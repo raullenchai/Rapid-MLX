@@ -15,6 +15,35 @@ pre-quantized q4 times isolate execution precision, rather than checkpoint
 conversion, as the useful lever for this workload. These figures are supplied
 measurements from the issue, not a new run performed by this change.
 
+## Branch dogfood
+
+The implementation at commit `4d280191d` was then dogfooded through the real
+`rapid-mlx serve` and `/v1/images/generations` path on the same class of host:
+
+- Mac mini, Apple M2 Pro, 32 GB unified memory, macOS 26.5.2;
+- mflux 0.19.1, MLX 0.32.2, low-power mode off, no recorded thermal warning;
+- otherwise-idle host, with its resident QSP service stopped for the A/B;
+- identical prompt, seed 1001, 1024×1024 output, and four inference steps;
+- one warm-up followed by five measured requests per checkpoint.
+
+| Weight path | Warm-up | Measured requests | Median |
+|---|---:|---:|---:|
+| Pinned pre-quantized q4 alias | 52.431 / 52.085 s | 54.643 / 60.425 / 51.882 / 52.463 / 52.703 s | 52.703 s |
+| Pinned packaged bf16 alias | 43.287 / 44.036 s | 46.065 / 41.820 / 40.538 / 42.805 / 40.844 s | 41.820 s |
+
+The packaged bf16 path reduced median end-to-end wall time by 20.6%, or 1.26×
+throughput. Every repeat within a precision produced the same PNG SHA-256;
+q4 and bf16 intentionally produced different bytes because the denoising
+weights differ. Visual inspection found both outputs coherent and faithful to
+the paper-crane prompt. A direct-engine companion run measured peak process RSS
+at approximately 4.57 GB for q4 and 12.49 GB for bf16. Raw timing JSON remains
+on the mini under `~/qsp-node/image_weight_dogfood_{exact_q4,exact_bf16}.json`.
+
+The bf16 run used the exact pinned snapshot below. Before generation,
+`mflux_missing_weights()` returned `[]`, proving all indexed component shards
+were locally present. The QSP LaunchAgent was restored after the run and its
+health endpoint passed.
+
 Rapid-MLX therefore exposes an opt-in path while preserving existing behavior:
 
 ```bash
@@ -29,7 +58,8 @@ loads it through `model_path`, and passes `quantize=None`. The q4 alias and all
 other models are unchanged. A range-read of the pinned snapshot's first
 transformer shard found 69 tensors, all declared `BF16`, and no `.scales` or
 `.biases` quantization auxiliaries. Automatic chip selection is deliberately
-deferred until M1/M2 family coverage and peak-working-set measurements exist.
+deferred until broader M1/M2 family coverage exists; the one measured M2 Pro
+working set is not enough to define a safe hardware policy.
 
 ## Reproduction checklist
 

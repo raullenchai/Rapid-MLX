@@ -17,20 +17,24 @@
 - The packaged bf16 source loads via `model_path` with `quantize=None`.
 - Relevant alias/image/download/CLI/residency tests pass; exact commands are in
   the eventual PR summary and the performance note.
+- Real M2 Pro dogfood through `rapid-mlx serve` and the image endpoint measured
+  52.703 s q4 versus 41.820 s bf16 median (1.26× throughput), with deterministic
+  repeats and visually coherent output. The exact pinned bf16 package passed
+  the repository completeness guard before loading.
 - A DiffusionGemma-shape M3 Ultra microbenchmark found q4 faster than bf16 at
   both M=256 and M=4096. No Gemma precision policy was changed.
 
 ## Unresolved questions and risks
 
 - The CLI flag is a new public surface and needs Atlas compatibility approval.
-- The 18 GiB residency estimate is conservative rather than a measured peak;
-  the alias independently enforces a 32 GB physical-memory floor.
-- A full q4/bf16 image generation and edit smoke against the new packaged
-  checkpoint still needs the 16 GB weight download. This change verifies the
-  load contract hermetically but does not download that checkpoint on Studio.
+- The 18 GiB residency estimate is conservative; direct-engine dogfood measured
+  about 12.49 GB peak process RSS, and the alias independently enforces a 32 GB
+  physical-memory floor.
+- Text-to-image is qualified end to end. FLUX.2 image editing with the bf16
+  package has not been separately timed in this pass.
 - M1/M2-family automatic selection remains deliberately out of scope.
 
 ## Next action
 
-Atlas should confirm the explicit CLI/alias surface, then run or delegate one
-real 1024×1024 generation and edit smoke on the 32 GB M2 Pro before merge.
+Atlas should confirm the explicit CLI/alias surface and decide whether a
+separate image-edit smoke is required before merge.
