@@ -2345,8 +2345,6 @@ def _normalize_speculative_config_or_exit(args):
             args.suffix_min_match_len = 24
         if getattr(args, "suffix_hybrid_bit_exact", None) is None:
             args.suffix_hybrid_bit_exact = False
-        if getattr(args, "suffix_hybrid_probe_len", None) is None:
-            args.suffix_hybrid_probe_len = 4
 
     def _legacy_speculative_config_payload() -> dict | None:
         methods: list[tuple[str, dict]] = []
@@ -4766,7 +4764,6 @@ def serve_command(args):
         suffix_hybrid=args.suffix_hybrid,
         suffix_min_match_len=args.suffix_min_match_len,
         suffix_hybrid_bit_exact=args.suffix_hybrid_bit_exact,
-        suffix_hybrid_probe_len=args.suffix_hybrid_probe_len,
         # KV cache quantization (R15 #300: dtype string is the canonical
         # observability surface; ``_quantization`` / ``_bits`` are the
         # wire-level toggles that drive ``mlx_lm.QuantizedKVCache``).
@@ -11513,12 +11510,6 @@ Examples:
     serve_parser.add_argument(
         "--suffix-hybrid-bit-exact",
         action="store_true",
-        default=None,
-        help=argparse.SUPPRESS,
-    )
-    serve_parser.add_argument(
-        "--suffix-hybrid-probe-len",
-        type=int,
         default=None,
         help=argparse.SUPPRESS,
     )

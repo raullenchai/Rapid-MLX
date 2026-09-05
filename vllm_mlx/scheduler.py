@@ -382,11 +382,6 @@ class SchedulerConfig:
     # if the quantized hybrid verify drifts from greedy (see
     # ``_hybrid_scratch_verify_drift_free``).
     suffix_hybrid: bool = False
-    # Tunnel-verify probe length for the hybrid bit-exactness guard (how
-    # many committed positions the guard replays to detect drift from
-    # greedy). A small pod value is enough to catch a quantized-hybrid
-    # drift signature without paying a long replay on every fallthrough.
-    suffix_hybrid_probe_len: int = 4
     # Bit-exactness guard for the hybrid path (issue #2561). A quantized
     # hybrid can DRIFT from greedy because the chunked-batched verify
     # forward is not step-update-equivalent on recurrent layers; even with
@@ -2941,7 +2936,6 @@ def _install_suffix_decoding(
     suffix_hybrid: bool = False,
     suffix_min_match_len: int = 24,
     suffix_hybrid_bit_exact: bool = False,
-    suffix_hybrid_probe_len: int = 4,
 ) -> bool:
     """Monkey-patch BatchGenerator's GenerationBatch to add SuffixDecoding.
 
@@ -3088,6 +3082,22 @@ def _install_suffix_decoding(
     _hybrid_active = bool(hybrid)
     _hybrid_bit_exact = bool(suffix_hybrid_bit_exact)
 
+    # The hybrid path has a 24-token minimum-match floor (a draft shorter
+    # falls through without paying the multi-token verify cost), but the
+    # configured ``suffix_max_draft`` cap defaults to 8. With the stock
+    # drafter the verify width can never reach the floor, so the opt-in
+    # hybrid path would be dead on every default install. When hybrid is
+    # active we therefore RAISE the effective draft cap to at least the
+    # match floor so a repeat pattern can actually clear it (a draft can be
+    # at most as long as the suffix-match of the prompt/prefix, so a plain
+    # prompt needs only 24+ generated tokens to build one — reachable).
+    #
+    # The bit-exactness guard below probes EVERY committed position (the
+    # full accepted prefix), so there is no probe-length knob to tune.
+    _effective_max_draft = (
+        max(max_draft, suffix_min_match_len) if _hybrid_active else max_draft
+    )
+
     def _hybrid_scratch_verify(
         verify_input: mx.array, committed_input: mx.array, draft: list[int]
     ) -> dict:
@@ -3112,40 +3122,47 @@ def _install_suffix_decoding(
             committed_head,
         )
         n_accepted = result["n_accepted"]
-        if n_accepted > 0:
-            if _hybrid_bit_exact:
-                # Bit-exactness guard: replay the committed prefix stepwise on
-                # a fresh pre-verify copy and compare each step's greedy pred
-                # to the chunked verify's pred at that position. Any mismatch
-                # means the chunked-batched forward DRIFTED from step-update
-                # on the recurrent layers (quantized-hybrid signature) — refuse
-                # to commit rather than surface silently-wrong accepted tokens.
-                # Nothing has been committed yet, so a refusal is a clean
-                # fall-through.
-                probe_head = copy.deepcopy(gb.prompt_cache)
-                probe_len = min(len(verify_input[0]), suffix_hybrid_probe_len)
-                drift = False
-                # The chunked verify predict at ``preds_list[j]`` is the model's
-                # greedy prediction AFTER consuming ``verify_input[:, :j+1]``.
-                # The stepwise probe feeds token ``j`` at iteration ``j`` (so X
-                # at j=0, then d_0, ...) and compares each stepwise pred to the
-                # corresponding chunk row.
-                for j in range(probe_len):
-                    step_logits = gb.model(verify_input[:, j : j + 1], cache=probe_head)
-                    step_pred = mx.argmax(step_logits, axis=-1)
-                    mx.eval(step_pred)
-                    if int(step_pred[0, 0].item()) != result["preds_list"][j]:
-                        drift = True
-                        break
-                if drift:
-                    result["drift"] = True
-                    return result
-            _commit_scratch_accepted(
-                gb.model,
-                gb.prompt_cache,
-                committed_input,
-                n_accepted,
-            )
+        if _hybrid_bit_exact:
+            # Bit-exactness guard: replay the committed prefix stepwise on
+            # a fresh pre-verify copy and compare each step's greedy pred
+            # to the chunked verify's pred at that position. Any mismatch
+            # means the chunked-batched forward DRIFTED from step-update
+            # on the recurrent layers (quantized-hybrid signature) — refuse
+            # to commit rather than surface silently-wrong accepted tokens.
+            # Nothing has been committed yet, so a refusal is a clean
+            # fall-through.
+            probe_head = copy.deepcopy(gb.prompt_cache)
+            # Probe EVERY committed position (X plus each accepted draft).
+            # A fixed probe window could let drift after the Nth position
+            # commit silently under a "bit-exact" contract, so the replay
+            # must cover the full committed prefix through ``n_accepted``.
+            probe_len = n_accepted + 1
+            drift = False
+            # The chunked verify predict at ``preds_list[j]`` is the model's
+            # greedy prediction AFTER consuming ``verify_input[:, :j+1]``.
+            # The stepwise probe feeds token ``j`` at iteration ``j`` (so X
+            # at j=0, then d_0, ...) and compares each stepwise pred to the
+            # corresponding chunk row.
+            for j in range(probe_len):
+                step_logits = gb.model(verify_input[:, j : j + 1], cache=probe_head)
+                step_pred = mx.argmax(step_logits, axis=-1)
+                mx.eval(step_pred)
+                if int(step_pred[0, 0].item()) != result["preds_list"][j]:
+                    drift = True
+                    break
+            if drift:
+                result["drift"] = True
+                return result
+        # Commit the FULL committed prefix [X, d_0..d_{n_accepted-1}] — always,
+        # including the reject-first (``n_accepted == 0``) case where only X is
+        # committed. X is emitted as the primary by the caller, so leaving the
+        # live cache before X would corrupt the next decode step.
+        _commit_scratch_accepted(
+            gb.model,
+            gb.prompt_cache,
+            committed_input,
+            n_accepted,
+        )
         return result
 
     def _reset_state_gauges_if_idle() -> None:
@@ -3235,7 +3252,19 @@ def _install_suffix_decoding(
     # ``max_draft`` on the other side, since ``num_speculative_tokens``
     # accepts 1 and a floor of 2 would issue two-token drafts against a
     # configured cap of one.
-    _K_MIN = min(max(2, min_draft_len), max_draft)
+    #
+    # On the hybrid path this floor deadlock is exactly the trap that would
+    # silently disable the feature: width only grows AFTER a full-accept
+    # VERIFY, but a below-floor draft falls back BEFORE the width-update code
+    # runs — so starting at the default 2 deadlocks there even though the
+    # effective cap was raised above the match floor. Seed the hybrid width
+    # AT the match floor so a floor-length repeat is issued on the first step
+    # and the verify path is actually reachable; the adaptive ``*2`` growth
+    # below then climbs to ``_effective_max_draft`` once acceptance is proven.
+    if _hybrid_active:
+        _K_MIN = suffix_min_match_len
+    else:
+        _K_MIN = min(max(2, min_draft_len), max_draft)
 
     def _is_greedy_for_uid(uid: int) -> bool:
         """Detect whether the request's sampler is effectively greedy.
@@ -3514,9 +3543,9 @@ def _install_suffix_decoding(
         # SHORT — we left tokens on the table — so double. A partial accept
         # means we paid for K but only n landed; retarget just above n.
         if n_accepted >= K:
-            st["k"] = min(st["k"] * 2, max_draft)
+            st["k"] = min(st["k"] * 2, _effective_max_draft)
         else:
-            st["k"] = max(_K_MIN, min(n_accepted + 1, max_draft))
+            st["k"] = max(_K_MIN, min(n_accepted + 1, _effective_max_draft))
         _stats["k_current"] = st["k"]
 
         if n_accepted == 0:
@@ -5042,9 +5071,6 @@ class Scheduler:
                 suffix_min_match_len=getattr(self.config, "suffix_min_match_len", 24),
                 suffix_hybrid_bit_exact=getattr(
                     self.config, "suffix_hybrid_bit_exact", False
-                ),
-                suffix_hybrid_probe_len=getattr(
-                    self.config, "suffix_hybrid_probe_len", 4
                 ),
                 requests=self.requests,
                 uid_to_request_id=self.uid_to_request_id,

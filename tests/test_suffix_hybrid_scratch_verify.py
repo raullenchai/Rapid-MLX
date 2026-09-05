@@ -236,6 +236,98 @@ class TestHybridInstallGate:
         assert bg._suffix_stats["suffix_hybrid"] is True
         assert bg._suffix_stats["suffix_min_match_len"] == 24
 
+    def test_installed_reject_first_commits_primary(self, monkeypatch):
+        """Installed-path reject-first verify: the live cache must equal
+        prompt + X after ``gb._step()``.
+
+        A reject-first draft (n_accepted == 0) still emits X (the greedy
+        primary). The hybrid commit-only path must therefore commit the
+        [X] prefix even when no draft token is accepted — otherwise the live
+        cache is left BEFORE X and the next decode step reads stale state.
+        This exercises ``_hybrid_scratch_verify`` + ``_suffix_step`` (not the
+        helper directly), so it guards the production zero-accept path.
+        """
+        from types import SimpleNamespace
+        from unittest.mock import MagicMock
+
+        from vllm_mlx import scheduler
+        from vllm_mlx.model_auto_config import ModelConfig
+        from vllm_mlx.speculative import suffix_decoding
+
+        model, _c = _model_and_prompt()
+        # Probe the greedy next token on a throwaway copy (X = 7, the token
+        # we're about to feed as the primary). Build a draft whose token 0 is
+        # guaranteed rejected.
+        probe = model.make_cache()
+        mx.eval(model(mx.array([[1, 2, 3]]), cache=probe))
+        l0 = model(mx.array([[7]]), cache=probe)
+        mx.eval(l0)
+        d0 = int(mx.argmax(l0[:, -1], axis=-1).item()) + 1  # rejected
+        d1 = d0 + 1
+        draft = [d0, d1]
+
+        class Drafter:
+            max_draft_tokens = 2
+
+            def __init__(self, **_kw):
+                pass
+
+            def add_prompt_tokens(self, _t):
+                pass
+
+            def add_generated_token(self, _t):
+                pass
+
+            def record_acceptance(self, _c):
+                pass
+
+            def get_draft(self):
+                return list(draft)
+
+        cache = model.make_cache()
+        mx.eval(model(mx.array([[1, 2, 3]]), cache=cache))
+        gb = SimpleNamespace(
+            _next_tokens=mx.array([7], dtype=mx.int32),
+            _next_logprobs=[mx.zeros((64,))],
+            uids=[1],
+            tokens=[[]],
+            logits_processors=[],
+            prompt_cache=cache,
+            _num_tokens=[0],
+            max_tokens=[10],
+            state_machines=[SimpleNamespace(match=lambda s, _t: (s, None, None))],
+            _matcher_states=[None],
+            extract_cache=lambda _r: [],
+            model=model,
+        )
+        gb.Response = SimpleNamespace
+        gb._step = lambda: ([7], [])
+        gb.next = lambda: []
+        bg = MagicMock()
+        bg._generation_batch = gb
+        bg.remove = lambda *a, **k: {}
+        profile = ModelConfig(is_hybrid=True, supports_spec_decode=False)
+        monkeypatch.setattr(suffix_decoding, "SuffixDecodingDrafter", Drafter)
+        scheduler._install_suffix_decoding(
+            bg,
+            model=model,
+            profile=profile,
+            max_draft=2,
+            max_suffix_len=4,
+            min_confidence=0.3,
+            requests={},
+            uid_to_request_id={},
+            suffix_hybrid=True,
+            suffix_min_match_len=2,
+        )
+        result = gb._step()
+        assert result[0] == [7]
+        # Live cache must equal prompt + [7] (X committed despite reject).
+        gold = model.make_cache()
+        mx.eval(model(mx.array([[1, 2, 3]]), cache=gold))
+        mx.eval(model(mx.array([[7]]), cache=gold))
+        _assert_state_equal(cache, gold)
+
     def test_pure_attention_optin_ignored(self):
         """suffix_hybrid on a pure-attention model is a no-op (not a raised error)."""
         from unittest.mock import MagicMock
@@ -655,6 +747,109 @@ class TestBitExactnessGuard:
         )
         result = gb._step()
         # Drift detected: refuse, fall through (no wrong tokens committed).
+        assert bg._suffix_stats["hybrid_drifts"] == 1
+        assert bg._suffix_stats["ft_hybrid_drift"] == 1
+        assert result[0] == [7]
+
+    def test_guard_catches_drift_beyond_position_four(self, monkeypatch):
+        """The bit-exactness guard must probe EVERY committed position.
+
+        The old guard replayed only ``suffix_hybrid_probe_len`` (default 4)
+        positions, so a quantized-hybrid drift that only appears AFTER the
+        fourth accepted token committed silently under the "bit-exact"
+        contract. Here the drift first shows up at position 5: the chunked
+        verify accepts a 6-token draft (n_accepted == 6), and stepwise greedy
+        matches for positions 0..3 but diverges at position 4. The guard must
+        still refuse, proving it probes the full accepted prefix.
+        """
+        from types import SimpleNamespace
+        from unittest.mock import MagicMock
+
+        import mlx.core as mx
+
+        from vllm_mlx import scheduler
+        from vllm_mlx.model_auto_config import ModelConfig
+        from vllm_mlx.speculative import suffix_decoding
+
+        class LateDriftModel:
+            def __init__(self):
+                self._stepwise_calls = 0
+
+            def __call__(self, tokens, cache=None, **kw):
+                L = tokens.shape[1]
+                logits = mx.full((1, L, 16), -10.0)
+                if L > 1:  # chunked verify forward: predict draft token 10
+                    for i in range(L):
+                        logits[0, i, 10] = 10.0
+                    return logits
+                # stepwise probe: agree with the chunked pred for the first
+                # four committed positions (j = 0..3), then diverge at j = 4
+                # (the 5th stepwise call) — exactly the position the OLD
+                # probe window (suffix_hybrid_probe_len=4) never inspected.
+                self._stepwise_calls += 1
+                if self._stepwise_calls >= 5:
+                    logits[0, 0, 11] = 10.0  # drift beyond old window
+                else:
+                    logits[0, 0, 10] = 10.0  # matches chunked
+                return logits
+
+        cache = [SimpleNamespace(offset=0, max_size=100, size=lambda: 0)]
+
+        class Drafter:
+            max_draft_tokens = 6
+
+            def __init__(self, **_kw):
+                pass
+
+            def add_prompt_tokens(self, _t):
+                pass
+
+            def add_generated_token(self, _t):
+                pass
+
+            def record_acceptance(self, _c):
+                pass
+
+            def get_draft(self):
+                return [10, 10, 10, 10, 10, 10]
+
+        gb = SimpleNamespace(
+            _next_tokens=mx.array([7], dtype=mx.int32),
+            _next_logprobs=[mx.zeros((8,))],
+            uids=[1],
+            tokens=[[]],
+            logits_processors=[],
+            prompt_cache=cache,
+            _num_tokens=[0],
+            max_tokens=[10],
+            state_machines=[SimpleNamespace(match=lambda s, _t: (s, None, None))],
+            _matcher_states=[None],
+            extract_cache=lambda _r: [],
+            model=LateDriftModel(),
+        )
+        gb.Response = SimpleNamespace
+        gb._step = lambda: ([7], [])
+        gb.next = lambda: []
+        bg = MagicMock()
+        bg._generation_batch = gb
+        bg.remove = lambda *a, **k: {}
+        profile = ModelConfig(is_hybrid=True, supports_spec_decode=False)
+        monkeypatch.setattr(suffix_decoding, "SuffixDecodingDrafter", Drafter)
+        scheduler._install_suffix_decoding(
+            bg,
+            model=gb.model,
+            profile=profile,
+            max_draft=6,
+            max_suffix_len=4,
+            min_confidence=0.3,
+            requests={},
+            uid_to_request_id={},
+            suffix_hybrid=True,
+            suffix_min_match_len=6,
+            suffix_hybrid_bit_exact=True,
+        )
+        result = gb._step()
+        # Drift at position 4 (beyond the old fixed window) is caught.
         assert bg._suffix_stats["hybrid_drifts"] == 1
         assert bg._suffix_stats["ft_hybrid_drift"] == 1
         assert result[0] == [7]
