@@ -32,12 +32,13 @@ struct ImageCatalogTests {
       z-image-turbo         5.5 GiB    [image:gen] filipstrand/Z-Image-Turbo-mflux-4bit
       hidream-o1-dev       16.4 GiB    [image:gen] mlx-community/HiDream-O1-Image-Dev-mlx-bf16
       sdxl-base             6.5 GiB     [image:gen] stabilityai/stable-diffusion-xl-base-1.0
+      sd35-large-4bit       15.3 GiB    [image:gen] argmaxinc/mlx-stable-diffusion-3.5-large-4bit-quantized
     """
 
     @Test("parseImageRows extracts image rows and their operation")
     func parsesImageRows() {
         let rows = ModelCatalog.parseImageRows(Self.sample)
-        #expect(rows.count == 5)
+        #expect(rows.count == 6)
 
         let aliases = rows.map(\.alias)
         #expect(aliases.contains("flux2-klein-4b"))
@@ -45,6 +46,7 @@ struct ImageCatalogTests {
         #expect(aliases.contains("z-image-turbo"))
         #expect(aliases.contains("hidream-o1-dev"))
         #expect(aliases.contains("sdxl-base"))
+        #expect(aliases.contains("sd35-large-4bit"))
         // No chat / video alias leaks in.
         #expect(!aliases.contains("qwen3.6-27b-4bit"))
         #expect(!aliases.contains("ltx-2.3-mlx-q4"))
@@ -64,6 +66,10 @@ struct ImageCatalogTests {
         #expect(bonsai?.hfRepo == "prism-ml/bonsai-image-ternary-4B-mlx-2bit")
         #expect(bonsai?.size == "3.6 GiB")
         #expect(bonsai?.capability == .generation)
+        let sd35 = rows.first { $0.alias == "sd35-large-4bit" }
+        #expect(sd35?.hfRepo == "argmaxinc/mlx-stable-diffusion-3.5-large-4bit-quantized")
+        #expect(sd35?.size == "15.3 GiB")
+        #expect(sd35?.capability == .generation)
     }
 
     @Test("complete mflux caches are marked downloaded in Images")
@@ -77,6 +83,7 @@ struct ImageCatalogTests {
                 "filipstrand/Z-Image-Turbo-mflux-4bit",
                 "mlx-community/HiDream-O1-Image-Dev-mlx-bf16",
                 "stabilityai/stable-diffusion-xl-base-1.0",
+                "argmaxinc/mlx-stable-diffusion-3.5-large-4bit-quantized",
             ]
         )
 
@@ -87,6 +94,7 @@ struct ImageCatalogTests {
         #expect(cached.first { $0.alias == "z-image-turbo" }?.cached == true)
         #expect(cached.first { $0.alias == "hidream-o1-dev" }?.cached == true)
         #expect(cached.first { $0.alias == "sdxl-base" }?.cached == true)
+        #expect(cached.first { $0.alias == "sd35-large-4bit" }?.cached == true)
     }
 
     @Test("Image capability rows are excluded from the chat catalog")
@@ -107,5 +115,6 @@ struct ImageCatalogTests {
         #expect(excluded.contains("z-image-turbo"))
         #expect(excluded.contains("hidream-o1-dev"))
         #expect(excluded.contains("sdxl-base"))
+        #expect(excluded.contains("sd35-large-4bit"))
     }
 }

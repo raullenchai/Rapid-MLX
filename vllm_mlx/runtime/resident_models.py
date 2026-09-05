@@ -557,6 +557,12 @@ def estimate_model_bytes(model_name: str) -> int:
         # allocator/output headroom while the catalog keeps a 16 GiB minimum.
         "sdxl-base": 14.0,
         "stable-diffusion-xl": 14.0,
+        # 15.25 GiB of revision-pinned MMDiT + CLIP/T5/tokenizer payloads.
+        # The low-memory runtime stages text encoding, denoising and decoding;
+        # keep a conservative 20 GiB admission charge pending broader hardware
+        # measurements, while the public alias requires a 32 GiB Mac.
+        "sd35-large": 20.0,
+        "stable-diffusion-3.5": 20.0,
         # 6-bit-transformer Qwen-Image (20B) — measured peak RSS during a
         # real generation at 1024x1024 (mflux-community/qwen-image-mflux-q6,
         # the API/GUI default resolution; `/usr/bin/time -l`): ~55.7 GiB.

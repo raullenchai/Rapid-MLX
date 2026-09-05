@@ -7715,6 +7715,8 @@ def pull_command(args):
     from vllm_mlx._download_gate import (
         IMAGE_MODEL_DATA_FILES,
         IMAGE_MODEL_REVISIONS,
+        SD35_REPO,
+        image_runtime_assets_for,
     )
     from vllm_mlx.audio.registry import runtime_assets_for, runtime_requirements_for
     from vllm_mlx.audio.runtime_requirements import (
@@ -7737,6 +7739,13 @@ def pull_command(args):
         primary_args.model = resolved_primary
         primary_repo = resolved_primary
 
+    if primary_repo == SD35_REPO:
+        print(
+            "\n  Model terms: Stable Diffusion 3.5 weights are subject to the "
+            "Stability AI Community License and Acceptable Use Policy. Review "
+            "https://stability.ai/license before commercial or hosted use."
+        )
+
     if primary_repo in IMAGE_MODEL_DATA_FILES:
         _pull_repository(
             primary_args,
@@ -7745,6 +7754,18 @@ def pull_command(args):
         )
     else:
         _pull_repository(primary_args)
+    for asset_repo, revision, allow_patterns in image_runtime_assets_for(primary_repo):
+        print(f"\n  Runtime assets: {asset_repo}")
+        dependency_args = copy.copy(args)
+        dependency_args.model = asset_repo
+        dependency_args._original_alias = asset_repo
+        dependency_args.bits = None
+        dependency_args.format = None
+        _pull_repository(
+            dependency_args,
+            allow_patterns_override=list(allow_patterns),
+            revision_override=revision,
+        )
     for asset in runtime_assets_for(primary_repo):
         if asset.repo_id == primary_repo:
             continue

@@ -17,3 +17,4 @@ omit =
     vllm_mlx/image/sdxl_runtime/utils.py
     # Exact third-party numerical core; Rapid-owned adapter remains covered.
     vllm_mlx/image/bonsai_runtime/_vendor/*
+    vllm_mlx/image/sd35_runtime/_vendor/*
