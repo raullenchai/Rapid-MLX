@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import ast
 import inspect
+import sys
 from types import SimpleNamespace
 
 import pytest
@@ -140,3 +141,95 @@ def test_serve_command_consults_the_helper_with_sys_argv():
     assert isinstance(argv_arg, ast.Attribute)
     assert isinstance(argv_arg.value, ast.Name) and argv_arg.value.id == "sys"
     assert argv_arg.attr == "argv"
+
+
+def _stub_heavy_serve_deps(monkeypatch) -> dict:
+    """Stub ``serve_command``'s heavyweight prologue (download, memory and
+    disk probes, model load, middleware wiring, ``uvicorn.run``) so the real
+    control flow runs from ``cli.main()`` through the warning loop to the
+    uvicorn dispatch. Mirrors ``tests/test_serve_listen_fd.py``; a new heavy
+    step in ``serve_command`` should be stubbed here rather than worked
+    around so the test keeps following the production path.
+    """
+    import uvicorn
+
+    from vllm_mlx import _version_check
+    from vllm_mlx import server as server_mod
+    from vllm_mlx.middleware import auth as auth_mod
+    from vllm_mlx.middleware import request_logging as reqlog_mod
+
+    captured: dict = {}
+
+    def fake_run(app, **kwargs):
+        captured["app"] = app
+        captured.update(kwargs)
+
+    monkeypatch.setattr(_version_check, "prompt_upgrade_if_available", lambda: False)
+    monkeypatch.setattr(
+        _version_check, "print_staleness_warning_if_any", lambda **_kwargs: None
+    )
+    monkeypatch.setattr(cli, "_ensure_model_downloaded", lambda model: None)
+    monkeypatch.setattr(cli, "_check_memory_capacity", lambda *a, **kw: None)
+    monkeypatch.setattr(cli, "_check_disk_space", lambda *a, **kw: None)
+    monkeypatch.setattr(server_mod, "configure_logging", lambda level: "info")
+    monkeypatch.setattr(server_mod, "load_model", lambda *a, **kw: None)
+    monkeypatch.setattr(server_mod, "configure_cors", lambda *a, **kw: None)
+    monkeypatch.setattr(auth_mod, "configure_rate_limiter", lambda *a, **kw: None)
+    monkeypatch.setattr(
+        reqlog_mod, "install_request_logging_middleware", lambda *a: None
+    )
+    monkeypatch.setattr(uvicorn, "run", fake_run)
+    return captured
+
+
+def _run_serve(monkeypatch, capsys, *extra_argv: str) -> tuple[str, dict]:
+    captured = _stub_heavy_serve_deps(monkeypatch)
+    monkeypatch.setattr(
+        sys, "argv", ["rapid-mlx", "serve", "qwen3.5-4b-8bit", *extra_argv]
+    )
+    cli.main()
+    assert "app" in captured, "serve_command never reached uvicorn.run"
+    return capsys.readouterr().out, captured
+
+
+@pytest.mark.requires_mlx
+def test_serve_command_prints_dropped_flag_warnings_end_to_end(monkeypatch, capsys):
+    """Behavioral pin: a real ``serve`` invocation that types both flags under
+    ``--no-memory-aware-cache`` must print one warning per dropped flag and
+    still boot (reach ``uvicorn.run``). Guards against the loop being deleted
+    or its result discarded, which the structural AST test cannot catch."""
+    out, _ = _run_serve(
+        monkeypatch,
+        capsys,
+        "--no-memory-aware-cache",
+        "--hybrid-cache-entries",
+        "8",
+        "--prefix-cache-index",
+        "hash",
+    )
+    assert (
+        "  Warning: with --no-memory-aware-cache, --hybrid-cache-entries=8 is a "
+        "memory-aware cache quota" in out
+    ), out
+    assert (
+        "  Warning: with --no-memory-aware-cache, --prefix-cache-index=hash is not "
+        "read by the legacy entry-count cache" in out
+    ), out
+    assert out.count("Warning: with --no-memory-aware-cache") == 2, out
+
+
+@pytest.mark.requires_mlx
+def test_serve_command_stays_silent_when_memory_aware_cache_enabled(
+    monkeypatch, capsys
+):
+    """Same flags under the default memory-aware cache: no warning, since the
+    flags are honoured there."""
+    out, _ = _run_serve(
+        monkeypatch,
+        capsys,
+        "--hybrid-cache-entries",
+        "8",
+        "--prefix-cache-index",
+        "hash",
+    )
+    assert "Warning: with --no-memory-aware-cache" not in out, out
