@@ -93,6 +93,7 @@ actor LocalWorkflowExecutor {
         guard run.workflowID == workflow.id,
               run.nextStepIndex >= 0,
               run.nextStepIndex <= workflow.steps.count,
+              run.status != .ready || run.nextStepIndex == 0,
               Set(workflow.steps.map(\.id)).count == workflow.steps.count,
               workflow.steps.allSatisfy({ !$0.id.isEmpty })
         else {

@@ -319,6 +319,35 @@ struct LocalWorkflowExecutorTests {
         #expect(await dependencies.actuator.count == 0)
     }
 
+    @Test("a forged ready checkpoint cannot skip workflow steps")
+    func advancedReadyResumeFailsClosed() async throws {
+        let workflow = LocalWorkflow(
+            title: "Lunch",
+            steps: [step(id: "choose"), step(id: "checkout", risk: .financial)]
+        )
+        let dependencies = Dependencies(
+            observer: ScriptedWorkflowObserver([]),
+            verifications: []
+        )
+
+        for nextStepIndex in [1, workflow.steps.count] {
+            let forged = LocalWorkflowRun(
+                workflowID: workflow.id,
+                nextStepIndex: nextStepIndex,
+                status: .ready
+            )
+            let run = await dependencies.executor.execute(workflow, resuming: forged)
+
+            #expect(run.status == .paused(
+                stepID: "invalid-run",
+                reason: .unsafeState,
+                actionMayHaveOccurred: false
+            ))
+        }
+        #expect(await dependencies.actuator.count == 0)
+        #expect(await dependencies.approver.count == 0)
+    }
+
     @Test("the executor rejects an overlapping claim before duplicate actuation")
     func overlappingRunIsRejected() async throws {
         let workflow = LocalWorkflow(title: "Lunch", steps: [step()])
