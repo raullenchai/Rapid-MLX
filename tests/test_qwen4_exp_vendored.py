@@ -940,6 +940,48 @@ def test_qwen4_state_cache_rollback_via_composite_cache_list():
     np.testing.assert_array_equal(np.array(recurrent.cache[1]), np.array(rb0[1]))
 
 
+def test_qwen4_state_cache_transactional_restore_on_later_leaf_failure():
+    """A failure mid-``trim_all`` atomically restores an already-trimmed leaf.
+
+    ``trim_all`` checkpoints every leaf before trimming, then restores all of
+    them if ANY leaf fails after an earlier trim already committed. Without
+    this the earlier leaf would be left half-trimmed — breaking the lossless
+    rollback contract. Force the failure in a later leaf and assert the
+    recurrent cache returns to its exact pre-trim (verify) state, undo record
+    intact.
+    """
+    from vllm_mlx.cache_rollback import trim_all
+
+    class _FailingLeaf:
+        def can_trim(self, n):
+            return True
+
+        def trim(self, n):
+            raise RuntimeError("boom")
+
+    recurrent = Qwen4ExpStateCache(size=2)
+    rb0 = [
+        mx.array([[1.0, 2.0]], dtype=mx.float32),
+        mx.array([[3.0, 4.0]], dtype=mx.float32),
+    ]
+    rb1 = [
+        mx.array([[5.0, 6.0]], dtype=mx.float32),
+        mx.array([[7.0, 8.0]], dtype=mx.float32),
+    ]
+    # The verify advanced to boundary 1 and captured a 2-entry undo record.
+    recurrent.cache = [rb1[0], rb1[1]]
+    recurrent.record_slot_snapshots(0, [rb0[0], rb1[0]])
+    recurrent.record_slot_snapshots(1, [rb0[1], rb1[1]], finalize=True)
+
+    composite = CacheList(recurrent, _FailingLeaf())
+    assert not trim_all([composite], 1)
+    # Atomic: the earlier successful trim was rolled back, not left half-applied.
+    assert recurrent.rollback_state is not None
+    assert len(recurrent.rollback_state) == 2
+    np.testing.assert_array_equal(np.array(recurrent.cache[0]), np.array(rb1[0]))
+    np.testing.assert_array_equal(np.array(recurrent.cache[1]), np.array(rb1[1]))
+
+
 def test_suffix_scheduler_falls_through_before_qsa_multitoken_verify():
     from vllm_mlx.scheduler import _install_suffix_decoding
 
