@@ -209,3 +209,20 @@ def test_cold_prefetch_keeps_pinned_bf16_revision_through_every_layer(monkeypatc
         "download": expected,
         "ref": expected,
     }
+
+
+def test_pinned_image_cache_does_not_accept_complete_moving_main(monkeypatch):
+    """A cached main snapshot cannot hide a missing pinned image revision."""
+
+    from vllm_mlx import cli
+
+    monkeypatch.setattr(
+        "vllm_mlx._download_gate.is_repo_cached",
+        lambda _repo: True,
+    )
+    monkeypatch.setattr(
+        "vllm_mlx._download_gate._snapshot_is_complete_mflux_model",
+        lambda _repo: False,
+    )
+
+    assert cli._cache_runnability(FLUX2_KLEIN_BF16_REPO) is False

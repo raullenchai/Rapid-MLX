@@ -1806,6 +1806,13 @@ def _ensure_model_downloaded(
     """
     if os.path.exists(model_name):
         return
+    # Registered image checkpoints are immutable execution contracts. Resolve
+    # the contract before probing cachedness: ``_cache_runnability`` treats a
+    # pinned image repo specially and must not let a complete moving ``main``
+    # snapshot hide a missing pinned snapshot.
+    from vllm_mlx._download_gate import IMAGE_MODEL_REVISIONS
+
+    pinned_image_revision = IMAGE_MODEL_REVISIONS.get(model_name)
     # Reuse the cache inventory's single runnability probe core
     # (``_cache_runnability``, the same source ``models --cached`` uses) so
     # what counts as "already cached" is identical everywhere and spans every
@@ -1845,14 +1852,6 @@ def _ensure_model_downloaded(
     # TimeoutError / disk-space exits: refuse before server initialization.
     if _offline_hub_mode_active() and cachedness is False:
         _refuse_offline_uncached(model_name)
-
-    # Registered image checkpoints are immutable execution contracts. Carry
-    # their exact revision through every cold-prefetch layer; otherwise the
-    # generic prefetch downloads moving ``main`` and the image engine then
-    # downloads the pinned commit a second time when those revisions differ.
-    from vllm_mlx._download_gate import IMAGE_MODEL_REVISIONS
-
-    pinned_image_revision = IMAGE_MODEL_REVISIONS.get(model_name)
 
     # Disk-space gate + mirror pull. Both the disk probe (HF ``model_info``)
     # and the mirror's own metadata + ``/api/models`` catalog round-trips run
@@ -6136,6 +6135,7 @@ def _cache_runnability(repo: str) -> bool | None:
     """
     try:
         from vllm_mlx._download_gate import (
+            IMAGE_MODEL_REVISIONS,
             _snapshot_is_complete_audio_model,
             _snapshot_is_complete_mflux_model,
             _snapshot_is_complete_split_model,
@@ -6165,6 +6165,13 @@ def _cache_runnability(repo: str) -> bool | None:
             # matches a lone ``model.safetensors``) must NOT mark an incomplete
             # Wan snapshot runnable. Complete -> runnable; incomplete -> not.
             return _snapshot_is_complete_wan_model(repo)
+        if repo in IMAGE_MODEL_REVISIONS:
+            # A generic complete ``refs/main`` is not interchangeable with a
+            # registered image checkpoint's pinned commit. The mflux probe
+            # resolves ``snapshots/<pinned revision>`` directly and validates
+            # all component indexes/shards there, so only that exact snapshot
+            # can suppress the foreground download.
+            return _snapshot_is_complete_mflux_model(repo)
         return (
             is_repo_cached(repo)
             or _snapshot_is_complete_split_model(repo)
