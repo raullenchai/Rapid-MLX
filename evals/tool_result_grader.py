@@ -639,6 +639,11 @@ def _numbered_in(text: str) -> list[tuple[float, str | None, int]]:
 # prefix), so "55 mph" / "8 km/h" are recognized. Single-letter units (m, g, l,
 # h, s) are deliberately EXCLUDED from the standalone list -- they would
 # over-reject ordinary prose ("5 m" could be "5 minutes", "8 l" a digit+letter).
+# `k` is a DELIBERATE single-letter exception: it is the standard Kelvin
+# abbreviation, a temperature unit that collides with the fact's OWN temperature
+# domain. "21 K" is always ~ -252 °C (never a °C report), so rejecting it can
+# never block a legitimate affirmative temperature-value report -- unlike "5 m"
+# (minutes) vs "8 l" (letter), `k` after a number is unambiguous in this domain.
 _ADJACENT_UNIT_RE = re.compile(
     r"\s{0,3}(?:(?:[a-z]{1,5}(?:/[a-z]{1,5})+)"
     r"|(?:mph|kph|kmh|knots|nmi|sq|sqm|ft|yd|mi|px|em|rem|pt|"
@@ -648,7 +653,7 @@ _ADJACENT_UNIT_RE = re.compile(
     r"hertz|hz|joules|joule|newtons|newton|pascals|pascal|lumens|lumen|"
     r"dollar|dollars|usd|cad|eur|gbp|yen|yuan|rupee|rupees|cents|"
     r"points|point|percentile|percentiles|grade|marks|"
-    r"batteries|battery|kelvin|kelvins))"
+    r"batteries|battery|kelvin|kelvins|k))"
     # NOTE: `degrees` is deliberately NOT in the reject list. It is the most
     # common English surface for the fact's OWN temperature unit ("temperature
     # is 21 degrees" is a natural affirmative report of temperature=21°C), so
@@ -911,6 +916,10 @@ _COMPARATIVES = (
     ("not hotter than", "<="),
     ("not colder than", ">="),  # not (colder than X) == >= X
     ("not cooler than", ">="),
+    ("no warmer than", "<="),  # no (warmer than X) == <= X
+    ("no hotter than", "<="),
+    ("no colder than", ">="),  # no (colder than X) == >= X
+    ("no cooler than", ">="),
 )
 
 # Regexes for the no/not-prefixed INCLUSIVE comparators ("no more than",

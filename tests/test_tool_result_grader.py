@@ -971,8 +971,10 @@ class TestCodexRegressionFixes:
     def test_deny_marker_introducing_comparator_is_a_bound(self, g):
         # Round-18 F2: a deny marker that introduces a RECOGNIZED comparator
         # ("is not more than 64%", "is no more than 64%") is an inclusive BOUND,
-        # not a negation of the fact. An unsupported comparative ("is no colder
-        # than 21°C") or a plain negation ("is not 21°C") is still a denial.
+        # not a negation of the fact. (Since round-27 F81, "no colder than" is
+        # itself a recognized inverse-inclusive comparator -- see the update
+        # below.) An unsupported comparative ("is no wetter than 21°C") or a
+        # plain negation ("is not 21°C") is still a denial.
         humidity = {
             "type": "relation",
             "key": "humidity",
@@ -990,8 +992,15 @@ class TestCodexRegressionFixes:
             rep = _grade(g, [humidity], phrase)
             assert rep.facts[0].contradicted is False, phrase
             assert rep.overall is False, phrase
-        # Unsupported comparative -> still a denial.
+        # Round-27 F81: "no colder than" is now a SUPPORTED inverse-inclusive
+        # comparator (>=). For a 21 °C fact, "no colder than 21°C" is 21 >= 21
+        # -- a compatible inclusive bound, so it is missing (a range), not a
+        # denial.
         rep = _grade(g, [TEMP21C], "temperature is no colder than 21°C")
+        assert rep.facts[0].status == "missing"
+        assert rep.facts[0].contradicted is False
+        # A genuinely UNSUPPORTED comparative still denies.
+        rep = _grade(g, [TEMP21C], "temperature is no wetter than 21°C")
         assert rep.facts[0].status == "contradicted"
         # Plain negation -> still a denial.
         rep = _grade(g, [TEMP21C], "the temperature is not 21°C")
@@ -1370,6 +1379,62 @@ class TestInputIsDataNotInstructions:
             "aliases": ["temperature"],
         }
         assert _grade(g, [neg], "temperature-21°C").overall is True
+
+    def test_kelvin_k_abbreviation_is_not_celsius(self, g):
+        # Round-27 F1: "21 K" is the STANDARD Kelvin abbreviation -- always
+        # ~-252 °C, never a °C report. The single-letter "k" is a deliberate
+        # exception to the standalone-unit exclusion (it collides with the
+        # fact's OWN temperature domain, unlike "5 m"/minutes etc.), so "21 K"
+        # / "21 kelvin" / "21 kelvins" must not ground a 21 °C fact.
+        for phrase in [
+            "temperature is 21 K",
+            "temperature is 21 kelvin",
+            "temperature is 21 kelvins",
+            "temperature reads 21 k",
+        ]:
+            rep = _grade(g, [TEMP21C], phrase)
+            assert rep.facts[0].status == "missing", phrase
+            assert rep.overall is False, phrase
+        # A genuine °C report and the fact's OWN unit abbreviations still ground.
+        assert _grade(g, [TEMP21C], "temperature is 21°C").overall is True
+        assert _grade(g, [TEMP21C], "temperature is 21 C").overall is True
+        assert _grade(g, [TEMP21C], "temperature is 21 degrees").overall is True
+
+    def test_no_warmer_colder_than_inverse_inclusive(self, g):
+        # Round-27 F2: "no warmer/hotter than X" == <= X and "no colder/cooler
+        # than X" == >= X (the `no`-forms of the round-22 F72 `not`-forms). A
+        # COMPATIBLE negated bound is a missing-range; an incompatible one is a
+        # contradiction.
+        for phrase in [
+            "temperature is no warmer than 30°C",  # 21 <= 30 -> compatible bound
+            "temperature is no hotter than 30°C",
+            "temperature is no colder than 15°C",  # 21 >= 15 -> compatible bound
+            "temperature is no cooler than 15°C",
+        ]:
+            rep = _grade(g, [TEMP21C], phrase)
+            assert rep.facts[0].status == "missing", phrase
+            assert rep.facts[0].contradicted is False, phrase
+            assert rep.overall is False, phrase
+        for phrase in [
+            "temperature is no warmer than 15°C",  # 21 <= 15 is false -> contradicted
+            "temperature is no colder than 30°C",  # 21 >= 30 is false -> contradicted
+        ]:
+            rep = _grade(g, [TEMP21C], phrase)
+            assert rep.facts[0].status == "contradicted", phrase
+            assert rep.overall is False, phrase
+        # The `not`-forms and plain comparators stay consistent.
+        assert (
+            _grade(g, [TEMP21C], "temperature is not warmer than 30°C").facts[0].status
+            == "missing"
+        )
+        assert (
+            _grade(g, [TEMP21C], "temperature is no more than 30°C").facts[0].status
+            == "missing"
+        )
+        assert (
+            _grade(g, [TEMP21C], "temperature is warmer than 30°C").facts[0].status
+            == "contradicted"
+        )
 
     def test_cross_unit_bound_converts_threshold(self, g):
         # Round-19 F66: a bound's threshold is converted into the fact's unit
