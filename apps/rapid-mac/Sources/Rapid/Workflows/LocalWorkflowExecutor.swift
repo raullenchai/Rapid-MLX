@@ -35,6 +35,9 @@ protocol LocalWorkflowFallbackResolving: Sendable {
 }
 
 protocol LocalWorkflowApproving: Sendable {
+    /// Implementations must return promptly when their task is cancelled so
+    /// the executor's structured timeout can drain without retaining approval
+    /// requests or their dependencies.
     func requestApproval(_ request: WorkflowApprovalRequest) async -> WorkflowApprovalDecision
 }
 
@@ -615,29 +618,24 @@ actor LocalWorkflowExecutor {
     }
 
     private func requestApproval(_ request: WorkflowApprovalRequest) async -> WorkflowApprovalDecision {
-        let race = WorkflowApprovalRace()
         let approver = approver
         let timeoutNanoseconds = approvalTimeoutNanoseconds
-        let approvalTask = Task {
-            let decision = await approver.requestApproval(request)
-            await race.resolve(decision)
-        }
-        let timeoutTask = Task {
-            do {
-                try await Task.sleep(nanoseconds: timeoutNanoseconds)
-                await race.resolve(.unavailable)
-            } catch {
-                // The winning approval path cancels this timeout task.
+        return await withTaskGroup(of: WorkflowApprovalDecision.self) { group in
+            group.addTask {
+                await approver.requestApproval(request)
             }
+            group.addTask {
+                do {
+                    try await Task.sleep(nanoseconds: timeoutNanoseconds)
+                } catch {
+                    return .unavailable
+                }
+                return .unavailable
+            }
+            let decision = await group.next() ?? .unavailable
+            group.cancelAll()
+            return decision
         }
-        let decision = await withTaskCancellationHandler {
-            await race.wait()
-        } onCancel: {
-            Task { await race.resolve(.unavailable) }
-        }
-        approvalTask.cancel()
-        timeoutTask.cancel()
-        return decision
     }
 
     /// Model text shown in an approval prompt is untrusted display data. Make
@@ -737,28 +735,5 @@ actor LocalWorkflowExecutor {
                 actionMayHaveOccurred: actionMayHaveOccurredOnFailure
             )
         }
-    }
-}
-
-private actor WorkflowApprovalRace {
-    private var decision: WorkflowApprovalDecision?
-    private var continuation: CheckedContinuation<WorkflowApprovalDecision, Never>?
-
-    func wait() async -> WorkflowApprovalDecision {
-        if let decision { return decision }
-        return await withCheckedContinuation { continuation in
-            if let decision {
-                continuation.resume(returning: decision)
-            } else {
-                self.continuation = continuation
-            }
-        }
-    }
-
-    func resolve(_ decision: WorkflowApprovalDecision) {
-        guard self.decision == nil else { return }
-        self.decision = decision
-        continuation?.resume(returning: decision)
-        continuation = nil
     }
 }
