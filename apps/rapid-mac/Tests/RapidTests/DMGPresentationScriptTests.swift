@@ -18,21 +18,22 @@ struct DMGPresentationScriptTests {
         )
     }
 
-    @Test("Layout writer discards stale state and verifies Finder readback")
+    @Test("Layout writer discards stale state and installs the deterministic template")
     func layoutPersistenceGuard() throws {
         let script = try Self.loadScript("configure-dmg-layout.sh")
 
         #expect(script.contains("rm -f \"$MOUNT/.DS_Store\""))
-        #expect(script.contains("PERSISTED_LAYOUT=\"$(osascript"))
-        #expect(script.contains("EXPECTED_LAYOUT=\"180,228|540,228|96|180,120,900,580\""))
-        #expect(script.contains("if [[ \"$PERSISTED_LAYOUT\" != \"$EXPECTED_LAYOUT\" ]]"))
+        #expect(script.contains("cp \"$LAYOUT_TEMPLATE\" \"$MOUNT/.DS_Store\""))
+        #expect(!script.contains("osascript"))
+        #expect(script.contains("verify-dmg-layout.py"))
         #expect(script.contains("BACKGROUND_SOURCE=\"$ROOT/Resources/dmg-background.png\""))
         #expect(script.contains("cp \"$BACKGROUND_SOURCE\" \"$BACKGROUND\""))
+        #expect(!script.contains("PERSISTED_LAYOUT"))
+        #expect(!script.contains("EXPECTED_LAYOUT"))
         #expect(!script.contains("sips -s format png"))
-        Self.expectBackgroundAliasContract(in: script)
     }
 
-    @Test("Final validator requires the persisted Finder background alias")
+    @Test("Final validator requires the deterministic Finder layout")
     func finalBackgroundAliasGuard() throws {
         Self.expectBackgroundAliasContract(in: try Self.loadScript("validate-dmg.sh"))
     }
@@ -138,8 +139,9 @@ struct DMGPresentationScriptTests {
     }
 
     private static func expectBackgroundAliasContract(in script: String) {
-        #expect(script.contains("python3 \"$ROOT/scripts/verify-dmg-background.py\" \"$MOUNT/.DS_Store\""))
+        #expect(script.contains("python3 \"$ROOT/scripts/verify-dmg-layout.py\" \"$MOUNT/.DS_Store\""))
         #expect(!script.contains("strings -a \"$MOUNT/.DS_Store\""))
+        #expect(!script.contains("osascript"))
     }
 
     private static func runBackgroundVerifier(

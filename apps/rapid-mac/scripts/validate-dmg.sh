@@ -163,43 +163,14 @@ BG_HEIGHT="$(sips -g pixelHeight "$BACKGROUND" | awk '/pixelHeight:/ {print $2}'
     || fail "Finder background is ${BG_WIDTH}x${BG_HEIGHT}, expected 720x460"
 [[ -s "$MOUNT/.DS_Store" ]] || fail "Finder layout .DS_Store missing or empty"
 
-# A present PNG is not enough: structurally parse the active icvp blob and
-# verify its backgroundImageAlias points to the volume-relative image.
-python3 "$ROOT/scripts/verify-dmg-background.py" "$MOUNT/.DS_Store" \
-    || fail "Finder background alias is missing or invalid"
-
-# Do not stop at file presence: a .DS_Store can carry an absolute alias to the
-# build-time mount and look complete on disk while Finder silently falls back
-# to a blank, auto-arranged window for users. Open the final read-only image
-# and read back the presentation through Finder itself.
-FINDER_LAYOUT="$(osascript - "$MOUNT" <<'APPLESCRIPT'
-on pointText(p)
-    return (item 1 of p as text) & "," & (item 2 of p as text)
-end pointText
-
-on rectText(r)
-    return (item 1 of r as text) & "," & (item 2 of r as text) & "," & (item 3 of r as text) & "," & (item 4 of r as text)
-end rectText
-
-on run argv
-    set volumeFolder to POSIX file (item 1 of argv) as alias
-    tell application "Finder"
-        open volumeFolder
-        delay 0.5
-        set dmgWindow to container window of volumeFolder
-        set appPosition to position of item "Rapid-MLX Desktop.app" of volumeFolder
-        set applicationsPosition to position of item "Applications" of volumeFolder
-        set iconSizeValue to icon size of icon view options of dmgWindow
-        set windowBounds to bounds of dmgWindow
-        close dmgWindow
-        return my pointText(appPosition) & "|" & my pointText(applicationsPosition) & "|" & (iconSizeValue as text) & "|" & my rectText(windowBounds)
-    end tell
-end run
-APPLESCRIPT
-)" || fail "Finder could not read the persisted DMG layout"
-
-[[ "$FINDER_LAYOUT" == "180,228|540,228|96|180,120,900,580" ]] \
-    || fail "unexpected Finder layout '$FINDER_LAYOUT' (expected app|Applications|icon|bounds = 180,228|540,228|96|180,120,900,580)"
-echo "==> Finder presentation: ${BG_WIDTH}x${BG_HEIGHT}; $FINDER_LAYOUT"
+# A present PNG is not enough: the .DS_Store must structurally match the
+# committed Rapid-MLX layout. verify-dmg-layout.py parses the window bounds,
+# icon view, icon positions and volume-relative background alias directly (no
+# Finder AppleEvents, which hang / silently fail to persist on macOS 26) and
+# rejects any build-host or absolute-mount string that would make the layout
+# non-remountable. It subsumes the former verify-dmg-background.py check.
+python3 "$ROOT/scripts/verify-dmg-layout.py" "$MOUNT/.DS_Store" \
+    || fail "Finder layout .DS_Store is invalid"
+echo "==> Finder presentation: ${BG_WIDTH}x${BG_HEIGHT}; deterministic layout"
 
 echo "==> validate-dmg: OK"
