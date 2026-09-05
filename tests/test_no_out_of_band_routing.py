@@ -157,6 +157,11 @@ ALLOWED_RAPID_MLX_ENV_VARS: frozenset[str] = frozenset(
         # fires, which tier engages — none of that changes. Read by
         # ``moe_fusion.fuse_gate_up()`` only.
         "RAPID_MLX_MOE_GATE_UP_FUSION",
+        # Opt-in direct QSA block-sparse attention on an already-selected
+        # Qwen4-Exp model. This changes only the prefill kernel after a measured
+        # context crossover; model, parser, tier, and engine routing are
+        # unchanged. Unsupported layouts and the default path remain dense.
+        "RAPID_MLX_QSA_BLOCK_SPARSE",
         # Opt-out of the blocked-seq GDN prefill Metal kernel
         # (vllm_mlx/gdn_prefill.py). Same shape as DISABLE_FUSED_SAMPLER —
         # a kernel-selection perf toggle computing the exact same

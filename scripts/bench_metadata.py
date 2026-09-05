@@ -48,6 +48,7 @@ JSON_BENCH_SCRIPTS = frozenset(
         "bench_engine_solo.py",
         "bench_qwen4_fused_gdn_decode.py",
         "bench_qwen4_fused_gdn_end_to_end.py",
+        "bench_qwen4_qsa_block_sparse.py",
         "bench_service_prefill.py",
         "bench_readme_refresh.py",
         "bench_suffix_decoding.py",

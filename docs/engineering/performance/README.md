@@ -6,6 +6,7 @@ summary statistics, and limitations.
 
 ## Reports
 
+- [Qwen4 block-sparse QSA prefill qualification](2026-09-04-qwen4-qsa-block-sparse-prefill.md)
 - [Qwen4 fused GDN single-token decode](2026-09-01-qwen4-fused-gdn-decode.md)
 - [Gemma 4 12B engine comparison on M2 Pro](2026-08-21-gemma4-12b-engine-comparison.md)
 - [Qwen3.5-9B engine comparison on M2 Pro](2026-08-21-qwen3.5-9b-engine-comparison.md)
