@@ -501,6 +501,17 @@ class TestCodexRegressionFixes:
         # A genuine bare value still counts.
         assert _grade(g, [TEMP21C], "temperature about 21").overall is True
 
+    def test_bare_degrees_is_temperature_not_foreign_unit(self, g):
+        # `degrees` is the English surface for the fact's OWN temperature unit,
+        # so an adjacent `degrees` must NOT strip a legitimate anchored value
+        # as an unknown foreign unit (regression: round-5 briefly added it to
+        # the reject list and turned "temperature is 21 degrees" into a false
+        # negative for a 21 °C fact).
+        assert _grade(g, [TEMP21C], "temperature is 21 degrees").overall is True
+        # The °F-convertible word form still resolves (70 °F ≈ 21 °C) and stays
+        # within TEMP21C's tolerance.
+        assert _grade(g, [TEMP21C], "a warm 70 degrees fahrenheit").overall is True
+
     def test_explicit_unresolvable_unit_rejected(self, g):
         # A typo'd configured unit ("k") must fail fast, not silently mean C.
         for u in ["k", "kelvin", "kg"]:

@@ -506,8 +506,10 @@ def _numbered_in(text: str) -> list[tuple[float, str | None, int]]:
 # so they don't leak in as bare numbers: "21 dollars" or "55 points" must not
 # satisfy a temperature/humidity fact whose value merely coincides. Conservative:
 # slash-form compounds (km/h), a small list of common physical units, and common
-# currency/count nouns. Ordinary prose words ("outside", "and", "rising") are
-# deliberately NOT included.
+# currency/count nouns. `degrees` is deliberately NOT included -- it is the
+# fact's OWN temperature unit surface, not a foreign unit (see inline note).
+# Ordinary prose words ("outside", "and", "rising") are deliberately NOT
+# included.
 # Multi-letter/compound unit tokens are matched STANDALONE (no required base
 # prefix), so "55 mph" / "8 km/h" are recognized. Single-letter units (m, g, l,
 # h, s) are deliberately EXCLUDED from the standalone list -- they would
@@ -517,7 +519,12 @@ _ADJACENT_UNIT_RE = re.compile(
     r"|(?:mph|kph|kmh|knots|nmi|sq|sqm|in|ft|yd|mi|px|em|rem|pt|"
     r"mm|cm|km|kg|ml|oz|lb|bar|mbar|hpa|pa|sec|min|hr|"
     r"dollar|dollars|usd|cad|eur|gbp|yen|yuan|rupee|rupees|cents|"
-    r"points|point|degrees|grade|marks))"
+    r"points|point|grade|marks))"
+    # NOTE: `degrees` is deliberately NOT in the reject list. It is the most
+    # common English surface for the fact's OWN temperature unit ("temperature
+    # is 21 degrees" is a natural affirmative report of temperature=21°C), so
+    # an adjacent `degrees` must not strip a legitimate anchored value. Only
+    # semantically FOREIGN unit words (currency, count, score) reject.
 )
 
 
