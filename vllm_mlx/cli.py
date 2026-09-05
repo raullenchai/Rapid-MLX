@@ -1008,6 +1008,17 @@ def _check_disk_space(model_name: str, force: bool = False) -> None:
     if os.path.exists(model_name):
         return
 
+    # Image loaders consume their verified local snapshot directly once every
+    # runtime-required file is present.  Check that contract before comparing
+    # against the Hub's *current* revision: a repo can advance after the local
+    # snapshot was downloaded, and pricing the newer remote revision here
+    # would reject a perfectly runnable warm start as a huge new download.
+    # Text checkpoints retain the selective-loader fast path below.
+    from vllm_mlx._download_gate import mflux_missing_weights
+
+    if mflux_missing_weights(model_name) == []:
+        return
+
     # Which directory inside the repo this alias actually needs. Resolved
     # OUTSIDE the cache probe below: that probe is best-effort and swallows
     # its own failures, and folding the prefix into it meant one flaky
