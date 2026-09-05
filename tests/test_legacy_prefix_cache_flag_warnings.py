@@ -68,9 +68,14 @@ def test_silent_for_auto_derived_hybrid_entries():
     )
 
 
-def test_silent_for_explicit_zero_hybrid_entries():
+def test_reports_explicit_zero_hybrid_entries():
+    """Typed 0 means "retain no hybrid entries"; the memory-aware cache honours
+    that, the legacy cache keeps them under --prefix-cache-size, so it is
+    reported like any other typed value."""
     argv = BASE_ARGV + ["--hybrid-cache-entries", "0"]
-    assert _legacy_prefix_cache_dropped_flags(_args(hybrid_cache_entries=0), argv) == []
+    lines = _legacy_prefix_cache_dropped_flags(_args(hybrid_cache_entries=0), argv)
+    assert len(lines) == 1
+    assert lines[0].startswith("--hybrid-cache-entries=0 is a memory-aware cache")
 
 
 @pytest.mark.parametrize("value", ["radix", "hash"])

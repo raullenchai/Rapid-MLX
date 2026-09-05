@@ -2877,7 +2877,10 @@ def _legacy_prefix_cache_dropped_flags(args, argv: list[str]) -> list[str]:
 
     dropped: list[str] = []
     hybrid_entries = int(getattr(args, "hybrid_cache_entries", 0) or 0)
-    if hybrid_entries > 0 and _explicit("--hybrid-cache-entries"):
+    # An explicit 0 is a dropped expectation too: the memory-aware cache
+    # honours 0 by not retaining hybrid entries at all, the legacy cache keeps
+    # them under --prefix-cache-size regardless.
+    if _explicit("--hybrid-cache-entries"):
         dropped.append(
             f"--hybrid-cache-entries={hybrid_entries} is a memory-aware cache "
             "quota; the legacy entry-count cache keeps hybrid entries under "
