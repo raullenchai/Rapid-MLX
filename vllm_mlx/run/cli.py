@@ -696,6 +696,13 @@ def _confirm_config_write() -> bool:
     """Require interactive consent before a generic profile config write."""
     if not sys.stdin.isatty():
         return False
+    try:
+        return input("Apply this configuration? [y/N] ").strip().lower() in {
+            "y",
+            "yes",
+        }
+    except (EOFError, KeyboardInterrupt):
+        return False
 
 
 def _cached_context_window(model: str) -> int | None:
@@ -718,13 +725,6 @@ def _cached_context_window(model: str) -> int | None:
         ):
             return candidate
     return None
-    try:
-        return input("Apply this configuration? [y/N] ").strip().lower() in {
-            "y",
-            "yes",
-        }
-    except (EOFError, KeyboardInterrupt):
-        return False
 
 
 def _print_instructions(profile, base_url, model) -> None:
