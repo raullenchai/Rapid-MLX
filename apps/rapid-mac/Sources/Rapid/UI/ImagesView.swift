@@ -7,6 +7,27 @@ struct ImageCatalogRefreshKey: Hashable {
     let cacheGeneration: UInt
 }
 
+enum ImageReadinessPresentation {
+    static func runtimeName(_ adapter: String?) -> String? {
+        guard let adapter else { return nil }
+        if adapter == "mflux" { return "mflux" }
+        if adapter.hasPrefix("rapid_mlx/") { return "Rapid MLX" }
+        return nil
+    }
+
+    static func rowTitle(_ entry: ModelEntry) -> String {
+        var details: [String] = []
+        if let size = entry.sizeOnDisk, !size.isEmpty { details.append(size) }
+        if let memory = entry.minimumMemoryGB, memory.isFinite, memory > 0 {
+            details.append(String(format: "≥%.0f GB RAM", memory))
+        }
+        details.append("512² default")
+        details.append("\(entry.imageDefaultSteps ?? ImageGenViewModel.seedSteps(for: entry.alias)) steps")
+        if let runtime = runtimeName(entry.runtimeAdapter) { details.append(runtime) }
+        return ([entry.alias] + details).joined(separator: " · ")
+    }
+}
+
 /// The Images tab. Deliberately mirrors ``ChatView``: a scrollable results
 /// area on top and, at the bottom, the *same* compose box — a `surfaceRaised`
 /// rounded field with the model picker + submit button clustered at its
@@ -325,9 +346,10 @@ struct ImagesView: View {
         _ = await server.ensureServing(
             alias: alias,
             hfPath: hfPath,
-            estimatedMemoryGB: ModelSizing.residentEstimateGB(
+            estimatedMemoryGB: ModelSizing.imageResidentEstimateGB(
                 alias: alias,
-                sizeText: entry?.sizeOnDisk
+                sizeText: entry?.sizeOnDisk,
+                minimumMemoryGB: entry?.minimumMemoryGB
             ),
             imageMode: viewModel.isEditing ? .editing : .generation,
             // mflux is a modal engine, like TTS: it cannot be admitted through
@@ -840,7 +862,7 @@ struct ImagesView: View {
                         viewModel.selectedAlias = entry.alias
                     } label: {
                         Label(
-                            modelRowTitle(entry),
+                            ImageReadinessPresentation.rowTitle(entry),
                             systemImage: ModelPickerBar.cacheGlyph(cached: entry.cached)
                         )
                     }
@@ -883,20 +905,21 @@ struct ImagesView: View {
         .fixedSize()
         .disabled(viewModel.isGenerating)
         .onHover { pickerHovering = $0 }
-        .help(viewModel.selectedAlias.isEmpty ? "Choose a model" : "Model: \(viewModel.selectedAlias)")
+        .help(selectedModelHelp)
         // Mirror the tooltip into an accessibility hint: SwiftUI's `.help(_)`
         // reaches AXHelp on macOS 15 but not on macOS 26 for a `Menu` styled as
         // a button, so without this the model the picker resolved to is
         // invisible to VoiceOver and to the golden-flow harness on 26.
-        .accessibilityHint(viewModel.selectedAlias.isEmpty ? "Choose a model" : "Model: \(viewModel.selectedAlias)")
+        .accessibilityHint(selectedModelHelp)
         .accessibilityIdentifier("Images.ModelPicker")
     }
 
-    private func modelRowTitle(_ entry: ModelEntry) -> String {
-        if let size = entry.sizeOnDisk, !size.isEmpty {
-            return "\(entry.alias) · \(size)"
-        }
-        return entry.alias
+    private var selectedModelHelp: String {
+        guard !viewModel.selectedAlias.isEmpty else { return "Choose a model" }
+        guard let entry = viewModel.imageModels.first(where: {
+            $0.alias == viewModel.selectedAlias
+        }) else { return "Model: \(viewModel.selectedAlias)" }
+        return "Model: \(ImageReadinessPresentation.rowTitle(entry))"
     }
 
     /// Submit / stop, styled exactly like ChatView's send button: an amber
