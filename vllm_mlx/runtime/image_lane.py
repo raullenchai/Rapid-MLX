@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""MLX-native text-to-image / image-edit generation lane (mflux backend).
+"""MLX-native text-to-image / image-edit generation lane.
 
 Mirrors the video lane's split: this module is the thin, duck-typed engine
 adapter that ``server.load_model`` dispatches to for ``modality=image-gen``
@@ -16,6 +16,7 @@ from ..image.engine import (
     ImageGenerationCancelled,
     ImageGenerationEngine,
     ImageRuntimeError,
+    _detect_family,
 )
 
 __all__ = [
@@ -37,7 +38,9 @@ def require_image_runtime_or_exit(model_name: str | None = None) -> None:
             file=sys.stderr,
         )
         raise SystemExit(2)
-    if importlib.util.find_spec("mflux") is None:
+    family = _detect_family(model_name) if model_name else ""
+    runtime_module = "mlx_vlm" if family == "hidream-o1-dev" else "mflux"
+    if importlib.util.find_spec(runtime_module) is None:
         print(
             "\n  Error: image generation requires the `rapid-mlx[image]` "
             "Python extra (`pip install 'rapid-mlx[image]'`).\n",

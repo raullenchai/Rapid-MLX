@@ -19,6 +19,11 @@ credits"** link opens.
   design. The required in-product attribution appears in Settings → Privacy.
   https://github.com/youssofal/mtplx
 
+* **HiDream-O1 MLX runtime** — mrbizarro and contributors — MIT License
+  Rapid adapts the pinned text-to-image path for the local Images backend.
+  Its license and provenance notice ship inside the Python sidecar package.
+  https://huggingface.co/mlx-community/HiDream-O1-Image-Dev-mlx-bf16
+
 **Scope.** Components this project declares directly: the Swift packages
 in `Package.swift` (plus the transitive ones actually linked into the
 binary), the engine requirements in the monorepo's root `pyproject.toml`,

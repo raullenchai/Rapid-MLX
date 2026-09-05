@@ -51,6 +51,13 @@ repository. Each keeps its upstream license text alongside the code.
   MIT License — Copyright (c) 2026 Stability AI.
   See vllm_mlx/audio/sa3/LICENSE and vllm_mlx/audio/sa3/NOTICE.
 
+* vllm_mlx/image/hidream_runtime/
+  HiDream-O1-Image-Dev MLX text-to-image runtime adapted from
+  mlx-community/HiDream-O1-Image-Dev-mlx-bf16 at commit
+  33c7a00bce8e3410304f83ec408a15a1eb6782df.
+  MIT License — Copyright (c) 2026 mrbizarro and contributors.
+  See vllm_mlx/image/hidream_runtime/LICENSE and NOTICE.
+
 * apps/rapid-mac/Vendor/SwiftMath/
   Vendored from https://github.com/mgriebling/SwiftMath at 1.7.3
   (fa8244ed032f4a1ade4cb0571bf87d2f1a9fd2d7) with a resource-resolution patch.

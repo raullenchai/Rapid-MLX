@@ -525,9 +525,12 @@ image = [
     # coexist with the coherence-validated core runtime. Keep a minor cap so
     # image-lane API changes remain deliberate. mflux requires Python >=3.11
     # (Rapid-MLX core still supports 3.10, so the image lane preflight gives
-    # 3.10 users an explicit upgrade diagnostic). Only Apache-2.0 model
-    # families are wired.
+    # 3.10 users an explicit upgrade diagnostic). Only commercially
+    # permissive model families are wired.
     "mflux>=0.19.0,<0.20; platform_system == 'Darwin' and python_version >= '3.11'",
+    # HiDream-O1 reuses the exact Qwen3-VL runtime already validated and
+    # bundled by Desktop. Keep this pin coherent with [vision]/the sidecar.
+    "mlx-vlm==0.6.17; platform_system == 'Darwin' and python_version >= '3.11'",
 ]
 
 [project.urls]
@@ -573,6 +576,10 @@ vllm_mlx = [
     "audio/sa3/LICENSE",
     "audio/sa3/NOTICE",
     "audio/sa3/README.md",
+    # Vendored HiDream-O1 MLX adapter attribution must ship in wheels and the
+    # Desktop sidecar alongside the redistributed MIT source.
+    "image/hidream_runtime/LICENSE",
+    "image/hidream_runtime/NOTICE",
 ]
 videox_fun_mlx = ["LICENSE", "NOTICE"]
 
@@ -652,6 +659,9 @@ ignore = [
 # Keep lint quiet on the copy so upstream sync diffs stay clean. The engine
 # entrypoint (vllm_mlx/audio/music.py) is NOT vendored and is linted normally.
 "vllm_mlx/audio/sa3/**/*.py" = ["UP", "B", "SIM", "N", "F", "I", "E", "W"]
+# Adapted from the pinned upstream HiDream-O1 MLX runtime. Keep source-shape
+# lint exceptions local so the Rapid-owned engine integration stays strict.
+"vllm_mlx/image/hidream_runtime/*.py" = ["UP", "B", "SIM", "N", "F", "I", "E", "W"]
 # Tensor-shape parameter names (B, H, N, D) follow ML literature
 # convention; N803 lowercase rule is incompatible.
 "scripts/bench_attention.py" = ["N803"]

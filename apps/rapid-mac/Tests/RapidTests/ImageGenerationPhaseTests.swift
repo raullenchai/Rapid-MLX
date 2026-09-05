@@ -102,5 +102,6 @@ struct ImageGenerationPhaseTests {
         #expect(ImageGenViewModel.seedSteps(for: "qwen-image-edit") == 20)
         #expect(ImageGenViewModel.seedSteps(for: "z-image-turbo") == 8)
         #expect(ImageGenViewModel.seedSteps(for: "flux2-klein-4b") == 4)
+        #expect(ImageGenViewModel.seedSteps(for: "hidream-o1-dev") == 28)
     }
 }

@@ -255,7 +255,7 @@ def test_runtime_asset_uses_normal_filtered_download_pipeline(
     expected = ("prince-canuma/Kokoro-82M", ["voices/*.safetensors"])
     assert seen["mirror"] == expected
     assert seen["snapshot"] == expected
-    assert "runtime assets declared by the audio catalog" in capsys.readouterr().out
+    assert "runtime data files declared by Rapid-MLX" in capsys.readouterr().out
 
 
 @pytest.mark.parametrize(
