@@ -51,6 +51,8 @@ catalog requires 16 GiB of system memory to retain practical headroom on base
 Apple Silicon machines.
 
 Desktop validation used the source-built app's isolated `image-generation`
-golden journey. The full Images flow passed: model selection, aspect changes,
-progress/finalizing states, generation, gallery/refinement behavior, and the
-generation-only versus edit-capable picker split.
+golden journey with its deterministic fake sidecar; real weights were exercised
+through the Server request above. The full Images flow passed: model selection,
+aspect changes, progress/finalizing states, generation, gallery/refinement
+behavior, and the generation-only versus edit-capable picker split. Separate
+catalog tests pin `flux-schnell` to that generation-only GUI path.
