@@ -45,7 +45,7 @@ def test_alias_routes_to_generation_only_image_backend() -> None:
 def test_alias_pins_download_size_revision_and_resident_budget() -> None:
     assert _download_gate.IMAGE_MODEL_REVISIONS[REPO] == REVISION
     assert size_bytes(REPO) == SIZE
-    for name in ("hidream-o1-dev", REPO):
+    for name in ("hidream-o1-dev", REPO, "/models/hidream_o1_dev"):
         assert estimate_model_bytes(name) == int(18.0 * 1024**3)
 
 
