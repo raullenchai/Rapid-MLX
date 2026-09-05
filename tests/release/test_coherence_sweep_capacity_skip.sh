@@ -155,6 +155,15 @@ else
   bad "expected exit 2 when a non-capacity boot failure co-occurs, got $st"
 fi
 
+st=0; out="$(run_sweep "passing broken qwen3.6-27b-4bit" "qwen3.6-27b-4bit" "passing")" || st=$?
+if [ "$st" = 2 ] \
+   && printf '%s' "$out" | grep -q 'broken(boot)' \
+   && printf '%s' "$out" | grep -q 'CAPACITY-SKIPPED'; then
+  ok "pass plus infrastructure failure plus skip reports every category"
+else
+  bad "mixed pass/infrastructure/capacity report lost a category:\n$out"
+fi
+
 echo "── a genuine boot failure still fails the sweep"
 
 st=0; out="$(run_sweep "qwen3.5-9b-4bit" "" "")" || st=$?

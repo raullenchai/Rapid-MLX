@@ -254,6 +254,8 @@ if [ -n "$infra_failed" ] || [ -n "$strict_skipped" ] || { [ -n "$skipped" ] && 
     echo "  CAPACITY-SKIPPED (COHERENCE_SWEEP_REQUIRE_ALL=1) —$strict_skipped" >&2
   elif [ -n "$skipped" ] && [ -z "$passed" ]; then
     echo "  NO RESIDENT ALIAS VALIDATED; CAPACITY-SKIPPED —$skipped" >&2
+  elif [ -n "$skipped" ]; then
+    echo "  CAPACITY-SKIPPED —$skipped" >&2
   fi
   if [ -n "$failed" ]; then echo "  MODEL FAILURES —$failed"; fi
   line
