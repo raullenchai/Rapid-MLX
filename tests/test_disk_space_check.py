@@ -158,6 +158,29 @@ class TestDiskSpaceCheck:
             _check_disk_space("filipstrand/Z-Image-Turbo-mflux-4bit")
         statvfs.assert_not_called()
 
+    def test_complete_image_snapshot_skips_remote_revision_pricing(self):
+        """A runnable warm image snapshot must not be repriced from the Hub.
+
+        The remote repo may have advanced since the local snapshot was pulled.
+        Image loading deliberately uses the verified local snapshot in that
+        case, so querying the newer revision can falsely demand tens of GB and
+        block startup even though no download will occur.
+        """
+        model_info = MagicMock()
+        cache_lookup = MagicMock()
+        statvfs = MagicMock()
+        with (
+            patch("vllm_mlx._download_gate.mflux_missing_weights", return_value=[]),
+            patch("huggingface_hub.model_info", model_info),
+            patch("huggingface_hub.try_to_load_from_cache", cache_lookup),
+            patch("os.statvfs", statvfs),
+        ):
+            _check_disk_space("stabilityai/stable-diffusion-xl-base-1.0")
+
+        model_info.assert_not_called()
+        cache_lookup.assert_not_called()
+        statvfs.assert_not_called()
+
     def test_partial_mflux_cache_counts_only_missing_files(self, tmp_path):
         """A partial component cache requires space only for missing weights."""
         cached_transformer = tmp_path / "transformer.safetensors"
