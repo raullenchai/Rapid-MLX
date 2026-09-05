@@ -3,7 +3,8 @@
 
 Prompt construction and SSE accounting reuse ``scripts/bench_service_prefill.py``:
 exact tokenizer-counted prompts, first-visible-token TTFT, and server-reported
-token counts. Each context length is cold-cache, 256 decode tokens, three runs.
+token counts. Each requested context length is cold-cache, with a fixed decode
+budget and repetition count shared by every arm of a comparison.
 """
 
 from __future__ import annotations
@@ -138,14 +139,17 @@ def main() -> int:
     args = parser.parse_args()
 
     lengths = [int(value) for value in args.prompt_tokens.split(",")]
-    if lengths != [128, 2048, 8192, 32768]:
-        raise ValueError(
-            "launch methodology requires prompt lengths 128,2048,8192,32768"
-        )
-    if args.runs != 3 or args.decode_tokens != 256:
-        raise ValueError("launch methodology requires 3 runs and 256 decode tokens")
+    if not lengths or any(value <= 0 for value in lengths):
+        raise ValueError("prompt lengths must be positive integers")
+    if lengths != sorted(set(lengths)):
+        raise ValueError("prompt lengths must be unique and increasing")
+    if args.runs < 1 or args.decode_tokens < 1:
+        raise ValueError("runs and decode tokens must be positive")
     if args.dry_run:
-        print("READY: 4 prompt lengths x 3 cold-cache runs x 256 decode tokens")
+        print(
+            f"READY: {len(lengths)} prompt lengths x {args.runs} cold-cache runs "
+            f"x {args.decode_tokens} decode tokens"
+        )
         return 0
 
     from transformers import AutoTokenizer

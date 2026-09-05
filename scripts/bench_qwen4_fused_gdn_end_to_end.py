@@ -40,6 +40,16 @@ def expected_path_counts(mode: str, fused_layers: int, generated_tokens: int):
     return fused_layers * (generated_tokens + 1), fused_layers
 
 
+def counter_delta(after: dict[str, int], before: dict[str, int]) -> dict[str, int]:
+    """Return non-zero per-reason deltas from cumulative path counters."""
+    reasons = set(before) | set(after)
+    return {
+        reason: delta
+        for reason in sorted(reasons)
+        if (delta := after.get(reason, 0) - before.get(reason, 0))
+    }
+
+
 def run(args):
     if args.max_tokens < 2:
         raise SystemExit("--max-tokens must be at least 2")
@@ -99,8 +109,14 @@ def run(args):
                 raise RuntimeError("decode timer did not advance")
             fused_calls = after["fused_calls"] - before["fused_calls"]
             fallbacks = after["fallbacks"] - before["fallbacks"]
+            fallback_reasons = counter_delta(
+                after["fallback_reasons"], before["fallback_reasons"]
+            )
             expected_fused_calls, expected_fallbacks = expected_path_counts(
                 mode, fused_layers, len(tokens)
+            )
+            expected_fallback_reasons = (
+                {"uninitialized cache": fused_layers} if mode == "fused" else {}
             )
             observations.append(
                 {
@@ -117,8 +133,11 @@ def run(args):
                     "expected_fused_calls": expected_fused_calls,
                     "fallbacks": fallbacks,
                     "expected_fallbacks": expected_fallbacks,
+                    "fallback_reasons": fallback_reasons,
+                    "expected_fallback_reasons": expected_fallback_reasons,
                     "path_counts_exact": fused_calls == expected_fused_calls
-                    and fallbacks == expected_fallbacks,
+                    and fallbacks == expected_fallbacks
+                    and fallback_reasons == expected_fallback_reasons,
                     "last_fallbacks": after["last_fallbacks"],
                 }
             )

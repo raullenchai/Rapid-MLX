@@ -36,6 +36,11 @@ from mlx_lm.models.gated_delta import gated_delta_update  # noqa: E402
 from mlx_lm.models.rope_utils import initialize_rope  # noqa: E402
 from mlx_lm.models.switch_layers import SwitchGLU  # noqa: E402
 
+from ..kernels.qsa_block_sparse import (  # noqa: E402
+    block_sparse_attention,
+    block_sparse_decline_reason,
+    block_sparse_layout_supported,
+)
 from ..kernels.qwen4_fused_gdn_decode import (  # noqa: E402
     admit_qwen4_fused_gdn_decode,
     fused_gdn_runtime_supported,
@@ -404,6 +409,7 @@ class GatedDeltaNet(nn.Module):
         self.fused_gdn_decode_calls = 0
         self.fused_gdn_decode_fallbacks = 0
         self.fused_gdn_decode_last_fallback: str | None = None
+        self.fused_gdn_decode_fallback_reasons: dict[str, int] = {}
 
     def set_fused_gdn_decode_mode(self, mode: str) -> None:
         """Select the decode path without replacing resident weights."""
@@ -417,6 +423,9 @@ class GatedDeltaNet(nn.Module):
     def _fused_gdn_fallback(self, reason: str):
         self.fused_gdn_decode_fallbacks += 1
         self.fused_gdn_decode_last_fallback = reason
+        self.fused_gdn_decode_fallback_reasons[reason] = (
+            self.fused_gdn_decode_fallback_reasons.get(reason, 0) + 1
+        )
         return None
 
     def _try_fused_decode(
@@ -649,6 +658,7 @@ def qwen4_fused_gdn_stats(model: nn.Module) -> dict[str, Any]:
     stats: dict[str, Any] = {
         "fused_calls": 0,
         "fallbacks": 0,
+        "fallback_reasons": {},
         "last_fallbacks": {},
     }
     for _, module in model.named_modules():
@@ -656,9 +666,15 @@ def qwen4_fused_gdn_stats(model: nn.Module) -> dict[str, Any]:
             continue
         stats["fused_calls"] += module.fused_gdn_decode_calls
         stats["fallbacks"] += module.fused_gdn_decode_fallbacks
-        reason = module.fused_gdn_decode_last_fallback
-        if reason is not None:
-            stats["last_fallbacks"][reason] = stats["last_fallbacks"].get(reason, 0) + 1
+        for reason, count in module.fused_gdn_decode_fallback_reasons.items():
+            stats["fallback_reasons"][reason] = (
+                stats["fallback_reasons"].get(reason, 0) + count
+            )
+        last_reason = module.fused_gdn_decode_last_fallback
+        if last_reason is not None:
+            stats["last_fallbacks"][last_reason] = (
+                stats["last_fallbacks"].get(last_reason, 0) + 1
+            )
     return stats
 
 
@@ -805,8 +821,43 @@ class _QSASelection:
     """Compact per-query physical KV indices produced by the QSA indexer."""
 
     token_indices: mx.array
-    valid: mx.array
+    block_valid: mx.array
+    tail_valid: mx.array
     physical_kv_length: int
+
+    def __post_init__(self) -> None:
+        if self.token_indices.ndim != 3:
+            raise ValueError("QSA compact token indices must be rank three")
+        batch, length, width = map(int, self.token_indices.shape)
+        if self.block_valid.ndim != 3 or tuple(self.block_valid.shape[:2]) != (
+            batch,
+            length,
+        ):
+            raise ValueError(
+                "QSA block validity must have shape [batch, query, blocks]"
+            )
+        if self.tail_valid.ndim != 3 or tuple(self.tail_valid.shape[:2]) != (
+            batch,
+            length,
+        ):
+            raise ValueError("QSA tail validity must have shape [batch, query, tail]")
+        block_size = int(self.tail_valid.shape[-1])
+        expected_width = (int(self.block_valid.shape[-1]) + 1) * block_size
+        if block_size <= 0 or width != expected_width:
+            raise ValueError("QSA compact selection does not match its block geometry")
+        if self.block_valid.dtype != mx.bool_ or self.tail_valid.dtype != mx.bool_:
+            raise ValueError("QSA compact validity arrays must be boolean")
+
+    @property
+    def valid(self) -> mx.array:
+        """Expand structurally block-aligned validity for the dense fallback."""
+        batch, length, _ = map(int, self.token_indices.shape)
+        block_size = int(self.tail_valid.shape[-1])
+        block_token_valid = mx.broadcast_to(
+            self.block_valid[..., None],
+            (*self.block_valid.shape, block_size),
+        ).reshape(batch, length, -1)
+        return mx.concatenate([block_token_valid, self.tail_valid], axis=-1)
 
     def dense_mask(self) -> mx.array:
         """Materialize the reference mask for unsupported sparse consumers."""
@@ -850,7 +901,7 @@ class QSAIndexer(nn.Module):
         *,
         physical_kv_length: int,
         record_rollback: bool = False,
-    ) -> mx.array | None:
+    ) -> _QSASelection | None:
         batch, length, _ = hidden_states.shape
         cache._ensure_batch(batch)
         offsets = list(cache._offsets)
@@ -915,7 +966,8 @@ class QSAIndexer(nn.Module):
             else [int(value) for value in cache.left_padding.tolist()]
         )
         compact_indices = []
-        compact_valid = []
+        compact_block_valid = []
+        compact_tail_valid = []
         for batch_index in range(batch):
             input_start, valid_length = valid_spans[batch_index]
             available_blocks = cache._compressed_counts[batch_index]
@@ -973,11 +1025,6 @@ class QSAIndexer(nn.Module):
                 blocks[:, :, None] * self.compress_ratio
                 + mx.arange(self.compress_ratio, dtype=mx.int32)[None, None, :]
             ).reshape(length, self.token_budget)
-            block_token_valid = mx.broadcast_to(
-                block_valid[:, :, None],
-                (length, self.block_topk, self.compress_ratio),
-            ).reshape(length, self.token_budget)
-
             tail_start = complete_counts * self.compress_ratio
             tail_counts = logical_positions + 1 - tail_start
             tail_offsets = mx.arange(self.compress_ratio, dtype=mx.int32)[None, :]
@@ -988,20 +1035,22 @@ class QSAIndexer(nn.Module):
                 query_indices < input_start + valid_length
             )
             indices = mx.concatenate([block_tokens, tail_tokens], axis=-1)
-            valid = mx.concatenate([block_token_valid, tail_valid], axis=-1)
-            valid = valid & query_valid[:, None]
+            block_valid = block_valid & query_valid[:, None]
+            tail_valid = tail_valid & query_valid[:, None]
             indices = mx.clip(
                 indices + left_padding[batch_index], 0, physical_kv_length - 1
             )
             compact_indices.append(indices)
-            compact_valid.append(valid)
+            compact_block_valid.append(block_valid)
+            compact_tail_valid.append(tail_valid)
 
         selection = _QSASelection(
             token_indices=mx.stack(compact_indices),
-            valid=mx.stack(compact_valid),
+            block_valid=mx.stack(compact_block_valid),
+            tail_valid=mx.stack(compact_tail_valid),
             physical_kv_length=physical_kv_length,
         )
-        return selection.dense_mask()
+        return selection
 
 
 class QSAAttention(nn.Module):
@@ -1044,6 +1093,15 @@ class QSAAttention(nn.Module):
             max_position_embeddings=args.max_position_embeddings,
         )
         self.indexer = QSAIndexer(args)
+        self.block_sparse_route_constructions = 0
+        self.block_sparse_declines = 0
+        self.block_sparse_decline_reasons: dict[str, int] = {}
+
+    def _record_block_sparse_decline(self, reason: str) -> None:
+        self.block_sparse_declines += 1
+        self.block_sparse_decline_reasons[reason] = (
+            self.block_sparse_decline_reasons.get(reason, 0) + 1
+        )
 
     def __call__(
         self,
@@ -1112,25 +1170,109 @@ class QSAAttention(nn.Module):
         )
         if kv_cache is not None:
             keys, values = kv_cache.update_and_fetch(keys, values)
-        additive_mask = (
-            mask
-            if selected is None
-            else mx.where(
-                selected,
-                mx.array(0.0, dtype=queries.dtype),
-                mx.array(-1e9, dtype=queries.dtype),
+        output = None
+        if isinstance(selected, _QSASelection):
+            decline_reason = block_sparse_decline_reason(
+                length,
+                physical_length,
+                training=bool(self.training),
             )
-        )
-        output = scaled_dot_product_attention(
-            queries,
-            keys,
-            values,
-            cache=kv_cache,
-            scale=self.scale,
-            mask=additive_mask,
-        )
+            if decline_reason is None and not block_sparse_layout_supported(
+                query_heads=self.num_attention_heads,
+                kv_heads=self.num_key_value_heads,
+                head_dim=self.head_dim,
+                block_size=self.indexer.compress_ratio,
+                dtype=queries.dtype,
+            ):
+                decline_reason = "unsupported layout"
+            if decline_reason is None:
+                block_slots = slice(
+                    0, self.indexer.token_budget, self.indexer.compress_ratio
+                )
+                tail_slots = slice(self.indexer.token_budget, None)
+                invalid_index = mx.array(
+                    physical_length, dtype=selected.token_indices.dtype
+                )
+                block_valid = selected.block_valid
+                block_starts = mx.sort(
+                    mx.where(
+                        block_valid,
+                        selected.token_indices[..., block_slots],
+                        invalid_index,
+                    ),
+                    axis=-1,
+                )
+                tail_valid = selected.tail_valid
+                tail_indices = mx.sort(
+                    mx.where(
+                        tail_valid,
+                        selected.token_indices[..., tail_slots],
+                        invalid_index,
+                    ),
+                    axis=-1,
+                )
+                output = block_sparse_attention(
+                    queries,
+                    keys,
+                    values,
+                    block_starts,
+                    mx.sum(block_valid, axis=-1).astype(mx.int32),
+                    tail_indices,
+                    mx.sum(tail_valid, axis=-1).astype(mx.int32),
+                    block_size=self.indexer.compress_ratio,
+                )
+                # MLX evaluates lazily. Do not add a per-layer synchronization
+                # in an attempt to catch later Metal failures here: eligibility
+                # declines fall back to dense, while execution failures surface
+                # through the engine's normal generation-error path.
+                self.block_sparse_route_constructions += 1
+            if decline_reason is not None:
+                self._record_block_sparse_decline(decline_reason)
+
+        if output is None:
+            dense_selection = (
+                selected.dense_mask()
+                if isinstance(selected, _QSASelection)
+                else selected
+            )
+            additive_mask = (
+                mask
+                if dense_selection is None
+                else mx.where(
+                    dense_selection,
+                    mx.array(0.0, dtype=queries.dtype),
+                    mx.array(-1e9, dtype=queries.dtype),
+                )
+            )
+            output = scaled_dot_product_attention(
+                queries,
+                keys,
+                values,
+                cache=kv_cache,
+                scale=self.scale,
+                mask=additive_mask,
+            )
         output = output.transpose(0, 2, 1, 3).reshape(batch, length, -1)
         return self.o_proj(output * mx.sigmoid(gate))
+
+
+def qwen4_qsa_block_sparse_stats(model: nn.Module) -> dict[str, Any]:
+    """Aggregate sparse-route constructions and every dense fallback reason."""
+    stats: dict[str, Any] = {
+        "route_constructions": 0,
+        "declines": 0,
+        "decline_reasons": {},
+    }
+    for _, module in model.named_modules():
+        if not isinstance(module, QSAAttention):
+            continue
+        stats["route_constructions"] += module.block_sparse_route_constructions
+        stats["declines"] += module.block_sparse_declines
+        for reason, count in module.block_sparse_decline_reasons.items():
+            stats["decline_reasons"][reason] = (
+                stats["decline_reasons"].get(reason, 0) + count
+            )
+    return stats
 
 
 def _splitmix64(value: int) -> int:

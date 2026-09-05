@@ -374,9 +374,17 @@ def test_resident_switch_preserves_weights_and_defaults_stock():
     layer.fused_gdn_decode_calls = 3
     layer.fused_gdn_decode_fallbacks = 2
     layer.fused_gdn_decode_last_fallback = "Metal runtime unavailable"
+    layer.fused_gdn_decode_fallback_reasons = {
+        "uninitialized cache": 1,
+        "Metal runtime unavailable": 1,
+    }
     assert qwen4_exp.qwen4_fused_gdn_stats(layer) == {
         "fused_calls": 3,
         "fallbacks": 2,
+        "fallback_reasons": {
+            "uninitialized cache": 1,
+            "Metal runtime unavailable": 1,
+        },
         "last_fallbacks": {"Metal runtime unavailable": 1},
     }
 
@@ -412,6 +420,10 @@ def test_uninitialized_and_speculative_cache_do_not_probe_metal():
     )
     assert result is None
     assert layer.fused_gdn_decode_last_fallback == "speculative rollback"
+    assert layer.fused_gdn_decode_fallback_reasons == {
+        "uninitialized cache": 1,
+        "speculative rollback": 1,
+    }
 
 
 def test_sharded_layer_falls_back_before_probe():

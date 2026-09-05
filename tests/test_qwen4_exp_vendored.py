@@ -914,8 +914,9 @@ def test_qsa_vectorized_mask_preserves_budget_tail_and_causality():
         physical_kv_length=65,
     )
     assert selected is not None
-    mx.eval(selected)
-    mask = np.array(selected[0, 0])
+    dense_mask = selected.dense_mask()
+    mx.eval(dense_mask)
+    mask = np.array(dense_mask[0, 0])
 
     expected_counts = []
     for position in range(65):
@@ -1015,7 +1016,8 @@ def test_qsa_sparse_scores_use_one_reference_batched_matmul(monkeypatch):
         cache,
         physical_kv_length=6,
     )
-    mx.eval(selected)
+    assert selected is not None
+    mx.eval(selected.token_indices, selected.valid)
     assert shapes == [
         (
             (args.indexer_n_heads, 6, args.indexer_head_dim),
