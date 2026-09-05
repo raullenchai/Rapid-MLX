@@ -170,9 +170,7 @@ class TestDiskSpaceCheck:
         cache_lookup = MagicMock()
         statvfs = MagicMock()
         with (
-            patch(
-                "vllm_mlx._download_gate.mflux_missing_weights", return_value=[]
-            ),
+            patch("vllm_mlx._download_gate.mflux_missing_weights", return_value=[]),
             patch("huggingface_hub.model_info", model_info),
             patch("huggingface_hub.try_to_load_from_cache", cache_lookup),
             patch("os.statvfs", statvfs),
