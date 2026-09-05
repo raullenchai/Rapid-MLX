@@ -30,6 +30,9 @@ internal state from turning into an out-of-bounds GPU read without imposing a
 host synchronization. Before count-based dispatch, invalid compact entries are
 replaced with an out-of-range sentinel and sorted behind the valid prefix, so a
 future validity hole cannot substitute a padded index for a selected block.
+Block validity is represented structurally as one bit per complete block, while
+the incomplete tail retains per-token validity; a partially valid complete
+block cannot be represented at this boundary.
 
 The existing fused-GDN receipt now also retains every fallback reason instead
 of only the most recent reason per layer. Its end-to-end gate subtracts the

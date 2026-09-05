@@ -821,8 +821,43 @@ class _QSASelection:
     """Compact per-query physical KV indices produced by the QSA indexer."""
 
     token_indices: mx.array
-    valid: mx.array
+    block_valid: mx.array
+    tail_valid: mx.array
     physical_kv_length: int
+
+    def __post_init__(self) -> None:
+        if self.token_indices.ndim != 3:
+            raise ValueError("QSA compact token indices must be rank three")
+        batch, length, width = map(int, self.token_indices.shape)
+        if self.block_valid.ndim != 3 or tuple(self.block_valid.shape[:2]) != (
+            batch,
+            length,
+        ):
+            raise ValueError(
+                "QSA block validity must have shape [batch, query, blocks]"
+            )
+        if self.tail_valid.ndim != 3 or tuple(self.tail_valid.shape[:2]) != (
+            batch,
+            length,
+        ):
+            raise ValueError("QSA tail validity must have shape [batch, query, tail]")
+        block_size = int(self.tail_valid.shape[-1])
+        expected_width = (int(self.block_valid.shape[-1]) + 1) * block_size
+        if block_size <= 0 or width != expected_width:
+            raise ValueError("QSA compact selection does not match its block geometry")
+        if self.block_valid.dtype != mx.bool_ or self.tail_valid.dtype != mx.bool_:
+            raise ValueError("QSA compact validity arrays must be boolean")
+
+    @property
+    def valid(self) -> mx.array:
+        """Expand structurally block-aligned validity for the dense fallback."""
+        batch, length, _ = map(int, self.token_indices.shape)
+        block_size = int(self.tail_valid.shape[-1])
+        block_token_valid = mx.broadcast_to(
+            self.block_valid[..., None],
+            (*self.block_valid.shape, block_size),
+        ).reshape(batch, length, -1)
+        return mx.concatenate([block_token_valid, self.tail_valid], axis=-1)
 
     def dense_mask(self) -> mx.array:
         """Materialize the reference mask for unsupported sparse consumers."""
@@ -931,7 +966,8 @@ class QSAIndexer(nn.Module):
             else [int(value) for value in cache.left_padding.tolist()]
         )
         compact_indices = []
-        compact_valid = []
+        compact_block_valid = []
+        compact_tail_valid = []
         for batch_index in range(batch):
             input_start, valid_length = valid_spans[batch_index]
             available_blocks = cache._compressed_counts[batch_index]
@@ -989,11 +1025,6 @@ class QSAIndexer(nn.Module):
                 blocks[:, :, None] * self.compress_ratio
                 + mx.arange(self.compress_ratio, dtype=mx.int32)[None, None, :]
             ).reshape(length, self.token_budget)
-            block_token_valid = mx.broadcast_to(
-                block_valid[:, :, None],
-                (length, self.block_topk, self.compress_ratio),
-            ).reshape(length, self.token_budget)
-
             tail_start = complete_counts * self.compress_ratio
             tail_counts = logical_positions + 1 - tail_start
             tail_offsets = mx.arange(self.compress_ratio, dtype=mx.int32)[None, :]
@@ -1004,17 +1035,19 @@ class QSAIndexer(nn.Module):
                 query_indices < input_start + valid_length
             )
             indices = mx.concatenate([block_tokens, tail_tokens], axis=-1)
-            valid = mx.concatenate([block_token_valid, tail_valid], axis=-1)
-            valid = valid & query_valid[:, None]
+            block_valid = block_valid & query_valid[:, None]
+            tail_valid = tail_valid & query_valid[:, None]
             indices = mx.clip(
                 indices + left_padding[batch_index], 0, physical_kv_length - 1
             )
             compact_indices.append(indices)
-            compact_valid.append(valid)
+            compact_block_valid.append(block_valid)
+            compact_tail_valid.append(tail_valid)
 
         selection = _QSASelection(
             token_indices=mx.stack(compact_indices),
-            valid=mx.stack(compact_valid),
+            block_valid=mx.stack(compact_block_valid),
+            tail_valid=mx.stack(compact_tail_valid),
             physical_kv_length=physical_kv_length,
         )
         return selection
@@ -1160,7 +1193,7 @@ class QSAAttention(nn.Module):
                 invalid_index = mx.array(
                     physical_length, dtype=selected.token_indices.dtype
                 )
-                block_valid = selected.valid[..., block_slots]
+                block_valid = selected.block_valid
                 block_starts = mx.sort(
                     mx.where(
                         block_valid,
@@ -1169,7 +1202,7 @@ class QSAAttention(nn.Module):
                     ),
                     axis=-1,
                 )
-                tail_valid = selected.valid[..., tail_slots]
+                tail_valid = selected.tail_valid
                 tail_indices = mx.sort(
                     mx.where(
                         tail_valid,

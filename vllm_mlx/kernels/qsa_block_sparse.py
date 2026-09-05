@@ -241,7 +241,6 @@ def block_sparse_attention(
     block_size: int,
 ) -> mx.array:
     """Attend to sorted selected blocks plus the current incomplete tail."""
-    _log_activation()
     if queries.ndim != 4 or keys.ndim != 4 or values.ndim != 4:
         raise ValueError("QSA query/K/V arrays must be rank four")
     if block_size <= 0:
@@ -281,6 +280,7 @@ def block_sparse_attention(
         dtype=queries.dtype,
     ):
         raise ValueError("QSA query/KV layout is unsupported by the sparse kernel")
+    _log_activation()
     block_starts = block_starts.astype(mx.int32)
     block_counts = block_counts.astype(mx.int32)
     tail_indices = tail_indices.astype(mx.int32)

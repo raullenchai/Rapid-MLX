@@ -128,6 +128,24 @@ def _valid_kernel_inputs(*, query_heads=2, kv_heads=1, head_dim=32, dtype=mx.flo
     }
 
 
+def test_qsa_selection_rejects_non_block_aligned_validity():
+    indices = mx.zeros((1, 2, 10), dtype=mx.int32)
+    with pytest.raises(ValueError, match="block geometry"):
+        qwen4_exp._QSASelection(
+            token_indices=indices,
+            block_valid=mx.ones((1, 2, 3), dtype=mx.bool_),
+            tail_valid=mx.ones((1, 2, 2), dtype=mx.bool_),
+            physical_kv_length=10,
+        )
+    with pytest.raises(ValueError, match="must be boolean"):
+        qwen4_exp._QSASelection(
+            token_indices=indices,
+            block_valid=mx.ones((1, 2, 4), dtype=mx.int32),
+            tail_valid=mx.ones((1, 2, 2), dtype=mx.bool_),
+            physical_kv_length=10,
+        )
+
+
 def test_qsa_kernel_rejects_every_unsafe_shape_and_layout():
     def rejected(message, **overrides):
         inputs = _valid_kernel_inputs()
@@ -188,7 +206,8 @@ class _FakeIndexer:
         tail = mx.broadcast_to(mx.array([16, 17], dtype=mx.int32), (1, length, 2))
         return qwen4_exp._QSASelection(
             token_indices=mx.concatenate([block_tokens, tail], axis=-1),
-            valid=mx.ones((1, length, 10), dtype=mx.bool_),
+            block_valid=mx.ones((1, length, 4), dtype=mx.bool_),
+            tail_valid=mx.ones((1, length, 2), dtype=mx.bool_),
             physical_kv_length=physical_kv_length,
         )
 
@@ -209,12 +228,12 @@ class _GappedFakeIndexer(_FakeIndexer):
             record_rollback=record_rollback,
         )
         length = int(hidden_states.shape[1])
-        validity = mx.array(
-            [True, True, False, False, True, True, False, False, False, True]
-        )
         return qwen4_exp._QSASelection(
             token_indices=selection.token_indices,
-            valid=mx.broadcast_to(validity, (1, length, validity.size)),
+            block_valid=mx.broadcast_to(
+                mx.array([True, False, True, False]), (1, length, 4)
+            ),
+            tail_valid=mx.broadcast_to(mx.array([False, True]), (1, length, 2)),
             physical_kv_length=physical_kv_length,
         )
 
