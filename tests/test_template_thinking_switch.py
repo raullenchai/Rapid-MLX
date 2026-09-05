@@ -277,7 +277,8 @@ class TestTemplateThinkingSwitch:
             "{{ reasoning | default('unset') }}"
             "{% for x in [1] %}{% break %}{% if reasoning %}R{% endif %}{% endfor %}",
             "{{ reasoning | default('unset') }}"
-            "{% for x in [1] %}{% if true %}{% break %}{% endif %}"
+            "{% for x in [1] %}{% if true %}{% break %}"
+            "{% elif false %}{% continue %}{% endif %}"
             "{% if reasoning %}R{% endif %}{% endfor %}",
             "{{ reasoning | default('unset') }}"
             "{% for x in items %}x{% else %}{% if reasoning %}R{% endif %}{% endfor %}",
@@ -509,7 +510,8 @@ class TestOtherTemplatesUnaffected:
             ),
             (
                 "{{ reasoning | default('unset') }}"
-                "{% for x in [1] %}{% if true %}{% break %}{% endif %}"
+                "{% for x in [1] %}{% if true %}{% break %}"
+                "{% elif false %}{% continue %}{% endif %}"
                 "{% if reasoning %}R{% endif %}{% endfor %}",
                 "unset",
             ),
