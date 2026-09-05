@@ -35,8 +35,8 @@ def _args(**overrides) -> TextModelArgs:
         "indexer_n_heads": 2,
         "indexer_kv_heads": 1,
         "indexer_head_dim": 64,
-        "indexer_budget": 8,
-        "indexer_compress_ratio": 2,
+        "indexer_budget": 2048,
+        "indexer_compress_ratio": 4,
         "ple_layer_ids": [],
         "eos_token_id": 31,
     }
@@ -106,19 +106,30 @@ def test_indexed_splitk_gate_is_opt_in_version_and_shape_qualified(monkeypatch):
     )
 
 
-def test_indexed_splitk_layout_gate_bounds_threads_and_dtype():
-    assert qsa_indexed_splitk.indexed_splitk_layout_supported(
-        query_heads=24, kv_heads=2, head_dim=256, dtype=mx.bfloat16
-    )
-    assert not qsa_indexed_splitk.indexed_splitk_layout_supported(
-        query_heads=33, kv_heads=1, head_dim=256, dtype=mx.bfloat16
-    )
-    assert not qsa_indexed_splitk.indexed_splitk_layout_supported(
-        query_heads=24, kv_heads=2, head_dim=255, dtype=mx.bfloat16
-    )
-    assert not qsa_indexed_splitk.indexed_splitk_layout_supported(
-        query_heads=24, kv_heads=2, head_dim=256, dtype=mx.int32
-    )
+@pytest.mark.parametrize(
+    ("override", "expected"),
+    [
+        ({}, True),
+        ({"query_heads": 32}, False),
+        ({"kv_heads": 3}, False),
+        ({"head_dim": 128}, False),
+        ({"block_size": 8}, False),
+        ({"block_topk": 256}, False),
+        ({"dtype": mx.float16}, False),
+        ({"dtype": mx.float32}, False),
+    ],
+)
+def test_indexed_splitk_layout_gate_is_exactly_production_qualified(override, expected):
+    layout = {
+        "query_heads": 24,
+        "kv_heads": 2,
+        "head_dim": 256,
+        "block_size": 4,
+        "block_topk": 512,
+        "dtype": mx.bfloat16,
+    }
+    layout.update(override)
+    assert qsa_indexed_splitk.indexed_splitk_layout_supported(**layout) is expected
 
 
 @pytest.mark.skipif(
@@ -317,6 +328,7 @@ class _FakeKVCache:
 def test_qsa_attention_routes_narrow_selection_and_records_receipt(monkeypatch):
     args = _args()
     attention = QSAAttention(args)
+    attention.set_dtype(mx.bfloat16)
     attention.eval()
     attention.indexer = _FakeIndexer(args)
     monkeypatch.setattr(
@@ -358,15 +370,15 @@ def test_qsa_attention_routes_narrow_selection_and_records_receipt(monkeypatch):
         ),
     )
     output = attention(
-        mx.zeros((1, 3, args.hidden_size)),
+        mx.zeros((1, 3, args.hidden_size), dtype=mx.bfloat16),
         [_FakeKVCache(), object()],
         mask="causal",
     )
     mx.eval(output)
     assert output.shape == (1, 3, args.hidden_size)
     assert len(observed) == 1
-    assert observed[0][:4] == ((1, 3, 4), (1, 3), (1, 3, 2), (1, 3))
-    assert observed[0][4:] == (2, 256**-0.5)
+    assert observed[0][:4] == ((1, 3, 512), (1, 3), (1, 3, 4), (1, 3))
+    assert observed[0][4:] == (4, 256**-0.5)
     assert qwen4_exp.qwen4_qsa_indexed_splitk_stats(attention) == {
         "route_constructions": 1,
         "declines": 0,

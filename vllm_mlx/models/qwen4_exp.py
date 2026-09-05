@@ -1196,6 +1196,8 @@ class QSAAttention(nn.Module):
                 query_heads=self.num_attention_heads,
                 kv_heads=self.num_key_value_heads,
                 head_dim=self.head_dim,
+                block_size=self.indexer.compress_ratio,
+                block_topk=self.indexer.block_topk,
                 dtype=queries.dtype,
             ):
                 indexed_decline = "unsupported layout"

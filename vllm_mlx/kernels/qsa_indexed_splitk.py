@@ -25,6 +25,12 @@ MAX_QUERY_LENGTH = 3
 QUALIFIED_QUERY_LENGTHS = frozenset({1, 3})
 MIN_KV_LENGTH_VERIFY = 16_384
 MIN_KV_LENGTH_DECODE = 65_536
+QUALIFIED_QUERY_HEADS = 24
+QUALIFIED_KV_HEADS = 2
+QUALIFIED_HEAD_DIM = 256
+QUALIFIED_DTYPE = mx.bfloat16
+QUALIFIED_BLOCK_SIZE = 4
+QUALIFIED_BLOCK_TOPK = 512
 MAX_GQA_HEADS = 32
 SIMD_WIDTH = 32
 
@@ -86,8 +92,29 @@ def indexed_splitk_decline_reason(
 
 
 def indexed_splitk_layout_supported(
+    *,
+    query_heads: int,
+    kv_heads: int,
+    head_dim: int,
+    block_size: int,
+    block_topk: int,
+    dtype: mx.Dtype,
+) -> bool:
+    """Return whether this is the exact production-qualified Qwen3.8 layout."""
+    return (
+        query_heads == QUALIFIED_QUERY_HEADS
+        and kv_heads == QUALIFIED_KV_HEADS
+        and head_dim == QUALIFIED_HEAD_DIM
+        and block_size == QUALIFIED_BLOCK_SIZE
+        and block_topk == QUALIFIED_BLOCK_TOPK
+        and dtype == QUALIFIED_DTYPE
+    )
+
+
+def _kernel_layout_supported(
     *, query_heads: int, kv_heads: int, head_dim: int, dtype: mx.Dtype
 ) -> bool:
+    """Validate the broader set of layouts that the Metal kernel can represent."""
     if kv_heads <= 0 or head_dim <= 0 or query_heads % kv_heads:
         return False
     gqa_heads = query_heads // kv_heads
@@ -364,7 +391,7 @@ def indexed_splitk_attention(
     compact = (block_starts, block_counts, tail_indices, tail_counts)
     if any(array.dtype != mx.int32 for array in compact):
         raise ValueError("QSA compact indices and counts must use int32")
-    if not indexed_splitk_layout_supported(
+    if not _kernel_layout_supported(
         query_heads=query_heads,
         kv_heads=kv_heads,
         head_dim=head_dim,

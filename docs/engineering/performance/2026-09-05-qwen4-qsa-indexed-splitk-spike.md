@@ -17,8 +17,10 @@ K=2 and the active K=1 target width M=2 was intentionally unqualified. The
 follow-up in PR #3087 adds explicit-only K=2 and completes real-model
 qualification. The production gate admits only M=3 from 16K and M=1 from 64K,
 requires batch size one, and pins both MLX 0.32.2 and the measured M3 Ultra
-Metal architecture. Explicit K=2 activates the route by default while an
-explicit environment opt-out remains available.
+Metal architecture. It also fail-closes on any tensor or selection geometry
+other than the measured BF16 QH=24, KVH=2, D=256, block-size-4, top-K-512
+layout. Explicit K=2 activates the route by default while an explicit
+environment opt-out remains available.
 
 Do not broaden the gate to M=2 merely to make the current MTP path exercise the
 kernel. A first cold M=2 served run regressed, and there is no settled hot
@@ -47,9 +49,10 @@ Distinct selections were used for all three query rows. Split counts 32, 64,
 and 512 all passed the fp64 tolerance. The production schedule uses 128 splits,
 which is bit-identical (`max_abs 0.0`) to MLX 0.32.2 attention over physically
 gathered 2,048-token K/V. A 512-split schedule was faster in one microbench but
-changed 9,261 bf16 outputs, so it was rejected. Additional tests cover opt-in and
-version/architecture gates, malformed int32 indices, empty selections, route
-priority/receipts, and graph identity when both sparse routes are disabled.
+changed 9,261 bf16 outputs, so it was rejected. Additional tests cover opt-in,
+version/architecture gates, exact production layout/selection admission,
+malformed int32 indices, empty selections, route priority/receipts, and graph
+identity when both sparse routes are disabled.
 
 The final stride-aware implementation was measured with K/V sliced from a
 larger capacity buffer, matching the non-row-contiguous decode-cache layout:
