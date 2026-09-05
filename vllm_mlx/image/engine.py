@@ -747,7 +747,6 @@ class ImageGenerationEngine:
                 raise ImageRuntimeError(
                     "HiDream-O1 Dev does not support negative_prompt."
                 )
-            self._validate_hidream_prompt_tokens(prompt)
 
         with self._lock:
             # Claim a run sequence and arm progress BEFORE loading, so a Cancel
@@ -767,6 +766,10 @@ class ImageGenerationEngine:
                 started_at=time.time(),
             )
             try:
+                if self.family == "hidream-o1-dev":
+                    self._validate_hidream_prompt_tokens(prompt)
+                    if self._is_cancelled():
+                        raise ImageGenerationCancelled("Generation cancelled.")
                 model = self._ensure_loaded(for_edit=editing)
                 # Honor a cancel that landed during the warm-up load before we
                 # commit to the denoise loop.

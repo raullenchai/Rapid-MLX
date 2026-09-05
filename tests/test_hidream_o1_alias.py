@@ -475,6 +475,44 @@ def test_prompt_tokenizer_failures_are_clean_runtime_errors(
         engine._validate_hidream_prompt_tokens("fox")
 
 
+def test_cancel_during_prompt_tokenizer_init_never_reaches_model_loader(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from transformers import AutoTokenizer
+
+    class Tokenizer:
+        boi_token = "<boi>"
+        tms_token = "<tms>"
+
+        def apply_chat_template(self, *_args, **_kwargs):
+            return "caption"
+
+        def encode(self, *_args, **_kwargs):
+            return [1]
+
+    engine = ImageGenerationEngine(REPO)
+    monkeypatch.setattr(
+        "vllm_mlx._download_gate.mflux_local_snapshot", lambda _name: None
+    )
+
+    def load_then_cancel(*_args, **_kwargs):
+        engine.request_cancel()
+        return Tokenizer()
+
+    monkeypatch.setattr(AutoTokenizer, "from_pretrained", load_then_cancel)
+    monkeypatch.setattr(
+        engine,
+        "_ensure_loaded",
+        lambda **_kwargs: pytest.fail("cancelled preflight reached the model loader"),
+    )
+
+    from vllm_mlx.image.engine import ImageGenerationCancelled
+
+    with pytest.raises(ImageGenerationCancelled, match="cancelled"):
+        engine.generate(prompt="fox", width=1024, height=1024, num_inference_steps=28)
+    assert engine._active_seq == 0
+
+
 def test_hidream_cold_snapshot_is_pinned_allowlisted_and_verified(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
