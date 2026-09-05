@@ -1715,6 +1715,7 @@ def _try_mirror_prefetch(
     *,
     allow_patterns: list[str] | None = None,
     out: dict | None = None,
+    revision: str | None = None,
 ) -> bool:
     """Pre-fetch a HuggingFace repo via R2-first / HF-fallback (per file).
 
@@ -1762,6 +1763,7 @@ def _try_mirror_prefetch(
         on_pull_start=on_pull_start,
         allow_patterns=allow_patterns,
         out=out,
+        revision=revision,
     )
 
 
@@ -1884,6 +1886,14 @@ def _ensure_model_downloaded(
     if _offline_hub_mode_active() and cachedness is False:
         _refuse_offline_uncached(model_name)
 
+    # Registered image checkpoints are immutable execution contracts. Carry
+    # their exact revision through every cold-prefetch layer; otherwise the
+    # generic prefetch downloads moving ``main`` and the image engine then
+    # downloads the pinned commit a second time when those revisions differ.
+    from vllm_mlx._download_gate import IMAGE_MODEL_REVISIONS
+
+    pinned_image_revision = IMAGE_MODEL_REVISIONS.get(model_name)
+
     # Disk-space gate + mirror pull. Both the disk probe (HF ``model_info``)
     # and the mirror's own metadata + ``/api/models`` catalog round-trips run
     # BEFORE the first "Pulling"/"First-time download" line — up to a few
@@ -1908,7 +1918,11 @@ def _ensure_model_downloaded(
         # serves every file the repo declares, populate the HF cache layout
         # ourselves and skip snapshot_download. On any miss we fall through
         # to the normal HuggingFace download below.
-        mirror_ok = _try_mirror_prefetch(model_name, on_pull_start=spinner.stop)
+        mirror_ok = _try_mirror_prefetch(
+            model_name,
+            on_pull_start=spinner.stop,
+            revision=pinned_image_revision,
+        )
     if mirror_ok:
         return
 
@@ -1944,11 +1958,14 @@ def _ensure_model_downloaded(
         size_gb = 0.0
         resolved_sha: str | None = None
         try:
+            metadata_kwargs = {"files_metadata": True}
+            if pinned_image_revision is not None:
+                metadata_kwargs["revision"] = pinned_image_revision
             info = call_with_deadline(
                 model_info,
                 _HF_RESOLVE_TIMEOUT_SECONDS,
                 model_name,
-                files_metadata=True,
+                **metadata_kwargs,
             )
             resolved_sha = getattr(info, "sha", None)
             if not resolved_sha:
@@ -2001,15 +2018,16 @@ def _ensure_model_downloaded(
                 f"fetching {model_name} from HuggingFace ..."
             )
 
-        download_kwargs = {"revision": resolved_sha} if resolved_sha else {}
+        download_revision = pinned_image_revision or resolved_sha
+        download_kwargs = {"revision": download_revision} if download_revision else {}
         if allow_patterns:
             snapshot_download(
                 model_name, allow_patterns=allow_patterns, **download_kwargs
             )
         else:
             snapshot_download(model_name, **download_kwargs)
-        if resolved_sha:
-            pin_main_ref(model_name, resolved_sha)
+        if download_revision:
+            pin_main_ref(model_name, download_revision)
         print()
     except SystemExit:
         # _check_disk_space aborts via sys.exit(1) — let it through.
