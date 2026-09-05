@@ -2272,6 +2272,56 @@ class TestMlxVlmImportContract:
         # Generator factory — callable, not the iterator type.
         assert callable(stream_diffusion_generate)
 
+    def test_is_diffusion_model_classifies_block_canvas_against_installed_mlx_vlm(
+        self,
+    ) -> None:
+        # codex (pr_validate, #3082): the lane tests above stub
+        # ``is_diffusion_model`` with a preset boolean, so they stay green
+        # even if the installed predicate is missing, changed signature, or
+        # stopped classifying DiffusionGemma-shaped models. Bind the gate
+        # to the REAL mlx-vlm predicate with representative model objects:
+        # the same ``config.canvas_length`` + ``language_model.generate``
+        # traits mlx-vlm's ``_has_model_diffusion_generator`` keys on.
+        pytest.importorskip("mlx_vlm")
+        from mlx_vlm.generate.diffusion import is_diffusion_model
+
+        class _LanguageModel:
+            def generate(self, *args: Any, **kwargs: Any) -> None:  # pragma: no cover
+                raise NotImplementedError
+
+        class _BlockCanvasModel:
+            config = FakeModelConfig()  # canvas_length = 256
+            language_model = _LanguageModel()
+
+        class _MaskedLmModel:
+            config = FakeMaskedLmDiffusionConfig()  # mask_token_id, no canvas
+            language_model = _LanguageModel()
+
+        class _PlainConfig:
+            eos_token_id = 7
+
+        class _AutoregressiveModel:
+            config = _PlainConfig()
+            language_model = _LanguageModel()
+
+        # Same call shape as diffusion_lane.py:_worker_loop (positional model).
+        assert is_diffusion_model(_BlockCanvasModel()) is True
+        # Generic masked-LM diffusion is still "diffusion" to mlx-vlm — the
+        # lane's extra canvas_length gate is what rejects it, not this call.
+        assert is_diffusion_model(_MaskedLmModel()) is True
+        assert is_diffusion_model(_AutoregressiveModel()) is False
+        # And the lane's combined gate, evaluated exactly as production does.
+        for model, expected in (
+            (_BlockCanvasModel(), True),
+            (_MaskedLmModel(), False),
+            (_AutoregressiveModel(), False),
+        ):
+            config = getattr(model, "config", None)
+            admitted = is_diffusion_model(model) and (
+                getattr(config, "canvas_length", None) is not None
+            )
+            assert admitted is expected, type(model).__name__
+
     def test_runtime_imports_match_installed_surface(self) -> None:
         # Pin the exact import paths that diffusion_lane.py uses at
         # request time. A future mlx-vlm release that moves these
@@ -2286,7 +2336,7 @@ class TestMlxVlmImportContract:
 
         # And the per-request imports inside _run_generator.
         gen_diff = importlib.import_module("mlx_vlm.generate.diffusion")
-        for symbol in ("diffusion_generation_family", "stream_diffusion_generate"):
+        for symbol in ("is_diffusion_model", "stream_diffusion_generate"):
             assert hasattr(gen_diff, symbol), (
                 f"mlx_vlm.generate.diffusion.{symbol} missing — "
                 "diffusion_lane.py would fail at request time"
