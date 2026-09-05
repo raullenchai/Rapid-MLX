@@ -239,6 +239,21 @@ def test_spawn_foreground_child_env(monkeypatch):
     assert captured["env"]["RAPID_MLX_WATCHDOG_PPID"] == str(os.getpid())
 
 
+def test_spawn_no_download_forces_child_offline(monkeypatch):
+    """--no-download remains strict inside the canonical serve child."""
+    import subprocess as real_subprocess
+
+    captured = {}
+    monkeypatch.setattr(
+        real_subprocess,
+        "Popen",
+        lambda cmd, **kwargs: captured.update(kwargs) or types.SimpleNamespace(),
+    )
+    run_cli._spawn_foreground_serve("cached", _make_args(no_download=True))
+    assert captured["env"]["HF_HUB_OFFLINE"] == "1"
+    assert captured["env"]["TRANSFORMERS_OFFLINE"] == "1"
+
+
 def test_reuse_compatible_server_attaches_no_spawn(monkeypatch, capsys):
     """Port serving the chosen model -> attach, never spawn."""
     args = _make_args()
@@ -440,11 +455,13 @@ def test_start_command_readiness_timeout_terminates(monkeypatch):
     monkeypatch.setattr(
         run_cli, "_attach_and_configure", lambda *a, **k: order.append("configure") or 0
     )
-    monkeypatch.setattr(run_cli, "_wait_child", lambda p: order.append("wait") or 2)
+    monkeypatch.setattr(
+        run_cli, "_wait_child", lambda p: pytest.fail("cleanup is already bounded")
+    )
 
-    assert run_cli.start_command(args) == 2
+    assert run_cli.start_command(args) == 124
     assert terminated == [True]  # child was terminated on timeout
-    assert order == ["spawn", "wait"]
+    assert order == ["spawn"]
 
 
 def test_start_command_readiness_keyboard(monkeypatch):
@@ -458,14 +475,19 @@ def test_start_command_readiness_keyboard(monkeypatch):
     monkeypatch.setattr(
         run_cli, "_spawn_foreground_serve", lambda *a: order.append("spawn") or object()
     )
-    monkeypatch.setattr(run_cli, "_wait_ready", lambda *a, **k: "exited")
+    monkeypatch.setattr(run_cli, "_wait_ready", lambda *a, **k: "interrupted")
     monkeypatch.setattr(
         run_cli, "_attach_and_configure", lambda *a, **k: order.append("configure") or 0
     )
-    monkeypatch.setattr(run_cli, "_wait_child", lambda p: order.append("wait") or 1)
+    stopped = []
+    monkeypatch.setattr(run_cli, "_terminate_child", lambda p: stopped.append(p))
+    monkeypatch.setattr(
+        run_cli, "_wait_child", lambda p: pytest.fail("cleanup is already bounded")
+    )
 
-    assert run_cli.start_command(args) == 1
-    assert order == ["spawn", "wait"]
+    assert run_cli.start_command(args) == 128 + signal.SIGINT
+    assert len(stopped) == 1
+    assert order == ["spawn"]
 
 
 # ---------------------------------------------------------------------------
@@ -692,7 +714,7 @@ def test_wait_ready_keyboard_interrupt(monkeypatch, capsys):
         raise KeyboardInterrupt
 
     monkeypatch.setattr(cli_mod, "_wait_for_chat_server", intr)
-    assert run_cli._wait_ready("http://x", object(), 5) == "exited"
+    assert run_cli._wait_ready("http://x", object(), 5) == "interrupted"
     assert "Interrupted during startup" in capsys.readouterr().out
 
 
@@ -706,13 +728,40 @@ def test_port_is_busy_wrapper(monkeypatch):
 
 
 def test_reuse_dry_run_branch(monkeypatch, capsys):
-    """Reuse handler under --dry-run previews attach without probing."""
+    """Reuse handler under --dry-run probes before promising an attach."""
     args = _make_args(dry_run=True)
+    from vllm_mlx.agents import adapter as ad
+
+    monkeypatch.setattr(ad, "_fetch_models", lambda base: [{"id": "m"}])
+    monkeypatch.setattr(run_cli, "_hf_id", lambda model: model)
+    previews = []
+    monkeypatch.setattr(
+        run_cli,
+        "_attach_and_configure",
+        lambda base_url, model, profile, seen_args: (
+            previews.append((base_url, model, seen_args.dry_run)) or 0
+        ),
+    )
     result = run_cli._reuse_or_refuse(
         "http://127.0.0.1:8000", "m", _FakeProfile(), args
     )
     assert result == 0
-    assert "Dry run" in capsys.readouterr().out
+    assert previews == [("http://127.0.0.1:8000", "m", True)]
+    assert "would reuse" in capsys.readouterr().out
+
+
+def test_reuse_dry_run_refuses_incompatible_server(monkeypatch, capsys):
+    """Dry-run reports the same incompatible-port failure as a real start."""
+    args = _make_args(dry_run=True)
+    from vllm_mlx.agents import adapter as ad
+
+    monkeypatch.setattr(ad, "_fetch_models", lambda base: [{"id": "other"}])
+    monkeypatch.setattr(run_cli, "_hf_id", lambda model: model)
+    assert (
+        run_cli._reuse_or_refuse("http://127.0.0.1:8000", "m", _FakeProfile(), args)
+        == 1
+    )
+    assert "not m" in capsys.readouterr().out
 
 
 # --- _attach_and_configure + _print_instructions ---------------------------
@@ -905,7 +954,7 @@ def test_attach_first_class_consent_cancelled(monkeypatch, capsys):
 
 def test_attach_generic_writer_success(monkeypatch, capsys):
     """Generic (non-first-class) profile writer success path."""
-    args = _make_args()
+    args = _make_args(yes=True)
     prof = _FakeProfile(name="hermes", recommended_models=["qwen3.5-9b-4bit"])
     prof.config = _FakeCfg(template=None)
 
@@ -915,10 +964,9 @@ def test_attach_generic_writer_success(monkeypatch, capsys):
     monkeypatch.setattr(
         ad,
         "setup_agent_config",
-        lambda profile, base_url, model, **kwargs: called.update(
-            base_url=base_url, model=model
-        )
-        or "wrote config",
+        lambda profile, base_url, model, **kwargs: (
+            called.update(base_url=base_url, model=model) or "wrote config"
+        ),
     )
     rc = run_cli._attach_and_configure("http://b", "m", prof, args)
     assert rc == 0
@@ -1102,6 +1150,9 @@ def test_terminate_child_is_quiet(monkeypatch):
     import subprocess as real_subprocess
 
     class FakeChild:
+        def poll(self):
+            return None
+
         def terminate(self):
             raise ProcessLookupError()
 
@@ -1110,25 +1161,63 @@ def test_terminate_child_is_quiet(monkeypatch):
     run_cli._terminate_child(FakeChild())
 
 
+def test_terminate_child_escalates_after_grace_period():
+    """A SIGTERM-ignoring child is killed and reaped within bounded waits."""
+    calls = []
+
+    class FakeChild:
+        returncode = None
+
+        def poll(self):
+            return self.returncode
+
+        def terminate(self):
+            calls.append("terminate")
+
+        def kill(self):
+            calls.append("kill")
+            self.returncode = -signal.SIGKILL
+
+        def wait(self, timeout):
+            calls.append(("wait", timeout))
+            if self.returncode is None:
+                raise run_cli.subprocess.TimeoutExpired("serve", timeout)
+            return self.returncode
+
+    run_cli._terminate_child(FakeChild(), grace_s=0.01)
+    assert calls == ["terminate", ("wait", 0.01), "kill", ("wait", 0.01)]
+
+
 def test_foreground_child_relays_signals(monkeypatch):
     """_foreground_child installs a relay forwarding SIGINT/SIGTERM to the child
     and restores prior handlers on exit (HIGH 2: relay active during ready-wait)."""
     sent = []
 
     class FakeChild:
+        def poll(self):
+            return None
+
         def send_signal(self, signum):
             sent.append(signum)
             if signum == signal.SIGINT:
                 raise ProcessLookupError()  # already gone -> swallowed
 
+    stopped = []
+    monkeypatch.setattr(run_cli, "_terminate_child", lambda proc: stopped.append(proc))
     prev_int = signal.getsignal(signal.SIGINT)
     prev_term = signal.getsignal(signal.SIGTERM)
-    with run_cli._foreground_child(FakeChild()):
-        # Handlers installed: invoke them directly.
-        signal.getsignal(signal.SIGINT)(signal.SIGINT, None)
-        signal.getsignal(signal.SIGTERM)(signal.SIGTERM, None)
+    for signum in (signal.SIGINT, signal.SIGTERM):
+        with (
+            pytest.raises(run_cli._ForwardedSignalError) as exc,
+            run_cli._foreground_child(FakeChild()),
+        ):
+            # Handler forwards to the child, then forces the parent out of a
+            # potentially blocked prompt/wait so cleanup can complete.
+            signal.getsignal(signum)(signum, None)
+        assert exc.value.signum == signum
     assert signal.SIGINT in sent
     assert signal.SIGTERM in sent
+    assert len(stopped) == 2
     # Restored.
     assert signal.getsignal(signal.SIGINT) == prev_int
     assert signal.getsignal(signal.SIGTERM) == prev_term

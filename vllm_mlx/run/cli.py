@@ -157,27 +157,35 @@ def start_command(args) -> int:
 
     if args.dry_run:
         _print_dry_run(profile_name, model, args)
+        if profile is not None and not args.no_setup:
+            _attach_and_configure(base_url, model, profile, args)
         return 0
 
     if not _confirm_download(model, no_download=args.no_download, yes=args.yes):
         return 1
 
     proc = _spawn_foreground_serve(model, args)
-    with _foreground_child(proc):
-        outcome = _wait_ready(base_url, proc, args.ready_timeout)
-        if outcome == "timeout":
-            # The child is STILL alive (loading/downloading) but never became
-            # ready within --ready-timeout. Waiting longer would hang
-            # indefinitely, so terminate it, reap, and fail (HIGH squash: the
-            # earlier "Server did not become ready" is the final word).
-            _terminate_child(proc)
+    try:
+        with _foreground_child(proc):
+            outcome = _wait_ready(base_url, proc, args.ready_timeout)
+            if outcome == "timeout":
+                # The child is STILL alive (loading/downloading) but never became
+                # ready within --ready-timeout. Waiting longer would hang
+                # indefinitely, so terminate it, reap, and fail (HIGH squash: the
+                # earlier "Server did not become ready" is the final word).
+                _terminate_child(proc)
+                return 124
+            if outcome == "interrupted":
+                _terminate_child(proc)
+                return 128 + signal.SIGINT
+            if outcome == "exited":
+                # The serve child died before /health/ready returned; reap it and
+                # surface its (nonzero) status instead of a raw traceback.
+                return _wait_child(proc)
+            _attach_and_configure(base_url, model, profile, args)
             return _wait_child(proc)
-        if outcome == "exited":
-            # The serve child died before /health/ready returned; reap it and
-            # surface its (nonzero) status instead of a raw traceback.
-            return _wait_child(proc)
-        _attach_and_configure(base_url, model, profile, args)
-        return _wait_child(proc)
+    except _ForwardedSignalError as exc:
+        return 128 + exc.signum
 
 
 # ---------------------------------------------------------------------------
@@ -358,11 +366,25 @@ def _spawn_foreground_serve(model: str, args) -> subprocess.Popen:
     # If the start parent is SIGKILLed, the child self-terminates instead of
     # orphan-locking the model + port.
     child_env["RAPID_MLX_WATCHDOG_PPID"] = str(os.getpid())
+    if args.no_download:
+        # ``--no-download`` is a strict execution contract, not just a
+        # parent-side preflight. The canonical serve path already honors both
+        # standard offline flags across its Hub/config/tokenizer loaders.
+        child_env["HF_HUB_OFFLINE"] = "1"
+        child_env["TRANSFORMERS_OFFLINE"] = "1"
     print(f"  Starting {model} on {args.host}:{args.port} (Ctrl-C to stop) ...")
     return subprocess.Popen(  # noqa: S603
         cmd,
         env=child_env,
     )
+
+
+class _ForwardedSignalError(Exception):
+    """Internal control flow used to leave prompts/waits after a signal."""
+
+    def __init__(self, signum: int):
+        self.signum = signum
+        super().__init__(signum)
 
 
 class _foreground_child:
@@ -387,6 +409,8 @@ class _foreground_child:
     def __exit__(self, _exc_type, _exc, _tb):
         signal.signal(signal.SIGINT, self._prev_int)
         signal.signal(signal.SIGTERM, self._prev_term)
+        if _exc_type is not None and self._proc.poll() is None:
+            _terminate_child(self._proc)
         return False
 
     def _forward(self, signum, _frame):
@@ -394,25 +418,48 @@ class _foreground_child:
             self._proc.send_signal(signum)
         except (ProcessLookupError, PermissionError):
             pass
+        # Replacing Python's default handler must not swallow the signal and
+        # leave the parent blocked in input()/wait. The surrounding context
+        # performs bounded cleanup before start_command maps this to 128+N.
+        raise _ForwardedSignalError(signum)
 
 
-def _terminate_child(proc) -> None:
-    """SIGTERM a still-alive child so the caller can reap it cleanly."""
+def _terminate_child(proc, *, grace_s: float = 5.0) -> None:
+    """Bounded SIGTERM→SIGKILL cleanup for a parent-owned child."""
+    if proc.poll() is not None:
+        return
     try:
         proc.terminate()
     except (ProcessLookupError, PermissionError):
+        return
+    try:
+        proc.wait(timeout=grace_s)
+        return
+    except subprocess.TimeoutExpired:
+        pass
+    try:
+        proc.kill()
+    except (ProcessLookupError, PermissionError):
+        return
+    try:
+        proc.wait(timeout=grace_s)
+    except subprocess.TimeoutExpired:
+        # SIGKILL can only remain pending for a process stuck in an
+        # uninterruptible kernel wait. Do not turn a readiness timeout into
+        # an unbounded parent hang; the child watchdog remains a final guard.
         pass
 
 
 def _wait_ready(base_url: str, proc, timeout_s: int) -> str:
     """Block until /health/ready returns 200, the child exits, or timeout.
 
-    Returns a tri-state so the caller can tell ``exited`` (the serve child
+    Returns an outcome so the caller can tell ``exited`` (the serve child
     died before becoming ready — reap it) from ``timeout`` (the child is
     STILL ALIVE but never reported healthy — terminate it, never just wait):
     * ``"ready"`` — /health/ready returned 200.
     * ``"exited"`` — the child exited early (code ``proc.returncode``).
     * ``"timeout"`` — the child is alive but not ready within ``timeout_s``.
+    * ``"interrupted"`` — the parent received Ctrl-C while waiting.
     """
     from vllm_mlx.cli import _wait_for_chat_server
 
@@ -431,7 +478,7 @@ def _wait_ready(base_url: str, proc, timeout_s: int) -> str:
         # The child is alive; the signal relay has already forwarded SIGINT to
         # it, so terminate + reap here for a clean teardown (no raw traceback).
         print("\n  Interrupted during startup; stopping the server.")
-        return "exited"
+        return "interrupted"
     return "ready"
 
 
@@ -455,17 +502,8 @@ def _reuse_or_refuse(base_url: str, model: str, profile, args) -> int:
     """
     from vllm_mlx.agents.adapter import _fetch_models
 
-    if args.dry_run:
-        print(
-            f"  Dry run — port {args.port} is already in use; "
-            f"start would attach to {base_url}."
-        )
-        return 0
-
     api_base_url = f"{base_url.rstrip('/')}/v1"
-    served = {
-        str(m.get("id")) for m in _fetch_models(api_base_url) if m.get("id")
-    }
+    served = {str(m.get("id")) for m in _fetch_models(api_base_url) if m.get("id")}
     if not served:
         print(
             f"  Port {args.port} is occupied but not a healthy rapid-mlx "
@@ -475,6 +513,12 @@ def _reuse_or_refuse(base_url: str, model: str, profile, args) -> int:
 
     hf_id = _hf_id(model)
     if hf_id in served or model in served:
+        if args.dry_run:
+            print(
+                f"  Dry run — port {args.port} already serves {model}; "
+                f"start would reuse {base_url}."
+            )
+            return _attach_and_configure(base_url, model, profile, args)
         print(f"  Reusing the running server on {base_url} (serving {model}).")
         return _attach_and_configure(base_url, model, profile, args)
 
@@ -495,12 +539,12 @@ def _attach_and_configure(base_url, model, profile, args) -> int:
         return 0
 
     api_base_url = f"{base_url.rstrip('/')}/v1"
-    if args.dry_run or args.no_setup:
+    if args.no_setup:
         _print_instructions(profile, api_base_url, model)
         return 0
 
     cfg = profile.get_config_for_version(None)
-    if cfg and cfg.template and "{context_length}" in cfg.template:
+    if not args.dry_run and cfg and cfg.template and "{context_length}" in cfg.template:
         from vllm_mlx.agents.adapter import fetch_context_window
 
         try:
@@ -512,6 +556,12 @@ def _attach_and_configure(base_url, model, profile, args) -> int:
 
     is_first_class = profile.name in {"claude-code", "continue", "deepseek-harness"}
     if is_first_class:
+        supports_reasoning = None
+        if profile.name == "deepseek-harness" and not args.dry_run:
+            from vllm_mlx.agents.adapter import fetch_reasoning_support
+
+            supports_reasoning = fetch_reasoning_support(api_base_url, model)
+
         from vllm_mlx.agents.setup import (
             apply_setup_plan,
             build_setup_plan,
@@ -520,7 +570,11 @@ def _attach_and_configure(base_url, model, profile, args) -> int:
 
         try:
             plan = build_setup_plan(
-                profile.name, api_base_url, model, context_length=context_length
+                profile.name,
+                api_base_url,
+                model,
+                context_length=context_length,
+                supports_reasoning=supports_reasoning,
             )
         except (OSError, ValueError) as exc:
             print(f"  {profile.display_name} setup failed: {exc}")
@@ -533,18 +587,44 @@ def _attach_and_configure(base_url, model, profile, args) -> int:
         else:
             print("  Already configured; no file changes needed.")
 
-        if not plan.changed or args.yes or confirm_plan(plan):
-            if plan.changed:
-                try:
-                    apply_setup_plan(plan)
-                except RuntimeError as exc:
-                    print(f"  {profile.display_name} setup failed: {exc}")
-                else:
-                    print(f"  Configured {profile.display_name} at {plan.path}.")
-        else:
+        if args.dry_run:
+            print("  Dry run only; nothing was written.")
+            return 0
+
+        if plan.changed and not args.yes and not confirm_plan(plan):
             print("  Setup cancelled; nothing was written.")
+            _print_instructions(profile, api_base_url, model)
+            return 0
+        if plan.changed:
+            try:
+                apply_setup_plan(plan)
+            except RuntimeError as exc:
+                print(f"  {profile.display_name} setup failed: {exc}")
+                _print_instructions(profile, api_base_url, model)
+                return 0
+            print(f"  Configured {profile.display_name} at {plan.path}.")
     else:
         from vllm_mlx.agents.adapter import setup_agent_config
+
+        preview = setup_agent_config(
+            profile,
+            api_base_url,
+            model,
+            dry_run=True,
+            context_length=context_length,
+        )
+        if preview.startswith("Cannot"):
+            print(f"  {profile.display_name} setup failed.")
+            print(f"  {preview}")
+            _print_instructions(profile, api_base_url, model)
+            return 0
+        print(f"  {profile.display_name} configuration: {preview}")
+        if args.dry_run:
+            return 0
+        if not args.yes and not _confirm_config_write():
+            print("  Setup cancelled; nothing was written.")
+            _print_instructions(profile, api_base_url, model)
+            return 0
 
         summary = setup_agent_config(
             profile,
@@ -562,6 +642,19 @@ def _attach_and_configure(base_url, model, profile, args) -> int:
 
     _print_next_steps(profile.name, api_base_url, model)
     return 0
+
+
+def _confirm_config_write() -> bool:
+    """Require interactive consent before a generic profile config write."""
+    if not sys.stdin.isatty():
+        return False
+    try:
+        return input("Apply this configuration? [y/N] ").strip().lower() in {
+            "y",
+            "yes",
+        }
+    except (EOFError, KeyboardInterrupt):
+        return False
 
 
 def _print_instructions(profile, base_url, model) -> None:
