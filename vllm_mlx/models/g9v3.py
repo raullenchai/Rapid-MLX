@@ -427,7 +427,7 @@ class Model(nn.Module):
             return self.model.embed_tokens.as_linear(h)
         return self.lm_head(h)
 
-    def sanitize(self, weights):
+    def sanitize(self, weights: dict[str, mx.array]) -> dict[str, mx.array]:
         """Stack per-expert checkpoint tensors into the ``SwitchGLU`` layout.
 
         ``model.layers.N.mlp.experts.E.{gate,up,down}_proj.{weight|scales|biases}``
