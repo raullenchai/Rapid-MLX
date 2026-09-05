@@ -700,7 +700,6 @@ class DiffusionEngine(BaseEngine):
         try:
             import mlx.core as mx
             from mlx_vlm.generate.diffusion import (
-                diffusion_generation_family,
                 is_diffusion_model,
             )
             from mlx_vlm.utils import load
@@ -736,11 +735,11 @@ class DiffusionEngine(BaseEngine):
             # block-canvas canvas trait.
             config = getattr(model, "config", None)
             is_block_canvas = getattr(config, "canvas_length", None) is not None
-            if not (is_diffusion_model(model) and is_block_canvas):
+            is_diffusion = is_diffusion_model(model)
+            if not (is_diffusion and is_block_canvas):
                 raise RuntimeError(
                     f"{self._model_name!r} is not a block-diffusion model "
-                    f"(is_diffusion_model="
-                    f"{is_diffusion_model(model)}, canvas_length="
+                    f"(is_diffusion_model={is_diffusion}, canvas_length="
                     f"{getattr(config, 'canvas_length', None)!r}). "
                     "DiffusionEngine only supports DiffusionGemma-family "
                     "block-canvas checkpoints."
