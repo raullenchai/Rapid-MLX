@@ -70,6 +70,7 @@ needed by the application; leave it unset for URL/base64-only deployments.
 | `--completion-batch-size` | Completion batch size | `32` |
 | `--prefill-step-size` | Chunk size for prompt prefill processing | `2048` |
 | `--gpu-memory-utilization` | Fraction of device memory for the Metal allocation limit (0.0-1.0); advanced override of the automatic per-model budget | `auto` |
+| `--image-weight-precision` | Explicit FLUX.2 Klein weight source (`q4` or `bf16`); bf16 requires a 32 GB Mac and is not selected automatically | alias default |
 
 ### Cache Options
 

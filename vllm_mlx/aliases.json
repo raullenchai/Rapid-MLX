@@ -1924,6 +1924,18 @@
     "suffix_decoding_tier": "unknown",
     "min_memory_gb": 12
   },
+  "flux2-klein-4b-bf16": {
+    "hf_path": "mflux-community/flux2-klein-4b-mflux-bf16",
+    "modality": "image-gen",
+    "tool_call_parser": null,
+    "reasoning_parser": null,
+    "is_hybrid": false,
+    "is_moe": false,
+    "supports_spec_decode": false,
+    "supports_dflash": false,
+    "suffix_decoding_tier": "unknown",
+    "min_memory_gb": 32
+  },
   "z-image-turbo": {
     "hf_path": "filipstrand/Z-Image-Turbo-mflux-4bit",
     "modality": "image-gen",
