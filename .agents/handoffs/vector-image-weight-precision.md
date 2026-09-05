@@ -26,6 +26,10 @@
   the repository completeness guard before loading.
 - A DiffusionGemma-shape M3 Ultra microbenchmark found q4 faster than bf16 at
   both M=256 and M=4096. No Gemma precision policy was changed.
+- `pr_validate` additionally exposed a pre-existing DiffusionGemma boot failure:
+  the alias routes to DiffusionEngine while `diffusion_generation_family`
+  returns `diffusion`. The exact failure reproduces on clean `origin/main` and
+  remains a separate follow-up, not part of this image-weight PR.
 
 ## Unresolved questions and risks
 

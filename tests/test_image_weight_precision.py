@@ -74,6 +74,15 @@ def test_real_cli_selects_bf16_before_download_and_load(monkeypatch):
         captured.setdefault("download_models", []).append(model_name)
 
     monkeypatch.setattr(server, "load_model", _load_model)
+    # ``serve_command`` normally installs middleware on the process-global
+    # Starlette app. That is outside this ordering contract and makes the test
+    # depend on whether another full-suite test has already started the app.
+    monkeypatch.setattr(server, "configure_cors_from_env", lambda _origins: [])
+    monkeypatch.setattr(server, "configure_trusted_hosts", lambda _hosts: None)
+    monkeypatch.setattr(
+        "vllm_mlx.middleware.request_logging.install_request_logging_middleware",
+        lambda _app: None,
+    )
     monkeypatch.setattr(cli, "_run_uvicorn", lambda *_a, **_kw: None)
     monkeypatch.setattr(cli, "_ensure_model_downloaded", _ensure_model_downloaded)
     monkeypatch.setattr(cli, "_port_preflight_or_die", lambda *_a, **_kw: None)
