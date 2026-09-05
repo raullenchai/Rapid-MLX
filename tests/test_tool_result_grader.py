@@ -552,6 +552,62 @@ class TestCodexRegressionFixes:
         rep = _grade(g, [big], "clear")
         assert rep.overall is False
 
+    def test_incomplete_numeric_token_not_read_as_bare(self, g):
+        # "1e2" (exponent) and "1,000" (thousands grouping) match only their
+        # leading "1" to _UNIT_RE; that prefix must not satisfy a 1 °C fact.
+        one = {"type": "number", "key": "temperature", "value": 1, "unit": "c"}
+        assert _grade(g, [one], "temperature is 1e2").overall is False
+        assert _grade(g, [one], "temperature is 1,000").overall is False
+        # Genuine scalar forms still satisfy.
+        assert _grade(g, [one], "temperature is 1").overall is True
+        assert _grade(g, [one], "temperature is 1.0").overall is True
+
+    def test_non_str_alias_rejected_not_coerced(self, g):
+        # A malformed numeric alias must be rejected, not silently str()-coerced
+        # into a matching term.
+        for bad in ([21], [1.0, "clear"]):
+            try:
+                g.fact_from_dict(
+                    {"type": "string", "key": "cond", "value": "clear", "aliases": bad}
+                )
+                raise AssertionError(f"accepted alias element in {bad!r}")
+            except ValueError:
+                pass
+        # A genuine list of strings is accepted.
+        assert g.fact_from_dict(
+            {"type": "string", "key": "cond", "value": "clear", "aliases": ["skies"]}
+        ).aliases == ("skies",)
+
+    def test_measurement_noun_does_not_masquerade_as_value(self, g):
+        # A clear non-temperature unit noun (meters/miles/feet) after a number
+        # must not let that number satisfy a temperature fact.
+        assert (
+            _grade(g, [TEMP21C], "temperature sensor is 21 meters away").overall
+            is False
+        )
+        assert _grade(g, [TEMP21C], "21 miles away").overall is False
+        # The temperature-family "degrees" form still satisfies (not a foreign unit).
+        assert _grade(g, [TEMP21C], "temperature is 21 degrees").overall is True
+
+    def test_typographic_apostrophe_still_trips_deny_marker(self, g):
+        # LLM output frequently uses the curly U+2019 apostrophe; a refusal
+        # "can't determine" must grade as contradicted (flag), not as a silent
+        # missing, regardless of apostrophe glyph.
+        for refusal in [
+            "I can't determine the temperature",
+            "I can’t determine the temperature",
+        ]:
+            rep = _grade(g, [TEMP21C], refusal)
+            assert "temperature" in rep.contradicted
+
+    def test_keyless_number_fact_does_not_crash(self, g):
+        # A pre-normalized NumberFact with an empty key has no textual anchor
+        # and (unlike StringFact) no normalized_value -- grading it must not
+        # crash on that fallback, and a unit-qualified value is still accepted
+        # as a paraphrase.
+        f = g.NumberFact(key="", value=21.0, unit="c", tolerance=0.0, aliases=())
+        assert _grade(g, [f], "21 °C at the moment").overall is True
+
 
 # --- Tool output is DATA, not instructions ---------------------------------
 class TestInputIsDataNotInstructions:

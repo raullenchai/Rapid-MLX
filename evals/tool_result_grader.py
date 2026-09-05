@@ -166,16 +166,24 @@ _MARKER_RES = tuple(
 _KNOWN_UNITS = frozenset(_UNIT_TO_CANONICAL)
 
 
+_CURLY_QUOTES = str.maketrans(
+    {"‘": "'", "’": "'", "“": '"', "”": '"', "‚": "'", "„": '"'}
+)
+
+
 def _norm(text: str) -> str:
     """NFC+casefold a string for reproducible, Unicode-insensitive matching.
 
     Handles full-width variants and degree-sign look-alikes (``℃``/``℉``
     collapse to ``°c``/``°f`` under NFKC) so "°C" / "degrees celsius" / plain
-    text compare cleanly.
+    text compare cleanly. Typographic apostrophes/quotes (U+2018–U+201E) are
+    folded to ASCII so a model's ``"can’t"`` still trips the ``"can't"`` deny
+    marker instead of grading a refusal as merely missing.
     """
     if not text:
         return ""
-    return unicodedata.normalize("NFKC", text).casefold().strip()
+    nfkc = unicodedata.normalize("NFKC", text)
+    return nfkc.translate(_CURLY_QUOTES).casefold().strip()
 
 
 def _resolve_unit(token: str) -> str | None:
@@ -410,6 +418,10 @@ def fact_from_dict(d: dict) -> Fact:
             raise ValueError(
                 f"fact '{fact_key}' 'aliases' must be a list/tuple of strings"
             )
+        # Every element must be a non-empty str -- NOT str()-coerced, so a
+        # malformed numeric alias like [21] can't silently become a match term.
+        if any(not isinstance(a, str) for a in aliases):
+            raise ValueError(f"fact '{fact_key}' 'aliases' must contain only strings")
         out = tuple(str(a) for a in aliases)
         if any(not a for a in out):
             raise ValueError(f"fact '{fact_key}' 'aliases' must be non-empty strings")
@@ -483,6 +495,13 @@ def _numbered_in(text: str) -> list[tuple[float, str | None, int]]:
         token = match.group("unit")
         if num is None:
             continue
+        # Reject a malformed incomplete numeric: "1e2" (exponent), "1,000"
+        # (thousands grouping) match only their leading "1", which would be read
+        # as a bare 1 and falsely satisfy a 1°C fact. If the digit run is
+        # immediately continued by an exponent/grouping char, the whole token is
+        # not a parseable scalar -- drop it rather than leak the prefix.
+        if match.end("num") < len(text) and text[match.end("num")] in ",eE":
+            continue
         value = float(num)
         start = match.start()
         if not token:
@@ -518,13 +537,17 @@ _ADJACENT_UNIT_RE = re.compile(
     r"\s{0,3}(?:(?:[a-z]{1,5}(?:/[a-z]{1,5})+)"
     r"|(?:mph|kph|kmh|knots|nmi|sq|sqm|in|ft|yd|mi|px|em|rem|pt|"
     r"mm|cm|km|kg|ml|oz|lb|bar|mbar|hpa|pa|sec|min|hr|"
+    r"meters|metres|miles|feet|yards|inches|liters|litres|kilograms|"
     r"dollar|dollars|usd|cad|eur|gbp|yen|yuan|rupee|rupees|cents|"
     r"points|point|grade|marks))"
     # NOTE: `degrees` is deliberately NOT in the reject list. It is the most
     # common English surface for the fact's OWN temperature unit ("temperature
     # is 21 degrees" is a natural affirmative report of temperature=21°C), so
-    # an adjacent `degrees` must not strip a legitimate anchored value. Only
-    # semantically FOREIGN unit words (currency, count, score) reject.
+    # an adjacent `degrees` must not strip a legitimate anchored value. The
+    # multi-letter measurement nouns above (meters, miles, feet, ...) ARE
+    # unambiguous non-temperature units, so a "21 meters" value cannot masquerade
+    # as a bare 21 for a temperature fact. Ordinary prose words ("and", "away",
+    # "rising") are deliberately NOT matched -- we reject only clear unit nouns.
 )
 
 
@@ -640,8 +663,14 @@ def _term_matches(term: str, norm_answer: str) -> bool:
 def _number_coverage(fact: NumberFact, norm_answer: str) -> tuple[bool, str]:
     """Affirmative coverage for a number fact (unit conversion + tolerance)."""
     candidates = _numbered_in(norm_answer)
-    anchor_terms = fact.anchor_terms
-    anchors = anchor_terms or (fact.normalized_value,)
+    # NumberFact has no textual ``normalized_value`` (only StringFact does), so
+    # a keyless NumberFact must NOT fall back to a nonexistent attribute (that
+    # would crash) or a value-as-text anchor. With no anchor label there is
+    # nothing to pin the fact's location, so the caller treats it as anchor-less
+    # (``anchors_present`` is False below): an explicitly unit-qualified value
+    # is accepted anywhere, and bare values never match -- the same behavior
+    # "_number_coverage" already has for keyed facts whose anchor never appears.
+    anchors = fact.anchor_terms
     # An ANSWER scene pinpoints the fact only when one of its anchor labels
     # actually appears; if none does, a correctly unit-qualified value
     # ("21 °C at the moment") is still accepted (natural paraphrase), but an
