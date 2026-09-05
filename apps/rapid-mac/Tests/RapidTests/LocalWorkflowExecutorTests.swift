@@ -307,6 +307,33 @@ struct LocalWorkflowExecutorTests {
         #expect((await dependencies.ledger.events).contains { $0.code == .invalidAction })
     }
 
+    @Test("typed text must be nonempty and bounded by UTF-8 bytes")
+    func typedTextIsBoundedBeforeInputInjection() async throws {
+        let workflow = LocalWorkflow(title: "Compose", steps: [step(maxAttempts: 1)])
+        let limit = WorkflowActionPayload.maximumTypedTextBytes
+        #expect(WorkflowActionPayload.typeText(String(repeating: "a", count: limit)).isStructurallyValid)
+
+        for payload in [
+            WorkflowActionPayload.typeText(""),
+            WorkflowActionPayload.typeText(String(repeating: "é", count: limit / 2 + 1)),
+        ] {
+            let dependencies = Dependencies(
+                observer: ScriptedWorkflowObserver([observation(revision: "editor")]),
+                verifications: [],
+                payload: payload
+            )
+
+            let run = await dependencies.executor.execute(workflow)
+
+            #expect(run.status == .paused(
+                stepID: "choose",
+                reason: .unsafeState,
+                actionMayHaveOccurred: false
+            ))
+            #expect(await dependencies.actuator.count == 0)
+        }
+    }
+
     @Test("an invalid observation fails closed before grounding")
     func invalidObservationFailsClosed() async throws {
         let workflow = LocalWorkflow(title: "Lunch", steps: [step()])

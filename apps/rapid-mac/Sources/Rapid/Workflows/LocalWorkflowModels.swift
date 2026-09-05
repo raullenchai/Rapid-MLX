@@ -113,6 +113,11 @@ struct WorkflowObservation: Equatable, Sendable {
 }
 
 enum WorkflowActionPayload: Equatable, Sendable {
+    /// Keeps a compromised or confused grounder from handing the input layer
+    /// an unbounded allocation. This is bytes, not graphemes, so the bound is
+    /// stable for every Unicode payload.
+    static let maximumTypedTextBytes = 65_536
+
     case click(normalizedX: Double, normalizedY: Double)
     case typeText(String)
     case keyPress(key: String, modifiers: [String])
@@ -121,8 +126,8 @@ enum WorkflowActionPayload: Equatable, Sendable {
         switch self {
         case .click(let x, let y):
             x.isFinite && y.isFinite && (0 ... 1).contains(x) && (0 ... 1).contains(y)
-        case .typeText:
-            true
+        case .typeText(let text):
+            !text.isEmpty && text.utf8.count <= Self.maximumTypedTextBytes
         case .keyPress(let key, let modifiers):
             !key.isEmpty && key.count <= 40 && modifiers.count <= 4
                 && modifiers.allSatisfy { !$0.isEmpty && $0.count <= 20 }
