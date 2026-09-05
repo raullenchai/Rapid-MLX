@@ -1121,16 +1121,14 @@ class TestInputIsDataNotInstructions:
         assert rep.facts[0].status == "missing"
 
     def test_identifier_prefix_number_is_not_a_value(self, g):
-        # Round-20 F1: a number immediately preceded by an identifier character
-        # (letter or underscore) is a token/LABEL suffix, not a standalone value
-        # -- "sensor ABC21°C" / "model_x21" must not leak a bare 21 that
-        # satisfies a 21 °C fact. (Signs/exponents were already covered; this
-        # closes the letter/underscore prefix gap.)
+        # Round-20 F1: an UNSIGNED number directly suffixed to an identifier
+        # char (letter or underscore) is a token/LABEL, not a standalone value --
+        # "sensor ABC21°C" / "model_x21" must not leak a bare 21 that satisfies
+        # a 21 °C fact.
         for phrase in [
             "sensor ABC21°C",
             "model_x21°C",
             "temperature is sensor ABC21°C",
-            "temp-21°C",
         ]:
             rep = _grade(g, [TEMP21C], phrase)
             assert rep.facts[0].status == "missing", phrase
@@ -1143,9 +1141,40 @@ class TestInputIsDataNotInstructions:
             "temperature is about 21",
         ]:
             assert _grade(g, [TEMP21C], phrase).overall is True, phrase
-        # Signed-exponent / exponent fragments stay rejected (no regression).
-        for phrase in ["temperature 1e21°C", "temperature 1e+21°C"]:
+        # Signed-exponent / exponent fragments stay rejected (no regression) --
+        # the "e" is an exponent only when a DIGIT precedes it ("1e21"), not a
+        # word-final letter.
+        for phrase in [
+            "temperature 1e21°C",
+            "temperature 1e+21°C",
+            "temperature 1e-21°C",
+        ]:
             assert _grade(g, [TEMP21C], phrase).overall is False, phrase
+
+    def test_hyphen_delimited_signed_value_grounds(self, g):
+        # Round-21 F1: a CAPTURED sign is a SEPARATOR between a label and a
+        # value, not an identifier suffix -- "temperature-21°C" is an anchored
+        # -21 °C report, NOT a token like "model_x21". A word-final "e"
+        # ("temperaturE") is the anchor label, not an exponent marker.
+        neg = {
+            "type": "number",
+            "key": "temperature",
+            "value": -21.0,
+            "unit": "c",
+            "tolerance": 1.0,
+            "aliases": ["temperature"],
+        }
+        # A -21 °C fact is grounded by the hyphen-delimited (and spaced) forms.
+        for phrase in ["temperature-21°C", "temperature -21°C"]:
+            rep = _grade(g, [neg], phrase)
+            assert rep.facts[0].status == "present", phrase
+            assert rep.overall is True, phrase
+        # Against a +21 °C fact, the anchored -21 is a WRONG value (contradicted),
+        # not a silent absence.
+        rep = _grade(g, [TEMP21C], "temperature-21°C")
+        assert rep.facts[0].status == "contradicted"
+        assert rep.facts[0].contradicted is True
+        assert rep.overall is False
 
     def test_cross_unit_bound_converts_threshold(self, g):
         # Round-19 F66: a bound's threshold is converted into the fact's unit

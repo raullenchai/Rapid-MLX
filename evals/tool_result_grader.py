@@ -548,19 +548,27 @@ def _numbered_in(text: str) -> list[tuple[float, str | None, int]]:
                 continue
         if start0 > 0:
             prev = text[start0 - 1]
-            # Numeric-punctuation continuation ("1e21", "1,000", "21.0.5") means
-            # this match is a SUFFIX of a larger numeric token.
-            if prev in "0123456789.,eE+-":
+            # Numeric-punctuation continuation: the preceding char is INSIDE a
+            # larger malformed numeric token, so this match is a SUFFIX of it
+            # ("1e21", "1,000", "21.0.5", "1e+21°C"). "." / "," / a digit are
+            # unambiguous separators. An "e"/"E" is an exponent marker ONLY when
+            # it is itself part of a number (digit immediately before it, as in
+            # "1e21"); a word-final "e" ("temperaturE-21°C") is NOT an exponent
+            # -- it is the end of an ordinary English word.
+            if prev in ".0123456789,":
                 continue
-            # An IDENTIFIER prefix ("sensor ABC21°C", "model_x21", "temp-21°C")
-            # means the number is part of a token/label, not a standalone value
-            # -- an identifier suffix must not satisfy a fact as the bare 21.
-            # The captured leading sign (if any) is part of the match, so this
-            # boundary is the char before the whole signed numeric; standalone
-            # signed values ("-21°C", "+21°C") are preceded by whitespace/start
-            # and unaffected.
+            if prev in "eE" and start0 - 2 >= 0 and text[start0 - 2].isdigit():
+                continue
+            # An UNSIGNED number directly suffixed to an identifier char is a
+            # token/LABEL, not a standalone value ("sensor ABC21°C",
+            # "model_x21") -- such a bare 21 must not satisfy a fact. A CAPTURED
+            # leading sign is a SEPARATOR between a label and a value, so a
+            # signed number always grounds regardless of the preceding char:
+            # "temperature-21°C" is an anchored -21 °C report, not an identifier
+            # (the `-` is the sign, `temperature` the anchor label).
             if prev.isalpha() or prev == "_":
-                continue
+                if num[0] not in "+-":
+                    continue
         value = float(num)
         start = match.start()
         if not token:
