@@ -1360,7 +1360,8 @@ def _check_alias_min_memory(user_typed: str) -> None:
     can still opt in. Silent no-op when:
       - The alias has no ``min_memory_gb`` metadata (every model we
         ship under 100 GB weights).
-      - The user typed an HF path directly instead of an alias.
+      - The model has no built-in alias profile (direct HF paths that match a
+        built-in profile inherit its floor through reverse-path resolution).
       - psutil is unavailable / raises.
     """
     try:
@@ -1715,6 +1716,7 @@ def _try_mirror_prefetch(
     *,
     allow_patterns: list[str] | None = None,
     out: dict | None = None,
+    revision: str | None = None,
 ) -> bool:
     """Pre-fetch a HuggingFace repo via R2-first / HF-fallback (per file).
 
@@ -1762,6 +1764,7 @@ def _try_mirror_prefetch(
         on_pull_start=on_pull_start,
         allow_patterns=allow_patterns,
         out=out,
+        revision=revision,
     )
 
 
@@ -1844,6 +1847,13 @@ def _ensure_model_downloaded(
     """
     if os.path.exists(model_name):
         return
+    # Registered image checkpoints are immutable execution contracts. Resolve
+    # the contract before probing cachedness: ``_cache_runnability`` treats a
+    # pinned image repo specially and must not let a complete moving ``main``
+    # snapshot hide a missing pinned snapshot.
+    from vllm_mlx._download_gate import IMAGE_MODEL_REVISIONS
+
+    pinned_image_revision = IMAGE_MODEL_REVISIONS.get(model_name)
     # Reuse the cache inventory's single runnability probe core
     # (``_cache_runnability``, the same source ``models --cached`` uses) so
     # what counts as "already cached" is identical everywhere and spans every
@@ -1908,7 +1918,11 @@ def _ensure_model_downloaded(
         # serves every file the repo declares, populate the HF cache layout
         # ourselves and skip snapshot_download. On any miss we fall through
         # to the normal HuggingFace download below.
-        mirror_ok = _try_mirror_prefetch(model_name, on_pull_start=spinner.stop)
+        mirror_ok = _try_mirror_prefetch(
+            model_name,
+            on_pull_start=spinner.stop,
+            revision=pinned_image_revision,
+        )
     if mirror_ok:
         return
 
@@ -1944,11 +1958,14 @@ def _ensure_model_downloaded(
         size_gb = 0.0
         resolved_sha: str | None = None
         try:
+            metadata_kwargs: dict[str, object] = {"files_metadata": True}
+            if pinned_image_revision is not None:
+                metadata_kwargs["revision"] = pinned_image_revision
             info = call_with_deadline(
                 model_info,
                 _HF_RESOLVE_TIMEOUT_SECONDS,
                 model_name,
-                files_metadata=True,
+                **metadata_kwargs,
             )
             resolved_sha = getattr(info, "sha", None)
             if not resolved_sha:
@@ -2001,15 +2018,16 @@ def _ensure_model_downloaded(
                 f"fetching {model_name} from HuggingFace ..."
             )
 
-        download_kwargs = {"revision": resolved_sha} if resolved_sha else {}
+        download_revision = pinned_image_revision or resolved_sha
+        download_kwargs = {"revision": download_revision} if download_revision else {}
         if allow_patterns:
             snapshot_download(
                 model_name, allow_patterns=allow_patterns, **download_kwargs
             )
         else:
             snapshot_download(model_name, **download_kwargs)
-        if resolved_sha:
-            pin_main_ref(model_name, resolved_sha)
+        if download_revision:
+            pin_main_ref(model_name, download_revision)
         print()
     except SystemExit:
         # _check_disk_space aborts via sys.exit(1) — let it through.
@@ -6178,6 +6196,7 @@ def _cache_runnability(repo: str) -> bool | None:
     """
     try:
         from vllm_mlx._download_gate import (
+            IMAGE_MODEL_REVISIONS,
             _snapshot_is_complete_audio_model,
             _snapshot_is_complete_mflux_model,
             _snapshot_is_complete_split_model,
@@ -6207,6 +6226,13 @@ def _cache_runnability(repo: str) -> bool | None:
             # matches a lone ``model.safetensors``) must NOT mark an incomplete
             # Wan snapshot runnable. Complete -> runnable; incomplete -> not.
             return _snapshot_is_complete_wan_model(repo)
+        if repo in IMAGE_MODEL_REVISIONS:
+            # A generic complete ``refs/main`` is not interchangeable with a
+            # registered image checkpoint's pinned commit. The mflux probe
+            # resolves ``snapshots/<pinned revision>`` directly and validates
+            # all component indexes/shards there, so only that exact snapshot
+            # can suppress the foreground download.
+            return _snapshot_is_complete_mflux_model(repo)
         return (
             is_repo_cached(repo)
             or _snapshot_is_complete_split_model(repo)
@@ -10703,6 +10729,17 @@ Examples:
             "on a different filesystem (e.g. external drive via HF_HOME)."
         ),
     )
+    serve_parser.add_argument(
+        "--image-weight-precision",
+        choices=("q4", "bf16"),
+        default=None,
+        help=(
+            "Explicit FLUX.2 Klein weight precision. q4 keeps the compact "
+            "default checkpoint; bf16 selects the full-precision checkpoint "
+            "measured faster on an M2 Pro large-matrix image workload. "
+            "Currently limited to FLUX.2 Klein; no automatic hardware switch."
+        ),
+    )
     # Disk-streaming MoE weight loading (PRD-rapid-mlx-integration.md).
     # Strictly opt-in: default behavior for every existing invocation is
     # unchanged. When set, the model loads lazily (routed-expert weights
@@ -12969,6 +13006,23 @@ def main():
         # (CI / pipe): no notice (it is TTY-only); ``main()`` sets the starter
         # and falls through to the same gate a bare ``rapid-mlx chat`` always
         # used, so scripted callers are unchanged (no new exit-1 path).
+
+    # An explicit image precision selects a concrete curated alias BEFORE the
+    # ordinary alias/download gates run. That ordering makes the 15.98 GB bf16
+    # download visible to the existing confirmation and disk-space checks; a
+    # late engine-only switch would silently gate the 4.6 GB q4 source and then
+    # download a much larger checkpoint on first generation.
+    _image_weight_precision = getattr(args, "image_weight_precision", None)
+    if _image_weight_precision is not None:
+        from vllm_mlx.image.precision import resolve_image_weight_precision
+
+        try:
+            args.model = resolve_image_weight_precision(
+                getattr(args, "model", ""), _image_weight_precision
+            )
+        except ValueError as exc:
+            print(f"\n  Error: {exc}", file=sys.stderr)
+            raise SystemExit(2) from None
 
     # Resolve model aliases before dispatch.
     #

@@ -1433,6 +1433,7 @@ IMAGE_MODEL_DATA_FILES: dict[str, tuple[str, ...]] = {
 IMAGE_MODEL_REVISIONS: dict[str, str] = {
     "Runpod/FLUX.2-klein-4B-mflux-4bit": "7ee1b3aa8178a1240050490072196a57da2bf2a9",
     "mflux-community/flux-1-schnell-mflux-q4": "bcdbe817ad51175959b2e691e64eca626db30558",
+    "mflux-community/flux2-klein-4b-mflux-bf16": "4d8e1bae8eb47c7766705de2cda7dabd6cc4ba67",
     "mflux-community/qwen-image-mflux-q6": "c628fe4392d963557c3013c2709e6d3b67bca79d",
     HIDREAM_O1_REPO: HIDREAM_O1_REVISION,
     SDXL_REPO: SDXL_REVISION,

@@ -47,6 +47,8 @@ import threading
 import time
 from pathlib import Path
 
+from .precision import is_packaged_bf16_model
+
 # A pre-quantized mflux repo carries a quant tag in its id — either the
 # ``<n>bit`` / ``<n>-bit`` convention (``FLUX.1-schnell-mflux-4bit``) or the
 # ``q<n>`` convention (``Qwen-Image-Edit-mflux-q4``). Anchored to a separator
@@ -221,11 +223,15 @@ class ImageGenerationEngine:
             "bonsai-image",
             "sd35-large",
         } or _looks_like_prequantized(model_name)
-        # ``None`` when a backend owns its local checkpoint conversion, or when
-        # the repo is already quantized. Passing a width for pre-quantized
-        # mflux weights would re-quantize and fail; SDXL quantizes its UNet
-        # inside the vendored loader instead.
-        self._quantize = None if self._prequantized else quantize
+        # Native backends, pre-quantized mflux repos, and the curated Klein BF16
+        # repo all own a packaged local checkpoint that must be handed through
+        # ``model_path``. BF16 remains distinct from ``_prequantized`` so the
+        # runtime state describes the weights truthfully while still disabling
+        # on-load quantization.
+        self._packaged_checkpoint = self._prequantized or is_packaged_bf16_model(
+            model_name
+        )
+        self._quantize = None if self._packaged_checkpoint else quantize
         self._model = None
         self._prompt_tokenizer = None
         # FLUX.2 uses distinct mflux classes for generation and editing. Only
@@ -263,7 +269,7 @@ class ImageGenerationEngine:
     def _model_path_for_mflux(self) -> str | None:
         """``model_path`` to hand mflux: a local directory whenever we have one.
 
-        A pre-quantized repo / local dir is handed to mflux verbatim; a canonical
+        A packaged mflux repo / local dir is handed to mflux verbatim; a canonical
         repo is selected through ``ModelConfig`` instead (``None``) so mflux
         downloads the official weights and quantizes on load.
 
@@ -278,7 +284,7 @@ class ImageGenerationEngine:
         ourselves at the exact verified commit rather than let mflux resolve
         and download whatever ``main`` currently points to.
         """
-        if not self._prequantized:
+        if not self._packaged_checkpoint:
             return None
         from .._download_gate import (
             IMAGE_MODEL_DATA_FILES,

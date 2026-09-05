@@ -539,6 +539,13 @@ def estimate_model_bytes(model_name: str) -> int:
 
     folded = model_name.casefold()
     known_image_gib = {
+        # Conservative admission charge for the 15.98 GB mflux-layout bf16
+        # payload plus generation activations. The alias itself requires a
+        # 32 GB Mac; this fallback prevents a dynamic load from inheriting the
+        # q4 checkpoint's measured 5.9 GiB charge merely because both names
+        # contain "flux2-klein-4b".
+        "flux2-klein-4b-mflux-bf16": 18.0,
+        "flux2-klein-4b-bf16": 18.0,
         "flux2-klein-4b": 5.9,
         # Published 3.62 GiB fixed payload (2-bit transformer, 4-bit text
         # encoder, FP16 VAE). Keep 7 GiB of admission room for 1024²
