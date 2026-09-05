@@ -965,14 +965,20 @@ def _incompatible_comparison(
         return False
     op, _surface = got
     # Convert the threshold from the candidate's unit into the fact's unit so a
-    # cross-unit bound ("above 69°F") compares like-for-like. If the unit is
-    # unimplementable/incompatible, fall back to the raw number (already
-    # unit-agnostic best effort).
-    threshold = value
-    if unit is not None:
+    # cross-unit bound ("above 69°F") compares like-for-like. A BARE threshold
+    # ("above 10" for a 21% fact) is assumed to already be in the fact's unit.
+    # An EXPLICIT unit that cannot convert into the fact's unit ("humidity above
+    # 10°C" for a 21% fact) is a MISMATCHED relational report -- the model
+    # asserted an inequality in a nonsensical unit, so it is a CONTRADICTION,
+    # not a silent absence (and certainly not passable merely because the raw
+    # number lands on the compatible side).
+    if unit is None:
+        threshold = value
+    else:
         converted = _to_unit(value, unit, fact.unit)
-        if converted is not None:
-            threshold = converted
+        if converted is None:
+            return True
+        threshold = converted
     # An inequality is compatible with the fact only when the fact's OWN value
     # lies on the asserted side of the threshold. Tolerance applies to roughly
     # matching an approximate VALUE, not to relocating a strict relational

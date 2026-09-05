@@ -1236,6 +1236,34 @@ class TestInputIsDataNotInstructions:
             == "contradicted"
         )
 
+    def test_incompatible_comparator_unit_is_a_contradiction(self, g):
+        # Round-23 F1: a comparator whose EXPLICIT unit cannot convert into the
+        # fact's unit ("humidity above 10°C" for a humidity=55% fact) is a
+        # MISMATCHED relational report -- the model asserted an inequality in a
+        # nonsensical unit. It must be contradicted, not quietly passed merely
+        # because the raw number (10) lands on the compatible side of 55.
+        for phrase in [
+            "humidity above 10°C",
+            "humidity below 10°C",
+            "humidity is above 10°C",
+        ]:
+            rep = _grade(g, [HUMIDITY], phrase)
+            assert rep.facts[0].status == "contradicted", phrase
+            assert rep.facts[0].contradicted is True, phrase
+            assert rep.overall is False, phrase
+        # A compatible bound in the fact's OWN unit is a range, not a denial.
+        rep = _grade(g, [HUMIDITY], "humidity below 62%")
+        assert rep.facts[0].status == "missing"
+        assert rep.facts[0].contradicted is False
+        # A CONVERTIBLE cross-unit bound keeps converting (round-19 F66).
+        rep = _grade(g, [TEMP21C], "temperature above 69°F")
+        assert rep.facts[0].contradicted is False
+        # A BARE threshold is in-target: "above 10" for humidity 55% is
+        # 55 > 10 -> a compatible bound, not a contradiction.
+        rep = _grade(g, [HUMIDITY], "humidity above 10")
+        assert rep.facts[0].status == "missing"
+        assert rep.facts[0].contradicted is False
+
     def test_cross_unit_bound_converts_threshold(self, g):
         # Round-19 F66: a bound's threshold is converted into the fact's unit
         # before comparing, so "above 69°F" for a 21 °C fact compares °C-to-°C
