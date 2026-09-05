@@ -193,6 +193,32 @@ class _FakeIndexer:
         )
 
 
+class _GappedFakeIndexer(_FakeIndexer):
+    def __call__(
+        self,
+        hidden_states,
+        cache,
+        *,
+        physical_kv_length,
+        record_rollback=False,
+    ):
+        selection = super().__call__(
+            hidden_states,
+            cache,
+            physical_kv_length=physical_kv_length,
+            record_rollback=record_rollback,
+        )
+        length = int(hidden_states.shape[1])
+        validity = mx.array(
+            [True, True, False, False, True, True, False, False, False, True]
+        )
+        return qwen4_exp._QSASelection(
+            token_indices=selection.token_indices,
+            valid=mx.broadcast_to(validity, (1, length, validity.size)),
+            physical_kv_length=physical_kv_length,
+        )
+
+
 class _FakeKVCache:
     offset = 16_384
     _idx = 16_384
@@ -256,6 +282,52 @@ def test_qsa_attention_routes_compact_selection_and_records_call(monkeypatch):
         "declines": 0,
         "decline_reasons": {},
     }
+
+
+def test_qsa_attention_compacts_gapped_validity_before_counted_dispatch(monkeypatch):
+    args = _args()
+    attention = QSAAttention(args)
+    attention.eval()
+    attention.indexer = _GappedFakeIndexer()
+    monkeypatch.setenv(qsa_block_sparse.ENABLE_ENV, "1")
+    observed = []
+
+    def fake_sparse(
+        queries,
+        keys,
+        values,
+        block_starts,
+        block_counts,
+        tail_indices,
+        tail_counts,
+        *,
+        block_size,
+    ):
+        del keys, values, block_size
+        mx.eval(block_starts, block_counts, tail_indices, tail_counts)
+        observed.append(
+            (
+                np.array(block_starts[0, 0]),
+                np.array(block_counts),
+                np.array(tail_indices[0, 0]),
+                np.array(tail_counts),
+            )
+        )
+        return mx.zeros_like(queries)
+
+    monkeypatch.setattr(qwen4_exp, "block_sparse_attention", fake_sparse)
+    output = attention(
+        mx.zeros((1, 64, args.hidden_size)),
+        [_FakeKVCache(), object()],
+        mask="causal",
+    )
+    mx.eval(output)
+
+    starts, block_counts, tails, tail_counts = observed[0]
+    np.testing.assert_array_equal(starts, [4, 8, 16_448, 16_448])
+    np.testing.assert_array_equal(block_counts, 2)
+    np.testing.assert_array_equal(tails, [17, 16_448])
+    np.testing.assert_array_equal(tail_counts, 1)
 
 
 def test_qsa_attention_disabled_control_stays_dense(monkeypatch):

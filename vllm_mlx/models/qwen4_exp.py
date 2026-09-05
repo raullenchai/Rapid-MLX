@@ -1157,12 +1157,27 @@ class QSAAttention(nn.Module):
                     0, self.indexer.token_budget, self.indexer.compress_ratio
                 )
                 tail_slots = slice(self.indexer.token_budget, None)
-                block_starts = mx.sort(
-                    selected.token_indices[..., block_slots], axis=-1
+                invalid_index = mx.array(
+                    physical_length, dtype=selected.token_indices.dtype
                 )
                 block_valid = selected.valid[..., block_slots]
-                tail_indices = selected.token_indices[..., tail_slots]
+                block_starts = mx.sort(
+                    mx.where(
+                        block_valid,
+                        selected.token_indices[..., block_slots],
+                        invalid_index,
+                    ),
+                    axis=-1,
+                )
                 tail_valid = selected.valid[..., tail_slots]
+                tail_indices = mx.sort(
+                    mx.where(
+                        tail_valid,
+                        selected.token_indices[..., tail_slots],
+                        invalid_index,
+                    ),
+                    axis=-1,
+                )
                 output = block_sparse_attention(
                     queries,
                     keys,

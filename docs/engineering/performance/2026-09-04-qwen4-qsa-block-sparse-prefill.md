@@ -27,7 +27,9 @@ The Metal kernel clamps compact counts to their buffer capacities and skips
 out-of-range block starts and tail indices before reading K/V. Production inputs
 come from the internal indexer, but the device-side guards prevent malformed
 internal state from turning into an out-of-bounds GPU read without imposing a
-host synchronization.
+host synchronization. Before count-based dispatch, invalid compact entries are
+replaced with an out-of-range sentinel and sorted behind the valid prefix, so a
+future validity hole cannot substitute a padded index for a selected block.
 
 The existing fused-GDN receipt now also retains every fallback reason instead
 of only the most recent reason per layer. Its end-to-end gate subtracts the
