@@ -470,6 +470,45 @@ struct LocalWorkflowExecutorTests {
         #expect(await actuator.count == 1)
     }
 
+    @Test("a later-step ledger failure preserves earlier side-effect uncertainty")
+    func laterStepLedgerFailurePreservesPriorAction() async throws {
+        let workflow = LocalWorkflow(
+            title: "Lunch",
+            steps: [step(id: "choose", maxAttempts: 1), step(id: "review", maxAttempts: 1)]
+        )
+        let observer = ScriptedWorkflowObserver([
+            observation(revision: "menu"),
+            observation(revision: "menu"),
+            observation(revision: "selected"),
+            observation(revision: "review"),
+        ])
+        let grounder = ScriptedWorkflowGrounder(
+            payload: .click(normalizedX: 0.2, normalizedY: 0.3),
+            actionSummary: "Choose meal"
+        )
+        let actuator = RecordingWorkflowActuator()
+        let ledger = FailingWorkflowLedger(failAtAppend: 5)
+        let executor = LocalWorkflowExecutor(
+            observer: observer,
+            grounder: grounder,
+            actuator: actuator,
+            verifier: ScriptedWorkflowVerifier([.satisfied]),
+            fallbackResolver: ScriptedWorkflowFallback(),
+            approver: ScriptedWorkflowApprover([]),
+            ledger: ledger
+        )
+
+        let run = await executor.execute(workflow)
+
+        #expect(run.status == .paused(
+            stepID: "review",
+            reason: .dependencyFailure,
+            actionMayHaveOccurred: true
+        ))
+        #expect(run.nextStepIndex == 1)
+        #expect(await actuator.count == 1)
+    }
+
     @Test("the executor rejects an overlapping claim before duplicate actuation")
     func overlappingRunIsRejected() async throws {
         let workflow = LocalWorkflow(title: "Lunch", steps: [step()])

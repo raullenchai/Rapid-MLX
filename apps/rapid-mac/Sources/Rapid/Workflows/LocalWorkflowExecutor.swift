@@ -215,7 +215,7 @@ actor LocalWorkflowExecutor {
         workflow: LocalWorkflow,
         run: LocalWorkflowRun
     ) async -> StepResult {
-        var priorActionMayHaveOccurred = false
+        var priorActionMayHaveOccurred = run.nextStepIndex > 0
         do {
             // Decode is allowed to bypass ``LocalWorkflowStep``'s initializer,
             // so clamp again at the trust boundary before constructing a range.
