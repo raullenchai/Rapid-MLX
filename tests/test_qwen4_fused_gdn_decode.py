@@ -724,9 +724,14 @@ def test_precise_bf16_sigmoid_matches_mx_sigmoid_on_every_finite_bf16():
     )
     mx.eval(reference, precise, fast)
     assert _bit_mismatches(precise, reference, mx.uint16) == 0
-    # The fast form is what the beta gate shipped with; keep the evidence
-    # that it is not the same function as the stock op.
-    assert _bit_mismatches(fast, reference, mx.uint16) >= 1
+    # The fast form is what the beta gate shipped with. Whether it differs
+    # from the stock op is GPU-family dependent (metal::exp's fast path is
+    # bit-identical on the GitHub Apple runners but not on M3 Ultra), so it
+    # is reported, not asserted: the contract this test pins is that the
+    # PRECISE form matches everywhere.
+    print(
+        f"fast-form bf16 mismatches vs mx.sigmoid: {_bit_mismatches(fast, reference, mx.uint16)}"
+    )
 
 
 @requires_metal
@@ -741,7 +746,11 @@ def test_precise_float_sigmoid_matches_mx_sigmoid_on_every_bf16_valued_float():
     )
     mx.eval(reference, precise, fast)
     assert _bit_mismatches(precise, reference, mx.uint32) == 0
-    assert _bit_mismatches(fast, reference, mx.uint32) >= 1
+    # See the bf16 sweep above: the fast form's mismatch count is
+    # GPU-family dependent, so it is reported rather than asserted.
+    print(
+        f"fast-form f32 mismatches vs mx.sigmoid: {_bit_mismatches(fast, reference, mx.uint32)}"
+    )
 
 
 @requires_metal
