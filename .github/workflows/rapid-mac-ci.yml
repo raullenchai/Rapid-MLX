@@ -578,6 +578,12 @@ jobs:
         env:
           RAPID_GUI_GOLDEN_OUT: ${{ runner.temp }}/golden/dictation
 
+      - name: 'Golden flow: dictation-rc2-upgrade'
+        continue-on-error: true
+        run: ./scripts/gui-golden-flows.sh --flow dictation-rc2-upgrade
+        env:
+          RAPID_GUI_GOLDEN_OUT: ${{ runner.temp }}/golden/dictation-rc2-upgrade
+
       - name: 'Golden flow: settings-mtp'
         continue-on-error: true
         run: ./scripts/gui-golden-flows.sh --flow settings-mtp

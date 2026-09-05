@@ -21,10 +21,10 @@ SWIFT_TESTS = ROOT / "apps/rapid-mac/Tests/RapidTests"
 # `chat-depth` requires all five turns to be simultaneously realised in AX.
 # The hosted runner's 1024x681 app window virtualises the oldest messages, so
 # that assertion is valid on larger local displays but false by construction in
-# CI. The rc2 state-upgrade journey was added during the release window and is
-# verified locally on Studio; hosted dictation-shard gating is tracked in
-# #2365. Keep both exceptions exact: any additional omission is accidental.
-CI_EXCLUSIONS = {"chat-depth", "dictation-rc2-upgrade"}
+# CI. This is the one explicit exception; keep it exact: any additional
+# omission is accidental. The rc2 state-upgrade journey used to be local-only
+# but was gated into the hosted audio shard by #2365.
+CI_EXCLUSIONS = {"chat-depth"}
 
 
 def harness_flows() -> set[str]:

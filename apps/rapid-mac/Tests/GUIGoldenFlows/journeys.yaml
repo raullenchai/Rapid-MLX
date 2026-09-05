@@ -238,7 +238,7 @@ journeys:
     group: audio
     risk: high
     driver: ax
-    ci_tier: local
+    ci_tier: pr
     fixtures: [fake-sidecar, audio-models, isolated-home]
     source_paths: [apps/rapid-mac/Sources/Rapid/Dictation/, apps/rapid-mac/Sources/Rapid/Audio/, apps/rapid-mac/Sources/Rapid/Server/SessionModelRestore.swift, apps/rapid-mac/Sources/Rapid/UI/ContentView.swift]
     owns_baseline: false
