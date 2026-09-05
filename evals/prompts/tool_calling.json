@@ -751,6 +751,40 @@
       "18°C",
       "62%"
     ],
+    "expected_facts": [
+      {
+        "type": "string",
+        "key": "condition",
+        "value": "Partly cloudy",
+        "aliases": [
+          "partly cloudy",
+          "partly-cloudy",
+          "partly cloudy skies",
+          "partly cloudy conditions",
+          "partly cloudy weather"
+        ]
+      },
+      {
+        "type": "number",
+        "key": "temperature",
+        "value": 18,
+        "unit": "c",
+        "tolerance": 1,
+        "aliases": [
+          "temperature"
+        ]
+      },
+      {
+        "type": "relation",
+        "key": "humidity",
+        "value": 62,
+        "unit": "%",
+        "tolerance": 2,
+        "aliases": [
+          "humidity"
+        ]
+      }
+    ],
     "first_call_stream": false,
     "forbid_tools": [
       "web_search"
