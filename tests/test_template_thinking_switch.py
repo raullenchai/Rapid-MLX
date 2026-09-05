@@ -233,6 +233,13 @@ class TestTemplateThinkingSwitch:
             "{%- macro never() %}{% if false %}{{ caller() }}{% endif %}ok{% endmacro %}"
             "{{ reasoning | default('unset') }}"
             "{% call(x=('a' if reasoning else 'b')) never() %}{{ x }}{% endcall %}",
+            # every actual arm establishes a local before the later branch;
+            # an ``elif`` must not create an imaginary unbound fallthrough
+            "{{ reasoning | default('unset') }}"
+            "{% if x %}{% set reasoning=true %}"
+            "{% elif y %}{% set reasoning=false %}"
+            "{% else %}{% set reasoning=true %}{% endif %}"
+            "{% if reasoning %}on{% else %}off{% endif %}",
             # branched on a loop variable of that name
             "{%- for reasoning in messages %}{% if reasoning %}x{% endif %}{%- endfor %}",
         ],
@@ -367,6 +374,19 @@ class TestOtherTemplatesUnaffected:
         prompt = apply_chat_template(tok, MESSAGES, enable_thinking=False)
         assert "reasoning" not in tok.received_kwargs
         assert prompt == "unsetok"
+
+    def test_complete_elif_chain_keeps_its_local_switch(self):
+        template = (
+            "{{ reasoning | default('unset') }}"
+            "{% if x %}{% set reasoning=true %}"
+            "{% elif y %}{% set reasoning=false %}"
+            "{% else %}{% set reasoning=true %}{% endif %}"
+            "{% if reasoning %}on{% else %}off{% endif %}"
+        )
+        tok = _RenderingTokenizer(template)
+        prompt = apply_chat_template(tok, MESSAGES, enable_thinking=False)
+        assert "reasoning" not in tok.received_kwargs
+        assert prompt == "unseton"
 
     def test_enable_thinking_template_gets_no_reasoning_kwarg(self):
         tok = _RenderingTokenizer(ENABLE_THINKING_TEMPLATE)

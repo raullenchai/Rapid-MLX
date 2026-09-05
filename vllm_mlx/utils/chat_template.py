@@ -1666,9 +1666,14 @@ def _context_reads(
         _record_truthiness_test(node.test, bound, nodes, tests)
         _context_reads(node.test, bound, nodes, reads, tests)
         after = [_context_reads_all(node.body, bound, nodes, reads, tests)]
-        after.extend(
-            _context_reads(branch, bound, nodes, reads, tests) for branch in node.elif_
-        )
+        # Jinja stores each ``elif`` as an ``If`` node whose ``else_`` is
+        # empty, while the chain's real ``else`` stays on the outer node.
+        # Recursing into each branch would therefore add a fake fallthrough
+        # path and lose bindings made by every real arm of the chain.
+        for branch in node.elif_:
+            _record_truthiness_test(branch.test, bound, nodes, tests)
+            _context_reads(branch.test, bound, nodes, reads, tests)
+            after.append(_context_reads_all(branch.body, bound, nodes, reads, tests))
         after.append(_context_reads_all(node.else_, bound, nodes, reads, tests))
         return frozenset.intersection(*after)
     if isinstance(node, nodes.Macro):
