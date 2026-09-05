@@ -38,9 +38,9 @@ def _print_json(value: Any) -> None:
 def _run_model_label(run: dict[str, Any]) -> str:
     """Human label for an archived run: the primary component's repo id.
 
-    Prefers the component whose ``role`` is ``primary`` regardless of its
-    position; falls back to the first component with a source only when no
-    component is marked primary.
+    Only primary components are considered when any is present, regardless
+    of position; other components are consulted only when no component is
+    marked primary.
     """
 
     model = run.get("model")
@@ -48,10 +48,10 @@ def _run_model_label(run: dict[str, Any]) -> str:
     if not isinstance(components, list):
         return "-"
     typed = [component for component in components if isinstance(component, dict)]
-    ordered = [c for c in typed if c.get("role") == "primary"] + [
-        c for c in typed if c.get("role") != "primary"
-    ]
-    for component in ordered:
+    primary = [c for c in typed if c.get("role") == "primary"]
+    # A primary component is authoritative: if one exists but carries no
+    # usable label, never attribute the run to an auxiliary (draft) model.
+    for component in primary or typed:
         source = component.get("source")
         if isinstance(source, dict):
             repo_id = source.get("repo_id")
@@ -145,10 +145,16 @@ def benchmark_command(args) -> int:
     try:
         if action == "catalog":
             memory_gib = args.memory_gib
+            memory_source = "override"
             if memory_gib is None:
                 memory_gib = host_memory_gib()
+                memory_source = "host"
             value = benchmark_catalog(memory_gib=memory_gib)
-            value["host_memory_gib"] = memory_gib
+            # ``memory_gib`` is what the fit column was computed against;
+            # ``memory_source`` says whether that is this Mac's probed
+            # unified memory or a planning value the user typed.
+            value["memory_gib"] = memory_gib
+            value["memory_source"] = memory_source
         elif action == "plan":
             value = plan_for_alias(args.benchmark_model)
         elif action == "run":
@@ -211,8 +217,13 @@ def benchmark_command(args) -> int:
         _print_json(value)
     elif action == "catalog":
         print("Community Benchmark models (local by default)")
-        memory_gib = value.get("host_memory_gib")
-        if isinstance(memory_gib, int):
+        memory_gib = value.get("memory_gib")
+        if isinstance(memory_gib, int) and value.get("memory_source") == "override":
+            print(
+                f"Fit column assumes {memory_gib} GB (--memory-gib), "
+                "not this Mac's memory\n"
+            )
+        elif isinstance(memory_gib, int):
             print(f"This Mac: {memory_gib} GB unified memory (fit column below)\n")
         else:
             print(

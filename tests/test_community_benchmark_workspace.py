@@ -2644,7 +2644,8 @@ def test_cli_catalog_prints_focus_marker_and_run_hint(
     assert community_cli.benchmark_command(args) == 0
     out = capsys.readouterr().out
     assert "Community Benchmark models (local by default)" in out
-    assert "This Mac: 8 GB unified memory" in out
+    assert "Fit column assumes 8 GB (--memory-gib), not this Mac's memory" in out
+    assert "This Mac:" not in out
     assert "★ focus-model" in out
     assert "does not fit" in out
     assert "Run: rapid-mlx benchmark run <model>" in out
@@ -2678,7 +2679,13 @@ def test_cli_catalog_defaults_memory_to_this_mac(
     args_json = SimpleNamespace(benchmark_action="catalog", memory_gib=None, json=True)
     monkeypatch.setattr(community_cli, "host_memory_gib", lambda: 48)
     assert community_cli.benchmark_command(args_json) == 0
-    assert json.loads(capsys.readouterr().out)["host_memory_gib"] == 48
+    payload = json.loads(capsys.readouterr().out)
+    assert (payload["memory_gib"], payload["memory_source"]) == (48, "host")
+
+    args_json.memory_gib = 8
+    assert community_cli.benchmark_command(args_json) == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert (payload["memory_gib"], payload["memory_source"]) == (8, "override")
 
 
 def test_host_memory_gib_degrades_to_none_when_probe_fails(
@@ -2811,6 +2818,30 @@ def test_cli_results_prints_empty_hint_then_rows(
     out = capsys.readouterr().out
     assert "00000000-0000-4000-8000-000000000003" in out
     assert "  /models/primary" in out
+    assert "org/draft" not in out
+
+    # A primary without a usable label must not fall through to the draft.
+    rows.append(
+        {
+            "run_id": "00000000-0000-4000-8000-000000000004",
+            "workload": {"task_type": "text_generation"},
+            "outcome": {"status": "completed"},
+            "completed_at": "2026-09-01T00:00:03Z",
+            "model": {
+                "components": [
+                    {
+                        "role": "draft",
+                        "source": {"kind": "huggingface", "repo_id": "org/draft"},
+                    },
+                    {"role": "primary", "source": {"kind": "local"}},
+                ]
+            },
+        }
+    )
+    assert community_cli.benchmark_command(args) == 0
+    out = capsys.readouterr().out
+    assert "00000000-0000-4000-8000-000000000004" in out
+    assert "2026-09-01T00:00:03Z  -\n" in out
     assert "org/draft" not in out
 
 
