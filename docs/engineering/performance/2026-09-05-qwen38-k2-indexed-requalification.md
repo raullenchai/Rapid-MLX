@@ -68,8 +68,11 @@ python3.12 /private/tmp/rapid_chunked_launch.py serve "$SNAPSHOT" \
   '{"method":"mtp","num_speculative_tokens":2,"disable_auto_k":true}'
 ```
 
-K=1 used the identical command without the indexed environment variable and
-with `num_speculative_tokens` set to one. Timed requests used the repository's
+The 16K and 32K K=1 runs used the identical command without the indexed
+environment variable and with `num_speculative_tokens` set to one. The strict
+64K K=1 comparator additionally exported
+`RAPID_MLX_QSA_INDEXED_SPLITK=1`, matching the K=2 kernel environment and
+isolating speculative depth. Timed requests used the repository's
 `.orca/flash-next-eval/benchmark.py` with one requested prompt length per run.
 The service emitted `QSA indexed split-K attention enabled for narrow
 decode/verify` on the first 16K K=2 request, proving that the candidate route

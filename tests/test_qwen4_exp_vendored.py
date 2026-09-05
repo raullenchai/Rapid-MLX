@@ -1416,7 +1416,7 @@ def test_qwen4_verify_block_matches_tokenwise_forward():
 
 
 @pytest.mark.parametrize("max_k", [1, 2])
-def test_qwen4_mtp_target_verify_matches_synthetic_greedy(monkeypatch, max_k):
+def test_qwen4_mtp_target_verify_matches_forced_greedy_oracle(monkeypatch, max_k):
     import importlib
 
     import mlx.nn as nn
@@ -1435,7 +1435,23 @@ def test_qwen4_mtp_target_verify_matches_synthetic_greedy(monkeypatch, max_k):
     args.mtp_num_hidden_layers = 1
     model = Model(ModelArgs(model_type="qwen4_exp", text_config=asdict(args)))
     prompt = mx.array([1, 2, 3], dtype=mx.uint32)
-    baseline = [int(token) for token, _ in generate_step(prompt, model, max_tokens=12)]
+
+    def force_successor(tokens, logits):
+        """Give every position a unique, architecture-independent argmax."""
+        successor = (tokens[-1] + 1) % logits.shape[-1]
+        vocabulary = mx.arange(logits.shape[-1], dtype=successor.dtype)
+        return mx.where(vocabulary == successor, mx.zeros_like(logits), -mx.inf)
+
+    baseline = [
+        int(token)
+        for token, _ in generate_step(
+            prompt,
+            model,
+            max_tokens=12,
+            logits_processors=[force_successor],
+        )
+    ]
+    assert baseline == list(range(4, 16))
 
     monkeypatch.setattr(nn, "quantize", lambda *_args, **_kwargs: None)
     assert dispatch_mtp_inject(model, "qwen4_exp", allow_random_init=True) is True
@@ -1452,19 +1468,18 @@ def test_qwen4_mtp_target_verify_matches_synthetic_greedy(monkeypatch, max_k):
                     max_k=max_k,
                     disable_auto_k=True,
                     accept_counter=counter,
+                    logits_processors=[force_successor],
                 )
             ]
         )
         assert counter.snapshot().attempts > 0
 
-    # K=1 retains the fixture's serial-token identity contract. Wider block
-    # verification is deterministic, but can select a different near-tied
-    # argmax because Metal uses a different accumulation shape; independent
-    # block-vs-token and rollback tests cover the state-transition contract.
+    # The successor oracle removes architecture-dependent near-tied logits, so
+    # both speculative depths must retain tokenwise greedy identity as well as
+    # repeatability. Independent block-vs-token and rollback tests cover the
+    # underlying state transitions with unmodified model logits.
     assert runs[0] == runs[1]
-    assert len(runs[0]) == 12
-    if max_k == 1:
-        assert runs[0] == baseline
+    assert runs[0] == baseline
 
 
 def test_qwen4_native_mtp_dispatch_attaches_synthetic_head(monkeypatch):
