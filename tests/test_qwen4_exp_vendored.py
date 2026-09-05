@@ -850,6 +850,40 @@ def test_qwen4_state_cache_implements_cache_rollback_contract():
     np.testing.assert_array_equal(np.array(recurrent.cache[1]), np.array(b1[1]))
 
 
+def test_qwen4_state_cache_zero_trim_is_side_effect_free():
+    """``trim(0)`` must not discard the verify undo record.
+
+    A degenerate ``n=0`` trim previously passed ``can_trim`` and invoked
+    ``restore_rollback``, rewriting ``cache`` to the last snapshot boundary and
+    clearing ``rollback_state`` (throwing away the verify window) even though
+    zero tokens were trimmed. ``can_trim(0)`` must be ``False`` so ``trim(0)``
+    is a no-op that leaves cache and undo record untouched.
+    """
+    from vllm_mlx.cache_rollback import can_trim, trim_all
+
+    recurrent = Qwen4ExpStateCache(size=2)
+    b0 = [
+        mx.array([[1.0, 2.0]], dtype=mx.float32),
+        mx.array([[3.0, 4.0]], dtype=mx.float32),
+    ]
+    b1 = [
+        mx.array([[5.0, 6.0]], dtype=mx.float32),
+        mx.array([[7.0, 8.0]], dtype=mx.float32),
+    ]
+    recurrent.cache = [b1[0], b1[1]]
+    recurrent.record_slot_snapshots(0, [b0[0], b1[0]])
+    recurrent.record_slot_snapshots(1, [b0[1], b1[1]], finalize=True)
+
+    assert not can_trim(recurrent, 0)
+    # trim_all short-circuits n<=0 (returns True) without invoking any trim;
+    # state must be left completely intact.
+    assert trim_all([recurrent], 0)
+    assert recurrent.rollback_state is not None
+    assert len(recurrent.rollback_state) == 2
+    np.testing.assert_array_equal(np.array(recurrent.cache[0]), np.array(b1[0]))
+    np.testing.assert_array_equal(np.array(recurrent.cache[1]), np.array(b1[1]))
+
+
 def test_qwen4_state_cache_rollback_full_rejection():
     """Full rejection restores the base (committed-prefix) boundary losslessly."""
     from vllm_mlx.cache_rollback import trim_all

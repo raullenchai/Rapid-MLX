@@ -116,7 +116,11 @@ class Qwen4ExpStateCache(ArraysCache):
         return self.rollback_state is not None
 
     def can_trim(self, n: int) -> bool:
-        if n < 0:
+        # ``n <= 0`` is degenerate: ``trim(0)`` would invoke ``restore_rollback``
+        # and discard the undo record without dropping any tokens, breaking the
+        # verify window. Mirror QSA's leaf contract: only a positive trim may
+        # roll back.
+        if n <= 0:
             return False
         if self.rollback_state is None:
             return False
