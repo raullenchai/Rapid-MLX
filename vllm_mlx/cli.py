@@ -1298,6 +1298,15 @@ def _apply_mtp_cli_model_type_reconciliation(
     except ValueError as exc:
         print(f"error: {exc}", file=sys.stderr)
         sys.exit(2)
+    if (
+        _eligibility_model_type == "qwen4_exp"
+        and explicit_depth
+        and scheduler_config.mtp_max_k == 2
+    ):
+        # K=2 is qualified with compact indexed-QSA verification. Make the
+        # public opt-in self-contained while preserving an explicit operator
+        # override for fallback/debug comparisons.
+        os.environ.setdefault("RAPID_MLX_QSA_INDEXED_SPLITK", "1")
 
 
 def _resolve_mtp_depth_for_model(
@@ -1312,8 +1321,8 @@ def _resolve_mtp_depth_for_model(
         return requested
     if not explicit:
         # Keep the production default at the previously qualified K=1.
-        # K=2 is an explicit-only capability while its end-to-end indexed-QSA
-        # performance is being qualified on the released checkpoint.
+        # K=2 is an explicit-only capability because its indexed-QSA speedup
+        # is qualified at ultra-long context, not across shorter prompts.
         return 1
     if requested not in {1, 2}:
         raise ValueError(

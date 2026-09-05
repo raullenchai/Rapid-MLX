@@ -19,8 +19,11 @@ PR: #3087 (Draft)
 - Focused MTP, Qwen4, indexed-QSA, and CLI suites pass; changed Python files
   pass Ruff.
 - A fresh-process isolated A/B collected three accepted samples per arm. K=2
-  was -7.1% at 16K, -0.7% at 32K, and +16.0% at 64K. Every 64K K=2 sample beat
+  was -7.1% at 16K, -0.7% at 32K, and +15.4% at 64K. Every 64K K=2 sample beat
   every K=1 sample.
+- The final 64K K=1 comparator also enabled indexed QSA, so the result isolates
+  speculative depth from the M=1 kernel toggle. Explicit K=2 now activates the
+  qualified kernel automatically unless the operator explicitly opts out.
 - The old gathered-K/V K=2 long-context collapse was not reproduced. The value
   is specifically an ultra-long-context crossover, not a universal speedup.
 - The K=2 real-model release battery retained the established K=1 vector at

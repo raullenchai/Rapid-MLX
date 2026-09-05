@@ -29,6 +29,7 @@ Deliberately out of scope (deferred to PR-B / PR-C):
 
 from __future__ import annotations
 
+import os
 from types import SimpleNamespace
 
 import pytest
@@ -4100,10 +4101,11 @@ def test_apply_mtp_cli_reconciliation_caps_qwen4_default_depth():
     assert sc.mtp_max_k == 1
 
 
-def test_apply_mtp_cli_reconciliation_accepts_explicit_qwen4_k2():
+def test_apply_mtp_cli_reconciliation_accepts_explicit_qwen4_k2(monkeypatch):
     from vllm_mlx.cli import _apply_mtp_cli_model_type_reconciliation
     from vllm_mlx.scheduler import SchedulerConfig
 
+    monkeypatch.delenv("RAPID_MLX_QSA_INDEXED_SPLITK", raising=False)
     sc = SchedulerConfig(spec_decode="mtp", mtp_max_k=2)
     _apply_mtp_cli_model_type_reconciliation(
         scheduler_config=sc,
@@ -4117,6 +4119,30 @@ def test_apply_mtp_cli_reconciliation_accepts_explicit_qwen4_k2():
     )
 
     assert sc.mtp_max_k == 2
+    assert os.environ["RAPID_MLX_QSA_INDEXED_SPLITK"] == "1"
+
+
+def test_apply_mtp_cli_reconciliation_preserves_qwen4_k2_kernel_opt_out(
+    monkeypatch,
+):
+    from vllm_mlx.cli import _apply_mtp_cli_model_type_reconciliation
+    from vllm_mlx.scheduler import SchedulerConfig
+
+    monkeypatch.setenv("RAPID_MLX_QSA_INDEXED_SPLITK", "0")
+    sc = SchedulerConfig(spec_decode="mtp", mtp_max_k=2)
+    _apply_mtp_cli_model_type_reconciliation(
+        scheduler_config=sc,
+        hf_cfg_eligibility={
+            "model_type": "qwen4_exp",
+            "mtp_num_hidden_layers": 1,
+        },
+        logger=None,
+        requested_depth=2,
+        explicit_depth=True,
+    )
+
+    assert sc.mtp_max_k == 2
+    assert os.environ["RAPID_MLX_QSA_INDEXED_SPLITK"] == "0"
 
 
 def test_apply_mtp_cli_reconciliation_rejects_explicit_qwen4_k3(capsys):

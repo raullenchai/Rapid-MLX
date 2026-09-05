@@ -14,7 +14,7 @@ Branch: `vector/qwen38-mtp-k2-indexed`, stacked on the indexed split-K spike
 
 Indexed M=3 QSA changes the conclusion of the 2026-08-28 K=2 no-go, but only at
 ultra-long context. A fully isolated same-code A/B found K=2 7.1% slower at 16K,
-within 0.7% of K=1 at 32K, and 16.0% faster at 64K. The old gathered-QSA
+within 0.7% of K=1 at 32K, and 15.4% faster at 64K. The old gathered-QSA
 long-context collapse is gone; the benefit has a measured crossover rather than
 being universal.
 
@@ -59,7 +59,7 @@ same local-only launcher: call mlx-lm with `lazy=True`, then materialize eight
 parameter leaves per `mx.eval`. This changes only load synchronization; it does
 not set MLX command-buffer environment overrides or alter inference scheduling.
 
-K=2 additionally used:
+The measured K=2 process explicitly set the kernel environment variable:
 
 ```bash
 export RAPID_MLX_QSA_INDEXED_SPLITK=1
@@ -76,6 +76,11 @@ The service emitted `QSA indexed split-K attention enabled for narrow
 decode/verify` on the first 16K K=2 request, proving that the candidate route
 was constructed rather than silently falling back.
 
+Adversarial review identified that a public explicit K=2 request must not
+silently depend on an undocumented environment variable. The final CLI uses
+`setdefault` to activate indexed QSA for explicit Qwen3.8 K=2 while preserving
+an operator's explicit `RAPID_MLX_QSA_INDEXED_SPLITK=0` fallback/debug override.
+
 Because another validation supervisor repeatedly started a 38 GB model worker
 despite the reserved host, every overlapping 64K K=1 replacement was excluded.
 The detached supervisor and its launcher were stopped before the accepted
@@ -89,13 +94,14 @@ process. This is contamination filtering, not performance outlier trimming.
 | ---: | --- | ---: | --- | ---: | ---: |
 | 16K | 35.38, 35.34, 35.40 | 35.38 tok/s | 34.45, 31.54, 32.88 | 32.88 tok/s | -7.1% |
 | 32K | 33.31, 33.21, 33.14 | 33.21 tok/s | 32.97, 33.03, 32.57 | 32.97 tok/s | -0.7% |
-| 64K | 28.98, 29.16, 29.06 | 29.06 tok/s | 33.82, 33.72, 33.28 | 33.72 tok/s | +16.0% |
+| 64K | 28.89, 29.45, 29.23 | 29.23 tok/s | 33.82, 33.72, 33.28 | 33.72 tok/s | +15.4% |
 
 The strict comparison reverses the provisional one-sample 32K signal recorded
 earlier in the day. K=2 is neutral within noise at 32K and a regression at 16K;
 its material value begins somewhere between 32K and 64K. At 64K every K=2
 sample beats every K=1 sample, with a 4.12 tok/s gap even between the slowest
-K=2 and fastest K=1 runs.
+K=2 and fastest K=1 runs. The final 64K K=1 comparator also had indexed QSA
+enabled, removing the M=1 kernel toggle as a confounder.
 
 The 32K K=2 median is still 1.84x the old 17.93 tok/s gathered-QSA result,
 although that historical comparison crosses Rapid and MLX revisions and is
