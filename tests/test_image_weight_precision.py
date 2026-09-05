@@ -232,18 +232,40 @@ def test_cold_prefetch_keeps_pinned_bf16_revision_through_every_layer(monkeypatc
     }
 
 
-def test_pinned_image_cache_does_not_accept_complete_moving_main(monkeypatch):
+def test_pinned_image_cache_does_not_accept_complete_moving_main(monkeypatch, tmp_path):
     """A cached main snapshot cannot hide a missing pinned image revision."""
 
+    import json
+
+    import huggingface_hub.constants
+
+    from vllm_mlx import _download_gate as download_gate
     from vllm_mlx import cli
 
-    monkeypatch.setattr(
-        "vllm_mlx._download_gate.is_repo_cached",
-        lambda _repo: True,
-    )
-    monkeypatch.setattr(
-        "vllm_mlx._download_gate._snapshot_is_complete_mflux_model",
-        lambda _repo: False,
-    )
+    main_revision = "b" * 40
+    assert main_revision != IMAGE_MODEL_REVISIONS[FLUX2_KLEIN_BF16_REPO]
+    repo_root = tmp_path / f"models--{FLUX2_KLEIN_BF16_REPO.replace('/', '--')}"
+    main_snapshot = repo_root / "snapshots" / main_revision
+    main_snapshot.mkdir(parents=True)
+    (main_snapshot / "model.safetensors").write_bytes(b"complete main weights")
+    tokenizer = main_snapshot / "tokenizer"
+    tokenizer.mkdir()
+    (tokenizer / "tokenizer.json").write_text("{}")
+    for component in ("transformer", "text_encoder", "vae"):
+        component_dir = main_snapshot / component
+        component_dir.mkdir()
+        shard = "model-00001-of-00001.safetensors"
+        (component_dir / shard).write_bytes(b"complete component weights")
+        (component_dir / "model.safetensors.index.json").write_text(
+            json.dumps({"weight_map": {"tensor": shard}})
+        )
+    refs = repo_root / "refs"
+    refs.mkdir()
+    (refs / "main").write_text(main_revision)
+    monkeypatch.setattr(huggingface_hub.constants, "HF_HUB_CACHE", str(tmp_path))
 
+    assert download_gate.is_repo_cached(FLUX2_KLEIN_BF16_REPO) is True
+    assert (
+        download_gate._snapshot_is_complete_mflux_model(FLUX2_KLEIN_BF16_REPO) is False
+    )
     assert cli._cache_runnability(FLUX2_KLEIN_BF16_REPO) is False
