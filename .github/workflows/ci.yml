@@ -404,7 +404,7 @@ jobs:
       - name: Install project and dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install -e ".[vision]"
+          pip install -e ".[vision,image]"
           # Test infra comes from the declared `ci-apple` extra (issue #2489).
           pip install -e ".[ci-apple]"
 
@@ -488,6 +488,7 @@ jobs:
             tests/test_mllm_hybrid_probe.py \
             tests/test_hidream_o1_alias.py \
             tests/test_sdxl_alias.py \
+            tests/test_bonsai_image_alias.py \
             -v --tb=short \
             -m "not slow" \
             -k "not Integration" \

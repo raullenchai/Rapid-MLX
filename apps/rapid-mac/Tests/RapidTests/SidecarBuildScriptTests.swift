@@ -127,6 +127,8 @@ struct SidecarBuildScriptTests {
                 "The Qwen Image import path must defer PiD's optional torch checkpoint converter.")
         #expect(script.contains(#"importlib.import_module("mflux.models.qwen.variants.txt2img.qwen_image")"#),
                 "The bundle build must prove qwen-image itself imports without torch.")
+        #expect(script.contains(#"importlib.import_module("vllm_mlx.image.bonsai_runtime")"#),
+                "The bundle build must prove the Desktop-advertised Bonsai adapter imports without torch.")
         #expect(script.contains("SIDECAR_IMAGE_SMOKE_MODEL"),
                 "Release-candidate builds must opt into a real image-generation model.")
         #expect(script.contains("$REPO_ROOT/scripts/smoke-sidecar-image.py"),

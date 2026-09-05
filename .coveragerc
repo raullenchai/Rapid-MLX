@@ -15,3 +15,5 @@ omit =
     vllm_mlx/image/sdxl_runtime/quantization.py
     vllm_mlx/image/sdxl_runtime/schedulers/*
     vllm_mlx/image/sdxl_runtime/utils.py
+    # Exact third-party numerical core; Rapid-owned adapter remains covered.
+    vllm_mlx/image/bonsai_runtime/_vendor/*

@@ -1366,9 +1366,40 @@ SDXL_DATA_FILES = (
     "vae/diffusion_pytorch_model.fp16.safetensors",
 )
 
+BONSAI_IMAGE_REPO = "prism-ml/bonsai-image-ternary-4B-mlx-2bit"
+BONSAI_IMAGE_REVISION = "2c24c81b934a658ba5590cf39088ba929985b4a8"
+BONSAI_IMAGE_DATA_FILES = (
+    "LICENSE",
+    "NOTICE.md",
+    "model_index.json",
+    "scheduler/scheduler_config.json",
+    "text_encoder-mlx-4bit/added_tokens.json",
+    "text_encoder-mlx-4bit/config.json",
+    "text_encoder-mlx-4bit/merges.txt",
+    "text_encoder-mlx-4bit/model.safetensors",
+    "text_encoder-mlx-4bit/model.safetensors.index.json",
+    "text_encoder-mlx-4bit/special_tokens_map.json",
+    "text_encoder-mlx-4bit/tokenizer.json",
+    "text_encoder-mlx-4bit/tokenizer_config.json",
+    "text_encoder-mlx-4bit/vocab.json",
+    "tokenizer/added_tokens.json",
+    "tokenizer/chat_template.jinja",
+    "tokenizer/merges.txt",
+    "tokenizer/special_tokens_map.json",
+    "tokenizer/tokenizer.json",
+    "tokenizer/tokenizer_config.json",
+    "tokenizer/vocab.json",
+    "transformer-packed-mflux/config.json",
+    "transformer-packed-mflux/diffusion_pytorch_model.safetensors",
+    "transformer-packed-mflux/quantization_config.json",
+    "vae/config.json",
+    "vae/diffusion_pytorch_model.safetensors",
+)
+
 IMAGE_MODEL_DATA_FILES: dict[str, tuple[str, ...]] = {
     HIDREAM_O1_REPO: HIDREAM_O1_DATA_FILES,
     SDXL_REPO: SDXL_DATA_FILES,
+    BONSAI_IMAGE_REPO: BONSAI_IMAGE_DATA_FILES,
 }
 
 IMAGE_MODEL_REVISIONS: dict[str, str] = {
@@ -1376,6 +1407,7 @@ IMAGE_MODEL_REVISIONS: dict[str, str] = {
     "mflux-community/qwen-image-mflux-q6": "c628fe4392d963557c3013c2709e6d3b67bca79d",
     HIDREAM_O1_REPO: HIDREAM_O1_REVISION,
     SDXL_REPO: SDXL_REVISION,
+    BONSAI_IMAGE_REPO: BONSAI_IMAGE_REVISION,
 }
 
 

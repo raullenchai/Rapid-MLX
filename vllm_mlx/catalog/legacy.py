@@ -33,14 +33,15 @@ def _image_operations(repo_id: str) -> list[str]:
 def _main_capabilities(profile: Any) -> dict[str, Any]:
     modality = getattr(profile, "modality", "text") or "text"
     if modality == "image-gen":
-        folded_path = profile.hf_path.casefold()
-        adapter = (
-            "rapid_mlx/hidream_o1"
-            if "hidream-o1" in folded_path
-            else "rapid_mlx/sdxl"
-            if "stable-diffusion-xl" in folded_path
-            else "mflux"
-        )
+        folded_hf_path = profile.hf_path.casefold()
+        if "hidream-o1" in folded_hf_path:
+            adapter = "rapid_mlx/hidream_o1"
+        elif "stable-diffusion-xl" in folded_hf_path:
+            adapter = "rapid_mlx/sdxl"
+        elif "bonsai-image" in folded_hf_path:
+            adapter = "rapid_mlx/bonsai_image"
+        else:
+            adapter = "mflux"
         tasks, operations, adapter = (
             ["image_generation"],
             _image_operations(profile.hf_path),

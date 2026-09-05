@@ -1972,6 +1972,18 @@
     "suffix_decoding_tier": "unknown",
     "min_memory_gb": 12
   },
+  "bonsai-image-4b-2bit": {
+    "hf_path": "prism-ml/bonsai-image-ternary-4B-mlx-2bit",
+    "modality": "image-gen",
+    "tool_call_parser": null,
+    "reasoning_parser": null,
+    "is_hybrid": false,
+    "is_moe": false,
+    "supports_spec_decode": false,
+    "supports_dflash": false,
+    "suffix_decoding_tier": "unknown",
+    "min_memory_gb": 12
+  },
   "z-image-turbo": {
     "hf_path": "filipstrand/Z-Image-Turbo-mflux-4bit",
     "modality": "image-gen",

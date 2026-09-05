@@ -586,6 +586,10 @@ vllm_mlx = [
     # Vendored SDXL MLX runtime attribution must ship beside the CC0 source.
     "image/sdxl_runtime/LICENSE",
     "image/sdxl_runtime/NOTICE",
+    # Vendored Bonsai low-bit numerical core attribution must ship with every
+    # wheel and Desktop sidecar that contains the adapted MIT source.
+    "image/bonsai_runtime/LICENSE",
+    "image/bonsai_runtime/NOTICE",
 ]
 videox_fun_mlx = ["LICENSE", "NOTICE"]
 
@@ -614,6 +618,9 @@ exclude = [
     # Vendored Stability AI MLX Stable Audio 3 (models + scripts). Keep
     # formatting identical to the upstream source so future syncs stay clean.
     "vllm_mlx/audio/sa3/**/*.py",
+    # Vendored Bonsai low-bit FLUX.2 numerical core. The Rapid-owned adapter
+    # in runtime.py remains under the normal formatter.
+    "vllm_mlx/image/bonsai_runtime/_vendor/**/*.py",
     # Vendored CogVideoX-Fun MLX runtime. Keep iso-upstream.
     "videox_fun_mlx/**/*.py",
 ]
@@ -672,6 +679,9 @@ ignore = [
 # upstream-shaped model, converter, scheduler, and pipeline files stay syncable.
 "vllm_mlx/image/sdxl_runtime/{caching,configuration,hub,modeling,quantization,utils}.py" = ["UP", "B", "SIM", "N", "F", "I", "E", "W"]
 "vllm_mlx/image/sdxl_runtime/{converters,models,pipelines,schedulers}/**/*.py" = ["UP", "B", "SIM", "N", "F", "I", "E", "W"]
+# Adapted verbatim from the pinned low-bit runtime. Keep exceptions confined
+# to _vendor; the checkpoint validation and product adapter stay strict.
+"vllm_mlx/image/bonsai_runtime/_vendor/*.py" = ["UP", "B", "SIM", "N", "F", "I", "E", "W"]
 # Tensor-shape parameter names (B, H, N, D) follow ML literature
 # convention; N803 lowercase rule is incompatible.
 "scripts/bench_attention.py" = ["N803"]
@@ -690,6 +700,12 @@ python_version = "3.10"
 warn_return_any = true
 warn_unused_configs = true
 ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+# Exact third-party numerical core; Rapid-owned runtime.py remains under the
+# repository-wide shrink-only error budget.
+module = "vllm_mlx.image.bonsai_runtime._vendor.*"
+ignore_errors = true
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
