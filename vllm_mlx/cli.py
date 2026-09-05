@@ -2795,6 +2795,60 @@ def _resolve_hybrid_cache_entries(
     return explicit_value
 
 
+def _legacy_prefix_cache_dropped_flags(args, argv: list[str]) -> list[str]:
+    """Return warnings for cache settings the legacy prefix cache does not apply.
+
+    Two serve flags configure the prefix-cache backend through
+    ``MemoryAwarePrefixCache``. The legacy branch of ``Scheduler.__init__``
+    builds a bare ``PrefixCacheManager(model, max_entries)`` that applies
+    neither:
+
+    * ``--hybrid-cache-entries`` bounds the live-stored, evictable
+      non-trimmable (recurrent-state) entries the memory-aware cache keeps.
+      The entry-count cache keeps such entries under the global
+      ``--prefix-cache-size`` instead, so a typed quota is silently replaced
+      by that limit. The value is not dead: the batched engine still reads it
+      as the message-boundary snapshot signal, which is why only an
+      explicitly typed request is reported and the auto-derived hybrid
+      default is left alone.
+    * ``--prefix-cache-index`` selects the memory-aware cache's lookup index
+      (``RadixPrefixIndex`` for ``radix``). The entry-count cache always uses
+      its own token trie and never constructs that index. The flag defaults
+      to ``radix``, so only a typed value is a dropped expectation.
+
+    Returns one human-readable line per dropped flag; empty when the legacy
+    branch is not taken (memory-aware or paged cache, or prefix cache off).
+    """
+    if not getattr(args, "no_memory_aware_cache", False):
+        return []
+    if getattr(args, "use_paged_cache", False):
+        return []
+    enable_prefix_cache = getattr(args, "enable_prefix_cache", False) and not getattr(
+        args, "disable_prefix_cache", False
+    )
+    if not enable_prefix_cache:
+        return []
+
+    def _explicit(flag: str) -> bool:
+        return flag in argv or any(a.startswith(f"{flag}=") for a in argv)
+
+    dropped: list[str] = []
+    hybrid_entries = int(getattr(args, "hybrid_cache_entries", 0) or 0)
+    if hybrid_entries > 0 and _explicit("--hybrid-cache-entries"):
+        dropped.append(
+            f"--hybrid-cache-entries={hybrid_entries} is a memory-aware cache "
+            "quota; the legacy entry-count cache keeps hybrid entries under "
+            f"--prefix-cache-size={getattr(args, 'prefix_cache_size', None)} instead"
+        )
+    if _explicit("--prefix-cache-index"):
+        dropped.append(
+            f"--prefix-cache-index={getattr(args, 'prefix_cache_index', None)} is not "
+            "read by the legacy entry-count cache, which always uses its own token "
+            "trie (RadixPrefixIndex is built only for the memory-aware cache)"
+        )
+    return dropped
+
+
 def _config_declares_sliding_window(config: dict | None) -> bool:
     """True if the checkpoint config declares sliding-window (local) attention.
 
@@ -4375,6 +4429,8 @@ def serve_command(args):
         model_name=getattr(args, "_original_alias", None) or args.model,
         model_config=auto_config,
     )
+    for _dropped_flag in _legacy_prefix_cache_dropped_flags(args, sys.argv):
+        print(f"  Warning: with --no-memory-aware-cache, {_dropped_flag}")
     _prefill_user_set_explicit = "--prefill-step-size" in sys.argv or any(
         a.startswith("--prefill-step-size=") for a in sys.argv
     )
