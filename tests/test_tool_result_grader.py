@@ -300,7 +300,7 @@ class TestFailures:
 
 # --- Regressions from pr_validate codex_review (#2347) ----------------------
 class TestCodexRegressionFixes:
-    """Lock in fixes for the 15 blocker findings from pr_validate codex_review."""
+    """Lock in fixes for the 20 blocker findings from pr_validate codex_review."""
 
     def test_incompatible_explicit_unit_does_not_satisfy_number(self, g):
         # An explicitly '%'-qualified value must never satisfy a °C fact even
@@ -442,6 +442,57 @@ class TestCodexRegressionFixes:
         assert rep.facts[0].status == "contradicted"
         assert rep.overall is False
 
+    def test_standalone_known_unit_suffix_rejected(self, g):
+        # "55 mph" immediately after the humidity anchor must be recognized as a
+        # unit-qualified (unmapped) value, not leak in as a bare 55.
+        rep = _grade(
+            g,
+            [
+                {
+                    "type": "relation",
+                    "key": "humidity",
+                    "value": 55,
+                    "unit": "%",
+                    "tolerance": 1,
+                    "aliases": ["humidity"],
+                }
+            ],
+            "humidity is 55 mph.",
+        )
+        assert rep.facts[0].status == "missing"
+
+    def test_relation_conflicting_values_contradict(self, g):
+        rep = _grade(g, [HUMIDITY], "humidity is 55% and 20%.")
+        assert rep.facts[0].status == "contradicted"
+        assert rep.overall is False
+        assert _grade(g, [HUMIDITY], "humidity is 55%.").overall is True
+
+    def test_metadata_bare_number_not_a_conflict(self, g):
+        # A bare number that is clearly metadata/a year ("as of 2026") must not
+        # fabricate a second measurement and falsely contradict the fact.
+        rep = _grade(g, [TEMP18C], "The temperature is 18°C as of 2026.")
+        assert rep.facts[0].status == "present"
+        assert rep.overall is True
+
+    def test_truncated_answer_fails_closed(self, g):
+        # A contradiction could hide past the answer cap; a truncated answer must
+        # not claim all-present.
+        rep = _grade(g, [SUNNY], "sunny " * 20000)
+        assert rep.truncated is True
+        assert rep.overall is False
+
+    def test_non_finite_and_bad_tolerance_rejected(self, g):
+        for bad in [
+            {"type": "number", "key": "t", "value": float("inf")},
+            {"type": "number", "key": "t", "value": 5, "tolerance": -1},
+            {"type": "number", "key": "t", "value": float("nan")},
+        ]:
+            try:
+                g.fact_from_dict(bad)
+                raise AssertionError(f"accepted bad fact: {bad!r}")
+            except ValueError:
+                pass
+
 
 # --- Tool output is DATA, not instructions ---------------------------------
 class TestInputIsDataNotInstructions:
@@ -471,9 +522,11 @@ class TestInputIsDataNotInstructions:
         huge = "sunny " * 20000  # ~100k chars
         rep = _grade(g, [SUNNY], huge)
         assert rep.truncated is True
-        # truncation still lets the leading "sunny" be seen
+        # truncation still lets the leading "sunny" be seen...
         assert rep.facts[0].coverage is True
-        assert rep.overall is True
+        # ...but overall fails CLOSED: a contradiction past the cap would be
+        # invisible to grading, so a truncated answer cannot claim all-present.
+        assert rep.overall is False
 
     def test_cap_oversized_fact_without_error(self, g):
         big_alias = "x" * 5000

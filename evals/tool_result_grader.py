@@ -45,6 +45,7 @@ Community / eval-only surface: any per-scenario ``expected_facts`` block in
 from __future__ import annotations
 
 import json
+import math
 import re
 import unicodedata
 from dataclasses import dataclass, field
@@ -386,13 +387,20 @@ def fact_from_dict(d: dict) -> Fact:
     raw_value = d["value"]
     if isinstance(raw_value, bool) or not isinstance(raw_value, (int, float)):
         raise ValueError(f"number/relation fact '{key}' requires a numeric 'value'")
+    if not math.isfinite(float(raw_value)):
+        raise ValueError(f"number/relation fact '{key}' requires a finite 'value'")
+    tolerance = float(d.get("tolerance", 0.0))
+    if not math.isfinite(tolerance) or tolerance < 0:
+        raise ValueError(
+            f"number/relation fact '{key}' requires a finite, non-negative tolerance"
+        )
     if ftype == "number":
         unit = _resolve_unit(str(d.get("unit", _C))) or _C
         return NumberFact(
             key=str(key),
             value=float(raw_value),
             unit=unit,
-            tolerance=float(d.get("tolerance", 0.0)),
+            tolerance=tolerance,
             aliases=tuple(str(a) for a in d.get("aliases", [])),
         )
     unit = _resolve_unit(str(d.get("unit", _PERCENT))) or _PERCENT
@@ -400,7 +408,7 @@ def fact_from_dict(d: dict) -> Fact:
         key=str(key),
         value=float(raw_value),
         unit=unit,
-        tolerance=float(d.get("tolerance", 0.0)),
+        tolerance=tolerance,
         aliases=tuple(str(a) for a in d.get("aliases", [])),
     )
 
@@ -448,9 +456,14 @@ def _numbered_in(text: str) -> list[tuple[float, str | None, int]]:
 # Used to reject unit-qualified numerics we don't model, so they don't leak in as
 # bare numbers. Conservative: slash-form compounds (km/h, m/s) plus a small list
 # of common physical units; ordinary words ("outside") are not included.
+# Multi-letter/compound unit tokens are matched STANDALONE (no required base
+# prefix), so "55 mph" / "8 km/h" are recognized. Single-letter units (m, g, l,
+# h, s) are deliberately EXCLUDED from the standalone list -- they would
+# over-reject ordinary prose ("5 m" could be "5 minutes", "8 l" a digit+letter).
 _ADJACENT_UNIT_RE = re.compile(
-    r"\s{0,3}(?:[a-z]{1,5}(?:/[a-z]{1,5})+|[a-z]{1,4}(?:mph|kph|kmh|knots|nmi|"
-    r"sq|in|ft|yd|mi|px|em|rem|pt|mm|cm|m|km|kg|g|l|ml|oz|lb|bar|mbar|hpa|pa))"
+    r"\s{0,3}(?:(?:[a-z]{1,5}(?:/[a-z]{1,5})+)"
+    r"|(?:mph|kph|kmh|knots|nmi|sq|sqm|in|ft|yd|mi|px|em|rem|pt|"
+    r"mm|cm|km|kg|ml|oz|lb|bar|mbar|hpa|pa|sec|min|hr))"
 )
 
 
@@ -601,15 +614,17 @@ def _number_coverage(fact: NumberFact, norm_answer: str) -> tuple[bool, str]:
     return False, f"no value within ±{fact.tolerance} {fact.unit} of {fact.value} found"
 
 
-def _number_conflict(fact: NumberFact, norm_answer: str) -> bool:
-    """True if the answer affirmatively reports a SECOND, incompatible value for
-    the same number fact (e.g. "temperature is 18°C and 30°C" against an 18°C
-    fact).
+def _unit_fact_conflict(fact: Fact, norm_answer: str) -> bool:
+    """True if the answer affirmatively reports a SECOND, incompatible VALUE for
+    the same anchored fact (e.g. "temperature is 18°C and 30°C" against an 18°C
+    fact, or "humidity 62% and 20%" against a 62% fact).
 
-    Only candidates that sit within a fact anchor's salient window count, so an
-    unrelated same-unit reading elsewhere ("oven is 30°C") is not treated as a
-    contradiction. Distinct values beyond tolerance in the same anchored context
-    mean the model's reply is incoherent and must flag for review.
+    Only explicitly UNIT-QUALIFIED candidates that sit within a fact anchor's
+    salient window count. Bare numbers are deliberately excluded: a bare "2026"
+    next to an anchor is metadata/a year, not a second measurement, so it must
+    not fabricate a contradiction. Distinct unit-qualified values beyond
+    tolerance in the same anchored context mean the model's reply is incoherent
+    and must flag for review.
     """
     anchors = fact.anchor_terms
     if not anchors or not any(_term_matches(a, norm_answer) for a in anchors):
@@ -617,14 +632,15 @@ def _number_conflict(fact: NumberFact, norm_answer: str) -> bool:
     key_spans = _salient_spans(norm_answer, anchors)
     seen: set[float] = set()
     for value, unit, start in _numbered_in(norm_answer):
+        if unit is None:  # bare numbers are ambiguous metadata -- never a 2nd value
+            continue
         if not any(s <= start < e for s, e in key_spans):
             continue
-        converted = _to_unit(value, unit if unit is not None else fact.unit, fact.unit)
+        converted = _to_unit(value, unit, fact.unit)
         if converted is None:
             continue
         rounded = round(converted, 9)
-        different = all(abs(rounded - s) > fact.tolerance + 1e-9 for s in seen)
-        if different:
+        if all(abs(rounded - s) > fact.tolerance + 1e-9 for s in seen):
             seen.add(rounded)
             if len(seen) >= 2:
                 return True
@@ -745,26 +761,27 @@ def _grade_fact(fact: Fact, norm_answer: str) -> FactEvidence:
         spans = _salient_spans(norm_answer, fact.contradiction_terms)
         contradicted = _has_deny_marker(norm_answer, spans)
         kind = "string"
-    elif isinstance(fact, NumberFact):
-        coverage, cov_ev = _number_coverage(fact, norm_answer)
+    elif isinstance(fact, NumberFact | RelationFact):
         spans = _salient_spans(norm_answer, fact.anchor_terms)
-        # ALSO contradict on a second incompatible value reported for the same
-        # anchored fact (e.g. "18°C and 30°C" against an 18°C fact).
-        contradicted = _has_deny_marker(norm_answer, spans) or _number_conflict(
-            fact, norm_answer
-        )
-        kind = "number"
-    elif isinstance(fact, RelationFact):
-        coverage, cov_ev = _relation_coverage(fact, norm_answer)
-        spans = _salient_spans(norm_answer, fact.anchor_terms)
-        contradicted = _has_deny_marker(norm_answer, spans)
-        kind = "relation"
+        if isinstance(fact, NumberFact):
+            coverage, cov_ev = _number_coverage(fact, norm_answer)
+            kind = "number"
+        else:
+            coverage, cov_ev = _relation_coverage(fact, norm_answer)
+            kind = "relation"
+        # ALSO contradict on a second incompatible unit-qualified value reported
+        # for the same anchored fact (e.g. "18°C and 30°C" vs an 18°C fact, or
+        # "humidity 62% and 20%" vs a 62% fact).
+        value_conflict = _unit_fact_conflict(fact, norm_answer)
+        contradicted = _has_deny_marker(norm_answer, spans) or value_conflict
     else:  # pragma: no cover - guarded by fact_from_dict
         raise TypeError(f"unexpected fact type: {type(fact).__name__}")
 
     if contradicted:
         status = "contradicted"
-        if isinstance(fact, NumberFact) and _number_conflict(fact, norm_answer):
+        if isinstance(fact, NumberFact | RelationFact) and _unit_fact_conflict(
+            fact, norm_answer
+        ):
             evidence = (
                 f"{cov_ev}; multiple incompatible values reported near "
                 f"{fact.key or fact.value!r}"
@@ -868,10 +885,12 @@ def grade_answer(
         # reported AND none negated/hedged. ``coverage`` is the INDEPENDENT
         # affirmative aggregate (all facts present), deliberately kept separate
         # from ``contradicted`` so consumers can distinguish "missing" from
-        # "contradicted" without re-deriving from the per-fact rows. An
-        # ungraded overflow (or any missing/contradicted fact) fails ``overall``
-        # -- a scenario must never pass while a required fact went unchecked.
-        overall=not missing and not contradicted,
+        # "contradicted" without re-deriving from the per-fact rows. An ungraded
+        # overflow, a truncated answer (a contradiction may lie past the cap and
+        # be invisible to grading), or any missing/contradicted fact fails
+        # ``overall`` -- a scenario must never pass while some of the evidence
+        # was not examined.
+        overall=not truncated and not missing and not contradicted,
         coverage=not missing,
         missing=missing,
         contradicted=contradicted,
