@@ -30,9 +30,18 @@
 #   FLEET_SCOPE=toolchain bash scripts/coherence_sweep.sh
 #
 # Exit codes:
-#   0 — every alias passed its blocking golden gate
+#   0 — every alias passed its blocking golden gate (and any unreached families
+#       were reported as capacity-skipped for insufficient disk, per #2206)
 #   1 — at least one alias failed
-#   2 — pre-flight refusal (port busy) or a server that never came up
+#   2 — pre-flight refusal (port busy), a server that never came up for reasons
+#       other than capacity, or a capacity-skip while
+#       COHERENCE_SWEEP_REQUIRE_ALL=1 is set
+#
+# On a disk-constrained host, a fleet family that `serve` refuses to download
+# because it would exceed free disk is reported as a "capacity-skip" instead of
+# a hard infrastructure failure, and the resident representatives are still
+# validated. Set COHERENCE_SWEEP_REQUIRE_ALL=1 to preserve the strict
+# every-family-required behaviour on fully provisioned release hosts.
 
 set -euo pipefail
 
@@ -105,6 +114,20 @@ line
 
 failed=""
 infra_failed=""
+skipped=""
+passed=""
+# Strict full-fleet mode (issue #2206 part c): when set, an unresident family
+# that is capacity-skipped for lack of disk is treated as an infrastructure
+# failure instead of a reported-but-passing skip. Release hosts provisioned
+# with enough storage keep the old every-family-required behaviour.
+case "${COHERENCE_SWEEP_REQUIRE_ALL:-0}" in
+  0) REQUIRE_ALL=0 ;;
+  1) REQUIRE_ALL=1 ;;
+  *)
+    echo "ERROR: COHERENCE_SWEEP_REQUIRE_ALL must be 0 or 1." >&2
+    exit 2
+    ;;
+esac
 for MODEL in $MODELS; do
   line
   echo "  → $MODEL"
@@ -175,9 +198,20 @@ for MODEL in $MODELS; do
     sleep 1
   done
   if [ "$up" != 1 ]; then
-    echo "ERROR: $MODEL server did not come up: $boot_failure. Last log lines:" >&2
-    tail -20 "$LOG" >&2
-    infra_failed="$infra_failed $MODEL(boot)"
+    # #2206: `serve` refuses a download that would exceed free disk with an
+    # exact, greppable line before exiting 1. On a constrained disk that is a
+    # capacity outcome, not a behavioural one — report it as a capacity-skip
+    # and keep validating the resident representatives, rather than dying the
+    # whole release gate for storage rather than correctness.
+    if grep -Fqx '  Error: Insufficient disk space for download.' "$LOG"; then
+      echo "  ⚠ $MODEL capacity-skipped: download would exceed free disk." >&2
+      tail -8 "$LOG" >&2
+      skipped="$skipped $MODEL"
+    else
+      echo "ERROR: $MODEL server did not come up: $boot_failure. Last log lines:" >&2
+      tail -20 "$LOG" >&2
+      infra_failed="$infra_failed $MODEL(boot)"
+    fi
   else
     if [ "$DISTILL" = "1" ]; then
       gate_command=("$PY" evals/coherence_gate.py --reasoning-distill)
@@ -189,6 +223,7 @@ for MODEL in $MODELS; do
     fi
     if "${gate_command[@]}"; then
       echo "  ✓ $MODEL coherent"
+      passed="$passed $MODEL"
     else
       gate_status=$?
       if [ "$gate_status" -eq 2 ]; then
@@ -208,16 +243,34 @@ for MODEL in $MODELS; do
 done
 
 line
-if [ -n "$infra_failed" ]; then
-  echo "  SWEEP INFRASTRUCTURE FAILURE —$infra_failed"
+strict_skipped=""
+if [ -n "$skipped" ] && [ "$REQUIRE_ALL" = 1 ]; then
+  strict_skipped="$skipped"
+fi
+if [ -n "$infra_failed" ] || [ -n "$strict_skipped" ] || { [ -n "$skipped" ] && [ -z "$passed" ] && [ -z "$failed" ]; }; then
+  echo "  SWEEP INFRASTRUCTURE FAILURE" >&2
+  if [ -n "$infra_failed" ]; then echo "  INFRASTRUCTURE FAILURES —$infra_failed" >&2; fi
+  if [ -n "$strict_skipped" ]; then
+    echo "  CAPACITY-SKIPPED (COHERENCE_SWEEP_REQUIRE_ALL=1) —$strict_skipped" >&2
+  elif [ -n "$skipped" ] && [ -z "$passed" ]; then
+    echo "  NO RESIDENT ALIAS VALIDATED; CAPACITY-SKIPPED —$skipped" >&2
+  elif [ -n "$skipped" ]; then
+    echo "  CAPACITY-SKIPPED —$skipped" >&2
+  fi
   if [ -n "$failed" ]; then echo "  MODEL FAILURES —$failed"; fi
   line
   exit 2
 fi
 if [ -n "$failed" ]; then
   echo "  SWEEP FAILED —$failed"
+  if [ -n "$skipped" ]; then echo "  CAPACITY-SKIPPED —$skipped"; fi
   line
   exit 1
+fi
+if [ -n "$skipped" ]; then
+  echo "  SWEEP PASSED — all resident aliases coherent; $skipped capacity-skipped (insufficient disk)"
+  line
+  exit 0
 fi
 echo "  SWEEP PASSED — all aliases coherent"
 line
