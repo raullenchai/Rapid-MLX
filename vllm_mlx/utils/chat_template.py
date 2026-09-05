@@ -2198,6 +2198,12 @@ def apply_chat_template(
     if tools:
         template_kwargs["tools"] = tools
 
+    supplied_template_kwargs = chat_template_kwargs or {}
+    supplied_effort = supplied_template_kwargs.get("reasoning_effort")
+    supplied_effort_is_off = isinstance(supplied_effort, str) and (
+        supplied_effort.strip().lower() == "none"
+    )
+
     # Pass through client-supplied ``chat_template_kwargs`` keys (e.g.
     # ``reasoning_effort`` for Qwen3.8) into the template render. Server-
     # controlled keys (``tokenize``, ``add_generation_prompt``,
@@ -2206,7 +2212,7 @@ def apply_chat_template(
     # on templates that do not accept them; the error-driven fallback
     # below (and the ``reasoning_effort`` pop in the second retry) handles
     # that exactly as it does today.
-    for key, value in (chat_template_kwargs or {}).items():
+    for key, value in supplied_template_kwargs.items():
         if key in ("tokenize", "add_generation_prompt", "enable_thinking", "tools"):
             continue
         if key not in template_kwargs:
@@ -2232,9 +2238,13 @@ def apply_chat_template(
     # without ``--think`` actually turn reasoning off (#3045). Detection is
     # template-driven (the template reads the name from its context and
     # branches on it as a boolean), not a model-name match. A client that
-    # already passed the switch or ``reasoning_effort`` (the template derives
-    # ``reasoning`` from ``"none"``) keeps control.
-    if enable_thinking is False and "reasoning_effort" not in template_kwargs:
+    # already passed the switch keeps control. A non-``none``
+    # ``reasoning_effort`` also keeps control; ``none`` is the portable off
+    # value and must still seed a detected boolean switch for templates that
+    # do not derive the switch from effort themselves.
+    if enable_thinking is False and (
+        "reasoning_effort" not in supplied_template_kwargs or supplied_effort_is_off
+    ):
         switch = template_thinking_switch(
             getattr(template_applicator, "chat_template", None), tools=tools
         )

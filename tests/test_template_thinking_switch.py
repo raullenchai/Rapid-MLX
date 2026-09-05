@@ -48,6 +48,15 @@ HARMONY_LIKE_TEMPLATE = (
     "{%- set effort = reasoning_effort | default('medium') %}"
     "Reasoning: {{ effort }}{%- for m in messages %}{{ m.content }}{%- endfor %}"
 )
+PLAIN_REASONING_TEMPLATE = (
+    "{%- for m in messages %}{{ m.content }}{%- endfor %}"
+    "{% if reasoning %}<think>{% else %}<think></think>{% endif %}"
+)
+HARMONY_REASONING_TEMPLATE = (
+    "{# <|start|><|channel|><|message|> #}"
+    "{% set reasoning = reasoning if reasoning is defined else true %}"
+    "{{ reasoning_effort }}:{% if reasoning %}on{% else %}off{% endif %}"
+)
 
 
 class _RenderingTokenizer:
@@ -383,6 +392,45 @@ class TestApplyChatTemplateOnNorth:
             chat_template_kwargs={"reasoning_effort": "none"},
         )
         assert prompt.endswith(NO_THINKING_PREFIX)
+
+    def test_none_effort_seeds_a_template_that_does_not_derive_it(self):
+        tok = _RenderingTokenizer(PLAIN_REASONING_TEMPLATE)
+        prompt = apply_chat_template(
+            tok,
+            MESSAGES,
+            enable_thinking=False,
+            chat_template_kwargs={"reasoning_effort": " NoNe "},
+        )
+        assert tok.received_kwargs["reasoning"] is False
+        assert prompt.endswith("<think></think>")
+
+    def test_non_none_effort_does_not_seed_plain_reasoning_switch(self):
+        tok = _RenderingTokenizer(PLAIN_REASONING_TEMPLATE)
+        apply_chat_template(
+            tok,
+            MESSAGES,
+            enable_thinking=False,
+            chat_template_kwargs={"reasoning_effort": "high"},
+        )
+        assert "reasoning" not in tok.received_kwargs
+
+    def test_explicit_reasoning_wins_over_none_effort_mapping(self):
+        tok = _RenderingTokenizer(PLAIN_REASONING_TEMPLATE)
+        prompt = apply_chat_template(
+            tok,
+            MESSAGES,
+            enable_thinking=False,
+            chat_template_kwargs={"reasoning_effort": "none", "reasoning": True},
+        )
+        assert tok.received_kwargs["reasoning"] is True
+        assert prompt.endswith("<think>")
+
+    def test_synthesized_low_effort_does_not_suppress_boolean_off_switch(self):
+        tok = _RenderingTokenizer(HARMONY_REASONING_TEMPLATE)
+        prompt = apply_chat_template(tok, MESSAGES, enable_thinking=False)
+        assert tok.received_kwargs["reasoning_effort"] == "low"
+        assert tok.received_kwargs["reasoning"] is False
+        assert prompt == "low:off"
 
 
 class TestOtherTemplatesUnaffected:
