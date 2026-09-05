@@ -71,7 +71,7 @@ class TestRegistration:
         config = detect_model_config("mlx-community/North-Mini-Code-1.0-4bit")
         assert config is not None
         assert config.reasoning_parser == "cohere_command4"
-        assert config.tool_call_parser is None
+        assert config.tool_call_parser == "north"
 
 
 def test_shared_parser_lifecycle_defaults_and_think_boundaries():

@@ -191,6 +191,11 @@ _FIDELITY_EXEMPT: dict[str, str] = {
     "llama": "llama_python_tag, renderer TODO",
     "llama3": "alias of llama",
     "llama4": "alias of llama",
+    "north": (
+        "cohere_action_envelope is parser-only (the generic scanner is blind); "
+        "JSON hostile-value fidelity is covered in test_cohere_tool_parser.py"
+    ),
+    "cohere_north": "alias of north",
 }
 
 # ---------------------------------------------------------------------------

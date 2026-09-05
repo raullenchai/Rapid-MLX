@@ -1326,6 +1326,29 @@ def detect_model_config(model_path: str) -> ModelConfig | None:
         # consumers that index by workload key use ``.speedup_dict``.
         return profile
 
+    # North's public HF ids resolve through aliases.json above.  A downloaded
+    # checkpoint is commonly served by absolute path, however, and then only
+    # its final directory name identifies the same supported checkpoint.  Use
+    # an exact, segment-scoped match rather than a broad Cohere regex: another
+    # Cohere family may use a different action/reasoning protocol.
+    name_segment = _extract_model_name_segment(model_path.lower())
+    if name_segment in {
+        "north-mini-code-1.0-4bit",
+        "north-mini-code-1.0-bf16",
+    }:
+        cfg = ModelConfig(
+            tool_call_parser="north",
+            reasoning_parser="cohere_command4",
+            is_moe=True,
+            supports_spec_decode=False,
+        )
+        _log_resolution_once(
+            model_path,
+            f"Auto-detected North-Mini-Code checkpoint '{model_path}' -> "
+            "tool_call_parser=north, reasoning_parser=cohere_command4",
+        )
+        return cfg
+
     # Read offline checkpoint metadata once. Family-name fallbacks still own
     # parser defaults, while explicit architecture fields from this profile
     # enrich those fallbacks before they reach serving policy.

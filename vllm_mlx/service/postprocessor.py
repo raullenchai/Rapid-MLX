@@ -3259,7 +3259,34 @@ class StreamingPostProcessor:
         # reasoning-first reorder).
         if self.tool_parser and reasoning and not self._line1_gate_engaged:
             _check = self.tool_accumulated_text + reasoning
-            if (
+            parser_reasoning_markers = getattr(
+                type(self.tool_parser), "REASONING_TOOL_MARKERS", ()
+            )
+            parser_marker_seen = any(
+                marker in _check for marker in parser_reasoning_markers
+            )
+            if parser_marker_seen:
+                splitter = getattr(
+                    self.tool_parser, "split_reasoning_tool_markup", None
+                )
+                if callable(splitter):
+                    pending = self.tool_parser.has_pending_tool_call(
+                        self.tool_accumulated_text
+                    )
+                    reasoning, promoted = splitter(
+                        reasoning,
+                        pending=pending,
+                        pending_text=self.tool_accumulated_text,
+                    )
+                    if promoted:
+                        # The action occurred before any post-thinking content.
+                        # Preserve that chronology so parser-owned cleanup and
+                        # post-action content handling see the original order.
+                        content = promoted + (content or "")
+                else:
+                    content = (content or "") + reasoning
+                    reasoning = None
+            elif (
                 "<minimax:tool_call>" in _check
                 or "<tool_call>" in _check
                 or '<invoke name="' in _check
@@ -3835,7 +3862,9 @@ class StreamingPostProcessor:
                 # a same-name scratch call with primitive args).
                 _forced_name = self._forced_tool_choice_name()
                 _required_mode = self._is_tool_choice_required()
-                if _forced_name:
+                if self._suppress_tool_calls:
+                    _filtered_calls = []
+                elif _forced_name:
                     _filtered_calls = [
                         tc
                         for tc in result.tool_calls
@@ -3878,7 +3907,10 @@ class StreamingPostProcessor:
                         )
                     )
                     self.tool_calls_detected = True
-            else:
+            elif not (
+                self._suppress_tool_calls
+                or getattr(result, "rejection_authoritative", False) is True
+            ):
                 # Cross-format fallback. The configured streaming parser is bound to
                 # ONE wire format; ``parse_tool_calls`` in ``api/tool_calling.py``
                 # scans every known format and recovers calls the per-parser path

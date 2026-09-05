@@ -75,6 +75,15 @@ class ExtractedToolCallInformation:
     content: str | None = None
     """Any content that wasn't part of tool calls."""
 
+    rejection_authoritative: bool = False
+    """Whether generic fallback must preserve a ``tools_called=False`` result.
+
+    Parsers set this only after positively matching their own wire format and
+    rejecting it (for example because the emitted function was not declared).
+    A plain format miss stays ``False`` so the service may still try its
+    cross-format compatibility parser.
+    """
+
 
 # Canonical wire-format labels each ToolParser subclass declares it handles.
 # Adding a new label here is a deliberate act — the audit script and the
@@ -116,6 +125,8 @@ class ExtractedToolCallInformation:
 #                           uses the inline ``<function=NAME>`` attribute form.
 #   ui_tars_action        — Action: verb(kwargs)  UI-TARS GUI-agent action
 #                           lines, normalized to ``computer`` tool_calls.
+#   cohere_action_envelope — <|START_ACTION|>[{tool_name,parameters}]<|END_ACTION|>
+#                           (Cohere North / cohere2_moe)
 #   hy3_native            — <tool_call:opensource>NAME<tool_sep:opensource>
 #                           {json}<end_of_tool_call:opensource>  Tencent
 #                           Hunyuan 3. Suffix-tolerant (``:opensource``
@@ -154,6 +165,7 @@ WIRE_FORMAT_LABELS: frozenset[str] = frozenset(
         "deepseek_v4_dsml",
         "qwen3_coder_xml_named",
         "ui_tars_action",
+        "cohere_action_envelope",
         "hy3_native",
         "minicpm_native",
         "muse_atem",
@@ -173,6 +185,14 @@ class ToolParser(ABC):
     # can handle role="tool" messages and tool_calls fields directly,
     # without needing conversion to text format.
     SUPPORTS_NATIVE_TOOL_FORMAT: bool = False
+
+    # Wire-format openers that must be routed out of a reasoning lane and
+    # through this parser.  Most thinking parsers promote ``<tool_call>``
+    # themselves; model-specific formats can opt in here so the streaming
+    # postprocessor does not strand a native call in reasoning_content. A
+    # parser may also implement ``split_reasoning_tool_markup`` to promote
+    # only its envelope while preserving surrounding private reasoning.
+    REASONING_TOOL_MARKERS: tuple[str, ...] = ()
 
     # Declarative list of wire formats this parser handles. Every concrete
     # subclass MUST override this with at least one label from

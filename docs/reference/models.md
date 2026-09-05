@@ -21,6 +21,7 @@ Families with registered aliases (run `rapid-mlx models` for the full, current l
 | LFM 2 / 2.5 | 1B, 2.6B, 8B-A1B, 24B-A2B | 4-bit |
 | GPT-OSS | 20B, 120B | 4/8-bit, mxfp4 |
 | Ternary Bonsai | 1.7B, 27B | 2-bit (ternary) |
+| North-Mini-Code 1.0 | 30B MoE (3B active) — **supported/experimental** | 4-bit, BF16 |
 | Hunyuan 3 (Hy3) | 295B MoE (21B active) — **Ultra-only** | 4-bit |
 
 ### Recommended Models
@@ -34,6 +35,24 @@ Recommendations live in one catalog (`vllm_mlx/model_recommendations.json`) shar
 | 18–23 GB | `qwen3.5-9b-4bit` | 8.7 GB |
 | 24–31 GB | `bonsai-27b-2bit` | 13.0 GB |
 | 32 GB+ | `qwen3.8-27b-4bit` | 20.0 GB |
+
+### Supported/experimental: North-Mini-Code 1.0
+
+North-Mini-Code's native reasoning and action-envelope parsers are selected
+automatically for `mlx-community/North-Mini-Code-1.0-4bit`, its short alias
+`north-mini-code-4bit`, and a downloaded local directory named
+`North-Mini-Code-1.0-4bit`:
+
+```bash
+rapid-mlx serve mlx-community/North-Mini-Code-1.0-4bit
+```
+
+The public 4-bit checkpoint is about 17.2 GB. A real agent-loop dogfood run
+completed on a 32 GB Mac, but projected working-set pressure was about 25.9 GB
+under the test machine's existing OS load. Treat **32 GB as a minimum,
+experimental configuration** and **48 GB as the comfortable target**. North is
+not in the recommended-model table yet; comparative memory, throughput, and
+agent-task results are still required before promoting it there.
 
 ### Ultra-only: Hunyuan 3 (Hy3)
 
