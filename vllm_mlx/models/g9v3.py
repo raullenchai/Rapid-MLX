@@ -75,6 +75,7 @@ fallback off transformers' ``AutoConfig`` for the unknown ``model_type``.
 probe, same as ``hy_v3``); delete this file after diffing for bug fixes.
 """
 
+import re
 from dataclasses import dataclass
 from typing import Any
 
@@ -97,6 +98,10 @@ from mlx_lm.models.base import (
 from mlx_lm.models.deepseek_v3 import group_expert_select
 from mlx_lm.models.rope_utils import initialize_rope
 from mlx_lm.models.switch_layers import SwitchGLU
+
+_EXPERT_KEY = re.compile(
+    r"^(model\.layers\.\d+\.mlp)\.experts\.(\d+)\.(gate_proj|up_proj|down_proj)\.(weight|scales|biases)$"
+)
 
 
 @dataclass
@@ -146,6 +151,11 @@ class ModelArgs(BaseModelArgs):
             raise ValueError(
                 f"unsupported hidden_act {self.hidden_act!r} (expected 'silu')"
             )
+        if self.num_attention_heads < 1 or self.num_key_value_heads < 1:
+            raise ValueError(
+                f"num_attention_heads ({self.num_attention_heads}) and "
+                f"num_key_value_heads ({self.num_key_value_heads}) must be positive"
+            )
         if self.num_attention_heads % self.num_key_value_heads != 0:
             raise ValueError(
                 f"num_attention_heads ({self.num_attention_heads}) must be a "
@@ -170,6 +180,15 @@ class ModelArgs(BaseModelArgs):
             if not 1 <= self.topk_group <= self.n_group:
                 raise ValueError(
                     f"topk_group ({self.topk_group}) must be within [1, n_group={self.n_group}]"
+                )
+            selectable = (self.n_routed_experts // self.n_group) * self.topk_group
+            if self.num_experts_per_tok > selectable:
+                # ``group_expert_select`` only keeps experts from the chosen
+                # groups, so a larger top-k has nothing left to pick.
+                raise ValueError(
+                    f"num_experts_per_tok ({self.num_experts_per_tok}) exceeds the "
+                    f"{selectable} experts selectable from topk_group={self.topk_group} "
+                    f"of n_group={self.n_group} groups"
                 )
 
 
@@ -360,6 +379,12 @@ class G9v3Model(nn.Module):
         h = self.embed_tokens(inputs) if input_embeddings is None else input_embeddings
         if cache is None:
             cache = [None] * len(self.layers)
+        elif len(cache) != len(self.layers):
+            # ``zip`` would silently drop layers (or cache entries) and still
+            # return plausible logits.
+            raise ValueError(
+                f"cache has {len(cache)} entries for {len(self.layers)} layers"
+            )
         mask = create_attention_mask(h, cache[0])
         for layer, c in zip(self.layers, cache):
             h = layer(h, mask, c)
@@ -397,25 +422,31 @@ class Model(nn.Module):
         conversion produced by this module) passes through unchanged.
         """
         n_experts = self.args.n_routed_experts
-        for layer_idx in range(self.args.num_hidden_layers):
-            prefix = f"model.layers.{layer_idx}.mlp"
-            for proj in ("gate_proj", "up_proj", "down_proj"):
-                for kind in ("weight", "scales", "biases"):
-                    if f"{prefix}.experts.0.{proj}.{kind}" not in weights:
-                        continue
-                    names = [
-                        f"{prefix}.experts.{e}.{proj}.{kind}" for e in range(n_experts)
-                    ]
-                    missing = [name for name in names if name not in weights]
-                    if missing:
-                        raise ValueError(
-                            f"g9v3 checkpoint is missing {len(missing)} expert "
-                            f"tensor(s) for layer {layer_idx} {proj}.{kind}, "
-                            f"first: {missing[0]}"
-                        )
-                    weights[f"{prefix}.switch_mlp.{proj}.{kind}"] = mx.stack(
-                        [weights.pop(name) for name in names]
-                    )
+        # Every per-expert tensor group present in the checkpoint, keyed by
+        # (layer prefix, proj, kind) — any expert index counts, so a
+        # checkpoint missing expert 0 is still caught by the check below.
+        groups: dict[tuple[str, str, str], set[int]] = {}
+        for key in weights:
+            m = _EXPERT_KEY.match(key)
+            if m is not None:
+                prefix, expert, proj, kind = m.groups()
+                groups.setdefault((prefix, proj, kind), set()).add(int(expert))
+        for (prefix, proj, kind), present in sorted(groups.items()):
+            missing = [e for e in range(n_experts) if e not in present]
+            stray = sorted(present - set(range(n_experts)))
+            if missing or stray:
+                raise ValueError(
+                    f"g9v3 checkpoint has {len(present)} of {n_experts} expert "
+                    f"tensors for {prefix}.experts.*.{proj}.{kind}"
+                    + (f", first missing: {missing[0]}" if missing else "")
+                    + (f", unexpected expert index: {stray[0]}" if stray else "")
+                )
+            weights[f"{prefix}.switch_mlp.{proj}.{kind}"] = mx.stack(
+                [
+                    weights.pop(f"{prefix}.experts.{e}.{proj}.{kind}")
+                    for e in range(n_experts)
+                ]
+            )
         if self.tie_word_embeddings:
             weights = {k: v for k, v in weights.items() if not k.startswith("lm_head.")}
         return weights

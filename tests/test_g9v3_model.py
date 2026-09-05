@@ -228,6 +228,10 @@ def test_head_dim_derived_like_remote_config():
     [
         (dict(hidden_act="gelu"), "hidden_act"),
         (dict(num_key_value_heads=3), "num_attention_heads"),
+        (dict(num_key_value_heads=0), "must be positive"),
+        (dict(num_attention_heads=0, num_key_value_heads=0), "must be positive"),
+        # 8 experts in 2 groups, 1 group kept -> only 4 experts selectable.
+        (dict(n_group=2, topk_group=1, num_experts_per_tok=8), "selectable"),
         (dict(num_experts_per_tok=9), "num_experts_per_tok"),
         (dict(num_experts_per_tok=0), "num_experts_per_tok"),
         (dict(n_group=3), "n_group"),
@@ -238,6 +242,30 @@ def test_head_dim_derived_like_remote_config():
 def test_config_validation(bad, match):
     with pytest.raises(ValueError, match=match):
         g9v3.ModelArgs.from_dict(dict(TINY, **bad))
+
+
+def test_grouped_routing_config_builds_and_runs():
+    """A grouped-routing config within the selectable bound goes through
+    ``group_expert_select``'s n_group > 1 path."""
+    args = g9v3.ModelArgs.from_dict(
+        dict(TINY, n_group=2, topk_group=1, num_experts_per_tok=4)
+    )
+    model = g9v3.Model(args)
+    logits = model(mx.array([[1, 2, 3]]))
+    assert logits.shape == (1, 3, TINY["vocab_size"])
+    assert bool(mx.all(mx.isfinite(logits)))
+
+
+def test_cache_length_must_match_layers():
+    from mlx_lm.models.cache import make_prompt_cache
+
+    model = tiny_model()
+    cache = make_prompt_cache(model)
+    x = mx.array([[1, 2, 3]])
+    with pytest.raises(ValueError, match="cache has 2 entries for 3 layers"):
+        model(x, cache=cache[:-1])
+    with pytest.raises(ValueError, match="cache has 4 entries for 3 layers"):
+        model(x, cache=cache + [None])
 
 
 def test_layer_kinds_follow_first_k_dense_replace():
@@ -414,9 +442,22 @@ def test_sanitize_stacks_quantized_triples_and_rejects_missing_expert():
     )
     assert out[f"{prefix}.switch_mlp.up_proj.scales"][5, 0, 0].item() == 5
 
-    del weights[f"{prefix}.experts.3.up_proj.weight"]
-    with pytest.raises(ValueError, match="experts.3.up_proj.weight"):
-        model.sanitize(dict(weights))
+    broken = dict(weights)
+    del broken[f"{prefix}.experts.3.up_proj.weight"]
+    with pytest.raises(ValueError, match=r"up_proj\.weight, first missing: 3"):
+        model.sanitize(broken)
+
+    # Missing expert 0 must not bypass the check (it used to gate on it).
+    broken = dict(weights)
+    del broken[f"{prefix}.experts.0.up_proj.weight"]
+    with pytest.raises(ValueError, match=r"7 of 8 expert tensors .*first missing: 0"):
+        model.sanitize(broken)
+
+    # An expert index beyond n_routed_experts is a config/checkpoint mismatch.
+    extra = dict(weights)
+    extra[f"{prefix}.experts.8.up_proj.weight"] = mx.zeros((2, 2))
+    with pytest.raises(ValueError, match="unexpected expert index: 8"):
+        model.sanitize(extra)
 
 
 def test_quant_predicate_keeps_non_experts_at_8_bits():
