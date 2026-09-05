@@ -128,8 +128,29 @@ def _valid_kernel_inputs(*, query_heads=2, kv_heads=1, head_dim=32, dtype=mx.flo
     }
 
 
-def test_qsa_selection_rejects_non_block_aligned_validity():
+def test_qsa_selection_rejects_invalid_structural_validity():
     indices = mx.zeros((1, 2, 10), dtype=mx.int32)
+    with pytest.raises(ValueError, match="rank three"):
+        qwen4_exp._QSASelection(
+            token_indices=mx.zeros((2, 10), dtype=mx.int32),
+            block_valid=mx.ones((1, 2, 4), dtype=mx.bool_),
+            tail_valid=mx.ones((1, 2, 2), dtype=mx.bool_),
+            physical_kv_length=10,
+        )
+    with pytest.raises(ValueError, match="block validity"):
+        qwen4_exp._QSASelection(
+            token_indices=indices,
+            block_valid=mx.ones((1, 1, 4), dtype=mx.bool_),
+            tail_valid=mx.ones((1, 2, 2), dtype=mx.bool_),
+            physical_kv_length=10,
+        )
+    with pytest.raises(ValueError, match="tail validity"):
+        qwen4_exp._QSASelection(
+            token_indices=indices,
+            block_valid=mx.ones((1, 2, 4), dtype=mx.bool_),
+            tail_valid=mx.ones((1, 1, 2), dtype=mx.bool_),
+            physical_kv_length=10,
+        )
     with pytest.raises(ValueError, match="block geometry"):
         qwen4_exp._QSASelection(
             token_indices=indices,
