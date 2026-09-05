@@ -1657,24 +1657,57 @@ def _context_reads(
     if isinstance(node, nodes.For):
         _context_reads(node.iter, bound, nodes, reads, tests)
         inner = bound | _bound_names(node, nodes)
+        body_tests: set[str] = set()
+        body_proven_nonempty = False
+        if node.test is None:
+            try:
+                body_proven_nonempty = bool(node.iter.as_const())
+            except Exception:
+                pass
         if node.test is not None:
-            _context_reads(node.test, inner, nodes, reads, tests)
-        _context_reads_all(node.body, inner, nodes, reads, tests)
-        _context_reads_all(node.else_, bound, nodes, reads, tests)
+            _context_reads(node.test, inner, nodes, reads, body_tests)
+        _context_reads_all(
+            node.body,
+            inner,
+            nodes,
+            reads,
+            body_tests,
+        )
+        # A loop ``else`` is dead only when an unfiltered iterable is
+        # statically known to contain at least one item.
+        _context_reads_all(
+            node.else_,
+            bound,
+            nodes,
+            reads,
+            body_tests if body_proven_nonempty else tests,
+        )
         return bound
     if isinstance(node, nodes.If):
-        _record_truthiness_test(node.test, bound, nodes, tests)
-        _context_reads(node.test, bound, nodes, reads, tests)
-        after = [_context_reads_all(node.body, bound, nodes, reads, tests)]
         # Jinja stores each ``elif`` as an ``If`` node whose ``else_`` is
         # empty, while the chain's real ``else`` stays on the outer node.
-        # Recursing into each branch would therefore add a fake fallthrough
-        # path and lose bindings made by every real arm of the chain.
-        for branch in node.elif_:
-            _record_truthiness_test(branch.test, bound, nodes, tests)
-            _context_reads(branch.test, bound, nodes, reads, tests)
-            after.append(_context_reads_all(branch.body, bound, nodes, reads, tests))
-        after.append(_context_reads_all(node.else_, bound, nodes, reads, tests))
+        # Evaluate the chain in order so bindings are joined across actual
+        # terminal paths and constant-dead arms cannot prove a live switch.
+        after: list[frozenset[str]] = []
+        fallthrough_possible = True
+        deferred_tests: set[str] = set()
+        for branch in [node, *node.elif_]:
+            branch_tests = tests if fallthrough_possible else deferred_tests
+            _record_truthiness_test(branch.test, bound, nodes, branch_tests)
+            _context_reads(branch.test, bound, nodes, reads, branch_tests)
+            truth = _constant_truthiness(branch.test, nodes)
+            if fallthrough_possible and truth is not False:
+                after.append(
+                    _context_reads_all(branch.body, bound, nodes, reads, tests)
+                )
+            else:
+                _context_reads_all(branch.body, bound, nodes, reads, deferred_tests)
+            if fallthrough_possible and truth is True:
+                fallthrough_possible = False
+        if fallthrough_possible:
+            after.append(_context_reads_all(node.else_, bound, nodes, reads, tests))
+        else:
+            _context_reads_all(node.else_, bound, nodes, reads, deferred_tests)
         return frozenset.intersection(*after)
     if isinstance(node, nodes.Macro):
         # A macro body is deferred until a call executes it.  Counting a
@@ -1722,6 +1755,25 @@ def _context_reads(
         return bound
     if isinstance(node, nodes.CondExpr):
         _record_truthiness_test(node.test, bound, nodes, tests)
+        _context_reads(node.test, bound, nodes, reads, tests)
+        truth = _constant_truthiness(node.test, nodes)
+        deferred_tests: set[str] = set()
+        _context_reads(
+            node.expr1,
+            bound,
+            nodes,
+            reads,
+            tests if truth is not False else deferred_tests,
+        )
+        if node.expr2 is not None:
+            _context_reads(
+                node.expr2,
+                bound,
+                nodes,
+                reads,
+                tests if truth is not True else deferred_tests,
+            )
+        return bound
     # Anything else (output, expressions, filter/scope blocks): evaluate the
     # children in order; bindings made inside stay inside.
     inner = bound | _bound_names(node, nodes)
@@ -1736,6 +1788,18 @@ def _record_truthiness_test(
     name = _truthiness_tested_name(test, nodes)
     if name is not None and name not in bound:
         tests.add(name)
+
+
+def _constant_truthiness(expr, nodes) -> bool | None:
+    """Jinja's compile-time truth value for a condition; unknown otherwise."""
+    try:
+        # ``as_const`` is Jinja's own side-effect-free constant folder.  It
+        # handles literal boolean expressions (``not false``, comparisons,
+        # ``and`` / ``or``) and raises ``Impossible`` for context-dependent
+        # expressions, which must remain conservatively reachable.
+        return bool(expr.as_const())
+    except Exception:
+        return None
 
 
 def _context_reads_all(

@@ -240,6 +240,23 @@ class TestTemplateThinkingSwitch:
             "{% elif y %}{% set reasoning=false %}"
             "{% else %}{% set reasoning=true %}{% endif %}"
             "{% if reasoning %}on{% else %}off{% endif %}",
+            # constant-dead bodies cannot establish a live switch
+            "{{ reasoning | default('unset') }}"
+            "{% if false %}{% if reasoning %}x{% endif %}{% endif %}",
+            "{{ reasoning | default('unset') }}"
+            "{% if true %}x{% else %}{% if reasoning %}y{% endif %}{% endif %}",
+            "{{ reasoning | default('unset') }}"
+            "{% if not false %}x{% else %}{% if reasoning %}y{% endif %}{% endif %}",
+            "{{ reasoning | default('unset') }}"
+            "{% if 1 == 1 %}x{% else %}{% if reasoning %}y{% endif %}{% endif %}",
+            # a loop body that is not proven to execute cannot establish a
+            # live switch
+            "{{ reasoning | default('unset') }}"
+            "{% for x in [] %}{% if reasoning %}x{% endif %}{% endfor %}",
+            "{{ reasoning | default('unset') }}"
+            "{{ ('R' if reasoning else 'N') if false else '' }}",
+            "{{ reasoning | default('unset') }}"
+            "{% for x in [1] %}{% break %}{% if reasoning %}R{% endif %}{% endfor %}",
             # branched on a loop variable of that name
             "{%- for reasoning in messages %}{% if reasoning %}x{% endif %}{%- endfor %}",
         ],
@@ -387,6 +404,53 @@ class TestOtherTemplatesUnaffected:
         prompt = apply_chat_template(tok, MESSAGES, enable_thinking=False)
         assert "reasoning" not in tok.received_kwargs
         assert prompt == "unseton"
+
+    @pytest.mark.parametrize(
+        ("template", "expected"),
+        [
+            (
+                "{{ reasoning | default('unset') }}"
+                "{% if false %}{% if reasoning %}x{% endif %}{% endif %}",
+                "unset",
+            ),
+            (
+                "{{ reasoning | default('unset') }}"
+                "{% if true %}x{% else %}{% if reasoning %}y{% endif %}{% endif %}",
+                "unsetx",
+            ),
+            (
+                "{{ reasoning | default('unset') }}"
+                "{% if not false %}x{% else %}{% if reasoning %}y{% endif %}{% endif %}",
+                "unsetx",
+            ),
+            (
+                "{{ reasoning | default('unset') }}"
+                "{% if 1 == 1 %}x{% else %}{% if reasoning %}y{% endif %}{% endif %}",
+                "unsetx",
+            ),
+            (
+                "{{ reasoning | default('unset') }}"
+                "{% for x in [] %}{% if reasoning %}x{% endif %}{% endfor %}",
+                "unset",
+            ),
+            (
+                "{{ reasoning | default('unset') }}"
+                "{{ ('R' if reasoning else 'N') if false else '' }}",
+                "unset",
+            ),
+            (
+                "{{ reasoning | default('unset') }}"
+                "{% for x in [1] %}{% break %}"
+                "{% if reasoning %}R{% endif %}{% endfor %}",
+                "unset",
+            ),
+        ],
+    )
+    def test_dead_branch_does_not_make_rendered_data_a_switch(self, template, expected):
+        tok = _RenderingTokenizer(template)
+        prompt = apply_chat_template(tok, MESSAGES, enable_thinking=False)
+        assert "reasoning" not in tok.received_kwargs
+        assert prompt == expected
 
     def test_enable_thinking_template_gets_no_reasoning_kwarg(self):
         tok = _RenderingTokenizer(ENABLE_THINKING_TEMPLATE)
