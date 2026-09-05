@@ -59,6 +59,7 @@ def test_cli_precision_is_explicit_and_defaults_to_no_override():
     assert bf16.image_weight_precision == "bf16"
 
 
+@pytest.mark.requires_mlx
 def test_real_cli_selects_bf16_before_download_and_load(monkeypatch):
     """Drive main far enough to prove the flag changes the actual source."""
 
@@ -148,6 +149,7 @@ def test_bf16_repo_directly_triggers_32gb_admission_warning(monkeypatch, capsys)
     assert "32 GB unified-memory floor" in warning
 
 
+@pytest.mark.requires_mlx
 def test_packaged_bf16_uses_model_path_without_onload_quantization(monkeypatch):
     engine = ImageGenerationEngine(FLUX2_KLEIN_BF16_REPO)
     constructor_kwargs = {}

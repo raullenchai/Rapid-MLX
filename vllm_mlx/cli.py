@@ -1958,7 +1958,7 @@ def _ensure_model_downloaded(
         size_gb = 0.0
         resolved_sha: str | None = None
         try:
-            metadata_kwargs = {"files_metadata": True}
+            metadata_kwargs: dict[str, object] = {"files_metadata": True}
             if pinned_image_revision is not None:
                 metadata_kwargs["revision"] = pinned_image_revision
             info = call_with_deadline(
