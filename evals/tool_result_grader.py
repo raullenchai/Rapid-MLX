@@ -553,6 +553,12 @@ def _numbered_in(text: str) -> list[tuple[float, str | None, int]]:
             end = match.end("num")
             if end < len(text) and text[end].isalpha():
                 continue
+            # A currency symbol immediately before the number means it is money,
+            # not a temperature: "$21" / "$ 21" must not satisfy a 21 °C fact.
+            # (The "21 dollars" suffix side is already rejected by
+            # ``_adjacent_unit_suffix``; this is its leading-symbol symmetric.)
+            if _leading_currency_symbol(text, match.start("num")):
+                continue
             out.append((value, None, start))
             continue
         unit = _resolve_unit(token.strip())
@@ -605,6 +611,24 @@ def _adjacent_unit_suffix(text: str, pos: int) -> bool:
         return False
     m = _ADJACENT_UNIT_RE.match(text, pos)
     return bool(m)
+
+
+# Currency symbols that, as a prefix, unambiguously mark a following number as
+# money rather than a temperature/percentage ("$21", "€ 21"). These are narrow
+# enough that a bare number after one is never a temperature-degree value.
+_CURRENCY_PREFIXES = frozenset("$€£¥₹₩¢")
+
+
+def _leading_currency_symbol(text: str, num_start: int) -> bool:
+    """True if a currency symbol immediately precedes ``text[num_start:]``.
+
+    Walks back over optional whitespace so both "$21" and "$ 21" are caught,
+    matching the adjacent-unit suffix rejection for the trailing-symbol side.
+    """
+    i = num_start
+    while i > 0 and text[i - 1].isspace():
+        i -= 1
+    return i > 0 and text[i - 1] in _CURRENCY_PREFIXES
 
 
 def _term_occurrences(term: str, text: str) -> list[int]:
@@ -1096,12 +1120,16 @@ def grade_answer(
         # altered), or any missing/contradicted fact fails ``overall`` -- a
         # scenario must never pass while some of the evidence was not examined
         # or was rewritten. ``coverage`` is the true affirmative aggregate: every
-        # fact's affirmative coverage must be true AND nothing was clamped. This
-        # keeps a NEGATED-correct answer ("21°C but I can't confirm", coverage
-        # true per-fact) at coverage=True while a WRONG-VALUE answer
-        # ("temperature is 5", coverage false per-fact) drops to coverage=False.
+        # fact's affirmative coverage must be true AND nothing was clamped or
+        # overflowed (an ungraded fact beyond MAX_FACTS means "all facts
+        # present" is no longer sound). This keeps a NEGATED-correct answer
+        # ("21°C but I can't confirm", coverage true per-fact) at coverage=True
+        # while a WRONG-VALUE answer ("temperature is 5", coverage false
+        # per-fact) drops to coverage=False.
         overall=not truncated and not fact_clamped and not missing and not contradicted,
-        coverage=all(f.coverage for f in facts_out) and not fact_clamped,
+        coverage=all(f.coverage for f in facts_out)
+        and not fact_clamped
+        and not overflow,
         missing=missing,
         contradicted=contradicted,
         facts=facts_out,

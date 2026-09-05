@@ -815,6 +815,36 @@ class TestCodexRegressionFixes:
         rep = _grade(g, [TEMP21C], "21c at the moment")
         assert rep.overall is True
 
+    def test_overflow_drops_coverage_not_just_overall(self, g):
+        # Round-13 F1: facts beyond MAX_FACTS are never graded, so an overflowed
+        # scenario cannot claim "all facts present" any more than it can claim
+        # `overall` -- coverage must also fail closed, mirroring the sentinel.
+        facts = [
+            {"type": "string", "key": f"k{i}", "value": "x", "aliases": [f"tok{i}"]}
+            for i in range(g.MAX_FACTS + 5)
+        ]
+        rep = _grade(
+            g, facts, " ".join(f"tok{i} is present" for i in range(g.MAX_FACTS + 5))
+        )
+        assert all(f.coverage for f in rep.facts)  # every GRADED fact is present
+        assert rep.overall is False  # ...but the overflow sentinel appears
+        assert rep.coverage is False  # ...and coverage must drop too (fail closed)
+
+    def test_leading_currency_symbol_not_a_temperature(self, g):
+        # Round-13 F2: a currency symbol immediately before a number means it is
+        # money, not a temperature -- "$21" / "$ 21" must not satisfy 21 °C.
+        for phrase in [
+            "temperature sensor costs $21",
+            "temperature cost $ 21 total",
+            "bought at £21, marked down",
+        ]:
+            rep = _grade(g, [TEMP21C], phrase)
+            assert rep.facts[0].status == "missing", phrase
+            assert rep.overall is False, phrase
+        # Real temperatures and the existing prose/unit forms still pass.
+        assert _grade(g, [TEMP21C], "the temperature is 21").overall is True
+        assert _grade(g, [TEMP21C], "temp 21 °C").overall is True
+
 
 # --- Tool output is DATA, not instructions ---------------------------------
 class TestInputIsDataNotInstructions:
