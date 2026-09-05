@@ -397,6 +397,7 @@ def test_unsupported_requests_fail_before_loading(
         engine.generate(**request)
 
 
+@pytest.mark.requires_mlx
 def test_token_dense_prompt_fails_before_the_17gb_loader(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -446,6 +447,7 @@ def test_token_dense_prompt_fails_before_the_17gb_loader(
     ]
 
 
+@pytest.mark.requires_mlx
 def test_prompt_tokenizer_failures_are_clean_runtime_errors(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -475,6 +477,7 @@ def test_prompt_tokenizer_failures_are_clean_runtime_errors(
         engine._validate_hidream_prompt_tokens("fox")
 
 
+@pytest.mark.requires_mlx
 def test_cancel_during_prompt_tokenizer_init_never_reaches_model_loader(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -546,6 +549,7 @@ def test_hidream_cold_snapshot_is_pinned_allowlisted_and_verified(
     assert verified == [True]
 
 
+@pytest.mark.requires_mlx
 def test_hidream_engine_build_progress_cancel_and_generate_dispatch(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -600,6 +604,7 @@ def test_hidream_engine_build_progress_cancel_and_generate_dispatch(
         missing._build_model()
 
 
+@pytest.mark.requires_mlx
 def test_hidream_sidecar_requires_mlx_vlm_not_mflux(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
