@@ -217,7 +217,7 @@ def test_consent_auto_pull_env_skips(monkeypatch):
 
 
 def test_spawn_foreground_child_env(monkeypatch):
-    """Serve child: foreground (no start_new_session) + gate + watchdog env."""
+    """Serve child: isolated signal group + gate + watchdog env."""
     import os
     import subprocess as real_subprocess
 
@@ -238,7 +238,7 @@ def test_spawn_foreground_child_env(monkeypatch):
 
     proc = run_cli._spawn_foreground_serve("qwen3.5-9b-4bit", args)
     assert isinstance(proc, FakeProc)
-    assert captured["start_new_session"] is False  # foreground, parent-owned
+    assert captured["start_new_session"] is True  # parent is sole signal relay
     assert captured["cmd"][:6] == [
         real_subprocess.sys.executable,
         "-m",
@@ -416,6 +416,23 @@ def test_start_command_spawn_after_consent_refused(monkeypatch):
     )
 
     assert run_cli.start_command(args) == 1
+
+
+def test_start_command_spawn_error_is_clean(monkeypatch, capsys):
+    """Popen failures become a concise command failure, not a traceback."""
+    args = _make_args()
+    _patch_profile_lookup(monkeypatch, _FakeProfile())
+    monkeypatch.setattr(run_cli, "_select_model", lambda **kw: "m")
+    monkeypatch.setattr(run_cli, "_port_is_busy", lambda h, p: False)
+    monkeypatch.setattr(run_cli, "_confirm_download", lambda *a, **k: True)
+    monkeypatch.setattr(
+        run_cli,
+        "_spawn_foreground_serve",
+        lambda *a: (_ for _ in ()).throw(OSError("fork failed")),
+    )
+
+    assert run_cli.start_command(args) == 1
+    assert "Could not start the server process: fork failed" in capsys.readouterr().out
 
 
 def test_start_command_readiness_exit(monkeypatch):
@@ -888,6 +905,32 @@ def test_attach_first_class_context_fetch_fails(monkeypatch, capsys):
     assert "Configured Claude Code" in capsys.readouterr().out
 
 
+def test_attach_deepseek_reasoning_probe_fails_open(monkeypatch):
+    """A transient reasoning probe failure does not block agent setup."""
+    args = _make_args(yes=True)
+    prof = _FakeProfile(name="deepseek-harness", recommended_models=["qwen3.5-9b-4bit"])
+    prof.display_name = "DeepSeek Harness"
+    prof.config = _FakeCfg(template=None)
+
+    import vllm_mlx.agents.setup as setup_mod
+    from vllm_mlx.agents import adapter as ad
+
+    monkeypatch.setattr(
+        ad,
+        "fetch_reasoning_support",
+        lambda *a, **k: (_ for _ in ()).throw(OSError("probe unavailable")),
+    )
+    planned = {}
+    monkeypatch.setattr(
+        setup_mod,
+        "build_setup_plan",
+        lambda *a, **k: planned.update(k=k) or _SetupPlanFake(changed=False),
+    )
+
+    assert run_cli._attach_and_configure("http://b", "m", prof, args) == 0
+    assert planned["k"]["supports_reasoning"] is None
+
+
 def test_attach_first_class_unchanged(monkeypatch, capsys):
     """First-class profile already configured: no-file-changes path."""
     args = _make_args()
@@ -1011,6 +1054,28 @@ def test_start_command_renders_ipv6_base_url(monkeypatch):
     assert reused["base_url"] == "http://[::1]:8000"
 
 
+@pytest.mark.parametrize(
+    ("bind_host", "expected"),
+    [("0.0.0.0", "http://127.0.0.1:8000"), ("::", "http://[::1]:8000")],
+)
+def test_start_command_probes_wildcard_bind_via_loopback(
+    monkeypatch, bind_host, expected
+):
+    """Wildcard bind addresses are never emitted as client destinations."""
+    args = _make_args(host=bind_host)
+    _patch_profile_lookup(monkeypatch, _FakeProfile())
+    monkeypatch.setattr(run_cli, "_select_model", lambda **kw: "m")
+    monkeypatch.setattr(run_cli, "_port_is_busy", lambda h, p: True)
+    seen = {}
+    monkeypatch.setattr(
+        run_cli,
+        "_reuse_or_refuse",
+        lambda base_url, *rest: seen.update(base_url=base_url) or 0,
+    )
+    assert run_cli.start_command(args) == 0
+    assert seen["base_url"] == expected
+
+
 def test_attach_generic_writer_cannot(monkeypatch, capsys):
     """Generic writer returning 'Cannot...' -> failure path, instructions."""
     args = _make_args()
@@ -1029,6 +1094,30 @@ def test_attach_generic_writer_cannot(monkeypatch, capsys):
     assert rc == 0
     out = capsys.readouterr().out
     assert "setup failed" in out
+    assert "manual instructions" in out
+
+
+@pytest.mark.parametrize("dry_run", [True, False])
+def test_attach_generic_writer_exception_falls_back(monkeypatch, capsys, dry_run):
+    """Generic config renderer/writer failures leave the server usable."""
+    args = _make_args(yes=True, dry_run=dry_run)
+    prof = _FakeProfile(name="hermes", recommended_models=["qwen3.5-9b-4bit"])
+    prof.config = _FakeCfg(template=None)
+
+    from vllm_mlx.agents import adapter as ad
+
+    monkeypatch.setattr(
+        ad,
+        "setup_agent_config",
+        lambda *a, **k: (_ for _ in ()).throw(OSError("config unavailable")),
+    )
+    monkeypatch.setattr(
+        ad, "get_setup_instructions", lambda *a, **k: "  manual instructions"
+    )
+
+    assert run_cli._attach_and_configure("http://b", "m", prof, args) == 0
+    out = capsys.readouterr().out
+    assert "setup failed: config unavailable" in out
     assert "manual instructions" in out
 
 
@@ -1061,6 +1150,28 @@ def test_attach_env_profile_prints_exports_without_write_consent(monkeypatch, ca
     assert "configured!" not in out
 
 
+def test_attach_env_profile_exception_falls_back(monkeypatch, capsys):
+    """Environment-profile rendering failures retain manual instructions."""
+    args = _make_args()
+    prof = _FakeProfile(name="langchain")
+    prof.config = _FakeCfg(config_type="env")
+    from vllm_mlx.agents import adapter as ad
+
+    monkeypatch.setattr(
+        ad,
+        "setup_agent_config",
+        lambda *a, **k: (_ for _ in ()).throw(ValueError("bad template")),
+    )
+    monkeypatch.setattr(
+        ad, "get_setup_instructions", lambda *a, **k: "  manual instructions"
+    )
+
+    assert run_cli._attach_and_configure("http://b", "m", prof, args) == 0
+    out = capsys.readouterr().out
+    assert "setup failed: bad template" in out
+    assert "manual instructions" in out
+
+
 def test_cached_context_window_reads_text_config(monkeypatch):
     """Dry-run can preview the eventual context value without network access."""
     import vllm_mlx.model_metadata as metadata_mod
@@ -1079,6 +1190,18 @@ def test_cached_context_window_reads_text_config(monkeypatch):
     )
     assert run_cli._cached_context_window("cached-model") == 262_144
     assert requested == ["org/resolved-model"]
+
+
+def test_cached_context_window_metadata_error_is_unknown(monkeypatch):
+    """Broken cache metadata defers setup preview rather than crashing start."""
+    import vllm_mlx.model_metadata as metadata_mod
+
+    monkeypatch.setattr(
+        metadata_mod,
+        "read_model_metadata",
+        lambda model: (_ for _ in ()).throw(OSError("corrupt cache")),
+    )
+    assert run_cli._cached_context_window("cached-model") is None
 
 
 def test_print_instructions_first_class(monkeypatch, capsys):
@@ -1271,8 +1394,10 @@ def test_foreground_child_relays_signals(monkeypatch):
             if signum == signal.SIGINT:
                 raise ProcessLookupError()  # already gone -> swallowed
 
-    stopped = []
-    monkeypatch.setattr(run_cli, "_terminate_child", lambda proc: stopped.append(proc))
+    reaped = []
+    monkeypatch.setattr(
+        run_cli, "_reap_forwarded_child", lambda proc: reaped.append(proc)
+    )
     prev_int = signal.getsignal(signal.SIGINT)
     prev_term = signal.getsignal(signal.SIGTERM)
     for signum in (signal.SIGINT, signal.SIGTERM):
@@ -1286,7 +1411,26 @@ def test_foreground_child_relays_signals(monkeypatch):
         assert exc.value.signum == signum
     assert signal.SIGINT in sent
     assert signal.SIGTERM in sent
-    assert len(stopped) == 2
+    assert len(reaped) == 2
     # Restored.
     assert signal.getsignal(signal.SIGINT) == prev_int
     assert signal.getsignal(signal.SIGTERM) == prev_term
+
+
+def test_reap_forwarded_child_waits_before_escalating():
+    """A relayed signal gets a grace period before any second signal."""
+    calls = []
+
+    class FakeChild:
+        returncode = None
+
+        def poll(self):
+            return self.returncode
+
+        def wait(self, timeout):
+            calls.append(("wait", timeout))
+            self.returncode = -signal.SIGINT
+            return self.returncode
+
+    run_cli._reap_forwarded_child(FakeChild(), grace_s=0.01)
+    assert calls == [("wait", 0.01)]

@@ -149,7 +149,8 @@ def start_command(args) -> int:
     # and agent configs consume ``/v1``.
     from vllm_mlx.connect import ServerEndpoints
 
-    base_url = ServerEndpoints(args.host, args.port, model=model).base_url
+    connect_host = _local_connect_host(args.host)
+    base_url = ServerEndpoints(connect_host, args.port, model=model).base_url
 
     # Port already occupied: reuse a compatible healthy server, else refuse.
     if _port_is_busy(args.host, args.port):
@@ -164,7 +165,11 @@ def start_command(args) -> int:
     if not _confirm_download(model, no_download=args.no_download, yes=args.yes):
         return 1
 
-    proc = _spawn_foreground_serve(model, args)
+    try:
+        proc = _spawn_foreground_serve(model, args)
+    except OSError as exc:
+        print(f"  Could not start the server process: {exc}")
+        return 1
     try:
         with _foreground_child(proc):
             outcome = _wait_ready(base_url, proc, args.ready_timeout)
@@ -288,6 +293,15 @@ def _hf_id(alias: str) -> str:
         return alias
 
 
+def _local_connect_host(bind_host: str) -> str:
+    """Map wildcard bind addresses to reachable local client addresses."""
+    if bind_host in {"", "0.0.0.0"}:
+        return "127.0.0.1"
+    if bind_host in {"::", "[::]"}:
+        return "::1"
+    return bind_host
+
+
 def _print_unknown_agent(name: str) -> None:
     from vllm_mlx.agents import list_profiles
 
@@ -395,6 +409,10 @@ def _spawn_foreground_serve(model: str, args) -> subprocess.Popen:
     return subprocess.Popen(  # noqa: S603
         cmd,
         env=child_env,
+        # Keep terminal Ctrl-C from reaching both parent and child.  The
+        # parent owns signal delivery through ``_foreground_child`` so the
+        # server sees one graceful-shutdown signal instead of two.
+        start_new_session=True,
     )
 
 
@@ -429,7 +447,10 @@ class _foreground_child:
         signal.signal(signal.SIGINT, self._prev_int)
         signal.signal(signal.SIGTERM, self._prev_term)
         if _exc_type is not None and self._proc.poll() is None:
-            _terminate_child(self._proc)
+            if _exc_type is _ForwardedSignalError:
+                _reap_forwarded_child(self._proc)
+            else:
+                _terminate_child(self._proc)
         return False
 
     def _forward(self, signum, _frame):
@@ -467,6 +488,19 @@ def _terminate_child(proc, *, grace_s: float = 5.0) -> None:
         # uninterruptible kernel wait. Do not turn a readiness timeout into
         # an unbounded parent hang; the child watchdog remains a final guard.
         pass
+
+
+def _reap_forwarded_child(proc, *, grace_s: float = 5.0) -> None:
+    """Reap after a relayed signal without immediately sending a second one."""
+    if proc.poll() is not None:
+        return
+    try:
+        proc.wait(timeout=grace_s)
+        return
+    except subprocess.TimeoutExpired:
+        # The graceful signal was ignored. Escalate using the normal bounded
+        # SIGTERM -> SIGKILL cleanup contract.
+        _terminate_child(proc, grace_s=grace_s)
 
 
 def _wait_ready(base_url: str, proc, timeout_s: int) -> str:
@@ -586,13 +620,18 @@ def _attach_and_configure(base_url, model, profile, args) -> int:
     if cfg and getattr(cfg, "type", None) == "env" and not is_first_class:
         from vllm_mlx.agents.adapter import setup_agent_config
 
-        instructions = setup_agent_config(
-            profile,
-            api_base_url,
-            model,
-            dry_run=True,
-            context_length=context_length,
-        )
+        try:
+            instructions = setup_agent_config(
+                profile,
+                api_base_url,
+                model,
+                dry_run=True,
+                context_length=context_length,
+            )
+        except (OSError, RuntimeError, TypeError, ValueError) as exc:
+            print(f"  {profile.display_name} setup failed: {exc}")
+            _print_instructions(profile, api_base_url, model)
+            return 0
         print(f"  {profile.display_name} uses shell environment variables:")
         print(instructions)
         return 0
@@ -602,7 +641,10 @@ def _attach_and_configure(base_url, model, profile, args) -> int:
         if profile.name == "deepseek-harness" and not args.dry_run:
             from vllm_mlx.agents.adapter import fetch_reasoning_support
 
-            supports_reasoning = fetch_reasoning_support(api_base_url, model)
+            try:
+                supports_reasoning = fetch_reasoning_support(api_base_url, model)
+            except (OSError, RuntimeError, TypeError, ValueError):
+                supports_reasoning = None
         elif profile.name == "deepseek-harness":
             from vllm_mlx.model_aliases import resolve_profile
 
@@ -654,13 +696,18 @@ def _attach_and_configure(base_url, model, profile, args) -> int:
     else:
         from vllm_mlx.agents.adapter import setup_agent_config
 
-        preview = setup_agent_config(
-            profile,
-            api_base_url,
-            model,
-            dry_run=True,
-            context_length=context_length,
-        )
+        try:
+            preview = setup_agent_config(
+                profile,
+                api_base_url,
+                model,
+                dry_run=True,
+                context_length=context_length,
+            )
+        except (OSError, RuntimeError, TypeError, ValueError) as exc:
+            print(f"  {profile.display_name} setup failed: {exc}")
+            _print_instructions(profile, api_base_url, model)
+            return 0
         if preview.startswith("Cannot"):
             print(f"  {profile.display_name} setup failed.")
             print(f"  {preview}")
@@ -674,13 +721,18 @@ def _attach_and_configure(base_url, model, profile, args) -> int:
             _print_instructions(profile, api_base_url, model)
             return 0
 
-        summary = setup_agent_config(
-            profile,
-            api_base_url,
-            model,
-            dry_run=False,
-            context_length=context_length,
-        )
+        try:
+            summary = setup_agent_config(
+                profile,
+                api_base_url,
+                model,
+                dry_run=False,
+                context_length=context_length,
+            )
+        except (OSError, RuntimeError, TypeError, ValueError) as exc:
+            print(f"  {profile.display_name} setup failed: {exc}")
+            _print_instructions(profile, api_base_url, model)
+            return 0
         if summary.startswith("Cannot"):
             print(f"  {profile.display_name} setup failed.")
             print(f"  {summary}")
@@ -709,7 +761,10 @@ def _cached_context_window(model: str) -> int | None:
     """Read a cached/local config context limit without network or weights."""
     from vllm_mlx.model_metadata import read_model_metadata
 
-    metadata = read_model_metadata(_hf_id(model))
+    try:
+        metadata = read_model_metadata(_hf_id(model))
+    except (OSError, RuntimeError, TypeError, ValueError):
+        return None
     config = metadata.config if metadata is not None else None
     if not isinstance(config, dict):
         return None
