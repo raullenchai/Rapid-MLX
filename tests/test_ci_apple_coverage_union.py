@@ -168,11 +168,18 @@ def test_sdxl_runtime_coverage_runs_on_apple_silicon() -> None:
 
 
 def test_bonsai_runtime_coverage_runs_on_apple_silicon() -> None:
-    """The MLX-only product adapter must contribute to the coverage union."""
+    """The MLX-only product adapter and dependency must reach the Apple lane."""
     _, workflow = _workflow()
-    apple_run = workflow["jobs"]["test-apple-silicon"]["steps"][-2]["run"]
+    steps = workflow["jobs"]["test-apple-silicon"]["steps"]
+    apple_run = steps[-2]["run"]
+    install = next(
+        step["run"]
+        for step in steps
+        if step.get("name") == "Install project and dependencies"
+    )
 
     assert "tests/test_bonsai_image_alias.py" in apple_run
+    assert 'pip install -e ".[vision,image]"' in install
 
 
 def test_coverage_data_is_commit_bound_and_fail_closed() -> None:
