@@ -119,8 +119,8 @@ echo "── capacity-skip reports and passes"
 
 # All families capacity-skipped means the gate validated nothing and must fail
 # closed rather than claiming vacuous coherence.
+st=0
 out="$(run_sweep "qwen3.6-27b-4bit qwen3.6-35b" "qwen3.6-27b-4bit:qwen3.6-35b" "")" || st=$?
-st=${st:-0}
 if [ "$st" = 2 ]; then
   ok "an all-capacity-skipped sweep fails because no alias was validated"
 else
