@@ -187,6 +187,13 @@ NON_ROUTING_FLAGS_ALLOWLIST: frozenset[str] = frozenset(
         # Agent setup UX knob: skips a post-write HTTP connectivity probe.
         # It does not change model/runtime routing or any auto-detection.
         "--no-check",
+        # ``rapid-mlx start`` (#150) UX knobs, not routing decisions.
+        # --no-download refuses to fetch a model (offline/prefer-cached
+        # preference); --no-setup skips the post-readiness agent-config write.
+        # Neither forwards a routing kwarg into the engine, so neither is a
+        # binary auto-detection that needs an AUTO_ROUTING_FLAG_PAIRS entry.
+        "--no-download",
+        "--no-setup",
         # CORS toggle.
         "--enable-cors",
         # Perf / UX toggles, not routing decisions.

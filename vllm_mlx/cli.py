@@ -12359,6 +12359,13 @@ Examples:
         help="Agent version for version-specific config (e.g. 0.8.5)",
     )
 
+    # Start command — one-command agent startup (#150). Deferred-import so
+    # ``vllm_mlx.run`` (and its heavy deps: recommendations, agents, etc.)
+    # are only loaded when the verb is actually used.
+    from vllm_mlx.run.cli import register as _register_start
+
+    _register_start(subparsers)
+
     # Connect command — the single place to learn "the server is up, now
     # point a tool at it." Renders from the same SSOT as the serve banner
     # (:mod:`vllm_mlx.connect`) so ``ready``/``openai``/``anthropic`` and the
@@ -13091,6 +13098,12 @@ def main():
         info_command(args)
     elif args.command == "agents":
         agents_command(args)
+    elif args.command == "start":
+        from vllm_mlx.run.cli import start_command
+
+        code = start_command(args)
+        if code:
+            raise SystemExit(code)
     elif args.command == "connect":
         connect_command(args)
     elif args.command == "doctor":

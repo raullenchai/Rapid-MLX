@@ -19,6 +19,7 @@
 | `rapid-mlx launch` | One-shot bootstrap: patch an IDE/agent client config to use rapid-mlx |
 | `rapid-mlx connect` | Show the server's connection info and wire up a tool |
 | `rapid-mlx agents` | List, configure, and test agent integrations |
+| `rapid-mlx start` | Start an AI agent with a local model in one command |
 | `rapid-mlx doctor` | Run self-diagnostic / regression harness |
 | `rapid-mlx telemetry` | Manage anonymous usage telemetry (opt-in) |
 | `rapid-mlx upgrade` | Upgrade rapid-mlx with its detected manager (brew / uv / pipx / pip / install.sh) |
@@ -452,6 +453,74 @@ MCP belongs to the chat process: it discovers and executes the configured
 tools, while the spawned or remote Rapid-MLX server receives only standard
 OpenAI function tools and tool-result messages. `serve` and `share` do not
 need the chat's MCP configuration.
+
+## `rapid-mlx start`
+
+Start an AI agent with a local model in one command. `start` ties together
+steps that would otherwise take several commands — pick an agent profile,
+choose a model that fits this Mac, run the server, and wire up the client —
+into a single foreground verb.
+
+### Usage
+
+```bash
+rapid-mlx start [profile] [--model MODEL] [--port PORT] [--host HOST]
+                [--no-download] [--dry-run] [--yes] [--no-setup]
+                [--ready-timeout SECONDS]
+```
+
+### Options
+
+| Flag | Description | Default |
+|------|-------------|---------|
+| `profile` | Agent name (e.g. `codex`, `hermes`, `opencode`). Omit for a generic OpenAI-compatible endpoint. | *(none)* |
+| `--model` | Model alias or HF repo to serve. When omitted, picks the first recommended model (in the profile's declaration order) that fits this Mac and is already cached, else a previewed download. | auto |
+| `--port` | Port to serve on. | `8000` |
+| `--host` | Host to serve on. | `127.0.0.1` |
+| `--no-download` | Refuse to download a model; fail if no recommended model is cached. | off |
+| `--dry-run` | Preview the model, port, and config mutations without starting a server, downloading, or writing anything. | off |
+| `--yes`, `-y` | Skip the confirmation prompt before downloading / writing config. | off |
+| `--no-setup` | Do not write agent configuration after the server is ready; only print instructions. | off |
+| `--ready-timeout` | Seconds to wait for the spawned server to become ready. | `600` |
+
+### Behavior
+
+- **Model selection.** An explicit `--model` wins. Otherwise `start` walks
+  the profile's `recommended` models in declaration order and picks the
+  first that fits this Mac's RAM and is already cached; if none is cached it
+  picks the first fitting recommendation (the profile lists its preferred
+  workhorse first) and shows the download size for consent before starting.
+  `--no-download` refuses rather than touching the network.
+- **Foreground server.** `start` spawns the canonical `serve` in the
+  foreground as a child of this process, forwards `Ctrl-C` (SIGINT/SIGTERM)
+  to it, and exits with the server's status — no orphan `serve` is left
+  behind when you stop the agent. This differs from
+  `rapid-mlx launch --start-server`, which deliberately detaches.
+- **Port reuse.** If a healthy Rapid-MLX server already serves the chosen
+  model on the port, `start` reuses it instead of spawning a second one. If
+  the port is occupied by something else (or a different model), it refuses
+  with a clear message.
+- **Setup.** After the endpoint is healthy, `start` prints the agent's
+  connection instructions and, for the first-class profiles (`claude-code`,
+  `continue`, `deepseek-harness`), applies the same previewed/backed-up
+  atomic config changes as `rapid-mlx agents <name> --setup`. `--no-setup`
+  prints instructions only.
+
+### Examples
+
+```bash
+# Start codex with its recommended model that fits this Mac
+rapid-mlx start codex
+
+# Preview without starting, downloading, or writing anything
+rapid-mlx start hermes --dry-run
+
+# Serve an explicit model on a non-default port, skipping prompts
+rapid-mlx start opencode --model qwen3.5-9b-4bit --port 8123 --yes
+
+# Start a generic OpenAI-compatible endpoint (no agent config)
+rapid-mlx start
+```
 
 ## Environment Variables
 
