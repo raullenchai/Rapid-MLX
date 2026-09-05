@@ -350,7 +350,7 @@ class ImageGenerationEngine:
 
                 local = mflux_local_snapshot(self.model_name)
                 source = local or self.model_name
-                kwargs = {"trust_remote_code": False}
+                kwargs: dict[str, object] = {"trust_remote_code": False}
                 revision = IMAGE_MODEL_REVISIONS.get(self.model_name)
                 if local is None and revision is not None:
                     kwargs["revision"] = revision
