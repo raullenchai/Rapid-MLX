@@ -160,7 +160,11 @@ actor LocalWorkflowExecutor {
 
         while run.nextStepIndex < workflow.steps.count {
             if Task.isCancelled {
-                return await cancel(run, stepID: nil, actionMayHaveOccurred: false)
+                return await cancel(
+                    run,
+                    stepID: nil,
+                    actionMayHaveOccurred: run.nextStepIndex > 0
+                )
             }
             let step = workflow.steps[run.nextStepIndex]
             let result = await executeStep(step, workflow: workflow, run: run)
