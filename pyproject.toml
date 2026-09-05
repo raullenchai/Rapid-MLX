@@ -525,15 +525,18 @@ image = [
     # coexist with the coherence-validated core runtime. Keep a minor cap so
     # image-lane API changes remain deliberate. mflux requires Python >=3.11
     # (Rapid-MLX core still supports 3.10, so the image lane preflight gives
-    # 3.10 users an explicit upgrade diagnostic). Only commercially
-    # permissive model families are wired.
+    # 3.10 users an explicit upgrade diagnostic). Model-weight licenses are
+    # independent of this runtime and documented per family.
     "mflux>=0.19.0,<0.20; platform_system == 'Darwin' and python_version >= '3.11'",
     # HiDream-O1 reuses the exact Qwen3-VL runtime already validated and
     # bundled by Desktop. Keep this pin coherent with [vision]/the sidecar.
     "mlx-vlm==0.6.17; platform_system == 'Darwin' and python_version >= '3.11'",
     # The vendored SDXL backend needs Pillow for PNG encoding. Keep this direct
-    # because SDXL also works on Rapid's Python 3.10 floor without mflux.
+    # because SDXL and SD3.5 also work on Rapid's Python 3.10 floor without
+    # mflux. SD3.5's reviewed local T5 tokenizer additionally needs
+    # sentencepiece on that same floor.
     "pillow>=10.0.0; platform_system == 'Darwin'",
+    "sentencepiece>=0.2.0; platform_system == 'Darwin'",
 ]
 
 [project.urls]
@@ -590,6 +593,9 @@ vllm_mlx = [
     # wheel and Desktop sidecar that contains the adapted MIT source.
     "image/bonsai_runtime/LICENSE",
     "image/bonsai_runtime/NOTICE",
+    # Vendored SD3.5 MLX runtime attribution must ship beside the MIT source.
+    "image/sd35_runtime/LICENSE",
+    "image/sd35_runtime/NOTICE",
 ]
 videox_fun_mlx = ["LICENSE", "NOTICE"]
 
@@ -682,6 +688,9 @@ ignore = [
 # Adapted verbatim from the pinned low-bit runtime. Keep exceptions confined
 # to _vendor; the checkpoint validation and product adapter stay strict.
 "vllm_mlx/image/bonsai_runtime/_vendor/*.py" = ["UP", "B", "SIM", "N", "F", "I", "E", "W"]
+# Pinned DiffusionKit numerical core. Rapid-owned adapter/runtime.py stays
+# linted; only the source-shaped vendor directory receives exceptions.
+"vllm_mlx/image/sd35_runtime/_vendor/**/*.py" = ["UP", "B", "SIM", "N", "F", "I", "E", "W"]
 # Tensor-shape parameter names (B, H, N, D) follow ML literature
 # convention; N803 lowercase rule is incompatible.
 "scripts/bench_attention.py" = ["N803"]
@@ -705,6 +714,12 @@ ignore_missing_imports = true
 # Exact third-party numerical core; Rapid-owned runtime.py remains under the
 # repository-wide shrink-only error budget.
 module = "vllm_mlx.image.bonsai_runtime._vendor.*"
+ignore_errors = true
+
+[[tool.mypy.overrides]]
+# Pinned third-party numerical core; keep the Rapid-owned SD3.5 adapter under
+# the repository-wide shrink-only error budget.
+module = "vllm_mlx.image.sd35_runtime._vendor.*"
 ignore_errors = true
 
 [tool.pytest.ini_options]

@@ -1,0 +1,8 @@
+SD3.5 MLX runtime source derived from DiffusionKit at commit
+498e5dba5fb48b0f01cb6b5c2292a6dbea67a317:
+https://github.com/argmaxinc/DiffusionKit
+
+Original work by Argmax, Inc. and contributors, released under the MIT License.
+Rapid-MLX modifications remove Torch/CoreML-only dependencies, require reviewed
+local asset roots, update the MLX attention API, expose progress/cancellation,
+and narrow the adapter to SD3.5 Large text-to-image generation.

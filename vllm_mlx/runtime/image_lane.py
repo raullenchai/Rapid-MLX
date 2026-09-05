@@ -30,7 +30,7 @@ __all__ = [
 def require_image_runtime_or_exit(model_name: str | None = None) -> None:
     """Fail before model download when the optional image stack is absent."""
     family = _detect_family(model_name) if model_name else ""
-    if sys.version_info < (3, 11) and family != "sdxl-base":
+    if sys.version_info < (3, 11) and family not in {"sdxl-base", "sd35-large"}:
         print(
             "\n  Error: image generation requires Python 3.11 or newer "
             f"(current: {sys.version_info.major}.{sys.version_info.minor}). "
@@ -43,7 +43,7 @@ def require_image_runtime_or_exit(model_name: str | None = None) -> None:
         "mlx_vlm"
         if family == "hidream-o1-dev"
         else "PIL"
-        if family == "sdxl-base"
+        if family in {"sdxl-base", "sd35-large"}
         else "mflux"
     )
     if importlib.util.find_spec(runtime_module) is None:

@@ -62,6 +62,8 @@ struct SidecarBuildScriptTests {
         let constraints = try String(contentsOf: Self.constraintsURL, encoding: .utf8)
 
         #expect(constraints.contains("mlx-vlm==0.6.17"))
+        #expect(constraints.contains("sentencepiece==0.2.2"),
+                "SD3.5's T5 tokenizer dependency must not float in signed builds.")
         #expect(!script.contains("'mlx-vlm>=0.6.3,!=0.6.4,<0.7'"),
                 "The no-deps sidecar install must never float within a range.")
         #expect(script.contains(#"--constraint "$SIDECAR_CONSTRAINTS""#),
@@ -82,6 +84,10 @@ struct SidecarBuildScriptTests {
         }
         #expect(script.contains("from vllm_mlx.image.hidream_runtime import HiDreamO1"),
                 "The bundled sidecar must include the HiDream image adapter, not only mlx-vlm.")
+        #expect(script.contains("from vllm_mlx.image.sd35_runtime import SD35Large"),
+                "The bundled sidecar must include the vendored SD3.5 image adapter.")
+        #expect(script.contains("import sentencepiece"),
+                "The bundled sidecar must prove SD3.5's tokenizer dependency imports.")
         #expect(script.contains("from vllm_mlx.image.sdxl_runtime import SDXL"),
                 "The bundled sidecar must include the vendored SDXL image adapter.")
         #expect(script.contains(#"find_spec("cv2") is None"#))

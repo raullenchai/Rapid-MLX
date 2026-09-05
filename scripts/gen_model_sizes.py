@@ -86,6 +86,7 @@ def _size_one(repo_id: str) -> tuple[str, int | None]:
         IMAGE_MODEL_DATA_FILES,
         IMAGE_MODEL_REVISIONS,
         estimate_repo_size_bytes,
+        image_runtime_assets_for,
     )
 
     data_files = IMAGE_MODEL_DATA_FILES.get(repo_id)
@@ -97,20 +98,27 @@ def _size_one(repo_id: str) -> tuple[str, int | None]:
         try:
             from huggingface_hub import model_info
 
-            info = model_info(
-                repo_id,
-                revision=IMAGE_MODEL_REVISIONS[repo_id],
-                files_metadata=True,
-                timeout=5,
+            payloads = (
+                (repo_id, IMAGE_MODEL_REVISIONS[repo_id], data_files),
+                *image_runtime_assets_for(repo_id),
             )
-            sizes = {
-                sibling.rfilename: sibling.size
-                for sibling in (getattr(info, "siblings", None) or [])
-                if hasattr(sibling, "rfilename")
-            }
-            if any(path not in sizes or sizes[path] is None for path in data_files):
-                return repo_id, None
-            return repo_id, sum(int(sizes[path]) for path in data_files)
+            total = 0
+            for payload_repo, revision, allowlist in payloads:
+                info = model_info(
+                    payload_repo,
+                    revision=revision,
+                    files_metadata=True,
+                    timeout=5,
+                )
+                sizes = {
+                    sibling.rfilename: sibling.size
+                    for sibling in (getattr(info, "siblings", None) or [])
+                    if hasattr(sibling, "rfilename")
+                }
+                if any(path not in sizes or sizes[path] is None for path in allowlist):
+                    return repo_id, None
+                total += sum(int(sizes[path]) for path in allowlist)
+            return repo_id, total
         except Exception:
             return repo_id, None
 

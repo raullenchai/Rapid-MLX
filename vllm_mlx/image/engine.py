@@ -1,14 +1,14 @@
 # SPDX-License-Identifier: Apache-2.0
 """MLX-native image generation engine.
 
-Thin wrapper over `mflux <https://github.com/filipstrand/mflux>`_ — an
-MLX-native, line-by-line port of the FLUX / Qwen-Image model families with
-built-in 4/8-bit quantization. Rapid-MLX owns request validation, the lazy
-load / process-lock lifecycle and the OpenAI-compatible transport; mflux owns
-the diffusion pipeline and weight loading.
+Unified adapter over mflux and the pinned native MLX runtimes used by image
+families outside mflux. Rapid-MLX owns request validation, the lazy-load /
+process-lock lifecycle, checkpoint boundaries, and the OpenAI-compatible
+transport; each family backend owns its diffusion pipeline and weight loading.
 
-Only commercially permissive families are wired here so the whole surface
-stays commercially clean:
+Each wired family has an explicit runtime and model-license contract. Some
+checkpoints are permissive; others require the user to accept model-specific
+terms before commercial use:
 
 * ``flux2-klein``      — text→image + image edit (``FLUX.2-klein-4B``),
   4B/4-step, the fast default: ~3 s @ 512² / ~10 s @ 1024² on an M3 Ultra,
@@ -24,6 +24,8 @@ stays commercially clean:
   30-step, dual-CLIP + UNet + VAE pipeline (OpenRAIL++)
 * ``bonsai-image``     — text→image (ternary ``FLUX.2-klein-4B``), 4-step,
   prepacked MLX 2-bit transformer with a 4-bit Qwen3 encoder (Apache-2.0)
+* ``sd35-large``       — text→image (``Stable Diffusion 3.5 Large``), 28-step,
+  triple-encoder MMDiT pipeline (Stability AI Community License)
 
 ``flux2-klein`` and ``z-image`` supersede the older/larger families for the
 interactive tab: Klein is ~3× faster than schnell/z-image at the same
@@ -38,6 +40,7 @@ from __future__ import annotations
 
 import gc
 import io
+import math
 import os
 import re
 import threading
@@ -117,6 +120,13 @@ def _detect_family(model_name: str) -> str:
         return "bonsai-image"
     if "hidream-o1" in name or "hidream_o1" in name:
         return "hidream-o1-dev"
+    if (
+        "stable-diffusion-3.5" in name
+        or "stable_diffusion_3.5" in name
+        or "sd3.5" in name
+        or "sd35" in name
+    ):
+        return "sd35-large"
     if "stable-diffusion-xl" in name or "sdxl" in name:
         return "sdxl-base"
     # Klein first — its repos ("FLUX.2-klein-4B-mflux-4bit") also contain
@@ -137,7 +147,7 @@ def _detect_family(model_name: str) -> str:
     raise ImageRuntimeError(
         f"Unsupported image model '{model_name}'. Supported families: "
         "flux2-klein, z-image, flux-schnell, qwen-image, qwen-image-edit, "
-        "hidream-o1-dev, sdxl-base, bonsai-image."
+        "hidream-o1-dev, sdxl-base, bonsai-image, sd35-large."
     )
 
 
@@ -160,6 +170,7 @@ _DEFAULT_STEPS_BY_FAMILY = {
     "hidream-o1-dev": 28,
     "sdxl-base": 30,
     "bonsai-image": 4,
+    "sd35-large": 28,
 }
 
 
@@ -203,6 +214,7 @@ class ImageGenerationEngine:
             "hidream-o1-dev",
             "sdxl-base",
             "bonsai-image",
+            "sd35-large",
         } or _looks_like_prequantized(model_name)
         # ``None`` when a backend owns its local checkpoint conversion, or when
         # the repo is already quantized. Passing a width for pre-quantized
@@ -325,6 +337,29 @@ class ImageGenerationEngine:
             if model_path is None:
                 raise ImageRuntimeError("SDXL requires a local model snapshot.")
             return SDXL(model_path, on_step=self._report_native_step)
+
+        if self.family == "sd35-large":
+            from .._download_gate import (
+                SD35_SHARED_REPO,
+                SD35_T5_TOKENIZER_REPO,
+                pinned_image_snapshot,
+            )
+            from .sd35_runtime import SD35Large
+
+            model_path = self._model_path_for_mflux()
+            shared_path = pinned_image_snapshot(SD35_SHARED_REPO)
+            t5_tokenizer_path = pinned_image_snapshot(SD35_T5_TOKENIZER_REPO)
+            if not model_path or not shared_path or not t5_tokenizer_path:
+                raise ImageRuntimeError(
+                    "SD3.5 Large requires its pinned model and text-encoder assets. "
+                    "Re-run the model download to finish them."
+                )
+            return SD35Large(
+                model_path,
+                shared_path,
+                t5_tokenizer_path,
+                on_step=self._report_native_step,
+            )
 
         from mflux.models.common.config.model_config import ModelConfig
 
@@ -474,6 +509,32 @@ class ImageGenerationEngine:
             "generating with it would produce noise rather than an image. "
             f"Missing: {', '.join(missing)}. Re-run the download to finish it."
         )
+
+    def _ensure_runtime_assets(self) -> None:
+        """Fetch pinned auxiliary image data needed by a vendored runtime."""
+        if Path(self.model_name).expanduser().is_dir():
+            return
+        from .._download_gate import image_runtime_assets_for, pinned_image_snapshot
+
+        assets = image_runtime_assets_for(self.model_name)
+        if not assets:
+            return
+        from huggingface_hub import snapshot_download
+
+        for repo_id, revision, allow_patterns in assets:
+            if pinned_image_snapshot(repo_id) is not None:
+                continue
+            try:
+                snapshot_download(
+                    repo_id,
+                    revision=revision,
+                    allow_patterns=list(allow_patterns),
+                )
+            except Exception as exc:  # noqa: BLE001 — clean runtime boundary
+                raise ImageRuntimeError(
+                    f"Could not download required image runtime assets "
+                    f"'{repo_id}' at pinned revision {revision}: {exc}"
+                ) from exc
 
     # Hidden size mflux hardcodes for the Qwen2 text encoder backing both
     # qwen-image and qwen-image-edit (``QwenEncoderLayer.__init__``'s
@@ -687,6 +748,7 @@ class ImageGenerationEngine:
             self._loaded_mode = None
             _release_allocator_cache()
         if self._model is None:
+            self._ensure_runtime_assets()
             self._verify_weights_complete()
             try:
                 self._model = (
@@ -829,6 +891,34 @@ class ImageGenerationEngine:
             if negative_prompt is not None:
                 raise ImageRuntimeError(
                     "Bonsai Image does not support negative_prompt."
+                )
+        elif self.family == "sd35-large":
+            if len(prompt) > 4096:
+                raise ImageRuntimeError(
+                    "SD3.5 Large prompts are limited to 4096 characters."
+                )
+            if num_inference_steps != 28:
+                raise ImageRuntimeError(
+                    "SD3.5 Large supports its validated 28-step schedule only."
+                )
+            if (
+                width is None
+                or height is None
+                or not (256 <= width <= 1536)
+                or not (256 <= height <= 1536)
+            ):
+                raise ImageRuntimeError(
+                    "SD3.5 Large dimensions must be between 256 and 1536 pixels."
+                )
+            if width % 16 or height % 16:
+                raise ImageRuntimeError(
+                    "SD3.5 Large dimensions must be multiples of 16."
+                )
+            if guidance is not None and (
+                not math.isfinite(guidance) or not (0.0 <= guidance <= 20.0)
+            ):
+                raise ImageRuntimeError(
+                    "SD3.5 Large guidance must be a finite value between 0 and 20."
                 )
 
         with self._lock:
