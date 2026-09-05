@@ -94,6 +94,58 @@ class Qwen4ExpStateCache(ArraysCache):
         self.rollback_state = None
         self._rollback_slots = None
 
+    # ------------------------------------------------------------------
+    # cache_rollback contract.
+    #
+    # During a speculative-verify forward the recurrent state is advanced by
+    # the whole draft in one call, and a rejected suffix must be rolled back
+    # to the last committed boundary losslessly. The per-position recurrent
+    # boundaries captured by ``record_slot_snapshots(..., finalize=True)``
+    # (``rollback_state``) are exactly the undo record this cache needs, the
+    # same way DeepSeek V4's rotating/pooling caches carry an undo log
+    # (``deepseek_v4_rollback``). Exposing them through the ``cache_rollback``
+    # contract (``is_trimmable``/``can_trim``/``trim``/``trim_checkpoint``/
+    # ``restore_trim_checkpoint``) lets ``cache_rollback.can_advance``/``trim_all``
+    # build an atomic multi-token verify transaction over a composite HYBRID
+    # cache — without which the draftless n-gram suffix path rejected hybrid
+    # recurring (Qwen3.5/3.6 GatedDeltaNet, Granite4 Mamba2) layers as
+    # non-trimmable. Only the spec-verify window is trimmable (matches DSpark's
+    # ``is_trimmable == has undo record``), and only rollback as far as the
+    # captured boundary.
+    def is_trimmable(self) -> bool:
+        return self.rollback_state is not None
+
+    def can_trim(self, n: int) -> bool:
+        if n < 0:
+            return False
+        if self.rollback_state is None:
+            return False
+        return 1 <= len(self.rollback_state) - n <= len(self.rollback_state)
+
+    def trim_checkpoint(self):
+        return (
+            list(self.cache),
+            self.rollback_state,
+            self._rollback_slots,
+            self.left_padding,
+            self.lengths,
+        )
+
+    def restore_trim_checkpoint(self, state) -> None:
+        (
+            self.cache,
+            self.rollback_state,
+            self._rollback_slots,
+            self.left_padding,
+            self.lengths,
+        ) = state
+
+    def trim(self, n: int) -> int:
+        if not self.can_trim(n):
+            return 0
+        self.restore_rollback(n, len(self.rollback_state))
+        return n
+
 
 class QSAIndexCache(ArraysCache):
     """Raw circular index keys plus persistent compressed-key state."""

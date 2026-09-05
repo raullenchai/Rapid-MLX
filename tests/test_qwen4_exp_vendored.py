@@ -791,6 +791,111 @@ def test_qsa_speculative_snapshot_fails_closed_on_invalid_boundary():
         qsa.restore_rollback(3, 3)
 
 
+def test_qwen4_state_cache_implements_cache_rollback_contract():
+    """``Qwen4ExpStateCache`` participates in the composite verify transaction.
+
+    Layer B' of #2561: the draftless n-gram suffix path (and the composite
+    ``cache_rollback`` transaction) rejected hybrid recurring layers because
+    ``Qwen4ExpStateCache`` did not satisfy ``cache_rollback.can_trim``. It now
+    exposes the same ``is_trimmable``/``can_trim``/``trim``/
+    ``trim_checkpoint``/``restore_trim_checkpoint`` contract QSA already has,
+    backed by the existing ``record_slot_snapshots``/``rollback_state``
+    undo record. Only the spec-verify window is trimmable; the preflight and
+    transactional restore must behave correctly.
+    """
+    from vllm_mlx.cache_rollback import can_advance, can_trim, trim_all
+
+    recurrent = Qwen4ExpStateCache(size=2)
+
+    # Not in a spec-verify window → nothing to roll back.
+    assert not recurrent.is_trimmable()
+    assert not can_trim(recurrent, 1)
+    assert not can_advance(recurrent, 1)
+
+    # A 2-draft verify captures 3 boundaries: the base (committed prefix)
+    # plus one per accepted position — so the undo record has 3 entries and
+    # can drop up to 2 (full rejection → keep base only), mirroring the QSA
+    # ``rollback_state``/``restore_rollback`` convention.
+    recurrent.record_slot_snapshots(
+        0,
+        [
+            mx.ones((1, 1, 2), dtype=mx.float32),
+            mx.ones((1, 1, 2), dtype=mx.float32),
+            mx.ones((1, 1, 2), dtype=mx.float32),
+        ],
+    )
+    recurrent.record_slot_snapshots(
+        1,
+        [
+            mx.ones((1, 1, 2), dtype=mx.float32),
+            mx.ones((1, 1, 2), dtype=mx.float32),
+            mx.ones((1, 1, 2), dtype=mx.float32),
+        ],
+        finalize=True,
+    )
+    assert recurrent.is_trimmable()
+    assert can_trim(recurrent, 1)
+    assert can_trim(recurrent, 2)
+    assert can_advance(recurrent, 2)
+
+    # Transactional trim drops the rejected tail and clears the undo record.
+    assert trim_all([recurrent], 1)
+    assert recurrent.rollback_state is None
+
+
+def test_qwen4_state_cache_rollback_via_composite_cache_list():
+    """A QSA + recurrent composite now admits multi-token rollback losslessly.
+
+    The suffix verify path preflights the WHOLE composite cache with
+    ``cache_rollback.can_advance``/``trim_all``. Both leaves (QSA compressed
+    keys and Qwen4 recurrent state) must roll back to the same committed
+    boundary. This is the Layer B' precondition for opening the hybrid n-gram
+    allowlist.
+    """
+    from vllm_mlx.cache_rollback import can_advance, trim_all
+
+    def transform(group, start):
+        return group + start
+
+    initial = mx.arange(9, dtype=mx.float32).reshape(1, 9, 1)
+    verify = mx.array([[[90.0], [91.0]]])
+
+    qsa = QSAIndexCache(compress_ratio=4)
+    qsa.update(initial, transform)
+    # Verify forward of [base, d_0, d_1] with rollback captured.
+    qsa.update(verify, transform, record_rollback=True)
+
+    recurrent = Qwen4ExpStateCache(size=2)
+    # The QSA verify above published 2 boundaries (from a 2-token verify that
+    # completed one extra compressed group), which supports dropping 1. The
+    # recurrent cache publishes a matching undo record so BOTH leaves roll back
+    # to the same committed boundary.
+    recurrent.record_slot_snapshots(
+        0,
+        [
+            mx.ones((1, 1, 2), dtype=mx.float32),
+            mx.ones((1, 1, 2), dtype=mx.float32),
+        ],
+    )
+    recurrent.record_slot_snapshots(
+        1,
+        [
+            mx.ones((1, 1, 2), dtype=mx.float32),
+            mx.ones((1, 1, 2), dtype=mx.float32),
+        ],
+        finalize=True,
+    )
+
+    composite = CacheList(qsa, recurrent)
+
+    # Multi-token verify admissible now that BOTH leaves are trimmable.
+    assert can_advance(composite, 1)
+    # Reject the last draft → roll back both leaves by one.
+    assert trim_all([composite], 1)
+    assert qsa.rollback_state is None
+    assert recurrent.rollback_state is None
+
+
 def test_suffix_scheduler_falls_through_before_qsa_multitoken_verify():
     from vllm_mlx.scheduler import _install_suffix_decoding
 
