@@ -186,23 +186,6 @@ def block_sparse_decline_reason(
     return None
 
 
-def should_use_block_sparse(
-    query_length: int,
-    physical_kv_length: int,
-    *,
-    training: bool = False,
-) -> bool:
-    """Return whether the route is enabled and past its measured crossover."""
-    return (
-        block_sparse_decline_reason(
-            query_length,
-            physical_kv_length,
-            training=training,
-        )
-        is None
-    )
-
-
 def block_sparse_layout_supported(
     *,
     query_heads: int,

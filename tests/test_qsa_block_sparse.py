@@ -90,6 +90,79 @@ def test_qsa_layout_gate_covers_threadgroup_and_gqa_limits():
         block_size=128,
         dtype=mx.bfloat16,
     )
+    assert not qsa_block_sparse.block_sparse_layout_supported(
+        query_heads=24,
+        kv_heads=0,
+        head_dim=256,
+        block_size=4,
+        dtype=mx.bfloat16,
+    )
+    assert not qsa_block_sparse.block_sparse_layout_supported(
+        query_heads=24,
+        kv_heads=2,
+        head_dim=255,
+        block_size=4,
+        dtype=mx.bfloat16,
+    )
+    assert not qsa_block_sparse.block_sparse_layout_supported(
+        query_heads=24,
+        kv_heads=2,
+        head_dim=256,
+        block_size=4,
+        dtype=mx.int32,
+    )
+
+
+def _valid_kernel_inputs(*, query_heads=2, kv_heads=1, head_dim=32, dtype=mx.float16):
+    queries = mx.zeros((1, query_heads, 1, head_dim), dtype=dtype)
+    keys = mx.zeros((1, kv_heads, 2, head_dim), dtype=dtype)
+    return {
+        "queries": queries,
+        "keys": keys,
+        "values": mx.zeros_like(keys),
+        "block_starts": mx.zeros((1, 1, 1), dtype=mx.int32),
+        "block_counts": mx.ones((1, 1), dtype=mx.int32),
+        "tail_indices": mx.zeros((1, 1, 2), dtype=mx.int32),
+        "tail_counts": mx.zeros((1, 1), dtype=mx.int32),
+        "block_size": 2,
+    }
+
+
+def test_qsa_kernel_rejects_every_unsafe_shape_and_layout():
+    def rejected(message, **overrides):
+        inputs = _valid_kernel_inputs()
+        inputs.update(overrides)
+        with pytest.raises(ValueError, match=message):
+            qsa_block_sparse.block_sparse_attention(**inputs)
+
+    rejected("rank four", queries=mx.zeros((1, 1, 32)))
+    rejected("positive", block_size=0)
+    rejected("block starts", block_starts=mx.zeros((1, 2, 1), dtype=mx.int32))
+    rejected("block counts", block_counts=mx.zeros((1, 2), dtype=mx.int32))
+    rejected("tail indices", tail_indices=mx.zeros((1, 1, 1), dtype=mx.int32))
+    rejected("tail counts", tail_counts=mx.zeros((1, 2), dtype=mx.int32))
+    rejected("shapes are inconsistent", values=mx.zeros((1, 1, 3, 32)))
+    rejected("same dtype", keys=mx.zeros((1, 1, 2, 32), dtype=mx.float32))
+
+    inputs = _valid_kernel_inputs(head_dim=33)
+    with pytest.raises(ValueError, match="divisible by 32"):
+        qsa_block_sparse.block_sparse_attention(**inputs)
+
+    inputs = _valid_kernel_inputs(kv_heads=0)
+    with pytest.raises(ValueError, match="at least one KV head"):
+        qsa_block_sparse.block_sparse_attention(**inputs)
+
+    inputs = _valid_kernel_inputs(query_heads=3, kv_heads=2)
+    with pytest.raises(ValueError, match="divisible by KV heads"):
+        qsa_block_sparse.block_sparse_attention(**inputs)
+
+    inputs = _valid_kernel_inputs(query_heads=33)
+    with pytest.raises(ValueError, match="at most 32"):
+        qsa_block_sparse.block_sparse_attention(**inputs)
+
+    inputs = _valid_kernel_inputs(dtype=mx.int32)
+    with pytest.raises(ValueError, match="layout is unsupported"):
+        qsa_block_sparse.block_sparse_attention(**inputs)
 
 
 class _FakeIndexer:
@@ -220,6 +293,37 @@ def test_qsa_attention_disabled_control_stays_dense(monkeypatch):
         "kernel_calls": 0,
         "declines": 1,
         "decline_reasons": {"disabled": 1},
+    }
+
+
+def test_qsa_attention_unsupported_layout_stays_dense(monkeypatch):
+    args = _args()
+    attention = QSAAttention(args)
+    attention.eval()
+    attention.indexer = _FakeIndexer()
+    monkeypatch.setenv(qsa_block_sparse.ENABLE_ENV, "1")
+    monkeypatch.setattr(qwen4_exp, "block_sparse_layout_supported", lambda **_: False)
+
+    def fail_if_sparse(*_args, **_kwargs):
+        raise AssertionError("unsupported layout must not dispatch the sparse kernel")
+
+    def fake_dense(queries, keys, values, *, cache, scale, mask):
+        del keys, values, cache, scale, mask
+        return mx.zeros_like(queries)
+
+    monkeypatch.setattr(qwen4_exp, "block_sparse_attention", fail_if_sparse)
+    monkeypatch.setattr(qwen4_exp, "scaled_dot_product_attention", fake_dense)
+    output = attention(
+        mx.zeros((1, 64, args.hidden_size)),
+        [_FakeKVCache(), object()],
+        mask="causal",
+    )
+    mx.eval(output)
+
+    assert qwen4_exp.qwen4_qsa_block_sparse_stats(attention) == {
+        "kernel_calls": 0,
+        "declines": 1,
+        "decline_reasons": {"unsupported layout": 1},
     }
 
 
