@@ -1,4 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
+import re
 from concurrent.futures import ThreadPoolExecutor
 from threading import Event, Lock
 from types import SimpleNamespace
@@ -10,6 +11,8 @@ pytest.importorskip("mlx")
 pytestmark = pytest.mark.requires_mlx
 
 import mlx.core as mx
+import mlx.nn as nn
+import numpy as np
 
 from vllm_mlx.kernels import qwen4_fused_gdn_decode as fused_gdn
 from vllm_mlx.models import qwen4_exp
@@ -615,3 +618,141 @@ def test_probe_exception_preserves_cache():
     assert layer.fused_gdn_decode_last_fallback == (
         "Metal kernel dispatch failed: ValueError"
     )
+
+
+# ---------------------------------------------------------------------------
+# Sigmoid form per boundary.
+#
+# The kernel replaces three stock ops that each involve a sigmoid, and its
+# exactness gate is bit-identity with those ops: the beta gate is
+# ``mx.sigmoid(beta)`` in bf16, the output gate is
+# ``mx.sigmoid(z.astype(float32))``, and the convolution activation is
+# ``nn.silu(x)``. On the tested MLX builds (0.32.1 and a 0.32.2 development
+# build) ``mx.sigmoid`` and the compiled ``nn.silu`` do not agree at the bit
+# level, so the kernel picks the form per boundary: ``mlx_sigmoid_precise``
+# matches ``mx.sigmoid`` on every finite bf16 input in bf16 and in float32
+# (the fast form differs on one bf16 input, x ~ -6.85, and on 628 inputs at
+# float32), while ``x * mlx_sigmoid_fast(x)`` matches ``nn.silu`` on every
+# finite bf16 input (the precise form differs on one). See ml-explore/mlx#4461
+# for the underlying ``metal::exp`` resolution difference.
+#
+# The source-string contracts below pin which helper each production
+# assignment uses. The Metal sweeps compile isolated helper bodies against
+# the kernel's ``_HEADER`` and re-check the whole finite-bf16 domain against
+# the installed MLX, rather than trusting a recorded count.
+# ---------------------------------------------------------------------------
+
+_BETA_GATE_LINE = re.compile(
+    r"^\s*shr\[3\] = float\(mlx_sigmoid_(\w+)\(beta\[hv\]\)\);\s*$", re.MULTILINE
+)
+_OUTPUT_GATE_LINE = re.compile(
+    r"^\s*float x = float\(normalized\) \* "
+    r"mlx_sigmoid_(\w+)<float>\(float\(z\[hv \* DV \+ d\]\)\);\s*$",
+    re.MULTILINE,
+)
+_CONV_SILU_LINE = re.compile(r"^\s*T sig = mlx_sigmoid_(\w+)\(xb\);\s*$", re.MULTILINE)
+
+
+def _production_gate_form(pattern: re.Pattern) -> str:
+    """The helper named on the single non-comment production line matching
+    ``pattern`` in the kernel source."""
+    lines = [
+        line
+        for line in fused_gdn._SOURCE.splitlines()
+        if not line.lstrip().startswith("//")
+    ]
+    matches = pattern.findall("\n".join(lines))
+    assert len(matches) == 1, f"expected one production line for {pattern.pattern}"
+    return matches[0]
+
+
+def test_beta_gate_uses_precise_sigmoid():
+    assert _production_gate_form(_BETA_GATE_LINE) == "precise"
+
+
+def test_output_gate_uses_precise_float_sigmoid():
+    assert _production_gate_form(_OUTPUT_GATE_LINE) == "precise"
+
+
+def test_conv_silu_keeps_fast_sigmoid():
+    assert _production_gate_form(_CONV_SILU_LINE) == "fast"
+
+
+def _finite_bf16() -> mx.array:
+    bits = np.arange(0, 65536, dtype=np.uint32)
+    values = (bits << 16).view(np.float32)
+    return mx.array(values[np.isfinite(values)]).astype(mx.bfloat16)
+
+
+def _header_helper(name: str, body: str, x: mx.array, out_dtype) -> mx.array:
+    kernel = mx.fast.metal_kernel(
+        name=f"qwen4_sigmoid_boundary_{name}",
+        input_names=["x"],
+        output_names=["out"],
+        header=fused_gdn._HEADER,
+        source="uint i = thread_position_in_grid.x; " + body,
+    )
+    (out,) = kernel(
+        inputs=[x],
+        template=[("T", mx.bfloat16)],
+        grid=(x.size, 1, 1),
+        threadgroup=(256, 1, 1),
+        output_shapes=[x.shape],
+        output_dtypes=[out_dtype],
+    )
+    return out
+
+
+def _bit_mismatches(a: mx.array, b: mx.array, view_dtype) -> int:
+    return int(mx.sum(a.view(view_dtype) != b.view(view_dtype)).item())
+
+
+requires_metal = pytest.mark.skipif(
+    not mx.metal.is_available(), reason="sweep compiles a Metal kernel"
+)
+
+
+@requires_metal
+def test_precise_bf16_sigmoid_matches_mx_sigmoid_on_every_finite_bf16():
+    x = _finite_bf16()
+    reference = mx.sigmoid(x)
+    precise = _header_helper(
+        "beta_precise", "out[i] = mlx_sigmoid_precise(x[i]);", x, mx.bfloat16
+    )
+    fast = _header_helper(
+        "beta_fast", "out[i] = mlx_sigmoid_fast(x[i]);", x, mx.bfloat16
+    )
+    mx.eval(reference, precise, fast)
+    assert _bit_mismatches(precise, reference, mx.uint16) == 0
+    # The fast form is what the beta gate shipped with; keep the evidence
+    # that it is not the same function as the stock op.
+    assert _bit_mismatches(fast, reference, mx.uint16) >= 1
+
+
+@requires_metal
+def test_precise_float_sigmoid_matches_mx_sigmoid_on_every_bf16_valued_float():
+    x = _finite_bf16()
+    reference = mx.sigmoid(x.astype(mx.float32))
+    precise = _header_helper(
+        "z_precise", "out[i] = mlx_sigmoid_precise<float>(float(x[i]));", x, mx.float32
+    )
+    fast = _header_helper(
+        "z_fast", "out[i] = mlx_sigmoid_fast<float>(float(x[i]));", x, mx.float32
+    )
+    mx.eval(reference, precise, fast)
+    assert _bit_mismatches(precise, reference, mx.uint32) == 0
+    assert _bit_mismatches(fast, reference, mx.uint32) >= 1
+
+
+@requires_metal
+def test_fast_silu_matches_nn_silu_on_every_finite_bf16():
+    x = _finite_bf16()
+    reference = nn.silu(x)
+    fast = _header_helper(
+        "silu_fast",
+        "{ T v = x[i]; T s = mlx_sigmoid_fast(v); out[i] = v * s; }",
+        x,
+        mx.bfloat16,
+    )
+    mx.eval(reference, fast)
+    assert _bit_mismatches(fast, reference, mx.uint16) == 0

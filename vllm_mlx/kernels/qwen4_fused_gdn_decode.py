@@ -252,7 +252,9 @@ _SOURCE = r"""
     T sp = mlx_softplus_fast(av);
     shr[2] = metal::precise::exp(
         -metal::precise::exp(float(A_log[hv])) * float(sp));
-    shr[3] = float(mlx_sigmoid_fast(beta[hv]));
+    // Exhaustive bf16 sweep: mlx_sigmoid_precise<T> equals mx.sigmoid on
+    // every finite bf16 input; the fast form differs on one (x ~ -6.85).
+    shr[3] = float(mlx_sigmoid_precise(beta[hv]));
   }
   threadgroup_barrier(mem_flags::mem_threadgroup);
 
@@ -327,7 +329,9 @@ _SOURCE = r"""
   for (uint d = tid; d < (uint)DV; d += NT) {
     T normalized = static_cast<T>(sy[d] * shr[0]);
     normalized = norm_weight[d] * normalized;
-    float x = float(normalized) * mlx_sigmoid_fast<float>(float(z[hv * DV + d]));
+    // Exhaustive bf16 sweep: the precise float32 sigmoid matches mx.sigmoid
+    // on every finite bf16-valued gate; the fast form differs on ~1%.
+    float x = float(normalized) * mlx_sigmoid_precise<float>(float(z[hv * DV + d]));
     output[hv * DV + d] = static_cast<T>(x);
   }
 """
