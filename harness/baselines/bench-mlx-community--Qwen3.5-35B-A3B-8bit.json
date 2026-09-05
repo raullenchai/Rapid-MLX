@@ -1,6 +1,6 @@
 {
   "schema": 1,
-  "captured_at": "2026-09-05T18:48:03Z",
+  "captured_at": "2026-09-05T18:44:31Z",
   "family": "qwen3.5",
   "sample_runs": 3,
   "regression_threshold_pct": {

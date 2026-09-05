@@ -139,7 +139,7 @@ def _install_mlx_vlm_mock(
     monkeypatch: pytest.MonkeyPatch,
     *,
     is_diffusion: bool = True,
-    model: FakeModel | FakeMaskedLmDiffusionModel = FakeModel(),
+    model: FakeModel | FakeMaskedLmDiffusionModel | None = None,
     stream_yields: list[FakeGenerationResult] | None = None,
 ) -> None:
     """Wire stub modules into ``sys.modules`` so the real mlx-vlm
@@ -157,8 +157,10 @@ def _install_mlx_vlm_mock(
     mlx_vlm_pkg = sys.modules.get("mlx_vlm") or types.ModuleType("mlx_vlm")
     mlx_vlm_utils = types.ModuleType("mlx_vlm.utils")
 
+    loaded_model: Any = FakeModel() if model is None else model
+
     def _load(hf_path: str) -> tuple[Any, FakeProcessor]:
-        return model, FakeProcessor()
+        return loaded_model, FakeProcessor()
 
     mlx_vlm_utils.load = _load  # type: ignore[attr-defined]
 
