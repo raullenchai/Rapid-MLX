@@ -62,6 +62,14 @@ TEMP21C = {
     "tolerance": 1.0,
     "aliases": ["temperature"],
 }
+TEMP18C = {
+    "type": "number",
+    "key": "temperature",
+    "value": 18.0,
+    "unit": "c",
+    "tolerance": 1.0,
+    "aliases": ["temperature"],
+}
 HUMIDITY = {
     "type": "relation",
     "key": "humidity",
@@ -292,7 +300,7 @@ class TestFailures:
 
 # --- Regressions from pr_validate codex_review (#2347) ----------------------
 class TestCodexRegressionFixes:
-    """Lock in fixes for the 10 blocker findings from pr_validate codex_review."""
+    """Lock in fixes for the 15 blocker findings from pr_validate codex_review."""
 
     def test_incompatible_explicit_unit_does_not_satisfy_number(self, g):
         # An explicitly '%'-qualified value must never satisfy a °C fact even
@@ -387,6 +395,52 @@ class TestCodexRegressionFixes:
         }
         rep = _grade(g, [rh], "we go through 62 pages of notes")
         assert rep.facts[0].status == "missing"
+
+    def test_unit_qualified_value_must_be_near_anchor_when_anchor_present(self, g):
+        # An unrelated same-unit value ("oven is 21°C") must not satisfy a
+        # 21°C temperature fact when the "temperature" anchor is present and the
+        # value sits outside its window.
+        rep = _grade(
+            g,
+            [TEMP21C],
+            "The temperature was recorded this morning as 5°C. Meanwhile the "
+            "oven thermometer above the workbench reads 21°C.",
+        )
+        assert rep.facts[0].status == "missing"
+        # No anchor present -> a correctly-unit-qualified value is natural
+        # paraphrase and still accepted ("21 °C at the moment").
+        assert _grade(g, [TEMP21C], "21°C at the moment today").overall is True
+
+    def test_unknown_unit_numeric_not_bare(self, g):
+        # "55 mph" must not be read as a bare 55 that could satisfy humidity 55%.
+        rep = _grade(g, [HUMIDITY], "Wind speed is 55 mph.")
+        assert rep.facts[0].status == "missing"
+
+    def test_conflicting_values_for_same_fact_contradict(self, g):
+        # Reporting two incompatible temperatures for one fact is a contradiction.
+        rep = _grade(
+            g,
+            [TEMP18C],
+            "The temperature is 18°C and 30°C.",
+        )
+        assert rep.facts[0].status == "contradicted"
+        assert rep.overall is False
+        # A single value stays clean.
+        assert _grade(g, [TEMP18C], "The temperature is 18°C.").overall is True
+
+    def test_missing_value_fact_fails_visible(self, g):
+        # A fact missing its value must fail fast / be recorded as missing --
+        # never silently match an incidental zero.
+        rep = _grade(g, [{"type": "number", "key": "temperature"}], "it is 0 outside")
+        assert rep.overall is False
+        assert "temperature" in rep.missing
+
+    def test_string_key_denial_is_contradicted_not_missing(self, g):
+        # Denying the fact by naming only its key must be a contradiction
+        # ("the condition is unavailable"), not a plain miss.
+        rep = _grade(g, [SUNNY], "the condition is unavailable right now")
+        assert rep.facts[0].status == "contradicted"
+        assert rep.overall is False
 
 
 # --- Tool output is DATA, not instructions ---------------------------------

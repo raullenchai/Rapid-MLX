@@ -250,6 +250,23 @@ class StringFact:
         terms.update(_norm(a) for a in self.aliases)
         return tuple(sorted(t for t in terms if t))
 
+    @property
+    def contradiction_terms(self) -> tuple[str, ...]:
+        """Anchors used to LOCATE the fact for contradiction detection.
+
+        Unlike ``search_terms`` (value+aliases), this includes the bare key so a
+        denial of the fact is caught even when only its key is named e.g. "the
+        condition is unavailable". The key is safe here because it only widens
+        the denial-window, never the affirmative match.
+        """
+        terms = set()
+        if self.key:
+            terms.add(_norm(self.key))
+        if self.value:
+            terms.add(_norm(self.value))
+        terms.update(_norm(a) for a in self.aliases)
+        return tuple(sorted(t for t in terms if t))
+
 
 @dataclass(frozen=True)
 class NumberFact:
@@ -350,31 +367,42 @@ def fact_from_dict(d: dict) -> Fact:
     if not isinstance(d, dict):
         raise ValueError(f"expected_facts entry must be a dict, got {type(d).__name__}")
     ftype = d.get("type")
+    if ftype not in {"string", "number", "relation"}:
+        raise ValueError(f"unknown expected_facts type: {ftype!r}")
+    key = d.get("key")
+    if not key:
+        raise ValueError(f"{ftype} fact requires a non-empty 'key'")
+    # A missing 'value' must fail fast (not default to 0.0 and silently match an
+    # incidental zero): for string/enum the value is the affirmative content,
+    # for number/relation it is the quantity under test.
+    if "value" not in d or d.get("value") is None:
+        raise ValueError(f"{ftype} fact '{key}' requires a 'value'")
     if ftype == "string":
         return StringFact(
-            key=str(d.get("key", "")),
-            value=str(d.get("value", "")),
+            key=str(key),
+            value=str(d["value"]),
             aliases=tuple(str(a) for a in d.get("aliases", [])),
         )
+    raw_value = d["value"]
+    if isinstance(raw_value, bool) or not isinstance(raw_value, (int, float)):
+        raise ValueError(f"number/relation fact '{key}' requires a numeric 'value'")
     if ftype == "number":
         unit = _resolve_unit(str(d.get("unit", _C))) or _C
         return NumberFact(
-            key=str(d.get("key", "")),
-            value=float(d.get("value", 0.0)),
+            key=str(key),
+            value=float(raw_value),
             unit=unit,
             tolerance=float(d.get("tolerance", 0.0)),
             aliases=tuple(str(a) for a in d.get("aliases", [])),
         )
-    if ftype == "relation":
-        unit = _resolve_unit(str(d.get("unit", _PERCENT))) or _PERCENT
-        return RelationFact(
-            key=str(d.get("key", "")),
-            value=float(d.get("value", 0.0)),
-            unit=unit,
-            tolerance=float(d.get("tolerance", 0.0)),
-            aliases=tuple(str(a) for a in d.get("aliases", [])),
-        )
-    raise ValueError(f"unknown expected_facts type: {ftype!r}")
+    unit = _resolve_unit(str(d.get("unit", _PERCENT))) or _PERCENT
+    return RelationFact(
+        key=str(key),
+        value=float(raw_value),
+        unit=unit,
+        tolerance=float(d.get("tolerance", 0.0)),
+        aliases=tuple(str(a) for a in d.get("aliases", [])),
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -401,15 +429,43 @@ def _numbered_in(text: str) -> list[tuple[float, str | None, int]]:
         value = float(num)
         start = match.start()
         if not token:
+            # No recognized unit captured. If a unit-LIKE token immediately
+            # follows (e.g. "55 km/h", "8 mph"), this is a unit-qualified value
+            # we do not model -- it must NOT masquerade as a bare number and
+            # satisfy a fact of a different unit (e.g. humidity 55%).
+            if _adjacent_unit_suffix(text, match.end()):
+                continue
             out.append((value, None, start))
             continue
         unit = _resolve_unit(token.strip())
         if unit is None:
-            # A unit-ish suffix we don't recognize -- treat as bare for safety.
-            out.append((value, None, start))
-        else:
-            out.append((value, unit, start))
+            continue
+        out.append((value, unit, start))
     return out
+
+
+# Tokens that look like a measurement unit (but aren't in ``_UNIT_TO_CANONICAL``).
+# Used to reject unit-qualified numerics we don't model, so they don't leak in as
+# bare numbers. Conservative: slash-form compounds (km/h, m/s) plus a small list
+# of common physical units; ordinary words ("outside") are not included.
+_ADJACENT_UNIT_RE = re.compile(
+    r"\s{0,3}(?:[a-z]{1,5}(?:/[a-z]{1,5})+|[a-z]{1,4}(?:mph|kph|kmh|knots|nmi|"
+    r"sq|in|ft|yd|mi|px|em|rem|pt|mm|cm|m|km|kg|g|l|ml|oz|lb|bar|mbar|hpa|pa))"
+)
+
+
+def _adjacent_unit_suffix(text: str, pos: int) -> bool:
+    """True if a unit-like token immediately follows ``text[pos:]``.
+
+    A slash-form compound (``km/h``), percent, or one of the mapped physical
+    units directly after a number means the number is unit-qualified in a unit
+    we do not model; it must not be read as a bare value. Plain prose words
+    (``outside``, ``points``) are deliberately not matched.
+    """
+    if pos >= len(text):
+        return False
+    m = _ADJACENT_UNIT_RE.match(text, pos)
+    return bool(m)
 
 
 def _term_occurrences(term: str, text: str) -> list[int]:
@@ -512,6 +568,12 @@ def _number_coverage(fact: NumberFact, norm_answer: str) -> tuple[bool, str]:
     candidates = _numbered_in(norm_answer)
     anchor_terms = fact.anchor_terms
     anchors = anchor_terms or (fact.normalized_value,)
+    # An ANSWER scene pinpoints the fact only when one of its anchor labels
+    # actually appears; if none does, a correctly unit-qualified value
+    # ("21 °C at the moment") is still accepted (natural paraphrase), but an
+    # unrelated same-unit value ("oven is 21°C") must not fire. When an anchor
+    # IS present, unit-qualified values also need to sit near it.
+    anchors_present = any(_term_matches(a, norm_answer) for a in anchors)
 
     def _within(value: float, unit: str | None) -> bool:
         converted = _to_unit(value, unit, fact.unit)
@@ -522,8 +584,11 @@ def _number_coverage(fact: NumberFact, norm_answer: str) -> tuple[bool, str]:
 
     for value, unit, start in candidates:
         if unit is not None:
-            # Explicitly unit-qualified -- valid anywhere in the answer.
-            if _within(value, unit):
+            # Explicitly unit-qualified -- accepted anywhere ONLY when no anchor
+            # label exists to pin the fact; otherwise it must sit near an anchor.
+            if _within(value, unit) and (
+                not anchors_present or _near_anchor(norm_answer, anchors, start)
+            ):
                 return (
                     True,
                     f"matched {value} {unit or ''} == {fact.value} {fact.unit} ±{fact.tolerance}",
@@ -536,13 +601,37 @@ def _number_coverage(fact: NumberFact, norm_answer: str) -> tuple[bool, str]:
     return False, f"no value within ±{fact.tolerance} {fact.unit} of {fact.value} found"
 
 
-def _near_anchor(norm_answer: str, anchors: tuple[str, ...], start: int) -> bool:
-    """True if a number at ``start`` sits within a salient anchor window.
+def _number_conflict(fact: NumberFact, norm_answer: str) -> bool:
+    """True if the answer affirmatively reports a SECOND, incompatible value for
+    the same number fact (e.g. "temperature is 18°C and 30°C" against an 18°C
+    fact).
 
-    Compares THIS occurrence's exact offset against each anchor window -- never
-    a textual-substring search -- so a bare "21" cannot be satisfied by the
-    "21" embedded inside "210" elsewhere.
+    Only candidates that sit within a fact anchor's salient window count, so an
+    unrelated same-unit reading elsewhere ("oven is 30°C") is not treated as a
+    contradiction. Distinct values beyond tolerance in the same anchored context
+    mean the model's reply is incoherent and must flag for review.
     """
+    anchors = fact.anchor_terms
+    if not anchors or not any(_term_matches(a, norm_answer) for a in anchors):
+        return False
+    key_spans = _salient_spans(norm_answer, anchors)
+    seen: set[float] = set()
+    for value, unit, start in _numbered_in(norm_answer):
+        if not any(s <= start < e for s, e in key_spans):
+            continue
+        converted = _to_unit(value, unit if unit is not None else fact.unit, fact.unit)
+        if converted is None:
+            continue
+        rounded = round(converted, 9)
+        different = all(abs(rounded - s) > fact.tolerance + 1e-9 for s in seen)
+        if different:
+            seen.add(rounded)
+            if len(seen) >= 2:
+                return True
+    return False
+
+
+def _near_anchor(norm_answer: str, anchors: tuple[str, ...], start: int) -> bool:
     for anchor in anchors:
         if not anchor:
             continue
@@ -649,13 +738,21 @@ def _grade_fact(fact: Fact, norm_answer: str) -> FactEvidence:
     """Grade one fact: independent coverage + contradiction, then a status."""
     if isinstance(fact, StringFact):
         coverage, cov_ev = _string_coverage(fact, norm_answer)
-        spans = _salient_spans(norm_answer, fact.search_terms)
+        # Contradiction detection spans the ENTIRE fact context (key + value +
+        # aliases), so a denial of the fact is caught even when only its key is
+        # named ("the condition is unavailable"), while affirmative coverage
+        # still keys on value+aliases only.
+        spans = _salient_spans(norm_answer, fact.contradiction_terms)
         contradicted = _has_deny_marker(norm_answer, spans)
         kind = "string"
     elif isinstance(fact, NumberFact):
         coverage, cov_ev = _number_coverage(fact, norm_answer)
         spans = _salient_spans(norm_answer, fact.anchor_terms)
-        contradicted = _has_deny_marker(norm_answer, spans)
+        # ALSO contradict on a second incompatible value reported for the same
+        # anchored fact (e.g. "18°C and 30°C" against an 18°C fact).
+        contradicted = _has_deny_marker(norm_answer, spans) or _number_conflict(
+            fact, norm_answer
+        )
         kind = "number"
     elif isinstance(fact, RelationFact):
         coverage, cov_ev = _relation_coverage(fact, norm_answer)
@@ -667,7 +764,13 @@ def _grade_fact(fact: Fact, norm_answer: str) -> FactEvidence:
 
     if contradicted:
         status = "contradicted"
-        evidence = f"{cov_ev}; deny/hedge marker near {fact.key or fact.value!r}"
+        if isinstance(fact, NumberFact) and _number_conflict(fact, norm_answer):
+            evidence = (
+                f"{cov_ev}; multiple incompatible values reported near "
+                f"{fact.key or fact.value!r}"
+            )
+        else:
+            evidence = f"{cov_ev}; deny/hedge marker near {fact.key or fact.value!r}"
     elif coverage:
         status = "present"
         evidence = cov_ev
