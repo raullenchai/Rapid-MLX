@@ -115,11 +115,19 @@ line
 failed=""
 infra_failed=""
 skipped=""
+passed=""
 # Strict full-fleet mode (issue #2206 part c): when set, an unresident family
 # that is capacity-skipped for lack of disk is treated as an infrastructure
 # failure instead of a reported-but-passing skip. Release hosts provisioned
 # with enough storage keep the old every-family-required behaviour.
-REQUIRE_ALL="${COHERENCE_SWEEP_REQUIRE_ALL:-}"
+case "${COHERENCE_SWEEP_REQUIRE_ALL:-0}" in
+  0) REQUIRE_ALL=0 ;;
+  1) REQUIRE_ALL=1 ;;
+  *)
+    echo "ERROR: COHERENCE_SWEEP_REQUIRE_ALL must be 0 or 1." >&2
+    exit 2
+    ;;
+esac
 for MODEL in $MODELS; do
   line
   echo "  → $MODEL"
@@ -195,7 +203,7 @@ for MODEL in $MODELS; do
     # capacity outcome, not a behavioural one — report it as a capacity-skip
     # and keep validating the resident representatives, rather than dying the
     # whole release gate for storage rather than correctness.
-    if grep -q "Insufficient disk space for download\." "$LOG"; then
+    if grep -Fqx '  Error: Insufficient disk space for download.' "$LOG"; then
       echo "  ⚠ $MODEL capacity-skipped: download would exceed free disk." >&2
       tail -8 "$LOG" >&2
       skipped="$skipped $MODEL"
@@ -215,6 +223,7 @@ for MODEL in $MODELS; do
     fi
     if "${gate_command[@]}"; then
       echo "  ✓ $MODEL coherent"
+      passed="$passed $MODEL"
     else
       gate_status=$?
       if [ "$gate_status" -eq 2 ]; then
@@ -234,15 +243,18 @@ for MODEL in $MODELS; do
 done
 
 line
-if [ -n "$skipped" ] && [ -n "$REQUIRE_ALL" ]; then
-  # Strict full-fleet mode: a capacity-skip is a release-blocking gap.
-  echo "  SWEEP INFRASTRUCTURE FAILURE (capacity-skipped under COHERENCE_SWEEP_REQUIRE_ALL) —$skipped" >&2
-  if [ -n "$failed" ]; then echo "  MODEL FAILURES —$failed"; fi
-  line
-  exit 2
+strict_skipped=""
+if [ -n "$skipped" ] && [ "$REQUIRE_ALL" = 1 ]; then
+  strict_skipped="$skipped"
 fi
-if [ -n "$infra_failed" ]; then
-  echo "  SWEEP INFRASTRUCTURE FAILURE —$infra_failed"
+if [ -n "$infra_failed" ] || [ -n "$strict_skipped" ] || { [ -n "$skipped" ] && [ -z "$passed" ]; }; then
+  echo "  SWEEP INFRASTRUCTURE FAILURE" >&2
+  if [ -n "$infra_failed" ]; then echo "  INFRASTRUCTURE FAILURES —$infra_failed" >&2; fi
+  if [ -n "$strict_skipped" ]; then
+    echo "  CAPACITY-SKIPPED (COHERENCE_SWEEP_REQUIRE_ALL=1) —$strict_skipped" >&2
+  elif [ -n "$skipped" ] && [ -z "$passed" ]; then
+    echo "  NO RESIDENT ALIAS VALIDATED; CAPACITY-SKIPPED —$skipped" >&2
+  fi
   if [ -n "$failed" ]; then echo "  MODEL FAILURES —$failed"; fi
   line
   exit 2

@@ -32,7 +32,7 @@ bad() { FAIL=$((FAIL + 1)); printf '  \033[31mFAIL\033[0m %s\n' "$1"; }
 
 # The sweep must still contain the capacity-skip hook — if the region drifts
 # this test is guarding nothing and should be re-read.
-if ! grep -q 'Insufficient disk space for download\\\.' "$SWEEP"; then
+if ! grep -Fq "grep -Fqx '  Error: Insufficient disk space for download.'" "$SWEEP"; then
   printf '  \033[31mFAIL\033[0m capacity-skip detection missing from %s\n' "$SWEEP"
   exit 1
 fi
@@ -52,56 +52,73 @@ print(s.getsockname()[1])
 s.close()'
 }
 
-# Fake `$PY`: a shell shim standing in for `python3.12`. It dispatches on the
-# command-line shape the sweep issues:
-#   -m vllm_mlx.cli serve <model> ...   -> write a boot outcome to stdout
-#                                         (the sweep redirects it to $LOG) and
-#                                         exit 1
-#   scripts/release_fleet.py is-reasoning-distill / forces-text-lane -> exit 1
-#                                        (neither, matching ordinary families)
-# Capacity models (alias prefixes the $CAPACITY_ALIASES env lists) write the
-# exact `_check_disk_space` refusal; every other model writes a generic crash so
-# the boot-failure (infra) branch is exercised for contrast.
-make_fake_py() {  # $1 = capacity aliases (colon-separated)
+# Fake `$PY` and curl shims. Capacity models write the exact disk refusal;
+# passing models hold a fake server open and publish a readiness marker;
+# everything else emits a generic boot crash.
+make_fake_bin() {
   local fake_dir="$TMP/fakebin"
   mkdir -p "$fake_dir"
-  cat > "$fake_dir/python3.12" <<EOF
+  cat > "$fake_dir/python3.12" <<'EOF'
 #!/bin/sh
-if [ "\$1" = "-m" ] && [ "\$3" = "serve" ]; then
-  model="\$4"
-  case ":$1:" in
-    *":\$model:"*) printf '%s\\n' '  Error: Insufficient disk space for download.' ;;
-    *)             printf '%s\\n' 'RuntimeError: fake engine died before load' ;;
+if [ "$1" = "-m" ] && [ "$3" = "serve" ]; then
+  model="$4"
+  case ":${CAPACITY_ALIASES:-}:" in
+    *":$model:"*) printf '%s\n' '  Error: Insufficient disk space for download.' ;;
+    *)
+      case ":${LOOKALIKE_ALIASES:-}:" in
+        *":$model:"*)
+          printf '%s\n' 'RuntimeError: Insufficient disk space for download.'
+          exit 1
+          ;;
+      esac
+      case ":${PASSING_ALIASES:-}:" in
+        *":$model:"*)
+          trap 'rm -f "$FAKE_READY"; exit 0' INT TERM EXIT
+          : > "$FAKE_READY"
+          while :; do sleep 1; done
+          ;;
+        *) printf '%s\n' 'RuntimeError: fake engine died before load' ;;
+      esac
+      ;;
   esac
   exit 1
 fi
 # release_fleet.py is-reasoning-distill / forces-text-lane -> not that family.
+if [ "$1" = "evals/coherence_gate.py" ]; then exit 0; fi
 exit 1
 EOF
-  sed -i.bak "s|:\$1:|:$1:|" "$fake_dir/python3.12" && rm -f "$fake_dir/python3.12.bak"
-  chmod +x "$fake_dir/python3.12"
-  printf '%s' "$fake_dir/python3.12"
+  cat > "$fake_dir/curl" <<'EOF'
+#!/bin/sh
+[ -f "${FAKE_READY:?}" ]
+EOF
+  chmod +x "$fake_dir/python3.12" "$fake_dir/curl"
+  printf '%s' "$fake_dir"
 }
 
-run_sweep() {  # $1 = alias list, $2 = capacity aliases, $3.. = extra env
-  local fake_py aliases cap
-  fake_py="$(make_fake_py "$2")"
+run_sweep() {  # $1 aliases, $2 capacity aliases, $3 passing aliases, $4.. env
+  local fake_dir aliases capacity passing
+  fake_dir="$(make_fake_bin)"
   aliases="$1"
-  shift 2
-  env "$@" PY="$fake_py" PORT="$(free_port)" MODELS="$aliases" \
+  capacity="$2"
+  passing="$3"
+  shift 3
+  rm -f "$TMP/server-ready"
+  env "$@" PY="$fake_dir/python3.12" PATH="$fake_dir:$PATH" \
+    FAKE_READY="$TMP/server-ready" CAPACITY_ALIASES="$capacity" \
+    PASSING_ALIASES="$passing" PORT="$(free_port)" MODELS="$aliases" \
     bash "$SWEEP" 2>&1; return $?
 }
 
 echo "── capacity-skip reports and passes"
 
-# All families capacity-skipped (no genuine infra failure) -> the sweep
-# validates the empty resident set, reports the skips, and exits 0.
-out="$(run_sweep "qwen3.6-27b-4bit qwen3.6-35b" "qwen3.6-27b-4bit:qwen3.6-35b")" || st=$?
+# All families capacity-skipped means the gate validated nothing and must fail
+# closed rather than claiming vacuous coherence.
+out="$(run_sweep "qwen3.6-27b-4bit qwen3.6-35b" "qwen3.6-27b-4bit:qwen3.6-35b" "")" || st=$?
 st=${st:-0}
-if [ "$st" = 0 ]; then
-  ok "capacity-skipped families report but the sweep exits 0"
+if [ "$st" = 2 ]; then
+  ok "an all-capacity-skipped sweep fails because no alias was validated"
 else
-  bad "expected exit 0 with only capacity-skips, got $st"
+  bad "expected exit 2 with zero validated aliases, got $st"
 fi
 if printf '%s' "$out" | grep -q 'capacity-skipped'; then
   ok "the capacity-skipped families are reported explicitly"
@@ -115,9 +132,17 @@ else
   bad "expected both skipped families present in output:\n$out"
 fi
 
-# A resident representative that boots genuinely passes, while a sibling is
-# capacity-skipped — but a genuine boot failure anywhere still fails the sweep.
-st=0; out="$(run_sweep "qwen3.5-9b-4bit qwen3.6-27b-4bit" "qwen3.6-27b-4bit")" || st=$?
+# A resident representative genuinely passes while an oversized sibling is
+# capacity-skipped: this is the intended constrained-host success path.
+st=0; out="$(run_sweep "qwen3.5-9b-4bit qwen3.6-27b-4bit" "qwen3.6-27b-4bit" "qwen3.5-9b-4bit")" || st=$?
+if [ "$st" = 0 ] && printf '%s' "$out" | grep -q 'all resident aliases coherent'; then
+  ok "a validated resident family plus a capacity-skip exits 0"
+else
+  bad "expected pass+skip to exit 0 with the resident summary, got $st:\n$out"
+fi
+
+# A capacity-skip must not hide a genuine boot failure elsewhere.
+st=0; out="$(run_sweep "broken qwen3.6-27b-4bit" "qwen3.6-27b-4bit" "")" || st=$?
 if [ "$st" = 2 ]; then
   ok "a generic boot failure among the families still fails the sweep (2)"
 else
@@ -126,7 +151,7 @@ fi
 
 echo "── a genuine boot failure still fails the sweep"
 
-st=0; out="$(run_sweep "qwen3.5-9b-4bit" "")" || st=$?
+st=0; out="$(run_sweep "qwen3.5-9b-4bit" "" "")" || st=$?
 if [ "$st" = 2 ]; then
   ok "a non-capacity boot failure still exits 2 (infrastructure)"
 else
@@ -138,13 +163,29 @@ else
   bad "generic boot failure not flagged as infrastructure:\n$out"
 fi
 
+st=0; out="$(run_sweep "lookalike" "" "" LOOKALIKE_ALIASES=lookalike)" || st=$?
+if [ "$st" = 2 ] && ! printf '%s' "$out" | grep -q 'capacity-skipped:'; then
+  ok "a lookalike error line remains an infrastructure failure"
+else
+  bad "lookalike disk text was misclassified as a capacity-skip:\n$out"
+fi
+
 echo "── strict full-fleet mode is preserved"
 
-st=0; out="$(run_sweep "qwen3.5-9b-4bit qwen3.6-27b-4bit" "qwen3.6-27b-4bit" COHERENCE_SWEEP_REQUIRE_ALL=1)" || st=$?
+st=0; out="$(run_sweep "qwen3.5-9b-4bit qwen3.6-27b-4bit" "qwen3.6-27b-4bit" "qwen3.5-9b-4bit" COHERENCE_SWEEP_REQUIRE_ALL=1)" || st=$?
 if [ "$st" = 2 ]; then
   ok "COHERENCE_SWEEP_REQUIRE_ALL=1 turns a capacity-skip into a failure"
 else
   bad "expected exit 2 under REQUIRE_ALL with a capacity-skip, got $st"
+fi
+
+st=0; out="$(run_sweep "broken qwen3.6-27b-4bit" "qwen3.6-27b-4bit" "" COHERENCE_SWEEP_REQUIRE_ALL=1)" || st=$?
+if [ "$st" = 2 ] \
+   && printf '%s' "$out" | grep -q 'broken(boot)' \
+   && printf '%s' "$out" | grep -q 'CAPACITY-SKIPPED'; then
+  ok "strict mixed failure reports both infrastructure and capacity"
+else
+  bad "strict mixed failure dropped a failure category:\n$out"
 fi
 
 echo "── a real model failure is still a model failure, skips are still noted"
