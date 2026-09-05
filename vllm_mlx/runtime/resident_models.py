@@ -540,6 +540,11 @@ def estimate_model_bytes(model_name: str) -> int:
     folded = model_name.casefold()
     known_image_gib = {
         "flux2-klein-4b": 5.9,
+        # mflux-community/flux-1-schnell-mflux-q4, measured after a real
+        # 1024x1024 4-step generation (`/usr/bin/time -l`): 9.46 GiB peak RSS.
+        # Keep one decimal place and round up so alias-only admission never
+        # falls through to the generic 4 GiB estimate.
+        "flux-schnell": 9.5,
         "z-image-turbo": 5.9,
         # 6-bit-transformer Qwen-Image (20B) — measured peak RSS during a
         # real generation at 1024x1024 (mflux-community/qwen-image-mflux-q6,
