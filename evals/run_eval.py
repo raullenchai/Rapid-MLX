@@ -30,6 +30,7 @@ Community contributors: see evals/README.md for how to submit results.
 """
 
 import argparse
+import importlib.util
 import json
 import os
 import platform
@@ -52,6 +53,33 @@ except ImportError:
 EVALS_DIR = Path(__file__).parent
 PROMPTS_DIR = EVALS_DIR / "prompts"
 RESULTS_DIR = EVALS_DIR / "results"
+
+_GRADER = None
+
+
+def _load_grader():
+    """Lazily load the deterministic tool-result-grounding grader (issue #2347).
+
+    Loaded via importlib from its real path so the helper works identically
+    whether run_eval is executed as a script (``python evals/run_eval.py``) or
+    imported standalone by the offline test harness. It is registered in
+    ``sys.modules`` so its own ``@dataclass`` declarations can resolve each
+    other. The grader is pure/deterministic (stdlib only) and is OPT-IN: it is
+    only invoked for scenarios that declare an ``expected_facts`` block.
+    """
+    global _GRADER
+    if _GRADER is not None:
+        return _GRADER
+    spec = importlib.util.spec_from_file_location(
+        "eval_tool_result_grader", EVALS_DIR / "tool_result_grader.py"
+    )
+    assert spec is not None and spec.loader is not None
+    mod = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = mod
+    spec.loader.exec_module(mod)
+    _GRADER = mod
+    return _GRADER
+
 
 # Reuse tool definitions from test_tool_call_e2e
 TOOLS = [
@@ -1215,6 +1243,74 @@ def run_tool_calling_suite(host: str, port: int, verbose: bool = False) -> dict:
                         "final text does not reflect the supplied tool result "
                         f"(none of {required})"
                     )
+                # Semantic tool-result grounding (issue #2347; OPT-IN via
+                # `expected_facts`). Only runs when `verify_final_text` is true
+                # AND the scenario declares a set of salient facts; every other
+                # scenario's behavior above is untouched. `grade_answer` is a
+                # deterministic, model-agnostic checker that verifies the final
+                # answer affirmatively and non-contradictorily reports each
+                # supplied fact (tolerating paraphrase / aliases / °C-°F unit
+                # conversion), and it stays SEPARATE from routing/tool-call
+                # scoring. A grounding failure fails the scenario for the same
+                # step, with a reason naming the offending fact, and records a
+                # stable, versioned machine-readable `grounding` report.
+                expected_facts = sc.get("expected_facts")
+                # Presence, not truthiness: an EXPLICITLY configured empty list
+                # (`"expected_facts": []`) is a misconfiguration, not "absent" --
+                # it must still enter the grader so grade_answer fails closed
+                # (empty-facts is a vacuous-pass, see grade_answer). Only a
+                # scenario that does NOT declare the key stays untouched.
+                if expected_facts is not None and not final_ok:
+                    # `verify_final_text` already failed this step (e.g. denied a
+                    # tool, or called one in the final turn) -- still record the
+                    # grounding evidence, but don't double-append the step.
+                    try:
+                        grader = _load_grader()
+                        result["grounding"] = grader.grade_answer(
+                            expected_facts, final_text
+                        ).to_dict()
+                    except Exception as e:  # noqa: BLE001 - grading is best-effort evidence
+                        result["grounding"] = {
+                            "version": None,
+                            "error": str(e),
+                            "overall": False,
+                        }
+                if expected_facts is not None and final_ok:
+                    # The plain text checks passed; now grade semantic grounding.
+                    # Best-effort like the failure path above: a grader import or
+                    # grading error must not crash the whole eval run, so it is
+                    # recorded as grounding.error instead.
+                    try:
+                        grader = _load_grader()
+                        g_report = grader.grade_answer(expected_facts, final_text)
+                        result["grounding"] = g_report.to_dict()
+                        if not g_report.overall:
+                            final_ok = False
+                            parts = []
+                            if g_report.missing:
+                                parts.append(
+                                    "missing salient fact(s): "
+                                    + ", ".join(g_report.missing)
+                                )
+                            if g_report.contradicted:
+                                parts.append(
+                                    "contradicted salient fact(s): "
+                                    + ", ".join(g_report.contradicted)
+                                )
+                            reasons.append(
+                                "final answer does not ground on the supplied tool "
+                                "result: " + ("; ".join(parts) or "facts not reported")
+                            )
+                    except Exception as e:  # noqa: BLE001 - grading is best-effort evidence
+                        result["grounding"] = {
+                            "version": None,
+                            "error": str(e),
+                            "overall": False,
+                        }
+                        final_ok = False
+                        reasons.append(
+                            "semantic grounding grader unavailable: " + str(e)
+                        )
                 steps_passed.append(final_ok)
                 if final_ok:
                     result["final_text"] = final_text[:200]
