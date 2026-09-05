@@ -13,12 +13,11 @@ Design contract (see ``vllm_mlx/run/__init__.py`` for the full rationale):
   ``vllm_mlx/recommendations`` (memory-fit selection),
   ``vllm_mlx/model_aliases`` (alias resolution), ``vllm_mlx/_download_gate``
   (download consent), and the canonical ``serve`` subprocess.
-* **Foreground child, parent-owned.** ``start`` spawns ``serve`` with a
-  plain ``subprocess.Popen`` (NO ``start_new_session`` — that detached
-  model belongs to ``launch --start-server`` / the headless service). The
-  parent forwards SIGINT/SIGTERM to the child and exits with the child's
-  status, so Ctrl-C tears the whole tree down and no orphan is left (modulo
-  SIGKILL, where the child-side ``RAPID_MLX_WATCHDOG_PPID`` watchdog
+* **Foreground child, parent-owned.** ``start`` keeps the child attached to
+  the terminal for stdio but isolates its signal group. The parent is the
+  sole SIGINT/SIGTERM relay, exits with the child's status, and prevents a
+  terminal Ctrl-C from double-signalling the server. No orphan is left
+  (modulo SIGKILL, where the child-side ``RAPID_MLX_WATCHDOG_PPID`` watchdog
   self-terminates).
 * **Download consent happens in the parent once.** The serve child is
   spawned with ``RAPID_MLX_CHAT_SPAWN=1`` so its own B2 auto-pull gate
@@ -135,13 +134,17 @@ def start_command(args) -> int:
         _print_unknown_agent(profile_name)
         return 1
 
-    model = _select_model(
+    resolved_model = _select_model(
         explicit=args.model,
         profile=profile,
         no_download=args.no_download,
     )
-    if model is None:
+    if resolved_model is None:
         return 1
+    # main() expands explicit aliases before dispatch. Downloads and cache
+    # probes use that resolved repo, while serve/API/config keep the spelling
+    # the user selected, matching a direct ``rapid-mlx serve <alias>`` call.
+    served_model = getattr(args, "_original_alias", None) or resolved_model
 
     # Render the authority through the endpoint SSOT so IPv6 literals are
     # bracketed correctly.  Keep the server root separate from the OpenAI
@@ -150,23 +153,25 @@ def start_command(args) -> int:
     from vllm_mlx.connect import ServerEndpoints
 
     connect_host = _local_connect_host(args.host)
-    base_url = ServerEndpoints(connect_host, args.port, model=model).base_url
+    base_url = ServerEndpoints(connect_host, args.port, model=served_model).base_url
 
     # Port already occupied: reuse a compatible healthy server, else refuse.
     if _port_is_busy(args.host, args.port):
-        return _reuse_or_refuse(base_url, model, profile, args)
+        return _reuse_or_refuse(base_url, resolved_model, served_model, profile, args)
 
     if args.dry_run:
-        _print_dry_run(profile_name, model, args)
+        _print_dry_run(profile_name, served_model, args)
         if profile is not None and not args.no_setup:
-            _attach_and_configure(base_url, model, profile, args)
+            return _attach_and_configure(base_url, served_model, profile, args)
         return 0
 
-    if not _confirm_download(model, no_download=args.no_download, yes=args.yes):
+    if not _confirm_download(
+        resolved_model, no_download=args.no_download, yes=args.yes
+    ):
         return 1
 
     try:
-        proc = _spawn_foreground_serve(model, args)
+        proc = _spawn_foreground_serve(served_model, args)
     except OSError as exc:
         print(f"  Could not start the server process: {exc}")
         return 1
@@ -187,7 +192,10 @@ def start_command(args) -> int:
                 # The serve child died before /health/ready returned; reap it and
                 # surface its (nonzero) status instead of a raw traceback.
                 return _wait_child(proc)
-            _attach_and_configure(base_url, model, profile, args)
+            setup_rc = _attach_and_configure(base_url, served_model, profile, args)
+            if setup_rc:
+                _terminate_child(proc)
+                return setup_rc
             return _wait_child(proc)
     except _ForwardedSignalError as exc:
         return 128 + exc.signum
@@ -546,7 +554,13 @@ def _port_is_busy(host: str, port: int) -> bool:
 # ---------------------------------------------------------------------------
 
 
-def _reuse_or_refuse(base_url: str, model: str, profile, args) -> int:
+def _reuse_or_refuse(
+    base_url: str,
+    resolved_model: str,
+    served_model: str,
+    profile,
+    args,
+) -> int:
     """Port occupied: reuse a compatible healthy server, else refuse clearly.
 
     Returns an exit code describing the dispatcher's next action:
@@ -564,18 +578,18 @@ def _reuse_or_refuse(base_url: str, model: str, profile, args) -> int:
         )
         return 1
 
-    hf_id = _hf_id(model)
-    if hf_id in served or model in served:
+    hf_id = _hf_id(resolved_model)
+    if served.intersection({resolved_model, served_model, hf_id}):
         if args.dry_run:
             print(
-                f"  Dry run — port {args.port} already serves {model}; "
+                f"  Dry run — port {args.port} already serves {served_model}; "
                 f"start would reuse {base_url}."
             )
-            return _attach_and_configure(base_url, model, profile, args)
-        print(f"  Reusing the running server on {base_url} (serving {model}).")
-        return _attach_and_configure(base_url, model, profile, args)
+            return _attach_and_configure(base_url, served_model, profile, args)
+        print(f"  Reusing the running server on {base_url} (serving {served_model}).")
+        return _attach_and_configure(base_url, served_model, profile, args)
 
-    print(f"  Port {args.port} already serves {sorted(served)}, not {model}.")
+    print(f"  Port {args.port} already serves {sorted(served)}, not {served_model}.")
     print("  Choose a different port with --port, or stop the other server.")
     return 1
 
@@ -585,16 +599,15 @@ def _attach_and_configure(base_url, model, profile, args) -> int:
 
     Uses the same setup-plan machinery as ``rapid-mlx agents --setup`` for
     the first-class profiles (claude-code / continue / deepseek-harness) and
-    the generic writer otherwise. Never kills the server. Returns 0.
+    the generic writer otherwise. Never kills the server. Returns nonzero for
+    a genuine setup/render failure; callers decide whether they own the server.
     """
     if profile is None:
-        _print_instructions(profile, base_url, model)
-        return 0
+        return 0 if _print_instructions(profile, base_url, model) else 1
 
     api_base_url = f"{base_url.rstrip('/')}/v1"
     if args.no_setup:
-        _print_instructions(profile, api_base_url, model)
-        return 0
+        return 0 if _print_instructions(profile, api_base_url, model) else 1
 
     cfg = profile.get_config_for_version(None)
     needs_context = bool(cfg and cfg.template and "{context_length}" in cfg.template)
@@ -631,7 +644,7 @@ def _attach_and_configure(base_url, model, profile, args) -> int:
         except (OSError, RuntimeError, TypeError, ValueError) as exc:
             print(f"  {profile.display_name} setup failed: {exc}")
             _print_instructions(profile, api_base_url, model)
-            return 0
+            return 1
         print(f"  {profile.display_name} uses shell environment variables:")
         print(instructions)
         return 0
@@ -669,7 +682,7 @@ def _attach_and_configure(base_url, model, profile, args) -> int:
         except (OSError, ValueError) as exc:
             print(f"  {profile.display_name} setup failed: {exc}")
             _print_instructions(profile, api_base_url, model)
-            return 0
+            return 1
 
         print(f"  {profile.display_name} configuration: {plan.path}")
         if plan.changed:
@@ -691,7 +704,7 @@ def _attach_and_configure(base_url, model, profile, args) -> int:
             except (OSError, RuntimeError) as exc:
                 print(f"  {profile.display_name} setup failed: {exc}")
                 _print_instructions(profile, api_base_url, model)
-                return 0
+                return 1
             print(f"  Configured {profile.display_name} at {plan.path}.")
     else:
         from vllm_mlx.agents.adapter import setup_agent_config
@@ -707,12 +720,12 @@ def _attach_and_configure(base_url, model, profile, args) -> int:
         except (OSError, RuntimeError, TypeError, ValueError) as exc:
             print(f"  {profile.display_name} setup failed: {exc}")
             _print_instructions(profile, api_base_url, model)
-            return 0
+            return 1
         if preview.startswith("Cannot"):
             print(f"  {profile.display_name} setup failed.")
             print(f"  {preview}")
             _print_instructions(profile, api_base_url, model)
-            return 0
+            return 1
         print(f"  {profile.display_name} configuration: {preview}")
         if args.dry_run:
             return 0
@@ -732,12 +745,12 @@ def _attach_and_configure(base_url, model, profile, args) -> int:
         except (OSError, RuntimeError, TypeError, ValueError) as exc:
             print(f"  {profile.display_name} setup failed: {exc}")
             _print_instructions(profile, api_base_url, model)
-            return 0
+            return 1
         if summary.startswith("Cannot"):
             print(f"  {profile.display_name} setup failed.")
             print(f"  {summary}")
             _print_instructions(profile, api_base_url, model)
-            return 0
+            return 1
         print(f"  {profile.display_name} configured! {summary}")
 
     _print_next_steps(profile.name, api_base_url, model)
@@ -782,19 +795,21 @@ def _cached_context_window(model: str) -> int | None:
     return None
 
 
-def _print_instructions(profile, base_url, model) -> None:
+def _print_instructions(profile, base_url, model) -> bool:
     if profile is None:
         print(f"  OpenAI-compatible endpoint: {base_url}/v1 (model {model})")
-        return
+        return True
     from vllm_mlx.agents.adapter import get_setup_instructions
 
     try:
         instructions = get_setup_instructions(profile, base_url, model)
     except Exception as exc:
         print(f"  (Could not render setup instructions: {exc})")
+        return False
     else:
         print()
         print(instructions)
+        return True
 
 
 def _print_next_steps(profile_name, base_url, model) -> None:

@@ -287,7 +287,11 @@ def test_reuse_compatible_server_attaches_no_spawn(monkeypatch, capsys):
     )
 
     result = run_cli._reuse_or_refuse(
-        "http://127.0.0.1:8000", "qwen3.5-9b-4bit", _FakeProfile(), args
+        "http://127.0.0.1:8000",
+        "qwen3.5-9b-4bit",
+        "qwen3.5-9b-4bit",
+        _FakeProfile(),
+        args,
     )
     assert result == 0
     assert toggles["attached"] is True
@@ -304,7 +308,11 @@ def test_reuse_incompatible_server_refuses(monkeypatch, capsys):
     monkeypatch.setattr(run_cli, "_hf_id", lambda a: "qwen3.5-9b-4bit")
 
     result = run_cli._reuse_or_refuse(
-        "http://127.0.0.1:8000", "qwen3.5-9b-4bit", _FakeProfile(), args
+        "http://127.0.0.1:8000",
+        "qwen3.5-9b-4bit",
+        "qwen3.5-9b-4bit",
+        _FakeProfile(),
+        args,
     )
     assert result == 1
     assert "already serves" in capsys.readouterr().out
@@ -319,7 +327,11 @@ def test_reuse_occupied_not_rapidmlx_refuses(monkeypatch, capsys):
     monkeypatch.setattr(run_cli, "_hf_id", lambda a: "qwen3.5-9b-4bit")
 
     result = run_cli._reuse_or_refuse(
-        "http://127.0.0.1:8000", "qwen3.5-9b-4bit", _FakeProfile(), args
+        "http://127.0.0.1:8000",
+        "qwen3.5-9b-4bit",
+        "qwen3.5-9b-4bit",
+        _FakeProfile(),
+        args,
     )
     assert result == 1
     assert "not a healthy" in capsys.readouterr().out
@@ -402,6 +414,61 @@ def test_start_command_spawn_then_wait(monkeypatch):
 
     assert run_cli.start_command(args) == 3
     assert order == ["select", "confirm", "spawn", "ready", "configure", "wait"]
+
+
+def test_start_command_preserves_explicit_alias_identity(monkeypatch):
+    """Resolved repos gate downloads while serve/config retain the alias."""
+    args = _make_args(model="org/model")
+    args._original_alias = "friendly-alias"
+    seen = {}
+    _patch_profile_lookup(monkeypatch, _FakeProfile())
+    monkeypatch.setattr(run_cli, "_select_model", lambda **kw: "org/model")
+    monkeypatch.setattr(run_cli, "_port_is_busy", lambda h, p: False)
+    monkeypatch.setattr(
+        run_cli,
+        "_confirm_download",
+        lambda model, **kw: seen.update(download=model) or True,
+    )
+    monkeypatch.setattr(
+        run_cli,
+        "_spawn_foreground_serve",
+        lambda model, a: seen.update(spawn=model) or object(),
+    )
+    monkeypatch.setattr(run_cli, "_wait_ready", lambda *a, **k: "ready")
+    monkeypatch.setattr(
+        run_cli,
+        "_attach_and_configure",
+        lambda base, model, *a: seen.update(config=model) or 0,
+    )
+    monkeypatch.setattr(run_cli, "_wait_child", lambda proc: 0)
+
+    assert run_cli.start_command(args) == 0
+    assert seen == {
+        "download": "org/model",
+        "spawn": "friendly-alias",
+        "config": "friendly-alias",
+    }
+
+
+def test_start_command_setup_failure_stops_owned_child(monkeypatch):
+    """Failed setup exits nonzero and cannot leave a spawned server behind."""
+    args = _make_args()
+    proc = object()
+    stopped = []
+    _patch_profile_lookup(monkeypatch, _FakeProfile())
+    monkeypatch.setattr(run_cli, "_select_model", lambda **kw: "m")
+    monkeypatch.setattr(run_cli, "_port_is_busy", lambda h, p: False)
+    monkeypatch.setattr(run_cli, "_confirm_download", lambda *a, **k: True)
+    monkeypatch.setattr(run_cli, "_spawn_foreground_serve", lambda *a: proc)
+    monkeypatch.setattr(run_cli, "_wait_ready", lambda *a, **k: "ready")
+    monkeypatch.setattr(run_cli, "_attach_and_configure", lambda *a, **k: 1)
+    monkeypatch.setattr(run_cli, "_terminate_child", lambda p: stopped.append(p))
+    monkeypatch.setattr(
+        run_cli, "_wait_child", lambda p: pytest.fail("must not wait indefinitely")
+    )
+
+    assert run_cli.start_command(args) == 1
+    assert stopped == [proc]
 
 
 def test_start_command_spawn_after_consent_refused(monkeypatch):
@@ -779,7 +846,7 @@ def test_reuse_dry_run_branch(monkeypatch, capsys):
         ),
     )
     result = run_cli._reuse_or_refuse(
-        "http://127.0.0.1:8000", "m", _FakeProfile(), args
+        "http://127.0.0.1:8000", "m", "m", _FakeProfile(), args
     )
     assert result == 0
     assert previews == [("http://127.0.0.1:8000", "m", True)]
@@ -794,7 +861,9 @@ def test_reuse_dry_run_refuses_incompatible_server(monkeypatch, capsys):
     monkeypatch.setattr(ad, "_fetch_models", lambda base: [{"id": "other"}])
     monkeypatch.setattr(run_cli, "_hf_id", lambda model: model)
     assert (
-        run_cli._reuse_or_refuse("http://127.0.0.1:8000", "m", _FakeProfile(), args)
+        run_cli._reuse_or_refuse(
+            "http://127.0.0.1:8000", "m", "m", _FakeProfile(), args
+        )
         == 1
     )
     assert "not m" in capsys.readouterr().out
@@ -950,7 +1019,7 @@ def test_attach_first_class_unchanged(monkeypatch, capsys):
 
 
 def test_attach_first_class_build_fails(monkeypatch, capsys):
-    """First-class profile whose plan build raises -> instructions, rc 0."""
+    """First-class profile whose plan build raises -> instructions, rc 1."""
     args = _make_args()
     prof = _first_class_profile()
     prof.config = _FakeCfg(template=None)
@@ -967,7 +1036,7 @@ def test_attach_first_class_build_fails(monkeypatch, capsys):
         ad, "get_setup_instructions", lambda *a, **k: "  fallback instructions"
     )
     rc = run_cli._attach_and_configure("http://b", "m", prof, args)
-    assert rc == 0
+    assert rc == 1
     out = capsys.readouterr().out
     assert "setup failed" in out
     assert "fallback instructions" in out
@@ -991,7 +1060,7 @@ def test_attach_first_class_apply_fails(monkeypatch, capsys):
     )
     monkeypatch.setattr(setup_mod, "confirm_plan", lambda p: True)
     rc = run_cli._attach_and_configure("http://b", "m", prof, args)
-    assert rc == 0
+    assert rc == 1
     assert "setup failed" in capsys.readouterr().out
 
 
@@ -1091,7 +1160,7 @@ def test_attach_generic_writer_cannot(monkeypatch, capsys):
         ad, "get_setup_instructions", lambda *a, **k: "  manual instructions"
     )
     rc = run_cli._attach_and_configure("http://b", "m", prof, args)
-    assert rc == 0
+    assert rc == 1
     out = capsys.readouterr().out
     assert "setup failed" in out
     assert "manual instructions" in out
@@ -1115,7 +1184,7 @@ def test_attach_generic_writer_exception_falls_back(monkeypatch, capsys, dry_run
         ad, "get_setup_instructions", lambda *a, **k: "  manual instructions"
     )
 
-    assert run_cli._attach_and_configure("http://b", "m", prof, args) == 0
+    assert run_cli._attach_and_configure("http://b", "m", prof, args) == 1
     out = capsys.readouterr().out
     assert "setup failed: config unavailable" in out
     assert "manual instructions" in out
@@ -1166,7 +1235,7 @@ def test_attach_env_profile_exception_falls_back(monkeypatch, capsys):
         ad, "get_setup_instructions", lambda *a, **k: "  manual instructions"
     )
 
-    assert run_cli._attach_and_configure("http://b", "m", prof, args) == 0
+    assert run_cli._attach_and_configure("http://b", "m", prof, args) == 1
     out = capsys.readouterr().out
     assert "setup failed: bad template" in out
     assert "manual instructions" in out
