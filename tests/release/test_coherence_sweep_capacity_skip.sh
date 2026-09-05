@@ -131,8 +131,9 @@ if printf '%s' "$out" | grep -q 'capacity-skipped'; then
 else
   bad "capacity-skipped families not reported:\n$out"
 fi
-if printf '%s' "$out" | grep -q 'qwen3.6-27b-4bit' \
-   && printf '%s' "$out" | grep -q 'qwen3.6-35b'; then
+skip_summary="$(printf '%s\n' "$out" | grep 'CAPACITY-SKIPPED' | tail -1)"
+if printf '%s' "$skip_summary" | grep -q 'qwen3.6-27b-4bit' \
+   && printf '%s' "$skip_summary" | grep -q 'qwen3.6-35b'; then
   ok "both capacity-skipped families are named in the output"
 else
   bad "expected both skipped families present in output:\n$out"
