@@ -597,6 +597,8 @@ _ADJACENT_UNIT_RE = re.compile(
     r"|(?:mph|kph|kmh|knots|nmi|sq|sqm|in|ft|yd|mi|px|em|rem|pt|"
     r"mm|cm|km|kg|ml|oz|lb|bar|mbar|hpa|pa|sec|min|hr|"
     r"meters|metres|miles|feet|yards|inches|liters|litres|kilograms|"
+    r"watts|watt|volts|volt|amps|amp|amperes|ampere|ohms|ohm|"
+    r"hertz|hz|joules|joule|newtons|newton|pascals|pascal|lumens|lumen|"
     r"dollar|dollars|usd|cad|eur|gbp|yen|yuan|rupee|rupees|cents|"
     r"points|point|percentile|percentiles|grade|marks))"
     # NOTE: `degrees` is deliberately NOT in the reject list. It is the most
@@ -718,15 +720,30 @@ def _salient_spans(text: str, terms: tuple[str, ...]) -> list[tuple[int, int]]:
     return [(s, e) for s, e in merged]
 
 
+# A "no"/"not" that is the leading token of an inclusive comparative
+# ("no more than X", "not less than X", "no fewer than X") is NOT a denial --
+# it states a bound, not a negation of the fact. The deny scan skips such hits.
+_NOT_THAN_RE = re.compile(r"\b(?:no|not)\s+\w+\s+than\b")
+
+
 def _has_deny_marker(text: str, spans: list[tuple[int, int]]) -> bool:
-    """True if any deny marker falls inside any salient span."""
+    """True if any deny marker falls inside any salient span.
+
+    A matching ``no``/``not`` that starts an inclusive comparative phrase
+    ("no more than 64%") is skipped -- it is a bound comparator, not a denial.
+    """
     if not spans:
         return False
     for regex in _MARKER_RES:
         for m in regex.finditer(text):
             pos = m.start()
-            if any(s <= pos < e for s, e in spans):
-                return True
+            if not any(s <= pos < e for s, e in spans):
+                continue
+            # Skip a no/not that heads a "… than …" comparative (its denial role
+            # is a bound, handled below by _comparative_at, not a negation).
+            if m.group(0) in ("no", "not") and _NOT_THAN_RE.match(text, pos):
+                continue
+            return True
     return False
 
 
@@ -807,8 +824,10 @@ _COMPARATIVES = (
     ("beneath", "<"),
     ("less than", "<"),
     ("lower than", "<"),
+    ("fewer than", "<"),
     ("above", ">"),
     ("over", ">"),
+    ("more than", ">"),
     ("greater than", ">"),
     ("higher than", ">"),
     ("at most", "<="),
@@ -822,31 +841,40 @@ def _comparative_at(text: str, start: int) -> tuple[str, str] | None:
     """Return (operator, matched surface) if ``text[start:]`` is immediately
     preceded by a strict comparative, else None.
 
-    Walks back over optional whitespace and reads the preceding token (or the
-    two-word forms "less than"/"at least"/…), matching the bounded comparator
-    list. Returns e.g. ("<", "below") for "humidity is below 62%".
+    Walks back over optional whitespace and reads the preceding bounded-words
+    sequence (1-3 words, so "below", "at least", and "no more than" all
+    resolve), matching the bounded comparator list. Returns e.g. ("<",
+    "below") for "humidity is below 62%", ("<=", "no more than") for "…is no
+    more than 64%".
     """
     i = start
     while i > 0 and text[i - 1].isspace():
         i -= 1
-    j = i
-    while j > 0 and text[j - 1].isalpha():
-        j -= 1
-    token = text[j:i]
-    for surface, op in _COMPARATIVES:
-        if " " in surface:
-            # two-word surface: need the word before ``token`` to complete it.
-            k = j
-            while k > 0 and text[k - 1].isspace():
-                k -= 1
-            m = k
-            while m > 0 and text[m - 1].isalpha():
-                m -= 1
-            if text[m:k] + " " + token == surface or token == surface:
-                return op, surface
-        elif token == surface:
-            return op, surface
-    return None
+    # Collect up to 3 whole words immediately before ``i``.
+    words: list[str] = []
+    pos = i
+    for _ in range(3):
+        end = pos
+        while end > 0 and text[end - 1].isspace():
+            end -= 1
+        b = end
+        while b > 0 and text[b - 1].isalpha():
+            b -= 1
+        words.append(text[b:end])
+        pos = b
+        if pos == 0:
+            break
+    # Longest-first so a 3-word surface ("no more than" == >=) wins over its
+    # own 2-word suffix ("more than" == >) when both sit before the value.
+    matched = [
+        (op, surface)
+        for surface, op in _COMPARATIVES
+        if len(parts := surface.split(" ")) <= len(words)
+        and words[: len(parts)] == parts[::-1]
+    ]
+    if not matched:
+        return None
+    return max(matched, key=lambda t: len(t[1]))
 
 
 def _incompatible_comparison(

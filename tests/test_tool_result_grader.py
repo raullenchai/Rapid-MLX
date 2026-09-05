@@ -950,6 +950,52 @@ class TestCodexRegressionFixes:
         f = g.fact_from_dict({"type": "string", "key": "condition", "value": "Sunny"})
         assert f.value == "Sunny"
 
+    def test_no_more_than_inclusive_comparator_is_not_denial(self, g):
+        # Round-16 F1/2: "no more than X"/"no less than X" are INCLUSIVE
+        # comparators (<= / >=), not denials -- their leading "no" must not trip
+        # the deny marker, and a compatible bound must not be flagged.
+        humidity = {
+            "type": "relation",
+            "key": "humidity",
+            "value": 62.0,
+            "unit": "%",
+            "tolerance": 2.0,
+            "aliases": ["humidity"],
+        }
+        for phrase in [
+            "humidity is no more than 64%",  # 62 <= 64 -> compatible
+            "humidity is no less than 60%",  # 62 >= 60 -> compatible
+            "humidity is at most 64%",
+            "humidity is at least 60%",
+        ]:
+            rep = _grade(g, [humidity], phrase)
+            assert rep.facts[0].status == "present", phrase
+            assert rep.overall is True, phrase
+        # An INCOMPATIBLE bound is still contradicted.
+        rep = _grade(g, [humidity], "humidity is no more than 50%")
+        assert rep.facts[0].status == "contradicted"
+        assert rep.overall is False
+        rep = _grade(g, [humidity], "humidity is no less than 65%")
+        assert rep.facts[0].status == "contradicted"
+
+    def test_electrical_unit_suffix_is_not_a_temperature(self, g):
+        # Round-16 F3: electrical/physical unit suffixes (watts, volts, amps,
+        # hertz, ...) are unambiguous non-temperature units -- "draws 21 watts"
+        # must not satisfy a 21 °C fact as a bare 21.
+        for phrase in [
+            "temperature sensor draws 21 watts",
+            "the fan uses 21 watts",
+            "reads 21 volts",
+            "draws 21 amps",
+            "runs at 21 hertz",
+        ]:
+            rep = _grade(g, [TEMP21C], phrase)
+            assert rep.facts[0].status == "missing", phrase
+            assert rep.overall is False, phrase
+        # Real temperature readings still pass.
+        assert _grade(g, [TEMP21C], "the temperature is 21°C").overall is True
+        assert _grade(g, [TEMP21C], "21 C at the moment").overall is True
+
 
 # --- Tool output is DATA, not instructions ---------------------------------
 class TestInputIsDataNotInstructions:
