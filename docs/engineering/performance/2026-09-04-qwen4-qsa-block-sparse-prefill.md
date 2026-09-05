@@ -36,8 +36,8 @@ can call it.
 - MLX / mlx-lm / NumPy: 0.32.1 / 0.31.3 / 2.5.2
 - Precision: bf16 performance geometry; fp16 inputs with an fp64 NumPy oracle
   for the numerical probe; TF32 disabled before importing MLX
-- Warmup / samples: two warmups and five interleaved sparse/dense observations;
-  three warmups and 100 synchronized dispatch-floor observations
+- Warmup / samples: two warmups before each of five interleaved sparse/dense
+  observations; three warmups before 100 synchronized dispatch-floor observations
 - Artifact: `/tmp/qsa-qualification-production.json`, SHA-256
   `3eedcab197d6609a83279cac40b2b4e0796a6c94a2b8d487c720d79eff2fd821`
 
