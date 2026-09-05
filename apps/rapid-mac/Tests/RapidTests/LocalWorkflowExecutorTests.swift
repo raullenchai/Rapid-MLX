@@ -74,6 +74,30 @@ struct LocalWorkflowExecutorTests {
         #expect(events.last?.kind == .runCompleted)
     }
 
+    @Test("exhausted idempotent retries preserve that an action occurred")
+    func exhaustedRetriesPreserveActionUncertainty() async throws {
+        let workflow = LocalWorkflow(title: "Lunch", steps: [step(maxAttempts: 2)])
+        let observer = ScriptedWorkflowObserver([
+            observation(revision: "a"), observation(revision: "a"), observation(revision: "b"),
+            observation(revision: "b"), observation(revision: "b"), observation(revision: "c"),
+        ])
+        let dependencies = Dependencies(
+            observer: observer,
+            verifications: [
+                .notSatisfied(code: .targetUnchanged),
+                .notSatisfied(code: .targetUnchanged),
+            ]
+        )
+
+        let run = await dependencies.executor.execute(workflow)
+
+        #expect(run.status == .paused(
+            stepID: "choose",
+            reason: .recoveryExhausted,
+            actionMayHaveOccurred: true
+        ))
+    }
+
     @Test("approval is action-scoped and changed UI after approval forces a fresh proposal")
     func approvalRebindsBeforeActing() async throws {
         let workflow = LocalWorkflow(
@@ -121,21 +145,34 @@ struct LocalWorkflowExecutorTests {
 
         let run = await dependencies.executor.execute(workflow)
 
-        #expect(run.status == .paused(stepID: "choose", reason: .approvalDenied))
+        #expect(run.status == .paused(
+            stepID: "choose",
+            reason: .approvalDenied,
+            actionMayHaveOccurred: false
+        ))
         #expect(run.nextStepIndex == 0)
         #expect(await dependencies.actuator.count == 0)
     }
 
     @Test("approval text flattens whitespace, exposes invisible controls, and is bounded")
     func approvalSummaryIsDisplaySafe() async throws {
+        let unsafeTitle = "Publish \u{202E}now"
         let workflow = LocalWorkflow(
             title: "Publish",
-            steps: [step(risk: .externalCommunication)]
+            steps: [
+                LocalWorkflowStep(
+                    id: "choose",
+                    title: unsafeTitle,
+                    instruction: "Publish the draft",
+                    successCriteria: "The draft is published",
+                    risk: .externalCommunication
+                ),
+            ]
         )
         let observer = ScriptedWorkflowObserver([
             observation(revision: "draft"), observation(revision: "draft"),
         ])
-        let rawSummary = "Publish\nnow \u{202E}" + String(repeating: "x", count: 300)
+        let rawSummary = "Publish\nnow \u{202E}e" + String(repeating: "\u{0301}", count: 300)
         let dependencies = Dependencies(
             observer: observer,
             verifications: [],
@@ -148,7 +185,8 @@ struct LocalWorkflowExecutorTests {
 
         #expect(!request.actionSummary.contains("\n"))
         #expect(request.actionSummary.contains("\\u{202E}"))
-        #expect(request.actionSummary.count <= 250)
+        #expect(request.actionSummary.utf8.count <= 240)
+        #expect(request.stepTitle.contains("\\u{202E}"))
     }
 
     @Test("an unsafe verifier result pauses without trying a different click")
@@ -164,7 +202,11 @@ struct LocalWorkflowExecutorTests {
 
         let run = await dependencies.executor.execute(workflow)
 
-        #expect(run.status == .paused(stepID: "choose", reason: .unsafeState))
+        #expect(run.status == .paused(
+            stepID: "choose",
+            reason: .unsafeState,
+            actionMayHaveOccurred: true
+        ))
         #expect(await dependencies.grounder.count == 1)
         #expect(await dependencies.actuator.count == 1)
     }
@@ -189,8 +231,20 @@ struct LocalWorkflowExecutorTests {
 
         let run = await dependencies.executor.execute(workflow)
 
-        #expect(run.status == .paused(stepID: "choose", reason: .recoveryExhausted))
+        #expect(run.status == .paused(
+            stepID: "choose",
+            reason: .recoveryExhausted,
+            actionMayHaveOccurred: true
+        ))
         #expect(await dependencies.grounder.count == 1)
+        #expect(await dependencies.actuator.count == 1)
+
+        let resumed = await dependencies.executor.execute(workflow, resuming: run)
+        #expect(resumed.status == .paused(
+            stepID: "invalid-run",
+            reason: .unsafeState,
+            actionMayHaveOccurred: true
+        ))
         #expect(await dependencies.actuator.count == 1)
     }
 
@@ -206,7 +260,11 @@ struct LocalWorkflowExecutorTests {
 
         let run = await dependencies.executor.execute(workflow)
 
-        #expect(run.status == .paused(stepID: "choose", reason: .unsafeState))
+        #expect(run.status == .paused(
+            stepID: "choose",
+            reason: .unsafeState,
+            actionMayHaveOccurred: false
+        ))
         #expect(await dependencies.actuator.count == 0)
         #expect((await dependencies.ledger.events).contains { $0.code == .invalidAction })
     }
@@ -230,7 +288,11 @@ struct LocalWorkflowExecutorTests {
 
         let run = await dependencies.executor.execute(workflow)
 
-        #expect(run.status == .paused(stepID: "choose", reason: .unsafeState))
+        #expect(run.status == .paused(
+            stepID: "choose",
+            reason: .unsafeState,
+            actionMayHaveOccurred: false
+        ))
         #expect(await dependencies.grounder.count == 0)
         #expect((await dependencies.ledger.events).contains { $0.code == .invalidObservation })
     }
@@ -249,8 +311,40 @@ struct LocalWorkflowExecutorTests {
 
         let run = await dependencies.executor.execute(workflow, resuming: interrupted)
 
-        #expect(run.status == .paused(stepID: "invalid-run", reason: .unsafeState))
+        #expect(run.status == .paused(
+            stepID: "invalid-run",
+            reason: .unsafeState,
+            actionMayHaveOccurred: true
+        ))
         #expect(await dependencies.actuator.count == 0)
+    }
+
+    @Test("the executor rejects an overlapping claim before duplicate actuation")
+    func overlappingRunIsRejected() async throws {
+        let workflow = LocalWorkflow(title: "Lunch", steps: [step()])
+        let initial = LocalWorkflowRun(workflowID: workflow.id)
+        let observer = BlockingFirstWorkflowObserver([
+            observation(revision: "menu"),
+            observation(revision: "menu"),
+            observation(revision: "selected"),
+        ])
+        let dependencies = Dependencies(observer: observer, verifications: [.satisfied])
+
+        let first = Task {
+            await dependencies.executor.execute(workflow, resuming: initial)
+        }
+        await observer.waitUntilBlocked()
+        let overlapping = await dependencies.executor.execute(workflow, resuming: initial)
+        await observer.release()
+        let completed = await first.value
+
+        #expect(overlapping.status == .paused(
+            stepID: "executor-busy",
+            reason: .unsafeState,
+            actionMayHaveOccurred: true
+        ))
+        #expect(completed.status == .completed)
+        #expect(await dependencies.actuator.count == 1)
     }
 
     @Test("cancellation becomes durable run state")
@@ -261,9 +355,45 @@ struct LocalWorkflowExecutorTests {
 
         let run = await dependencies.executor.execute(workflow)
 
-        #expect(run.status == .cancelled)
+        #expect(run.status == .cancelled(stepID: "choose", actionMayHaveOccurred: false))
         #expect(run.nextStepIndex == 0)
         #expect((await dependencies.ledger.events).last?.kind == .runCancelled)
+    }
+
+    @Test("cancellation while input is suspended cannot become completed")
+    func cancellationDuringActuationIsConservative() async throws {
+        let workflow = LocalWorkflow(title: "Lunch", steps: [step()])
+        let observer = ScriptedWorkflowObserver([
+            observation(revision: "menu"),
+            observation(revision: "menu"),
+        ])
+        let grounder = ScriptedWorkflowGrounder(
+            payload: .click(normalizedX: 0.2, normalizedY: 0.3),
+            actionSummary: "Choose meal"
+        )
+        let actuator = BlockingWorkflowActuator()
+        let ledger = RecordingWorkflowLedger()
+        let executor = LocalWorkflowExecutor(
+            observer: observer,
+            grounder: grounder,
+            actuator: actuator,
+            verifier: ScriptedWorkflowVerifier([.satisfied]),
+            fallbackResolver: ScriptedWorkflowFallback(),
+            approver: ScriptedWorkflowApprover([]),
+            ledger: ledger
+        )
+
+        let task = Task { await executor.execute(workflow) }
+        await actuator.waitUntilBlocked()
+        task.cancel()
+        await actuator.release()
+        let run = await task.value
+
+        #expect(run.status == .cancelled(
+            stepID: "choose",
+            actionMayHaveOccurred: true
+        ))
+        #expect((await ledger.events).last?.kind == .runCancelled)
     }
 
     @Test("audit events have no field capable of persisting action text or workflow instructions")
@@ -341,6 +471,48 @@ private actor ScriptedWorkflowObserver: LocalWorkflowObserving {
     }
 }
 
+private actor OneShotWorkflowGate {
+    private var isOpen = false
+    private var waiters: [CheckedContinuation<Void, Never>] = []
+
+    func wait() async {
+        if isOpen { return }
+        await withCheckedContinuation { continuation in
+            waiters.append(continuation)
+        }
+    }
+
+    func open() {
+        guard !isOpen else { return }
+        isOpen = true
+        let current = waiters
+        waiters.removeAll()
+        current.forEach { $0.resume() }
+    }
+}
+
+private actor BlockingFirstWorkflowObserver: LocalWorkflowObserving {
+    private var observations: [WorkflowObservation]
+    private var callCount = 0
+    private let blocked = OneShotWorkflowGate()
+    private let released = OneShotWorkflowGate()
+
+    init(_ observations: [WorkflowObservation]) { self.observations = observations }
+
+    func observe(for _: LocalWorkflowStep) async throws -> WorkflowObservation {
+        callCount += 1
+        if callCount == 1 {
+            await blocked.open()
+            await released.wait()
+        }
+        guard !observations.isEmpty else { throw TestDependencyError.exhausted }
+        return observations.removeFirst()
+    }
+
+    func waitUntilBlocked() async { await blocked.wait() }
+    func release() async { await released.open() }
+}
+
 private actor CancellingWorkflowObserver: LocalWorkflowObserving {
     func observe(for _: LocalWorkflowStep) async throws -> WorkflowObservation {
         throw CancellationError()
@@ -382,6 +554,22 @@ private actor RecordingWorkflowActuator: LocalWorkflowActuating {
     ) async throws {
         actions.append(action)
     }
+}
+
+private actor BlockingWorkflowActuator: LocalWorkflowActuating {
+    private let blocked = OneShotWorkflowGate()
+    private let released = OneShotWorkflowGate()
+
+    func perform(
+        _: GroundedWorkflowAction,
+        against _: WorkflowObservation
+    ) async throws {
+        await blocked.open()
+        await released.wait()
+    }
+
+    func waitUntilBlocked() async { await blocked.wait() }
+    func release() async { await released.open() }
 }
 
 private actor ScriptedWorkflowVerifier: LocalWorkflowVerifying {

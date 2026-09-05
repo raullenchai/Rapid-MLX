@@ -56,6 +56,7 @@ actor LocalWorkflowExecutor {
     private let fallbackResolver: any LocalWorkflowFallbackResolving
     private let approver: any LocalWorkflowApproving
     private let ledger: any LocalWorkflowLedgerWriting
+    private var activeRunID: UUID?
 
     init(
         observer: any LocalWorkflowObserving,
@@ -77,18 +78,42 @@ actor LocalWorkflowExecutor {
 
     func execute(_ workflow: LocalWorkflow, resuming run: LocalWorkflowRun? = nil) async -> LocalWorkflowRun {
         var run = run ?? LocalWorkflowRun(workflowID: workflow.id)
+        guard activeRunID == nil else {
+            return await pause(
+                run,
+                stepID: "executor-busy",
+                reason: .unsafeState,
+                code: .executorBusy,
+                actionMayHaveOccurred: true
+            )
+        }
+        activeRunID = run.id
+        defer { activeRunID = nil }
+
         guard run.workflowID == workflow.id,
               run.nextStepIndex >= 0,
               run.nextStepIndex <= workflow.steps.count,
               Set(workflow.steps.map(\.id)).count == workflow.steps.count,
               workflow.steps.allSatisfy({ !$0.id.isEmpty })
         else {
-            return await pause(run, stepID: "invalid-run", reason: .unsafeState, code: .invalidResumeState)
+            return await pause(
+                run,
+                stepID: "invalid-run",
+                reason: .unsafeState,
+                code: .invalidResumeState,
+                actionMayHaveOccurred: run.status.actionMayHaveOccurred
+            )
         }
 
         if run.nextStepIndex == workflow.steps.count {
             guard run.status.permitsExecution || run.status == .completed else {
-                return await pause(run, stepID: "invalid-run", reason: .unsafeState, code: .invalidResumeState)
+                return await pause(
+                    run,
+                    stepID: "invalid-run",
+                    reason: .unsafeState,
+                    code: .invalidResumeState,
+                    actionMayHaveOccurred: run.status.actionMayHaveOccurred
+                )
             }
             run.status = .completed
             await record(run, stepID: nil, kind: .runCompleted)
@@ -96,24 +121,42 @@ actor LocalWorkflowExecutor {
         }
 
         guard run.status.permitsExecution else {
-            return await pause(run, stepID: "invalid-run", reason: .unsafeState, code: .invalidResumeState)
+            return await pause(
+                run,
+                stepID: "invalid-run",
+                reason: .unsafeState,
+                code: .invalidResumeState,
+                actionMayHaveOccurred: run.status.actionMayHaveOccurred
+            )
         }
 
         run.status = .running
         await record(run, stepID: nil, kind: .runStarted)
 
         while run.nextStepIndex < workflow.steps.count {
-            if Task.isCancelled { return await cancel(run) }
+            if Task.isCancelled {
+                return await cancel(run, stepID: nil, actionMayHaveOccurred: false)
+            }
             let step = workflow.steps[run.nextStepIndex]
             let result = await executeStep(step, workflow: workflow, run: run)
             switch result {
             case .completed:
                 run.nextStepIndex += 1
                 run.status = .running
-            case .paused(let reason, let code):
-                return await pause(run, stepID: step.id, reason: reason, code: code)
-            case .cancelled:
-                return await cancel(run)
+            case .paused(let reason, let code, let actionMayHaveOccurred):
+                return await pause(
+                    run,
+                    stepID: step.id,
+                    reason: reason,
+                    code: code,
+                    actionMayHaveOccurred: actionMayHaveOccurred
+                )
+            case .cancelled(let actionMayHaveOccurred):
+                return await cancel(
+                    run,
+                    stepID: step.id,
+                    actionMayHaveOccurred: actionMayHaveOccurred
+                )
             }
         }
 
@@ -124,8 +167,8 @@ actor LocalWorkflowExecutor {
 
     private enum StepResult {
         case completed
-        case paused(WorkflowPauseReason, code: WorkflowLedgerCode)
-        case cancelled
+        case paused(WorkflowPauseReason, code: WorkflowLedgerCode, actionMayHaveOccurred: Bool)
+        case cancelled(actionMayHaveOccurred: Bool)
     }
 
     private func executeStep(
@@ -133,12 +176,15 @@ actor LocalWorkflowExecutor {
         workflow: LocalWorkflow,
         run: LocalWorkflowRun
     ) async -> StepResult {
+        var priorActionMayHaveOccurred = false
         do {
             // Decode is allowed to bypass ``LocalWorkflowStep``'s initializer,
             // so clamp again at the trust boundary before constructing a range.
             let attemptLimit = min(max(1, step.maxGroundingAttempts), 3)
             for attempt in 1 ... attemptLimit {
-                if Task.isCancelled { return .cancelled }
+                if Task.isCancelled {
+                    return .cancelled(actionMayHaveOccurred: priorActionMayHaveOccurred)
+                }
                 let observed = try await validObservation(for: step)
                 let proposed = try await grounder.ground(step: step, observation: observed)
                 let action = GroundedWorkflowAction(
@@ -167,20 +213,37 @@ actor LocalWorkflowExecutor {
                 case .verified:
                     return .completed
                 case .retry(let actionWasPerformed):
+                    priorActionMayHaveOccurred = priorActionMayHaveOccurred || actionWasPerformed
                     if actionWasPerformed && !step.isIdempotent {
-                        return .paused(.recoveryExhausted, code: .visualRetriesExhausted)
+                        return .paused(
+                            .recoveryExhausted,
+                            code: .visualRetriesExhausted,
+                            actionMayHaveOccurred: true
+                        )
                     }
                     continue
-                case .paused(let reason, let code):
-                    return .paused(reason, code: code)
+                case .paused(let reason, let code, let actionMayHaveOccurred):
+                    return .paused(
+                        reason,
+                        code: code,
+                        actionMayHaveOccurred: priorActionMayHaveOccurred || actionMayHaveOccurred
+                    )
                 }
             }
 
             guard let fallbackIdentifier = step.semanticFallbackIdentifier else {
-                return .paused(.recoveryExhausted, code: .visualRetriesExhausted)
+                return .paused(
+                    .recoveryExhausted,
+                    code: .visualRetriesExhausted,
+                    actionMayHaveOccurred: priorActionMayHaveOccurred
+                )
             }
             guard step.isIdempotent else {
-                return .paused(.recoveryExhausted, code: .visualRetriesExhausted)
+                return .paused(
+                    .recoveryExhausted,
+                    code: .visualRetriesExhausted,
+                    actionMayHaveOccurred: priorActionMayHaveOccurred
+                )
             }
             let observed = try await validObservation(for: step)
             guard var fallback = try await fallbackResolver.fallbackAction(
@@ -188,7 +251,11 @@ actor LocalWorkflowExecutor {
                 step: step,
                 observation: observed
             ) else {
-                return .paused(.recoveryExhausted, code: .fallbackUnavailable)
+                return .paused(
+                    .recoveryExhausted,
+                    code: .fallbackUnavailable,
+                    actionMayHaveOccurred: priorActionMayHaveOccurred
+                )
             }
             fallback = GroundedWorkflowAction(
                 observationID: fallback.observationID,
@@ -216,23 +283,49 @@ actor LocalWorkflowExecutor {
             case .verified:
                 return .completed
             case .retry:
-                return .paused(.recoveryExhausted, code: .fallbackNotVerified)
-            case .paused(let reason, let code):
-                return .paused(reason, code: code)
+                return .paused(
+                    .recoveryExhausted,
+                    code: .fallbackNotVerified,
+                    actionMayHaveOccurred: true
+                )
+            case .paused(let reason, let code, let actionMayHaveOccurred):
+                return .paused(
+                    reason,
+                    code: code,
+                    actionMayHaveOccurred: priorActionMayHaveOccurred || actionMayHaveOccurred
+                )
             }
+        } catch WorkflowKernelError.cancelled(let actionMayHaveOccurred) {
+            return .cancelled(
+                actionMayHaveOccurred: priorActionMayHaveOccurred || actionMayHaveOccurred
+            )
         } catch is CancellationError {
-            return .cancelled
-        } catch WorkflowKernelError.invalidObservation {
-            return .paused(.unsafeState, code: .invalidObservation)
+            return .cancelled(actionMayHaveOccurred: priorActionMayHaveOccurred)
+        } catch WorkflowKernelError.invalidObservation(let actionMayHaveOccurred) {
+            return .paused(
+                .unsafeState,
+                code: .invalidObservation,
+                actionMayHaveOccurred: priorActionMayHaveOccurred || actionMayHaveOccurred
+            )
+        } catch WorkflowKernelError.dependencyFailure(let actionMayHaveOccurred) {
+            return .paused(
+                .dependencyFailure,
+                code: .dependencyFailure,
+                actionMayHaveOccurred: priorActionMayHaveOccurred || actionMayHaveOccurred
+            )
         } catch {
-            return .paused(.dependencyFailure, code: .dependencyFailure)
+            return .paused(
+                .dependencyFailure,
+                code: .dependencyFailure,
+                actionMayHaveOccurred: priorActionMayHaveOccurred
+            )
         }
     }
 
     private enum AttemptResult {
         case verified
         case retry(actionWasPerformed: Bool)
-        case paused(WorkflowPauseReason, code: WorkflowLedgerCode)
+        case paused(WorkflowPauseReason, code: WorkflowLedgerCode, actionMayHaveOccurred: Bool)
     }
 
     private func performIfCurrent(
@@ -252,7 +345,11 @@ actor LocalWorkflowExecutor {
                 source: action.source,
                 code: .invalidAction
             )
-            return .paused(.unsafeState, code: .invalidAction)
+            return .paused(
+                .unsafeState,
+                code: .invalidAction,
+                actionMayHaveOccurred: false
+            )
         }
         guard action.observationID == observed.id else {
             await record(
@@ -287,7 +384,7 @@ actor LocalWorkflowExecutor {
                     workflowID: workflow.id,
                     runID: run.id,
                     stepID: step.id,
-                    stepTitle: step.title,
+                    stepTitle: Self.displaySafeSummary(step.title),
                     actionSummary: Self.displaySafeSummary(action.safeSummary),
                     risk: effectiveRisk
                 )
@@ -295,9 +392,17 @@ actor LocalWorkflowExecutor {
             switch decision {
             case .denied:
                 await record(run, stepID: step.id, kind: .approvalDenied, attempt: attempt, source: action.source)
-                return .paused(.approvalDenied, code: .userDenied)
+                return .paused(
+                    .approvalDenied,
+                    code: .userDenied,
+                    actionMayHaveOccurred: false
+                )
             case .unavailable:
-                return .paused(.approvalUnavailable, code: .approvalUnavailable)
+                return .paused(
+                    .approvalUnavailable,
+                    code: .approvalUnavailable,
+                    actionMayHaveOccurred: false
+                )
             case .approved:
                 await record(run, stepID: step.id, kind: .approvalGranted, attempt: attempt, source: action.source)
             }
@@ -319,10 +424,33 @@ actor LocalWorkflowExecutor {
         }
 
         if Task.isCancelled { throw CancellationError() }
-        try await actuator.perform(action, against: current)
+        do {
+            try await actuator.perform(action, against: current)
+        } catch is CancellationError {
+            throw WorkflowKernelError.cancelled(actionMayHaveOccurred: true)
+        } catch {
+            throw WorkflowKernelError.dependencyFailure(actionMayHaveOccurred: true)
+        }
+        if Task.isCancelled {
+            throw WorkflowKernelError.cancelled(actionMayHaveOccurred: true)
+        }
         await record(run, stepID: step.id, kind: .actionPerformed, attempt: attempt, source: action.source)
-        let after = try await validObservation(for: step)
-        switch try await verifier.verify(step: step, before: current, after: after) {
+        if Task.isCancelled {
+            throw WorkflowKernelError.cancelled(actionMayHaveOccurred: true)
+        }
+        let after = try await validObservation(for: step, actionMayHaveOccurred: true)
+        let verification: WorkflowVerification
+        do {
+            verification = try await verifier.verify(step: step, before: current, after: after)
+        } catch is CancellationError {
+            throw WorkflowKernelError.cancelled(actionMayHaveOccurred: true)
+        } catch {
+            throw WorkflowKernelError.dependencyFailure(actionMayHaveOccurred: true)
+        }
+        if Task.isCancelled {
+            throw WorkflowKernelError.cancelled(actionMayHaveOccurred: true)
+        }
+        switch verification {
         case .satisfied:
             await record(run, stepID: step.id, kind: .verificationPassed, attempt: attempt, source: action.source)
             return .verified
@@ -345,7 +473,11 @@ actor LocalWorkflowExecutor {
                 source: action.source,
                 code: WorkflowLedgerCode(code)
             )
-            return .paused(.unsafeState, code: WorkflowLedgerCode(code))
+            return .paused(
+                .unsafeState,
+                code: WorkflowLedgerCode(code),
+                actionMayHaveOccurred: true
+            )
         }
     }
 
@@ -353,22 +485,41 @@ actor LocalWorkflowExecutor {
         _ original: LocalWorkflowRun,
         stepID: String,
         reason: WorkflowPauseReason,
-        code: WorkflowLedgerCode
+        code: WorkflowLedgerCode,
+        actionMayHaveOccurred: Bool
     ) async -> LocalWorkflowRun {
         var run = original
-        run.status = .paused(stepID: stepID, reason: reason)
+        run.status = .paused(
+            stepID: stepID,
+            reason: reason,
+            actionMayHaveOccurred: actionMayHaveOccurred
+        )
         await record(run, stepID: stepID, kind: .runPaused, code: code)
         return run
     }
 
     private enum WorkflowKernelError: Error {
-        case invalidObservation
+        case invalidObservation(actionMayHaveOccurred: Bool)
+        case dependencyFailure(actionMayHaveOccurred: Bool)
+        case cancelled(actionMayHaveOccurred: Bool)
     }
 
-    private func validObservation(for step: LocalWorkflowStep) async throws -> WorkflowObservation {
-        let observation = try await observer.observe(for: step)
+    private func validObservation(
+        for step: LocalWorkflowStep,
+        actionMayHaveOccurred: Bool = false
+    ) async throws -> WorkflowObservation {
+        let observation: WorkflowObservation
+        do {
+            observation = try await observer.observe(for: step)
+        } catch is CancellationError {
+            throw WorkflowKernelError.cancelled(actionMayHaveOccurred: actionMayHaveOccurred)
+        } catch {
+            throw WorkflowKernelError.dependencyFailure(actionMayHaveOccurred: actionMayHaveOccurred)
+        }
         guard observation.isStructurallyValid else {
-            throw WorkflowKernelError.invalidObservation
+            throw WorkflowKernelError.invalidObservation(
+                actionMayHaveOccurred: actionMayHaveOccurred
+            )
         }
         return observation
     }
@@ -376,33 +527,56 @@ actor LocalWorkflowExecutor {
     /// Model text shown in an approval prompt is untrusted display data. Make
     /// controls and Unicode formatting characters visible, flatten whitespace,
     /// and cap it so a misleading suffix cannot be pushed off-screen.
-    private static func displaySafeSummary(_ raw: String, cap: Int = 240) -> String {
+    private static func displaySafeSummary(_ raw: String, capBytes: Int = 240) -> String {
+        let ellipsis = "…"
+        let contentLimit = max(0, capBytes - ellipsis.utf8.count)
         var result = ""
-        result.reserveCapacity(min(raw.count, cap))
+        result.reserveCapacity(min(raw.utf8.count, contentLimit))
+        var byteCount = 0
         var previousWasWhitespace = false
+        var truncated = false
         for scalar in raw.unicodeScalars {
-            if result.count >= cap { break }
+            let token: String
             if scalar.properties.isWhitespace {
-                if !result.isEmpty && !previousWasWhitespace { result.append(" ") }
+                if result.isEmpty || previousWasWhitespace {
+                    previousWasWhitespace = true
+                    continue
+                }
+                token = " "
                 previousWasWhitespace = true
-                continue
+            } else {
+                previousWasWhitespace = false
+                switch scalar.properties.generalCategory {
+                case .control, .format, .lineSeparator, .paragraphSeparator,
+                     .privateUse, .surrogate, .unassigned:
+                    token = String(format: "\\u{%04X}", scalar.value)
+                default:
+                    token = String(scalar)
+                }
             }
-            previousWasWhitespace = false
-            switch scalar.properties.generalCategory {
-            case .control, .format, .lineSeparator, .paragraphSeparator,
-                 .privateUse, .surrogate, .unassigned:
-                result += String(format: "\\u{%04X}", scalar.value)
-            default:
-                result.unicodeScalars.append(scalar)
+            let tokenBytes = token.utf8.count
+            guard byteCount + tokenBytes <= contentLimit else {
+                truncated = true
+                break
             }
+            result += token
+            byteCount += tokenBytes
         }
         while result.last == " " { result.removeLast() }
-        return raw.count > cap ? result + "…" : result
+        if result.isEmpty && !raw.isEmpty { return "Protected action" }
+        return truncated ? result + ellipsis : result
     }
 
-    private func cancel(_ original: LocalWorkflowRun) async -> LocalWorkflowRun {
+    private func cancel(
+        _ original: LocalWorkflowRun,
+        stepID: String?,
+        actionMayHaveOccurred: Bool
+    ) async -> LocalWorkflowRun {
         var run = original
-        run.status = .cancelled
+        run.status = .cancelled(
+            stepID: stepID,
+            actionMayHaveOccurred: actionMayHaveOccurred
+        )
         await record(run, stepID: nil, kind: .runCancelled)
         return run
     }

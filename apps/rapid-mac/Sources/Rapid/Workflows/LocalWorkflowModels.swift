@@ -187,16 +187,29 @@ enum WorkflowPauseReason: String, Codable, Equatable, Sendable {
 enum LocalWorkflowRunStatus: Codable, Equatable, Sendable {
     case ready
     case running
-    case awaitingApproval(stepID: String)
-    case paused(stepID: String, reason: WorkflowPauseReason)
+    case paused(stepID: String, reason: WorkflowPauseReason, actionMayHaveOccurred: Bool)
     case completed
-    case cancelled
+    case cancelled(stepID: String?, actionMayHaveOccurred: Bool)
 
     var permitsExecution: Bool {
         switch self {
-        case .ready, .paused:
+        case .ready:
             true
-        case .running, .awaitingApproval, .completed, .cancelled:
+        case .running, .paused, .completed, .cancelled:
+            false
+        }
+    }
+
+    /// Conservative persisted uncertainty used when an invalid resume is
+    /// rejected. A run interrupted while executing may already have crossed
+    /// the external side-effect boundary even if no result was recorded.
+    var actionMayHaveOccurred: Bool {
+        switch self {
+        case .running, .completed:
+            true
+        case .paused(_, _, let value), .cancelled(_, let value):
+            value
+        case .ready:
             false
         }
     }
@@ -251,6 +264,7 @@ struct WorkflowLedgerEvent: Codable, Equatable, Sendable {
 
 enum WorkflowLedgerCode: String, Codable, Equatable, Sendable {
     case invalidResumeState
+    case executorBusy
     case observationIDMismatch
     case interactionStateChanged
     case invalidAction
