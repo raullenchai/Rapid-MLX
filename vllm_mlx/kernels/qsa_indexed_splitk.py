@@ -69,9 +69,7 @@ def indexed_splitk_decline_reason(
         return "batch size is not qualified"
     if query_length not in QUALIFIED_QUERY_LENGTHS:
         return "query length is not qualified"
-    crossover = (
-        MIN_KV_LENGTH_DECODE if query_length == 1 else MIN_KV_LENGTH_VERIFY
-    )
+    crossover = MIN_KV_LENGTH_DECODE if query_length == 1 else MIN_KV_LENGTH_VERIFY
     if physical_kv_length < crossover:
         return "physical KV below crossover"
     installed_version = _mlx_version() if mlx_version is None else mlx_version
@@ -375,7 +373,9 @@ def indexed_splitk_attention(
         raise ValueError("QSA query/K/V layout is unsupported by indexed split-K")
     split_count = _split_count(key_length, query_length) if splits is None else splits
     if split_count <= 0 or split_count % SIMD_WIDTH:
-        raise ValueError("indexed split-K split count must be a positive multiple of 32")
+        raise ValueError(
+            "indexed split-K split count must be a positive multiple of 32"
+        )
 
     block_topk = int(block_starts.shape[-1])
     gqa_heads = query_heads // kv_heads

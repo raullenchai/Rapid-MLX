@@ -169,7 +169,10 @@ def test_indexed_splitk_production_layout_matches_fp64_with_distinct_rows():
     for query_index in range(query_length):
         selected = np.concatenate(
             [
-                *(np.arange(start, start + block_size) for start in starts_np[0, query_index]),
+                *(
+                    np.arange(start, start + block_size)
+                    for start in starts_np[0, query_index]
+                ),
                 tails_np[0, query_index, : tail_counts_np[0, query_index]],
             ]
         )
@@ -182,8 +185,7 @@ def test_indexed_splitk_production_layout_matches_fp64_with_distinct_rows():
             weights = np.exp(scores - scores.max())
             weights /= weights.sum()
             reference[0, head, query_index] = (
-                weights[:, None]
-                * values_fp[0, kv_head, selected].astype(np.float64)
+                weights[:, None] * values_fp[0, kv_head, selected].astype(np.float64)
             ).sum(axis=0)
 
     np.testing.assert_allclose(
@@ -203,23 +205,21 @@ def test_indexed_splitk_is_bit_exact_with_native_gather_path():
     scale = head_dim**-0.5
     # Deliberately slice padded capacity so pass 1 must honor input strides
     # instead of copying the physical KV cache on every decode layer.
-    queries = mx.random.normal(
-        (batch, query_heads, query_length + 1, head_dim)
-    ).astype(mx.bfloat16)[:, :, :query_length, :]
-    keys = mx.random.normal(
-        (batch, kv_heads, key_length + 7, head_dim)
-    ).astype(mx.bfloat16)[:, :, :key_length, :]
-    values = mx.random.normal(
-        (batch, kv_heads, key_length + 7, head_dim)
-    ).astype(mx.bfloat16)[:, :, :key_length, :]
+    queries = mx.random.normal((batch, query_heads, query_length + 1, head_dim)).astype(
+        mx.bfloat16
+    )[:, :, :query_length, :]
+    keys = mx.random.normal((batch, kv_heads, key_length + 7, head_dim)).astype(
+        mx.bfloat16
+    )[:, :, :key_length, :]
+    values = mx.random.normal((batch, kv_heads, key_length + 7, head_dim)).astype(
+        mx.bfloat16
+    )[:, :, :key_length, :]
     starts = []
     gathered_outputs = []
     for query_index in range(query_length):
         row_starts = (
             np.sort(
-                rng.choice(
-                    key_length // block_size, size=block_topk, replace=False
-                )
+                rng.choice(key_length // block_size, size=block_topk, replace=False)
             ).astype(np.int32)
             * block_size
         )
@@ -236,21 +236,11 @@ def test_indexed_splitk_is_bit_exact_with_native_gather_path():
             )
         )
     gathered = mx.concatenate(gathered_outputs, axis=2)
-    padded_starts = mx.full(
-        (batch, query_length, block_topk + 1), -1, dtype=mx.int32
-    )
-    padded_starts[:, :, :block_topk] = mx.array(
-        np.array(starts, dtype=np.int32)[None]
-    )
-    padded_counts = mx.full(
-        (batch, query_length + 1), block_topk, dtype=mx.int32
-    )
-    padded_tails = mx.zeros(
-        (batch, query_length, block_size + 1), dtype=mx.int32
-    )
-    padded_tail_counts = mx.zeros(
-        (batch, query_length + 1), dtype=mx.int32
-    )
+    padded_starts = mx.full((batch, query_length, block_topk + 1), -1, dtype=mx.int32)
+    padded_starts[:, :, :block_topk] = mx.array(np.array(starts, dtype=np.int32)[None])
+    padded_counts = mx.full((batch, query_length + 1), block_topk, dtype=mx.int32)
+    padded_tails = mx.zeros((batch, query_length, block_size + 1), dtype=mx.int32)
+    padded_tail_counts = mx.zeros((batch, query_length + 1), dtype=mx.int32)
     indexed = qsa_indexed_splitk.indexed_splitk_attention(
         queries,
         keys,
@@ -329,7 +319,9 @@ def test_qsa_attention_routes_narrow_selection_and_records_receipt(monkeypatch):
     attention = QSAAttention(args)
     attention.eval()
     attention.indexer = _FakeIndexer(args)
-    monkeypatch.setattr(qwen4_exp, "indexed_splitk_decline_reason", lambda *a, **k: None)
+    monkeypatch.setattr(
+        qwen4_exp, "indexed_splitk_decline_reason", lambda *a, **k: None
+    )
     observed = []
 
     def fake_indexed(
@@ -346,7 +338,14 @@ def test_qsa_attention_routes_narrow_selection_and_records_receipt(monkeypatch):
     ):
         del keys, values
         observed.append(
-            (block_starts.shape, block_counts.shape, tail_indices.shape, tail_counts.shape, block_size, scale)
+            (
+                block_starts.shape,
+                block_counts.shape,
+                tail_indices.shape,
+                tail_counts.shape,
+                block_size,
+                scale,
+            )
         )
         return mx.zeros_like(queries)
 
