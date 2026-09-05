@@ -107,8 +107,11 @@ def _endpoint_health(host: str, port: int) -> tuple[bool, bool]:
         except OSError:
             return False
 
-    from .install import _readyz_ready
+    from .install import _probe_host, _readyz_ready
 
+    probe_host = _probe_host(host)
+    if probe_host != host:
+        host = probe_host
     return _probe_live(), _readyz_ready(host, port)
 
 

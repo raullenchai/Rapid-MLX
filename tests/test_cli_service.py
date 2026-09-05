@@ -96,6 +96,23 @@ def test_service_subcommand_registered():
     assert "service" in choices
 
 
+def test_service_install_parses_passthrough_after_separator():
+    args = build_parser().parse_args(
+        [
+            "service",
+            "install",
+            "--service-user",
+            "serveuser",
+            "--model",
+            "qwen3.5-4b-4bit",
+            "--",
+            "--max-num-seqs",
+            "4",
+        ]
+    )
+    assert args.serve_args == ["--", "--max-num-seqs", "4"]
+
+
 def test_service_macos_guard():
     """On non-darwin the service dispatch must refuse with a clear message."""
 
@@ -178,6 +195,12 @@ def test_refuse_secret_flags(flag):
 def test_allow_non_secret_flags():
     # No raise.
     ins_mod.refuse_secret_flags(("--max-num-seqs", "4", "--use-paged-cache"))
+
+
+@pytest.mark.parametrize("flag", ["--host", "--port=9000", "--listen-fd"])
+def test_refuse_passthrough_bind_overrides(flag):
+    with pytest.raises(ins_mod.ServiceInstallError, match="bind option"):
+        ins_mod.refuse_secret_flags((flag, "value"))
 
 
 # ---------------------------------------------------------------------------
@@ -522,6 +545,10 @@ def test_install_rollback_removes_plist_on_readiness_failure(monkeypatch, tmp_pa
     # fail). plutil/install/bootstrap return success so the only failure is
     # the readiness wait.
     def _fake_run(args, check=True):
+        if args and args[0] == "install":
+            import shutil
+
+            shutil.copyfile(args[-2], args[-1])
         if args and args[0] == "rm":
             import os
 
@@ -534,7 +561,6 @@ def test_install_rollback_removes_plist_on_readiness_failure(monkeypatch, tmp_pa
 
     monkeypatch.setattr(ins, "_run", _fake_run)
     plist = tmp_path / "com.rapidmlx.server.plist"
-    plist.write_bytes(b"<failed-install-persisted>")
 
     code = ins.install_command(_ns(dry_run=False))
     assert code == 2
@@ -1321,6 +1347,16 @@ def test_readyz_ready_connection_error():
     assert _readyz_ready("127.0.0.1", 1) is False
 
 
+@pytest.mark.parametrize(
+    ("bind", "probe"),
+    [("0.0.0.0", "127.0.0.1"), ("::", "::1"), ("[::]", "::1")],
+)
+def test_wildcard_bind_uses_connectable_probe_address(bind, probe):
+    from vllm_mlx.headless_service.install import _probe_host
+
+    assert _probe_host(bind) == probe
+
+
 def test_install_plutil_lint_failure_rolls_back(monkeypatch, tmp_path, capsys):
     """A plutil -lint failure aborts the install cleanly (rollback)."""
     ins = ins_mod
@@ -1426,10 +1462,8 @@ def test_install_rollback_unlink_oserror(monkeypatch, tmp_path, capsys):
 # ---------------------------------------------------------------------------
 
 
-def test_install_real_path_tolerates_already_loaded(monkeypatch, tmp_path):
-    """A reinstall where `launchctl bootstrap` reports 'already loaded' must
-    be accepted (documented reinstall grace), not fail as a bare CalledProcess
-    error — the tolerance must actually be reachable."""
+def test_install_real_path_rejects_already_loaded(monkeypatch, tmp_path, capsys):
+    """A hidden loaded job must not make a new plist look successfully active."""
     import vllm_mlx.headless_service.install as ins
 
     _valid_user_monkeypatch(monkeypatch)
@@ -1458,4 +1492,34 @@ def test_install_real_path_tolerates_already_loaded(monkeypatch, tmp_path):
 
     monkeypatch.setattr(ins, "_run", _fake_run)
     code = ins.install_command(_ns(dry_run=False))
-    assert code == 0  # tolerated, not an error
+    assert code == 2
+    assert "bootstrap failed" in capsys.readouterr().err
+
+
+def test_install_refuses_existing_plist_before_mutation(monkeypatch, tmp_path, capsys):
+    """Replacing a plist while launchd retains old argv creates split-brain."""
+    import vllm_mlx.headless_service.install as ins
+
+    _valid_user_monkeypatch(monkeypatch)
+    monkeypatch.setattr(ins, "LAUNCH_DAEMONS_DIR", tmp_path)
+    (tmp_path / "com.rapidmlx.server.plist").write_text("existing")
+    code = ins.install_command(_ns(dry_run=False))
+    assert code == 1
+    assert "already exists" in capsys.readouterr().err
+
+
+def test_stage_plist_uses_private_unpredictable_file(tmp_path, monkeypatch):
+    import stat
+
+    import vllm_mlx.headless_service.install as ins
+
+    monkeypatch.setattr(ins.tempfile, "tempdir", str(tmp_path))
+    first = ins._stage_plist(b"one")
+    second = ins._stage_plist(b"two")
+    try:
+        assert first != second
+        assert first.read_bytes() == b"one"
+        assert stat.S_IMODE(first.stat().st_mode) == 0o600
+    finally:
+        first.unlink()
+        second.unlink()

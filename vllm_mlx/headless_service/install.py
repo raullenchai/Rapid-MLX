@@ -24,6 +24,7 @@ from __future__ import annotations
 import os
 import subprocess
 import sys
+import tempfile
 import time
 from pathlib import Path
 
@@ -36,7 +37,8 @@ from .common import (
 )
 from .plist import build_plist_dict, serialize_plist
 
-FORBIDDEN_ARG_TOKENS = ("--api-key", "--api_key")
+FORBIDDEN_SECRET_ARG_TOKENS = ("--api-key", "--api_key")
+FORBIDDEN_BIND_ARG_TOKENS = ("--host", "--port", "--listen-fd")
 
 
 class ServiceInstallError(Exception):
@@ -55,12 +57,18 @@ def is_root() -> bool:
 def is_admin_user(user: str) -> bool:
     """Best-effort: is ``user`` a member of the local admin group (gid 80)?"""
     import grp
+    import pwd
 
     try:
         group = grp.getgrgid(80)
+        record = pwd.getpwnam(user)
     except KeyError:
         return False
-    return user in group.gr_mem
+    try:
+        return group.gr_gid in os.getgrouplist(user, record.pw_gid)
+    except OSError:
+        # Keep a conservative fallback for directory-service lookup failures.
+        return record.pw_gid == group.gr_gid or user in group.gr_mem
 
 
 def resolve_executable(home: Path) -> str:
@@ -126,12 +134,20 @@ def validate_service_account(user: str) -> None:
 def refuse_secret_flags(serve_args: tuple[str, ...]) -> None:
     """Reject serve flags that would embed a secret into argv/plist."""
     for tok in serve_args:
-        if tok.split("=", 1)[0] in FORBIDDEN_ARG_TOKENS:
+        option = tok.split("=", 1)[0]
+        if option in FORBIDDEN_SECRET_ARG_TOKENS:
             raise ServiceInstallError(
                 "refusing to put an API key in the service definition: argv "
                 "and plist EnvironmentVariables are visible to other local "
                 "processes. Bind to loopback and put a TLS-terminating "
                 "reverse proxy in front instead (the documented pattern)."
+            )
+        if option in FORBIDDEN_BIND_ARG_TOKENS:
+            raise ServiceInstallError(
+                f"refusing duplicate bind option {option!r} after `--`: use "
+                "the service install --host/--port options instead. "
+                "--listen-fd is incompatible with a launchd service that "
+                "does not configure socket activation."
             )
 
 
@@ -191,10 +207,19 @@ def _port_busy(host: str, port: int) -> bool:
     import socket
 
     try:
-        with socket.create_connection((host, port), timeout=1.0):
+        with socket.create_connection((_probe_host(host), port), timeout=1.0):
             return True
     except OSError:
         return False
+
+
+def _probe_host(bind_host: str) -> str:
+    """Return a connectable local address for a configured bind address."""
+    if bind_host == "0.0.0.0":
+        return "127.0.0.1"
+    if bind_host in {"::", "[::]"}:
+        return "::1"
+    return bind_host
 
 
 def _run(args: list[str], *, check: bool = True) -> subprocess.CompletedProcess:
@@ -205,18 +230,38 @@ def _mutation_list(
     *,
     label: str,
     plist_buf: bytes,
-    staged: Path,
     plist_path: Path,
     host: str,
     port: int,
 ) -> list[str]:
     return [
-        f"write staged plist {staged} ({len(plist_buf)} bytes)",
-        f"validate {staged} with plutil -lint",
-        f"install -o root -g wheel -m 644 {staged} -> {plist_path}",
+        f"write secure temporary plist ({len(plist_buf)} bytes, mode 600)",
+        "validate temporary plist with plutil -lint",
+        f"install -o root -g wheel -m 644 temporary plist -> {plist_path}",
         f"launchctl bootstrap {DEFAULT_DOMAIN} {plist_path}",
         f"poll {host}:{port}/readyz until ready (max 120s)",
     ]
+
+
+def _stage_plist(plist_buf: bytes) -> Path:
+    """Write ``plist_buf`` to an unguessable, owner-only temporary file.
+
+    ``rapid-mlx service install`` normally runs under sudo.  A predictable
+    path in a world-writable directory would let another local user place a
+    symlink there before the root process writes it.  ``mkstemp`` creates the
+    file atomically with O_EXCL and mode 0600, closing that overwrite path.
+    """
+    fd, raw_path = tempfile.mkstemp(prefix="rapid-mlx-service-", suffix=".plist")
+    try:
+        with os.fdopen(fd, "wb") as handle:
+            handle.write(plist_buf)
+    except BaseException:
+        try:
+            os.unlink(raw_path)
+        except OSError:
+            pass
+        raise
+    return Path(raw_path)
 
 
 def _readyz_ready(host: str, port: int) -> bool:
@@ -231,7 +276,7 @@ def _readyz_ready(host: str, port: int) -> bool:
     import socket
 
     try:
-        with socket.create_connection((host, port), timeout=1.0) as sock:
+        with socket.create_connection((_probe_host(host), port), timeout=1.0) as sock:
             sock.settimeout(1.0)
             sock.sendall(b"GET /readyz HTTP/1.1\r\nHost: x\r\n\r\n")
             data = sock.recv(4096)
@@ -331,6 +376,8 @@ def install_command(args) -> int:
     host = getattr(args, "host", None) or "127.0.0.1"
     port = getattr(args, "port", None) or 8000
     serve_args = tuple(getattr(args, "serve_args", None) or ())
+    if serve_args[:1] == ("--",):
+        serve_args = serve_args[1:]
     dry_run = bool(getattr(args, "dry_run", False))
 
     # argparse marks --service-user required, but guard here too (direct calls
@@ -369,8 +416,20 @@ def install_command(args) -> int:
         port=port,
         serve_args=serve_args,
     )
-    staged = Path("/tmp") / f"{label}.plist"
     plist_path = _plist_path(label)
+
+    # Never silently replace a persistent definition.  A loaded job keeps
+    # using its old in-memory configuration even if its plist is overwritten,
+    # which would make a reinstall appear successful until the next reboot.
+    # Explicit uninstall+install is deterministic and preserves models/logs.
+    if plist_path.exists():
+        print(
+            f"error: {plist_path} already exists. Refusing an ambiguous "
+            "in-place reinstall; run `sudo rapid-mlx service uninstall` "
+            "first (models/cache/logs are preserved), then install again.",
+            file=sys.stderr,
+        )
+        return 1
 
     # Port-race guard: refuse before touching anything if a server already
     # listens on the target port (unknown owner — do not silently cohabit).
@@ -401,7 +460,6 @@ def install_command(args) -> int:
         for step in _mutation_list(
             label=label,
             plist_buf=plist_buf,
-            staged=staged,
             plist_path=plist_path,
             host=host,
             port=port,
@@ -425,7 +483,6 @@ def install_command(args) -> int:
     for step in _mutation_list(
         label=label,
         plist_buf=plist_buf,
-        staged=staged,
         plist_path=plist_path,
         host=host,
         port=port,
@@ -435,15 +492,17 @@ def install_command(args) -> int:
     # True transaction state: whether we've installed the persistent plist,
     # so a failure below can roll back BOTH the loaded job AND the plist
     # file (a plist left in /Library/LaunchDaemons auto-loads on reboot).
-    plist_installed = False
+    persistent_write_attempted = False
+    staged: Path | None = None
     try:
         # Stage + lint. check=False so a lint failure surfaces its specific
         # message instead of a generic "install step failed" traceback.
-        staged.write_bytes(plist_buf)
+        staged = _stage_plist(plist_buf)
         lint = _run(["plutil", "-lint", str(staged)], check=False)
         if lint.returncode != 0:
             raise ServiceInstallError(f"plutil -lint failed: {lint.stderr.strip()}")
         # Install root-owned, 0644.
+        persistent_write_attempted = True
         _run(
             [
                 "install",
@@ -457,22 +516,19 @@ def install_command(args) -> int:
                 str(plist_path),
             ]
         )
-        plist_installed = True
-        # Bootstrap into the system domain (boot-time autostart). check=False
-        # so we can distinguish "already loaded" (reinstall — fine) from a real
-        # bootstrap failure (error). launchctl exits non-zero on already-loaded.
+        # Bootstrap into the system domain (boot-time autostart). A job that is
+        # already loaded without its plist is still an inconsistent state, not
+        # a successful reinstall; fail and remove the newly installed plist.
         boot = _run(
             ["launchctl", "bootstrap", DEFAULT_DOMAIN, str(plist_path)],
             check=False,
         )
         if boot.returncode != 0:
             boot_err = boot.stderr.strip()
-            if "already loaded" not in boot_err.lower():
-                raise ServiceInstallError(f"launchctl bootstrap failed: {boot_err}")
+            raise ServiceInstallError(f"launchctl bootstrap failed: {boot_err}")
         # Wait for readiness; on failure roll back the load AND the plist so
         # nothing persists to auto-start on the next boot.
         if not _wait_ready(host, port):
-            _run(["launchctl", "bootout", f"{DEFAULT_DOMAIN}/{label}"], check=False)
             raise ServiceInstallError(
                 f"service did not become ready on {host}:{port} within 120s; "
                 f"rolled back. Check {home}/Library/Logs/Rapid-MLX/"
@@ -483,10 +539,18 @@ def install_command(args) -> int:
         # plist (never the models/data/logs), so a failed install cannot
         # leave a boot-persistent daemon behind.
         try:
-            staged.unlink()
+            if staged is not None:
+                staged.unlink()
         except OSError:
             pass
-        if plist_installed:
+        if persistent_write_attempted:
+            # A failed bootstrap can still leave a partially loaded job. Make
+            # rollback idempotent by always attempting bootout before removing
+            # the new persistent definition.
+            _run(
+                ["launchctl", "bootout", f"{DEFAULT_DOMAIN}/{label}"],
+                check=False,
+            )
             _run(["rm", "-f", str(plist_path)], check=False)
             if not isinstance(exc, ServiceInstallError):
                 print(
@@ -499,6 +563,15 @@ def install_command(args) -> int:
         else:
             print(f"error: install step failed: {exc}", file=sys.stderr)
         return 2
+
+    # The persistent root-owned copy is installed; the private staging file is
+    # no longer needed.  Failure to remove it is harmless but should not turn a
+    # healthy service into a reported install failure.
+    if staged is not None:
+        try:
+            staged.unlink()
+        except OSError:
+            pass
 
     print(f"Installed and running: {label} (model {model}, {host}:{port}).")
     print(

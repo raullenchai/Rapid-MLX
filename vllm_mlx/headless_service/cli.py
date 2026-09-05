@@ -74,9 +74,9 @@ def register(subparsers) -> None:
     )
     install.add_argument(
         "serve_args",
-        nargs="*",
-        help="Additional non-secret serve flags to embed in the plist, e.g. "
-        "--max-num-seqs 4. Secrets (--api-key) are refused.",
+        nargs=argparse.REMAINDER,
+        help="Additional non-secret serve flags after a `--` separator, e.g. "
+        "`-- --max-num-seqs 4`. Secrets and bind overrides are refused.",
     )
     install.add_argument(
         "--dry-run",

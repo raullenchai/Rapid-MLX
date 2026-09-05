@@ -38,6 +38,15 @@ rapid-mlx service install --service-user serveuser \
   --model qwen3.5-4b-4bit --dry-run
 ```
 
+Pass advanced non-secret server options after a `--` separator, for example
+`-- --max-num-seqs 4`. Use the service command's own `--host` and `--port`
+options for binding; secret-bearing flags are intentionally rejected.
+
+Changing an installed definition is explicit: run `service uninstall`, then
+`service install` with the new settings. Uninstalling preserves models, cache,
+and logs. The installer refuses to overwrite an existing plist because launchd
+would otherwise keep the old in-memory configuration until reboot.
+
 Day-to-day operations:
 
 ```bash

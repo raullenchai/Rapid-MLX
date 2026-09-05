@@ -531,7 +531,7 @@ existing non-administrator service account and (for `install`/`uninstall`/
 
 ```bash
 rapid-mlx service install --service-user USER --model MODEL \
-  [--host HOST] [--port PORT] [serve options...] [--dry-run]
+  [--host HOST] [--port PORT] [--dry-run] [-- SERVE_OPTIONS...]
 rapid-mlx service status [--json]
 rapid-mlx service logs [--follow] [--tail N]
 rapid-mlx service restart [--dry-run]
@@ -543,6 +543,9 @@ rapid-mlx service uninstall [--dry-run]
   bootstraps the daemon. It refuses an administrator/system account, a
   secret in the definition, and a target port that already has a server.
   `--dry-run` prints every step without changing anything.
+- Additional `serve` options must follow a `--` separator, for example
+  `-- --max-num-seqs 4`. Bind overrides and secret-bearing options are
+  rejected; use the service command's own `--host` and `--port` flags.
 - `status` reports launchd registration, PID and owner, the declared model
   and bind, endpoint (`/livez`/`/readyz`) health, and log paths.
 - `logs` tails the daemon's stdout/stderr logs (`--follow` streams across
