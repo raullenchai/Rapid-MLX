@@ -195,19 +195,6 @@ def _looks_like_prequantized(model_name: str) -> bool:
     return bool(_QUANT_TAG_RE.search(model_name or ""))
 
 
-def _looks_like_packaged_checkpoint(model_name: str) -> bool:
-    """Whether mflux should load this repository through ``model_path``.
-
-    Quantized community repositories and the curated Klein bf16 repository
-    already use mflux's component layout. The latter is not quantized, but it
-    must follow the same ``model_path`` + ``quantize=None`` load contract;
-    otherwise ModelConfig ignores the requested repository and downloads BFL's
-    canonical source instead.
-    """
-
-    return _looks_like_prequantized(model_name) or is_packaged_bf16_model(model_name)
-
-
 class ImageGenerationEngine:
     """Adapter over a single mflux model family.
 

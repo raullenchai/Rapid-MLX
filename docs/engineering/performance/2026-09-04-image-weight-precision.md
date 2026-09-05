@@ -17,8 +17,8 @@ measurements from the issue, not a new run performed by this change.
 
 ## Branch dogfood
 
-The implementation at commit `4d280191d` was then dogfooded through the real
-`rapid-mlx serve` and `/v1/images/generations` path on the same class of host:
+The implementation branch was then dogfooded through the real `rapid-mlx serve`
+and `/v1/images/generations` path on the same class of host:
 
 - Mac mini, Apple M2 Pro, 32 GB unified memory, macOS 26.5.2;
 - mflux 0.19.1, MLX 0.32.2, low-power mode off, no recorded thermal warning;

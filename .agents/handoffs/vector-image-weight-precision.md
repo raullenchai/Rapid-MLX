@@ -18,30 +18,32 @@
 - Cold prefetch carries the registered image revision through the mirror,
   metadata, and Hub download layers, preventing a moving `main` snapshot from
   being downloaded before the pinned 16 GB snapshot.
-- Relevant alias/image/download/CLI/residency tests pass; exact commands are in
-  the eventual PR summary and the performance note.
+- After rebasing on the complete image-stack prerequisites, 670 focused Python
+  tests and 43 Desktop catalog/residency/phase tests pass. The BF16 catalog row
+  exposes its 15.98 GB size, 32 GB floor, four-step default, and image modality
+  through the same server contract consumed by the Desktop picker.
 - Real M2 Pro dogfood through `rapid-mlx serve` and the image endpoint measured
   52.703 s q4 versus 41.820 s bf16 median (1.26× throughput), with deterministic
   repeats and visually coherent output. The exact pinned bf16 package passed
   the repository completeness guard before loading.
 - A DiffusionGemma-shape M3 Ultra microbenchmark found q4 faster than bf16 at
   both M=256 and M=4096. No Gemma precision policy was changed.
-- `pr_validate` additionally exposed a pre-existing DiffusionGemma boot failure:
-  the alias routes to DiffusionEngine while `diffusion_generation_family`
-  returns `diffusion`. The exact failure reproduces on clean `origin/main` and
-  remains a separate follow-up, not part of this image-weight PR.
+- The previously independent DiffusionGemma routing fix is now on `main`; this
+  branch only preserves compatibility with it and does not change its precision
+  policy.
 
 ## Unresolved questions and risks
 
-- The CLI flag is a new public surface and needs Atlas compatibility approval.
 - The 18 GiB residency estimate is conservative; direct-engine dogfood measured
   about 12.49 GB peak process RSS, and the alias independently enforces a 32 GB
-  physical-memory floor.
+  physical-memory floor. Desktop admission intentionally honors that larger
+  hardware floor when it has catalog metadata.
 - Text-to-image is qualified end to end. FLUX.2 image editing with the bf16
   package has not been separately timed in this pass.
 - M1/M2-family automatic selection remains deliberately out of scope.
 
 ## Next action
 
-Atlas should confirm the explicit CLI/alias surface and decide whether a
-separate image-edit smoke is required before merge.
+Monitor exact-head CI and queue the PR once every required check is green.
+Image-edit timing remains a separate qualification rather than a merge blocker
+for this text-to-image performance path.
