@@ -699,8 +699,18 @@ class DiffusionEngine(BaseEngine):
         """
         try:
             import mlx.core as mx
+
+            # ``is_diffusion_model`` first appears in mlx-vlm 0.6.17, which is
+            # the ONLY version this runtime supports: rapid-mlx pins
+            # ``mlx-vlm==0.6.17`` in every vision extra (pyproject.toml), the
+            # doctor gate enforces it, and ``models/mllm.py``
+            # ``VALIDATED_MLX_VLM_VERSION`` hard-refuses any other installed
+            # version at import. So an unconditional import here is safe by
+            # the runtime's own contract, and no ``diffusion_generation_family``
+            # fallback is needed (or wanted — that shim is the brittle API this
+            # lane is moving off of).
             from mlx_vlm.generate.diffusion import (
-                diffusion_generation_family,
+                is_diffusion_model,
             )
             from mlx_vlm.utils import load
         except BaseException as e:  # noqa: BLE001 — propagate to caller
@@ -718,11 +728,29 @@ class DiffusionEngine(BaseEngine):
         try:
             logger.info(f"Loading DiffusionEngine model: {self._model_name}")
             model, processor = load(self._model_name)
-            family = diffusion_generation_family(model)
-            if family != "block":
+            # mlx-vlm >= 0.6.17 routes diffusion detection through
+            # ``is_diffusion_model`` (the deprecated
+            # ``diffusion_generation_family`` now returns a generic
+            # ``"diffusion"`` and never the block-canvas family name this
+            # lane used to match). Gate on the modern predicate AND the
+            # block-canvas capability trait this lane actually serves.
+            # ``is_diffusion_model`` alone is a generic text-diffusion
+            # predicate (True for any ``language_model.generate`` +
+            # ``canvas_length``/``mask_token_id`` checkpoint) — it would
+            # admit e.g. a masked-LM diffusion model. DiffusionEngine is
+            # built for the DiffusionGemma block-canvas family only, whose
+            # engine-driven denoising loop operates on ``config.canvas_length``
+            # (the same trait mlx-vlm's shared engine gates its canvas
+            # streaming on). So require BOTH: a diffusion model AND the
+            # block-canvas canvas trait.
+            config = getattr(model, "config", None)
+            is_block_canvas = getattr(config, "canvas_length", None) is not None
+            is_diffusion = is_diffusion_model(model)
+            if not (is_diffusion and is_block_canvas):
                 raise RuntimeError(
                     f"{self._model_name!r} is not a block-diffusion model "
-                    f"(diffusion_generation_family returned {family!r}). "
+                    f"(is_diffusion_model={is_diffusion}, canvas_length="
+                    f"{getattr(config, 'canvas_length', None)!r}). "
                     "DiffusionEngine only supports DiffusionGemma-family "
                     "block-canvas checkpoints."
                 )
