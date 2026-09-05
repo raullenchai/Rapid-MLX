@@ -321,42 +321,64 @@ class RelationFact:
 Fact = StringFact | NumberFact | RelationFact
 
 
-def _clamp_fact(fact: Fact, max_fact_len: int) -> Fact:
+def _clamp_fact(fact: Fact, max_fact_len: int) -> tuple[Fact, bool]:
     """Rebuild ``fact`` with every string field capped to ``max_fact_len``.
 
-    Values and aliases are DATA (potentially attacker- or tool-controlled), so
-    an oversized / injection-ish fact is clamped rather than allowed to dominate
-    the verdict. Numeric fields and unit/tolerance are kept untouched.
+    Returns ``(clamped_fact, was_clamped)``. Values and aliases are DATA
+    (potentially attacker- or tool-controlled), so an oversized / injection-ish
+    fact is clamped rather than allowed to dominate the verdict. ``was_clamped``
+    lets the caller FAIL CLOSED: grading the truncated prefix as if it were the
+    required fact would let an answer containing only the first 200 chars pass,
+    so an oversized fact must invalidate the run (see ``grade_answer``).
     """
     if max_fact_len <= 0:
-        return fact
+        return fact, False
 
     def _cut(value: str) -> str:
         return value[:max_fact_len]
 
+    def _changed(value: str) -> bool:
+        return len(value) > max_fact_len
+
     if isinstance(fact, StringFact):
-        return StringFact(
-            key=_cut(fact.key),
-            value=_cut(fact.value),
-            aliases=tuple(_cut(a) for a in fact.aliases),
+        clamped = (
+            _changed(fact.key)
+            or _changed(fact.value)
+            or any(_changed(a) for a in fact.aliases)
+        )
+        return (
+            StringFact(
+                key=_cut(fact.key),
+                value=_cut(fact.value),
+                aliases=tuple(_cut(a) for a in fact.aliases),
+            ),
+            clamped,
         )
     if isinstance(fact, NumberFact):
-        return NumberFact(
-            key=_cut(fact.key),
-            value=fact.value,
-            unit=fact.unit,
-            tolerance=fact.tolerance,
-            aliases=tuple(_cut(a) for a in fact.aliases),
+        clamped = _changed(fact.key) or any(_changed(a) for a in fact.aliases)
+        return (
+            NumberFact(
+                key=_cut(fact.key),
+                value=fact.value,
+                unit=fact.unit,
+                tolerance=fact.tolerance,
+                aliases=tuple(_cut(a) for a in fact.aliases),
+            ),
+            clamped,
         )
     if isinstance(fact, RelationFact):
-        return RelationFact(
-            key=_cut(fact.key),
-            value=fact.value,
-            unit=fact.unit,
-            tolerance=fact.tolerance,
-            aliases=tuple(_cut(a) for a in fact.aliases),
+        clamped = _changed(fact.key) or any(_changed(a) for a in fact.aliases)
+        return (
+            RelationFact(
+                key=_cut(fact.key),
+                value=fact.value,
+                unit=fact.unit,
+                tolerance=fact.tolerance,
+                aliases=tuple(_cut(a) for a in fact.aliases),
+            ),
+            clamped,
         )
-    return fact
+    return fact, False
 
 
 def fact_from_dict(d: dict) -> Fact:
@@ -378,11 +400,27 @@ def fact_from_dict(d: dict) -> Fact:
     # for number/relation it is the quantity under test.
     if "value" not in d or d.get("value") is None:
         raise ValueError(f"{ftype} fact '{key}' requires a 'value'")
+
+    def _clean_aliases(aliases: object, fact_key: str) -> tuple[str, ...]:
+        # Must be a real sequence of strings -- a bare string would iterate into
+        # single characters and let an incidental letter satisfy the fact.
+        if aliases is None:
+            return ()
+        if isinstance(aliases, (str, bytes)) or not isinstance(aliases, (list, tuple)):
+            raise ValueError(
+                f"fact '{fact_key}' 'aliases' must be a list/tuple of strings"
+            )
+        out = tuple(str(a) for a in aliases)
+        if any(not a for a in out):
+            raise ValueError(f"fact '{fact_key}' 'aliases' must be non-empty strings")
+        return out
+
+    aliases = _clean_aliases(d.get("aliases"), str(key))
     if ftype == "string":
         return StringFact(
             key=str(key),
             value=str(d["value"]),
-            aliases=tuple(str(a) for a in d.get("aliases", [])),
+            aliases=aliases,
         )
     raw_value = d["value"]
     if isinstance(raw_value, bool) or not isinstance(raw_value, (int, float)):
@@ -394,22 +432,33 @@ def fact_from_dict(d: dict) -> Fact:
         raise ValueError(
             f"number/relation fact '{key}' requires a finite, non-negative tolerance"
         )
+
+    def _resolve_configured_unit(supplied: object, default: str, fact_key: str) -> str:
+        # An EXPLICIT but unresolvable unit (e.g. a typo "unit":"k") must fail
+        # fast rather than silently fall back to a plausible default unit.
+        if supplied is None or supplied == "":
+            return default
+        resolved = _resolve_unit(str(supplied))
+        if resolved is None:
+            raise ValueError(f"fact '{fact_key}' has an unrecognized unit {supplied!r}")
+        return resolved
+
     if ftype == "number":
-        unit = _resolve_unit(str(d.get("unit", _C))) or _C
+        unit = _resolve_configured_unit(d.get("unit"), _C, str(key))
         return NumberFact(
             key=str(key),
             value=float(raw_value),
             unit=unit,
             tolerance=tolerance,
-            aliases=tuple(str(a) for a in d.get("aliases", [])),
+            aliases=aliases,
         )
-    unit = _resolve_unit(str(d.get("unit", _PERCENT))) or _PERCENT
+    unit = _resolve_configured_unit(d.get("unit"), _PERCENT, str(key))
     return RelationFact(
         key=str(key),
         value=float(raw_value),
         unit=unit,
         tolerance=tolerance,
-        aliases=tuple(str(a) for a in d.get("aliases", [])),
+        aliases=aliases,
     )
 
 
@@ -452,10 +501,13 @@ def _numbered_in(text: str) -> list[tuple[float, str | None, int]]:
     return out
 
 
-# Tokens that look like a measurement unit (but aren't in ``_UNIT_TO_CANONICAL``).
-# Used to reject unit-qualified numerics we don't model, so they don't leak in as
-# bare numbers. Conservative: slash-form compounds (km/h, m/s) plus a small list
-# of common physical units; ordinary words ("outside") are not included.
+# Tokens that look like a measurement / currency / count unit (but aren't in
+# ``_UNIT_TO_CANONICAL``). Used to reject unit-qualified numerics we don't model,
+# so they don't leak in as bare numbers: "21 dollars" or "55 points" must not
+# satisfy a temperature/humidity fact whose value merely coincides. Conservative:
+# slash-form compounds (km/h), a small list of common physical units, and common
+# currency/count nouns. Ordinary prose words ("outside", "and", "rising") are
+# deliberately NOT included.
 # Multi-letter/compound unit tokens are matched STANDALONE (no required base
 # prefix), so "55 mph" / "8 km/h" are recognized. Single-letter units (m, g, l,
 # h, s) are deliberately EXCLUDED from the standalone list -- they would
@@ -463,7 +515,9 @@ def _numbered_in(text: str) -> list[tuple[float, str | None, int]]:
 _ADJACENT_UNIT_RE = re.compile(
     r"\s{0,3}(?:(?:[a-z]{1,5}(?:/[a-z]{1,5})+)"
     r"|(?:mph|kph|kmh|knots|nmi|sq|sqm|in|ft|yd|mi|px|em|rem|pt|"
-    r"mm|cm|km|kg|ml|oz|lb|bar|mbar|hpa|pa|sec|min|hr))"
+    r"mm|cm|km|kg|ml|oz|lb|bar|mbar|hpa|pa|sec|min|hr|"
+    r"dollar|dollars|usd|cad|eur|gbp|yen|yuan|rupee|rupees|cents|"
+    r"points|point|degrees|grade|marks))"
 )
 
 
@@ -858,16 +912,24 @@ def grade_answer(
 
     # Cap sizes defensively: the answer is bounded, and each fact's string
     # content is clamped so oversized / injection-ish fact values or aliases
-    # can't dominate the verdict (tool output and answers are DATA).
+    # can't dominate the verdict (tool output and answers are DATA). Grading
+    # the truncated prefix as if it were the required fact would let an answer
+    # containing only the first 200 chars pass, so any clamped fact FAILS CLOSED
+    # (see _clamp_fact / report below).
     truncated = len(answer_text or "") > max_answer_len
     capped_answer = (answer_text or "")[:max_answer_len]
     norm_answer = _norm(capped_answer)
-    clamped_facts = [_clamp_fact(f, max_fact_len) for f in normalized]
+    clamped = [_clamp_fact(f, max_fact_len) for f in normalized]
+    fact_clamped = False
+    facts_for_grading: list[Fact] = []
+    for f, was_clamped in clamped:
+        fact_clamped = fact_clamped or was_clamped
+        facts_for_grading.append(f)
 
     facts_out: list[FactEvidence] = []
     missing: list[str] = []
     contradicted: list[str] = []
-    for fact in clamped_facts:
+    for fact in facts_for_grading:
         ev = _grade_fact(fact, norm_answer)
         facts_out.append(ev)
         if ev.status == "missing":
@@ -886,11 +948,11 @@ def grade_answer(
         # affirmative aggregate (all facts present), deliberately kept separate
         # from ``contradicted`` so consumers can distinguish "missing" from
         # "contradicted" without re-deriving from the per-fact rows. An ungraded
-        # overflow, a truncated answer (a contradiction may lie past the cap and
-        # be invisible to grading), or any missing/contradicted fact fails
-        # ``overall`` -- a scenario must never pass while some of the evidence
-        # was not examined.
-        overall=not truncated and not missing and not contradicted,
+        # overflow, a truncated answer, an oversized/clamped fact (evidence was
+        # altered), or any missing/contradicted fact fails ``overall`` -- a
+        # scenario must never pass while some of the evidence was not examined
+        # or was rewritten.
+        overall=not truncated and not fact_clamped and not missing and not contradicted,
         coverage=not missing,
         missing=missing,
         contradicted=contradicted,

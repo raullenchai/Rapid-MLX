@@ -300,7 +300,7 @@ class TestFailures:
 
 # --- Regressions from pr_validate codex_review (#2347) ----------------------
 class TestCodexRegressionFixes:
-    """Lock in fixes for the 20 blocker findings from pr_validate codex_review."""
+    """Lock in fixes for the 24 blocker findings from pr_validate codex_review."""
 
     def test_incompatible_explicit_unit_does_not_satisfy_number(self, g):
         # An explicitly '%'-qualified value must never satisfy a °C fact even
@@ -492,6 +492,54 @@ class TestCodexRegressionFixes:
                 raise AssertionError(f"accepted bad fact: {bad!r}")
             except ValueError:
                 pass
+
+    def test_bare_number_with_count_noun_not_accepted(self, g):
+        # "21 dollars" / "55 points" are count/currency nouns, not the fact's
+        # unit -- the coincident bare value must not satisfy the fact.
+        assert _grade(g, [TEMP21C], "temperature is 21 dollars").overall is False
+        assert _grade(g, [HUMIDITY], "humidity is 55 points").overall is False
+        # A genuine bare value still counts.
+        assert _grade(g, [TEMP21C], "temperature about 21").overall is True
+
+    def test_explicit_unresolvable_unit_rejected(self, g):
+        # A typo'd configured unit ("k") must fail fast, not silently mean C.
+        for u in ["k", "kelvin", "kg"]:
+            try:
+                g.fact_from_dict({"type": "number", "key": "t", "value": 21, "unit": u})
+                raise AssertionError(f"accepted unit {u!r}")
+            except ValueError:
+                pass
+        # No unit configured still falls back to the default (C).
+        assert (
+            _grade(
+                g,
+                [{"type": "number", "key": "temperature", "value": 21}],
+                "temperature is 21",
+            ).overall
+            is True
+        )
+
+    def test_non_list_aliases_rejected(self, g):
+        try:
+            g.fact_from_dict(
+                {"type": "string", "key": "cond", "value": "sunny", "aliases": "sunny"}
+            )
+            raise AssertionError("accepted string aliases")
+        except ValueError:
+            pass
+        assert _grade(g, [SUNNY], "it is clear").overall is True
+
+    def test_oversized_fact_value_fails_closed(self, g):
+        # Clamping an oversized fact then grading the truncated prefix as if it
+        # were the fact would false-pass; any oversized fact fails closed.
+        big = {
+            "type": "string",
+            "key": "cond",
+            "value": "x" * 5000,
+            "aliases": ["clear"],
+        }
+        rep = _grade(g, [big], "clear")
+        assert rep.overall is False
 
 
 # --- Tool output is DATA, not instructions ---------------------------------
