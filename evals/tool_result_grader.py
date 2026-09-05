@@ -779,7 +779,7 @@ def _term_matches(term: str, norm_answer: str) -> bool:
 # ("updated in 2026", "as of 2024"). A bare number after one of these is not a
 # confident wrong-value temperature report -- it reads as a timestamp.
 _TEMPORAL_PREPS = frozenset(
-    {"in", "on", "at", "as of", "since", "from", "during", "around", "by", "for"}
+    {"in", "on", "at", "as of", "since", "from", "during", "by", "for"}
 )
 
 
@@ -877,6 +877,17 @@ def _comparative_at(text: str, start: int) -> tuple[str, str] | None:
     return max(matched, key=lambda t: len(t[1]))
 
 
+def _comparative_present(norm_answer: str, start: int) -> bool:
+    """True if the value at ``start`` is prefixed by ANY relational comparator.
+
+    Inequalities ("below 64%", "above 60%") never AFFIRM the exact fact value,
+    so they must not count as coverage even when compatible -- only an explicit
+    value within tolerance grounds an exact fact. (Incompatible ones are
+    additionally flagged as contradictions elsewhere.)
+    """
+    return _comparative_at(norm_answer, start) is not None
+
+
 def _incompatible_comparison(
     fact: FactEvidence | object, norm_answer: str, start: int, value: float
 ) -> bool:
@@ -934,9 +945,10 @@ def _number_coverage(fact: NumberFact, norm_answer: str) -> tuple[bool, str]:
         )
 
     for value, unit, start in candidates:
-        # A strict relational comparison ("below 62%", "above 62%") is not an
-        # affirmative report of the exact value -- never count it as coverage.
-        if _incompatible_comparison(fact, norm_answer, start, value):
+        # ANY relational comparison ("below 62%", "above 60%") is not an
+        # affirmative report of the exact value -- never count it as coverage,
+        # even when compatible (an inequality does not ground the exact value).
+        if _comparative_present(norm_answer, start):
             continue
         if unit is not None:
             # Explicitly unit-qualified -- accepted anywhere ONLY when no anchor
@@ -1084,9 +1096,10 @@ def _relation_coverage(fact: RelationFact, norm_answer: str) -> tuple[bool, str]
     key_spans = _salient_spans(norm_answer, anchors)
     candidates = _numbered_in(norm_answer)
     for value, unit, start in candidates:
-        # A strict relational comparison is not an affirmation of the exact
-        # value -- "humidity is below 62%" must not cover a humidity=62 fact.
-        if _incompatible_comparison(fact, norm_answer, start, value):
+        # ANY relational comparison is not an affirmation of the exact value --
+        # "humidity is below 64%" must not cover a humidity=62 fact (even when
+        # compatible, an inequality does not ground the exact value).
+        if _comparative_present(norm_answer, start):
             continue
         converted = _to_unit(value, unit if unit is not None else fact.unit, fact.unit)
         if converted is None or abs(converted - fact.value) > fact.tolerance + 1e-9:

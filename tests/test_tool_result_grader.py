@@ -928,12 +928,29 @@ class TestCodexRegressionFixes:
         # Exact / approximate / in-range values still PASS.
         for phrase in ["humidity is 62%", "humidity is about 62%", "humidity is 61%"]:
             assert _grade(g, [humidity], phrase).overall is True, phrase
-        # A comparison whose threshold includes the fact value is COMPATIBLE.
-        assert _grade(g, [humidity], "humidity is below 64%").overall is True
-        assert _grade(g, [humidity], "humidity is above 60%").overall is True
+        # A COMPATIBLE inequality ("below 64%" for a 62±2 fact) is not a
+        # contradiction, but it is also NOT affirmative coverage of the exact
+        # value -- it asserts a range, so the fact is MISSING (see round-17 F1).
+        for phrase in ["humidity is below 64%", "humidity is above 60%"]:
+            rep = _grade(g, [humidity], phrase)
+            assert rep.facts[0].status == "missing", phrase
+            assert rep.facts[0].contradicted is False, phrase
+            assert rep.overall is False, phrase
         # Number facts: below/above the temperature value likewise contradict.
         rep = _grade(g, [TEMP21C], "the temperature is below 21°C")
         assert rep.facts[0].status == "contradicted"
+
+    def test_around_approx_wrong_value_is_contradicted(self, g):
+        # Round-17 F2: "around" is an APPROXIMATION qualifier, not a temporal
+        # preposition -- "temperature around 5" is an (approximate) WRONG value
+        # for a 21 °C fact, so it is CONTRADICTED, not a year/time MISSING.
+        for phrase in ["temperature around 5", "the temperature is around 5"]:
+            rep = _grade(g, [TEMP21C], phrase)
+            assert rep.facts[0].status == "contradicted", phrase
+            assert "temperature" in rep.contradicted, phrase
+            assert rep.overall is False, phrase
+        # An approximate CORRECT value still passes.
+        assert _grade(g, [TEMP21C], "the temperature is around 21").overall is True
 
     def test_malformed_string_value_fails_fast(self, g):
         # Round-15 F3 (nit hardened): a string fact's value must be a non-empty
@@ -953,7 +970,8 @@ class TestCodexRegressionFixes:
     def test_no_more_than_inclusive_comparator_is_not_denial(self, g):
         # Round-16 F1/2: "no more than X"/"no less than X" are INCLUSIVE
         # comparators (<= / >=), not denials -- their leading "no" must not trip
-        # the deny marker, and a compatible bound must not be flagged.
+        # the deny marker. A COMPATIBLE bound is neither a contradiction nor an
+        # affirmation of the exact value: it is MISSING (see round-17 F1).
         humidity = {
             "type": "relation",
             "key": "humidity",
@@ -963,14 +981,15 @@ class TestCodexRegressionFixes:
             "aliases": ["humidity"],
         }
         for phrase in [
-            "humidity is no more than 64%",  # 62 <= 64 -> compatible
-            "humidity is no less than 60%",  # 62 >= 60 -> compatible
+            "humidity is no more than 64%",  # 62 <= 64 -> compatible, not a denial
+            "humidity is no less than 60%",  # 62 >= 60 -> compatible, not a denial
             "humidity is at most 64%",
             "humidity is at least 60%",
         ]:
             rep = _grade(g, [humidity], phrase)
-            assert rep.facts[0].status == "present", phrase
-            assert rep.overall is True, phrase
+            assert rep.facts[0].status == "missing", phrase
+            assert rep.facts[0].contradicted is False, phrase
+            assert rep.overall is False, phrase
         # An INCOMPATIBLE bound is still contradicted.
         rep = _grade(g, [humidity], "humidity is no more than 50%")
         assert rep.facts[0].status == "contradicted"
