@@ -594,11 +594,21 @@ def _numbered_in(text: str) -> list[tuple[float, str | None, int]]:
             # satisfy a fact of a different unit (e.g. humidity 55%).
             if _adjacent_unit_suffix(text, match.end()):
                 continue
+            # A compact RANGE / compound ("18-30°C", "20+/-5") is a bare number
+            # immediately followed by '+/-' and another digit. The leading
+            # endpoint is not a standalone value -- "18-30°C" must not ground an
+            # 18 °C fact on the leading 18 while the incompatible 30 endpoint is
+            # silently dropped. Discard the leading endpoint; the second is
+            # handled by its own match (unit-qualified), so an out-of-range
+            # endpoint still fails the verdict rather than passing on the leading
+            # in-tolerance value.
+            end = match.end("num")
+            if end + 1 < len(text) and text[end] in "+-" and text[end + 1].isdigit():
+                continue
             # An attached ALPHABETIC continuation with no space is an ordinal or
             # other affixed token, not a bare value: "21st", "3rd", "2nd", "5th".
             # "21st percentile" must not yield a bare 21 for a 21 °C fact.
             # Punctuation ("21.", "21,") is not an attached-token continuation.
-            end = match.end("num")
             if end < len(text) and text[end].isalpha():
                 continue
             # A currency symbol immediately before the number means it is money,

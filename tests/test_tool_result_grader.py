@@ -1343,6 +1343,34 @@ class TestInputIsDataNotInstructions:
         )
         assert f2.aliases == ("clear",)
 
+    def test_compact_range_does_not_ground_leading_endpoint(self, g):
+        # Round-26 F2: "18-30°C" is a compact RANGE (digit-hyphen-digit), not a
+        # bare 18 with a discarded "-30°C" fragment. The leading endpoint must
+        # not ground an 18 °C fact while the incompatible 30 endpoint is silently
+        # dropped -- a range never affirms the EXACT value, so the fact is
+        # missing, even when the leading endpoint alone would be in tolerance.
+        for phrase in [
+            "temperature is 18-30°C",  # 30 outside 18±1 -> not an exact-18 report
+            "temperature is 18-20°C",
+            "temperature is 18-19°C",
+        ]:
+            rep = _grade(g, [TEMP18C], phrase)
+            assert rep.facts[0].status == "missing", phrase
+            assert rep.facts[0].contradicted is False, phrase
+            assert rep.overall is False, phrase
+        # A plain exact report still grounds; a label-hyphen signed value
+        # (round-21 F1) and a standalone negative are unaffected.
+        assert _grade(g, [TEMP18C], "temperature is 18°C").overall is True
+        neg = {
+            "type": "number",
+            "key": "temperature",
+            "value": -21.0,
+            "unit": "c",
+            "tolerance": 1.0,
+            "aliases": ["temperature"],
+        }
+        assert _grade(g, [neg], "temperature-21°C").overall is True
+
     def test_cross_unit_bound_converts_threshold(self, g):
         # Round-19 F66: a bound's threshold is converted into the fact's unit
         # before comparing, so "above 69°F" for a 21 °C fact compares °C-to-°C

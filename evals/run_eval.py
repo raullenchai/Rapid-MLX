@@ -1255,7 +1255,12 @@ def run_tool_calling_suite(host: str, port: int, verbose: bool = False) -> dict:
                 # step, with a reason naming the offending fact, and records a
                 # stable, versioned machine-readable `grounding` report.
                 expected_facts = sc.get("expected_facts")
-                if expected_facts and not final_ok:
+                # Presence, not truthiness: an EXPLICITLY configured empty list
+                # (`"expected_facts": []`) is a misconfiguration, not "absent" --
+                # it must still enter the grader so grade_answer fails closed
+                # (empty-facts is a vacuous-pass, see grade_answer). Only a
+                # scenario that does NOT declare the key stays untouched.
+                if expected_facts is not None and not final_ok:
                     # `verify_final_text` already failed this step (e.g. denied a
                     # tool, or called one in the final turn) -- still record the
                     # grounding evidence, but don't double-append the step.
@@ -1270,7 +1275,7 @@ def run_tool_calling_suite(host: str, port: int, verbose: bool = False) -> dict:
                             "error": str(e),
                             "overall": False,
                         }
-                if expected_facts and final_ok:
+                if expected_facts is not None and final_ok:
                     # The plain text checks passed; now grade semantic grounding.
                     # Best-effort like the failure path above: a grader import or
                     # grading error must not crash the whole eval run, so it is
