@@ -24,7 +24,8 @@ The implementation at commit `4d280191d` was then dogfooded through the real
 - mflux 0.19.1, MLX 0.32.2, low-power mode off, no recorded thermal warning;
 - otherwise-idle host, with its resident QSP service stopped for the A/B;
 - identical prompt, seed 1001, 1024×1024 output, and four inference steps;
-- one warm-up followed by five measured requests per checkpoint.
+- two independent server processes per checkpoint, each with one discarded
+  warm-up, followed by five measured requests combined across both processes.
 
 | Weight path | Warm-up | Measured requests | Median |
 |---|---:|---:|---:|
