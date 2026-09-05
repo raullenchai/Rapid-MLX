@@ -1695,6 +1695,54 @@
     "is_moe": false,
     "supports_spec_decode": false
   },
+  "granite-4.2-30b-4bit": {
+    "hf_path": "ibm-granite/granite-4.2-30b-q4-mlx",
+    "tool_call_parser": "qwen3_coder_xml",
+    "reasoning_parser": "qwen3",
+    "is_hybrid": false,
+    "is_moe": false,
+    "supports_spec_decode": true
+  },
+  "granite-4.2-30b-8bit": {
+    "hf_path": "ibm-granite/granite-4.2-30b-q8-mlx",
+    "tool_call_parser": "qwen3_coder_xml",
+    "reasoning_parser": "qwen3",
+    "is_hybrid": false,
+    "is_moe": false,
+    "supports_spec_decode": true
+  },
+  "granite-4.2-8b-4bit": {
+    "hf_path": "ibm-granite/granite-4.2-8b-q4-mlx",
+    "tool_call_parser": "qwen3_coder_xml",
+    "reasoning_parser": "qwen3",
+    "is_hybrid": false,
+    "is_moe": false,
+    "supports_spec_decode": true
+  },
+  "granite-4.2-8b-8bit": {
+    "hf_path": "ibm-granite/granite-4.2-8b-q8-mlx",
+    "tool_call_parser": "qwen3_coder_xml",
+    "reasoning_parser": "qwen3",
+    "is_hybrid": false,
+    "is_moe": false,
+    "supports_spec_decode": true
+  },
+  "granite-4.2-3b-4bit": {
+    "hf_path": "ibm-granite/granite-4.2-3b-q4-mlx",
+    "tool_call_parser": "qwen3_coder_xml",
+    "reasoning_parser": "qwen3",
+    "is_hybrid": false,
+    "is_moe": false,
+    "supports_spec_decode": true
+  },
+  "granite-4.2-3b-8bit": {
+    "hf_path": "ibm-granite/granite-4.2-3b-q8-mlx",
+    "tool_call_parser": "qwen3_coder_xml",
+    "reasoning_parser": "qwen3",
+    "is_hybrid": false,
+    "is_moe": false,
+    "supports_spec_decode": true
+  },
   "nanbeige4.1-3b-4bit": {
     "hf_path": "mlx-community/Nanbeige4.1-3B-4bit",
     "tool_call_parser": "hermes",

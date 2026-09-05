@@ -16,7 +16,7 @@ Families with registered aliases (run `rapid-mlx models` for the full, current l
 | GLM | 4.5 Air, 4.7 9B, 5.2 REAP-50 | 4-bit |
 | Kimi | K2.6 | 4-bit |
 | Phi 3.5 / 4 | mini, 14B | 4-bit |
-| Granite 4 | tiny, h-micro | 4-bit |
+| Granite 4 / 4.2 | tiny, h-micro (4.0-H); 3B, 8B, 30B dense (4.2) | 4/8-bit |
 | Nemotron 3 / 3.5 | Nano 30B, Lightning 30B | 4-bit |
 | LFM 2 / 2.5 | 1B, 2.6B, 8B-A1B, 24B-A2B | 4-bit |
 | GPT-OSS | 20B, 120B | 4/8-bit, mxfp4 |
@@ -75,6 +75,36 @@ instead — `rapid-mlx models` lists every alias with its size. Hy3's tool
 calling and reasoning are exercised in CI without booting the model via
 an offline parser-level integration test; real-inference coverage runs in
 the weekly Golden Path job on M3 Ultra hardware.
+
+### Granite 4.2 (IBM) 3B / 8B / 30B dense
+
+Granite 4.2 is IBM's dense line (`model_type: granite`, native in mlx-lm; the
+4.0-H `tiny` / `h-micro` aliases are the hybrid Mamba line). The aliases point
+at IBM's own MLX conversions:
+
+| Alias | HF path | Weights |
+|-------|---------|---------|
+| `granite-4.2-30b-4bit` | `ibm-granite/granite-4.2-30b-q4-mlx` | ~15 GB |
+| `granite-4.2-30b-8bit` | `ibm-granite/granite-4.2-30b-q8-mlx` | ~29 GB |
+| `granite-4.2-8b-4bit` | `ibm-granite/granite-4.2-8b-q4-mlx` | ~4.6 GB |
+| `granite-4.2-8b-8bit` | `ibm-granite/granite-4.2-8b-q8-mlx` | ~8.7 GB |
+| `granite-4.2-3b-4bit` | `ibm-granite/granite-4.2-3b-q4-mlx` | ~1.9 GB |
+| `granite-4.2-3b-8bit` | `ibm-granite/granite-4.2-3b-q8-mlx` | ~3.6 GB |
+
+```bash
+rapid-mlx serve granite-4.2-8b-4bit
+```
+
+The Granite 4.2 chat template is ChatML with a Qwen3-style `<think>` block
+and Qwen3-Coder-style `<function=…><parameter=…>` tool calls (the tokenizer
+config declares `tool_parser_type: qwen3_coder`), so the aliases pin the
+`qwen3` reasoning parser and the `qwen3_coder_xml` tool-call parser.
+**Thinking is on by default** in this template; `enable_thinking: false`
+(what Desktop sends with the thinking toggle off, and what
+`reasoning_effort: "none"` maps to) turns it off. `reasoning_effort: "low"`
+uses the reasoning-token budget; to send the template's own
+`{reasoning effort: low}` marker instead, pass
+`chat_template_kwargs: {"reasoning_effort": "low"}`.
 
 ## Multimodal Models (via mlx-vlm)
 
