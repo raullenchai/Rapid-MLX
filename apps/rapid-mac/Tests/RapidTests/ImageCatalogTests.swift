@@ -23,12 +23,13 @@ struct ImageCatalogTests {
       ────────────────────────────
       ltx-2.3-mlx-q4        24.0 GiB   [video:gen] notapalindrome/ltx23-mlx-av-q4
 
-      Image models (5 aliases)
+      Image models (7 aliases)
       ────────────────────────────
       Alias                 Size       Kind        HF id
       ────────────────────────────
       flux2-klein-4b        4.3 GiB    [image:both] Runpod/FLUX.2-klein-4B-mflux-4bit
       bonsai-image-4b-2bit   3.6 GiB    [image:gen] prism-ml/bonsai-image-ternary-4B-mlx-2bit
+      flux-schnell          9.0 GiB    [image:gen]  mflux-community/flux-1-schnell-mflux-q4
       z-image-turbo         5.5 GiB    [image:gen] filipstrand/Z-Image-Turbo-mflux-4bit
       hidream-o1-dev       16.4 GiB    [image:gen] mlx-community/HiDream-O1-Image-Dev-mlx-bf16
       sdxl-base             6.5 GiB     [image:gen] stabilityai/stable-diffusion-xl-base-1.0
@@ -38,7 +39,7 @@ struct ImageCatalogTests {
     @Test("parseImageRows extracts image rows and their operation")
     func parsesImageRows() {
         let rows = ModelCatalog.parseImageRows(Self.sample)
-        #expect(rows.count == 6)
+        #expect(rows.count == 7)
 
         let aliases = rows.map(\.alias)
         #expect(aliases.contains("flux2-klein-4b"))
@@ -47,6 +48,7 @@ struct ImageCatalogTests {
         #expect(aliases.contains("hidream-o1-dev"))
         #expect(aliases.contains("sdxl-base"))
         #expect(aliases.contains("sd35-large-4bit"))
+        #expect(aliases.contains("flux-schnell"))
         // No chat / video alias leaks in.
         #expect(!aliases.contains("qwen3.6-27b-4bit"))
         #expect(!aliases.contains("ltx-2.3-mlx-q4"))
@@ -70,6 +72,9 @@ struct ImageCatalogTests {
         #expect(sd35?.hfRepo == "argmaxinc/mlx-stable-diffusion-3.5-large-4bit-quantized")
         #expect(sd35?.size == "15.3 GiB")
         #expect(sd35?.capability == .generation)
+        let schnell = rows.first { $0.alias == "flux-schnell" }
+        #expect(schnell?.hfRepo == "mflux-community/flux-1-schnell-mflux-q4")
+        #expect(schnell?.capability == .generation)
     }
 
     @Test("complete mflux caches are marked downloaded in Images")
@@ -80,6 +85,7 @@ struct ImageCatalogTests {
             cachedRepos: [
                 "Runpod/FLUX.2-klein-4B-mflux-4bit",
                 "prism-ml/bonsai-image-ternary-4B-mlx-2bit",
+                "mflux-community/flux-1-schnell-mflux-q4",
                 "filipstrand/Z-Image-Turbo-mflux-4bit",
                 "mlx-community/HiDream-O1-Image-Dev-mlx-bf16",
                 "stabilityai/stable-diffusion-xl-base-1.0",
@@ -95,6 +101,7 @@ struct ImageCatalogTests {
         #expect(cached.first { $0.alias == "hidream-o1-dev" }?.cached == true)
         #expect(cached.first { $0.alias == "sdxl-base" }?.cached == true)
         #expect(cached.first { $0.alias == "sd35-large-4bit" }?.cached == true)
+        #expect(cached.first { $0.alias == "flux-schnell" }?.cached == true)
     }
 
     @Test("Image capability rows are excluded from the chat catalog")
@@ -116,5 +123,6 @@ struct ImageCatalogTests {
         #expect(excluded.contains("hidream-o1-dev"))
         #expect(excluded.contains("sdxl-base"))
         #expect(excluded.contains("sd35-large-4bit"))
+        #expect(excluded.contains("flux-schnell"))
     }
 }

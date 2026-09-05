@@ -2540,11 +2540,20 @@ def test_is_weightless_stub_false_for_video_component_weights(tmp_path, monkeypa
     assert gate.is_weightless_stub("dgrauet/CogVideoX-Fun-V1.5-5b-InP-mlx-q4") is False
 
 
-def _seed_mflux_snapshot(repo_root, sha: str, *, omit: tuple[str, str] | None = None):
+def _seed_mflux_snapshot(
+    repo_root,
+    sha: str,
+    *,
+    omit: tuple[str, str] | None = None,
+    extra_components: tuple[str, ...] = (),
+    extra_tokenizers: tuple[str, ...] = (),
+):
     snap = repo_root / "snapshots" / sha
-    (snap / "tokenizer").mkdir(parents=True)
-    (snap / "tokenizer" / "tokenizer.json").write_text("{}")
-    for component in ("transformer", "text_encoder", "vae"):
+    for tokenizer in ("tokenizer",) + extra_tokenizers:
+        (snap / tokenizer).mkdir(parents=True, exist_ok=True)
+        if omit != (tokenizer, "tokenizer.json"):
+            (snap / tokenizer / "tokenizer.json").write_text("{}")
+    for component in ("transformer", "text_encoder", "vae") + extra_components:
         component_dir = snap / component
         component_dir.mkdir()
         (component_dir / "model.safetensors.index.json").write_text(
@@ -2642,6 +2651,46 @@ def test_mflux_missing_weights_empty_when_complete(tmp_path, monkeypatch):
     monkeypatch.setattr("huggingface_hub.constants.HF_HUB_CACHE", str(cache_root))
 
     assert gate.mflux_missing_weights(repo) == []
+
+
+@pytest.mark.parametrize(
+    "omit,expected",
+    [
+        (("tokenizer_2", "tokenizer.json"), "tokenizer_2/tokenizer.json"),
+        (("text_encoder_2", "1.safetensors"), "text_encoder_2/1.safetensors"),
+    ],
+)
+def test_flux_schnell_requires_second_text_stack(tmp_path, monkeypatch, omit, expected):
+    """A partial schnell snapshot cannot pass the generic mflux load gate."""
+    repo = "mflux-community/flux-1-schnell-mflux-q4"
+    cache_root = tmp_path / "hf-cache"
+    repo_root = _mflux_repo_root(cache_root, repo)
+    _seed_mflux_snapshot(
+        repo_root,
+        gate.IMAGE_MODEL_REVISIONS[repo],
+        omit=omit,
+        extra_components=("text_encoder_2",),
+        extra_tokenizers=("tokenizer_2",),
+    )
+    monkeypatch.setattr("huggingface_hub.constants.HF_HUB_CACHE", str(cache_root))
+
+    assert gate.mflux_missing_weights(repo) == [expected]
+
+
+def test_complete_flux_schnell_snapshot_is_runnable(tmp_path, monkeypatch):
+    repo = "mflux-community/flux-1-schnell-mflux-q4"
+    cache_root = tmp_path / "hf-cache"
+    repo_root = _mflux_repo_root(cache_root, repo)
+    _seed_mflux_snapshot(
+        repo_root,
+        gate.IMAGE_MODEL_REVISIONS[repo],
+        extra_components=("text_encoder_2",),
+        extra_tokenizers=("tokenizer_2",),
+    )
+    monkeypatch.setattr("huggingface_hub.constants.HF_HUB_CACHE", str(cache_root))
+
+    assert gate.mflux_missing_weights(repo) == []
+    assert gate.mflux_local_snapshot(repo) is not None
 
 
 def test_mflux_missing_weights_no_verdict_when_nothing_cached(tmp_path, monkeypatch):
