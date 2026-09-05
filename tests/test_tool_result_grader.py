@@ -1301,6 +1301,48 @@ class TestInputIsDataNotInstructions:
         assert _grade(g, [TEMP21C], "temperature is 21°C").overall is True
         assert _grade(g, [TEMP21C], "temperature is 21 degrees").overall is True
 
+    def test_empty_facts_fail_closed(self, g):
+        # Round-25 F1: an empty ``facts`` list produced overall=True and
+        # coverage=True through the VACUOUS all()/empty-list checks, falsely
+        # claiming the answer grounded a scenario with no configured facts. A
+        # no-fact scenario is a misconfiguration, not a pass -- it now fails
+        # closed with a visible sentinel and overall=False/coverage=False.
+        rep = _grade(g, [], "the weather is sunny and warm")
+        assert rep.overall is False
+        assert rep.coverage is False
+        assert rep.facts == []
+        assert "__no facts configured to grade__" in rep.missing
+        # A non-empty scenario is unaffected.
+        assert _grade(g, [TEMP21C], "temperature is 21°C").overall is True
+
+    def test_alias_count_is_bounded(self, g):
+        # Round-25 nit: every alias drives a scan over the answer, so an
+        # unbounded alias COUNT would multiply per-fact cost. Declaring more
+        # than MAX_ALIASES is rejected; up to the cap (and normal aliases)
+        # construct fine.
+        with pytest.raises(ValueError):
+            g.fact_from_dict(
+                {
+                    "type": "string",
+                    "key": "c",
+                    "value": "sunny",
+                    "aliases": [f"a{i}" for i in range(g.MAX_ALIASES + 1)],
+                }
+            )
+        f = g.fact_from_dict(
+            {
+                "type": "string",
+                "key": "c",
+                "value": "sunny",
+                "aliases": [f"a{i}" for i in range(g.MAX_ALIASES)],
+            }
+        )
+        assert len(f.aliases) == g.MAX_ALIASES
+        f2 = g.fact_from_dict(
+            {"type": "string", "key": "c", "value": "sunny", "aliases": ["clear"]}
+        )
+        assert f2.aliases == ("clear",)
+
     def test_cross_unit_bound_converts_threshold(self, g):
         # Round-19 F66: a bound's threshold is converted into the fact's unit
         # before comparing, so "above 69°F" for a 21 °C fact compares °C-to-°C

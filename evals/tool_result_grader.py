@@ -151,6 +151,12 @@ SALIENT_WINDOW = 40
 DEFAULT_MAX_ANSWER_LEN = 2000
 DEFAULT_MAX_FACT_LEN = 200
 MAX_FACTS = 50
+# Furthest bound on how many alias/synonym tokens a single fact may declare.
+# Every alias later drives a scan over the (bounded) answer, so an unbounded
+# alias COUNT would multiply the per-fact matching cost and let a pathological
+# fact dominate the verdict. 200 is far above any realistic synonym list while
+# keeping the work per fact bounded.
+MAX_ALIASES = 200
 
 # Derived compiled regexes (token-level, bounded -- not loose text->regex).
 # All ALPHABETIC unit alternatives end with a word boundary so a surface form
@@ -446,8 +452,14 @@ def fact_from_dict(d: dict) -> Fact:
             )
         # Every element must be a non-empty str -- NOT str()-coerced, so a
         # malformed numeric alias like [21] can't silently become a match term.
+        # The COUNT is also bounded: each alias drives a scan over the answer,
+        # so a pathological fact must not multiply that cost without limit.
         if any(not isinstance(a, str) for a in aliases):
             raise ValueError(f"fact '{fact_key}' 'aliases' must contain only strings")
+        if len(aliases) > MAX_ALIASES:
+            raise ValueError(
+                f"fact '{fact_key}' declares {len(aliases)} aliases (> {MAX_ALIASES})"
+            )
         out = tuple(str(a) for a in aliases)
         if any(not a for a in out):
             raise ValueError(f"fact '{fact_key}' 'aliases' must be non-empty strings")
@@ -1425,6 +1437,14 @@ def grade_answer(
         missing.append(
             f"__{overflow} fact(s) beyond MAX_FACTS={MAX_FACTS} not graded__"
         )
+    if not facts_out:
+        # No facts were configured / none survived normalization. An empty
+        # ``facts`` list is a scenario misconfiguration, not a pass: "all facts
+        # present" and "no contradiction" over an EMPTY set are vacuously true,
+        # which would falsely claim the answer grounded a no-fact scenario. Fail
+        # closed with a visible sentinel (mirroring the overflow sentinel) so
+        # the report names the problem and ``overall`` cannot pass.
+        missing.append("__no facts configured to grade__")
     report = GroundingReport(
         version=SCORE_FORMAT,
         # ``overall`` is the strict AND: every salient fact affirmatively
@@ -1443,7 +1463,8 @@ def grade_answer(
         # while a WRONG-VALUE answer ("temperature is 5", coverage false
         # per-fact) drops to coverage=False.
         overall=not truncated and not fact_clamped and not missing and not contradicted,
-        coverage=all(f.coverage for f in facts_out)
+        coverage=bool(facts_out)
+        and all(f.coverage for f in facts_out)
         and not fact_clamped
         and not overflow,
         missing=missing,
