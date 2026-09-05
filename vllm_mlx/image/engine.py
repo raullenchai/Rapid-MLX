@@ -174,6 +174,11 @@ _DEFAULT_STEPS_BY_FAMILY = {
 }
 
 
+def default_steps_for_model(model_name: str) -> int:
+    """Public catalog view of the same family default used at generation."""
+    return _DEFAULT_STEPS_BY_FAMILY.get(_detect_family(model_name), 4)
+
+
 def _looks_like_prequantized(model_name: str) -> bool:
     """A pre-quantized mflux repo / local dir is loaded via ``model_path``.
 

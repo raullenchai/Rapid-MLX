@@ -254,9 +254,10 @@ struct ModelEntry: Identifiable, Hashable, Sendable {
 
     /// Image-only operation metadata. `nil` for chat/audio/video rows.
     var imageCapability: ImageModelCapability? = nil
+    var imageDefaultSteps: Int? = nil
 
-    /// Video-only operation and hardware metadata. Empty/`nil` for every
-    /// other modality and for older sidecars that do not advertise it.
+    /// Video-only operation metadata plus the whole-machine memory floor used
+    /// by video and image rows. `nil` for older sidecars that omit it.
     var videoCapabilities: Set<VideoModelCapability> = []
     var minimumMemoryGB: Double? = nil
 
@@ -1446,9 +1447,15 @@ enum ModelCatalog {
         let cached = await cachedTask
         let json = await modelsJSON
         if json.succeeded, let atomic = parseAtomicModelEntriesJSON(json.stdout) {
+            let readinessByAlias = parseImageReadinessJSON(json.stdout)
             return mergeAtomicAndCached(
                 atomic: atomic, cached: cached, excluded: []
-            ).filter { $0.supports(.image) }
+            ).filter { $0.supports(.image) }.map { entry in
+                var enriched = entry
+                enriched.minimumMemoryGB = readinessByAlias[entry.alias]?.minimumMemoryGB
+                enriched.imageDefaultSteps = readinessByAlias[entry.alias]?.defaultSteps
+                return enriched
+            }
         }
         let modelsOut = await runRapidMlx(binary: binary, args: ["models"])
         let rows = parseImageRows(modelsOut)
@@ -1479,6 +1486,37 @@ enum ModelCatalog {
                 imageCapability: row.capability
             )
         }
+    }
+
+    /// Read image hardware floors from the versioned legacy projection that
+    /// accompanies the atomic catalog. The atomic envelope owns capability and
+    /// runtime identity; this projection supplies checked-in sizing metadata
+    /// without teaching Desktop model-name heuristics.
+    struct ImageReadiness: Equatable {
+        let minimumMemoryGB: Double
+        let defaultSteps: Int
+    }
+
+    static func parseImageReadinessJSON(_ output: String) -> [String: ImageReadiness] {
+        guard let data = output.data(using: .utf8),
+              let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let rows = root["image"] as? [[String: Any]] else { return [:] }
+        var result: [String: ImageReadiness] = [:]
+        for row in rows {
+            guard let alias = row["alias"] as? String, isSafeAlias(alias),
+                  row["min_memory_gb"] as? Bool == nil,
+                  let number = row["min_memory_gb"] as? NSNumber,
+                  number.doubleValue.isFinite,
+                  number.doubleValue > 0,
+                  row["default_steps"] as? Bool == nil,
+                  let defaultSteps = row["default_steps"] as? Int,
+                  (1...200).contains(defaultSteps) else { continue }
+            result[alias] = ImageReadiness(
+                minimumMemoryGB: number.doubleValue,
+                defaultSteps: defaultSteps
+            )
+        }
+        return result
     }
 
     /// Audio aliases for Settings and the dedicated Audio surface. Cached
