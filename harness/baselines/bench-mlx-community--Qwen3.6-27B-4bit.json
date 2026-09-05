@@ -1,8 +1,8 @@
 {
   "schema": 1,
-  "captured_at": "2026-09-05T09:15:00Z",
+  "captured_at": "2026-09-05T18:48:03Z",
   "family": "qwen3.6",
-  "sample_runs": 5,
+  "sample_runs": 3,
   "regression_threshold_pct": {
     "cold_request_ms_median": 5,
     "warm_request_ms_median": 5
@@ -20,8 +20,8 @@
     },
     "software": {
       "rapid_mlx_version": "0.13.4",
-      "rapid_mlx_commit": "c5f98f8fbf9f0ff56df2b79456422bba834ddcb4",
-      "python": "3.12.14",
+      "rapid_mlx_commit": "e3b65724cb30332b8daa47d5e26b2499f7d4400d",
+      "python": "3.11.14",
       "macos": "26.5.2 (25F84)",
       "mlx": "0.32.2",
       "mlx_lm": "0.31.3",
@@ -30,8 +30,8 @@
     }
   },
   "metrics": {
-    "cold_request_ms_median": 327.128,
-    "warm_request_ms_median": 552.967,
-    "speedup_x": 0.5916
+    "cold_request_ms_median": 303.0,
+    "warm_request_ms_median": 495.0,
+    "speedup_x": 0.6121
   }
 }
