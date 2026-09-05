@@ -75,6 +75,32 @@ The environment flag remains disabled by default. Prefill, multi-request
 batching, ragged caches, and speculative rollback are explicit stock-path
 fallbacks rather than unqualified extensions of this result.
 
+## Sigmoid forms per boundary
+
+The kernel matches two stock sigmoids that do not agree at the bit level on
+the tested MLX builds. `mx.sigmoid` comes from MLX's prebuilt kernels;
+`nn.silu` is `mx.compile`d at runtime, and the runtime-compiled sigmoid
+resolves its exponential to the fast approximation (ml-explore/mlx#4461
+records the mechanism). An exhaustive sweep over all 65,280 finite bf16
+values on MLX 0.32.1 and on a 0.32.2 development build gave the same counts:
+`mlx_sigmoid_precise` matches `mx.sigmoid` on every value in bf16 and in
+float32, while `mlx_sigmoid_fast` differs on one bf16 value (x ~ -6.85) and on
+628 values in float32; `x * mlx_sigmoid_fast(x)` matches `nn.silu` on every
+value and the precise form differs on one. The beta gate and the float32
+output gate therefore use `mlx_sigmoid_precise`, and the convolution SiLU
+keeps `mlx_sigmoid_fast`.
+
+The x ~ -6.85 beta value was observed in real Qwen3.8-Flash-Next activations
+during a width-3 speculative-verify round of the same projections (a shape
+this single-token kernel declines); the single-token gate sequences above did
+not sample it. The change is exactness hardening on the sweep evidence: it
+makes the kernel's gates the same functions as the stock ops over the whole
+bf16 domain. The layer and end-to-end timings in this note were measured
+before the change; the output gate now evaluates one precise exponential per
+output element, and the decay path already used `metal::precise::exp`.
+`tests/test_qwen4_fused_gdn_decode.py` pins the per-gate choice as a
+source-string contract and re-runs the sweep on Metal.
+
 ## Failure lifecycle
 
 The capability probe compile-and-runs the exact BF16 kernel specialization
