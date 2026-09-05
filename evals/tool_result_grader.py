@@ -141,10 +141,14 @@ DEFAULT_MAX_FACT_LEN = 200
 MAX_FACTS = 50
 
 # Derived compiled regexes (token-level, bounded -- not loose text->regex).
+# All ALPHABETIC unit alternatives end with a word boundary so a surface form
+# is never read as the PREFIX of a longer word ("55 percentiles" must not be a
+# percent, "21 celsiusian" must not be Celsius). Symbolic units (°c/°f/%) and
+# single letters (already \b-guarded) are unaffected.
 _UNIT_RE = re.compile(
     r"(?P<num>-?\d+(?:\.\d+)?)\s*"
-    r"(?P<unit>celsius|fahrenheit|degrees?\s+c(?:elsius)?|degrees?\s+f(?:ahrenheit)?"
-    r"|deg\s*c(?:elsius)?|deg\s*f(?:ahrenheit)?|°c|°f|percent|[%]|c\b|f\b)?"
+    r"(?P<unit>celsius\b|fahrenheit\b|degrees?\s+c(?:elsius)?\b|degrees?\s+f(?:ahrenheit)?\b"
+    r"|deg\s*c(?:elsius)?\b|deg\s*f(?:ahrenheit)?\b|°c|°f|percent\b|[%]|c\b|f\b)?"
 )
 
 
@@ -521,7 +525,7 @@ def _numbered_in(text: str) -> list[tuple[float, str | None, int]]:
                 and text[match.end("num") + 1].isdigit()
             ):
                 continue
-        if start0 > 0 and text[start0 - 1] in "0123456789.,eE":
+        if start0 > 0 and text[start0 - 1] in "0123456789.,eE+-":
             continue
         value = float(num)
         start = match.start()
@@ -560,7 +564,7 @@ _ADJACENT_UNIT_RE = re.compile(
     r"mm|cm|km|kg|ml|oz|lb|bar|mbar|hpa|pa|sec|min|hr|"
     r"meters|metres|miles|feet|yards|inches|liters|litres|kilograms|"
     r"dollar|dollars|usd|cad|eur|gbp|yen|yuan|rupee|rupees|cents|"
-    r"points|point|grade|marks))"
+    r"points|point|percentile|percentiles|grade|marks))"
     # NOTE: `degrees` is deliberately NOT in the reject list. It is the most
     # common English surface for the fact's OWN temperature unit ("temperature
     # is 21 degrees" is a natural affirmative report of temperature=21°C), so
@@ -766,30 +770,44 @@ def _unit_fact_conflict(fact: Fact, norm_answer: str) -> bool:
 
 
 def _wrong_value_present(fact: NumberFact | RelationFact, norm_answer: str) -> bool:
-    """True if the answer affirmatively reports the fact's entity with a
-    UNIT-COMPATIBLE value that is OUT of tolerance.
+    """True if the answer affirmatively reports the fact's entity with a value
+    that is OUT of tolerance.
 
-    This distinguishes a hallucinated WRONG-value report ("temperature is 5°C"
-    for an expected 21 °C) from a pure absence. Without it the model's false
-    claim is mere ``missing`` -- indistinguishable from never mentioning the
-    temperature at all. Both fail ``overall`` either way; this only fixes the
-    per-fact status so a mis-reported value is flagged for review rather than
-    read as a silent omission. Bare numbers are excluded (ambiguous metadata);
-    only a value that resolves into the fact's unit within an anchored window
-    counts, and an anchor label must be present to pin the fact.
+    This distinguishes a hallucinated WRONG-value report ("temperature is 5°C" /
+    "temperature is 5" for an expected 21 °C) from a pure absence. Without it
+    the model's false claim is mere ``missing`` -- indistinguishable from never
+    mentioning the temperature at all. Both fail ``overall`` either way; this
+    only fixes the per-fact status so a mis-reported value is flagged for review
+    rather than read as a silent omission.
+
+    Two value kinds are considered:
+      * a unit-COMPATIBLE value (resolving into the fact's unit) within an
+        anchored window -- the unit-qualified hallucination;
+      * a BARE value, but only when it is the SOLE numeric candidate in the
+        whole answer (e.g. "temperature is 5") -- a lone bare number right at
+        the anchor is clearly the reported wrong value. Bare numbers otherwise
+        stay excluded as ambiguous metadata (a delta "rose 5 to 21" or a
+        multi-number sentence can't be confidently attributed).
     """
     anchors = fact.anchor_terms
     if not anchors or not any(_term_matches(a, norm_answer) for a in anchors):
         return False
     key_spans = _salient_spans(norm_answer, anchors)
-    for value, unit, start in _numbered_in(norm_answer):
-        if unit is None:  # bare numbers are ambiguous metadata -- never a wrong value
-            continue
+    candidates = _numbered_in(norm_answer)
+    sole_candidate = len(candidates) == 1
+    for value, unit, start in candidates:
         if not any(s <= start < e for s, e in key_spans):
             continue
-        converted = _to_unit(value, unit, fact.unit)
-        if converted is None:
-            continue
+        if unit is None:
+            # Bare: only a lone value right at the anchor is a confident wrong
+            # report; otherwise it's ambiguous metadata and not attributed.
+            if not sole_candidate:
+                continue
+            converted = float(value)
+        else:
+            converted = _to_unit(value, unit, fact.unit)
+            if converted is None:
+                continue
         if abs(converted - fact.value) > fact.tolerance + 1e-9:
             return True
     return False

@@ -634,6 +634,48 @@ class TestCodexRegressionFixes:
         assert rep.overall is False
         assert rep.coverage is False
 
+    def test_unit_word_prefix_not_partial_match(self, g):
+        # An alphabetic unit must not be read as the PREFIX of a longer word:
+        # "55 percentiles" is a percentile rank, not 55% -- it must not satisfy
+        # a humidity=55% fact as either a `%` unit or a coincident bare 55.
+        assert _grade(g, [HUMIDITY], "humidity is 55 percentiles").overall is False
+        # Exact unit forms still resolve.
+        assert _grade(g, [HUMIDITY], "humidity is 55 percent").overall is True
+        assert (
+            _grade(g, [TEMP21C], "temperature is 21 degrees celsius here").overall
+            is True
+        )
+
+    def test_signed_exponent_fragment_not_read_as_value(self, g):
+        # "1e+21°C" (signed exponent): the "21°C" fragment is a suffix of a huge
+        # scified magnitude, not a 21 °C report.
+        assert _grade(g, [TEMP21C], "temperature 1e+21°C").overall is False
+        assert _grade(g, [TEMP21C], "temperature 1e21°C").overall is False
+
+    def test_bare_wrong_value_is_contradiction_when_sole(self, g):
+        # "the temperature is 5" (a lone bare value right at the anchor) is the
+        # model asserting a wrong temperature -> contradicted, not missing.
+        rep = _grade(g, [TEMP21C], "temperature is 5")
+        assert "temperature" in rep.contradicted
+        assert rep.facts[0].status == "contradicted"
+        # A bare value alongside another number is ambiguous metadata (a delta:
+        # "rose 5 to 18") and must NOT be attributed as a wrong value.
+        rep2 = _grade(
+            g,
+            [
+                {
+                    "type": "number",
+                    "key": "temperature",
+                    "value": 18,
+                    "unit": "c",
+                    "tolerance": 1,
+                }
+            ],
+            "temperature rose 5 to 18",
+        )
+        assert rep2.facts[0].status in ("present", "missing")
+        assert "temperature" not in rep2.contradicted
+
     def test_non_str_alias_rejected_not_coerced(self, g):
         # A malformed numeric alias must be rejected, not silently str()-coerced
         # into a matching term.
