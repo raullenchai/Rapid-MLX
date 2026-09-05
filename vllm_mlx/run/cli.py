@@ -211,10 +211,7 @@ def _select_model(
        touching the network.
     """
     from vllm_mlx._download_gate import is_repo_cached
-    from vllm_mlx.recommendations import (
-        is_recommended_alias,
-        physical_ram_gb,
-    )
+    from vllm_mlx.recommendations import physical_ram_gb
 
     if explicit:
         return explicit
@@ -238,7 +235,7 @@ def _select_model(
         # (0) is treated as "can't judge fit" -> every candidate fits, so a
         # cached recommended model is still returned instead of forcing a
         # re-download of candidates[0].
-        if ram_gb and not is_recommended_alias(alias, ram_gb):
+        if ram_gb and _fits_host(alias, ram_gb) is False:
             continue
         if is_repo_cached(_hf_id(alias)):
             return alias
@@ -252,12 +249,33 @@ def _select_model(
     # machines whose memsize probe failed. The download-consent step runs
     # next and shows the exact transfer size.
     for alias in candidates:
-        if ram_gb and not is_recommended_alias(alias, ram_gb):
+        if ram_gb and _fits_host(alias, ram_gb) is False:
             continue
         return alias
 
     _print_nothing_fits(candidates, ram_gb)
     return None
+
+
+def _fits_host(alias: str, ram_gb: float) -> bool | None:
+    """Return known fit, known incompatibility, or unknown for an alias."""
+    from vllm_mlx.model_aliases import resolve_profile
+    from vllm_mlx.recommendations import (
+        is_recommended_alias,
+        recommendation_footprint_gb,
+    )
+
+    # Curated public recommendations encode their supported RAM tiers. For an
+    # agent-specific recommendation outside that table, fall back to its
+    # explicit minimum-memory contract. Unknown is not the same as "does not
+    # fit": the canonical serve path remains the final capacity authority.
+    if recommendation_footprint_gb(alias) is not None:
+        return is_recommended_alias(alias, ram_gb)
+    alias_profile = resolve_profile(alias)
+    minimum = alias_profile.min_memory_gb if alias_profile is not None else None
+    if minimum is None:
+        return None
+    return ram_gb >= minimum
 
 
 def _hf_id(alias: str) -> str:
@@ -283,12 +301,10 @@ def _print_unknown_agent(name: str) -> None:
 
 
 def _print_nothing_cached(candidates, ram_gb) -> None:
-    from vllm_mlx.recommendations import is_recommended_alias
-
     print("  No recommended model is already cached and --no-download was set.")
     print("  Candidates would have been:")
     for alias in candidates:
-        fits = "" if (not ram_gb or is_recommended_alias(alias, ram_gb)) else " ✗"
+        fits = "" if (not ram_gb or _fits_host(alias, ram_gb) is not False) else " ✗"
         print(f"    {alias}{fits}")
     if ram_gb:
         print("  (✗ = does not fit this Mac's RAM)")
@@ -322,6 +338,9 @@ def _confirm_download(model: str, *, no_download: bool, yes: bool) -> bool:
         estimate_download_size_bytes,
         is_repo_cached,
     )
+
+    if os.path.exists(model):
+        return True
 
     hf_id = _hf_id(model)
 
@@ -544,7 +563,8 @@ def _attach_and_configure(base_url, model, profile, args) -> int:
         return 0
 
     cfg = profile.get_config_for_version(None)
-    if not args.dry_run and cfg and cfg.template and "{context_length}" in cfg.template:
+    needs_context = bool(cfg and cfg.template and "{context_length}" in cfg.template)
+    if needs_context and not args.dry_run:
         from vllm_mlx.agents.adapter import fetch_context_window
 
         try:
@@ -552,7 +572,29 @@ def _attach_and_configure(base_url, model, profile, args) -> int:
         except Exception:
             context_length = None
     else:
-        context_length = None
+        context_length = _cached_context_window(model) if needs_context else None
+
+    if args.dry_run and needs_context and context_length is None:
+        print(
+            "  Configuration preview deferred: the model's context window "
+            "is not available in the local cache."
+        )
+        print("  Nothing was written.")
+        return 0
+
+    if cfg and getattr(cfg, "type", None) == "env":
+        from vllm_mlx.agents.adapter import setup_agent_config
+
+        instructions = setup_agent_config(
+            profile,
+            api_base_url,
+            model,
+            dry_run=True,
+            context_length=context_length,
+        )
+        print(f"  {profile.display_name} uses shell environment variables:")
+        print(instructions)
+        return 0
 
     is_first_class = profile.name in {"claude-code", "continue", "deepseek-harness"}
     if is_first_class:
@@ -561,6 +603,12 @@ def _attach_and_configure(base_url, model, profile, args) -> int:
             from vllm_mlx.agents.adapter import fetch_reasoning_support
 
             supports_reasoning = fetch_reasoning_support(api_base_url, model)
+        elif profile.name == "deepseek-harness":
+            from vllm_mlx.model_aliases import resolve_profile
+
+            model_profile = resolve_profile(model)
+            if model_profile is not None:
+                supports_reasoning = model_profile.reasoning_parser is not None
 
         from vllm_mlx.agents.setup import (
             apply_setup_plan,
@@ -648,6 +696,28 @@ def _confirm_config_write() -> bool:
     """Require interactive consent before a generic profile config write."""
     if not sys.stdin.isatty():
         return False
+
+
+def _cached_context_window(model: str) -> int | None:
+    """Read a cached/local config context limit without network or weights."""
+    from vllm_mlx.model_metadata import read_model_metadata
+
+    metadata = read_model_metadata(model)
+    config = metadata.config if metadata is not None else None
+    if not isinstance(config, dict):
+        return None
+    candidates = [config.get("max_position_embeddings")]
+    text_config = config.get("text_config")
+    if isinstance(text_config, dict):
+        candidates.append(text_config.get("max_position_embeddings"))
+    for candidate in candidates:
+        if (
+            isinstance(candidate, int)
+            and not isinstance(candidate, bool)
+            and candidate > 0
+        ):
+            return candidate
+    return None
     try:
         return input("Apply this configuration? [y/N] ").strip().lower() in {
             "y",

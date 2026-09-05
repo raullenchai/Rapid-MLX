@@ -117,10 +117,22 @@ def test_select_nothing_fits(monkeypatch, capsys):
     """Every recommended model rejected by RAM -> None + message."""
     profile = _FakeProfile(recommended_models=["qwen3.6-27b-4bit"])
     _patch_select_resources(monkeypatch, cached=lambda alias: False, fit=False)
+    monkeypatch.setattr(run_cli, "_fits_host", lambda alias, ram: False)
 
     picked = run_cli._select_model(explicit=None, profile=profile, no_download=False)
     assert picked is None
     assert "fit" in capsys.readouterr().out
+
+
+def test_select_cached_agent_model_with_unknown_fit_is_not_rejected(monkeypatch):
+    """Agent-only recommendations outside the global tiers remain eligible."""
+    alias = "qwen3-coder-30b-4bit"
+    profile = _FakeProfile(recommended_models=[alias])
+    _patch_select_resources(monkeypatch, cached=lambda candidate: candidate == alias)
+
+    assert (
+        run_cli._select_model(explicit=None, profile=profile, no_download=True) == alias
+    )
 
 
 def test_select_no_recommended_models_errors(monkeypatch, capsys):
@@ -636,6 +648,13 @@ def test_consent_no_download_cached_returns_true(monkeypatch):
     assert run_cli._confirm_download("m", no_download=True, yes=False) is True
 
 
+def test_consent_no_download_accepts_existing_local_model(tmp_path):
+    """A local checkpoint path never needs a Hugging Face cache entry."""
+    model = tmp_path / "model"
+    model.mkdir()
+    assert run_cli._confirm_download(str(model), no_download=True, yes=False) is True
+
+
 def test_consent_size_estimate_raises_handled(monkeypatch):
     """A size-estimate network failure is swallowed; gate still runs."""
     monkeypatch.setattr(run_cli, "_hf_id", lambda a: a)
@@ -768,8 +787,9 @@ def test_reuse_dry_run_refuses_incompatible_server(monkeypatch, capsys):
 
 
 class _FakeCfg:
-    def __init__(self, template=None):
+    def __init__(self, template=None, config_type="json"):
         self.template = template
+        self.type = config_type
 
 
 class _SetupPlanFake:
@@ -1010,6 +1030,49 @@ def test_attach_generic_writer_cannot(monkeypatch, capsys):
     out = capsys.readouterr().out
     assert "setup failed" in out
     assert "manual instructions" in out
+
+
+def test_attach_env_profile_prints_exports_without_write_consent(monkeypatch, capsys):
+    """Environment-only profiles give instructions and never claim a write."""
+    args = _make_args()
+    prof = _FakeProfile(name="langchain")
+    prof.config = _FakeCfg(config_type="env")
+    from vllm_mlx.agents import adapter as ad
+
+    calls = []
+    monkeypatch.setattr(
+        ad,
+        "setup_agent_config",
+        lambda *a, **kwargs: (
+            calls.append(kwargs.get("dry_run"))
+            or "Run these commands in your shell:\n  export OPENAI_API_BASE=http://b/v1"
+        ),
+    )
+    monkeypatch.setattr(
+        run_cli,
+        "_confirm_config_write",
+        lambda: pytest.fail("env instructions do not write configuration"),
+    )
+
+    assert run_cli._attach_and_configure("http://b", "m", prof, args) == 0
+    out = capsys.readouterr().out
+    assert calls == [True]
+    assert "uses shell environment variables" in out
+    assert "configured!" not in out
+
+
+def test_cached_context_window_reads_text_config(monkeypatch):
+    """Dry-run can preview the eventual context value without network access."""
+    import vllm_mlx.model_metadata as metadata_mod
+
+    monkeypatch.setattr(
+        metadata_mod,
+        "read_model_metadata",
+        lambda model: types.SimpleNamespace(
+            config={"text_config": {"max_position_embeddings": 262_144}}
+        ),
+    )
+    assert run_cli._cached_context_window("cached-model") == 262_144
 
 
 def test_print_instructions_first_class(monkeypatch, capsys):
