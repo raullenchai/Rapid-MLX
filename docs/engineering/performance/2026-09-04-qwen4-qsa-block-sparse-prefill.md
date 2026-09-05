@@ -154,6 +154,12 @@ geometry measured 1.487 ms sparse versus 3.348 ms dense (2.25x), with the exact
 same numerical errors reported above. The artifact is
 `/private/tmp/qsa-qualification-safety-guards.json`, SHA-256
 `15d6354b039801c39c1e155c72a16ef9e43da6b4f6f793a2bd7d74a4c0fbeab5`.
+After block-validity structuring, strict int32 input enforcement, and receipt
+renaming, code head `20df4f239c97ba107d6f180a0386f7cf396855f1`
+remeasured the geometry at 1.577 ms sparse versus 2.755 ms dense (1.75x), with
+the same numerical errors. That artifact is
+`/private/tmp/qsa-qualification-final-contract.json`, SHA-256
+`c5e7353e86eee32f683d0b6a1c52b51306350c5209ce7836b87022b9c77e2664`.
 A final served rerun completed three 16K samples and one 32K sample at the
 expected rates before a Metal recovery invalidated the remaining process state;
 those partial samples are not merged into the complete table.
