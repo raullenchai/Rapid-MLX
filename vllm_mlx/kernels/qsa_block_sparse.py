@@ -256,6 +256,20 @@ def block_sparse_attention(
         raise ValueError("QSA tail indices must have shape [batch, query, block_size]")
     if tuple(tail_counts.shape) != expected_rows:
         raise ValueError("QSA tail counts must have shape [batch, query]")
+    compact_arrays = {
+        "block starts": block_starts,
+        "block counts": block_counts,
+        "tail indices": tail_indices,
+        "tail counts": tail_counts,
+    }
+    invalid_dtypes = [
+        name for name, array in compact_arrays.items() if array.dtype != mx.int32
+    ]
+    if invalid_dtypes:
+        raise ValueError(
+            "QSA compact indices and counts must use int32: "
+            + ", ".join(invalid_dtypes)
+        )
     block_topk = int(block_starts.shape[-1])
     if key_batch != batch or key_dim != head_dim or values.shape != keys.shape:
         raise ValueError("QSA query/KV shapes are inconsistent")
@@ -281,10 +295,6 @@ def block_sparse_attention(
     ):
         raise ValueError("QSA query/KV layout is unsupported by the sparse kernel")
     _log_activation()
-    block_starts = block_starts.astype(mx.int32)
-    block_counts = block_counts.astype(mx.int32)
-    tail_indices = tail_indices.astype(mx.int32)
-    tail_counts = tail_counts.astype(mx.int32)
     (output,) = _kernel()(
         inputs=[
             queries,

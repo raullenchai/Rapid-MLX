@@ -15,13 +15,16 @@ for each MLX build before changing the default.
 
 ## Production-path contract
 
-Each QSA attention layer records cumulative `kernel_calls`, `declines`, and a
-complete `decline_reasons` histogram. `qwen4_qsa_block_sparse_stats(model)`
-aggregates the receipt without evaluating MLX arrays. Eligibility declines fail
-closed to dense attention. MLX kernel execution is lazy, so construction and
-execution errors surface through the engine's normal generation-error path;
-the route deliberately does not synchronize every layer to simulate an
-execution-time fallback.
+Each QSA attention layer records cumulative `route_constructions`, `declines`,
+and a complete `decline_reasons` histogram.
+`qwen4_qsa_block_sparse_stats(model)` aggregates the receipt without evaluating
+MLX arrays. A route construction proves selection of the sparse graph, not its
+successful execution; qualification must pair a positive construction delta
+with successful downstream request completion. Eligibility declines fail closed
+to dense attention. MLX kernel execution is lazy, so construction and execution
+errors surface through the engine's normal generation-error path; the route
+deliberately does not synchronize every layer to simulate an execution-time
+fallback.
 
 The Metal kernel clamps compact counts to their buffer capacities and skips
 out-of-range block starts and tail indices before reading K/V. Production inputs
@@ -167,5 +170,6 @@ than an exact-head promotion gate.
 The served campaign now supplies settled wall-time and peak-memory
 evidence at 16K, 32K, and 64K. Before automatic enablement, still require a
 fresh model-scale correctness comparison on the pinned release dependency
-build, the expected nonzero kernel-call count, and no unexpected decline
-reasons. Keep the feature opt-in while any of those requirements is missing.
+build, the expected nonzero route-construction delta paired with successful
+request completion, and no unexpected decline reasons. Keep the feature opt-in
+while any of those requirements is missing.

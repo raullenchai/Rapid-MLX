@@ -161,6 +161,11 @@ def test_qsa_kernel_rejects_every_unsafe_shape_and_layout():
     rejected("tail counts", tail_counts=mx.zeros((1, 2), dtype=mx.int32))
     rejected("shapes are inconsistent", values=mx.zeros((1, 1, 3, 32)))
     rejected("same dtype", keys=mx.zeros((1, 1, 2, 32), dtype=mx.float32))
+    for name in ("block_starts", "block_counts", "tail_indices", "tail_counts"):
+        inputs = _valid_kernel_inputs()
+        inputs[name] = inputs[name].astype(mx.int64)
+        with pytest.raises(ValueError, match="must use int32"):
+            qsa_block_sparse.block_sparse_attention(**inputs)
 
     inputs = _valid_kernel_inputs(head_dim=33)
     with pytest.raises(ValueError, match="divisible by 32"):
@@ -249,7 +254,7 @@ class _FakeKVCache:
         return keys, values
 
 
-def test_qsa_attention_routes_compact_selection_and_records_call(monkeypatch):
+def test_qsa_attention_routes_compact_selection_and_records_construction(monkeypatch):
     args = _args()
     attention = QSAAttention(args)
     attention.eval()
@@ -297,7 +302,7 @@ def test_qsa_attention_routes_compact_selection_and_records_call(monkeypatch):
     np.testing.assert_array_equal(tail_counts, 2)
     assert block_size == 2
     assert qwen4_exp.qwen4_qsa_block_sparse_stats(attention) == {
-        "kernel_calls": 1,
+        "route_constructions": 1,
         "declines": 0,
         "decline_reasons": {},
     }
@@ -381,7 +386,7 @@ def test_qsa_attention_disabled_control_stays_dense(monkeypatch):
     assert len(dense_masks) == 1
     assert dense_masks[0].shape == (1, 1, 64, 16_448)
     assert qwen4_exp.qwen4_qsa_block_sparse_stats(attention) == {
-        "kernel_calls": 0,
+        "route_constructions": 0,
         "declines": 1,
         "decline_reasons": {"disabled": 1},
     }
@@ -412,7 +417,7 @@ def test_qsa_attention_unsupported_layout_stays_dense(monkeypatch):
     mx.eval(output)
 
     assert qwen4_exp.qwen4_qsa_block_sparse_stats(attention) == {
-        "kernel_calls": 0,
+        "route_constructions": 0,
         "declines": 1,
         "decline_reasons": {"unsupported layout": 1},
     }
@@ -437,7 +442,7 @@ def test_qsa_attention_construction_failure_surfaces_without_false_receipt(monke
         )
 
     assert qwen4_exp.qwen4_qsa_block_sparse_stats(attention) == {
-        "kernel_calls": 0,
+        "route_constructions": 0,
         "declines": 0,
         "decline_reasons": {},
     }

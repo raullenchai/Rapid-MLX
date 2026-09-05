@@ -1093,7 +1093,7 @@ class QSAAttention(nn.Module):
             max_position_embeddings=args.max_position_embeddings,
         )
         self.indexer = QSAIndexer(args)
-        self.block_sparse_calls = 0
+        self.block_sparse_route_constructions = 0
         self.block_sparse_declines = 0
         self.block_sparse_decline_reasons: dict[str, int] = {}
 
@@ -1225,7 +1225,7 @@ class QSAAttention(nn.Module):
                 # in an attempt to catch later Metal failures here: eligibility
                 # declines fall back to dense, while execution failures surface
                 # through the engine's normal generation-error path.
-                self.block_sparse_calls += 1
+                self.block_sparse_route_constructions += 1
             if decline_reason is not None:
                 self._record_block_sparse_decline(decline_reason)
 
@@ -1257,16 +1257,16 @@ class QSAAttention(nn.Module):
 
 
 def qwen4_qsa_block_sparse_stats(model: nn.Module) -> dict[str, Any]:
-    """Aggregate QSA sparse-kernel calls and every dense fallback reason."""
+    """Aggregate sparse-route constructions and every dense fallback reason."""
     stats: dict[str, Any] = {
-        "kernel_calls": 0,
+        "route_constructions": 0,
         "declines": 0,
         "decline_reasons": {},
     }
     for _, module in model.named_modules():
         if not isinstance(module, QSAAttention):
             continue
-        stats["kernel_calls"] += module.block_sparse_calls
+        stats["route_constructions"] += module.block_sparse_route_constructions
         stats["declines"] += module.block_sparse_declines
         for reason, count in module.block_sparse_decline_reasons.items():
             stats["decline_reasons"][reason] = (
