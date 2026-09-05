@@ -53,10 +53,16 @@ _SOURCE = r"""
     }
 
     const int query_offset = batch * query_length + query_index;
-    const int block_count = block_counts[query_offset];
+    const int raw_block_count = block_counts[query_offset];
+    const int block_count = raw_block_count < 0
+        ? 0
+        : (raw_block_count > BLOCK_TOPK ? BLOCK_TOPK : raw_block_count);
     const int block_base = query_offset * BLOCK_TOPK;
     for (int block_index = 0; block_index < block_count; ++block_index) {
         const int physical_start = block_starts[block_base + block_index];
+        if (physical_start < 0 || physical_start > key_length - BLOCK_SIZE) {
+            continue;
+        }
         for (int element = int(tid); element < BLOCK_SIZE * HEAD_DIM;
              element += THREADS) {
             const int token = element / HEAD_DIM;
@@ -96,10 +102,16 @@ _SOURCE = r"""
         threadgroup_barrier(mem_flags::mem_threadgroup);
     }
 
-    const int tail_count = tail_counts[query_offset];
+    const int raw_tail_count = tail_counts[query_offset];
+    const int tail_count = raw_tail_count < 0
+        ? 0
+        : (raw_tail_count > BLOCK_SIZE ? BLOCK_SIZE : raw_tail_count);
     const int tail_base = query_offset * BLOCK_SIZE;
     for (int tail_index = 0; tail_index < tail_count; ++tail_index) {
         const int key_index = tail_indices[tail_base + tail_index];
+        if (key_index < 0 || key_index >= key_length) {
+            continue;
+        }
         for (int dim = int(tid); dim < HEAD_DIM; dim += THREADS) {
             const int offset =
                 ((batch * KV_HEADS + kv_head) * key_length + key_index)

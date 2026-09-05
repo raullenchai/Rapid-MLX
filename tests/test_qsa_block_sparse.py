@@ -327,7 +327,7 @@ def test_qsa_attention_unsupported_layout_stays_dense(monkeypatch):
     }
 
 
-def test_qsa_attention_dispatch_failure_falls_back_with_histogram(monkeypatch):
+def test_qsa_attention_construction_failure_surfaces_without_false_receipt(monkeypatch):
     args = _args()
     attention = QSAAttention(args)
     attention.eval()
@@ -337,25 +337,39 @@ def test_qsa_attention_dispatch_failure_falls_back_with_histogram(monkeypatch):
     def fail_sparse(*_args, **_kwargs):
         raise RuntimeError("synthetic failure")
 
-    def fake_dense(queries, keys, values, *, cache, scale, mask):
-        del keys, values, cache, scale
-        assert mask.shape == (1, 1, 64, 16_448)
-        return mx.zeros_like(queries)
-
     monkeypatch.setattr(qwen4_exp, "block_sparse_attention", fail_sparse)
-    monkeypatch.setattr(qwen4_exp, "scaled_dot_product_attention", fake_dense)
-    output = attention(
-        mx.zeros((1, 64, args.hidden_size)),
-        [_FakeKVCache(), object()],
-        mask="causal",
-    )
-    mx.eval(output)
+    with pytest.raises(RuntimeError, match="synthetic failure"):
+        attention(
+            mx.zeros((1, 64, args.hidden_size)),
+            [_FakeKVCache(), object()],
+            mask="causal",
+        )
 
     assert qwen4_exp.qwen4_qsa_block_sparse_stats(attention) == {
         "kernel_calls": 0,
-        "declines": 1,
-        "decline_reasons": {"kernel dispatch failed: RuntimeError": 1},
+        "declines": 0,
+        "decline_reasons": {},
     }
+
+
+@pytest.mark.skipif(
+    not mx.metal.is_available(), reason="QSA block-sparse kernel requires Metal"
+)
+@pytest.mark.parametrize("bad_block_start", [-8, 99, 2**31 - 1])
+@pytest.mark.parametrize("bad_count", [-1, 99])
+def test_qsa_kernel_bounds_malformed_counts_and_indices_on_device(
+    bad_block_start, bad_count
+):
+    inputs = _valid_kernel_inputs()
+    inputs.update(
+        block_starts=mx.array([[[bad_block_start]]], dtype=mx.int32),
+        block_counts=mx.array([[bad_count]], dtype=mx.int32),
+        tail_indices=mx.array([[[99, -1]]], dtype=mx.int32),
+        tail_counts=mx.array([[bad_count]], dtype=mx.int32),
+    )
+    output = qsa_block_sparse.block_sparse_attention(**inputs)
+    mx.eval(output)
+    np.testing.assert_array_equal(np.array(output), np.zeros(output.shape))
 
 
 @pytest.mark.skipif(

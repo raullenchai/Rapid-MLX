@@ -1163,21 +1163,21 @@ class QSAAttention(nn.Module):
                 block_valid = selected.valid[..., block_slots]
                 tail_indices = selected.token_indices[..., tail_slots]
                 tail_valid = selected.valid[..., tail_slots]
-                try:
-                    output = block_sparse_attention(
-                        queries,
-                        keys,
-                        values,
-                        block_starts,
-                        mx.sum(block_valid, axis=-1).astype(mx.int32),
-                        tail_indices,
-                        mx.sum(tail_valid, axis=-1).astype(mx.int32),
-                        block_size=self.indexer.compress_ratio,
-                    )
-                except Exception as exc:  # noqa: BLE001 - optional path fails closed
-                    decline_reason = f"kernel dispatch failed: {type(exc).__name__}"
-                else:
-                    self.block_sparse_calls += 1
+                output = block_sparse_attention(
+                    queries,
+                    keys,
+                    values,
+                    block_starts,
+                    mx.sum(block_valid, axis=-1).astype(mx.int32),
+                    tail_indices,
+                    mx.sum(tail_valid, axis=-1).astype(mx.int32),
+                    block_size=self.indexer.compress_ratio,
+                )
+                # MLX evaluates lazily. Do not add a per-layer synchronization
+                # in an attempt to catch later Metal failures here: eligibility
+                # declines fall back to dense, while execution failures surface
+                # through the engine's normal generation-error path.
+                self.block_sparse_calls += 1
             if decline_reason is not None:
                 self._record_block_sparse_decline(decline_reason)
 

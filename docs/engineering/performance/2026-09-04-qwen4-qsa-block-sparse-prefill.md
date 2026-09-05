@@ -17,9 +17,17 @@ for each MLX build before changing the default.
 
 Each QSA attention layer records cumulative `kernel_calls`, `declines`, and a
 complete `decline_reasons` histogram. `qwen4_qsa_block_sparse_stats(model)`
-aggregates the receipt without evaluating MLX arrays. Synchronous construction
-or dispatch failures fail closed to dense attention and retain the exception
-class, not its potentially sensitive message.
+aggregates the receipt without evaluating MLX arrays. Eligibility declines fail
+closed to dense attention. MLX kernel execution is lazy, so construction and
+execution errors surface through the engine's normal generation-error path;
+the route deliberately does not synchronize every layer to simulate an
+execution-time fallback.
+
+The Metal kernel clamps compact counts to their buffer capacities and skips
+out-of-range block starts and tail indices before reading K/V. Production inputs
+come from the internal indexer, but the device-side guards prevent malformed
+internal state from turning into an out-of-bounds GPU read without imposing a
+host synchronization.
 
 The existing fused-GDN receipt now also retains every fallback reason instead
 of only the most recent reason per layer. Its end-to-end gate subtracts the
