@@ -262,11 +262,13 @@ def _rope_positions(
     return positions
 
 
-def _build_sample(prompt: str, height: int, width: int, processor, config) -> dict:
+def _encode_prompt_ids(prompt: str, processor) -> np.ndarray:
+    """Apply the published chat wrapper and return bounded-model token ids."""
+
     tokenizer = processor.tokenizer if hasattr(processor, "tokenizer") else processor
     for name in ("boi", "tms"):
         attribute = f"{name}_token"
-        if not hasattr(tokenizer, attribute):
+        if not getattr(tokenizer, attribute, None):
             setattr(tokenizer, attribute, f"<|{name}_token|>")
     caption = (
         processor.apply_chat_template(
@@ -277,9 +279,13 @@ def _build_sample(prompt: str, height: int, width: int, processor, config) -> di
         + tokenizer.boi_token
         + tokenizer.tms_token * TIMESTEP_TOKEN_NUM
     )
-    input_ids = np.asarray(
+    return np.asarray(
         tokenizer.encode(caption, add_special_tokens=False), dtype=np.int64
     ).reshape(1, -1)
+
+
+def _build_sample(prompt: str, height: int, width: int, processor, config) -> dict:
+    input_ids = _encode_prompt_ids(prompt, processor)
     if input_ids.shape[-1] > MAX_PROMPT_TOKENS:
         raise ValueError(
             f"HiDream-O1 prompts are limited to {MAX_PROMPT_TOKENS} tokens"

@@ -397,6 +397,84 @@ def test_unsupported_requests_fail_before_loading(
         engine.generate(**request)
 
 
+def test_token_dense_prompt_fails_before_the_17gb_loader(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from transformers import AutoTokenizer
+
+    class DenseTokenizer:
+        boi_token = None
+        tms_token = None
+
+        def apply_chat_template(self, *_args, **_kwargs):
+            return "caption"
+
+        def encode(self, *_args, **_kwargs):
+            return list(range(1025))
+
+    tokenizer_calls = []
+    monkeypatch.setattr(
+        AutoTokenizer,
+        "from_pretrained",
+        lambda source, **kwargs: (
+            tokenizer_calls.append((source, kwargs)) or DenseTokenizer()
+        ),
+    )
+    monkeypatch.setattr(
+        "vllm_mlx._download_gate.mflux_local_snapshot", lambda _name: None
+    )
+    engine = ImageGenerationEngine(REPO)
+    monkeypatch.setattr(
+        engine,
+        "_ensure_loaded",
+        lambda **_kwargs: pytest.fail("token-dense prompt reached the 17 GB loader"),
+    )
+
+    with pytest.raises(ImageRuntimeError, match="1024 tokens"):
+        engine.generate(
+            prompt="x",
+            width=1024,
+            height=1024,
+            num_inference_steps=28,
+        )
+
+    assert tokenizer_calls == [
+        (
+            REPO,
+            {"trust_remote_code": False, "revision": REVISION},
+        )
+    ]
+
+
+def test_prompt_tokenizer_failures_are_clean_runtime_errors(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from transformers import AutoTokenizer
+
+    engine = ImageGenerationEngine(REPO)
+    monkeypatch.setattr(
+        "vllm_mlx._download_gate.mflux_local_snapshot", lambda _name: None
+    )
+    monkeypatch.setattr(
+        AutoTokenizer,
+        "from_pretrained",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("offline")),
+    )
+    with pytest.raises(ImageRuntimeError, match="load.*tokenizer.*offline"):
+        engine._validate_hidream_prompt_tokens("fox")
+
+    class BrokenTokenizer:
+        boi_token = "<boi>"
+        tms_token = "<tms>"
+
+        def apply_chat_template(self, *_args, **_kwargs):
+            raise ValueError("bad template")
+
+    engine._prompt_tokenizer = BrokenTokenizer()
+    with pytest.raises(ImageRuntimeError, match="tokenize.*bad template"):
+        engine._validate_hidream_prompt_tokens("fox")
+
+
 def test_hidream_cold_snapshot_is_pinned_allowlisted_and_verified(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -463,6 +541,7 @@ def test_hidream_engine_build_progress_cancel_and_generate_dispatch(
 
     monkeypatch.setattr(engine, "_is_cancelled", lambda: False)
     monkeypatch.setattr(engine, "_ensure_loaded", lambda **_kwargs: model)
+    monkeypatch.setattr(engine, "_validate_hidream_prompt_tokens", lambda _prompt: None)
     png = engine.generate(
         prompt="fox", width=256, height=256, num_inference_steps=28, seed=11
     )

@@ -194,6 +194,7 @@ class ImageGenerationEngine:
         # for a pre-quantized checkpoint makes mflux re-quantize and error.
         self._quantize = None if self._prequantized else quantize
         self._model = None
+        self._prompt_tokenizer = None
         # FLUX.2 uses distinct mflux classes for generation and editing. Only
         # one stays resident at a time so switching modes does not duplicate
         # the checkpoint in unified memory.
@@ -335,6 +336,43 @@ class ImageGenerationEngine:
         self._progress["total"] = int(total)
         if self._is_cancelled():
             raise ImageGenerationCancelled("Generation cancelled.")
+
+    def _validate_hidream_prompt_tokens(self, prompt: str) -> None:
+        """Reject token-dense prompts before constructing the 17 GB model."""
+
+        from .._download_gate import IMAGE_MODEL_REVISIONS, mflux_local_snapshot
+        from .hidream_runtime.runtime import MAX_PROMPT_TOKENS, _encode_prompt_ids
+
+        processor = getattr(self._model, "processor", None)
+        if processor is None:
+            if self._prompt_tokenizer is None:
+                from transformers import AutoTokenizer
+
+                local = mflux_local_snapshot(self.model_name)
+                source = local or self.model_name
+                kwargs = {"trust_remote_code": False}
+                revision = IMAGE_MODEL_REVISIONS.get(self.model_name)
+                if local is None and revision is not None:
+                    kwargs["revision"] = revision
+                try:
+                    self._prompt_tokenizer = AutoTokenizer.from_pretrained(
+                        source, **kwargs
+                    )
+                except Exception as exc:  # noqa: BLE001 — clean API boundary
+                    raise ImageRuntimeError(
+                        f"Could not load the HiDream prompt tokenizer: {exc}"
+                    ) from exc
+            processor = self._prompt_tokenizer
+        try:
+            token_count = int(_encode_prompt_ids(prompt, processor).shape[-1])
+        except Exception as exc:  # noqa: BLE001 — clean API boundary
+            raise ImageRuntimeError(
+                f"Could not tokenize the HiDream prompt: {exc}"
+            ) from exc
+        if token_count > MAX_PROMPT_TOKENS:
+            raise ImageRuntimeError(
+                f"HiDream-O1 prompts are limited to {MAX_PROMPT_TOKENS} tokens."
+            )
 
     def _build_edit_model(self):
         """Instantiate the edit variant for a model that accepts input images."""
@@ -709,6 +747,7 @@ class ImageGenerationEngine:
                 raise ImageRuntimeError(
                     "HiDream-O1 Dev does not support negative_prompt."
                 )
+            self._validate_hidream_prompt_tokens(prompt)
 
         with self._lock:
             # Claim a run sequence and arm progress BEFORE loading, so a Cancel
