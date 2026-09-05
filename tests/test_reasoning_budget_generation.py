@@ -204,6 +204,33 @@ def test_force_mask_makes_think_end_the_argmax():
     assert masked == 127  # all but the single kept column
 
 
+def test_mtp_force_inside_a_rejected_draft_row_is_rolled_back():
+    """#3044: under MTP the budget may spend itself on a tentative draft
+    prefix; restoring the pre-proposal boundary re-arms it and the next
+    ordinary step is ``free`` again with the force row rebuilt on demand."""
+    proc = ReasoningBudgetLogitsProcessor(THINK_END, 2, seeded_thinking=True)
+    _ = proc([1], mx.zeros((128,)))  # baseline, 0/2
+    boundary = proc.mtp_snapshot_state()
+    # Row 2 of a K=2 proposal: two tentative think tokens spend the budget.
+    out = proc.mtp_apply([1, 10, 11], mx.array([11]), mx.random.normal((1, 128)))
+    assert int(mx.argmax(out[0]).item()) == THINK_END
+    assert proc._think_count == 2
+    assert proc._force_logged is True  # the one-shot line fired tentatively
+    # Target rejected the drafts: the boundary restores 0/2 and the force is
+    # gone; the cached row is harmless (rebuilt / reused when spent again),
+    # and the log latch is re-armed so the committed force still logs once.
+    proc.mtp_restore_state(boundary)
+    assert proc._think_count == 0
+    assert proc._force_logged is False
+    assert proc._phase([1, 12]) == "free"
+    out = proc([1, 12], mx.random.normal((128,)))
+    assert math.isfinite(out[0].item())  # untouched logits, no force
+    # Spend it for real now: the same force row serves the committed path.
+    out = proc([1, 12, 13], mx.random.normal((128,)))
+    assert int(mx.argmax(out).item()) == THINK_END
+    assert proc._force_logged is True
+
+
 def test_force_mask_released_when_think_end_observed():
     # codex R14 nit: the cached OVERRIDE row must be dropped the moment </think>
     # is observed, not pinned through the whole answer. Force once (mask built),

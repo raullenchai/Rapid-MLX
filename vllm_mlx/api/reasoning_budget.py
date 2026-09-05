@@ -239,6 +239,60 @@ class ReasoningBudgetLogitsProcessor:
             return logits
         return self._force_distribution(logits)
 
+    # ---- MTP verification transaction (#3044) -------------------------------
+    #
+    # The continuous MTP lane admits a request only when every processor on
+    # its row is scheduler-vetted, and a processor with per-request mutable
+    # state is vetted only through this contract (``spec_decode/mtp/
+    # generator.py``; ``GrammarLogitsProcessor`` and the agent repetition
+    # guard implement the same one). Without it a ``reasoning_max_tokens``
+    # cap — every graded ``reasoning_effort`` on a template without native
+    # levels — silently dropped the request out of MTP.
+
+    def mtp_apply(self, token_ids: Any, _tentative_token_ids: Any, logits: Any) -> Any:
+        """Apply the budget to one cumulative speculative candidate row.
+
+        The verifier supplies the same cumulative history ordinary decode
+        does (prompt, committed output, then this row's draft prefix), so the
+        phase machine walks the draft prefix exactly as it would delivered
+        tokens. Generator-owned snapshots decide which of that temporary
+        state survives target acceptance, so the tentative array is not
+        consulted here.
+        """
+        return self(token_ids, logits)
+
+    def mtp_snapshot_state(self) -> tuple[int | None, int, int, bool, bool, bool]:
+        """Capture every phase counter speculative verification may advance.
+
+        The "budget spent" log latch travels with the state: a force on a
+        draft row the target then rejects must not consume the one-shot
+        line, or the committed force would go unlogged. The cached force row
+        is rebuilt lazily from the counters, and the out-of-range latch
+        guards a static tokenizer/model mismatch that is true on every path,
+        so neither is snapshotted.
+        """
+        return (
+            self._prompt_len,
+            self._committed,
+            self._think_count,
+            self._started,
+            self._ended,
+            self._force_logged,
+        )
+
+    def mtp_restore_state(
+        self, state: tuple[int | None, int, int, bool, bool, bool]
+    ) -> None:
+        """Restore a pre-proposal or target-accepted phase boundary."""
+        (
+            self._prompt_len,
+            self._committed,
+            self._think_count,
+            self._started,
+            self._ended,
+            self._force_logged,
+        ) = state
+
     # ---- forced-distribution construction (cached per vocab width) ---------
 
     def _force_distribution(self, logits: Any) -> Any:

@@ -825,6 +825,111 @@ class TestScheduleWaitingInsertDispatch:
         assert isinstance(admitted[1], AgentRepetitionLogitsProcessor)
         assert tuple(admitted) == request._mtp_safe_logits_processors
 
+    def test_real_schedule_registers_reasoning_budget_as_transactional_mtp_safe(self):
+        """A thinking-budget request keeps MTP: the budget joins the admitted row (#3044)."""
+        from vllm_mlx.api.reasoning_budget import ReasoningBudgetLogitsProcessor
+
+        scheduler = _make_scheduler_with_cache()
+        scheduler.config.hybrid_cache_entries = 8
+        scheduler.config.non_trimmable_exact_prefix_reuse = True
+        budget = ReasoningBudgetLogitsProcessor(think_end_id=7, max_think_tokens=512)
+        request = Request(
+            request_id="req-reasoning-budget-mtp-admission",
+            prompt="ignored",
+            prompt_token_ids=[10, 20, 30, 40],
+            sampling_params=SamplingParams(max_tokens=4),
+        )
+        request.reasoning_budget_logits_processor = budget
+        request.prefix_boundary = 99
+        scheduler.waiting.append(request)
+
+        batch_generator = MagicMock()
+        batch_generator.insert_segments.return_value = [105]
+        scheduler.batch_generator = batch_generator
+        scheduler._ensure_batch_generator = MagicMock(return_value=True)
+        scheduler._get_request_sampler = MagicMock(return_value=MagicMock())
+        scheduler._register_uid_processors = MagicMock()
+
+        assert scheduler._schedule_waiting() == [request]
+
+        admitted = batch_generator.insert_segments.call_args.kwargs[
+            "logits_processors"
+        ][0]
+        assert admitted == [budget]
+        assert tuple(admitted) == request._mtp_safe_logits_processors
+
+    def test_real_schedule_keeps_reasoning_budget_last_behind_the_tool_guard(self):
+        """Row order is the contract: guard first, budget last (its force mask wins)."""
+        from vllm_mlx.api.reasoning_budget import ReasoningBudgetLogitsProcessor
+        from vllm_mlx.repetition_guard import AgentRepetitionLogitsProcessor
+
+        scheduler = _make_scheduler_with_cache()
+        scheduler.config.hybrid_cache_entries = 8
+        scheduler.config.non_trimmable_exact_prefix_reuse = True
+        budget = ReasoningBudgetLogitsProcessor(think_end_id=7, max_think_tokens=512)
+        request = Request(
+            request_id="req-reasoning-budget-tool-mtp-admission",
+            prompt="ignored",
+            prompt_token_ids=[10, 20, 30, 40],
+            sampling_params=SamplingParams(max_tokens=4),
+        )
+        request.has_tools = True
+        request.reasoning_budget_logits_processor = budget
+        request.prefix_boundary = 99
+        scheduler.waiting.append(request)
+
+        batch_generator = MagicMock()
+        batch_generator.insert_segments.return_value = [106]
+        scheduler.batch_generator = batch_generator
+        scheduler._ensure_batch_generator = MagicMock(return_value=True)
+        scheduler._get_request_sampler = MagicMock(return_value=MagicMock())
+        scheduler._register_uid_processors = MagicMock()
+
+        assert scheduler._schedule_waiting() == [request]
+
+        admitted = batch_generator.insert_segments.call_args.kwargs[
+            "logits_processors"
+        ][0]
+        assert isinstance(admitted[0], AgentRepetitionLogitsProcessor)
+        assert admitted[1] is budget
+        assert tuple(admitted) == request._mtp_safe_logits_processors
+
+    def test_real_schedule_rejects_reasoning_budget_lookalike_from_mtp(self):
+        """Only the exact built-in budget type is MTP-safe; a subclass fails closed."""
+        from vllm_mlx.api.reasoning_budget import ReasoningBudgetLogitsProcessor
+
+        class _Lookalike(ReasoningBudgetLogitsProcessor):
+            pass
+
+        scheduler = _make_scheduler_with_cache()
+        scheduler.config.hybrid_cache_entries = 8
+        scheduler.config.non_trimmable_exact_prefix_reuse = True
+        budget = _Lookalike(think_end_id=7, max_think_tokens=512)
+        request = Request(
+            request_id="req-reasoning-budget-lookalike-mtp-admission",
+            prompt="ignored",
+            prompt_token_ids=[10, 20, 30, 40],
+            sampling_params=SamplingParams(max_tokens=4),
+        )
+        request.reasoning_budget_logits_processor = budget
+        request.prefix_boundary = 99
+        scheduler.waiting.append(request)
+
+        batch_generator = MagicMock()
+        batch_generator.insert_segments.return_value = [107]
+        scheduler.batch_generator = batch_generator
+        scheduler._ensure_batch_generator = MagicMock(return_value=True)
+        scheduler._get_request_sampler = MagicMock(return_value=MagicMock())
+        scheduler._register_uid_processors = MagicMock()
+
+        assert scheduler._schedule_waiting() == [request]
+
+        admitted = batch_generator.insert_segments.call_args.kwargs[
+            "logits_processors"
+        ][0]
+        assert admitted == [budget]
+        assert request._mtp_safe_logits_processors == ()
+
     def test_real_schedule_rejects_transactional_grammar_lookalike_from_mtp(self):
         """Named methods do not make an unknown stateful processor MTP-safe."""
         from vllm_mlx.repetition_guard import AgentRepetitionLogitsProcessor
