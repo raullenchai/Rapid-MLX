@@ -154,6 +154,44 @@ struct LocalWorkflowExecutorTests {
         #expect(await dependencies.actuator.count == 0)
     }
 
+    @Test("an approval provider that misses its deadline fails closed")
+    func approvalTimeoutFailsClosed() async throws {
+        let workflow = LocalWorkflow(
+            title: "Lunch",
+            steps: [step(risk: .financial, maxAttempts: 1)]
+        )
+        let observer = ScriptedWorkflowObserver([
+            observation(revision: "checkout"),
+            observation(revision: "checkout"),
+        ])
+        let grounder = ScriptedWorkflowGrounder(
+            payload: .click(normalizedX: 0.2, normalizedY: 0.3),
+            actionSummary: "Place order"
+        )
+        let actuator = RecordingWorkflowActuator()
+        let approver = SlowWorkflowApprover()
+        let executor = LocalWorkflowExecutor(
+            observer: observer,
+            grounder: grounder,
+            actuator: actuator,
+            verifier: ScriptedWorkflowVerifier([]),
+            fallbackResolver: ScriptedWorkflowFallback(),
+            approver: approver,
+            ledger: RecordingWorkflowLedger(),
+            approvalTimeoutNanoseconds: 1_000_000
+        )
+
+        let run = await executor.execute(workflow)
+
+        #expect(run.status == .paused(
+            stepID: "choose",
+            reason: .approvalUnavailable,
+            actionMayHaveOccurred: false
+        ))
+        #expect(await approver.count == 1)
+        #expect(await actuator.count == 0)
+    }
+
     @Test("approval text flattens whitespace, exposes invisible controls, and is bounded")
     func approvalSummaryIsDisplaySafe() async throws {
         let unsafeTitle = "Publish \u{202E}now"
@@ -348,6 +386,90 @@ struct LocalWorkflowExecutorTests {
         #expect(await dependencies.approver.count == 0)
     }
 
+    @Test("an already completed run is returned without duplicate ledger events")
+    func completedResumeIsIdempotent() async throws {
+        let workflow = LocalWorkflow(title: "Lunch", steps: [step()])
+        let completed = LocalWorkflowRun(
+            workflowID: workflow.id,
+            nextStepIndex: workflow.steps.count,
+            status: .completed
+        )
+        let dependencies = Dependencies(
+            observer: ScriptedWorkflowObserver([]),
+            verifications: []
+        )
+
+        let returned = await dependencies.executor.execute(workflow, resuming: completed)
+
+        #expect(returned == completed)
+        #expect(await dependencies.ledger.events.isEmpty)
+        #expect(await dependencies.actuator.count == 0)
+    }
+
+    @Test("ledger failure before execution prevents observation and input")
+    func initialLedgerFailureFailsClosed() async throws {
+        let workflow = LocalWorkflow(title: "Lunch", steps: [step()])
+        let observer = ScriptedWorkflowObserver([observation(revision: "menu")])
+        let grounder = ScriptedWorkflowGrounder(
+            payload: .click(normalizedX: 0.2, normalizedY: 0.3),
+            actionSummary: "Choose meal"
+        )
+        let actuator = RecordingWorkflowActuator()
+        let ledger = FailingWorkflowLedger(failAtAppend: 1)
+        let executor = LocalWorkflowExecutor(
+            observer: observer,
+            grounder: grounder,
+            actuator: actuator,
+            verifier: ScriptedWorkflowVerifier([]),
+            fallbackResolver: ScriptedWorkflowFallback(),
+            approver: ScriptedWorkflowApprover([]),
+            ledger: ledger
+        )
+
+        let run = await executor.execute(workflow)
+
+        #expect(run.status == .paused(
+            stepID: "ledger",
+            reason: .dependencyFailure,
+            actionMayHaveOccurred: false
+        ))
+        #expect(await grounder.count == 0)
+        #expect(await actuator.count == 0)
+    }
+
+    @Test("ledger failure after input preserves side-effect uncertainty")
+    func postActionLedgerFailureFailsClosed() async throws {
+        let workflow = LocalWorkflow(title: "Lunch", steps: [step(maxAttempts: 1)])
+        let observer = ScriptedWorkflowObserver([
+            observation(revision: "menu"),
+            observation(revision: "menu"),
+        ])
+        let grounder = ScriptedWorkflowGrounder(
+            payload: .click(normalizedX: 0.2, normalizedY: 0.3),
+            actionSummary: "Choose meal"
+        )
+        let actuator = RecordingWorkflowActuator()
+        let ledger = FailingWorkflowLedger(failAtAppend: 3)
+        let executor = LocalWorkflowExecutor(
+            observer: observer,
+            grounder: grounder,
+            actuator: actuator,
+            verifier: ScriptedWorkflowVerifier([]),
+            fallbackResolver: ScriptedWorkflowFallback(),
+            approver: ScriptedWorkflowApprover([]),
+            ledger: ledger
+        )
+
+        let run = await executor.execute(workflow)
+
+        #expect(run.status == .paused(
+            stepID: "choose",
+            reason: .dependencyFailure,
+            actionMayHaveOccurred: true
+        ))
+        #expect(await actuator.count == 1)
+    }
+
     @Test("the executor rejects an overlapping claim before duplicate actuation")
     func overlappingRunIsRejected() async throws {
         let workflow = LocalWorkflow(title: "Lunch", steps: [step()])
@@ -374,6 +496,9 @@ struct LocalWorkflowExecutorTests {
         ))
         #expect(completed.status == .completed)
         #expect(await dependencies.actuator.count == 1)
+        let eventKinds = await dependencies.ledger.events.map(\.kind)
+        #expect(!eventKinds.contains(.runPaused))
+        #expect(eventKinds.filter { $0 == .runCompleted }.count == 1)
     }
 
     @Test("cancellation becomes durable run state")
@@ -649,10 +774,36 @@ private actor ScriptedWorkflowApprover: LocalWorkflowApproving {
     }
 }
 
+private actor SlowWorkflowApprover: LocalWorkflowApproving {
+    private(set) var count = 0
+
+    func requestApproval(_: WorkflowApprovalRequest) async -> WorkflowApprovalDecision {
+        count += 1
+        do {
+            try await Task.sleep(nanoseconds: 1_000_000_000)
+        } catch {
+            return .unavailable
+        }
+        return .approved
+    }
+}
+
 private actor RecordingWorkflowLedger: LocalWorkflowLedgerWriting {
     private(set) var events: [WorkflowLedgerEvent] = []
 
     func append(_ event: WorkflowLedgerEvent) async { events.append(event) }
+}
+
+private actor FailingWorkflowLedger: LocalWorkflowLedgerWriting {
+    private let failAtAppend: Int
+    private var appendCount = 0
+
+    init(failAtAppend: Int) { self.failAtAppend = failAtAppend }
+
+    func append(_: WorkflowLedgerEvent) async throws {
+        appendCount += 1
+        if appendCount == failAtAppend { throw TestDependencyError.exhausted }
+    }
 }
 
 private struct Dependencies {
