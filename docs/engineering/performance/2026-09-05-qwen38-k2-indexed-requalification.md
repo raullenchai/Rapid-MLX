@@ -6,9 +6,8 @@ Owner: Vector
 
 Host: Mac Studio, Apple M3 Ultra 256 GB, `applegpu_g15d`
 
-Branch: `vector/qwen38-mtp-k2-indexed`, stacked on the indexed split-K spike
-`f620f0d847207a17d7c92f808230bd010fae8be6` and therefore on PR #3055 head
-`8ef208607ececfaf9646da18575a1c7b95f7f4da`.
+Branch: `vector/qwen38-mtp-k2-indexed`, PR #3087, rebased onto `main` after
+prerequisite PR #3055 merged.
 
 ## Outcome
 

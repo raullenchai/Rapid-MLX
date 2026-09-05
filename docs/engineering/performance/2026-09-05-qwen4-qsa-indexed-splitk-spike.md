@@ -1,4 +1,4 @@
-# Qwen4 indexed split-K QSA spike (not promoted)
+# Qwen4 indexed split-K QSA qualification
 
 Date: 2026-09-05
 
@@ -6,19 +6,19 @@ Owner: Vector
 
 Host: Mac Studio, M3 Ultra 256 GB, `applegpu_g15d`
 
-Branch: `vector/qsa-indexed-splitk`, stacked on PR #3055 head
-`8ef208607ececfaf9646da18575a1c7b95f7f4da`
+Originating branch: `vector/qsa-indexed-splitk`. The implementation and its K=2
+qualification are now combined in PR #3087 on top of `main`; prerequisite PR
+#3055 is merged.
 
 ## Outcome
 
-The direct compact-index Metal path is promising for the geometry that the
-source handoff qualified, but it is **not ready to promote or queue** in Rapid.
-The handoff's end-to-end result is for self-MTP k=2 (target verify width M=3),
-while the current Qwen3.8 Flash-Next native-MTP runtime rejects k=2 and supports
-k=1 only. Its target verify width is M=2, which was not qualified by the source
-experiment. The production gate therefore admits only M=3 from 16K and M=1
-from 64K, remains opt-in, requires batch size one, and pins both MLX 0.32.2 and
-the measured M3 Ultra Metal architecture.
+The initial standalone spike was not ready to promote because Qwen3.8 rejected
+K=2 and the active K=1 target width M=2 was intentionally unqualified. The
+follow-up in PR #3087 adds explicit-only K=2 and completes real-model
+qualification. The production gate admits only M=3 from 16K and M=1 from 64K,
+requires batch size one, and pins both MLX 0.32.2 and the measured M3 Ultra
+Metal architecture. Explicit K=2 activates the route by default while an
+explicit environment opt-out remains available.
 
 Do not broaden the gate to M=2 merely to make the current MTP path exercise the
 kernel. A first cold M=2 served run regressed, and there is no settled hot
@@ -87,17 +87,16 @@ resulting samples are too contaminated to compare. Artifacts:
 - `/private/tmp/qsa-indexed-baseline-k1-16k.json`
 - `/private/tmp/qsa-indexed-baseline-k1-settled-16k.json`
 
-## Reopen / promotion gate
+## Promotion gate disposition
 
-1. Enable and independently qualify Qwen3.8 Flash-Next native MTP k=2, or run
-   a real 64K M=1 decode campaign.
-2. Start from a clean Metal session with no other model server resident.
-3. Warm the new pipelines before timing, then collect at least three samples
-   per arm at 16K, 32K, and 64K with identical prompts and seeds.
-4. Require nonzero indexed route receipts, zero unexpected declines/fallbacks,
-   successful state rollback transactions, and a same-seed output comparison.
-5. Re-pin the exact MLX build and rerun production tensor captures on every
-   MLX-core bump.
+The follow-up requalification completed the clean Metal session, three samples
+per K=1/K=2 arm at 16K/32K/64K, real indexed-route construction, rollback tests,
+same-seed coherent-output comparison, the 45-case release battery, sampled
+decoding, and cancellation recovery. The strict 64K comparison kept indexed
+QSA enabled for both arms and measured K=2 at 33.72 tok/s versus K=1 at 29.23
+tok/s (+15.4%). See
+`2026-09-05-qwen38-k2-indexed-requalification.md` for the complete evidence and
+the shorter-context non-win.
 
-Until all five conditions pass, do not open/queue a performance PR and do not
-enable this route by default.
+The MLX version and Metal architecture pins remain mandatory. Production tensor
+captures must be rerun before broadening either pin or admitting M=2.

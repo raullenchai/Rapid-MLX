@@ -12,8 +12,8 @@ PR: #3087 (Draft)
 
 ## Verified facts
 
-- The branch is stacked on indexed split-K spike `f620f0d84`, itself based on
-  PR #3055 head `8ef208607`.
+- PR #3087 is a self-contained indexed-QSA plus K=2 change rebased onto current
+  `main`; prerequisite PR #3055 is merged.
 - Qwen3.8 keeps implicit MTP at K=1, admits only explicit K=2, and rejects K=3.
 - Existing generic chain-of-K and Qwen-specific rollback logic is unchanged.
 - Focused MTP, Qwen4, indexed-QSA, and CLI suites pass; changed Python files
