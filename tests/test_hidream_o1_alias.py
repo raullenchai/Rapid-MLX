@@ -679,8 +679,10 @@ def test_custom_heads_reject_missing_extra_and_shape_mismatch() -> None:
         )
 
 
+@pytest.mark.parametrize("requested", [REPO, "hidream-o1-dev"])
 def test_pull_uses_exact_revision_and_data_allowlist(
     monkeypatch: pytest.MonkeyPatch,
+    requested: str,
 ) -> None:
     from vllm_mlx import cli
 
@@ -691,7 +693,7 @@ def test_pull_uses_exact_revision_and_data_allowlist(
         lambda args, **kwargs: calls.append((args.model, kwargs)),
     )
     monkeypatch.setattr(cli, "_emit_pull_activation", lambda: None)
-    args = SimpleNamespace(model=REPO)
+    args = SimpleNamespace(model=requested)
 
     cli.pull_command(args)
 

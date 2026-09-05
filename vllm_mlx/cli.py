@@ -7695,6 +7695,11 @@ def pull_command(args):
 
     import copy
 
+    from vllm_mlx._download_gate import (
+        HIDREAM_O1_DATA_FILES,
+        HIDREAM_O1_REPO,
+        HIDREAM_O1_REVISION,
+    )
     from vllm_mlx.audio.registry import runtime_assets_for, runtime_requirements_for
     from vllm_mlx.audio.runtime_requirements import (
         AudioRuntimePreparationError,
@@ -7702,20 +7707,28 @@ def pull_command(args):
     )
 
     primary_repo = args.model
-    from vllm_mlx._download_gate import (
-        HIDREAM_O1_DATA_FILES,
-        HIDREAM_O1_REPO,
-        HIDREAM_O1_REVISION,
-    )
+    primary_args = args
+    if primary_repo != HIDREAM_O1_REPO:
+        # ``main()`` normally resolves aliases before dispatch, but keep this
+        # security boundary fail-closed for direct/internal pull_command calls.
+        from vllm_mlx.model_aliases import resolve_model
+
+        if resolve_model(primary_repo) == HIDREAM_O1_REPO:
+            primary_args = copy.copy(args)
+            primary_args._original_alias = (
+                getattr(args, "_original_alias", None) or primary_repo
+            )
+            primary_args.model = HIDREAM_O1_REPO
+            primary_repo = HIDREAM_O1_REPO
 
     if primary_repo == HIDREAM_O1_REPO:
         _pull_repository(
-            args,
+            primary_args,
             allow_patterns_override=list(HIDREAM_O1_DATA_FILES),
             revision_override=HIDREAM_O1_REVISION,
         )
     else:
-        _pull_repository(args)
+        _pull_repository(primary_args)
     for asset in runtime_assets_for(primary_repo):
         if asset.repo_id == primary_repo:
             continue
