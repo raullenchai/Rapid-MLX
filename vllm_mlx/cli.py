@@ -1310,12 +1310,17 @@ def _resolve_mtp_depth_for_model(
 
     if model_type != "qwen4_exp":
         return requested
-    if explicit and requested != 1:
+    if not explicit:
+        # Keep the production default at the previously qualified K=1.
+        # K=2 is an explicit-only capability while its end-to-end indexed-QSA
+        # performance is being qualified on the released checkpoint.
+        return 1
+    if requested not in {1, 2}:
         raise ValueError(
             "Qwen3.8 Flash-Next native MTP currently supports "
-            "num_speculative_tokens=1 only"
+            "num_speculative_tokens in [1, 2]"
         )
-    return 1
+    return requested
 
 
 def _check_alias_min_memory(user_typed: str) -> None:

@@ -1415,7 +1415,8 @@ def test_qwen4_verify_block_matches_tokenwise_forward():
     )
 
 
-def test_qwen4_mtp_target_verify_matches_synthetic_greedy(monkeypatch):
+@pytest.mark.parametrize("max_k", [1, 2])
+def test_qwen4_mtp_target_verify_matches_synthetic_greedy(monkeypatch, max_k):
     import importlib
 
     import mlx.nn as nn
@@ -1438,21 +1439,32 @@ def test_qwen4_mtp_target_verify_matches_synthetic_greedy(monkeypatch):
 
     monkeypatch.setattr(nn, "quantize", lambda *_args, **_kwargs: None)
     assert dispatch_mtp_inject(model, "qwen4_exp", allow_random_init=True) is True
-    counter = MTPAcceptCounter()
-    speculative = [
-        int(token)
-        for token, _logprobs, _draft in mtp_generate_step(
-            prompt,
-            model.language_model,
-            max_tokens=12,
-            max_k=1,
-            disable_auto_k=True,
-            accept_counter=counter,
+    runs = []
+    for _ in range(2):
+        counter = MTPAcceptCounter()
+        runs.append(
+            [
+                int(token)
+                for token, _logprobs, _draft in mtp_generate_step(
+                    prompt,
+                    model.language_model,
+                    max_tokens=12,
+                    max_k=max_k,
+                    disable_auto_k=True,
+                    accept_counter=counter,
+                )
+            ]
         )
-    ]
+        assert counter.snapshot().attempts > 0
 
-    assert speculative == baseline
-    assert counter.snapshot().attempts > 0
+    # K=1 retains the fixture's serial-token identity contract. Wider block
+    # verification is deterministic, but can select a different near-tied
+    # argmax because Metal uses a different accumulation shape; independent
+    # block-vs-token and rollback tests cover the state-transition contract.
+    assert runs[0] == runs[1]
+    assert len(runs[0]) == 12
+    if max_k == 1:
+        assert runs[0] == baseline
 
 
 def test_qwen4_native_mtp_dispatch_attaches_synthetic_head(monkeypatch):
@@ -1482,7 +1494,7 @@ def test_qwen4_native_mtp_dispatch_attaches_synthetic_head(monkeypatch):
     )
     assert dispatch_mtp_inject(model, "qwen4_exp", allow_random_init=True) is True
     assert dispatch_mtp_validate(model, "qwen4_exp") is True
-    assert model.mtp_max_speculative_tokens == 1
+    assert model.mtp_max_speculative_tokens == 2
 
     inner = model.language_model
     cache = inner.make_mtp_cache()

@@ -238,8 +238,12 @@ def inject_qwen4_exp_mtp_support(
                 return [CacheList(KVCache(), QSAIndexCache(ratio))]
 
         inner.mtp = mtp
-        inner.mtp_max_speculative_tokens = 1
-        model.mtp_max_speculative_tokens = 1
+        # One autoregressive MTP layer can be invoked twice to form a verified
+        # draft chain. The CLI keeps K=1 as the implicit default; this ceiling
+        # only admits an explicit K=2 request after family-specific rollback
+        # qualification.
+        inner.mtp_max_speculative_tokens = 2
+        model.mtp_max_speculative_tokens = 2
         inner.__class__ = _Qwen4ExpWithMTP
         if model is not inner:
             model.mtp_prompt_lookup_supported = True
