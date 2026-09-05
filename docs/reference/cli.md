@@ -17,6 +17,7 @@
 | `rapid-mlx ps` | List running rapid-mlx servers |
 | `rapid-mlx share` | Expose a local model behind a public URL via rapidmlx.com |
 | `rapid-mlx launch` | One-shot bootstrap: patch an IDE/agent client config to use rapid-mlx |
+| `rapid-mlx service` | Install/inspect/remove the headless macOS system service (`install` `status` `logs` `restart` `uninstall`) |
 | `rapid-mlx connect` | Show the server's connection info and wire up a tool |
 | `rapid-mlx agents` | List, configure, and test agent integrations |
 | `rapid-mlx start` | Start an AI agent with a local model in one command |
@@ -521,7 +522,40 @@ rapid-mlx start opencode --model qwen3.5-9b-4bit --port 8123 --yes
 # Start a generic OpenAI-compatible endpoint (no agent config)
 rapid-mlx start
 ```
+## `rapid-mlx service`
 
+Manage Rapid-MLX as an unattended headless macOS system service (a launchd
+LaunchDaemon that boots before any GUI login). macOS-only; requires an
+existing non-administrator service account and (for `install`/`uninstall`/
+`restart`) root.
+
+```bash
+rapid-mlx service install --service-user USER --model MODEL \
+  [--host HOST] [--port PORT] [--dry-run] [-- SERVE_OPTIONS...]
+rapid-mlx service status [--json]
+rapid-mlx service logs [--follow] [--tail N]
+rapid-mlx service restart [--dry-run]
+rapid-mlx service uninstall [--dry-run]
+```
+
+- `install` validates the least-privilege service account, writes a
+  deterministic root-owned plist to `/Library/LaunchDaemons/`, and
+  bootstraps the daemon. It refuses an administrator/system account, a
+  secret in the definition, and a target port that already has a server.
+  `--dry-run` prints every step without changing anything.
+- Additional `serve` options must follow a `--` separator, for example
+  `-- --max-num-seqs 4`. Bind overrides and secret-bearing options are
+  rejected; use the service command's own `--host` and `--port` flags.
+- `status` reports launchd registration, PID and owner, the declared model
+  and bind, endpoint (`/livez`/`/readyz`) health, and log paths.
+- `logs` tails the daemon's stdout/stderr logs (`--follow` streams across
+  KeepAlive restarts).
+- `restart` kickstarts the daemon and waits for readiness.
+- `uninstall` removes the launchd registration and plist only — models,
+  cache, and logs are never deleted.
+
+See [`docs/guides/headless-macos-service.md`](../guides/headless-macos-service.md)
+for the full appliance setup and recovery guidance.
 ## Environment Variables
 
 Operator-facing `RAPID_MLX_*` variables read by the server and CLI. A CLI

@@ -12560,6 +12560,15 @@ Examples:
 
     _register_launch(subparsers)
 
+    # Service subcommand — supported headless macOS service lifecycle
+    # (system LaunchDaemon). GH issue #2859. Lives in headless_service to
+    # stay distinct from vllm_mlx.service (the engine's helper/post-process
+    # layer). Registered after launch so the help ordering keeps the common
+    # interactive verbs first.
+    from vllm_mlx.headless_service.cli import register as _register_service
+
+    _register_service(subparsers)
+
     return parser
 
 
@@ -12897,10 +12906,14 @@ def main():
     # The doctor subcommand is exempt for historical reasons (and as a
     # belt-and-suspenders guard now that doctor doesn't take ``--model``):
     # an env-health probe should never trigger an alias→path lookup.
+    # ``service`` is exempt for the same class of reason: it embeds the
+    # model string verbatim into the plist and runs its own (dry-run safe,
+    # unit-testable) validation — it must not hard-fail here on an unknown
+    # alias nor swallow the user's spelling under a resolved HF path.
     if (
         hasattr(args, "model")
         and args.model
-        and getattr(args, "command", None) != "doctor"
+        and getattr(args, "command", None) not in ("doctor", "service")
     ):
         from vllm_mlx.model_aliases import RetiredModelAliasError, resolve_model
         from vllm_mlx.user_aliases import UserAliasError
@@ -13172,6 +13185,10 @@ def main():
         from vllm_mlx.launch.cli import launch_command
 
         launch_command(args)
+    elif args.command == "service":  # pragma: no cover - dispatch boundary
+        from vllm_mlx.headless_service.cli import service_command
+
+        service_command(args)
     elif (
         getattr(args, "command", None) is None
         and sys.stdout.isatty()

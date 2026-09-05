@@ -5,9 +5,72 @@ inference appliance. A system daemon starts after macOS boots and does not
 depend on a graphical login. This is the macOS equivalent of an enabled
 `systemd` service.
 
-> **Operational scope:** this guide uses the existing CLI and Apple's
-> `launchd`. Rapid-MLX does not yet install or manage the daemon for you. Test
-> the procedure while you still have physical or out-of-band access to the Mac.
+> **Operational scope:** `rapid-mlx service` (the supported way to set this
+> up) installs and manages the daemon for you in one command. The manual
+> runbook below remains as the fallback / recovery path and as the reference
+> for what the CLI produces. Test the procedure while you still have physical
+> or out-of-band access to the Mac.
+
+## Quickstart: `rapid-mlx service`
+
+Create a dedicated, non-administrator service account (shown as `serveuser`)
+and install Rapid-MLX there with the one-line installer, exactly as in
+[section 1](#1-prepare-the-service-account) below. Download the intended
+model once as that account. Then, from an administrator session:
+
+```bash
+sudo rapid-mlx service install \
+  --service-user serveuser \
+  --model qwen3.5-4b-4bit \
+  --host 127.0.0.1 --port 8000
+```
+
+`install` validates the service account, writes a deterministic,
+root-owned plist to `/Library/LaunchDaemons/com.rapidmlx.server.plist`,
+and bootstraps it into the system domain. It refuses to install onto an
+administrator or system account, refuses to embed a secret
+(`--api-key`) into the definition, and refuses when a server already
+answers on the target port (so it cannot silently race a Desktop-managed
+instance). Rehearse first without touching the machine:
+
+```bash
+rapid-mlx service install --service-user serveuser \
+  --model qwen3.5-4b-4bit --dry-run
+```
+
+Pass advanced non-secret server options after a `--` separator, for example
+`-- --max-num-seqs 4`. Use the service command's own `--host` and `--port`
+options for binding; secret-bearing flags are intentionally rejected.
+
+Changing an installed definition is explicit: run `service uninstall`, then
+`service install` with the new settings. Uninstalling preserves models, cache,
+and logs. The installer refuses to overwrite an existing plist because launchd
+would otherwise keep the old in-memory configuration until reboot.
+
+Day-to-day operations:
+
+```bash
+rapid-mlx service status                 # registration / pid / health / logs
+rapid-mlx service status --json          # machine-readable
+rapid-mlx service logs                   # tail daemon logs
+rapid-mlx service logs --follow          # stream, across KeepAlive restarts
+sudo rapid-mlx service restart           # kickstart + wait until healthy
+```
+
+Remove the service (models, cache, and logs are left in place):
+
+```bash
+sudo rapid-mlx service uninstall         # bootout + remove plist
+rapid-mlx service uninstall --dry-run    # print the removal steps first
+```
+
+A full appliance acceptance test is [`scripts/headless_service_smoke.sh`](../scripts/headless_service_smoke.sh),
+which checks registration, process owner, liveness, readiness, model
+inventory, and a real one-token completion. Run it after any reboot test.
+
+> The CLI is macOS-only and requires an existing least-privilege account —
+> it intentionally does **not** create system users. Programmatic account
+> creation is out of scope for the first supported release.
 
 ## Before you begin
 
@@ -264,8 +327,9 @@ environment, or logs.
 
 ## Known limits
 
-- There is no `rapid-mlx service install` command yet; this is an operator-run
-  deployment.
+- `rapid-mlx service` requires a pre-existing non-administrator service
+  account and an administrator to run `install`/`uninstall`; it does not
+  create system users or rotate logs automatically.
 - Rapid-MLX does not rotate the two log files. Configure your existing log
   collector or rotation policy and monitor free disk space.
 - A full application update causes downtime while the daemon is booted out.
