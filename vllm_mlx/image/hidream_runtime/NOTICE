@@ -1,0 +1,10 @@
+HiDream-O1-Image-Dev MLX runtime
+
+Adapted for Rapid-MLX from the text-to-image runtime published in
+mlx-community/HiDream-O1-Image-Dev-mlx-bf16 at commit
+33c7a00bce8e3410304f83ec408a15a1eb6782df.
+
+The Rapid-MLX adaptation removes the standalone CLI, conversion, editing,
+multi-reference, diagnostic, and file-output paths and integrates generation
+with Rapid's image-engine lifecycle, cancellation, progress, and in-memory PNG
+transport. No model weights are redistributed.

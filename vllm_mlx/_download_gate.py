@@ -1327,9 +1327,26 @@ def _snapshot_is_complete_wan_model(repo_id: str) -> bool:
 #: A repo absent from this map is unpinned and falls through to today's
 #: behavior; one present here is refused unless the resolved snapshot
 #: matches exactly (see the check in ``_mflux_snapshot_dir``).
+HIDREAM_O1_REPO = "mlx-community/HiDream-O1-Image-Dev-mlx-bf16"
+HIDREAM_O1_REVISION = "33c7a00bce8e3410304f83ec408a15a1eb6782df"
+HIDREAM_O1_DATA_FILES = (
+    "model.safetensors",
+    "extras/custom_heads.safetensors",
+    "config.json",
+    "generation_config.json",
+    "chat_template.json",
+    "preprocessor_config.json",
+    "video_preprocessor_config.json",
+    "tokenizer.json",
+    "tokenizer_config.json",
+    "merges.txt",
+    "vocab.json",
+)
+
 IMAGE_MODEL_REVISIONS: dict[str, str] = {
     "Runpod/FLUX.2-klein-4B-mflux-4bit": "7ee1b3aa8178a1240050490072196a57da2bf2a9",
     "mflux-community/qwen-image-mflux-q6": "c628fe4392d963557c3013c2709e6d3b67bca79d",
+    HIDREAM_O1_REPO: HIDREAM_O1_REVISION,
 }
 
 
@@ -1485,6 +1502,17 @@ def mflux_missing_weights(repo_id: str) -> list[str] | None:
     import json
 
     missing: list[str] = []
+
+    if repo_id == HIDREAM_O1_REPO:
+        # HiDream is a single root MLX checkpoint plus three custom diffusion
+        # heads, not an mflux component tree. Validate every data file reached
+        # by mlx-vlm/the adapter; lab scripts and samples are deliberately not
+        # downloaded or executed.
+        return [
+            relative
+            for relative in HIDREAM_O1_DATA_FILES
+            if not _is_nonempty_repo_file(os.path.join(snap_dir, *relative.split("/")))
+        ]
 
     # All currently supported mflux families use these three components and a
     # local tokenizer. Requiring the full set prevents an interrupted pull with

@@ -151,6 +151,14 @@ def test_qwen4_fused_gdn_coverage_runs_on_apple_silicon() -> None:
     assert "tests/test_qwen4_fused_gdn_decode.py" in apple_run
 
 
+def test_hidream_runtime_coverage_runs_on_apple_silicon() -> None:
+    """The MLX-only image runtime must contribute to the coverage union."""
+    _, workflow = _workflow()
+    apple_run = workflow["jobs"]["test-apple-silicon"]["steps"][-2]["run"]
+
+    assert "tests/test_hidream_o1_alias.py" in apple_run
+
+
 def test_coverage_data_is_commit_bound_and_fail_closed() -> None:
     text, workflow = _workflow()
     jobs = workflow["jobs"]

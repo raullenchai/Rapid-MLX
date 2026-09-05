@@ -55,7 +55,7 @@ def _seed_cache(tmp_path, monkeypatch, *, omit=None):
     )
 
 
-def _drive_serve(monkeypatch):
+def _drive_serve(monkeypatch, *, alias=_ALIAS, download_hook=None):
     """Run ``rapid-mlx serve flux2-klein-4b`` with the heavy boundaries stubbed.
 
     Only ever driven to the point where the gate refuses. Letting a serve run
@@ -68,7 +68,11 @@ def _drive_serve(monkeypatch):
 
     monkeypatch.setattr(server, "load_model", lambda *_a, **_kw: None)
     monkeypatch.setattr(cli, "_run_uvicorn", lambda *_a, **_kw: None)
-    monkeypatch.setattr(cli, "_ensure_model_downloaded", lambda *_a, **_kw: None)
+    monkeypatch.setattr(
+        cli,
+        "_ensure_model_downloaded",
+        download_hook or (lambda *_a, **_kw: None),
+    )
     monkeypatch.setattr(cli, "_port_preflight_or_die", lambda *_a, **_kw: None)
     monkeypatch.setattr(cli, "_check_disk_space", lambda *_a, **_kw: None)
     monkeypatch.setattr(cli, "_check_memory_capacity", lambda *_a, **_kw: None)
@@ -83,7 +87,7 @@ def _drive_serve(monkeypatch):
         "vllm_mlx._version_check.print_staleness_warning_if_any",
         lambda **_kwargs: None,
     )
-    monkeypatch.setattr(sys, "argv", ["rapid-mlx", "serve", _ALIAS, "--port", "0"])
+    monkeypatch.setattr(sys, "argv", ["rapid-mlx", "serve", alias, "--port", "0"])
     cli.main()
 
 
@@ -125,3 +129,22 @@ def test_serve_refuses_partially_downloaded_image_model(tmp_path, monkeypatch, c
     err = capsys.readouterr().err
     assert _ALIAS in err, "the operator must see which model to re-pull"
     assert "transformer/0.safetensors" in err
+
+
+def test_hidream_skips_unpinned_generic_prefetch(monkeypatch):
+    """Its ImageEngine owns the exact-revision, data-only cold pull."""
+    calls = []
+    monkeypatch.setattr(
+        "vllm_mlx._download_gate.mflux_missing_weights",
+        lambda _repo: ["extras/custom_heads.safetensors"],
+    )
+
+    with pytest.raises(SystemExit) as excinfo:
+        _drive_serve(
+            monkeypatch,
+            alias="hidream-o1-dev",
+            download_hook=lambda *args, **kwargs: calls.append((args, kwargs)),
+        )
+
+    assert excinfo.value.code == 1
+    assert calls == []

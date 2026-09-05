@@ -541,6 +541,11 @@ def estimate_model_bytes(model_name: str) -> int:
     known_image_gib = {
         "flux2-klein-4b": 5.9,
         "z-image-turbo": 5.9,
+        # BF16 unified backbone + custom diffusion heads. Rapid's 1024² server
+        # dogfood measured 17.43 GiB max RSS; round up to retain allocator and
+        # output headroom (docs/engineering/performance/2026-09-04-hidream-o1-dev-dogfood.md).
+        "hidream-o1": 18.0,
+        "hidream_o1": 18.0,
         # 6-bit-transformer Qwen-Image (20B) — measured peak RSS during a
         # real generation at 1024x1024 (mflux-community/qwen-image-mflux-q6,
         # the API/GUI default resolution; `/usr/bin/time -l`): ~55.7 GiB.

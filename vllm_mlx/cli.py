@@ -3184,6 +3184,10 @@ def serve_command(args):
         getattr(args, "_original_alias", None) or getattr(args, "model", "")
     )
     _is_wan_video = False
+    _is_hidream_o1 = bool(
+        _serve_profile is not None
+        and _serve_profile.hf_path == "mlx-community/HiDream-O1-Image-Dev-mlx-bf16"
+    )
     if _serve_profile is not None and _serve_profile.modality == "video-gen":
         from .runtime.video_lane import require_video_runtime_or_exit
         from .video.wan import is_wan_model
@@ -3404,7 +3408,21 @@ def serve_command(args):
     # revision (or uses RAPID_MLX_WAN_MODEL_DIR). The generic prefetch has no
     # revision parameter and could otherwise download repository HEAD first,
     # duplicating tens of gigabytes before the pinned snapshot is loaded.
-    if not _is_wan_video:
+    # HiDream owns a revision-pinned, data-file-only pull in ImageEngine. The
+    # generic prefetch resolves repository HEAD and downloads every file,
+    # including unreviewed scripts and samples, before that guarded path runs.
+    if _is_hidream_o1:
+        # Preserve the normal first-run disk guard even though the generic
+        # downloader is intentionally bypassed. A complete pinned snapshot is
+        # a warm no-op; cold/partial caches are checked before the 17 GB pull
+        # begins inside ImageEngine.
+        from ._download_gate import mflux_missing_weights as _image_missing
+
+        if _image_missing(args.model) != []:
+            _check_disk_space(
+                args.model, force=getattr(args, "force_disk_check", False)
+            )
+    elif not _is_wan_video:
         if getattr(args, "force_disk_check", False):
             _ensure_model_downloaded(args.model, force_disk_check=True)
         else:
@@ -7416,7 +7434,12 @@ def _sync_pulled_variant_marker(repo_id: str, variant: str | None) -> None:
         pass
 
 
-def _pull_repository(args, *, allow_patterns_override: list[str] | None = None):
+def _pull_repository(
+    args,
+    *,
+    allow_patterns_override: list[str] | None = None,
+    revision_override: str | None = None,
+):
     """Download one repository through the normal mirror/HF pipeline."""
     import time
 
@@ -7498,7 +7521,9 @@ def _pull_repository(args, *, allow_patterns_override: list[str] | None = None):
     # R2-first / HuggingFace-fallback per file. Default mirror is
     # ``https://models.rapidmlx.com``; set ``RAPID_MLX_MODEL_MIRROR=""``
     # to force HF only. The function prints its own progress + summary.
-    if _try_mirror_prefetch(repo_id, allow_patterns=variant_allow, out=_mirror_out):
+    if revision_override is None and _try_mirror_prefetch(
+        repo_id, allow_patterns=variant_allow, out=_mirror_out
+    ):
         from pathlib import Path
 
         try:
@@ -7568,7 +7593,7 @@ def _pull_repository(args, *, allow_patterns_override: list[str] | None = None):
         # catalog subfolder (one checkpoint per quantization).
         if allow_patterns_override is not None:
             _allow = variant_allow
-            print("  Fetching only the runtime assets declared by the audio catalog.")
+            print("  Fetching only the runtime data files declared by Rapid-MLX.")
         elif variant_allow is not None:
             _allow = variant_allow
             # Literal folder name the user asked for (e.g. "4bit"). Derived
@@ -7618,10 +7643,11 @@ def _pull_repository(args, *, allow_patterns_override: list[str] | None = None):
         _mirror_fetched = _mirror_out.get("network_fetch", False)
         _cache_root = _hf_cache_root(repo_id)
         _before = _blob_identifier(_cache_root)
+        download_kwargs = {"revision": revision_override} if revision_override else {}
         path = (
-            snapshot_download(repo_id, allow_patterns=_allow)
+            snapshot_download(repo_id, allow_patterns=_allow, **download_kwargs)
             if _allow
-            else snapshot_download(repo_id)
+            else snapshot_download(repo_id, **download_kwargs)
         )
         _after = _blob_identifier(_cache_root)
         _was_cached = (_before == _after and _before != ()) and not _mirror_fetched
@@ -7669,6 +7695,11 @@ def pull_command(args):
 
     import copy
 
+    from vllm_mlx._download_gate import (
+        HIDREAM_O1_DATA_FILES,
+        HIDREAM_O1_REPO,
+        HIDREAM_O1_REVISION,
+    )
     from vllm_mlx.audio.registry import runtime_assets_for, runtime_requirements_for
     from vllm_mlx.audio.runtime_requirements import (
         AudioRuntimePreparationError,
@@ -7676,7 +7707,28 @@ def pull_command(args):
     )
 
     primary_repo = args.model
-    _pull_repository(args)
+    primary_args = args
+    if primary_repo != HIDREAM_O1_REPO:
+        # ``main()`` normally resolves aliases before dispatch, but keep this
+        # security boundary fail-closed for direct/internal pull_command calls.
+        from vllm_mlx.model_aliases import resolve_model
+
+        if resolve_model(primary_repo) == HIDREAM_O1_REPO:
+            primary_args = copy.copy(args)
+            primary_args._original_alias = (
+                getattr(args, "_original_alias", None) or primary_repo
+            )
+            primary_args.model = HIDREAM_O1_REPO
+            primary_repo = HIDREAM_O1_REPO
+
+    if primary_repo == HIDREAM_O1_REPO:
+        _pull_repository(
+            primary_args,
+            allow_patterns_override=list(HIDREAM_O1_DATA_FILES),
+            revision_override=HIDREAM_O1_REVISION,
+        )
+    else:
+        _pull_repository(primary_args)
     for asset in runtime_assets_for(primary_repo):
         if asset.repo_id == primary_repo:
             continue

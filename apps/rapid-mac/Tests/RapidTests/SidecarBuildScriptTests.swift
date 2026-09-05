@@ -80,6 +80,8 @@ struct SidecarBuildScriptTests {
             #expect(script.contains(architecture),
                     "Every Desktop-advertised vision architecture needs a bundled import smoke.")
         }
+        #expect(script.contains("from vllm_mlx.image.hidream_runtime import HiDreamO1"),
+                "The bundled sidecar must include the HiDream image adapter, not only mlx-vlm.")
         #expect(script.contains(#"find_spec("cv2") is None"#))
         #expect(script.contains(#"find_spec("torch") is None"#))
         #expect(script.contains(#"find_spec("torchvision") is None"#),

@@ -7,8 +7,8 @@ built-in 4/8-bit quantization. Rapid-MLX owns request validation, the lazy
 load / process-lock lifecycle and the OpenAI-compatible transport; mflux owns
 the diffusion pipeline and weight loading.
 
-Only Apache-2.0-licensed families are wired here so the whole surface stays
-commercially clean:
+Only commercially permissive families are wired here so the whole surface
+stays commercially clean:
 
 * ``flux2-klein``      — text→image + image edit (``FLUX.2-klein-4B``),
   4B/4-step, the fast default: ~3 s @ 512² / ~10 s @ 1024² on an M3 Ultra,
@@ -18,6 +18,8 @@ commercially clean:
 * ``flux-schnell``     — text→image (``black-forest-labs/FLUX.1-schnell``), 12B
 * ``qwen-image``       — text→image (``Qwen/Qwen-Image``), strongest text-in-image
 * ``qwen-image-edit``  — instruction edit (``Qwen/Qwen-Image-Edit-2509``)
+* ``hidream-o1-dev``   — text→image (``HiDream-O1-Image-Dev``), 28-step,
+  VAE-free unified pixel transformer (MIT)
 
 ``flux2-klein`` and ``z-image`` supersede the older/larger families for the
 interactive tab: Klein is ~3× faster than schnell/z-image at the same
@@ -107,6 +109,8 @@ class _ProgressReporter:
 def _detect_family(model_name: str) -> str:
     """Map an alias hf_path (or local dir) to a supported mflux family."""
     name = (model_name or "").casefold()
+    if "hidream-o1" in name or "hidream_o1" in name:
+        return "hidream-o1-dev"
     # Klein first — its repos ("FLUX.2-klein-4B-mflux-4bit") also contain
     # "flux", so the distinctive "klein" / "flux2" token must win before the
     # generic FLUX.1 checks below.
@@ -124,14 +128,15 @@ def _detect_family(model_name: str) -> str:
         return "flux-dev"
     raise ImageRuntimeError(
         f"Unsupported image model '{model_name}'. Supported families: "
-        "flux2-klein, z-image, flux-schnell, qwen-image, qwen-image-edit."
+        "flux2-klein, z-image, flux-schnell, qwen-image, qwen-image-edit, "
+        "hidream-o1-dev."
     )
 
 
 # Families whose ``generate_image`` takes NO ``negative_prompt`` parameter.
 # FLUX.2 Klein omits it (Flux1 / Qwen-Image / Z-Image all accept it), and
 # passing an unknown kwarg raises — so the engine drops it for these.
-_NO_NEGATIVE_PROMPT_FAMILIES = frozenset({"flux2-klein"})
+_NO_NEGATIVE_PROMPT_FAMILIES = frozenset({"flux2-klein", "hidream-o1-dev"})
 
 # Per-family default denoise steps when the request pins none. Distilled/turbo
 # models converge in a handful of steps; a non-distilled model needs many more.
@@ -142,6 +147,7 @@ _DEFAULT_STEPS_BY_FAMILY = {
     "flux-dev": 20,  # non-distilled
     "qwen-image": 20,  # non-distilled 20B
     "qwen-image-edit": 20,
+    "hidream-o1-dev": 28,
 }
 
 
@@ -181,11 +187,14 @@ class ImageGenerationEngine:
         self.default_edit_steps = 4 if self.family == "flux2-klein" else 20
         self.default_edit_guidance = None if self.family == "flux2-klein" else 4.0
         self.supports_negative_prompt = self.family not in _NO_NEGATIVE_PROMPT_FAMILIES
-        self._prequantized = _looks_like_prequantized(model_name)
+        self._prequantized = (
+            self.family == "hidream-o1-dev" or _looks_like_prequantized(model_name)
+        )
         # ``None`` when the repo is already quantized — passing a quantize width
         # for a pre-quantized checkpoint makes mflux re-quantize and error.
         self._quantize = None if self._prequantized else quantize
         self._model = None
+        self._prompt_tokenizer = None
         # FLUX.2 uses distinct mflux classes for generation and editing. Only
         # one stays resident at a time so switching modes does not duplicate
         # the checkpoint in unified memory.
@@ -238,7 +247,11 @@ class ImageGenerationEngine:
         """
         if not self._prequantized:
             return None
-        from .._download_gate import IMAGE_MODEL_REVISIONS, mflux_local_snapshot
+        from .._download_gate import (
+            HIDREAM_O1_DATA_FILES,
+            IMAGE_MODEL_REVISIONS,
+            mflux_local_snapshot,
+        )
 
         snapshot = mflux_local_snapshot(self.model_name)
         if snapshot is not None:
@@ -248,7 +261,14 @@ class ImageGenerationEngine:
             return self.model_name
         from huggingface_hub import snapshot_download
 
-        downloaded = snapshot_download(self.model_name, revision=pinned_revision)
+        kwargs = {}
+        if self.family == "hidream-o1-dev":
+            # The weights repo also contains executable lab scripts and sample
+            # images. The runtime is vendored+reviewed here; fetch only data.
+            kwargs["allow_patterns"] = list(HIDREAM_O1_DATA_FILES)
+        downloaded = snapshot_download(
+            self.model_name, revision=pinned_revision, **kwargs
+        )
         # A pinned cold pull bypasses ``_verify_weights_complete()``'s
         # normal preflight — at the time it ran (in ``_ensure_loaded``,
         # right before this method), there was nothing cached yet to
@@ -261,6 +281,14 @@ class ImageGenerationEngine:
 
     def _build_model(self):
         """Instantiate the backing mflux model (import-lazy)."""
+        if self.family == "hidream-o1-dev":
+            from .hidream_runtime import HiDreamO1
+
+            model_path = self._model_path_for_mflux()
+            if model_path is None:
+                raise ImageRuntimeError("HiDream-O1 requires a local model snapshot.")
+            return HiDreamO1(model_path, on_step=self._report_hidream_step)
+
         from mflux.models.common.config.model_config import ModelConfig
 
         model_path = self._model_path_for_mflux()
@@ -300,6 +328,51 @@ class ImageGenerationEngine:
         return Flux1(
             quantize=self._quantize, model_path=model_path, model_config=config
         )
+
+    def _report_hidream_step(self, step: int, total: int) -> None:
+        """Bridge HiDream's loop into the shared progress/cancel contract."""
+        self._progress["running"] = True
+        self._progress["step"] = int(step)
+        self._progress["total"] = int(total)
+        if self._is_cancelled():
+            raise ImageGenerationCancelled("Generation cancelled.")
+
+    def _validate_hidream_prompt_tokens(self, prompt: str) -> None:
+        """Reject token-dense prompts before constructing the 17 GB model."""
+
+        from .._download_gate import IMAGE_MODEL_REVISIONS, mflux_local_snapshot
+        from .hidream_runtime.runtime import MAX_PROMPT_TOKENS, _encode_prompt_ids
+
+        processor = getattr(self._model, "processor", None)
+        if processor is None:
+            if self._prompt_tokenizer is None:
+                from transformers import AutoTokenizer
+
+                local = mflux_local_snapshot(self.model_name)
+                source = local or self.model_name
+                kwargs: dict[str, object] = {"trust_remote_code": False}
+                revision = IMAGE_MODEL_REVISIONS.get(self.model_name)
+                if local is None and revision is not None:
+                    kwargs["revision"] = revision
+                try:
+                    self._prompt_tokenizer = AutoTokenizer.from_pretrained(
+                        source, **kwargs
+                    )
+                except Exception as exc:  # noqa: BLE001 — clean API boundary
+                    raise ImageRuntimeError(
+                        f"Could not load the HiDream prompt tokenizer: {exc}"
+                    ) from exc
+            processor = self._prompt_tokenizer
+        try:
+            token_count = int(_encode_prompt_ids(prompt, processor).shape[-1])
+        except Exception as exc:  # noqa: BLE001 — clean API boundary
+            raise ImageRuntimeError(
+                f"Could not tokenize the HiDream prompt: {exc}"
+            ) from exc
+        if token_count > MAX_PROMPT_TOKENS:
+            raise ImageRuntimeError(
+                f"HiDream-O1 prompts are limited to {MAX_PROMPT_TOKENS} tokens."
+            )
 
     def _build_edit_model(self):
         """Instantiate the edit variant for a model that accepts input images."""
@@ -643,6 +716,37 @@ class ImageGenerationEngine:
                 f"{self.family} is text-to-image only and does not accept input images; "
                 "use an image-edit capable model."
             )
+        if self.family == "hidream-o1-dev":
+            if len(prompt) > 4096:
+                raise ImageRuntimeError(
+                    "HiDream-O1 prompts are limited to 4096 characters."
+                )
+            if num_inference_steps != 28:
+                raise ImageRuntimeError(
+                    "HiDream-O1 Dev supports its published 28-step schedule only."
+                )
+            if (
+                width is None
+                or height is None
+                or not (256 <= width <= 2048)
+                or not (256 <= height <= 2048)
+            ):
+                raise ImageRuntimeError(
+                    "HiDream-O1 dimensions must be between 256 and 2048 pixels."
+                )
+            if width % 32 or height % 32:
+                raise ImageRuntimeError(
+                    "HiDream-O1 dimensions must be multiples of 32."
+                )
+            if guidance is not None:
+                raise ImageRuntimeError(
+                    "HiDream-O1 Dev does not expose classifier-free guidance; "
+                    "omit the guidance field."
+                )
+            if negative_prompt is not None:
+                raise ImageRuntimeError(
+                    "HiDream-O1 Dev does not support negative_prompt."
+                )
 
         with self._lock:
             # Claim a run sequence and arm progress BEFORE loading, so a Cancel
@@ -662,6 +766,10 @@ class ImageGenerationEngine:
                 started_at=time.time(),
             )
             try:
+                if self.family == "hidream-o1-dev":
+                    self._validate_hidream_prompt_tokens(prompt)
+                    if self._is_cancelled():
+                        raise ImageGenerationCancelled("Generation cancelled.")
                 model = self._ensure_loaded(for_edit=editing)
                 # Honor a cancel that landed during the warm-up load before we
                 # commit to the denoise loop.
@@ -700,13 +808,26 @@ class ImageGenerationEngine:
                         ),
                     )
                 else:
-                    result = model.generate_image(
-                        height=height,
-                        width=width,
-                        **self._gen_kwargs(
-                            seed, prompt, num_inference_steps, guidance, negative_prompt
-                        ),
-                    )
+                    if self.family == "hidream-o1-dev":
+                        result = model.generate_image(
+                            height=height,
+                            width=width,
+                            seed=seed,
+                            prompt=prompt,
+                            num_inference_steps=num_inference_steps,
+                        )
+                    else:
+                        result = model.generate_image(
+                            height=height,
+                            width=width,
+                            **self._gen_kwargs(
+                                seed,
+                                prompt,
+                                num_inference_steps,
+                                guidance,
+                                negative_prompt,
+                            ),
+                        )
             except ImageRuntimeError:
                 raise  # cancellation + already-clean errors pass straight through
             except Exception as exc:  # noqa: BLE001 — surface a clean API error

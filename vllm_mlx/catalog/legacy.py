@@ -33,10 +33,15 @@ def _image_operations(repo_id: str) -> list[str]:
 def _main_capabilities(profile: Any) -> dict[str, Any]:
     modality = getattr(profile, "modality", "text") or "text"
     if modality == "image-gen":
+        adapter = (
+            "rapid_mlx/hidream_o1"
+            if "hidream-o1" in profile.hf_path.casefold()
+            else "mflux"
+        )
         tasks, operations, adapter = (
             ["image_generation"],
             _image_operations(profile.hf_path),
-            "mflux",
+            adapter,
         )
     elif modality == "video-gen":
         tasks = ["video_generation"]
