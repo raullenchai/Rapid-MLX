@@ -937,8 +937,8 @@ def _run_local_measured(
             # stray late call in this process can never mutate a stale
             # capture.
             _CONDITIONS_AFTER.reset(capture_token)
-        # ``_LOADED_IDENTITY`` was disarmed below on every path; if the
-        # helper deposited one, prefer it (covers doubles that return two).
+        # ``_LOADED_IDENTITY`` is disarmed by ``run_local`` on every path; if
+        # the helper deposited one, prefer it (covers doubles that return two).
         if loaded.get("identity") is not None:
             model_identity = loaded["identity"]
         measurements_completed = True
