@@ -429,8 +429,15 @@ def mlx_vlm_available() -> bool:
     return vision_runtime_status()[0] is VisionRuntimeStatus.OK
 
 
-def require_mlx_vlm_or_exit(model_name: str) -> None:
+def require_mlx_vlm_or_exit(model_name: str, *, text_diffusion: bool = False) -> None:
     """CLI-side boot guard for vision/multimodal aliases.
+
+    ``text_diffusion=True`` names the alias as a discrete-text-diffusion
+    checkpoint (DiffusionGemma) instead of a "vision/multimodal alias" and
+    drops the ``--no-mllm`` escape hatch from the hint: that lane is
+    dispatched by modality in ``server.py`` and imports ``mlx_vlm``
+    unconditionally, so ``--no-mllm`` only moves the same ImportError
+    minutes later into model load (#3113).
 
     R-10 (PyPI 0.8.6 dogfood): a first-time ``pip install rapid-mlx``
     user running ``rapid-mlx serve ui-tars-1.5-7b-4bit`` got a deep,
@@ -466,6 +473,14 @@ def require_mlx_vlm_or_exit(model_name: str) -> None:
         print(
             f"error: model {model_name!r} is a vision/multimodal alias, but "
             f"the vision runtime cannot load.\n" + _vlm_broken_install_hint(detail),
+            file=sys.stderr,
+        )
+    elif text_diffusion:
+        print(
+            f"error: model {model_name!r} is a text-diffusion alias and runs "
+            f"on the mlx-vlm DiffusionGemma runtime, which requires the "
+            f"optional `mlx-vlm` dependency (shipped with the [vision] "
+            f"extra).\n" + VLM_EXTRA_INSTALL_HINT,
             file=sys.stderr,
         )
     else:

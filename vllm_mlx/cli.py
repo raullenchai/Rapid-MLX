@@ -3125,10 +3125,12 @@ def _serve_will_run_on_mllm_lane(args) -> bool:
     ``resolve_serving_lane``'s explicit-flag short-circuits.
 
     The probe reads the cached checkpoint config offline (no network, no
-    weight load). On a first-time uncached start the config isn't
-    materialized yet, so the hybrid probe answers "not hybrid" and the model
-    keeps the SAFE ``[vision]``-required default — the guard's error message
-    then points at ``--no-mllm`` for a text-capable backbone.
+    weight load). ``is_mllm_model`` promotes a checkpoint only on positive
+    weight evidence, so on a first-time uncached start every VLM alias probes
+    "text_checkpoint" and the guard used to stay silent until the full
+    download failed at load (#3113). For that evidence-free verdict only,
+    fall back to the curated alias profile
+    (:func:`_alias_needs_vision_runtime_without_weights`).
     """
     from .api.utils import resolve_serving_lane
 
@@ -3137,13 +3139,139 @@ def _serve_will_run_on_mllm_lane(args) -> bool:
         requested_spec_decode = "mtp"
     elif requested_spec_decode == "none" and getattr(args, "force_spec_decode", False):
         requested_spec_decode = "auto"
-    is_mllm_lane, _auto_text_fallback = resolve_serving_lane(
+    force_text = getattr(args, "no_mllm", False)
+    is_mllm_lane, auto_text_fallback = resolve_serving_lane(
         args.model,
         force_mllm=getattr(args, "mllm", False),
-        force_text=getattr(args, "no_mllm", False),
+        force_text=force_text,
         requested_spec_decode=requested_spec_decode,
     )
-    return is_mllm_lane
+    if is_mllm_lane:
+        return True
+    if _alias_modality(args.model) == "text-diffusion":
+        # DiffusionGemma runs on the mlx-vlm diffusion runtime whatever lane
+        # flags say: --no-mllm / spec-decode cannot route it to mlx-lm.
+        return True
+    if force_text or auto_text_fallback:
+        # Explicit --no-mllm, or a deliberate downgrade (spec-decode, hybrid
+        # cache/runtime, memory): the checkpoint was inspected and routed to
+        # the text lane on purpose. Only the evidence-free "text_checkpoint"
+        # verdict (#3113: no weights cached yet) may fall back to the
+        # curated alias profile.
+        return False
+    return _alias_needs_vision_runtime_without_weights(
+        args.model,
+        force_text=force_text,
+        requested_spec_decode=requested_spec_decode,
+    )
+
+
+def _alias_modality(model_name: str) -> str | None:
+    """Curated modality of ``model_name`` (alias or hf_path), else ``None``."""
+    from .model_aliases import resolve_profile
+
+    profile = resolve_profile(model_name)
+    return None if profile is None else profile.modality
+
+
+def _prefetch_config_for_lane_guard(hf_path: str) -> None:
+    """Pull only ``config.json`` (a few KB) so the pre-download guard can read
+    the backbone layout before ``snapshot_download`` commits to the weights.
+
+    Honours the Hub offline switches and swallows every failure: a network
+    error here means the full pull would fail moments later with its own,
+    better error, so the guard simply has nothing to say.
+    """
+    from .model_metadata import hub_offline_mode_active
+
+    if hub_offline_mode_active():
+        return
+    try:
+        from huggingface_hub import hf_hub_download
+
+        hf_hub_download(hf_path, "config.json")
+    except Exception:  # noqa: BLE001 - best-effort probe, never fatal
+        return
+
+
+def _alias_needs_vision_runtime_without_weights(
+    model_name: str, *, force_text: bool, requested_spec_decode: str
+) -> bool:
+    """Pre-download ``[vision]`` verdict from the alias profile plus config.
+
+    ``is_mllm_model`` promotes a checkpoint to the MLLM lane only on
+    positive WEIGHT evidence (a cached safetensors index naming a vision
+    tower) and deliberately never on an inconclusive probe. That is the
+    right engine-side contract — it runs after the pull — but the boot guard
+    runs BEFORE the pull, so on a fresh install every genuine VLM alias
+    probed "text checkpoint", the guard stayed silent, and a base-wheel user
+    downloaded 15 GB of Gemma 4 before learning it needs ``mlx-vlm`` (#3113).
+
+    When the cache holds no weight evidence for the alias (nothing cached, or
+    config/tokenizer only), decide from what the catalog declares plus the
+    checkpoint config (fetched on its own when nothing is cached yet):
+
+    * ``modality == "text-diffusion"`` runs on the mlx-vlm DiffusionGemma
+      runtime regardless of ``--no-mllm`` or speculative decoding — the
+      modality dispatch in ``server.py`` does not consult either.
+    * a ``supports_image_input`` alias whose config declares a vision tower
+      will land on the MLLM lane once its weights arrive, unless
+      ``--no-mllm`` or a requested speculative decoder already routes it to
+      the text lane exactly as ``resolve_serving_lane_decision`` would.
+    * a hybrid/recurrent backbone (Qwen3.5 GatedDeltaNet, Mamba, …) or an
+      architecture whose text backbone we vendor auto-downgrades to the text
+      lane on the base wheel — the same fallbacks
+      ``resolve_serving_lane_decision`` applies after the pull — so those
+      stay exempt and keep booting without ``mlx-vlm``.
+    * no config at all (offline, or the Hub is unreachable) is not evidence:
+      the guard stays silent and the pull reports its own error.
+
+    Once weight evidence exists the engine-side verdict is authoritative and
+    this helper returns ``False`` so the two never disagree.
+
+    Resolution is by repository path, exactly like ``is_mllm_model`` and
+    ``read_model_metadata`` on the engine side: ``serve`` has no revision or
+    subfolder selector, so the snapshot this helper inspects is the snapshot
+    the engine classifies after the pull.
+    """
+    from .model_aliases import resolve_profile
+
+    profile = resolve_profile(model_name)
+    if profile is None or profile.is_text_only:
+        return False
+    if profile.modality == "text-diffusion":
+        return True
+    if force_text or requested_spec_decode not in (None, "none"):
+        return False
+    if not profile.supports_image_input or profile.is_hybrid:
+        return False
+    from .api.utils import (
+        mllm_arch_unsupported_but_text_vendored,
+        mllm_backbone_cache_mode,
+    )
+    from .model_metadata import (
+        checkpoint_has_multimodal_weights,
+        config_indicates_multimodal,
+        read_model_metadata,
+    )
+
+    hf_path = profile.hf_path or model_name
+    metadata = read_model_metadata(hf_path)
+    if metadata is None or metadata.config is None:
+        _prefetch_config_for_lane_guard(hf_path)
+        metadata = read_model_metadata(hf_path)
+    if metadata is None or not isinstance(metadata.config, dict):
+        return False
+    verdict = checkpoint_has_multimodal_weights(metadata.snapshot_dir, metadata.config)
+    if verdict is not None:
+        return False
+    if not config_indicates_multimodal(metadata.config):
+        return False
+    if mllm_backbone_cache_mode(hf_path) in ("arrays", "other"):
+        return False
+    if mllm_arch_unsupported_but_text_vendored(hf_path):
+        return False
+    return True
 
 
 def kv_cache_flag_conflict(args) -> str | None:
@@ -3405,7 +3533,10 @@ def serve_command(args):
     if _serve_will_run_on_mllm_lane(args):
         from .models.mllm import require_mlx_vlm_or_exit
 
-        require_mlx_vlm_or_exit(args.model)
+        require_mlx_vlm_or_exit(
+            args.model,
+            text_diffusion=_alias_modality(args.model) == "text-diffusion",
+        )
 
     # R6-H4 (Eva 0.8.7 dogfood): same boot-guard shape for audio aliases.
     # ``mlx-audio`` lives behind the ``[audio]`` extra; pre-fix
