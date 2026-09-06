@@ -330,15 +330,17 @@ struct CommunityBenchmarkResult: Decodable, Identifiable {
         case workload, outcome, measurements, model, machine, execution
     }
 
-    /// Per-case medians over completed rounds — the same numbers the CLI
-    /// prints after `benchmark run` (`summarize_measurements`), so Desktop
-    /// and terminal users read the same result.
+    /// Per-case medians over completed rounds — the same shape the CLI prints
+    /// after `benchmark run` (`summarize_measurements`): decode tok/s + TTFT
+    /// for text cases, wall seconds for image/video.
     struct CaseSummary: Equatable {
         let caseID: String
         let rounds: Int
-        /// Median decode throughput using the website's formula
-        /// `(output_tokens - 1) / decode_duration`, so the number matches the
-        /// public leaderboard rather than a private variant of it.
+        /// Median decode throughput using the leaderboard's formula
+        /// `(output_tokens - 1) / decode_duration` (the first decode token is
+        /// counted in TTFT), so the number matches what the public board will
+        /// show for a shared run. The CLI's text summary divides by
+        /// `output_tokens`, so it reads ~1/128 higher on the short case.
         let decodeTokensPerSecond: Double?
         let ttftMS: Double?
         /// Median wall time per round; the headline for image/video cases.
@@ -428,8 +430,6 @@ struct CommunityBenchmarkResult: Decodable, Identifiable {
 
     /// `completed_at` is a UTC ISO-8601 stamp with or without fractional
     /// seconds, depending on the CLI version that wrote the record.
-    var completedDate: Date? { Self.parseTimestamp(completedAt) }
-
     static func parseTimestamp(_ raw: String) -> Date? {
         let fractional = ISO8601DateFormatter()
         fractional.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
@@ -455,12 +455,16 @@ struct CommunityBenchmarkResult: Decodable, Identifiable {
         time.locale = locale
         time.timeZone = timeZone
         time.setLocalizedDateFormatFromTemplate("jm")
+        // "Today"/"Yesterday" already have catalog entries (zh-Hans), so the
+        // relative day follows the app language like the rest of the row.
         if calendar.isDate(date, inSameDayAs: now) {
-            return "Today \(time.string(from: date))"
+            let today = String(localized: String.LocalizationValue("Today"))
+            return "\(today) \(time.string(from: date))"
         }
         if let yesterday = calendar.date(byAdding: .day, value: -1, to: now),
            calendar.isDate(date, inSameDayAs: yesterday) {
-            return "Yesterday \(time.string(from: date))"
+            let label = String(localized: String.LocalizationValue("Yesterday"))
+            return "\(label) \(time.string(from: date))"
         }
         let day = DateFormatter()
         day.locale = locale
@@ -507,11 +511,15 @@ enum CommunityBenchmarkRunStatus {
         return String(format: "%d:%02d", seconds / 60, seconds % 60)
     }
 
-    /// Picks the per-round progress lines the CLI writes to stderr
-    /// (`pp512-tg128  round 3/5  46.1 tok/s`) out of everything else on that
-    /// stream (warnings, tracebacks, download logs). Returns nil for anything
-    /// that is not a progress line so the view never mirrors arbitrary
-    /// stderr, and collapses whitespace so the row renders on one line.
+    /// Picks per-round progress lines of the form
+    /// `pp512-tg128  round 3/5  46.1 tok/s` out of everything else on the
+    /// CLI's stderr (warnings, tracebacks, download logs). The shipped CLI
+    /// does not emit them yet — the runner is silent until the final JSON —
+    /// so today the row simply stays hidden and the status line + elapsed
+    /// clock carry the feedback; a CLI that starts emitting them lights the
+    /// row up without a Desktop change. Returns nil for anything that is not
+    /// a progress line so the view never mirrors arbitrary stderr, and
+    /// collapses whitespace so the row renders on one line.
     static func progressLine(from line: String) -> String? {
         let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty, trimmed.count <= 200,
