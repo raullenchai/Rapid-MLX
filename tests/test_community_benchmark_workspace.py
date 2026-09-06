@@ -2937,6 +2937,14 @@ def test_summarize_measurements_reports_wall_time_for_image_and_video() -> None:
     ]
     assert community_cli.summarize_measurements({"run_id": "x"}) == []
     assert community_cli.summarize_measurements({"measurements": [{"x": 1}]}) == []
+    # A completed sample that carries neither decode nor wall-time fields has
+    # nothing to summarise and is skipped rather than rendered as a blank row.
+    assert (
+        community_cli.summarize_measurements(
+            {"measurements": [{"case_id": "odd", "completed": True, "round_index": 1}]}
+        )
+        == []
+    )
 
 
 def test_cli_failure_json_includes_saved_run_payload(
