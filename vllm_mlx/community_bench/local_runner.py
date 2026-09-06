@@ -525,10 +525,10 @@ def _validated_video_artifact(
 def _format_duration(seconds: float) -> str:
     """``~45 s`` / ``~3 min 10 s`` for estimates and elapsed stage times."""
 
-    seconds = max(0.0, seconds)
-    if seconds < 60:
-        return f"{seconds:.0f} s"
-    minutes, rest = divmod(int(round(seconds)), 60)
+    whole = int(round(max(0.0, seconds)))
+    if whole < 60:
+        return f"{whole} s"
+    minutes, rest = divmod(whole, 60)
     return f"{minutes} min {rest} s" if rest else f"{minutes} min"
 
 
@@ -816,11 +816,13 @@ async def _text_measurements(
     )
     try:
         if progress is not None:
-            source = (
-                "from the local Hugging Face cache"
-                if model_is_cached(repo_id)
-                else "not cached yet; downloading from Hugging Face first"
-            )
+            cached = model_is_cached(repo_id)
+            if cached is True:
+                source = "from the local Hugging Face cache"
+            elif cached is False:
+                source = "not cached yet; downloading from Hugging Face first"
+            else:
+                source = "cache state unknown; downloads anything missing"
             progress(f"Loading {repo_id} ({source})...")
         load_started = _stage_started(progress)
         model, tokenizer = executor.submit(load_model_with_fallback, repo_id).result()

@@ -42,9 +42,16 @@ def _print_json(value: Any) -> None:
 
 
 def _progress_to_stderr(line: str) -> None:
-    """Human progress goes to stderr so stdout stays a clean result stream."""
+    """Human progress goes to stderr so stdout stays a clean result stream.
 
-    print(line, file=sys.stderr, flush=True)
+    Presentation must never abort a benchmark: a closed or broken stderr
+    (``2> >(head -n 3)``) is swallowed rather than raised into the runner.
+    """
+
+    try:
+        print(line, file=sys.stderr, flush=True)
+    except (OSError, ValueError):
+        pass
 
 
 def _local_time(timestamp: Any) -> str:
@@ -103,7 +110,10 @@ def _print_catalog(value: dict[str, Any], *, show_all: bool) -> None:
             f"{memory:>7}  {fit}"
         )
 
-    # Recommended = focus models not known to exceed this Mac's memory.
+    # Recommended = focus models not known to exceed this Mac's memory. With
+    # no memory figure every fit is unknown, and the heading must say so
+    # rather than promise a fit nobody checked.
+    memory_known = isinstance(memory_gib, int)
     recommended: list[dict[str, Any]] = []
     rest: list[dict[str, Any]] = []
     for model in value["models"]:
@@ -111,22 +121,27 @@ def _print_catalog(value: dict[str, Any], *, show_all: bool) -> None:
             recommended.append(model)
         else:
             rest.append(model)
-    print("Recommended (★ focus models that fit this Mac)")
+    if memory_known:
+        print("Recommended (★ focus models that fit this Mac)")
+    else:
+        print("Recommended (★ focus models; memory fit unknown, see --memory-gib)")
     if recommended:
         for model in recommended:
             print(row(model))
-    else:
+    elif memory_known:
         print("   (none of the focus models fit this Mac's memory)")
+    else:
+        print("   (no focus models in this catalog)")
     if show_all:
         print("\nAll other models")
         for model in rest:
             print(row(model))
     else:
         fitting = sum(1 for m in rest if m.get("memory_fit") == "fits")
+        verdict = f"{fitting} fit this Mac" if memory_known else "fit unknown"
         print(
             f"\n{len(rest)} more models have a registered protocol "
-            f"({fitting} fit this Mac); list them with "
-            "rapid-mlx benchmark catalog --all"
+            f"({verdict}); list them with rapid-mlx benchmark catalog --all"
         )
     print("\nRun: rapid-mlx benchmark run <model>")
 
@@ -151,6 +166,11 @@ def _print_plan(value: dict[str, Any]) -> None:
         print(
             "Download: not cached yet; `benchmark run` downloads it from "
             "Hugging Face first"
+        )
+    elif "model_cached" in value:
+        print(
+            "Download: could not verify the local cache; `benchmark run` "
+            "downloads anything that is missing"
         )
     print("Storage:  local; upload requires a separate share command and consent")
     print("Nothing is uploaded by this command or by `benchmark run`.")

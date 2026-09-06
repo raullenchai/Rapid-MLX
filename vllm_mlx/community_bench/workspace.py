@@ -275,15 +275,23 @@ def describe_case(case: dict[str, Any]) -> str:
     return f"{case_id:<16} {detail}   ({warmup} warmup + {measured} measured)"
 
 
-def model_is_cached(repo_id: str) -> bool:
-    """True when the Hugging Face snapshot is complete in the local cache."""
+def model_is_cached(repo_id: str) -> bool | None:
+    """Tri-state: the weights are complete in the local cache (``True``),
+    definitively absent (``False``), or the probe was inconclusive (``None``).
 
-    from vllm_mlx._download_gate import is_repo_cached
+    Delegates to the modality-aware probe behind ``rapid-mlx models
+    --cached`` so mflux image and Wan/split video checkpoints, whose weights
+    live in component subdirectories, are judged by their own layout rather
+    than by the text-only ``model*.safetensors`` rule. Never downloads.
+    """
 
     try:
-        return bool(is_repo_cached(repo_id))
+        from vllm_mlx.cli import _cache_runnability
+
+        verdict = _cache_runnability(repo_id)
     except Exception:
-        return False
+        return None
+    return verdict if isinstance(verdict, bool) else None
 
 
 def plan_for_alias(
@@ -292,8 +300,8 @@ def plan_for_alias(
     """Describe the exact local workload for one alias.
 
     ``memory_gib`` fills the model's ``memory_fit`` the same way the catalog
-    does. ``check_cache`` adds ``model_cached`` (whether the weights are
-    already in the local Hugging Face cache); it touches only the local
+    does. ``check_cache`` adds ``model_cached`` (``True``/``False``, or
+    ``None`` when the cache could not be probed); it touches only the local
     filesystem and never downloads anything.
     """
 

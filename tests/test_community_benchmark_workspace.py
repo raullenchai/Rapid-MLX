@@ -3109,13 +3109,22 @@ def test_cli_catalog_recommends_focus_models_when_memory_is_unknown(
     assert community_cli.benchmark_command(args) == 0
     out = capsys.readouterr().out
     assert "★ focus-model" in out
-    assert "0 more models" in out
+    # The heading must not claim a fit that was never computed.
+    assert "memory fit unknown" in out
+    assert "fit this Mac" not in out
+    assert "0 more models have a registered protocol (fit unknown)" in out
 
     monkeypatch.setattr(
         community_cli, "benchmark_catalog", lambda **kwargs: {"models": []}
     )
     assert community_cli.benchmark_command(args) == 0
-    assert "none of the focus models fit" in capsys.readouterr().out
+    assert "(no focus models in this catalog)" in capsys.readouterr().out
+
+    monkeypatch.setattr(community_cli, "host_memory_gib", lambda: 8)
+    assert community_cli.benchmark_command(args) == 0
+    out = capsys.readouterr().out
+    assert "Recommended (★ focus models that fit this Mac)" in out
+    assert "none of the focus models fit this Mac's memory" in out
 
 
 def test_cli_catalog_defaults_memory_to_this_mac(
@@ -3265,11 +3274,15 @@ def test_cli_plan_memory_and_download_lines_cover_every_verdict(
     plan["model"]["estimated_memory_gib"] = None
     plan["model"]["memory_fit"] = "unknown"
     del plan["memory_gib"]
-    del plan["model_cached"]
+    plan["model_cached"] = None  # probe was inconclusive: say so, do not guess
     assert community_cli.benchmark_command(args) == 0
     out = capsys.readouterr().out
     assert "Memory:   unknown (no estimate for this model)" in out
-    assert "Download:" not in out
+    assert "Download: could not verify the local cache" in out
+
+    del plan["model_cached"]
+    assert community_cli.benchmark_command(args) == 0
+    assert "Download:" not in capsys.readouterr().out
 
 
 def test_cli_results_prints_empty_hint_then_rows(
@@ -5061,6 +5074,13 @@ def test_text_measurements_reports_model_load_stage(
     assert observed["on_round"] is None
     assert lines == []
 
+    # An inconclusive cache probe is reported as such, not as "cached".
+    monkeypatch.setattr(local_runner, "model_is_cached", lambda repo_id: None)
+    asyncio.run(local_runner._text_measurements("org/model", progress=lines.append))
+    assert lines[0] == (
+        "Loading org/model (cache state unknown; downloads anything missing)..."
+    )
+
 
 def test_describe_case_covers_every_registered_shape() -> None:
     text, image, video = (
@@ -5089,16 +5109,28 @@ def test_plan_for_alias_adds_memory_fit_and_cache_state_without_downloading(
     assert "model_cached" not in base
     assert base["model"]["memory_fit"] == "unknown"
 
-    import vllm_mlx._download_gate as gate
+    # The probe is the modality-aware one behind ``models --cached`` (mflux
+    # image and Wan video layouts are not the text ``model*.safetensors``
+    # rule), and an inconclusive probe stays inconclusive.
+    import vllm_mlx.cli as top_cli
 
-    monkeypatch.setattr(gate, "is_repo_cached", lambda repo_id: True)
-    assert workspace_module.model_is_cached("org/model") is True
+    probed: list[str] = []
+
+    def runnability(repo_id: str):
+        probed.append(repo_id)
+        return {"org/cached": True, "org/absent": False}.get(repo_id)
+
+    monkeypatch.setattr(top_cli, "_cache_runnability", runnability)
+    assert workspace_module.model_is_cached("org/cached") is True
+    assert workspace_module.model_is_cached("org/absent") is False
+    assert workspace_module.model_is_cached("org/inconclusive") is None
+    assert probed == ["org/cached", "org/absent", "org/inconclusive"]
 
     def boom(repo_id: str) -> bool:
-        raise OSError("cache unreadable")
+        raise RuntimeError("probe crashed")
 
-    monkeypatch.setattr(gate, "is_repo_cached", boom)
-    assert workspace_module.model_is_cached("org/model") is False
+    monkeypatch.setattr(top_cli, "_cache_runnability", boom)
+    assert workspace_module.model_is_cached("org/model") is None
 
     calls: list[str] = []
 
@@ -5128,6 +5160,28 @@ def test_benchmark_catalog_parser_accepts_all_flag() -> None:
 def test_format_duration_is_human_scale() -> None:
     assert local_runner._format_duration(0.4) == "0 s"
     assert local_runner._format_duration(45.4) == "45 s"
+    assert local_runner._format_duration(59.6) == "1 min"  # never "60 s"
     assert local_runner._format_duration(60) == "1 min"
     assert local_runner._format_duration(190.2) == "3 min 10 s"
+    assert local_runner._format_duration(3599.6) == "60 min"
     assert local_runner._format_duration(-5) == "0 s"
+
+
+def test_progress_sink_never_aborts_the_benchmark(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A closed or broken stderr is a presentation problem, not a failed run."""
+
+    class BrokenStream(io.StringIO):
+        def write(self, text: str) -> int:
+            raise BrokenPipeError("stderr consumer went away")
+
+    monkeypatch.setattr(sys, "stderr", BrokenStream())
+    community_cli._progress_to_stderr("pp512-tg128      round 1/5")
+
+    class ClosedStream(io.StringIO):
+        def write(self, text: str) -> int:
+            raise ValueError("I/O operation on closed file")
+
+    monkeypatch.setattr(sys, "stderr", ClosedStream())
+    community_cli._progress_to_stderr("pp512-tg128      round 2/5")
