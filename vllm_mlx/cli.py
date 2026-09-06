@@ -3152,6 +3152,11 @@ def _alias_needs_vision_runtime_without_weights(
 
     Once weight evidence exists the engine-side verdict is authoritative and
     this helper returns ``False`` so the two never disagree.
+
+    Resolution is by repository path, exactly like ``is_mllm_model`` and
+    ``read_model_metadata`` on the engine side: ``serve`` has no revision or
+    subfolder selector, so the snapshot this helper inspects is the snapshot
+    the engine classifies after the pull.
     """
     from .model_aliases import resolve_profile
 
