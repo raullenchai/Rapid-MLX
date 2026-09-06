@@ -120,7 +120,7 @@ def test_text_lane_converts_engine_result_and_reaps_executor(
     monkeypatch.setattr(
         tokenizer_module,
         "load_model_with_fallback",
-        lambda repo_id: (
+        lambda repo_id, **_: (
             SimpleNamespace(args=SimpleNamespace(max_position_embeddings=32768)),
             object(),
         ),

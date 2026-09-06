@@ -46,6 +46,14 @@ def _record_conditions_after() -> None:
         capture["after"] = run_conditions()
 
 
+#: Where the text helper deposits the identity of the checkpoint the loader
+#: pinned, so a run that fails after loading still archives the facts of
+#: the artifact that was actually loaded.
+_LOADED_IDENTITY: contextvars.ContextVar[dict[str, Any] | None] = (
+    contextvars.ContextVar("community_bench_loaded_identity", default=None)
+)
+
+
 from .run_builder import (
     build_run,
     consistent_model_identity,
@@ -746,6 +754,9 @@ async def _text_measurements(
                 else None
             ),
         )
+        capture = _LOADED_IDENTITY.get()
+        if capture is not None:
+            capture["identity"] = loaded_identity
         scheduler = SchedulerConfig(
             max_num_seqs=1,
             max_concurrent_requests=1,
@@ -855,6 +866,36 @@ def run_local(
     task_type = model["task_type"]
     if task_type not in {"text_generation", "image_generation", "video_generation"}:
         raise ValueError(f"unsupported task type {task_type!r}")
+    destination = archive or LocalRunArchive.default()
+    # The text helper deposits the identity of the checkpoint the loader
+    # pinned; arm the capture for this run only and disarm on every path.
+    loaded: dict[str, Any] = {}
+    loaded_token = _LOADED_IDENTITY.set(loaded)
+    try:
+        return _run_local_measured(
+            alias,
+            plan,
+            model,
+            task_type,
+            started_at,
+            destination,
+            inherit_process_group,
+            loaded,
+        )
+    finally:
+        _LOADED_IDENTITY.reset(loaded_token)
+
+
+def _run_local_measured(
+    alias: str,
+    plan: dict[str, Any],
+    model: dict[str, Any],
+    task_type: str,
+    started_at: str,
+    destination: LocalRunArchive,
+    inherit_process_group: bool,
+    loaded: dict[str, Any],
+) -> dict[str, Any]:
     context_length = None
     hardware = None
     software = None
@@ -862,7 +903,6 @@ def run_local(
     conditions_before = None
     conditions_after = None
     measurements_completed = False
-    destination = archive or LocalRunArchive.default()
     # Resolve the identity from the cache BEFORE loading: the loader pins a
     # snapshot at load time, and reading the config after the run could
     # describe a newer snapshot if another pull advanced refs/main meanwhile.
@@ -898,6 +938,10 @@ def run_local(
             # stray late call in this process can never mutate a stale
             # capture.
             _CONDITIONS_AFTER.reset(capture_token)
+        # ``_LOADED_IDENTITY`` was disarmed below on every path; if the
+        # helper deposited one, prefer it (covers doubles that return two).
+        if loaded.get("identity") is not None:
+            model_identity = loaded["identity"]
         measurements_completed = True
         # Taken by the helper before its engine/server context tore down. A
         # helper that never captured leaves ``after`` unknown; probing here,
@@ -932,6 +976,10 @@ def run_local(
         # ``CancelledError`` is a BaseException: without naming it here a
         # cancelled benchmark would skip the archived cancellation record
         # (and its before-snapshot) entirely.
+        # A run that failed after loading still describes the checkpoint
+        # that was actually loaded.
+        if loaded.get("identity") is not None:
+            model_identity = loaded["identity"]
         if measurements_completed and execution is None:
             raise LocalBenchmarkError(
                 f"benchmark completed but result could not be constructed: {exc}",
