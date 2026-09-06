@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import json
 import platform
 import subprocess
 import uuid
@@ -22,7 +23,96 @@ def utc_now() -> str:
     return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
 
 
+_BASE_DTYPES = {
+    "float32": "float32",
+    "float16": "float16",
+    "bfloat16": "bfloat16",
+}
+
+
+def _cached_config(repo_id: str) -> tuple[dict[str, Any], str | None] | None:
+    """Return ``(config.json, resolved_revision)`` from the local HF cache.
+
+    The benchmark just loaded this repo, so its snapshot is on disk. Only the
+    cache is consulted — never the network — and any failure means "no
+    facts", never an exception: identity facts are best-effort provenance.
+    """
+    try:
+        from huggingface_hub import try_to_load_from_cache
+
+        path = try_to_load_from_cache(repo_id, "config.json")
+        if not isinstance(path, str):
+            return None
+        with open(path, encoding="utf-8") as handle:
+            config = json.load(handle)
+    except Exception:  # noqa: BLE001 — provenance must never fail a run
+        return None
+    if not isinstance(config, dict):
+        return None
+    revision = None
+    parts = Path(path).parts
+    if "snapshots" in parts:
+        candidate = parts[parts.index("snapshots") + 1]
+        if len(candidate) == 40 and all(c in "0123456789abcdef" for c in candidate):
+            revision = candidate
+    return config, revision
+
+
+def quantization_facts(config: dict[str, Any]) -> dict[str, Any]:
+    """Project an MLX ``config.json`` onto the atomic quantization contract.
+
+    MLX converters write ``{"quantization": {"bits": 4, "group_size": 64,
+    "mode": "affine", "<layer>": {"bits": 8, ...}}}``. Uniform bits are a
+    ``weights`` quantization; per-layer overrides with different bits are
+    ``mixed``; no block means the weights are unquantized (``none``).
+    """
+    base_dtype = _BASE_DTYPES.get(str(config.get("torch_dtype")), "unknown")
+    block = config.get("quantization")
+    if block is None:
+        block = config.get("quantization_config")
+    if not isinstance(block, dict):
+        return {"kind": "none", "base_dtype": base_dtype}
+    bits = block.get("bits")
+    group_size = block.get("group_size")
+    override_bits = {
+        value.get("bits")
+        for value in block.values()
+        if isinstance(value, dict) and value.get("bits") is not None
+    }
+    if not isinstance(bits, int | float) or bits <= 0:
+        return {"kind": "unknown", "base_dtype": base_dtype}
+    facts: dict[str, Any] = {"base_dtype": base_dtype}
+    if override_bits - {bits}:
+        facts["kind"] = "mixed"
+    else:
+        facts["kind"] = "weights"
+        facts["weight_bits_x2"] = int(round(float(bits) * 2))
+    method = block.get("mode")
+    if isinstance(method, str) and method:
+        facts["method"] = method.lower()
+    elif facts["kind"] == "weights":
+        facts["method"] = "affine"
+    if isinstance(group_size, int) and group_size > 0:
+        facts["group_size"] = group_size
+    return facts
+
+
 def unresolved_model_identity(repo_id: str, task_type: str) -> dict[str, Any]:
+    """Identity with every fact the local cache can vouch for.
+
+    ``identity_strength`` stays ``unresolved`` (no manifest digest is
+    computed here), but the quantization block and the resolved snapshot
+    revision are filled from the cached ``config.json`` so a
+    ``...-4bit`` model no longer reports ``quantization.kind: unknown``.
+    """
+    source: dict[str, Any] = {"kind": "huggingface", "repo_id": repo_id}
+    quantization: dict[str, Any] = {"kind": "unknown", "base_dtype": "unknown"}
+    cached = _cached_config(repo_id)
+    if cached is not None:
+        config, revision = cached
+        quantization = quantization_facts(config)
+        if revision is not None:
+            source["resolved_revision"] = revision
     identity = {
         "schema_version": 1,
         "identity_strength": "unresolved",
@@ -31,9 +121,9 @@ def unresolved_model_identity(repo_id: str, task_type: str) -> dict[str, Any]:
             {
                 "component_id": "primary",
                 "role": "primary",
-                "source": {"kind": "huggingface", "repo_id": repo_id},
+                "source": source,
                 "artifact": {"format": "mlx-safetensors"},
-                "quantization": {"kind": "unknown", "base_dtype": "unknown"},
+                "quantization": quantization,
             }
         ],
     }

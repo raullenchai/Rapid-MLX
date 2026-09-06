@@ -4618,3 +4618,132 @@ def test_run_bucket_selects_registered_or_synthetic_prompts(
     assert len(synthetic_ids) == 8
     assert observed == [("synthetic prompt text", False)] * 6
     assert len(result.rounds_raw) == 5
+
+
+# ---------------------------------------------------------------------------
+# Model identity facts from the local Hugging Face cache
+# ---------------------------------------------------------------------------
+
+
+def test_quantization_facts_projects_mlx_config_onto_the_contract() -> None:
+    from vllm_mlx.catalog.validation import ContractValidator
+    from vllm_mlx.community_bench.run_builder import quantization_facts
+
+    uniform = {"quantization": {"group_size": 64, "bits": 4, "mode": "affine"}}
+    assert quantization_facts(uniform) == {
+        "kind": "weights",
+        "method": "affine",
+        "weight_bits_x2": 8,
+        "group_size": 64,
+        "base_dtype": "unknown",
+    }
+    mixed = {
+        "torch_dtype": "bfloat16",
+        "quantization": {
+            "group_size": 64,
+            "bits": 4,
+            "mode": "affine",
+            "model.layers.0.mlp.gate": {"group_size": 64, "bits": 8},
+        },
+    }
+    assert quantization_facts(mixed) == {
+        "kind": "mixed",
+        "method": "affine",
+        "group_size": 64,
+        "base_dtype": "bfloat16",
+    }
+    # Fractional bit widths are carried as x2 integers (3.5 bpw -> 7).
+    assert quantization_facts({"quantization": {"bits": 3.5}})["weight_bits_x2"] == 7
+    assert quantization_facts({"torch_dtype": "float16"}) == {
+        "kind": "none",
+        "base_dtype": "float16",
+    }
+    assert quantization_facts({"quantization": {"bits": "four"}}) == {
+        "kind": "unknown",
+        "base_dtype": "unknown",
+    }
+    # Every projection must satisfy the atomic quantization contract.
+    for config in (
+        uniform,
+        mixed,
+        {"quantization": {"bits": 3.5}},
+        {},
+        {"quantization": 5},
+    ):
+        identity = {
+            "schema_version": 1,
+            "identity_strength": "unresolved",
+            "pipeline_kind": "text_generation",
+            "components": [
+                {
+                    "component_id": "primary",
+                    "role": "primary",
+                    "source": {"kind": "huggingface", "repo_id": "org/model"},
+                    "artifact": {"format": "mlx-safetensors"},
+                    "quantization": quantization_facts(config),
+                }
+            ],
+        }
+        ContractValidator().validate_model_identity(identity)
+
+
+def test_model_identity_reads_quantization_and_revision_from_the_cache(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    import huggingface_hub
+
+    from vllm_mlx.catalog.validation import ContractValidator
+    from vllm_mlx.community_bench import run_builder
+
+    revision = "32f3e8ecf65426fc3306969496342d504bfa13f3"
+    snapshot = tmp_path / "models--org--model" / "snapshots" / revision
+    snapshot.mkdir(parents=True)
+    (snapshot / "config.json").write_text(
+        json.dumps({"quantization": {"group_size": 32, "bits": 8, "mode": "affine"}})
+    )
+
+    def fake_cache(repo_id: str, filename: str, **_: object):
+        assert (repo_id, filename) == ("org/model", "config.json")
+        return str(snapshot / "config.json")
+
+    monkeypatch.setattr(huggingface_hub, "try_to_load_from_cache", fake_cache)
+    identity = run_builder.unresolved_model_identity("org/model", "text_generation")
+    component = identity["components"][0]
+    assert component["quantization"] == {
+        "kind": "weights",
+        "method": "affine",
+        "weight_bits_x2": 16,
+        "group_size": 32,
+        "base_dtype": "unknown",
+    }
+    assert component["source"] == {
+        "kind": "huggingface",
+        "repo_id": "org/model",
+        "resolved_revision": revision,
+    }
+    assert identity["identity_strength"] == "unresolved"
+    ContractValidator().validate_model_identity(identity)
+
+
+def test_model_identity_stays_unknown_when_the_cache_cannot_answer(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import huggingface_hub
+
+    from vllm_mlx.community_bench import run_builder
+
+    monkeypatch.setattr(huggingface_hub, "try_to_load_from_cache", lambda *a, **k: None)
+    component = run_builder.unresolved_model_identity("org/missing", "text_generation")[
+        "components"
+    ][0]
+    assert component["quantization"] == {"kind": "unknown", "base_dtype": "unknown"}
+    assert "resolved_revision" not in component["source"]
+
+    def explode(*a, **k):
+        raise OSError("cache unreadable")
+
+    monkeypatch.setattr(huggingface_hub, "try_to_load_from_cache", explode)
+    component = run_builder.unresolved_model_identity("org/missing", "text_generation")[
+        "components"
+    ][0]
+    assert component["quantization"] == {"kind": "unknown", "base_dtype": "unknown"}
