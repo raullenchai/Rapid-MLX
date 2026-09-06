@@ -492,6 +492,7 @@ jobs:
             tests/test_bonsai_image_alias.py \
             tests/test_sd35_alias.py \
             tests/test_diffusion_engine.py \
+            tests/test_legacy_prefix_cache_flag_warnings.py \
             -v --tb=short \
             -m "not slow" \
             -k "not Integration" \
