@@ -1328,6 +1328,13 @@ def mtp_generate_step(
                 pending_draft_ms = 0.0
             else:
                 _record_round(k_len, round_wall_ms, accepts_for_record)
+                # #3155: per-depth acceptance for /metrics.  ``accepts`` stops
+                # at the first rejection, so the drafted depth is ``k_len``
+                # (every position was proposed and charged as an attempt),
+                # EOS-capped so depths past a natural terminator are neither
+                # drafted nor accepted in the histogram.
+                verify_depth = len(accepts_for_record) if eos_cut else k_len
+                accept_counter.record_verify(verify_depth, accepted_count)
 
             # Emit the accepted drafts (capped at EOS position when set).
             for i in range(accepted_count):

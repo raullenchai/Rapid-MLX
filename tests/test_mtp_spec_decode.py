@@ -2489,6 +2489,12 @@ def test_generator_emits_first_token_from_backbone_then_draft():
     assert snap.attempts == 1
     assert snap.accepts == 1
     assert snap.tokens_saved == 1
+    # #3155: one verify call at depth 1, fully accepted -> bonus token
+    assert snap.verify_calls == 1
+    assert snap.bonus_tokens == 1
+    assert snap.correction_tokens == 0
+    assert snap.drafted_by_depth == ((1, 1),)
+    assert snap.accepted_by_depth == ((1, 1),)
 
 
 def test_generator_sampled_verify_accepts_matching_draft():
