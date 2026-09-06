@@ -3098,10 +3098,30 @@ def _alias_modality(model_name: str) -> str | None:
     return None if profile is None else profile.modality
 
 
+def _prefetch_config_for_lane_guard(hf_path: str) -> None:
+    """Pull only ``config.json`` (a few KB) so the pre-download guard can read
+    the backbone layout before ``snapshot_download`` commits to the weights.
+
+    Honours the Hub offline switches and swallows every failure: a network
+    error here means the full pull would fail moments later with its own,
+    better error, so the guard simply has nothing to say.
+    """
+    from .model_metadata import hub_offline_mode_active
+
+    if hub_offline_mode_active():
+        return
+    try:
+        from huggingface_hub import hf_hub_download
+
+        hf_hub_download(hf_path, "config.json")
+    except Exception:  # noqa: BLE001 - best-effort probe, never fatal
+        return
+
+
 def _alias_needs_vision_runtime_without_weights(
     model_name: str, *, force_text: bool, requested_spec_decode: str
 ) -> bool:
-    """Pre-download ``[vision]`` verdict from the alias profile alone.
+    """Pre-download ``[vision]`` verdict from the alias profile plus config.
 
     ``is_mllm_model`` promotes a checkpoint to the MLLM lane only on
     positive WEIGHT evidence (a cached safetensors index naming a vision
@@ -3112,16 +3132,23 @@ def _alias_needs_vision_runtime_without_weights(
     downloaded 15 GB of Gemma 4 before learning it needs ``mlx-vlm`` (#3113).
 
     When the cache holds no weight evidence for the alias (nothing cached, or
-    config/tokenizer only), fall back to what the catalog already declares:
+    config/tokenizer only), decide from what the catalog declares plus the
+    checkpoint config (fetched on its own when nothing is cached yet):
 
     * ``modality == "text-diffusion"`` runs on the mlx-vlm DiffusionGemma
       runtime regardless of ``--no-mllm`` or speculative decoding — the
       modality dispatch in ``server.py`` does not consult either.
-    * a non-hybrid ``supports_image_input`` alias will land on the MLLM lane
-      once its weights arrive (hybrid-backbone VLMs auto-downgrade to the
-      text lane and boot from the base wheel, so they stay exempt), unless
+    * a ``supports_image_input`` alias whose config declares a vision tower
+      will land on the MLLM lane once its weights arrive, unless
       ``--no-mllm`` or a requested speculative decoder already routes it to
       the text lane exactly as ``resolve_serving_lane_decision`` would.
+    * a hybrid/recurrent backbone (Qwen3.5 GatedDeltaNet, Mamba, …) or an
+      architecture whose text backbone we vendor auto-downgrades to the text
+      lane on the base wheel — the same fallbacks
+      ``resolve_serving_lane_decision`` applies after the pull — so those
+      stay exempt and keep booting without ``mlx-vlm``.
+    * no config at all (offline, or the Hub is unreachable) is not evidence:
+      the guard stays silent and the pull reports its own error.
 
     Once weight evidence exists the engine-side verdict is authoritative and
     this helper returns ``False`` so the two never disagree.
@@ -3137,13 +3164,33 @@ def _alias_needs_vision_runtime_without_weights(
         return False
     if not profile.supports_image_input or profile.is_hybrid:
         return False
-    from .model_metadata import checkpoint_has_multimodal_weights, read_model_metadata
+    from .api.utils import (
+        mllm_arch_unsupported_but_text_vendored,
+        mllm_backbone_cache_mode,
+    )
+    from .model_metadata import (
+        checkpoint_has_multimodal_weights,
+        config_indicates_multimodal,
+        read_model_metadata,
+    )
 
-    metadata = read_model_metadata(profile.hf_path or model_name)
+    hf_path = profile.hf_path or model_name
+    metadata = read_model_metadata(hf_path)
     if metadata is None or metadata.config is None:
-        return True
+        _prefetch_config_for_lane_guard(hf_path)
+        metadata = read_model_metadata(hf_path)
+    if metadata is None or not isinstance(metadata.config, dict):
+        return False
     verdict = checkpoint_has_multimodal_weights(metadata.snapshot_dir, metadata.config)
-    return verdict is None
+    if verdict is not None:
+        return False
+    if not config_indicates_multimodal(metadata.config):
+        return False
+    if mllm_backbone_cache_mode(hf_path) in ("arrays", "other"):
+        return False
+    if mllm_arch_unsupported_but_text_vendored(hf_path):
+        return False
+    return True
 
 
 def kv_cache_flag_conflict(args) -> str | None:
