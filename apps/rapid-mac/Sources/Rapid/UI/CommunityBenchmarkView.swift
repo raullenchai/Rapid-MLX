@@ -447,8 +447,17 @@ struct CommunityBenchmarkResult: Decodable, Identifiable {
     /// never mistaken for a finished benchmark.
     var isCompleted: Bool { outcome.status == "completed" }
 
-    /// The number shown on the result row: the first (short) case.
-    var headline: String? { isCompleted ? caseSummaries.first?.headline : nil }
+    /// The number shown on the result row: the first declared (short) case.
+    /// If that case produced no usable metric and another case is promoted,
+    /// its ID is kept in the headline so it is never mistaken for the short
+    /// case.
+    var headline: String? {
+        guard isCompleted, let first = caseSummaries.first else { return nil }
+        let declaredFirst = workload.cases?.first?.caseID
+        return declaredFirst == nil || declaredFirst == first.caseID
+            ? first.headline
+            : "\(first.caseID): \(first.headline)"
+    }
 
     /// Remaining cases, one per line, for the secondary line / tooltip.
     var secondaryLines: [String] {

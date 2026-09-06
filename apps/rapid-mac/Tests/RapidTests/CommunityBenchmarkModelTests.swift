@@ -582,6 +582,18 @@ struct CommunityBenchmarkModelTests {
         #expect(failedLate.caseSummaries.count == 2)
         #expect(failedLate.headline == nil)
         #expect(failedLate.secondaryLines.isEmpty)
+
+        // If the short case has no usable metric, the promoted long case is
+        // labelled with its ID instead of posing as the short case.
+        let shortCaseBroken = try Self.decodeRun(
+            Self.textRunFixture.replacingOccurrences(
+                of: #""case_id":"pp512-tg128","completed":true"#,
+                with: #""case_id":"pp512-tg128","completed":false"#
+            )
+        )
+        #expect(shortCaseBroken.caseSummaries.map(\.caseID) == ["pp2048-tg512"])
+        #expect(shortCaseBroken.headline == "pp2048-tg512: 25.3 tok/s · TTFT 5811 ms")
+        #expect(shortCaseBroken.secondaryLines.isEmpty)
     }
 
     @Test("Image and video runs summarize as median wall seconds")
