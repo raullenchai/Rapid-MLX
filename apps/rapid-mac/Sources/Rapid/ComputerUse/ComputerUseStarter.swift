@@ -14,7 +14,6 @@ struct ComputerUseStarter: Identifiable, Equatable, Sendable {
     }
 
     enum Availability: Equatable, Sendable {
-        case available
         case comingSoon
         case reserved
     }
@@ -37,7 +36,7 @@ struct ComputerUseStarter: Identifiable, Equatable, Sendable {
             systemImage: "externaldrive.badge.minus",
             applications: "Finder",
             approvalNote: "Nothing moves until you review and approve it.",
-            availability: .available
+            availability: .comingSoon
         ),
         ComputerUseStarter(
             kind: .tidyInbox,

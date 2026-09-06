@@ -42,8 +42,7 @@ struct ComputerUseFeatureTests {
             .createDemoVideo,
             .reserved,
         ])
-        #expect(ComputerUseStarter.catalog.first?.availability == .available)
-        #expect(ComputerUseStarter.catalog.dropFirst().dropLast().allSatisfy {
+        #expect(ComputerUseStarter.catalog.dropLast().allSatisfy {
             $0.availability == .comingSoon
         })
         #expect(ComputerUseStarter.catalog.last?.availability == .reserved)
