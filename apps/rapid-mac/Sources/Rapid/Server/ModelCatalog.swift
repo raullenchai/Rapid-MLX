@@ -1100,10 +1100,12 @@ enum ModelCatalog {
                     return operations.contains(.embed)
                 }
             }) else { return nil }
-            // An embeddings-only alias has no Desktop surface: it is neither a
-            // chat, image, audio nor video model. Skip the row rather than
-            // let the `kind` fallback file it under Chat (#3116).
-            if tasks == [.embedding] {
+            // An embedding alias has no Desktop surface: it is neither a
+            // chat, image, audio nor video model. Skip any row that carries
+            // the task — a hypothetical `embedding` + `text_generation` combo
+            // included — rather than let the `kind` fallback file it under
+            // Chat (#3116, codex).
+            if tasks.contains(.embedding) {
                 continue
             }
             let kind: ModelKind

@@ -97,6 +97,37 @@ def test_serve_rejects_embedding_alias_with_the_embedding_model_hint(capsys):
     assert "--embedding-model embeddinggemma-300m-6bit" in err
 
 
+def test_serve_command_exits_before_any_model_work_for_embedding_alias(
+    monkeypatch, capsys
+):
+    """codex #3128: pin the ``serve_command`` wiring, not just the helper.
+
+    Anything past the guard is a bug here, so the first post-guard step the
+    audio boot-check test also uses (the upgrade prompt) is turned into a
+    tripwire.
+    """
+    from argparse import Namespace
+
+    from vllm_mlx import _version_check
+
+    def _past_the_guard(*_a, **_kw):
+        raise AssertionError("serve_command ran past the embedding guard")
+
+    monkeypatch.setattr(_version_check, "prompt_upgrade_if_available", _past_the_guard)
+    args = Namespace(
+        model="embeddinggemma-300m-6bit",
+        embedding_model=None,
+        no_mllm=False,
+        mllm=False,
+    )
+    with pytest.raises(SystemExit) as exc_info:
+        cli.serve_command(args)
+    assert exc_info.value.code == 2
+    err = capsys.readouterr().err
+    assert "sentence-embedding alias" in err
+    assert "--embedding-model embeddinggemma-300m-6bit" in err
+
+
 @pytest.mark.parametrize(
     "profile",
     [None, SimpleNamespace(modality="text"), SimpleNamespace(modality="image-gen")],

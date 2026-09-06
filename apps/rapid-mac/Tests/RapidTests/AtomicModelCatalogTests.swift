@@ -428,16 +428,20 @@ struct AtomicModelCatalogTests {
         #expect(preset.isDefaultEnabled)
     }
 
-    private static func embeddingRow(operation: String) -> [String: Any] {
+    private static func embeddingRow(
+        operation: String,
+        tasks: [String] = ["embedding"],
+        operations: [String]? = nil
+    ) -> [String: Any] {
         [
             "schema_version": 2,
             "alias": "embed",
             "origin": "builtin",
             "target": ["registry_model_id": "legacy/hf/chat", "resolution_status": "unresolved"],
             "capabilities": [
-                "task_types": ["embedding"],
+                "task_types": tasks,
                 "is_text_only": false,
-                "operation_modes": [operation],
+                "operation_modes": operations ?? [operation],
                 "runtime_adapter": "mlx_embeddings",
             ],
             "availability": ["cli": true, "server": true, "desktop": true, "website": true],
@@ -446,12 +450,18 @@ struct AtomicModelCatalogTests {
         ]
     }
 
-    private static func withEmbeddingRow(operation: String) -> String {
+    private static func withEmbeddingRow(
+        operation: String,
+        tasks: [String] = ["embedding"],
+        operations: [String]? = nil
+    ) -> String {
         mutated { root in
             var atomic = root["atomic"] as! [String: Any]
             var snapshot = atomic["snapshot"] as! [String: Any]
             var aliases = snapshot["aliases"] as! [[String: Any]]
-            aliases.append(embeddingRow(operation: operation))
+            aliases.append(embeddingRow(
+                operation: operation, tasks: tasks, operations: operations
+            ))
             snapshot["aliases"] = aliases
             atomic["snapshot"] = snapshot
             root["atomic"] = atomic
@@ -473,6 +483,18 @@ struct AtomicModelCatalogTests {
         #expect(ModelCatalog.parseAtomicModelEntriesJSON(
             Self.withEmbeddingRow(operation: "chat")
         ) == nil)
+        // A schema-valid `embedding` + `text_generation` combination must not
+        // slip into Chat either (codex on #3128): any row carrying the
+        // embedding task stays out of every picker.
+        let combined = ModelCatalog.parseAtomicModelEntriesJSON(
+            Self.withEmbeddingRow(
+                operation: "embed",
+                tasks: ["embedding", "text_generation"],
+                operations: ["embed", "chat"]
+            )
+        )
+        #expect(combined != nil)
+        #expect(combined?.contains { $0.alias == "embed" } == false)
     }
 
     @Test("unknown atomic tasks fail closed into the legacy downgrade path")
