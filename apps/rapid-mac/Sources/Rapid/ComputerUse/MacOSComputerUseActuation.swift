@@ -351,20 +351,20 @@ struct AXComputerUseInputEmitter: ComputerUseInputEmitting {
         permissionReader: PermissionReader,
         targetValidator: TargetValidator
     ) throws {
-        let currentBinding = try resolver(payload, target)
-        guard requiredBinding.representsSameElement(as: currentBinding) else {
-            throw MacOSComputerUseActuationError.elementChanged
-        }
         let permissions = permissionReader()
         guard permissions.isReadyForComputerUse else {
             throw MacOSComputerUseActuationError.permissionMissing(
                 permissions.missingForComputerUse
             )
         }
-        // Keep this as the last fallible validation before AXPress. Element
-        // resolution and permission reads can take long enough for another app
-        // to move in front of the selected window.
+        // Recheck the target before resolving the element because either set
+        // of cross-process queries can observe drift. The production resolver
+        // defensively repeats this target check after its AX queries as well.
         try targetValidator(payload, target)
+        let currentBinding = try resolver(payload, target)
+        guard requiredBinding.representsSameElement(as: currentBinding) else {
+            throw MacOSComputerUseActuationError.elementChanged
+        }
         try performer(currentBinding)
     }
 
@@ -454,6 +454,10 @@ struct AXComputerUseInputEmitter: ComputerUseInputEmitting {
             throw MacOSComputerUseActuationError.elementUnavailable
         }
         let fingerprint = try elementFingerprint(element)
+        // AX queries above may take long enough for focus, geometry, or
+        // occlusion to change. Make the target check the resolver's final
+        // cross-process operation before returning the newly bound element.
+        try validateTarget(payload, expected)
         return ComputerUseElementBinding(
             fingerprint: fingerprint,
             element: element

@@ -387,7 +387,7 @@ struct MacOSComputerUseActuationTests {
                 verifiedAgainst: fixture.observation
             )
         }
-        #expect(recorder.calls.count == 2)
+        #expect(recorder.calls.count == 1)
         #expect(recorder.performed.isEmpty)
     }
 
@@ -417,7 +417,7 @@ struct MacOSComputerUseActuationTests {
                 verifiedAgainst: fixture.observation
             )
         }
-        #expect(recorder.calls.count == 2)
+        #expect(recorder.calls.count == 1)
         #expect(recorder.performed.isEmpty)
     }
 
