@@ -2524,6 +2524,106 @@ class TestCheckpointMetadataFallback:
         assert "experimental" in format_profile_summary("local-flash-next", flash)
         assert "⚠ experimental" in format_profile_table("local-flash-next", flash)
 
+    def test_granitemoe_swa_metadata_uses_granite_and_mixed_cache_gates(
+        self, monkeypatch
+    ):
+        monkeypatch.setattr(
+            auto_config_mod,
+            "read_model_metadata",
+            lambda name: self._metadata(
+                {"model_type": "granitemoe_swa", "sliding_window": 128},
+                "{% if tools %}<|tool_call|>"
+                '[{"name": "example", "arguments": {}}]{% endif %}',
+            ),
+        )
+
+        config = detect_model_config("publisher/repacked-granite-swash")
+
+        assert config is not None
+        assert config.tool_call_parser == "granite"
+        assert config.reasoning_parser is None
+        assert config.is_hybrid is False
+        assert config.is_moe is True
+        assert config.supports_spec_decode is False
+
+    def test_granitemoe_swa_without_template_keeps_architecture_but_no_tools(
+        self, monkeypatch
+    ):
+        """A repackage's template is the wire contract: no template, no parser."""
+        monkeypatch.setattr(
+            auto_config_mod,
+            "read_model_metadata",
+            lambda name: self._metadata(
+                {"model_type": "granitemoe_swa", "sliding_window": 128},
+                None,
+            ),
+        )
+
+        config = detect_model_config("publisher/templateless-granite-swash")
+
+        assert config is not None
+        assert config.tool_call_parser is None
+        assert config.is_moe is True
+        assert config.supports_spec_decode is False
+
+    def test_granitemoe_swa_uncalled_macro_marker_is_not_wire_evidence(
+        self, monkeypatch
+    ):
+        """A ``<|tool_call|>`` literal inside an uncalled macro never renders,
+        so it must not advertise the granite parser."""
+        monkeypatch.setattr(
+            auto_config_mod,
+            "read_model_metadata",
+            lambda name: self._metadata(
+                {"model_type": "granitemoe_swa", "sliding_window": 128},
+                "{% macro dormant() %}{% if tools %}<|tool_call|>"
+                "{% endif %}{% endmacro %}{% if tools %}plain{% endif %}",
+            ),
+        )
+
+        config = detect_model_config("publisher/dormant-macro-granite-swash")
+
+        assert config is not None
+        assert config.tool_call_parser is None
+        assert config.is_moe is True
+
+    def test_granitemoe_swa_set_captured_marker_is_not_wire_evidence(self, monkeypatch):
+        """A marker swallowed by a ``{% set %}`` capture is not rendered."""
+        monkeypatch.setattr(
+            auto_config_mod,
+            "read_model_metadata",
+            lambda name: self._metadata(
+                {"model_type": "granitemoe_swa", "sliding_window": 128},
+                "{% set hidden %}{% if tools %}<|tool_call|>{% endif %}"
+                "{% endset %}{% if tools %}plain{% endif %}",
+            ),
+        )
+
+        config = detect_model_config("publisher/set-capture-granite-swash")
+
+        assert config is not None
+        assert config.tool_call_parser is None
+        assert config.is_moe is True
+
+    def test_granitemoe_swa_plain_template_does_not_advertise_granite_tools(
+        self, monkeypatch
+    ):
+        monkeypatch.setattr(
+            auto_config_mod,
+            "read_model_metadata",
+            lambda name: self._metadata(
+                {"model_type": "granitemoe_swa", "sliding_window": 128},
+                "{{ messages[0].content }}",
+            ),
+        )
+
+        config = detect_model_config("publisher/plain-template-granite-swash")
+
+        assert config is not None
+        assert config.tool_call_parser is None
+        assert config.is_moe is True
+        assert config.supports_spec_decode is False
+
     def test_incomplete_template_is_not_advertised_as_native_tools(self, monkeypatch):
         # The template PARSES successfully (``{% endif %}`` is present), but the
         # XML tool contract is genuinely INCOMPLETE: it opens
