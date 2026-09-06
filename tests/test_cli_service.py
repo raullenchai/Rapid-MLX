@@ -133,6 +133,31 @@ def test_service_macos_guard():
         sys.platform = real_platform
 
 
+@pytest.mark.parametrize(
+    ("verb", "module_name", "handler_name"),
+    [
+        ("configure", "configure", "configure_command"),
+        ("apply", "configure", "apply_command"),
+        ("config", "configure", "config_show_command"),
+        ("credential", "configure", "credential_command"),
+        ("run", "runtime", "run_command"),
+        ("upgrade", "upgrade", "upgrade_command"),
+    ],
+)
+def test_new_service_verbs_dispatch(monkeypatch, verb, module_name, handler_name):
+    import importlib
+
+    import vllm_mlx.headless_service.cli as svc_cli
+
+    module = importlib.import_module(f"vllm_mlx.headless_service.{module_name}")
+    called = []
+    monkeypatch.setattr(sys, "platform", "darwin")
+    monkeypatch.setattr(module, handler_name, lambda args: called.append(args) or 0)
+    args = types.SimpleNamespace(service_command=verb, label=None)
+    svc_cli.service_command(args)
+    assert called == [args]
+
+
 # ---------------------------------------------------------------------------
 # Service-account validation (monkeypatched account DB).
 # ---------------------------------------------------------------------------
