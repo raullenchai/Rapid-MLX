@@ -1,0 +1,568 @@
+import AppKit
+import ApplicationServices
+import Foundation
+import Observation
+import ScreenCaptureKit
+
+struct ComputerUseWindowOption: Identifiable, Equatable, Sendable {
+    let id: String
+    let applicationName: String
+    let windowTitle: String
+    let selection: ComputerUseWindowSelection
+
+    var displayName: String {
+        windowTitle.isEmpty ? applicationName : "\(applicationName) — \(windowTitle)"
+    }
+}
+
+enum ComputerUseWindowCatalogError: Error, Equatable {
+    case permissionsMissing([MacAutomationPermission])
+    case unavailable
+}
+
+protocol ComputerUseWindowListing: Sendable {
+    func windows() async throws -> [ComputerUseWindowOption]
+}
+
+struct MacOSComputerUseWindowCatalog: ComputerUseWindowListing {
+    func windows() async throws -> [ComputerUseWindowOption] {
+        let permissions = MacAutomationPermissions.snapshot()
+        guard permissions.isReadyForComputerUse else {
+            throw ComputerUseWindowCatalogError.permissionsMissing(
+                permissions.missingForComputerUse
+            )
+        }
+        let content: SCShareableContent
+        do {
+            content = try await SCShareableContent.excludingDesktopWindows(
+                true,
+                onScreenWindowsOnly: true
+            )
+        } catch {
+            throw ComputerUseWindowCatalogError.unavailable
+        }
+        let ownPID = getpid()
+        var result: [ComputerUseWindowOption] = []
+        for window in content.windows {
+            guard window.isOnScreen,
+                  window.frame.width >= 240,
+                  window.frame.height >= 160,
+                  let application = window.owningApplication,
+                  application.processID != ownPID,
+                  !application.bundleIdentifier.isEmpty,
+                  let launchDate = await launchDate(for: application.processID)
+            else { continue }
+            result.append(ComputerUseWindowOption(
+                id: "\(application.processID):\(window.windowID)",
+                applicationName: application.applicationName,
+                windowTitle: window.title ?? "",
+                selection: ComputerUseWindowSelection(
+                    bundleIdentifier: application.bundleIdentifier,
+                    processIdentifier: application.processID,
+                    processLaunchDate: launchDate,
+                    windowID: window.windowID
+                )
+            ))
+        }
+        return result.sorted {
+            ($0.applicationName.localizedCaseInsensitiveCompare($1.applicationName) == .orderedAscending)
+                || ($0.applicationName == $1.applicationName
+                    && $0.windowTitle.localizedCaseInsensitiveCompare($1.windowTitle) == .orderedAscending)
+        }
+    }
+
+    @MainActor
+    private func launchDate(for processIdentifier: pid_t) -> Date? {
+        NSRunningApplication(processIdentifier: processIdentifier)?.launchDate
+    }
+}
+
+enum DraftPostFlowFailure: Error, Equatable, Sendable {
+    case sourceIsNotTextEdit
+    case destinationIsNotBrowser
+    case targetUnavailable
+    case focusChanged
+    case draftMissing
+    case draftTooLarge
+    case composerMissing
+    case composerAmbiguous
+    case composerNotEmpty
+    case writeRejected
+    case verificationFailed
+    case permissionMissing
+    case cancelled
+
+    var isRecoverable: Bool {
+        switch self {
+        case .targetUnavailable, .focusChanged:
+            true
+        default:
+            false
+        }
+    }
+
+    var userMessage: String {
+        switch self {
+        case .sourceIsNotTextEdit: "Choose a TextEdit window as the draft source."
+        case .destinationIsNotBrowser: "Choose a supported browser window as the destination."
+        case .targetUnavailable: "A selected window is no longer available."
+        case .focusChanged: "Rapid could not safely focus the selected window."
+        case .draftMissing: "The selected TextEdit document has no readable draft."
+        case .draftTooLarge: "The draft is too large for this preview (64 KB maximum)."
+        case .composerMissing: "No editable post composer was found in the browser window."
+        case .composerAmbiguous: "More than one possible composer was found. Close other editors and try again."
+        case .composerNotEmpty: "The browser composer already contains text. Clear it before running this flow."
+        case .writeRejected: "The browser rejected the local text update."
+        case .verificationFailed: "The browser content did not match the TextEdit draft."
+        case .permissionMissing: "Screen Recording and Accessibility access are required."
+        case .cancelled: "The flow was stopped."
+        }
+    }
+}
+
+struct DraftPostFlowMetrics: Equatable, Sendable {
+    var attempts = 0
+    var automaticRecoveries = 0
+    var humanCorrections = 0
+    var completedSteps = 0
+}
+
+enum DraftPostFlowOutcome: Equatable, Sendable {
+    case readyForReview(DraftPostFlowMetrics)
+    case failed(DraftPostFlowFailure, DraftPostFlowMetrics)
+}
+
+protocol DraftPostFlowDriving: Sendable {
+    func transferDraft(
+        from source: ComputerUseWindowOption,
+        to destination: ComputerUseWindowOption
+    ) async throws
+}
+
+/// Runs one idempotent local transfer with a strict retry budget. The driver
+/// can only populate the composer; publishing is intentionally absent from
+/// this protocol and therefore cannot be reached by recovery logic.
+actor DraftPostFlowCoordinator {
+    private let driver: any DraftPostFlowDriving
+    private let maximumAttempts: Int
+
+    init(driver: any DraftPostFlowDriving, maximumAttempts: Int = 3) {
+        self.driver = driver
+        self.maximumAttempts = min(max(1, maximumAttempts), 3)
+    }
+
+    func run(
+        source: ComputerUseWindowOption,
+        destination: ComputerUseWindowOption
+    ) async -> DraftPostFlowOutcome {
+        var metrics = DraftPostFlowMetrics()
+        for attempt in 1 ... maximumAttempts {
+            if Task.isCancelled {
+                return .failed(.cancelled, metrics)
+            }
+            metrics.attempts = attempt
+            do {
+                try await driver.transferDraft(from: source, to: destination)
+                metrics.completedSteps = 3
+                return .readyForReview(metrics)
+            } catch let failure as DraftPostFlowFailure {
+                guard failure.isRecoverable, attempt < maximumAttempts else {
+                    return .failed(failure, metrics)
+                }
+                metrics.automaticRecoveries += 1
+            } catch is CancellationError {
+                return .failed(.cancelled, metrics)
+            } catch {
+                return .failed(.targetUnavailable, metrics)
+            }
+        }
+        return .failed(.targetUnavailable, metrics)
+    }
+}
+
+/// Accessibility-first implementation for the first bounded starter flow.
+/// The user selects both windows. Rapid reads one TextEdit document, writes an
+/// empty browser composer, verifies the exact value, and stops. No coordinate
+/// action and no publish/send action exists in this adapter.
+struct MacOSDraftPostFlowDriver: DraftPostFlowDriving {
+    static let maximumDraftBytes = 65_536
+    private static let textEditBundle = "com.apple.TextEdit"
+    static let browserBundles: Set<String> = [
+        "com.apple.Safari",
+        "com.google.Chrome",
+        "com.google.Chrome.canary",
+        "com.microsoft.edgemac",
+        "company.thebrowser.Browser",
+        "org.mozilla.firefox",
+    ]
+
+    func transferDraft(
+        from source: ComputerUseWindowOption,
+        to destination: ComputerUseWindowOption
+    ) async throws {
+        guard source.selection.bundleIdentifier == Self.textEditBundle else {
+            throw DraftPostFlowFailure.sourceIsNotTextEdit
+        }
+        guard Self.browserBundles.contains(destination.selection.bundleIdentifier) else {
+            throw DraftPostFlowFailure.destinationIsNotBrowser
+        }
+        guard MacAutomationPermissions.snapshot().isReadyForComputerUse else {
+            throw DraftPostFlowFailure.permissionMissing
+        }
+
+        let draft = try await readDraft(from: source.selection)
+        guard !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            throw DraftPostFlowFailure.draftMissing
+        }
+        guard draft.utf8.count <= Self.maximumDraftBytes else {
+            throw DraftPostFlowFailure.draftTooLarge
+        }
+        try await writeAndVerify(draft, to: destination.selection)
+    }
+
+    private func readDraft(from selection: ComputerUseWindowSelection) async throws -> String {
+        try await focus(selection)
+        return try await MainActor.run {
+            let window = try Self.exactFocusedWindow(selection)
+            let candidates = Self.editableElements(in: window)
+                .compactMap { Self.stringAttribute(kAXValueAttribute as CFString, from: $0) }
+                .filter { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+            guard let draft = candidates.max(by: { $0.utf8.count < $1.utf8.count }) else {
+                throw DraftPostFlowFailure.draftMissing
+            }
+            return draft
+        }
+    }
+
+    private func writeAndVerify(
+        _ draft: String,
+        to selection: ComputerUseWindowSelection
+    ) async throws {
+        try await focus(selection)
+        try await MainActor.run {
+            let window = try Self.exactFocusedWindow(selection)
+            let composer = try Self.uniqueComposer(in: window)
+            let existing = Self.stringAttribute(kAXValueAttribute as CFString, from: composer) ?? ""
+            guard existing.isEmpty || existing == draft else {
+                throw DraftPostFlowFailure.composerNotEmpty
+            }
+            var settable: DarwinBoolean = false
+            guard AXUIElementIsAttributeSettable(
+                composer,
+                kAXValueAttribute as CFString,
+                &settable
+            ) == .success, settable.boolValue else {
+                throw DraftPostFlowFailure.writeRejected
+            }
+            guard AXUIElementSetAttributeValue(
+                composer,
+                kAXFocusedAttribute as CFString,
+                kCFBooleanTrue
+            ) == .success else {
+                throw DraftPostFlowFailure.writeRejected
+            }
+            // Re-resolve the exact selected window immediately before the
+            // value mutation. Focusing the exact bound editor is allowed, but
+            // it must not have moved focus into another window.
+            let currentWindow = try Self.exactFocusedWindow(selection)
+            let currentComposer = try Self.uniqueComposer(in: currentWindow)
+            guard CFEqual(composer, currentComposer) else {
+                throw DraftPostFlowFailure.verificationFailed
+            }
+            guard AXUIElementSetAttributeValue(
+                currentComposer,
+                kAXValueAttribute as CFString,
+                draft as CFString
+            ) == .success else {
+                throw DraftPostFlowFailure.writeRejected
+            }
+            let verifiedWindow = try Self.exactFocusedWindow(selection)
+            let verifiedComposer = try Self.uniqueComposer(in: verifiedWindow)
+            guard CFEqual(currentComposer, verifiedComposer),
+                  Self.stringAttribute(
+                    kAXValueAttribute as CFString,
+                    from: verifiedComposer
+                  ) == draft
+            else {
+                throw DraftPostFlowFailure.verificationFailed
+            }
+        }
+    }
+
+    private func focus(_ selection: ComputerUseWindowSelection) async throws {
+        try Task.checkCancellation()
+        try await MainActor.run {
+            guard let app = NSRunningApplication(processIdentifier: selection.processIdentifier),
+                  app.bundleIdentifier == selection.bundleIdentifier,
+                  app.launchDate == selection.processLaunchDate
+            else { throw DraftPostFlowFailure.targetUnavailable }
+            app.activate()
+            let application = AXUIElementCreateApplication(selection.processIdentifier)
+            guard let window = Self.window(matching: selection, in: application),
+                  AXUIElementPerformAction(window, kAXRaiseAction as CFString) == .success
+            else { throw DraftPostFlowFailure.targetUnavailable }
+        }
+        try await Task.sleep(for: .milliseconds(180))
+        try Task.checkCancellation()
+        try await MainActor.run {
+            _ = try Self.exactFocusedWindow(selection)
+        }
+    }
+
+    @MainActor
+    private static func exactFocusedWindow(
+        _ selection: ComputerUseWindowSelection
+    ) throws -> AXUIElement {
+        guard let running = NSRunningApplication(
+            processIdentifier: selection.processIdentifier
+        ),
+            running.bundleIdentifier == selection.bundleIdentifier,
+            running.launchDate == selection.processLaunchDate,
+            NSWorkspace.shared.frontmostApplication?.processIdentifier
+                == selection.processIdentifier
+        else { throw DraftPostFlowFailure.focusChanged }
+        let application = AXUIElementCreateApplication(selection.processIdentifier)
+        guard let selected = window(matching: selection, in: application) else {
+            throw DraftPostFlowFailure.targetUnavailable
+        }
+        var focusedValue: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(
+            application,
+            kAXFocusedWindowAttribute as CFString,
+            &focusedValue
+        ) == .success,
+            let focusedValue,
+            CFGetTypeID(focusedValue) == AXUIElementGetTypeID(),
+            CFEqual(selected, unsafeDowncast(focusedValue, to: AXUIElement.self))
+        else { throw DraftPostFlowFailure.focusChanged }
+        return selected
+    }
+
+    @MainActor
+    private static func window(
+        matching selection: ComputerUseWindowSelection,
+        in application: AXUIElement
+    ) -> AXUIElement? {
+        guard let frame = currentFrame(for: selection) else { return nil }
+        var value: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(
+            application,
+            kAXWindowsAttribute as CFString,
+            &value
+        ) == .success,
+            let windows = value as? [AXUIElement]
+        else { return nil }
+        let matches = windows.filter {
+            guard let candidate = elementFrame($0) else { return false }
+            return MacOSComputerUseWindowIdentity.framesMatch(candidate, frame)
+        }
+        return matches.count == 1 ? matches[0] : nil
+    }
+
+    @MainActor
+    private static func currentFrame(
+        for selection: ComputerUseWindowSelection
+    ) -> CGRect? {
+        guard let records = CGWindowListCopyWindowInfo(
+            [.optionOnScreenOnly, .excludeDesktopElements],
+            kCGNullWindowID
+        ) as? [[CFString: Any]],
+            let record = records.first(where: {
+                ($0[kCGWindowNumber] as? NSNumber)?.uint32Value == selection.windowID
+                    && ($0[kCGWindowOwnerPID] as? NSNumber)?.int32Value
+                        == selection.processIdentifier
+            }),
+            let bounds = record[kCGWindowBounds] as? [String: NSNumber]
+        else { return nil }
+        return CGRect(dictionaryRepresentation: bounds as CFDictionary)
+    }
+
+    @MainActor
+    private static func editableElements(in root: AXUIElement) -> [AXUIElement] {
+        var queue: [(AXUIElement, Int)] = [(root, 0)]
+        var result: [AXUIElement] = []
+        var visited = 0
+        while !queue.isEmpty, visited < 2_048 {
+            let (element, depth) = queue.removeFirst()
+            visited += 1
+            let role = stringAttribute(kAXRoleAttribute as CFString, from: element)
+            let subrole = stringAttribute(kAXSubroleAttribute as CFString, from: element)
+            if (role == kAXTextAreaRole as String || role == kAXTextFieldRole as String),
+               subrole != kAXSecureTextFieldSubrole as String {
+                result.append(element)
+            }
+            guard depth < 32 else { continue }
+            var value: CFTypeRef?
+            if AXUIElementCopyAttributeValue(
+                element,
+                kAXChildrenAttribute as CFString,
+                &value
+            ) == .success,
+                let children = value as? [AXUIElement]
+            {
+                queue.append(contentsOf: children.map { ($0, depth + 1) })
+            }
+        }
+        return result
+    }
+
+    @MainActor
+    private static func composerScore(_ element: AXUIElement) -> Int {
+        let fields = [
+            stringAttribute(kAXTitleAttribute as CFString, from: element),
+            stringAttribute(kAXDescriptionAttribute as CFString, from: element),
+            stringAttribute(kAXHelpAttribute as CFString, from: element),
+            stringAttribute("AXPlaceholderValue" as CFString, from: element),
+        ].compactMap { $0?.lowercased() }.joined(separator: " ")
+        let hints = ["post", "tweet", "what is happening", "what's happening", "compose", "update"]
+        // No generic "first empty field" fallback: that can be a search box
+        // or browser chrome. A composer needs an explicit semantic hint, and
+        // equal matches fail closed rather than relying on tree order.
+        return hints.reduce(0) { $0 + (fields.contains($1) ? 10 : 0) }
+    }
+
+    @MainActor
+    private static func uniqueComposer(in window: AXUIElement) throws -> AXUIElement {
+        let ranked = editableElements(in: window)
+            .map { ($0, composerScore($0)) }
+            .filter { $0.1 > 0 }
+            .sorted { $0.1 > $1.1 }
+        guard let best = ranked.first else {
+            throw DraftPostFlowFailure.composerMissing
+        }
+        if ranked.count > 1, ranked[1].1 == best.1 {
+            throw DraftPostFlowFailure.composerAmbiguous
+        }
+        return best.0
+    }
+
+    @MainActor
+    private static func stringAttribute(
+        _ name: CFString,
+        from element: AXUIElement
+    ) -> String? {
+        var value: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(element, name, &value) == .success else {
+            return nil
+        }
+        return value as? String
+    }
+
+    @MainActor
+    private static func elementFrame(_ element: AXUIElement) -> CGRect? {
+        var positionValue: CFTypeRef?
+        var sizeValue: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(
+            element,
+            kAXPositionAttribute as CFString,
+            &positionValue
+        ) == .success,
+            AXUIElementCopyAttributeValue(
+                element,
+                kAXSizeAttribute as CFString,
+                &sizeValue
+            ) == .success,
+            let positionValue,
+            let sizeValue,
+            CFGetTypeID(positionValue) == AXValueGetTypeID(),
+            CFGetTypeID(sizeValue) == AXValueGetTypeID()
+        else { return nil }
+        var origin = CGPoint.zero
+        var size = CGSize.zero
+        guard AXValueGetValue(
+            unsafeDowncast(positionValue, to: AXValue.self),
+            .cgPoint,
+            &origin
+        ), AXValueGetValue(
+            unsafeDowncast(sizeValue, to: AXValue.self),
+            .cgSize,
+            &size
+        ) else { return nil }
+        return CGRect(origin: origin, size: size)
+    }
+}
+
+@MainActor
+@Observable
+final class DraftPostFlowViewModel {
+    enum Phase: Equatable {
+        case loading
+        case ready
+        case running
+        case readyForReview(DraftPostFlowMetrics)
+        case failed(String, DraftPostFlowMetrics?)
+    }
+
+    var phase: Phase = .loading
+    var windows: [ComputerUseWindowOption] = []
+    var sourceID: String?
+    var destinationID: String?
+    private let catalog: any ComputerUseWindowListing
+    private let driver: any DraftPostFlowDriving
+    private var runTask: Task<Void, Never>?
+
+    init(
+        catalog: any ComputerUseWindowListing = MacOSComputerUseWindowCatalog(),
+        driver: any DraftPostFlowDriving = MacOSDraftPostFlowDriver()
+    ) {
+        self.catalog = catalog
+        self.driver = driver
+    }
+
+    var sourceOptions: [ComputerUseWindowOption] {
+        windows.filter { $0.selection.bundleIdentifier == "com.apple.TextEdit" }
+    }
+
+    var destinationOptions: [ComputerUseWindowOption] {
+        windows.filter {
+            MacOSDraftPostFlowDriver.browserBundles.contains(
+                $0.selection.bundleIdentifier
+            )
+        }
+    }
+
+    var canRun: Bool {
+        sourceID != nil && destinationID != nil && phase == .ready
+    }
+
+    func load() async {
+        phase = .loading
+        do {
+            windows = try await catalog.windows()
+            sourceID = sourceOptions.count == 1 ? sourceOptions[0].id : nil
+            phase = .ready
+        } catch let error as ComputerUseWindowCatalogError {
+            switch error {
+            case .permissionsMissing:
+                phase = .failed(DraftPostFlowFailure.permissionMissing.userMessage, nil)
+            case .unavailable:
+                phase = .failed("Rapid could not list the available windows.", nil)
+            }
+        } catch {
+            phase = .failed("Rapid could not list the available windows.", nil)
+        }
+    }
+
+    func run() {
+        guard let source = windows.first(where: { $0.id == sourceID }),
+              let destination = windows.first(where: { $0.id == destinationID })
+        else { return }
+        phase = .running
+        let coordinator = DraftPostFlowCoordinator(driver: driver)
+        runTask = Task { [weak self] in
+            let outcome = await coordinator.run(source: source, destination: destination)
+            guard let self else { return }
+            switch outcome {
+            case .readyForReview(let metrics):
+                self.phase = .readyForReview(metrics)
+            case .failed(let failure, let metrics):
+                self.phase = .failed(failure.userMessage, metrics)
+            }
+        }
+    }
+
+    func stop() {
+        runTask?.cancel()
+        runTask = nil
+    }
+}
