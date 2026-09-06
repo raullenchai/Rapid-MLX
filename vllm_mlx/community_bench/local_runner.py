@@ -46,7 +46,12 @@ def _record_conditions_after() -> None:
         capture["after"] = run_conditions()
 
 
-from .run_builder import build_run, execution_config, utc_now
+from .run_builder import (
+    build_run,
+    execution_config,
+    unresolved_model_identity,
+    utc_now,
+)
 from .workspace import LocalRunArchive, plan_for_alias
 
 _VIDEO_JOB_TIMEOUT_S = 3600.0
@@ -819,6 +824,12 @@ def run_local(
     conditions_after = None
     measurements_completed = False
     destination = archive or LocalRunArchive.default()
+    # Resolve the identity from the cache BEFORE loading: the loader pins a
+    # snapshot at load time, and reading the config after the run could
+    # describe a newer snapshot if another pull advanced refs/main meanwhile.
+    model_identity = unresolved_model_identity(
+        model["repo_id"], task_type, model.get("subfolder")
+    )
     try:
         hardware, software = collect()
         # Snapshot the volatile machine state (power, thermal, memory
@@ -854,6 +865,7 @@ def run_local(
         run = build_run(
             repo_id=model["repo_id"],
             subfolder=model.get("subfolder"),
+            model_identity=model_identity,
             task_type=task_type,
             hardware=hardware,
             software=software,
@@ -886,6 +898,7 @@ def run_local(
             failed = build_run(
                 repo_id=model["repo_id"],
                 subfolder=model.get("subfolder"),
+                model_identity=model_identity,
                 task_type=task_type,
                 hardware=hardware,
                 software=software,

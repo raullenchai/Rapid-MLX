@@ -4687,6 +4687,13 @@ def test_quantization_facts_projects_mlx_config_onto_the_contract() -> None:
         "kind": "unknown",
         "base_dtype": "unknown",
     }
+    # 3.3 bpw is not a contract value: never rounded into a fact.
+    assert quantization_facts({"quantization": {"bits": 3.3}})["kind"] == "unknown"
+    # A declaration that exists but is unreadable is unknown, not "none".
+    assert quantization_facts({"quantization": 5})["kind"] == "unknown"
+    # transformers-style quantization_config names the scheme quant_method.
+    awq = {"quantization_config": {"bits": 4, "quant_method": "awq"}}
+    assert quantization_facts(awq)["method"] == "awq"
     # Every projection must satisfy the atomic quantization contract.
     for config in (
         uniform,
@@ -4804,6 +4811,32 @@ def test_run_local_measures_text_models_by_alias_not_bare_repo_id(
     monkeypatch.setattr(local_runner, "_text_measurements", fake_measurements)
     local_runner.run_local("example-text", archive=archive)
     assert seen == ["example-text"]
+
+
+def test_run_local_resolves_identity_before_loading_the_model(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The recorded identity is the snapshot present before the run, not
+    whatever the cache holds after measurement (a pull may advance it)."""
+    archive = LocalRunArchive(tmp_path)
+    _mock_local_context(
+        monkeypatch, "text_generation", "mlx-community/example-text-model"
+    )
+    order: list[str] = []
+    real_identity = local_runner.unresolved_model_identity
+
+    def identity_first(repo_id, task_type, subfolder=None):
+        order.append("identity")
+        return real_identity(repo_id, task_type, subfolder)
+
+    async def fake_measurements(model_name: str):
+        order.append("measure")
+        return _text_run()["measurements"], 32768
+
+    monkeypatch.setattr(local_runner, "unresolved_model_identity", identity_first)
+    monkeypatch.setattr(local_runner, "_text_measurements", fake_measurements)
+    local_runner.run_local("example-text", archive=archive)
+    assert order == ["identity", "measure"]
 
 
 def test_benchmark_catalog_exposes_the_alias_subfolder() -> None:

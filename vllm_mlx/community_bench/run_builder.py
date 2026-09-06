@@ -95,7 +95,12 @@ def _bits_x2(value: Any) -> int | None:
         return None
     if not math.isfinite(value) or value <= 0:
         return None
-    x2 = int(round(float(value) * 2))
+    doubled = float(value) * 2
+    if not doubled.is_integer():
+        # 3.3 bpw is not a contract value; recording it as 3.5 would invent
+        # a quantization fact.
+        return None
+    x2 = int(doubled)
     return x2 if 2 <= x2 <= 64 else None
 
 
@@ -107,8 +112,11 @@ def _quantization_facts(config: dict[str, Any]) -> dict[str, Any]:
     block = config.get("quantization")
     if block is None:
         block = config.get("quantization_config")
-    if not isinstance(block, dict):
+    if block is None:
         return {"kind": "none", "base_dtype": base_dtype}
+    if not isinstance(block, dict):
+        # A declaration that exists but cannot be read is not "unquantized".
+        return {"kind": "unknown", "base_dtype": base_dtype}
     bits_x2 = _bits_x2(block.get("bits"))
     if bits_x2 is None:
         return {"kind": "unknown", "base_dtype": base_dtype}
@@ -129,9 +137,12 @@ def _quantization_facts(config: dict[str, Any]) -> dict[str, Any]:
     # image models write ``method`` ("mflux"). Honour whichever the artifact
     # declares; only a block that names neither is assumed to be mlx-lm's
     # historical affine default.
-    declared = block.get("method")
-    if not (isinstance(declared, str) and declared):
-        declared = block.get("mode")
+    declared = None
+    for field in ("method", "quant_method", "mode"):
+        candidate = block.get(field)
+        if isinstance(candidate, str) and candidate:
+            declared = candidate
+            break
     if isinstance(declared, str) and declared:
         method = declared.strip().lower()
         facts["method"] = method if _METHOD_PATTERN.fullmatch(method) else "other"
@@ -362,6 +373,7 @@ def build_run(
     execution: dict[str, Any] | None = None,
     conditions_before: dict[str, Any] | None = None,
     conditions_after: dict[str, Any] | None = None,
+    model_identity: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     outcome = {"status": status}
     if failure_code is not None:
@@ -372,7 +384,14 @@ def build_run(
         "started_at": started_at,
         "completed_at": utc_now(),
         "collector": {"name": "rapid-mlx-community-bench", "version": __version__},
-        "model": unresolved_model_identity(repo_id, task_type, subfolder),
+        # Callers that resolved the identity before loading pass it in, so
+        # the record describes the snapshot that was measured even if the
+        # cache moves on (another pull) while the benchmark runs.
+        "model": (
+            model_identity
+            if model_identity is not None
+            else unresolved_model_identity(repo_id, task_type, subfolder)
+        ),
         "execution": (
             execution
             if execution is not None
