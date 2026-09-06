@@ -415,6 +415,29 @@ def test_mflux_reporter_records_denoise_only_timing(monkeypatch):
     }
 
 
+def test_finish_denoise_without_start_is_a_noop():
+    engine = ImageGenerationEngine("Runpod/FLUX.2-klein-4B-mflux-4bit")
+
+    engine._finish_denoise(4)
+
+    assert engine.performance_snapshot() == {
+        "denoise_seconds": None,
+        "denoise_steps": 0,
+    }
+
+
+def test_generate_with_performance_pairs_bytes_and_snapshot(monkeypatch):
+    engine = ImageGenerationEngine("Runpod/FLUX.2-klein-4B-mflux-4bit")
+    engine._last_denoise_seconds = 8.0
+    engine._last_denoise_steps = 4
+    monkeypatch.setattr(engine, "generate", lambda **kwargs: b"png")
+
+    png_bytes, performance = engine.generate_with_performance(prompt="a fox")
+
+    assert png_bytes == b"png"
+    assert performance == {"denoise_seconds": 8.0, "denoise_steps": 4}
+
+
 def test_new_generation_clears_stale_denoise_timing():
     engine = ImageGenerationEngine("Runpod/FLUX.2-klein-4B-mflux-4bit")
     engine._last_denoise_seconds = 11.2
@@ -539,6 +562,20 @@ def test_image_adapter_residency_without_mode_preserves_family_default(monkeypat
     engine.ensure_resident()
 
     assert modes == [None]
+
+
+def test_image_adapter_delegates_atomic_performance_methods(monkeypatch):
+    engine = ImageEngine("Runpod/FLUX.2-klein-4B-mflux-4bit")
+    expected = {"denoise_seconds": 8.0, "denoise_steps": 4}
+    monkeypatch.setattr(engine._engine, "performance_snapshot", lambda: expected)
+    monkeypatch.setattr(
+        engine._engine,
+        "generate_with_performance",
+        lambda **kwargs: (b"png", expected),
+    )
+
+    assert engine.performance_snapshot() == expected
+    assert engine.generate_with_performance(prompt="a fox") == (b"png", expected)
 
 
 # --------------------------------------------------------------------------- #
@@ -696,6 +733,44 @@ def test_route_logs_measured_klein_step_throughput(client, monkeypatch, caplog):
     assert "denoise=11.20s (2.80 s/step" in message
     assert "~13.6 estimated TFLOPS" in message
     assert "private prompt" not in message
+
+
+def test_route_prefers_atomic_generation_and_performance(client, monkeypatch):
+    engine = _FakeImageEngine(performance={"denoise_seconds": 4.0, "denoise_steps": 4})
+    atomic_calls = []
+
+    def _generate_with_performance(**kwargs):
+        atomic_calls.append(kwargs)
+        return engine.generate(**kwargs), engine.performance
+
+    engine.generate_with_performance = _generate_with_performance
+    _patch_engine(monkeypatch, engine)
+
+    resp = client.post("/v1/images/generations", json={"prompt": "a fox", "seed": 42})
+
+    assert resp.status_code == 200
+    assert atomic_calls[0]["prompt"] == "a fox"
+
+
+def test_route_ignores_legacy_performance_snapshot_failure(client, monkeypatch, caplog):
+    engine = _FakeImageEngine()
+
+    def _broken_snapshot():
+        raise RuntimeError("optional telemetry failed")
+
+    monkeypatch.setattr(engine, "performance_snapshot", _broken_snapshot)
+    _patch_engine(monkeypatch, engine)
+
+    with caplog.at_level("INFO", logger="vllm_mlx.routes.images"):
+        resp = client.post("/v1/images/generations", json={"prompt": "a fox"})
+
+    assert resp.status_code == 200
+    message = next(
+        record.getMessage()
+        for record in caplog.records
+        if record.getMessage().startswith("Image generation:")
+    )
+    assert message.endswith("(denoise timing unavailable)")
 
 
 def test_route_does_not_extrapolate_tflops_to_other_models(client, monkeypatch, caplog):
