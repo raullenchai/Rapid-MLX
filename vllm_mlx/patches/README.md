@@ -13,3 +13,9 @@ therefore needs a subprocess regression test that:
 See `test_install_fires_on_real_serve_import_path` in
 `tests/test_deepseek_v32_indexer_gate.py` and
 `tests/test_qwen3_5_norm_shift.py` for the standing pattern.
+
+`mla_absorbed_verify.py` carries the pending mlx-lm absorbed-MLA crossover
+for short multi-token forwards. It is opt-in via
+`RAPID_MLX_MLA_ABSORBED_VERIFY=1`, refuses unknown upstream method bodies,
+requires a post-update cache of at least 1024 tokens, and retires itself
+automatically once mlx-lm exposes the upstream helper.

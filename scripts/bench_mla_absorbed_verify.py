@@ -1,0 +1,324 @@
+#!/usr/bin/env python3
+"""Measure stock versus absorbed MLA for a warm multi-token forward.
+
+The two arms share one loaded model and start each timed call from a shallow
+copy of the same immutable MLX cache graph.  Only the supported attention
+classes' ``__call__`` methods are switched between arms.
+
+Example:
+    python3.12 scripts/bench_mla_absorbed_verify.py \
+      --model mlx-community/GLM-4.7-Flash-4bit \
+      --contexts 1024 4096 16384 --width 3 --repeats 6 \
+      --json /tmp/mla-verify.json
+"""
+
+from __future__ import annotations
+
+import argparse
+import copy
+import json
+import os
+import platform
+import random
+import statistics
+import sys
+import time
+from pathlib import Path
+
+os.environ["RAPID_MLX_MLA_ABSORBED_VERIFY"] = "1"
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+import mlx.core as mx
+from mlx_lm import load
+from mlx_lm.models import cache as mlx_cache
+
+from vllm_mlx.patches import mla_absorbed_verify as patch
+
+LONG_CODE_EDIT_PROMPT = """You are a code refactoring assistant. Re-emit the
+complete Python module below with one change: rename every local variable
+`total` to `accumulator`. Preserve all other tokens and emit only Python.
+
+""" + "\n\n".join(
+    f"""def compute_score_{index}(records, weights):
+    if not records:
+        return 0.0
+    total = 0.0
+    for record, weight in zip(records, weights):
+        total += float(record.value) * float(weight)
+    if total < 0:
+        return 0.0
+    return total"""
+    for index in range(64)
+)
+
+
+def _parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--model", required=True)
+    parser.add_argument("--revision")
+    parser.add_argument("--contexts", nargs="+", type=int, default=[1024, 4096])
+    parser.add_argument("--width", type=int, default=3)
+    parser.add_argument("--repeats", type=int, default=6)
+    parser.add_argument("--chunk-size", type=int, default=512)
+    parser.add_argument("--seed", type=int, default=7)
+    parser.add_argument("--oracle-context", type=int, default=0)
+    parser.add_argument("--oracle-cases", type=int, default=12)
+    parser.add_argument("--suffix-repeats", type=int, default=0)
+    parser.add_argument("--suffix-max-tokens", type=int, default=128)
+    parser.add_argument("--json", type=Path)
+    return parser.parse_args()
+
+
+def _set_arm(targets: dict, originals: dict, arm: str) -> None:
+    for key, cls in targets.items():
+        cls.__call__ = originals[key] if arm == "stock" else targets[key].rapid_call
+
+
+def _clone_cache(cache):
+    """Clone mutable cache containers while sharing immutable MLX arrays."""
+    if hasattr(cache, "shape") and hasattr(cache, "dtype"):
+        return cache
+    if isinstance(cache, list):
+        return [_clone_cache(value) for value in cache]
+    if isinstance(cache, tuple):
+        return tuple(_clone_cache(value) for value in cache)
+    if isinstance(cache, dict):
+        return {key: _clone_cache(value) for key, value in cache.items()}
+
+    cloned = copy.copy(cache)
+    # CacheList owns nested cache objects; ArraysCache owns a mutable list.
+    for attribute in ("caches", "cache"):
+        if hasattr(cache, attribute):
+            setattr(cloned, attribute, _clone_cache(getattr(cache, attribute)))
+    return cloned
+
+
+def _timed_forward(model, tokens, cache) -> tuple[float, object]:
+    started = time.perf_counter()
+    logits = model(tokens, cache=cache)
+    mx.eval(logits)
+    return (time.perf_counter() - started) * 1000, logits
+
+
+def _prefill(model, token_ids: list[int], chunk_size: int):
+    cache = mlx_cache.make_prompt_cache(model)
+    for start in range(0, len(token_ids), chunk_size):
+        logits = model(
+            mx.array(token_ids[start : start + chunk_size], mx.uint32)[None],
+            cache=cache,
+        )
+        mx.eval(logits)
+    return cache
+
+
+def _logit_distance(value, oracle) -> dict:
+    delta = value[:, -1].astype(mx.float32) - oracle[:, -1].astype(mx.float32)
+    mx.eval(delta)
+    return {
+        "max_abs": float(mx.max(mx.abs(delta))),
+        "rms": float(mx.sqrt(mx.mean(mx.square(delta)))),
+        "argmax_equal": bool(
+            mx.array_equal(
+                mx.argmax(value[:, -1], -1), mx.argmax(oracle[:, -1], -1)
+            ).item()
+        ),
+    }
+
+
+def _token_differences(left: list[int], right: list[int]) -> int:
+    return abs(len(left) - len(right)) + sum(a != b for a, b in zip(left, right))
+
+
+def main() -> None:
+    args = _parse_args()
+    if args.width < 2 or args.repeats < 2 or any(c < 1 for c in args.contexts):
+        raise SystemExit("width, repeats, and contexts must be positive; width >= 2")
+
+    patch.install_mla_absorbed_verify()
+    stats = patch.mla_absorbed_verify_stats()
+    if stats["provider"] != "rapid":
+        raise SystemExit(f"Rapid MLA provider is not active: {stats}")
+
+    from mlx_lm.models import mla
+
+    originals = mla._RAPID_MLX_MLA_ABSORBED_ORIGINALS
+    targets = {}
+    for module_name, class_name in originals:
+        module = __import__(f"mlx_lm.models.{module_name}", fromlist=[class_name])
+        cls = getattr(module, class_name)
+        cls.rapid_call = cls.__call__
+        targets[(module_name, class_name)] = cls
+
+    mx.random.seed(args.seed)
+    model, tokenizer = load(args.model, revision=args.revision)
+    active_classes = tuple(targets.values())
+    if not any(isinstance(module, active_classes) for module in model.modules()):
+        supported = ", ".join(f"{mod}.{cls}" for mod, cls in sorted(targets))
+        raise SystemExit(
+            f"loaded model does not contain a patched MLA class; supported: {supported}"
+        )
+    seed_ids = tokenizer.encode(" reproducible MLA benchmark")
+    if not seed_ids:
+        raise SystemExit("tokenizer produced no input IDs")
+    verify = mx.array(
+        [seed_ids[index % len(seed_ids)] for index in range(args.width)], mx.uint32
+    )[None]
+
+    rows = []
+    for context in args.contexts:
+        repeated = [seed_ids[index % len(seed_ids)] for index in range(context)]
+        _set_arm(targets, originals, "stock")
+        base_cache = _prefill(model, repeated, args.chunk_size)
+
+        # Compile both shapes before sampling. ABBA order counters slow drift.
+        arm_logits = {}
+        for arm in ("stock", "rapid"):
+            _set_arm(targets, originals, arm)
+            _, arm_logits[arm] = _timed_forward(model, verify, _clone_cache(base_cache))
+        samples = {"stock": [], "rapid": []}
+        order = ("stock", "rapid", "rapid", "stock")
+        while len(samples["stock"]) < args.repeats:
+            for arm in order:
+                if len(samples[arm]) >= args.repeats:
+                    continue
+                _set_arm(targets, originals, arm)
+                elapsed, arm_logits[arm] = _timed_forward(
+                    model, verify, _clone_cache(base_cache)
+                )
+                samples[arm].append(round(elapsed, 3))
+
+        stock = arm_logits["stock"][:, -1].astype(mx.float32)
+        rapid = arm_logits["rapid"][:, -1].astype(mx.float32)
+        delta = stock - rapid
+        mx.eval(delta)
+        stock_median = statistics.median(samples["stock"])
+        rapid_median = statistics.median(samples["rapid"])
+        rows.append(
+            {
+                "context": context,
+                "width": args.width,
+                "stock_ms": samples["stock"],
+                "rapid_ms": samples["rapid"],
+                "stock_median_ms": stock_median,
+                "rapid_median_ms": rapid_median,
+                "speedup": stock_median / rapid_median,
+                "max_abs_logit": float(mx.max(mx.abs(delta))),
+                "rms_logit": float(mx.sqrt(mx.mean(mx.square(delta)))),
+                "argmax_equal": bool(
+                    mx.array_equal(mx.argmax(stock, -1), mx.argmax(rapid, -1)).item()
+                ),
+            }
+        )
+
+    oracle_result = None
+    if args.oracle_context:
+        _set_arm(targets, originals, "stock")
+        repeated = [
+            seed_ids[index % len(seed_ids)] for index in range(args.oracle_context)
+        ]
+        base_cache = _prefill(model, repeated, args.chunk_size)
+        rng = random.Random(args.seed)
+        vocab_size = int(getattr(tokenizer, "vocab_size", 65536))
+        oracle_rows = []
+        for case in range(args.oracle_cases):
+            ids = [rng.randrange(vocab_size) for _ in range(args.width)]
+            tokens = mx.array(ids, mx.uint32)[None]
+            _set_arm(targets, originals, "stock")
+            stock = model(tokens, cache=_clone_cache(base_cache))
+            oracle_cache = _clone_cache(base_cache)
+            oracle = None
+            for token_id in ids:
+                oracle = model(mx.array([[token_id]], mx.uint32), cache=oracle_cache)
+            _set_arm(targets, originals, "rapid")
+            rapid = model(tokens, cache=_clone_cache(base_cache))
+            mx.eval(stock, rapid, oracle)
+            oracle_rows.append(
+                {
+                    "case": case,
+                    "tokens": ids,
+                    "stock": _logit_distance(stock, oracle),
+                    "rapid": _logit_distance(rapid, oracle),
+                }
+            )
+        oracle_result = {
+            "context": args.oracle_context,
+            "cases": args.oracle_cases,
+            "stock_argmax_matches": sum(
+                r["stock"]["argmax_equal"] for r in oracle_rows
+            ),
+            "rapid_argmax_matches": sum(
+                r["rapid"]["argmax_equal"] for r in oracle_rows
+            ),
+            "stock_mean_rms": statistics.mean(r["stock"]["rms"] for r in oracle_rows),
+            "rapid_mean_rms": statistics.mean(r["rapid"]["rms"] for r in oracle_rows),
+            "rows": oracle_rows,
+        }
+
+    suffix_result = None
+    if args.suffix_repeats:
+        from scripts.bench_suffix_decoding import _run_suffix, _run_vanilla
+
+        _set_arm(targets, originals, "stock")
+        vanilla = _run_vanilla(
+            model, tokenizer, LONG_CODE_EDIT_PROMPT, args.suffix_max_tokens
+        )
+        runs = {"stock": [], "rapid": []}
+        outputs = {}
+        for arm in ("stock", "rapid"):
+            _set_arm(targets, originals, arm)
+            for _ in range(args.suffix_repeats):
+                run = _run_suffix(
+                    model,
+                    tokenizer,
+                    LONG_CODE_EDIT_PROMPT,
+                    args.suffix_max_tokens,
+                    max_draft=8,
+                    max_suffix=4,
+                    min_conf=0.3,
+                )
+                runs[arm].append(run.tps)
+                outputs[arm] = run.out_tokens
+        stock_median = statistics.median(runs["stock"])
+        rapid_median = statistics.median(runs["rapid"])
+        suffix_result = {
+            "prompt_tokens": len(tokenizer.encode(LONG_CODE_EDIT_PROMPT)),
+            "completion_tokens": args.suffix_max_tokens,
+            "vanilla_tps": vanilla.tps,
+            "stock_tps": runs["stock"],
+            "rapid_tps": runs["rapid"],
+            "stock_median_tps": stock_median,
+            "rapid_median_tps": rapid_median,
+            "speedup": rapid_median / stock_median,
+            "vanilla_output_tokens": len(vanilla.out_tokens),
+            "stock_output_tokens": len(outputs["stock"]),
+            "rapid_output_tokens": len(outputs["rapid"]),
+            "stock_vs_vanilla_diffs": _token_differences(
+                outputs["stock"], vanilla.out_tokens
+            ),
+            "rapid_vs_vanilla_diffs": _token_differences(
+                outputs["rapid"], vanilla.out_tokens
+            ),
+            "stock_vs_rapid_diffs": _token_differences(
+                outputs["stock"], outputs["rapid"]
+            ),
+        }
+
+    result = {
+        "model": args.model,
+        "revision": args.revision,
+        "mlx": mx.__version__,
+        "platform": platform.platform(),
+        "seed": args.seed,
+        "rows": rows,
+        "oracle": oracle_result,
+        "suffix": suffix_result,
+        "stats": patch.mla_absorbed_verify_stats(),
+    }
+    rendered = json.dumps(result, indent=2)
+    print(rendered)
+    if args.json:
+        args.json.write_text(rendered + "\n")
+
+
+if __name__ == "__main__":
+    main()
