@@ -43,14 +43,14 @@ The registered text protocol (`rapid-community-speed` v2) is two fixed workloads
 
 Prompts are synthetic token sequences (`rapid-synthetic-token-corpus` v2, seeded per case), so no user content is ever measured or recorded. If the model is not in the local Hugging Face cache yet, `run` downloads it first — that network call is model loading, not a submission. The image and video protocols are a fixed prompt, seed and size (see `rapid-image-speed-v1.json` / `rapid-video-speed-v1.json` under `vllm_mlx/catalog/schemas/`). The protocol files are immutable; a new version is a new file and a new `protocol_version`.
 
-Per round, a text measurement records `prompt_tokens`, `output_tokens`, `ttft_ms`, `decode_duration_ms`, `total_duration_ms` and `peak_active_memory_mib`. Decode throughput is derived by readers as `(output_tokens − 1) / (decode_duration_ms / 1000)` tokens per second — the first token lands at `ttft_ms` — which matches llama.cpp `tg` and vLLM TPOT semantics. The website uses this formula; the CLI summary matches it from #3148 onwards.
+Per round, a text measurement records `prompt_tokens`, `output_tokens`, `ttft_ms`, `decode_duration_ms`, `total_duration_ms` and `peak_active_memory_mib`. Decode throughput is derived by readers as `(output_tokens − 1) / (decode_duration_ms / 1000)` tokens per second — the first token lands at `ttft_ms` — which matches llama.cpp `tg` and vLLM TPOT semantics. The website uses this formula; the CLI summary printed by `benchmark run` uses the same one from the release after 0.13.4 (earlier releases divided by `output_tokens`, about 1% higher).
 
 ### What `share` sends
 
 `rapid-mlx benchmark share <run_id>` prints the exact request body and asks for `y/N` (default no). `--preview` prints it without asking. The body is the archived run plus one field, `install_id`:
 
-- `model` — the Hugging Face repo id (and subfolder), artifact format, and the quantization block. Releases up to 0.13.4 record the quantization as `unknown`; from #3147 it is read from the cached `config.json` (kind, method, bit width, group size) together with the resolved snapshot revision.
-- `machine` — chip, unified memory, CPU/GPU core counts, macOS version, and the run conditions (AC/battery, Low Power Mode, thermal state, memory pressure, available memory). Releases up to 0.13.4 record these as `unknown`; from #3146 they are sampled before the model loads and again after the last measured round.
+- `model` — the Hugging Face repo id (and subfolder), artifact format, and the quantization block. Releases up to 0.13.4 record the quantization as `unknown`; from the release after 0.13.4 it is read from the cached `config.json` (kind, method, bit width, group size) together with the resolved snapshot revision.
+- `machine` — chip, unified memory, CPU/GPU core counts, macOS version, and the run conditions (AC/battery, Low Power Mode, thermal state, memory pressure, available memory). Releases up to 0.13.4 record these as `unknown`; from the release after 0.13.4 they are sampled before the model loads and again after the last measured round.
 - `execution` — Rapid-MLX / MLX / Python versions, source revision when running from a checkout, and the execution fields (context length, speculative decoding, KV-cache mode/dtype, prefill backend); settings the runner did not observe are recorded explicitly as `unknown` / `null`, never guessed.
 - `workload` — the protocol id, version and digest that produced the numbers.
 - `measurements` — the raw per-round samples above.
