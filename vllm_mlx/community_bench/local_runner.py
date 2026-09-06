@@ -686,9 +686,9 @@ async def _text_measurements(model_name: str) -> tuple[list[dict[str, Any]], int
         EngineConfig,
         _init_mlx_step_thread,
     )
+    from vllm_mlx.model_aliases import resolve_model
     from vllm_mlx.scheduler import SchedulerConfig
     from vllm_mlx.service.helpers import get_model_max_context
-    from vllm_mlx.model_aliases import resolve_model
     from vllm_mlx.utils.tokenizer import load_model_with_fallback
 
     from .runner import _reported_token_count, run_standardized_bench
