@@ -94,6 +94,79 @@ class Qwen4ExpStateCache(ArraysCache):
         self.rollback_state = None
         self._rollback_slots = None
 
+    # ------------------------------------------------------------------
+    # cache_rollback contract.
+    #
+    # During a speculative-verify forward the recurrent state is advanced by
+    # the whole draft in one call, and a rejected suffix must be rolled back
+    # to the last committed boundary losslessly. The per-position recurrent
+    # boundaries captured by ``record_slot_snapshots(..., finalize=True)``
+    # (``rollback_state``) are exactly the undo record this cache needs, the
+    # same way DeepSeek V4's rotating/pooling caches carry an undo log
+    # (``deepseek_v4_rollback``). Exposing them through the ``cache_rollback``
+    # contract (``is_trimmable``/``can_trim``/``trim``/``trim_checkpoint``/
+    # ``restore_trim_checkpoint``) lets ``cache_rollback.can_advance``/``trim_all``
+    # build an atomic multi-token verify transaction over a composite HYBRID
+    # cache — without which the draftless n-gram suffix path rejected hybrid
+    # recurring (Qwen3.5/3.6 GatedDeltaNet, Granite4 Mamba2) layers as
+    # non-trimmable. Only the spec-verify window is trimmable (matches DSpark's
+    # ``is_trimmable == has undo record``), and only rollback as far as the
+    # captured boundary.
+    # Boundary convention — MUST match the ``restore_rollback`` callers in
+    # ``spec_decode/mtp/generator.py`` and the producers in ``qwen4_exp.py``:
+    # a verify forward of ``L = K + 1`` tokens ``[committed, d_0..d_{K-1}]``
+    # records ``L - 1`` boundaries, the recurrent state after positions
+    # ``1..L-1`` (``range(1, length)``); the state after all ``L`` tokens is
+    # the live ``cache`` itself and the pre-verify state is never needed
+    # because the first token is already committed. Hence
+    # ``verify_size == len(rollback_state) + 1``, dropping ``n`` rejected
+    # tokens keeps ``L - n`` and restores ``snapshots[L - n - 1]``, and ``n``
+    # ranges over ``1..K == len(rollback_state)``. (QSA differs: its record
+    # holds exactly ``verify_size`` entries, so it may pass ``len(...)``
+    # straight through — do not copy that here.)
+    def _verify_size(self) -> int | None:
+        snapshots = self.rollback_state
+        if snapshots is None:
+            return None
+        return len(snapshots) + 1
+
+    def is_trimmable(self) -> bool:
+        return self.rollback_state is not None
+
+    def can_trim(self, n: int) -> bool:
+        # ``n <= 0`` is degenerate: ``trim(0)`` would invoke ``restore_rollback``
+        # and discard the undo record without dropping any tokens, breaking the
+        # verify window. Only a positive trim may roll back.
+        snapshots = self.rollback_state
+        if n <= 0 or snapshots is None:
+            return False
+        return n <= len(snapshots)
+
+    def trim_checkpoint(self):
+        return (
+            list(self.cache),
+            self.rollback_state,
+            self._rollback_slots,
+            self.left_padding,
+            self.lengths,
+        )
+
+    def restore_trim_checkpoint(self, state) -> None:
+        (
+            self.cache,
+            self.rollback_state,
+            self._rollback_slots,
+            self.left_padding,
+            self.lengths,
+        ) = state
+
+    def trim(self, n: int) -> int:
+        verify_size = self._verify_size()
+        if verify_size is None or not self.can_trim(n):
+            return 0
+        self.restore_rollback(n, verify_size)
+        return n
+
 
 class QSAIndexCache(ArraysCache):
     """Raw circular index keys plus persistent compressed-key state."""

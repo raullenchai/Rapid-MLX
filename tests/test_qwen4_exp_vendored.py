@@ -791,6 +791,284 @@ def test_qsa_speculative_snapshot_fails_closed_on_invalid_boundary():
         qsa.restore_rollback(3, 3)
 
 
+def test_qwen4_state_cache_implements_cache_rollback_contract():
+    """``Qwen4ExpStateCache`` participates in the composite verify transaction.
+
+    Layer B' of #2561: the draftless n-gram suffix path (and the composite
+    ``cache_rollback`` transaction) rejected hybrid recurring layers because
+    ``Qwen4ExpStateCache`` did not satisfy ``cache_rollback.can_trim``. It now
+    exposes the same ``is_trimmable``/``can_trim``/``trim``/
+    ``trim_checkpoint``/``restore_trim_checkpoint`` contract QSA already has,
+    backed by the existing ``record_slot_snapshots``/``rollback_state``
+    undo record. Only the spec-verify window is trimmable; the preflight and
+    transactional restore must behave correctly.
+    """
+    from vllm_mlx.cache_rollback import can_advance, can_trim, trim_all
+
+    recurrent = Qwen4ExpStateCache(size=2)
+
+    # Not in a spec-verify window → nothing to roll back.
+    assert not recurrent.is_trimmable()
+    assert not can_trim(recurrent, 1)
+    assert not can_advance(recurrent, 1)
+
+    # Producer convention (``qwen4_exp.py`` ``record_slot_snapshots`` over
+    # ``range(1, length)`` and the MTP generator's ``verify_size = k_len + 1``):
+    # a 2-draft verify forward ``[committed, d_0, d_1]`` (L = 3) records L-1 = 2
+    # boundaries — the state after position 1 and after position 2 — while the
+    # live ``cache`` holds the state after all 3 tokens. Dropping ``n`` rejected
+    # drafts keeps ``L - n`` tokens and must restore ``snapshots[L - n - 1]``.
+    # Each boundary carries DISTINCT slot values so an off-by-one is caught.
+    after1 = [
+        mx.array([[1.0, 2.0]], dtype=mx.float32),
+        mx.array([[3.0, 4.0]], dtype=mx.float32),
+    ]
+    after2 = [
+        mx.array([[5.0, 6.0]], dtype=mx.float32),
+        mx.array([[7.0, 8.0]], dtype=mx.float32),
+    ]
+    after3 = [
+        mx.array([[9.0, 10.0]], dtype=mx.float32),
+        mx.array([[11.0, 12.0]], dtype=mx.float32),
+    ]
+    recurrent.cache = list(after3)
+    recurrent.record_slot_snapshots(0, [after1[0], after2[0]])
+    recurrent.record_slot_snapshots(1, [after1[1], after2[1]], finalize=True)
+
+    assert recurrent.is_trimmable()
+    assert can_trim(recurrent, 1)
+    assert can_trim(recurrent, 2)
+    # Only the K = 2 drafts are droppable; the committed first token never is.
+    assert not can_trim(recurrent, 3)
+    assert can_advance(recurrent, 2)
+
+    # Reject ONE draft → keep 2 tokens → the state after position 2, and the
+    # undo record is consumed. The restored cache must MATCH that boundary
+    # exactly, proving lossless rollback (not just a cleared record).
+    assert trim_all([recurrent], 1)
+    assert recurrent.rollback_state is None
+    np.testing.assert_array_equal(np.array(recurrent.cache[0]), np.array(after2[0]))
+    np.testing.assert_array_equal(np.array(recurrent.cache[1]), np.array(after2[1]))
+
+
+def test_qwen4_state_cache_trim_matches_mtp_generator_restore():
+    """``trim(n)`` must land on the same boundary as the MTP generator's call.
+
+    ``spec_decode/mtp/generator.py`` rolls a Qwen4 cache back with
+    ``restore_rollback(n_to_drop, verify_size=k_len + 1)``. The composite
+    ``cache_rollback`` contract has no ``verify_size`` argument, so ``trim``
+    must derive it from the undo record (``len(rollback_state) + 1``); passing
+    ``len(rollback_state)`` (the QSA convention) lands one token too early and
+    silently desynchronises the recurrent state from the trimmed KV cache.
+    """
+    k_len = 3
+    boundaries = [
+        [
+            mx.array([[float(10 * position + 1)]], dtype=mx.float32),
+            mx.array([[float(10 * position + 2)]], dtype=mx.float32),
+        ]
+        for position in range(1, k_len + 1)
+    ]
+
+    def fresh() -> Qwen4ExpStateCache:
+        cache = Qwen4ExpStateCache(size=2)
+        cache.record_slot_snapshots(0, [b[0] for b in boundaries])
+        cache.record_slot_snapshots(1, [b[1] for b in boundaries], finalize=True)
+        return cache
+
+    for n_to_drop in range(1, k_len + 1):
+        via_generator = fresh()
+        via_generator.restore_rollback(n_to_drop, verify_size=k_len + 1)
+        via_trim = fresh()
+        assert via_trim.trim(n_to_drop) == n_to_drop
+        for slot in range(2):
+            np.testing.assert_array_equal(
+                np.array(via_trim.cache[slot]), np.array(via_generator.cache[slot])
+            )
+        # Explicitly: keep = (k_len + 1) - n_to_drop tokens → boundary index keep-1.
+        expected = boundaries[k_len - n_to_drop]
+        np.testing.assert_array_equal(
+            np.array(via_trim.cache[0]), np.array(expected[0])
+        )
+
+    # Dropping more than the K drafts is refused rather than aliased, and a
+    # cache with no undo record (outside a verify window) refuses any trim.
+    assert fresh().trim(k_len + 1) == 0
+    assert Qwen4ExpStateCache(size=2).trim(1) == 0
+
+
+def test_qwen4_state_cache_zero_trim_is_side_effect_free():
+    """``trim(0)`` must not discard the verify undo record.
+
+    A degenerate ``n=0`` trim previously passed ``can_trim`` and invoked
+    ``restore_rollback``, rewriting ``cache`` to the last snapshot boundary and
+    clearing ``rollback_state`` (throwing away the verify window) even though
+    zero tokens were trimmed. ``can_trim(0)`` must be ``False`` so ``trim(0)``
+    is a no-op that leaves cache and undo record untouched.
+    """
+    from vllm_mlx.cache_rollback import can_trim, trim_all
+
+    recurrent = Qwen4ExpStateCache(size=2)
+    b0 = [
+        mx.array([[1.0, 2.0]], dtype=mx.float32),
+        mx.array([[3.0, 4.0]], dtype=mx.float32),
+    ]
+    b1 = [
+        mx.array([[5.0, 6.0]], dtype=mx.float32),
+        mx.array([[7.0, 8.0]], dtype=mx.float32),
+    ]
+    recurrent.cache = [b1[0], b1[1]]
+    recurrent.record_slot_snapshots(0, [b0[0], b1[0]])
+    recurrent.record_slot_snapshots(1, [b0[1], b1[1]], finalize=True)
+
+    assert not can_trim(recurrent, 0)
+    # trim_all short-circuits n<=0 (returns True) without invoking any trim;
+    # state must be left completely intact.
+    assert trim_all([recurrent], 0)
+    assert recurrent.rollback_state is not None
+    assert len(recurrent.rollback_state) == 2
+    np.testing.assert_array_equal(np.array(recurrent.cache[0]), np.array(b1[0]))
+    np.testing.assert_array_equal(np.array(recurrent.cache[1]), np.array(b1[1]))
+
+
+def test_qwen4_state_cache_rollback_full_rejection():
+    """Rejecting every draft restores the state after the committed token."""
+    from vllm_mlx.cache_rollback import trim_all
+
+    recurrent = Qwen4ExpStateCache(size=2)
+    after1 = [
+        mx.array([[1.0, 2.0]], dtype=mx.float32),
+        mx.array([[3.0, 4.0]], dtype=mx.float32),
+    ]
+    after2 = [
+        mx.array([[5.0, 6.0]], dtype=mx.float32),
+        mx.array([[7.0, 8.0]], dtype=mx.float32),
+    ]
+    after3 = [
+        mx.array([[9.0, 10.0]], dtype=mx.float32),
+        mx.array([[11.0, 12.0]], dtype=mx.float32),
+    ]
+    recurrent.cache = list(after3)
+    recurrent.record_slot_snapshots(0, [after1[0], after2[0]])
+    recurrent.record_slot_snapshots(1, [after1[1], after2[1]], finalize=True)
+
+    # Reject both drafts → keep only the committed token → state after position 1.
+    assert trim_all([recurrent], 2)
+    assert recurrent.rollback_state is None
+    np.testing.assert_array_equal(np.array(recurrent.cache[0]), np.array(after1[0]))
+    np.testing.assert_array_equal(np.array(recurrent.cache[1]), np.array(after1[1]))
+
+
+def test_qwen4_state_cache_rollback_via_composite_cache_list():
+    """A QSA + recurrent composite now admits multi-token rollback losslessly.
+
+    The suffix verify path preflights the WHOLE composite cache with
+    ``cache_rollback.can_advance``/``trim_all``. Both leaves (QSA compressed
+    keys and Qwen4 recurrent state) must roll back to the same committed
+    boundary. This is the Layer B' precondition for opening the hybrid n-gram
+    allowlist.
+    """
+    from vllm_mlx.cache_rollback import can_advance, trim_all
+
+    def transform(group, start):
+        return group + start
+
+    initial = mx.arange(9, dtype=mx.float32).reshape(1, 9, 1)
+    verify = mx.array([[[90.0], [91.0]]])
+
+    qsa = QSAIndexCache(compress_ratio=4)
+    qsa.update(initial, transform)
+    # Verify forward of [base, d_0, d_1] with rollback captured.
+    qsa.update(verify, transform, record_rollback=True)
+    # The first rollback boundary is the committed prefix a rejected verify must
+    # return to; capture it (as its own (offsets, counts, pending, raw_ring)
+    # tuple) so the post-trim state can be compared against it exactly.
+    qbase = qsa.rollback_state[0]
+
+    recurrent = Qwen4ExpStateCache(size=2)
+    # The QSA verify above published 2 boundaries (from a 2-token verify that
+    # completed one extra compressed group), which supports dropping 1. The
+    # recurrent cache saw the same [committed, d_0, d_1] forward, so its undo
+    # record holds the state after position 1 and after position 2 (its live
+    # ``cache`` is the state after position 3). Dropping one token must land on
+    # ``after2``; DISTINCT per-boundary values catch a wrong restore.
+    after1 = [
+        mx.array([[1.0, 2.0]], dtype=mx.float32),
+        mx.array([[3.0, 4.0]], dtype=mx.float32),
+    ]
+    after2 = [
+        mx.array([[5.0, 6.0]], dtype=mx.float32),
+        mx.array([[7.0, 8.0]], dtype=mx.float32),
+    ]
+    recurrent.cache = [
+        mx.array([[9.0, 10.0]], dtype=mx.float32),
+        mx.array([[11.0, 12.0]], dtype=mx.float32),
+    ]
+    recurrent.record_slot_snapshots(0, [after1[0], after2[0]])
+    recurrent.record_slot_snapshots(1, [after1[1], after2[1]], finalize=True)
+
+    composite = CacheList(qsa, recurrent)
+
+    # Multi-token verify admissible now that BOTH leaves are trimmable.
+    assert can_advance(composite, 1)
+    # Reject the last draft → roll back both leaves by one to the base boundary.
+    assert trim_all([composite], 1)
+    assert qsa.rollback_state is None
+    assert recurrent.rollback_state is None
+    # QSA restored its committed-prefix (offsets, counts, pending, raw_ring)
+    # boundary exactly, matching the rollback snapshot it was recorded from.
+    (q_offsets, q_counts, q_pending, q_raw) = qbase
+    assert qsa._offsets == list(q_offsets)
+    assert qsa._compressed_counts == list(q_counts)
+    assert qsa._pending_left_padding == list(q_pending)
+    np.testing.assert_array_equal(np.array(qsa.raw_ring), np.array(q_raw))
+    # …and the recurrent cache restored the state after the two kept tokens.
+    np.testing.assert_array_equal(np.array(recurrent.cache[0]), np.array(after2[0]))
+    np.testing.assert_array_equal(np.array(recurrent.cache[1]), np.array(after2[1]))
+
+
+def test_qwen4_state_cache_transactional_restore_on_later_leaf_failure():
+    """A failure mid-``trim_all`` atomically restores an already-trimmed leaf.
+
+    ``trim_all`` checkpoints every leaf before trimming, then restores all of
+    them if ANY leaf fails after an earlier trim already committed. Without
+    this the earlier leaf would be left half-trimmed — breaking the lossless
+    rollback contract. Force the failure in a later leaf and assert the
+    recurrent cache returns to its exact pre-trim (verify) state, undo record
+    intact.
+    """
+    from vllm_mlx.cache_rollback import trim_all
+
+    class _FailingLeaf:
+        def can_trim(self, n):
+            return True
+
+        def trim(self, n):
+            raise RuntimeError("boom")
+
+    recurrent = Qwen4ExpStateCache(size=2)
+    rb0 = [
+        mx.array([[1.0, 2.0]], dtype=mx.float32),
+        mx.array([[3.0, 4.0]], dtype=mx.float32),
+    ]
+    rb1 = [
+        mx.array([[5.0, 6.0]], dtype=mx.float32),
+        mx.array([[7.0, 8.0]], dtype=mx.float32),
+    ]
+    # The verify advanced to boundary 1 and captured a 2-entry undo record.
+    recurrent.cache = [rb1[0], rb1[1]]
+    recurrent.record_slot_snapshots(0, [rb0[0], rb1[0]])
+    recurrent.record_slot_snapshots(1, [rb0[1], rb1[1]], finalize=True)
+
+    composite = CacheList(recurrent, _FailingLeaf())
+    assert not trim_all([composite], 1)
+    # Atomic: the earlier successful trim was rolled back, not left half-applied.
+    assert recurrent.rollback_state is not None
+    assert len(recurrent.rollback_state) == 2
+    np.testing.assert_array_equal(np.array(recurrent.cache[0]), np.array(rb1[0]))
+    np.testing.assert_array_equal(np.array(recurrent.cache[1]), np.array(rb1[1]))
+
+
 def test_suffix_scheduler_falls_through_before_qsa_multitoken_verify():
     from vllm_mlx.scheduler import _install_suffix_decoding
 
