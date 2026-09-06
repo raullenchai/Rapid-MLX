@@ -199,6 +199,27 @@ print(json.dumps(stats))
     assert stats["unchanged"] is True
 
 
+def test_unqualified_mlx_lm_version_fails_closed() -> None:
+    stats = _run_install_probe(
+        """
+import importlib.metadata
+import json
+from mlx_lm.models import deepseek_v3
+original = deepseek_v3.DeepseekV3Attention.__call__
+real_version = importlib.metadata.version
+importlib.metadata.version = lambda name: "0.31.4" if name == "mlx-lm" else real_version(name)
+from vllm_mlx.patches.mla_absorbed_verify import install_mla_absorbed_verify, mla_absorbed_verify_stats
+install_mla_absorbed_verify()
+stats = mla_absorbed_verify_stats()
+stats["unchanged"] = deepseek_v3.DeepseekV3Attention.__call__ is original
+print(json.dumps(stats))
+"""
+    )
+    assert stats["provider"] == "unsupported"
+    assert stats["targets"] == []
+    assert stats["unchanged"] is True
+
+
 def test_deepseek_v32_indexer_patch_is_not_replaced() -> None:
     stats = _run_install_probe(
         """
@@ -384,6 +405,20 @@ def test_patched_attention_matches_stock_contract(
 
     delta = mx.abs(stock.astype(mx.float32) - candidate.astype(mx.float32))
     assert float(mx.max(delta)) < 1e-5
+    assert stock_cache.offset == candidate_cache.offset
+    assert mx.array_equal(stock_cache.keys, candidate_cache.keys).item()
+    assert mx.array_equal(stock_cache.values, candidate_cache.values).item()
+
+    # The verification call must leave an equivalent cache for subsequent
+    # single-token decoding, not merely produce matching immediate logits.
+    follow_x = mx.random.normal((1, 1, 32)).astype(mx.bfloat16)
+    stock_follow = original(attention, follow_x, None, stock_cache)
+    candidate_follow = attention(follow_x, None, candidate_cache)
+    mx.eval(stock_follow, candidate_follow)
+    follow_delta = mx.abs(
+        stock_follow.astype(mx.float32) - candidate_follow.astype(mx.float32)
+    )
+    assert float(mx.max(follow_delta)) < 1e-5
     after_warm = patch.mla_absorbed_verify_stats()
     assert after_warm["absorbed"] == after_cold["absorbed"] + 1
 

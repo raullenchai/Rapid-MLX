@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """Opt-in absorbed MLA routing for short multi-token forwards.
 
-mlx-lm 0.31.x only uses the absorbed Multi-head Latent Attention (MLA)
+mlx-lm 0.31.3 only uses the absorbed Multi-head Latent Attention (MLA)
 factorization for a single query.  On a warm cache the same factorization is
 cheaper for the small query widths used by speculative verification.  This
 module carries a narrowly version-gated compatibility patch while the
@@ -19,11 +19,13 @@ import logging
 import os
 import threading
 from collections.abc import Callable
+from importlib.metadata import PackageNotFoundError, version
 from typing import Any
 
 logger = logging.getLogger(__name__)
 
 _ENV = "RAPID_MLX_MLA_ABSORBED_VERIFY"
+_QUALIFIED_MLX_LM_VERSION = "0.31.3"
 _TRUE_VALUES = frozenset({"1", "true", "yes", "on"})
 _MIN_CACHE_LENGTH = 1024
 _LOCK = threading.Lock()
@@ -68,6 +70,13 @@ _SUPPORTED_SOURCE_HASHES = {
 
 def _feature_enabled() -> bool:
     return os.environ.get(_ENV, "").strip().lower() in _TRUE_VALUES
+
+
+def _mlx_lm_version() -> str | None:
+    try:
+        return version("mlx-lm")
+    except PackageNotFoundError:  # pragma: no cover - core dependency in production
+        return None
 
 
 def max_absorbed_queries(
@@ -240,6 +249,18 @@ def install_mla_absorbed_verify() -> None:
             # Default-off must be a literal zero-overhead path: do not wrap
             # every attention layer merely to rediscover that the flag is off.
             _PROVIDER = "disabled"
+            _INSTALLED = True
+            return
+
+        installed_version = _mlx_lm_version()
+        if installed_version != _QUALIFIED_MLX_LM_VERSION:
+            logger.warning(
+                "[mla_absorbed_verify] refusing unqualified mlx-lm version %s "
+                "(expected %s)",
+                installed_version or "unavailable",
+                _QUALIFIED_MLX_LM_VERSION,
+            )
+            _PROVIDER = "unsupported"
             _INSTALLED = True
             return
 
