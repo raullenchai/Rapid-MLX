@@ -169,6 +169,18 @@ def low_power_mode() -> int:
     return int(match.group(1))
 
 
+def running_rapid_servers() -> list[int]:
+    rows = command("ps", "-axo", "pid=,command=")
+    matches = []
+    for row in rows.splitlines():
+        pid_text, _, process_command = row.strip().partition(" ")
+        if not pid_text.isdigit() or int(pid_text) == os.getpid():
+            continue
+        if re.search(r"(?:rapid-mlx|vllm_mlx\.cli).*\bserve\b", process_command):
+            matches.append(int(pid_text))
+    return matches
+
+
 def swap_used_mb() -> float:
     text = command("sysctl", "-n", "vm.swapusage")
     match = re.search(r"used = ([0-9.]+)([MG])", text)
@@ -313,8 +325,36 @@ def run_session(
         try:
             wait_ready(proc, args.port, args.load_timeout)
             samples: list[dict[str, object]] = []
+            warmups: list[dict[str, object]] = []
+
+            def session_record(status: str, swap_after: float) -> dict[str, object]:
+                return {
+                    "session": session_index,
+                    "precision": precision,
+                    "alias": alias,
+                    "status": status,
+                    "swap_before_mb": round(swap_before, 2),
+                    "swap_after_mb": round(swap_after, 2),
+                    "swap_delta_mb": round(max(0.0, swap_after - swap_before), 2),
+                    "warmups": warmups,
+                    "samples": samples,
+                    "log": str(log_path),
+                }
+
             for workload in workloads:
                 warmup = request_image(args.port, alias, workload, args.seed)
+                current_gib, peak_gib = footprint(proc.pid)
+                warmups.append(
+                    {
+                        "workload": workload["id"],
+                        **warmup,
+                        "current_footprint_gib": current_gib,
+                        "peak_footprint_gib": peak_gib,
+                    }
+                )
+                swap_now = swap_used_mb()
+                if swap_now - swap_before > args.abort_swap_mb:
+                    return session_record("aborted_swap", swap_now)
                 for repeat in range(args.repeats):
                     sample = request_image(args.port, alias, workload, args.seed)
                     current_gib, peak_gib = footprint(proc.pid)
@@ -327,23 +367,16 @@ def run_session(
                             "peak_footprint_gib": peak_gib,
                         }
                     )
+                    swap_now = swap_used_mb()
+                    if swap_now - swap_before > args.abort_swap_mb:
+                        return session_record("aborted_swap", swap_now)
                 print(
                     f"session {session_index} {precision} {workload['id']}: "
                     f"warmup={warmup['wall_s']}s",
                     flush=True,
                 )
             swap_after = swap_used_mb()
-            return {
-                "session": session_index,
-                "precision": precision,
-                "alias": alias,
-                "status": "ok",
-                "swap_before_mb": round(swap_before, 2),
-                "swap_after_mb": round(swap_after, 2),
-                "swap_delta_mb": round(max(0.0, swap_after - swap_before), 2),
-                "samples": samples,
-                "log": str(log_path),
-            }
+            return session_record("ok", swap_after)
         finally:
             stop(proc)
             time.sleep(args.cooldown)
@@ -395,6 +428,7 @@ def main() -> int:
     parser.add_argument("--load-timeout", type=float, default=300)
     parser.add_argument("--cooldown", type=float, default=15)
     parser.add_argument("--max-start-swap-mb", type=float, default=256)
+    parser.add_argument("--abort-swap-mb", type=float, default=256)
     parser.add_argument("--log-dir", default="/tmp/rapid-image-precision-logs")
     args = parser.parse_args()
     if platform.system() != "Darwin":
@@ -409,6 +443,15 @@ def main() -> int:
     if ram_gib < 32:
         parser.error(
             f"BF16 qualification requires at least 32 GiB; host has {ram_gib:.1f}"
+        )
+    power_mode = low_power_mode()
+    if power_mode != 0:
+        parser.error("qualification requires AC low-power mode to be off")
+    active_servers = running_rapid_servers()
+    if active_servers:
+        parser.error(
+            "qualification requires an otherwise-idle host; active Rapid server PID: "
+            f"{active_servers[0]}"
         )
     start_swap_mb = swap_used_mb()
     if start_swap_mb > args.max_start_swap_mb:
@@ -431,7 +474,7 @@ def main() -> int:
             "chip": chip,
             "physical_ram_gib": round(ram_gib, 2),
             "macos": platform.mac_ver()[0],
-            "low_power_mode": low_power_mode(),
+            "low_power_mode": power_mode,
             "start_swap_mb": round(start_swap_mb, 2),
             "python": platform.python_version(),
             "rapid_mlx": package_version("rapid-mlx"),
@@ -450,6 +493,7 @@ def main() -> int:
             "models_are_sequential": True,
             "downloads_allowed": False,
             "max_start_swap_mb": args.max_start_swap_mb,
+            "abort_swap_mb": args.abort_swap_mb,
         },
         "artifacts": identities,
         "sessions": [],
@@ -461,6 +505,11 @@ def main() -> int:
             session = run_session(precision, session_index, workloads, args)
             result["sessions"].append(session)  # type: ignore[union-attr]
             output.write_text(json.dumps(result, indent=2) + "\n")
+            if session["status"] != "ok":
+                raise RuntimeError(
+                    f"session {session_index} {precision} aborted after "
+                    f"{session['swap_delta_mb']} MiB new swap"
+                )
         result["summary"] = summarize(result["sessions"])  # type: ignore[arg-type]
         result["status"] = "pass"
         output.write_text(json.dumps(result, indent=2) + "\n")

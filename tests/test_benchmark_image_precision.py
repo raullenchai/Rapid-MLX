@@ -73,6 +73,20 @@ def test_port_probe_rejects_listener_but_not_released_port():
     bench.ensure_port_free(port)
 
 
+def test_running_rapid_servers_ignores_unrelated_processes(monkeypatch):
+    monkeypatch.setattr(bench.os, "getpid", lambda: 20)
+    monkeypatch.setattr(
+        bench,
+        "command",
+        lambda *args, **kwargs: (
+            "10 /usr/bin/node portal_server.py\n"
+            "20 python benchmark_image_precision.py\n"
+            "30 /usr/bin/rapid-mlx --no-banner serve model --port 8000\n"
+        ),
+    )
+    assert bench.running_rapid_servers() == [30]
+
+
 def test_validate_png_checks_format_dimensions_and_nonuniformity():
     raw = _png()
     response = {"data": [{"b64_json": base64.b64encode(raw).decode()}]}
