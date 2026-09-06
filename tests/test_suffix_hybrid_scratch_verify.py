@@ -409,6 +409,10 @@ class TestHybridInstallGate:
         mx.eval(model(mx.array([[1, 2, 3]]), cache=gold))
         mx.eval(model(mx.array([[7]]), cache=gold))
         _assert_state_equal(gb.prompt_cache, gold)
+        # Finding (round-8 #2): reject-first (n_accepted == 0) has NO synthetic
+        # emits, so no pristine replay head should be retained — the live cache
+        # already holds exactly what will be surfaced.
+        assert 1 not in gb._suffix_hybrid_replay
 
     def test_pure_attention_optin_ignored(self):
         """suffix_hybrid on a pure-attention model is a no-op (not a raised error)."""

@@ -2327,7 +2327,13 @@ def _verify_scratch(
     """
     verify_logits = model(verify_input, cache=commit_head)
     preds = mx.argmax(verify_logits, axis=-1)
-    mx.eval(preds)
+    # Materialize BOTH outputs together. Leaving ``verify_logits`` as an
+    # unevaluated lazy graph keeps the scratch forward - and therefore the
+    # scratch cache tensors - referenced even after the caller drops
+    # ``commit_head``, quietly defeating the ~2x-cache envelope once the
+    # bit-exactness probe allocates its own head. Realizing it here releases
+    # the scratch graph as soon as this helper returns.
+    mx.eval(verify_logits, preds)
     preds_list = preds.tolist()[0]
     n_accepted = 0
     for i, tok in enumerate(draft):
@@ -3520,14 +3526,20 @@ def _install_suffix_decoding(
                 # The committed prefix is now on the live cache ([X, d_0..
                 # d_{n_accepted-1}]) and the extra accepted drafts are queued
                 # for emission. Retain the pristine pre-verify snapshot (plus
-                # the verify batch) so a terminal stop part-way through the
-                # synthetic emits can rebuild the delivered response cache
-                # from only the surfaced tokens — the Qwen4 recurrent cache
-                # cannot roll an un-surfaced accepted tail back any other way.
-                _pending_hybrid_replay[uid] = (
-                    result["replay_snapshot"],
-                    verify_input,
-                )
+                # the verify batch) ONLY while there are accepted drafts to
+                # drain, so a terminal stop part-way through the synthetic
+                # emits can rebuild the delivered response cache from only the
+                # surfaced tokens — the Qwen4 recurrent cache cannot roll an
+                # un-surfaced accepted tail back any other way. With
+                # ``n_accepted == 0`` there are no synthetic emits, so the
+                # live cache already holds exactly what will be surfaced and
+                # no replay head is retained (avoids a sustained 2x hold for
+                # the common reject/vanilla fast path).
+                if n_accepted > 0:
+                    _pending_hybrid_replay[uid] = (
+                        result["replay_snapshot"],
+                        verify_input,
+                    )
             except Exception as e:  # noqa: BLE001
                 logger.debug(f"[SuffixDecoding] hybrid verify failed: {e!r}")
                 _stats["errors"] += 1
@@ -3951,6 +3963,12 @@ def _install_suffix_decoding(
                         all_tokens=None,
                     )
                 )
+            # All pending synthetic emits for this uid were drained WITHOUT a
+            # terminal firing, so there is no un-surfaced accepted tail to
+            # repair — release the retained pristine replay head now (it would
+            # otherwise hold a full 2nd cache for the rest of the request).
+            # A terminal path already reaped it via ``_reap_uid`` above.
+            _pending_hybrid_replay.pop(uid, None)
 
         return augmented
 
@@ -4029,6 +4047,10 @@ def _install_suffix_decoding(
     # cleanup. Production code should not mutate this directly.
     gb._suffix_drafters = _drafters
     gb._suffix_uid_state = _uid_state
+    # Expose the per-uid hybrid replay slot (retained pristine snapshot + verify
+    # batch) for tests to assert its lifecycle (stored only when accepted drafts
+    # are pending, released when they drain). Test-only.
+    gb._suffix_hybrid_replay = _pending_hybrid_replay
 
     logger.info(
         "[SuffixDecoding] installed: max_draft=%d, max_suffix_len=%d, "
