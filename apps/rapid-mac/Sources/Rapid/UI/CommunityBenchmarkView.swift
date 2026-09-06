@@ -92,9 +92,15 @@ struct CommunityBenchmarkModel: Identifiable, Hashable {
         let models: [CommunityBenchmarkModel]
     }
 
-    static let recommendedSectionTitle = "Recommended for this Mac"
-    static let downloadedSectionTitle = "Downloaded"
-    static let allModelsSectionTitle = "All models"
+    static let recommendedSectionTitle = String(
+        localized: String.LocalizationValue("Recommended for this Mac")
+    )
+    static let downloadedSectionTitle = String(
+        localized: String.LocalizationValue("Downloaded")
+    )
+    static let allModelsSectionTitle = String(
+        localized: String.LocalizationValue("All models")
+    )
 
     /// Splits the flat (already sorted) model list into the three menu
     /// groups: focus models that fit this Mac first, then anything else that
@@ -501,6 +507,20 @@ struct CommunityBenchmarkResult: Decodable, Identifiable {
             == calendar.component(.year, from: now)
         day.setLocalizedDateFormatFromTemplate(sameYear ? "MMMd" : "yMMMd")
         return "\(day.string(from: date)), \(time.string(from: date))"
+    }
+}
+
+/// Monotonic stamp for stderr progress lines, taken on the reader thread in
+/// arrival order so the main actor can discard out-of-order deliveries.
+final class ProgressSequencer: @unchecked Sendable {
+    private let lock = NSLock()
+    private var value = 0
+
+    func next() -> Int {
+        lock.lock()
+        defer { lock.unlock() }
+        value += 1
+        return value
     }
 }
 
@@ -938,6 +958,10 @@ struct CommunityBenchmarkView: View {
     @State private var runningModel: CommunityBenchmarkModel?
     @State private var runProgressLine: String?
     @State private var currentRunID: UUID?
+    /// Highest progress sequence applied so far; lines are stamped in
+    /// arrival order off the main actor and applied only if newer, so the
+    /// unordered main-actor hops can never show an older round.
+    @State private var appliedProgressSequence = 0
     @State private var errorMessage: String?
     @State private var runTask: Task<Void, Never>?
     @State private var shareTask: Task<Void, Never>?
@@ -1130,7 +1154,14 @@ struct CommunityBenchmarkView: View {
 
             HStack(alignment: .top) {
                 Button(isRunning ? "Stop" : "Run locally") {
-                    isRunning ? runTask?.cancel() : startRun()
+                    if isRunning {
+                        // Invalidate the run token first so stderr that
+                        // arrives during teardown cannot update the row.
+                        currentRunID = nil
+                        runTask?.cancel()
+                    } else {
+                        startRun()
+                    }
                 }
                 .buttonStyle(.borderedProminent)
                 .accessibilityIdentifier("CommunityBenchmark.RunOrStop")
@@ -1284,8 +1315,10 @@ struct CommunityBenchmarkView: View {
         runningModel = selected
         runStartedAt = Date()
         runProgressLine = nil
+        appliedProgressSequence = 0
         let activeRunID = UUID()
         currentRunID = activeRunID
+        let sequencer = ProgressSequencer()
         runTask = Task {
             var acquiredReservation = false
             do {
@@ -1303,11 +1336,17 @@ struct CommunityBenchmarkView: View {
                         guard let progress = CommunityBenchmarkRunStatus.progressLine(
                             from: line
                         ) else { return }
+                        let sequence = sequencer.next()
                         Task { @MainActor in
                             // A line that arrives after Stop / a new run must
-                            // not resurrect stale progress on the next run.
+                            // not resurrect stale progress, and an older line
+                            // whose hop landed late must not overwrite a
+                            // newer one.
                             guard isRunning, runStartedAt != nil,
-                                  currentRunID == activeRunID else { return }
+                                  currentRunID == activeRunID,
+                                  sequence > appliedProgressSequence
+                            else { return }
+                            appliedProgressSequence = sequence
                             runProgressLine = progress
                         }
                     }

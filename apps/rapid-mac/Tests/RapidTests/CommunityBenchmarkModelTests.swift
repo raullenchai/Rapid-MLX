@@ -739,6 +739,18 @@ struct CommunityBenchmarkModelTests {
         )
     }
 
+    @Test("Progress lines are stamped in arrival order so late hops cannot regress")
+    func progressSequencerIsMonotonic() {
+        let sequencer = ProgressSequencer()
+        #expect(sequencer.next() == 1)
+        #expect(sequencer.next() == 2)
+        // The view applies a line only when its stamp exceeds the last
+        // applied one, so a delayed stamp-2 hop after stamp-3 is discarded.
+        var applied = 0
+        for stamp in [1, 3, 2] where stamp > applied { applied = stamp }
+        #expect(applied == 3)
+    }
+
     @Test("Stderr line splitter reassembles lines across chunks and bounds partial lines")
     func stderrLineSplitter() {
         let seen = LineCollector()
