@@ -38,7 +38,7 @@ _BASE_DTYPES = {
 
 
 def _cached_config(
-    repo_id: str, subfolder: str | None = None
+    repo_id: str, subfolder: str | None = None, snapshot_path: str | None = None
 ) -> tuple[dict[str, Any], str | None] | None:
     """Return ``(config.json, resolved_revision)`` from the local HF cache.
 
@@ -50,14 +50,21 @@ def _cached_config(
     that ship several quantisations side by side.
     """
     try:
-        from huggingface_hub import try_to_load_from_cache
+        if snapshot_path:
+            # The loader told us the concrete checkpoint directory it used
+            # (``.../snapshots/<sha>[/<subfolder>]``): read exactly that.
+            path = str(Path(snapshot_path) / "config.json")
+            if not Path(path).is_file():
+                return None
+        else:
+            from huggingface_hub import try_to_load_from_cache
 
-        filename = "config.json"
-        if subfolder:
-            filename = f"{subfolder.strip('/')}/config.json"
-        path = try_to_load_from_cache(repo_id, filename)
-        if not isinstance(path, str):
-            return None
+            filename = "config.json"
+            if subfolder:
+                filename = f"{subfolder.strip('/')}/config.json"
+            path = try_to_load_from_cache(repo_id, filename)
+            if not isinstance(path, str):
+                return None
         with open(path, encoding="utf-8") as handle:
             config = json.load(handle)
     except Exception:  # noqa: BLE001 — provenance must never fail a run
@@ -207,7 +214,10 @@ def _unknown_identity(
 
 
 def unresolved_model_identity(
-    repo_id: str, task_type: str, subfolder: str | None = None
+    repo_id: str,
+    task_type: str,
+    subfolder: str | None = None,
+    snapshot_path: str | None = None,
 ) -> dict[str, Any]:
     """Identity with every fact the local cache can vouch for.
 
@@ -220,7 +230,7 @@ def unresolved_model_identity(
     if subfolder:
         source["subfolder"] = subfolder
     quantization: dict[str, Any] = {"kind": "unknown", "base_dtype": "unknown"}
-    cached = _cached_config(repo_id, subfolder)
+    cached = _cached_config(repo_id, subfolder, snapshot_path)
     if cached is not None:
         config, revision = cached
         quantization = quantization_facts(config)

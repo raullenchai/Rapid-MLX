@@ -2799,7 +2799,7 @@ def test_run_local_converts_text_engine_result_to_atomic_measurements(
     monkeypatch.setattr(
         tokenizer_module,
         "load_model_with_fallback",
-        lambda repo_id: (
+        lambda repo_id, **_: (
             SimpleNamespace(args=SimpleNamespace(max_position_embeddings=32768)),
             object(),
         ),
@@ -4882,6 +4882,56 @@ def test_identity_is_kept_only_when_the_snapshot_did_not_move() -> None:
     from vllm_mlx.catalog.validation import ContractValidator
 
     ContractValidator().validate_model_identity(degraded)
+
+
+def test_run_local_prefers_the_identity_read_right_after_loading(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The text helper hands back the identity of the snapshot the loader
+    pinned; run_local uses it over the pre-load read."""
+    archive = LocalRunArchive(tmp_path)
+    _mock_local_context(
+        monkeypatch, "text_generation", "mlx-community/example-text-model"
+    )
+    real = local_runner.unresolved_model_identity
+    loaded = real("mlx-community/example-text-model", "text_generation")
+    loaded["components"][0]["source"]["resolved_revision"] = "c" * 40
+    loaded["components"][0]["quantization"] = {
+        "kind": "weights",
+        "method": "affine",
+        "weight_bits_x2": 8,
+        "base_dtype": "unknown",
+    }
+
+    async def fake_measurements(model_name: str, **_: object):
+        return _text_run()["measurements"], 32768, loaded
+
+    def after_read(repo_id, task_type, subfolder=None, snapshot_path=None):
+        identity = real(repo_id, task_type, subfolder)
+        identity["components"][0]["source"]["resolved_revision"] = "c" * 40
+        return identity
+
+    monkeypatch.setattr(local_runner, "unresolved_model_identity", after_read)
+    monkeypatch.setattr(local_runner, "_text_measurements", fake_measurements)
+    run = local_runner.run_local("example-text", archive=archive)
+    component = run["model"]["components"][0]
+    assert component["source"]["resolved_revision"] == "c" * 40
+    assert component["quantization"]["weight_bits_x2"] == 8
+
+
+def test_cached_config_reads_the_exact_snapshot_directory(tmp_path: Path) -> None:
+    from vllm_mlx.community_bench.run_builder import _cached_config
+
+    revision = "d" * 40
+    snapshot = tmp_path / "snapshots" / revision / "4bit"
+    snapshot.mkdir(parents=True)
+    (snapshot / "config.json").write_text(json.dumps({"quantization": {"bits": 4}}))
+    config, found = _cached_config("org/model", "4bit", snapshot_path=str(snapshot))
+    assert config == {"quantization": {"bits": 4}}
+    assert found == revision
+    assert (
+        _cached_config("org/model", None, snapshot_path=str(tmp_path / "nope")) is None
+    )
 
 
 def test_run_local_degrades_identity_when_the_cache_moves_during_the_run(

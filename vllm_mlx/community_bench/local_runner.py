@@ -693,7 +693,9 @@ def _loader_target(model_name: str, repo_id: str) -> str:
     return model_name if resolve_subfolder(model_name) else repo_id
 
 
-async def _text_measurements(model_name: str) -> tuple[list[dict[str, Any]], int]:
+async def _text_measurements(
+    model_name: str,
+) -> tuple[list[dict[str, Any]], int, dict[str, Any] | None]:
     """Measure ``model_name`` — the catalog alias, not the bare repo id.
 
     The loader resolves an explicit alias to that alias's checkpoint
@@ -707,7 +709,7 @@ async def _text_measurements(model_name: str) -> tuple[list[dict[str, Any]], int
         EngineConfig,
         _init_mlx_step_thread,
     )
-    from vllm_mlx.model_aliases import resolve_model
+    from vllm_mlx.model_aliases import resolve_model, resolve_subfolder
     from vllm_mlx.scheduler import SchedulerConfig
     from vllm_mlx.service.helpers import get_model_max_context
     from vllm_mlx.utils.tokenizer import load_model_with_fallback
@@ -721,7 +723,25 @@ async def _text_measurements(model_name: str) -> tuple[list[dict[str, Any]], int
         max_workers=1, thread_name_prefix="mlx-step", initializer=_init_mlx_step_thread
     )
     try:
-        model, tokenizer = executor.submit(load_model_with_fallback, target).result()
+        loaded = executor.submit(
+            load_model_with_fallback, target, return_source=True
+        ).result()
+        # ``return_source`` appends the concrete checkpoint source; a test
+        # double may still answer with the plain pair.
+        model, tokenizer = loaded[0], loaded[1]
+        loaded_source = loaded[2] if len(loaded) > 2 else ""
+        # Identity of the checkpoint the loader just pinned, read now — before
+        # minutes of measurement give another process time to move refs/main.
+        loaded_identity = unresolved_model_identity(
+            repo_id,
+            "text_generation",
+            resolve_subfolder(model_name),
+            snapshot_path=(
+                loaded_source
+                if isinstance(loaded_source, str) and os.path.isdir(loaded_source)
+                else None
+            ),
+        )
         scheduler = SchedulerConfig(
             max_num_seqs=1,
             max_concurrent_requests=1,
@@ -778,7 +798,7 @@ async def _text_measurements(model_name: str) -> tuple[list[dict[str, Any]], int
                     "decode_duration_ms": decode_ms,
                 }
             )
-    return measurements, context_length
+    return measurements, context_length, loaded_identity
 
 
 def _is_dedicated_process_group_leader() -> bool:
@@ -855,9 +875,12 @@ def run_local(
         capture_token = _CONDITIONS_AFTER.set(capture)
         try:
             if task_type == "text_generation":
-                measurements, context_length = asyncio.run(
-                    _text_measurements(alias)
-                )
+                measured = asyncio.run(_text_measurements(alias))
+                measurements, context_length = measured[0], measured[1]
+                # The identity read right after the loader pinned its snapshot
+                # (3-tuple from the real helper; test doubles may return two).
+                if len(measured) > 2 and measured[2] is not None:
+                    model_identity = measured[2]
             elif task_type == "image_generation":
                 measurements = _run_image(
                     alias, isolate_process_group=not inherit_process_group
