@@ -46,14 +46,6 @@ def _record_conditions_after() -> None:
         capture["after"] = run_conditions()
 
 
-#: Where the text helper deposits the identity of the checkpoint the loader
-#: pinned, so a run that fails after loading still archives the facts of
-#: the artifact that was actually loaded.
-_LOADED_IDENTITY: contextvars.ContextVar[dict[str, Any] | None] = (
-    contextvars.ContextVar("community_bench_loaded_identity", default=None)
-)
-
-
 from .run_builder import (
     build_run,
     consistent_model_identity,
@@ -62,6 +54,13 @@ from .run_builder import (
     utc_now,
 )
 from .workspace import LocalRunArchive, plan_for_alias
+
+#: Where the text helper deposits the identity of the checkpoint the loader
+#: pinned, so a run that fails after loading still archives the facts of
+#: the artifact that was actually loaded.
+_LOADED_IDENTITY: contextvars.ContextVar[dict[str, Any] | None] = (
+    contextvars.ContextVar("community_bench_loaded_identity", default=None)
+)
 
 _VIDEO_JOB_TIMEOUT_S = 3600.0
 _VIDEO_POLL_INTERVAL_S = 1.0
