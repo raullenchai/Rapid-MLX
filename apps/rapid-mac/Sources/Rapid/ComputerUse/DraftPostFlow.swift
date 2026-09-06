@@ -273,17 +273,10 @@ struct MacOSDraftPostFlowDriver: DraftPostFlowDriving {
         // The destination may now be mutated. Every remaining observation is
         // therefore terminal on failure: recovery must never replay the write.
         do {
-            // Give WebKit and page frameworks a render turn before accepting
-            // the value. A controlled composer that rejects the AX update is
-            // detected by the final re-read instead of producing false success.
-            try await Task.sleep(for: .milliseconds(300))
-            let finalSource = try await readDraft(from: source.selection)
-            guard Self.utf8Matches(finalSource, draft) else {
-                throw DraftPostFlowFailure.verificationFailed
-            }
-            try await verifyComposer(
-                draft,
-                in: destination,
+            try await Self.verifyDefinitivePostMutationState(
+                draft: draft,
+                source: source.selection,
+                destination: destination,
                 documentIdentity: documentIdentity
             )
         } catch {
@@ -425,26 +418,45 @@ struct MacOSDraftPostFlowDriver: DraftPostFlowDriving {
         }
     }
 
-    private func verifyComposer(
-        _ draft: String,
-        in destination: ComputerUseWindowOption,
+    private static func verifyDefinitivePostMutationState(
+        draft: String,
+        source: ComputerUseWindowSelection,
+        destination: ComputerUseWindowOption,
         documentIdentity: String
     ) async throws {
-        let selection = destination.selection
-        try await focus(selection)
-        try await Self.runAXWork {
-            let window = try Self.exactFocusedBrowserWindow(
-                destination,
-                documentIdentity: documentIdentity
-            )
-            let composer = try Self.uniqueComposer(in: window)
-            guard Self.stringAttribute(
-                kAXValueAttribute as CFString,
-                from: composer
-            ).map({ Self.utf8Matches($0, draft) }) == true else {
+        // This detached task is intentionally cancellation-insensitive: after
+        // a possible write, Stop must wait for definitive source/destination
+        // verification rather than misreporting an unknown mutation state.
+        try await Task.detached {
+            try await Task.sleep(for: .milliseconds(300))
+            let finalSource = try readDraftWithoutFocusing(from: source)
+            guard utf8Matches(finalSource, draft) else {
                 throw DraftPostFlowFailure.verificationFailed
             }
-        }
+            let selection = destination.selection
+            guard let running = NSRunningApplication(
+                processIdentifier: selection.processIdentifier
+            ), running.bundleIdentifier == selection.bundleIdentifier,
+                running.launchDate == selection.processLaunchDate
+            else { throw DraftPostFlowFailure.verificationFailed }
+            let application = applicationElement(selection.processIdentifier)
+            guard let window = window(matching: selection, in: application),
+                  browserDocumentMatches(
+                    currentTitle: stringAttribute(
+                        kAXTitleAttribute as CFString,
+                        from: window
+                    ),
+                    selectedTitle: destination.windowTitle
+                  ), try currentBrowserDocumentIdentity(in: window) == documentIdentity
+            else { throw DraftPostFlowFailure.verificationFailed }
+            let composer = try uniqueComposer(in: window)
+            guard stringAttribute(
+                kAXValueAttribute as CFString,
+                from: composer
+            ).map({ utf8Matches($0, draft) }) == true else {
+                throw DraftPostFlowFailure.verificationFailed
+            }
+        }.value
     }
 
     private static func exactFocusedBrowserWindow(

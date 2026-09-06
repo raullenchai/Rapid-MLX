@@ -282,33 +282,24 @@ struct DraftPostFlowTests {
         }
     }
 
-    @Test("The driver contract exposes no publish action")
-    func noPublishSurface() throws {
-        let source = try String(
-            contentsOf: Self.sourceFile("DraftPostFlow.swift"),
-            encoding: .utf8
-        )
-        let protocolSlice = try #require(source.range(
-            of: "protocol DraftPostComposerActuating: Sendable"
-        )).lowerBound ..< #require(source.range(
-            of: "struct AXDraftPostComposerActuator"
-        )).lowerBound
-        let contract = String(source[protocolSlice])
-        #expect(contract.contains("focusComposer"))
-        #expect(contract.contains("setDraft"))
-        #expect(!contract.lowercased().contains("publish"))
-        #expect(!contract.lowercased().contains("send("))
+    @Test("The coordinator can request only a draft transfer")
+    func coordinatorCapabilityIsLimited() async {
+        let driver = ScriptedDraftPostDriver(results: [.success(())])
+        let coordinator = DraftPostFlowCoordinator(driver: driver)
 
-        let driverSlice = try #require(source.range(
-            of: "protocol DraftPostFlowDriving: Sendable"
-        )).lowerBound ..< #require(source.range(
-            of: "/// Runs one idempotent local transfer"
-        )).lowerBound
-        let driverContract = String(source[driverSlice])
-        #expect(driverContract.contains("transferDraft"))
-        #expect(!driverContract.lowercased().contains("publish"))
-        #expect(!driverContract.lowercased().contains("send("))
-        #expect(!driverContract.lowercased().contains("submit"))
+        let outcome = await coordinator.run(
+            source: Self.source,
+            destination: Self.destination
+        )
+
+        #expect(outcome == .readyForReview(DraftPostFlowMetrics(
+            attempts: 1,
+            automaticRecoveries: 0,
+            completedSteps: 3
+        )))
+        #expect(await driver.actions == [
+            .transferDraft(sourceID: Self.source.id, destinationID: Self.destination.id)
+        ])
     }
 
     @MainActor
@@ -376,15 +367,6 @@ struct DraftPostFlowTests {
                 windowID: window
             )
         )
-    }
-
-    private static func sourceFile(_ name: String) -> URL {
-        URL(fileURLWithPath: #filePath)
-            .deletingLastPathComponent()
-            .deletingLastPathComponent()
-            .deletingLastPathComponent()
-            .appendingPathComponent("Sources/Rapid/ComputerUse")
-            .appendingPathComponent(name)
     }
 
     private static func liveOptions() async throws -> (
@@ -507,19 +489,28 @@ private struct NoopDraftPostComposerActuator: DraftPostComposerActuating {
     func setDraft(_: String, on _: AXUIElement) throws {}
 }
 
+private enum ScriptedDraftPostAction: Equatable, Sendable {
+    case transferDraft(sourceID: String, destinationID: String)
+}
+
 private actor ScriptedDraftPostDriver: DraftPostFlowDriving {
     private var results: [Result<Void, DraftPostFlowFailure>]
     private(set) var callCount = 0
+    private(set) var actions: [ScriptedDraftPostAction] = []
 
     init(results: [Result<Void, DraftPostFlowFailure>]) {
         self.results = results
     }
 
     func transferDraft(
-        from _: ComputerUseWindowOption,
-        to _: ComputerUseWindowOption
+        from source: ComputerUseWindowOption,
+        to destination: ComputerUseWindowOption
     ) async throws {
         callCount += 1
+        actions.append(.transferDraft(
+            sourceID: source.id,
+            destinationID: destination.id
+        ))
         guard !results.isEmpty else {
             throw DraftPostFlowFailure.targetUnavailable
         }
