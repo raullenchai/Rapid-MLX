@@ -4793,6 +4793,21 @@ def test_model_identity_reads_the_subfolder_config_for_nested_variants(
     ContractValidator().validate_model_identity(identity)
 
 
+def test_loader_target_is_alias_only_when_it_pins_a_subfolder() -> None:
+    """Caught by dogfood: loading a plain alias sent it to the Hub verbatim
+    (``Repository Not Found ... /api/models/qwen3.5-4b-4bit``)."""
+    assert (
+        local_runner._loader_target(
+            "qwen3.5-4b-4bit", "mlx-community/Qwen3.5-4B-MLX-4bit"
+        )
+        == "mlx-community/Qwen3.5-4B-MLX-4bit"
+    )
+    assert (
+        local_runner._loader_target("lfm2.5-2.6b-4bit", "LiquidAI/LFM2.5-2.6B-MLX")
+        == "lfm2.5-2.6b-4bit"
+    )
+
+
 def test_run_local_measures_text_models_by_alias_not_bare_repo_id(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:

@@ -677,6 +677,21 @@ def _run_video(
         ]
 
 
+def _loader_target(model_name: str, repo_id: str) -> str:
+    """What to hand ``load_model_with_fallback`` for ``model_name``.
+
+    The loader only resolves an alias when that alias declares a subfolder
+    (``lfm2.5-2.6b-4bit`` -> ``…/snapshots/<sha>/4bit``); a plain alias would
+    reach the Hub verbatim and 404 (``serve`` resolves ``hf_path`` first for
+    the same reason). So: alias when it pins a subfolder — explicit-alias
+    precedence keeps the measured checkpoint equal to the recorded identity —
+    and the resolved repo id otherwise.
+    """
+    from vllm_mlx.model_aliases import resolve_subfolder
+
+    return model_name if resolve_subfolder(model_name) else repo_id
+
+
 async def _text_measurements(model_name: str) -> tuple[list[dict[str, Any]], int]:
     """Measure ``model_name`` — the catalog alias, not the bare repo id.
 
@@ -699,14 +714,13 @@ async def _text_measurements(model_name: str) -> tuple[list[dict[str, Any]], int
     from .runner import _reported_token_count, run_standardized_bench
 
     repo_id = resolve_model(model_name)
+    target = _loader_target(model_name, repo_id)
 
     executor = concurrent.futures.ThreadPoolExecutor(
         max_workers=1, thread_name_prefix="mlx-step", initializer=_init_mlx_step_thread
     )
     try:
-        model, tokenizer = executor.submit(
-            load_model_with_fallback, model_name
-        ).result()
+        model, tokenizer = executor.submit(load_model_with_fallback, target).result()
         scheduler = SchedulerConfig(
             max_num_seqs=1,
             max_concurrent_requests=1,
