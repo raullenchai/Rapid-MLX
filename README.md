@@ -163,6 +163,24 @@ curl http://localhost:8000/v1/images/generations \
   -d '{"model":"flux2-klein-4b","prompt":"A red sailboat on an alpine lake","size":"1024x1024","seed":42}'
 ```
 
+Edit an existing PNG or JPEG with the edit-specialized model:
+
+In one terminal:
+
+```bash
+rapid-mlx serve qwen-image-edit
+```
+
+In another terminal:
+
+```bash
+curl http://localhost:8000/v1/images/edits \
+  -F image=@input.png \
+  -F model=qwen-image-edit \
+  -F 'prompt=Change the sky to a warm sunset' \
+  -F response_format=b64_json
+```
+
 `flux2-klein-4b` is the recommended starting point. Download sizes are the
 currently cataloged model payloads; minimum unified memory includes practical
 headroom for macOS and the serving process. Omit `steps` to use the validated
@@ -180,6 +198,7 @@ family default shown below.
 | `hidream-o1-dev` | Complex compositions | Generate | 16.4 GiB | 32 GB | 28 |
 | `sd35-large-4bit` | Stable Diffusion 3.5 | Generate | 15.3 GiB | 32 GB | 28 |
 | `qwen-image` | Text inside images | Generate | 28.9 GiB | 64 GB | 20 |
+| `qwen-image-edit` | Precise instruction edits and text changes | Edit | 34.9 GiB | 96 GB | 20 |
 <!-- image-model-matrix:end -->
 
 At 1024×1024 with the four-step Klein default, measured warm generation was
@@ -412,7 +431,7 @@ reached a 27.1 GB MLX allocator peak before non-MLX process and macOS memory;
 on a 32 GB Mac, reduce context/cache use or choose a larger-memory machine.
 
 → [Full RAM tier map + serve flags per tier](https://rapidmlx.com/docs/hardware-tiers.html)
-→ [Every alias, quant, and family (186 text + 9 image + 10 video + 44 audio aliases, 249 total)](https://rapidmlx.com/docs/aliases.html) · interactive at [models.rapidmlx.com](https://models.rapidmlx.com/)
+→ [Every alias, quant, and family (186 text + 10 image + 10 video + 44 audio aliases, 250 total)](https://rapidmlx.com/docs/aliases.html) · interactive at [models.rapidmlx.com](https://models.rapidmlx.com/)
 
 ---
 
