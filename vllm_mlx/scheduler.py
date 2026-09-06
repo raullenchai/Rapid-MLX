@@ -3111,13 +3111,15 @@ def _install_suffix_decoding(
     # The hybrid path has a 24-token minimum-match floor (a draft shorter
     # falls through without paying the multi-token verify cost). ``max_draft``
     # is the operator's hard cap on verify width and is honored as-is on every
-    # path — the CLI rejects a hybrid config whose cap is below the floor, so a
-    # below-floor cap here (programmatic call only) makes the hybrid path a
-    # no-op rather than silently overriding the documented width limit. A
-    # pure-attention model with ``--suffix-hybrid`` (a no-op flag there) keeps
-    # its configured ``max_draft`` unchanged. The bit-exactness guard probes
-    # EVERY committed position (the full accepted prefix), so there is no
-    # probe-length knob to tune.
+    # path. The CLI raises the DEFAULT cap to the floor for a CONFIRMED hybrid
+    # model (model-resolution time), so a below-floor cap here is either an
+    # explicit operator override (documented) or a programmatic call — in
+    # either case it makes the hybrid path a no-op rather than silently
+    # overriding the documented width limit. A pure-attention model with
+    # ``--suffix-hybrid`` (a no-op flag there) keeps its configured
+    # ``max_draft`` unchanged. The bit-exactness guard probes EVERY committed
+    # position (the full accepted prefix), so there is no probe-length knob to
+    # tune.
     _effective_max_draft = max_draft
 
     def _hybrid_scratch_verify(

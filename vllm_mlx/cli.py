@@ -2335,12 +2335,18 @@ def _normalize_speculative_config_or_exit(args):
             args.suffix_hybrid = False
         if getattr(args, "suffix_min_match_len", None) is None:
             args.suffix_min_match_len = 24
-        if getattr(args, "suffix_max_draft", None) is None:
-            # Keep the pure-attention default (8). The hybrid path raises the
-            # effective width to the match floor ONLY for an actual hybrid
-            # model in the installer (profile.is_hybrid-gated), so a pure-
-            # attention model with --suffix-hybrid (a no-op flag there) keeps
-            # its normal verify width instead of silently tripling it.
+        # Record whether the operator explicitly set --suffix-max-draft (vs the
+        # 8 default). The hybrid path raises the effective width to the match
+        # floor for a CONFIRMED HYBRID model when the cap was NOT explicitly set
+        # — an explicit below-floor cap is the operator's bound and gets an
+        # install-time warning instead. This lets --suffix-hybrid work out of
+        # the box on a real hybrid while never tripling a pure-attention model's
+        # verify width (pure-attention is not hybrid-gated, so it keeps 8/its
+        # normal adaptive width).
+        args._suffix_max_draft_was_explicit = getattr(
+            args, "suffix_max_draft", None
+        ) is not None
+        if not args._suffix_max_draft_was_explicit:
             args.suffix_max_draft = 8
         if getattr(args, "suffix_max_suffix_len", None) is None:
             args.suffix_max_suffix_len = 4
@@ -2624,24 +2630,6 @@ def _normalize_speculative_config_or_exit(args):
             args.suffix_min_draft_len = config.min_draft_len
 
     _fill_suffix_defaults()
-
-    # Fail fast instead of silently contradicting the operator. suffix_hybrid
-    # needs a verify width that can reach the 24-token match floor; honoring an
-    # explicitly-set suffix_max_draft below the floor would make the opt-in a
-    # silent no-op, and silently raising the cap would violate the documented
-    # max width (memory) contract. Reject the contradictory combination with an
-    # actionable message naming the flag to raise.
-    if getattr(args, "suffix_hybrid", False) and (
-        getattr(args, "suffix_max_draft", 0) < getattr(args, "suffix_min_match_len", 24)
-    ):
-        print(
-            "error: --suffix-hybrid requires --suffix-max-draft >= "
-            f"suffix_min_match_len ({args.suffix_min_match_len}); "
-            f"got suffix_max_draft={args.suffix_max_draft}. Raise "
-            "--suffix-max-draft to enable the hybrid path.",
-            file=sys.stderr,
-        )
-        sys.exit(2)
 
 
 def _resolve_dflash_drafter_repo(args, profile) -> str | None:
@@ -3447,6 +3435,29 @@ def _auto_config_lookup_key(config_identity: str) -> str:
     from .utils.tokenizer import _resolve_subfolder_checkpoint
 
     return _resolve_subfolder_checkpoint(config_identity)
+
+
+def _hybrid_suffix_cap(args, profile) -> int:
+    """Effective ``--suffix-max-draft`` for the SuffixDecoding config.
+
+    Deferred to model resolution because the CLI cannot know the model is
+    hybrid until the ``serve`` profile is resolved. For a CONFIRMED hybrid
+    model with ``--suffix-hybrid`` and NO explicit ``--suffix-max-draft``,
+    raise the cap to the match floor so the opt-in works out of the box (the
+    pure-attention default 8 cannot clear the 24-token match floor). An
+    EXPLICIT below-floor cap is the operator's bound and is honored as-is
+    (the scheduler install issues a no-op warning). A pure-attention model
+    with ``--suffix-hybrid`` (a documented no-op flag there) keeps its cap.
+    """
+    effective = args.suffix_max_draft
+    if (
+        args.suffix_hybrid
+        and profile is not None
+        and getattr(profile, "is_hybrid", False)
+        and not getattr(args, "_suffix_max_draft_was_explicit", False)
+    ):
+        effective = max(args.suffix_max_draft, args.suffix_min_match_len)
+    return effective
 
 
 def serve_command(args):
@@ -4721,6 +4732,11 @@ def serve_command(args):
         except Exception:  # pragma: no cover — best-effort
             _cli_mtp_model_type = None
 
+    # SuffixDecoding hybrid cap: DEFERRED to model resolution (see
+    # ``_hybrid_suffix_cap``) — the CLI cannot know the model is hybrid until
+    # the resolved ``_serve_profile`` is available here.
+    _effective_suffix_max_draft = _hybrid_suffix_cap(args, _serve_profile)
+
     scheduler_config = SchedulerConfig(
         max_num_seqs=args.max_num_seqs,
         max_concurrent_requests=args.max_concurrent_requests,
@@ -4786,9 +4802,15 @@ def serve_command(args):
         mtp_allow_dynamic_membership=getattr(
             args, "mtp_allow_dynamic_membership", False
         ),
-        # SuffixDecoding
+        # SuffixDecoding. For a CONFIRMED hybrid model with --suffix-hybrid and
+        # no explicit --suffix-max-draft, raise the cap to the match floor so
+        # the opt-in works out of the box (the pure-attention default 8 cannot
+        # clear the 24-token floor). An EXPLICIT below-floor cap is the
+        # operator's bound and is honored as-is (WARNING at install). A pure-
+        # attention model with --suffix-hybrid (a no-op flag) keeps its cap, so
+        # its verify width is never tripled.
         enable_suffix_decoding=args.suffix_decoding,
-        suffix_max_draft=args.suffix_max_draft,
+        suffix_max_draft=_effective_suffix_max_draft,
         suffix_max_suffix_len=args.suffix_max_suffix_len,
         suffix_min_confidence=args.suffix_min_confidence,
         suffix_min_draft_len=args.suffix_min_draft_len,
