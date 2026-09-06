@@ -13,6 +13,12 @@ service) behind commands an operator can run:
 * ``rapid-mlx service logs`` — tail the daemon stdout/stderr logs.
 * ``rapid-mlx service restart`` — kickstart the daemon and wait for
   readiness.
+* ``rapid-mlx service configure/apply`` — stage and health-gate versioned
+  configuration with automatic rollback.
+* ``rapid-mlx service credential`` — store API authentication outside the
+  plist and process arguments.
+* ``rapid-mlx service upgrade`` — snapshot the Python environment and restore
+  it if the upgraded launchd service fails readiness.
 * ``rapid-mlx service uninstall`` — ``bootout`` + remove the plist
   without touching models, cache, or logs.
 

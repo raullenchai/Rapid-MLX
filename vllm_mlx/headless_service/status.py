@@ -18,6 +18,7 @@ owner / model / port / healthy / log paths / last launchd exit).
 from __future__ import annotations
 
 import json
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -66,9 +67,20 @@ def _parse_last_exit(print_out: str | None) -> int | None:
         return None
     for line in print_out.splitlines():
         if "last exit code" in line.lower():
-            digits = "".join(ch for ch in line.split("=", 1)[1] if ch.isdigit())
-            if digits:
-                return int(digits)
+            match = re.search(r"-?\d+", line.split("=", 1)[1])
+            if match:
+                return int(match.group())
+    return None
+
+
+def _parse_launchd_field(print_out: str | None, field: str) -> str | None:
+    if not print_out:
+        return None
+    prefix = f"{field.lower()} ="
+    for line in print_out.splitlines():
+        stripped = line.strip()
+        if stripped.lower().startswith(prefix):
+            return stripped.split("=", 1)[1].strip() or None
     return None
 
 
@@ -127,19 +139,53 @@ def collect_status(
     registered = print_out is not None
     pid = _parse_pid(print_out)
     last_exit = _parse_last_exit(print_out)
+    launchd_state = _parse_launchd_field(print_out, "state")
+    raw_runs = _parse_launchd_field(print_out, "runs")
+    runs = int(raw_runs) if raw_runs and raw_runs.isdigit() else None
     plist = _read_installed_plist(label)
 
     model = port_declared = host_declared = None
+    config_file = config_sha256 = config_error = None
+    pending_config = False
+    credential_configured: bool | None = False
     if plist:
         argv = plist.get("ProgramArguments") or []
         # argv shape: [<bin>, "serve", <model>, ...]
-        if len(argv) >= 3 and argv[0].endswith("rapid-mlx"):
+        if len(argv) >= 3 and argv[0].endswith("rapid-mlx") and argv[1] == "serve":
             model = argv[2] if len(argv) > 2 else None
             for i, tok in enumerate(argv[:-1]):
                 if tok == "--port" and i + 1 < len(argv):
                     port_declared = argv[i + 1]
                 if tok == "--host" and i + 1 < len(argv):
                     host_declared = argv[i + 1]
+
+        # New definitions use a stable config-backed launcher. Keep the argv
+        # parser above for installations created by the first service release.
+        from .config import (
+            config_digest,
+            load_config,
+            pending_config_path,
+            private_file_present,
+        )
+        from .definition import installed_identity
+
+        identity = installed_identity(label)
+        if identity is not None:
+            config_file = str(identity[2])
+            try:
+                effective = load_config(identity[2])
+                model = effective.model
+                host_declared = effective.host
+                port_declared = effective.port
+                config_sha256 = config_digest(effective)
+                pending_config = pending_config_path(identity[1], label).is_file()
+                credential_configured = (
+                    private_file_present(Path(effective.credential_file))
+                    if effective.credential_file
+                    else False
+                )
+            except Exception as exc:
+                config_error = str(exc)
 
     # Probe the bind the plist declares (fall back to CLI defaults) — probing
     # the CLI default while the service actually listens elsewhere would report
@@ -161,7 +207,9 @@ def collect_status(
         except (subprocess.SubprocessError, OSError):
             owner = None
 
-    log_dir = log_dir_for(user) if user else None
+    declared_user = plist.get("UserName") if plist else None
+    effective_user = user or (declared_user if isinstance(declared_user, str) else None)
+    log_dir = log_dir_for(effective_user) if effective_user else None
     return {
         "label": label,
         "domain": DEFAULT_DOMAIN,
@@ -169,6 +217,11 @@ def collect_status(
         "pid": pid,
         "owner": owner,
         "last_exit": last_exit,
+        "launchd_state": launchd_state,
+        "runs": runs,
+        "crash_loop_suspected": bool(
+            registered and pid is None and last_exit not in (None, 0)
+        ),
         "model": model,
         "host": effective_host,
         "port": effective_port,
@@ -178,6 +231,11 @@ def collect_status(
         "plist": str(_plist_path(label)),
         "log_dir": str(log_dir) if log_dir else None,
         "plist_present": Path(_plist_path(label)).is_file(),
+        "config_file": config_file,
+        "config_sha256": config_sha256,
+        "config_error": config_error,
+        "pending_config": pending_config,
+        "credential_configured": credential_configured,
     }
 
 
@@ -194,8 +252,33 @@ def _render_human(s: dict) -> str:
         lines.append("  pid:                   (no live process)")
     if s["last_exit"] is not None:
         lines.append(f"  last launchd exit:     {s['last_exit']}")
+    if s.get("launchd_state") or s.get("runs") is not None:
+        lines.append(
+            f"  launchd details:       state={s.get('launchd_state') or 'unknown'} "
+            f"runs={s.get('runs') if s.get('runs') is not None else 'unknown'}"
+        )
+    if s.get("crash_loop_suspected"):
+        lines.append(
+            "  warning:               repeated startup failure suspected; inspect logs"
+        )
     if s["model"]:
         lines.append(f"  model:                 {s['model']}")
+    if s.get("config_file"):
+        digest = (s.get("config_sha256") or "invalid")[:12]
+        staged = " (PENDING changes)" if s.get("pending_config") else ""
+        lines.append(f"  config:                {s['config_file']} [{digest}]{staged}")
+    if s.get("config_error"):
+        lines.append(f"  config error:          {s['config_error']}")
+    if s.get("config_file"):
+        credential_state = s.get("credential_configured")
+        auth_label = (
+            "credential file"
+            if credential_state is True
+            else "disabled"
+            if credential_state is False
+            else "unknown (run status with sudo)"
+        )
+        lines.append("  authentication:        " + auth_label)
     lines.append(f"  endpoint:              http://{s['host']}:{s['port']}")
     lines.append(
         f"  health:                livez={'ok' if s['livez'] else 'down'} "

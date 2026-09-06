@@ -179,6 +179,7 @@ def _build_plist_bytes(
     host: str,
     port: int,
     serve_args: tuple[str, ...],
+    config_path: Path | None = None,
 ) -> bytes:
     log_dir = log_dir_for(user)
     if log_dir is None:
@@ -193,6 +194,7 @@ def _build_plist_bytes(
         host=host,
         port=port,
         serve_args=serve_args,
+        config_path=config_path,
     )
     return serialize_plist(config)
 
@@ -235,6 +237,7 @@ def _mutation_list(
     port: int,
 ) -> list[str]:
     return [
+        "write versioned service config atomically (mode 600)",
         f"write secure temporary plist ({len(plist_buf)} bytes, mode 600)",
         "validate temporary plist with plutil -lint",
         f"install -o root -g wheel -m 644 temporary plist -> {plist_path}",
@@ -262,6 +265,17 @@ def _stage_plist(plist_buf: bytes) -> Path:
             pass
         raise
     return Path(raw_path)
+
+
+def _install_service_config(*, user: str, home: Path, path: Path, data: bytes) -> None:
+    """Install a root-owned readable config; it is validated secret-free."""
+    import pwd
+
+    from .config import atomic_write_definition, ensure_config_dir
+
+    account = pwd.getpwnam(user)
+    ensure_config_dir(home, uid=account.pw_uid, gid=account.pw_gid)
+    atomic_write_definition(path, data)
 
 
 def _readyz_ready(host: str, port: int) -> bool:
@@ -406,6 +420,30 @@ def install_command(args) -> int:
         print(f"error: {exc}", file=sys.stderr)
         return 1
 
+    from .config import (
+        SCHEMA_VERSION,
+        ServiceConfig,
+        config_bytes,
+        config_path,
+        credential_path,
+    )
+
+    try:
+        service_config = ServiceConfig(
+            schema_version=SCHEMA_VERSION,
+            label=label,
+            service_user=user,
+            executable=executable,
+            model=model,
+            host=host,
+            port=port,
+            serve_args=serve_args,
+            credential_file=str(credential_path(home, label)),
+        ).validated()
+    except ValueError as exc:
+        print(f"error: invalid service configuration: {exc}", file=sys.stderr)
+        return 1
+    service_config_path = config_path(home, label)
     plist_buf = _build_plist_bytes(
         label=label,
         user=user,
@@ -415,6 +453,7 @@ def install_command(args) -> int:
         host=host,
         port=port,
         serve_args=serve_args,
+        config_path=service_config_path,
     )
     plist_path = _plist_path(label)
 
@@ -493,8 +532,19 @@ def install_command(args) -> int:
     # so a failure below can roll back BOTH the loaded job AND the plist
     # file (a plist left in /Library/LaunchDaemons auto-loads on reboot).
     persistent_write_attempted = False
+    config_write_attempted = False
     staged: Path | None = None
     try:
+        # The stable plist only names this file. Configuration can later be
+        # staged and applied transactionally without rewriting root-owned
+        # launchd state.
+        config_write_attempted = True
+        _install_service_config(
+            user=user,
+            home=home,
+            path=service_config_path,
+            data=config_bytes(service_config),
+        )
         # Stage + lint. check=False so a lint failure surfaces its specific
         # message instead of a generic "install step failed" traceback.
         staged = _stage_plist(plist_buf)
@@ -558,6 +608,11 @@ def install_command(args) -> int:
                     "from auto-starting on reboot",
                     file=sys.stderr,
                 )
+        if config_write_attempted:
+            try:
+                service_config_path.unlink()
+            except OSError:
+                pass
         if isinstance(exc, ServiceInstallError):
             print(f"error: {exc}", file=sys.stderr)
         else:
