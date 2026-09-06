@@ -395,29 +395,15 @@ def test_no_speculative_config_fills_suffix_runtime_defaults() -> None:
     assert args.suffix_min_draft_len == 2
 
 
-def test_hybrid_default_raises_draft_cap_to_floor() -> None:
-    """``--suffix-hybrid`` alone must default the draft cap to the 24-token
-    match floor (the pure-attention default 8 would make the hybrid opt-in a
-    no-op, since no draft could clear the floor)."""
+def test_hybrid_cli_keeps_default_cap_for_pure_attention() -> None:
+    """The CLI must NOT raise ``suffix_max_draft`` when ``--suffix-hybrid`` is
+    set: the hybrid width raise is gated on an actual hybrid model in the
+    installer, so a pure-attention model (where the flag is a no-op) keeps the
+    normal 8-token default instead of silently tripling its verify width."""
     from vllm_mlx.cli import _normalize_speculative_config_or_exit
 
     args = _spec_config_args(
         suffix_decoding=True, suffix_hybrid=True, suffix_min_match_len=24
-    )
-    _normalize_speculative_config_or_exit(args)
-    assert args.suffix_max_draft == 24
-
-
-def test_hybrid_explicit_below_floor_cap_is_preserved() -> None:
-    """An EXPLICIT below-floor ``--suffix-max-draft`` is the operator's bound
-    and wins over the hybrid default raise."""
-    from vllm_mlx.cli import _normalize_speculative_config_or_exit
-
-    args = _spec_config_args(
-        suffix_decoding=True,
-        suffix_hybrid=True,
-        suffix_min_match_len=24,
-        suffix_max_draft=8,
     )
     _normalize_speculative_config_or_exit(args)
     assert args.suffix_max_draft == 8

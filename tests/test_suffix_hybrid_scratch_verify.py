@@ -252,21 +252,28 @@ class TestHybridInstallGate:
         assert bg._suffix_stats["suffix_hybrid"] is True
         assert bg._suffix_stats["suffix_min_match_len"] == 24
 
-    def test_hybrid_drafter_cap_never_exceeds_config_and_reaches_floor(
+    def test_hybrid_drafter_reaches_floor_but_pure_attention_keeps_cap(
         self, monkeypatch
     ):
-        """Finding: the hybrid drafter cap must never exceed the operator's
-        explicit ``suffix_max_draft`` (``_effective_max_draft = min(max_draft,
-        floor)``), while reaching the 24-token floor when the cap allows it."""
+        """Final design (rounds 5-7): on the HYBRID path the drafter cap is
+        raised to at least the 24-token match floor so the opt-in feature is
+        not a silent no-op; on PURE-ATTENTION (where --suffix-hybrid is a
+        no-op flag) the configured ``max_draft`` is preserved untouched —
+        the hybrid cap raise must NOT leak into pure-attention models."""
         from types import SimpleNamespace
         from unittest.mock import MagicMock
 
         from vllm_mlx import scheduler
         from vllm_mlx.model_auto_config import ModelConfig
 
-        def _install_opts(max_draft):
+        def _install_opts(max_draft, is_hybrid):
             bg, gb = self._make_fake_bg()
-            profile = ModelConfig(is_hybrid=True, supports_spec_decode=False)
+            # Pure-attention installs need supports_spec_decode=True (the
+            # hybrid opt-in path bypasses that gate); hybrid is gated only on
+            # is_hybrid + suffix_hybrid.
+            profile = ModelConfig(
+                is_hybrid=is_hybrid, supports_spec_decode=not is_hybrid
+            )
             assert scheduler._install_suffix_decoding(
                 bg,
                 model=MagicMock(),
@@ -290,18 +297,23 @@ class TestHybridInstallGate:
             gb.model = MagicMock()
             gb._orig_step = lambda: ([1], [])
             gb._step()  # lazy-init constructs the drafter this step
-            return bg, gb, gb._suffix_drafters[1]
+            return gb._suffix_drafters[1]
 
-        # (a) Below-floor cap (default 8): drafter is clamped AT 8, never above.
-        _bg, _gb, drafter8 = _install_opts(8)
-        assert drafter8.max_draft_tokens == 8
-        assert drafter8.max_draft_tokens < 24
-        # (b) Cap at/above the floor: drafter reaches the 24-token floor.
-        _bg, _gb, drafter32 = _install_opts(32)
+        # (a) Hybrid, below-floor configured cap (default 8): width is raised
+        # to the 24-token floor so the feature engages.
+        drafter8 = _install_opts(8, is_hybrid=True)
+        assert drafter8.max_draft_tokens == 24
+        # (b) Hybrid, cap above the floor: width reaches the floor, not higher.
+        drafter32 = _install_opts(32, is_hybrid=True)
         assert drafter32.max_draft_tokens == 24
-        # (c) Cap above the floor is not lowered below it.
-        _bg, _gb, drafter24 = _install_opts(24)
-        assert drafter24.max_draft_tokens == 24
+        # (c) PURE-ATTENTION, same flag: the width stays at the normal adaptive
+        # start (2), NOT raised to the 24-token floor — the hybrid raise must
+        # not leak into a no-op-flag pure-attention model.
+        drafter_pa8 = _install_opts(8, is_hybrid=False)
+        assert drafter_pa8.max_draft_tokens == 2
+        # (d) Pure-attention, explicit higher cap: also not raised to the floor.
+        drafter_pa32 = _install_opts(32, is_hybrid=False)
+        assert drafter_pa32.max_draft_tokens == 2
 
     def test_installed_reject_first_commits_primary(self, monkeypatch):
         """Installed-path reject-first verify: the live cache must equal

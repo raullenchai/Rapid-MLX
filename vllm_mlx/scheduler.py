@@ -3103,16 +3103,18 @@ def _install_suffix_decoding(
     _hybrid_bit_exact = bool(suffix_hybrid_bit_exact)
 
     # The hybrid path has a 24-token minimum-match floor (a draft shorter
-    # falls through without paying the multi-token verify cost). ``max_draft``
-    # is the operator's HARD cap on verify width (memory-bound); we never
-    # exceed it — a below-floor cap (the default 8) simply means the hybrid
-    # feature cannot reach the floor and degrades to a no-op, which the
-    # install WARNING below says explicitly. When ``max_draft`` IS >= the
-    # floor the effective ceiling is the floor. The bit-exactness guard
-    # probes EVERY committed position (the full accepted prefix), so there
-    # is no probe-length knob to tune.
+    # falls through without paying the multi-token verify cost). Opting into
+    # the hybrid path (``suffix_hybrid=True`` + ``profile.is_hybrid``)
+    # establishes a floor-compatible verify width: ``_effective_max_draft`` is
+    # raised to at least the floor so the advertised feature is not a silent
+    # no-op. This is gated on ``_hybrid_active`` — a pure-attention model with
+    # ``--suffix-hybrid`` (a no-op flag there) keeps its configured
+    # ``max_draft`` unchanged. A below-floor ``suffix_max_draft`` is overridden
+    # for the hybrid path and the install WARNING below says so explicitly.
+    # The bit-exactness guard probes EVERY committed position (the full
+    # accepted prefix), so there is no probe-length knob to tune.
     _effective_max_draft = (
-        min(max_draft, suffix_min_match_len) if _hybrid_active else max_draft
+        max(max_draft, suffix_min_match_len) if _hybrid_active else max_draft
     )
 
     def _hybrid_scratch_verify(
@@ -3308,10 +3310,9 @@ def _install_suffix_decoding(
     # below then climbs to ``_effective_max_draft`` once acceptance is proven.
     if _hybrid_active:
         # Seed the hybrid width AT the match floor so a floor-length repeat is
-        # issued on the first step and the verify path is reachable — but never
-        # above the operator's hard cap (a below-floor cap degrades the hybrid
-        # feature to a no-op rather than deadlocking or exceeding the bound).
-        _K_MIN = min(suffix_min_match_len, max_draft)
+        # issued on the first step and the verify path is reachable (the
+        # effective cap is raised to the floor above, so this never deadlocks).
+        _K_MIN = suffix_min_match_len
     else:
         _K_MIN = min(max(2, min_draft_len), max_draft)
 
@@ -4036,17 +4037,18 @@ def _install_suffix_decoding(
         max_suffix_len,
         min_confidence,
     )
-    if _hybrid_active and _effective_max_draft < suffix_min_match_len:
-        # Do not silently leave the hybrid feature a no-op. ``max_draft`` is the
-        # operator's HARD cap and we respect it, so a below-floor cap (the
-        # default 8) means drafts can never clear the 24-token match floor and
-        # the hybrid path never engages. Say so and name the flag to raise.
+    if _hybrid_active and _effective_max_draft > max_draft:
+        # The hybrid opt-in established a floor-compatible width that exceeds
+        # the configured (pure-attention-oriented) suffix_max_draft. Do not
+        # let that happen silently — say so and name the knob to raise if the
+        # operator wants to bound it.
         logger.warning(
-            "[SuffixDecoding] hybrid suffix decoding DEGRADED to a no-op: "
-            "suffix_max_draft=%d is below the %d-token match floor, so no draft "
-            "can clear the floor and the hybrid verify path never runs. Raise "
-            "--suffix-max-draft to >= suffix_min_match_len to enable it.",
+            "[SuffixDecoding] hybrid path raises effective max draft from "
+            "suffix_max_draft=%d to suffix_min_match_len=%d so drafts can clear "
+            "the %d-token match floor (set --suffix-max-draft to at least that "
+            "to make it explicit)",
             max_draft,
+            _effective_max_draft,
             suffix_min_match_len,
         )
     return True

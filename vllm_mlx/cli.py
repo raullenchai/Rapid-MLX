@@ -2336,14 +2336,12 @@ def _normalize_speculative_config_or_exit(args):
         if getattr(args, "suffix_min_match_len", None) is None:
             args.suffix_min_match_len = 24
         if getattr(args, "suffix_max_draft", None) is None:
-            # Default the draft cap to at least the hybrid match floor when
-            # hybrid is ON. The 24-token floor only makes sense with a verify
-            # width that can reach it; the pure-attention default of 8 would
-            # silently make --suffix-hybrid a no-op. An EXPLICIT below-floor
-            # cap is still honored (the operator's bound wins).
-            args.suffix_max_draft = (
-                args.suffix_min_match_len if args.suffix_hybrid else 8
-            )
+            # Keep the pure-attention default (8). The hybrid path raises the
+            # effective width to the match floor ONLY for an actual hybrid
+            # model in the installer (profile.is_hybrid-gated), so a pure-
+            # attention model with --suffix-hybrid (a no-op flag there) keeps
+            # its normal verify width instead of silently tripling it.
+            args.suffix_max_draft = 8
         if getattr(args, "suffix_max_suffix_len", None) is None:
             args.suffix_max_suffix_len = 4
         if getattr(args, "suffix_min_confidence", None) is None:
