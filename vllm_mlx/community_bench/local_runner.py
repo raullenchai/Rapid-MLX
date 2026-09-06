@@ -27,7 +27,7 @@ from typing import Any
 import requests
 
 from .benchmark_contracts import public_prompt, registered_workload
-from .hardware import collect
+from .hardware import collect, run_conditions
 from .run_builder import build_run, execution_config, utc_now
 from .workspace import LocalRunArchive, plan_for_alias
 
@@ -777,10 +777,16 @@ def run_local(
     hardware = None
     software = None
     execution = None
+    conditions_before = None
+    conditions_after = None
     measurements_completed = False
     destination = archive or LocalRunArchive.default()
     try:
         hardware, software = collect()
+        # Snapshot the volatile machine state (power, thermal, memory
+        # pressure) before the model is loaded and again right after the last
+        # measurement, so a reader can tell a battery/throttled run apart.
+        conditions_before = run_conditions()
         if task_type == "text_generation":
             measurements, context_length = asyncio.run(
                 _text_measurements(model["repo_id"])
@@ -794,6 +800,7 @@ def run_local(
                 alias, isolate_process_group=not inherit_process_group
             )
         measurements_completed = True
+        conditions_after = run_conditions()
         execution = execution_config(task_type, context_length=context_length)
         run = build_run(
             repo_id=model["repo_id"],
@@ -804,6 +811,8 @@ def run_local(
             measurements=measurements,
             context_length=context_length,
             execution=execution,
+            conditions_before=conditions_before,
+            conditions_after=conditions_after,
         )
     except Exception as exc:
         if measurements_completed and execution is None:
@@ -834,6 +843,8 @@ def run_local(
                 failure_code=failure_code,
                 context_length=context_length,
                 execution=execution,
+                conditions_before=conditions_before,
+                conditions_after=conditions_after,
             )
         except Exception as envelope_exc:
             raise LocalBenchmarkError(

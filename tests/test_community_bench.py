@@ -2998,3 +2998,154 @@ def test_submit_flow_guard_rejects_hf_path_when_no_original_alias(
     out = capsys.readouterr().out
     assert "requires the canonical alias key" in out
     assert "mlx-community/Llama-3.2-1B-Instruct-4bit" in out
+
+
+# ---------------------------------------------------------------------------
+# hardware.run_conditions() — volatile run conditions
+# ---------------------------------------------------------------------------
+
+
+def _fake_probe(outputs: dict[str, str]):
+    """Return a ``_run`` stand-in keyed on the joined argv.
+
+    Missing keys raise ``RuntimeError`` exactly like a failed probe so the
+    per-field degradation path is exercised, not just the happy path.
+    """
+
+    def run(cmd, timeout):
+        key = " ".join(cmd)
+        if key not in outputs:
+            raise RuntimeError(f"probe {cmd!r} failed")
+        return outputs[key]
+
+    return run
+
+
+_BATT_AC = "Now drawing from 'AC Power'\n -InternalBattery-0 (id=1)\t100%; charged"
+_BATT_BATTERY = (
+    "Now drawing from 'Battery Power'\n -InternalBattery-0 (id=1)\t61%; discharging"
+)
+_PMSET_G = "System-wide power settings:\nCurrently in use:\n lowpowermode         1\n standby              1\n"
+
+
+def test_run_conditions_maps_every_probe_onto_the_schema_enums(monkeypatch) -> None:
+    from vllm_mlx.community_bench import hardware
+
+    monkeypatch.setattr(
+        hardware,
+        "_run",
+        _fake_probe(
+            {
+                "/usr/bin/pmset -g batt": _BATT_BATTERY,
+                "/usr/bin/pmset -g": _PMSET_G,
+                "/usr/sbin/sysctl -n kern.memorystatus_vm_pressure_level": "2",
+                "/usr/sbin/sysctl -n vm.page_free_count vm.page_speculative_count "
+                "vm.page_purgeable_count hw.pagesize": "1024\n1024\n2048\n16384",
+            }
+        ),
+    )
+    monkeypatch.setattr(hardware, "_thermal_state", lambda: "fair")
+    conditions = hardware.run_conditions()
+    assert conditions == {
+        "power_source": "battery",
+        "low_power_mode": True,
+        "thermal_state": "fair",
+        "memory_pressure": "warning",
+        # (1024 + 1024 + 2048) pages * 16 KiB = 64 MiB
+        "available_memory_mib": 64,
+    }
+
+
+def test_run_conditions_reads_ac_and_normal_pressure(monkeypatch) -> None:
+    from vllm_mlx.community_bench import hardware
+
+    monkeypatch.setattr(
+        hardware,
+        "_run",
+        _fake_probe(
+            {
+                "/usr/bin/pmset -g batt": _BATT_AC,
+                "/usr/bin/pmset -g": _PMSET_G.replace(
+                    "lowpowermode         1", "lowpowermode         0"
+                ),
+                "/usr/sbin/sysctl -n kern.memorystatus_vm_pressure_level": "1",
+            }
+        ),
+    )
+    monkeypatch.setattr(hardware, "_thermal_state", lambda: "nominal")
+    conditions = hardware.run_conditions()
+    assert conditions["power_source"] == "ac"
+    assert conditions["low_power_mode"] is False
+    assert conditions["memory_pressure"] == "normal"
+    # The memory probe was not answered: that one field degrades, nothing else.
+    assert conditions["available_memory_mib"] is None
+
+
+def test_run_conditions_degrades_each_field_independently(monkeypatch) -> None:
+    """Every probe failing must still yield a schema-valid object."""
+    from vllm_mlx.catalog.validation import ContractValidator
+    from vllm_mlx.community_bench import hardware
+
+    monkeypatch.setattr(hardware, "_run", _fake_probe({}))
+    monkeypatch.setattr(hardware, "_thermal_state", lambda: "unknown")
+    conditions = hardware.run_conditions()
+    assert conditions == {
+        "power_source": "unknown",
+        "low_power_mode": None,
+        "thermal_state": "unknown",
+        "memory_pressure": "unknown",
+        "available_memory_mib": None,
+    }
+    # Unrecognised raw values map to "unknown" too, never to a wrong bucket.
+    monkeypatch.setattr(
+        hardware,
+        "_run",
+        _fake_probe(
+            {
+                "/usr/bin/pmset -g batt": "Now drawing from 'UPS Power'",
+                "/usr/sbin/sysctl -n kern.memorystatus_vm_pressure_level": "3",
+            }
+        ),
+    )
+    assert hardware.run_conditions()["power_source"] == "unknown"
+    assert hardware.run_conditions()["memory_pressure"] == "unknown"
+    observation = {
+        "schema_version": 1,
+        "profile_completeness": "partial",
+        "profile": {
+            "chip": "Apple M3 Pro",
+            "memory_gib": 18,
+            "cpu_cores": 12,
+            "gpu_cores": 18,
+        },
+        "profile_digest": "sha256:" + "0" * 64,
+        "os": {"name": "macOS", "version": "15.6.1", "architecture": "arm64"},
+        "conditions_before": conditions,
+        "conditions_after": hardware.run_conditions(),
+    }
+    # profile_digest is checked by the run validator, not the atomic one.
+    ContractValidator().validate("machine_observation", observation)
+
+
+@pytest.mark.skipif(
+    sys.platform != "darwin", reason="Objective-C runtime is macOS-only"
+)
+def test_thermal_state_reads_a_real_enum_value_on_macos() -> None:
+    from vllm_mlx.community_bench import hardware
+
+    assert hardware._thermal_state() in {"nominal", "fair", "serious", "critical"}
+
+
+def test_pmset_is_on_the_allowlist_and_nothing_else_was_added() -> None:
+    """The privacy contract enumerates every binary; pin the expansion."""
+    from vllm_mlx.community_bench import hardware
+
+    expected = frozenset(
+        {
+            "/usr/sbin/sysctl",
+            "/usr/bin/sw_vers",
+            "/usr/sbin/system_profiler",
+            "/usr/bin/pmset",
+        }
+    )
+    assert expected == hardware._PERMITTED_BINARIES

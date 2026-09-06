@@ -1188,6 +1188,88 @@ def test_run_local_archives_registered_token_drift_as_failure(
     }
 
 
+def test_run_local_records_conditions_before_and_after_the_measurements(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Both snapshots come from the runner, taken around the measured work."""
+    archive = LocalRunArchive(tmp_path)
+    _mock_local_context(
+        monkeypatch, "text_generation", "mlx-community/example-text-model"
+    )
+    snapshots = iter(
+        [
+            {
+                "power_source": "ac",
+                "low_power_mode": False,
+                "thermal_state": "nominal",
+                "memory_pressure": "normal",
+                "available_memory_mib": 9000,
+            },
+            {
+                "power_source": "battery",
+                "low_power_mode": True,
+                "thermal_state": "serious",
+                "memory_pressure": "warning",
+                "available_memory_mib": 1200,
+            },
+        ]
+    )
+    order: list[str] = []
+
+    def fake_conditions():
+        order.append("conditions")
+        return next(snapshots)
+
+    async def fake_measurements(repo_id: str):
+        order.append("measure")
+        return _text_run()["measurements"], 32768
+
+    monkeypatch.setattr(local_runner, "run_conditions", fake_conditions)
+    monkeypatch.setattr(local_runner, "_text_measurements", fake_measurements)
+
+    run = local_runner.run_local("example-text", archive=archive)
+
+    assert order == ["conditions", "measure", "conditions"]
+    assert run["machine"]["conditions_before"]["power_source"] == "ac"
+    assert run["machine"]["conditions_before"]["available_memory_mib"] == 9000
+    assert run["machine"]["conditions_after"]["thermal_state"] == "serious"
+    assert run["machine"]["conditions_after"]["low_power_mode"] is True
+    BenchmarkRunValidator().validate(run)
+
+
+def test_failed_run_keeps_the_before_snapshot_and_marks_after_unknown(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    archive = LocalRunArchive(tmp_path)
+    _mock_local_context(
+        monkeypatch, "text_generation", "mlx-community/example-text-model"
+    )
+    before = {
+        "power_source": "battery",
+        "low_power_mode": None,
+        "thermal_state": "fair",
+        "memory_pressure": "normal",
+        "available_memory_mib": 4321,
+    }
+    monkeypatch.setattr(local_runner, "run_conditions", lambda: dict(before))
+
+    async def broken(repo_id: str):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(local_runner, "_text_measurements", broken)
+    with pytest.raises(local_runner.LocalBenchmarkError):
+        local_runner.run_local("example-text", archive=archive)
+    failed = archive.list()[0]
+    assert failed["machine"]["conditions_before"] == before
+    assert failed["machine"]["conditions_after"] == {
+        "power_source": "unknown",
+        "low_power_mode": None,
+        "thermal_state": "unknown",
+        "memory_pressure": "unknown",
+        "available_memory_mib": None,
+    }
+
+
 def test_machine_profile_digest_is_recomputed() -> None:
     run = _image_run()
     run["machine"]["profile"]["memory_gib"] = 48
