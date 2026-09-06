@@ -244,10 +244,15 @@ struct CGEventComputerUseInputEmitter: ComputerUseInputEmitting {
 
             switch payload {
             case .click(let normalizedX, let normalizedY):
-                let frame = target.windowFrame
-                let point = CGPoint(
-                    x: frame.x + normalizedX * frame.width,
-                    y: frame.y + normalizedY * frame.height
+                let current = try Self.requireCurrent(
+                    target,
+                    using: targetReader,
+                    cancellationCheck: cancellationCheck
+                )
+                let point = try Self.clickPoint(
+                    normalizedX: normalizedX,
+                    normalizedY: normalizedY,
+                    in: current.windowFrame
                 )
                 guard let down = CGEvent(
                     mouseEventSource: source,
@@ -264,12 +269,7 @@ struct CGEventComputerUseInputEmitter: ComputerUseInputEmitting {
                 else {
                     throw MacOSComputerUseActuationError.eventCreationFailed
                 }
-                try Task.checkCancellation()
-                try Self.requireCurrent(
-                    target,
-                    using: targetReader,
-                    cancellationCheck: cancellationCheck
-                )
+                try cancellationCheck()
                 down.post(tap: .cgAnnotatedSessionEventTap)
                 up.post(tap: .cgAnnotatedSessionEventTap)
 
@@ -278,7 +278,7 @@ struct CGEventComputerUseInputEmitter: ComputerUseInputEmitting {
                 // clipboard without splitting surrogate pairs between events.
                 for chunk in textChunks {
                     try Task.checkCancellation()
-                    try Self.requireCurrent(
+                    _ = try Self.requireCurrent(
                         target,
                         using: targetReader,
                         cancellationCheck: cancellationCheck
@@ -335,7 +335,7 @@ struct CGEventComputerUseInputEmitter: ComputerUseInputEmitting {
                 down.flags = flags
                 up.flags = flags
                 try Task.checkCancellation()
-                try Self.requireCurrent(
+                _ = try Self.requireCurrent(
                     target,
                     using: targetReader,
                     cancellationCheck: cancellationCheck
@@ -368,16 +368,38 @@ struct CGEventComputerUseInputEmitter: ComputerUseInputEmitting {
         return chunks
     }
 
+    static func clickPoint(
+        normalizedX: Double,
+        normalizedY: Double,
+        in frame: WorkflowWindowFrame
+    ) throws -> CGPoint {
+        let point = CGPoint(
+            x: frame.x + normalizedX * frame.width,
+            y: frame.y + normalizedY * frame.height
+        )
+        // A mathematically interior normalized value can round onto a pixel at
+        // the frame boundary. Never let that event escape the live window.
+        guard point.x > frame.x,
+              point.x < frame.x + frame.width,
+              point.y > frame.y,
+              point.y < frame.y + frame.height
+        else {
+            throw MacOSComputerUseActuationError.invalidAction
+        }
+        return point
+    }
+
     @MainActor
     private static func requireCurrent(
         _ expected: WorkflowInteractionTarget,
         using targetReader: TargetReader,
         cancellationCheck: CancellationCheck
-    ) throws {
+    ) throws -> WorkflowInteractionTarget {
         let current = try targetReader(expected)
         guard MacOSComputerUseWindowIdentity.targetsMatch(current, expected) else {
             throw MacOSComputerUseActuationError.targetChanged
         }
         try cancellationCheck()
+        return current
     }
 }

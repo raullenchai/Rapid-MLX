@@ -193,6 +193,38 @@ struct MacOSComputerUseActuationTests {
         }
     }
 
+    @Test("Click coordinates use the tolerated live frame")
+    func clickUsesLiveFrame() throws {
+        let liveFrame = WorkflowWindowFrame(
+            x: 100.5,
+            y: 200.5,
+            width: 799.5,
+            height: 599.5
+        )
+
+        let point = try CGEventComputerUseInputEmitter.clickPoint(
+            normalizedX: 0.25,
+            normalizedY: 0.75,
+            in: liveFrame
+        )
+
+        #expect(point.x == 300.375)
+        #expect(point.y == 650.125)
+    }
+
+    @Test("A normalized coordinate that rounds onto the live edge is rejected")
+    func roundedEdgeIsRejected() {
+        let frame = WorkflowWindowFrame(x: 100, y: 200, width: 800, height: 600)
+
+        #expect(throws: MacOSComputerUseActuationError.invalidAction) {
+            try CGEventComputerUseInputEmitter.clickPoint(
+                normalizedX: Double.leastNonzeroMagnitude,
+                normalizedY: 0.5,
+                in: frame
+            )
+        }
+    }
+
     @Test("Unicode chunks never split a surrogate pair")
     func unicodeChunksPreserveScalars() {
         let text = String(repeating: "a", count: 1_023) + "😀" + "b"
