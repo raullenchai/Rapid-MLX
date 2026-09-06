@@ -36,7 +36,52 @@ from __future__ import annotations
 import re
 from typing import Any
 
+
+def payload_spans(text: str, opener: str, closer: str) -> list[tuple[int, int]]:
+    """Half-open ranges covering ``opener`` element payload bodies.
+
+    Used to tell an element that CONTAINS marker-shaped text apart from a
+    real sibling. A tool name inside a parameter value is prose the model
+    quoted — a file it read, a page it fetched, a previous tool result —
+    not a call it made, and emitting it as one turns any content an agent
+    ingests into an execution channel.
+
+    The range for each ``opener`` element reaches the next *sibling* ``opener``
+    (same rule ``split_marked_parameters`` uses to bound a value) or, failing
+    a sibling, the next ``<tool_call>`` wrapper — NOT the first ``closer``.
+
+    Ending at the first ``closer`` was a security hole, not mere over-coverage:
+    these escaping-free formats put literal closers inside values all the
+    time, and an attacker who controls argument text can forge one to close
+    the protected range early, then place a declared executable opener (e.g.
+    ``<function=run_shell>``) in the gap. The first-closer rule would skip
+    exactly that gap and still fabricate an executable call. This is the
+    closer-escape variant of the tool-name-in-an-argument injection.
+
+    Bounding on openers that START a new element — the next sibling
+    ``<parameter>``, or the next ``<tool_call>`` — cannot be truncated by a
+    forged closer, so a payload that itself contains delimiter-shaped text
+    fails CLOSED (the whole ambiguous element stays payload) rather than
+    continuing to emit an executable call. The deliberate cost, matching the
+    sibling rule used when parsing parameters, is that a value with a genuine
+    sibling parameter still ends at that sibling's opener.
+    """
+    openers = list(re.finditer(re.escape(opener), text))
+    spans: list[tuple[int, int]] = []
+    for index, m in enumerate(openers):
+        end = len(text)
+        wrapper = text.find("<tool_call>", m.end())
+        if wrapper != -1:
+            end = min(end, wrapper)
+        sibling = _next_sibling(text, openers, index, closer)
+        if sibling < len(openers):
+            end = min(end, openers[sibling].start())
+        spans.append((m.start(), end))
+    return spans
+
+
 __all__ = [
+    "payload_spans",
     "segment_by_next_opener",
     "declared_tool_names",
     "split_marked_calls",
@@ -153,6 +198,7 @@ def split_marked_calls(
     closer: str,
     outer: str | None = None,
     valid_names: frozenset[str] | set[str] | None = None,
+    not_inside: list[tuple[int, int]] | None = None,
 ) -> list[tuple[str, str, int, int]]:
     """``(name, body, span_start, span_end)`` for each call in ``text``.
 
@@ -162,8 +208,23 @@ def split_marked_calls(
     invocation from surrounding prose in one step — a second, differently
     truncating regex pass over the same text is how tag fragments leak into
     user-visible content.
+
+    ``not_inside`` lists ranges whose contents are payload — typically the
+    parameter bodies from ``payload_spans``. An opener starting inside one
+    is text the model quoted, not a call it made. Without this filter a
+    tool name appearing in an argument value is emitted as an executable
+    invocation, which turns any content an agent ingests (a file it reads,
+    a page it fetches, a previous tool result) into an execution channel.
+
+    ``valid_names`` cannot cover this: the dangerous names — run_shell,
+    write_file — are exactly the ones the request DID declare, so a
+    name-based filter passes them through.
     """
     openers = list(re.finditer(opener, text, re.DOTALL))
+    if not_inside:
+        openers = [
+            m for m in openers if not any(a <= m.start() < b for a, b in not_inside)
+        ]
     calls: list[tuple[str, str, int, int]] = []
     i = 0
     while i < len(openers):
