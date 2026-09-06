@@ -93,4 +93,4 @@ Nothing new is written to `submissions/` by either current flow.
 
 ## License
 
-The files in this directory (`submissions/`, `aggregated.json`) are CC0 (`SPDX-License-Identifier: CC0-1.0`). For rows submitted over HTTP, the licence under which rapidmlx.com publishes them is the one stated on the leaderboard page itself (its footer reads "Submissions: CC0" at the time of writing); the upload contract and consent text carry no licence term of their own.
+The files in this directory (`submissions/`, `aggregated.json`) are CC0 (`SPDX-License-Identifier: CC0-1.0`). The terms under which rapidmlx.com publishes rows submitted over HTTP are stated on the leaderboard page itself, not in the upload contract or the CLI consent text.
