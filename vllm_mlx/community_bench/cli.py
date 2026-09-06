@@ -68,7 +68,8 @@ def _run_model_label(run: dict[str, Any]) -> str:
 def summarize_measurements(run: dict[str, Any]) -> list[str]:
     """One line per case with the numbers a user actually wants to see.
 
-    Text cases report median decode throughput and time-to-first-token; image
+    Text cases report median decode throughput (``(output_tokens - 1) /
+    decode_duration``, the board's formula) and time-to-first-token; image
     and video cases report the median wall time. Medians over completed rounds
     only, matching how the board aggregates. Returns ``[]`` when the run has
     no completed measurements so callers can fall back to the raw record.
@@ -86,8 +87,14 @@ def summarize_measurements(run: dict[str, Any]) -> list[str]:
             by_case.setdefault(case_id, []).append(sample)
     lines: list[str] = []
     for case_id, samples in by_case.items():
+        # Same formula as the board (rapidmlx.com) and the legacy
+        # ``bench`` runner: the first token lands at ``ttft_ms``, so the
+        # decode window covers ``output_tokens - 1`` tokens (llama.cpp
+        # ``tg`` / vLLM TPOT semantics). ``N == 1`` falls back to ``N``
+        # to avoid a 0/0. Printing ``N / window`` here made the CLI read
+        # 45.8 tok/s for a run the site then showed as 45.5.
         decode = [
-            s["output_tokens"] / (s["decode_duration_ms"] / 1000.0)
+            max(s["output_tokens"] - 1, 1) / (s["decode_duration_ms"] / 1000.0)
             for s in samples
             if isinstance(s.get("output_tokens"), int | float)
             and isinstance(s.get("decode_duration_ms"), int | float)

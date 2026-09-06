@@ -2910,12 +2910,41 @@ def test_cli_run_prints_local_only_confirmation(
     # The user must see their numbers without opening the JSON (0.13.5 dogfood
     # F3): median decode throughput and TTFT per case, completed rounds only.
     assert "pp512-tg128" in out
-    assert "128.0 tok/s decode" in out  # median of 128, 100, 128 tok/s
+    # (128 - 1) / 1.0 s, 127 / 1.28 s, 127 / 1.0 s -> median 127.0. The
+    # ``- 1`` is the board's formula; ``128.0`` here would mean the CLI and
+    # the website disagree on the same run again.
+    assert "127.0 tok/s decode" in out
+    assert "128.0 tok/s" not in out
     assert "TTFT    460 ms" in out
     assert "(3 rounds)" in out
     assert "pp2048-tg512" not in out
     assert "Nothing was uploaded." in out
     assert "Share it: rapid-mlx benchmark share abc-123" in out
+
+
+def test_summarize_measurements_matches_the_board_decode_formula() -> None:
+    """``(N - 1) / window`` like rapidmlx.com; ``N == 1`` falls back to ``N``."""
+    run = {
+        "measurements": [
+            {
+                "case_id": "pp512-tg128",
+                "completed": True,
+                "output_tokens": 128,
+                "decode_duration_ms": 2794.0,
+                "ttft_ms": 813.0,
+            },
+            {
+                "case_id": "single",
+                "completed": True,
+                "output_tokens": 1,
+                "decode_duration_ms": 500.0,
+                "ttft_ms": 100.0,
+            },
+        ]
+    }
+    lines = community_cli.summarize_measurements(run)
+    assert lines[0].startswith("  pp512-tg128         45.5 tok/s decode")
+    assert lines[1].startswith("  single               2.0 tok/s decode")
 
 
 def test_summarize_measurements_reports_wall_time_for_image_and_video() -> None:
