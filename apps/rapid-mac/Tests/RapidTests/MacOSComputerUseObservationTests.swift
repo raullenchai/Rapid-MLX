@@ -60,6 +60,143 @@ struct MacOSComputerUseObservationTests {
         #expect(await capture.callCount == 2)
     }
 
+    @Test("ScreenCaptureKit boundary resolves the exact selection before and after pixels")
+    func screenCaptureBoundaryUsesExactSelection() async throws {
+        let target = Self.captureResult().target
+        let resolver = WindowResolverStub(
+            results: [
+                .success(.init(window: nil, target: target)),
+                .success(.init(window: nil, target: target)),
+            ]
+        )
+        let image = ImageCapturerStub(artifact: Self.captureResult().artifact)
+        let capture = ScreenCaptureKitComputerUseCapture(
+            windowResolver: { selection in try await resolver.resolve(selection) },
+            imageCapturer: { resolved, size in
+                await image.capture(resolved, size: size)
+            }
+        )
+
+        let result = try await capture.capture(selection)
+
+        #expect(result == Self.captureResult())
+        #expect(await resolver.selections == [selection, selection])
+        #expect(await image.callCount == 1)
+        #expect(await image.requestedTarget == target)
+        #expect(await image.requestedSize == CGSize(width: 800, height: 600))
+    }
+
+    @Test("A resolver cannot substitute another bundle, process, or window")
+    func screenCaptureBoundaryRejectsSubstitution() async {
+        let original = Self.captureResult().target
+        let substitutions = [
+            WorkflowInteractionTarget(
+                bundleIdentifier: "com.example.Other",
+                processIdentifier: original.processIdentifier,
+                windowIdentifier: original.windowIdentifier,
+                windowFrame: original.windowFrame
+            ),
+            WorkflowInteractionTarget(
+                bundleIdentifier: original.bundleIdentifier,
+                processIdentifier: 999,
+                windowIdentifier: original.windowIdentifier,
+                windowFrame: original.windowFrame
+            ),
+            WorkflowInteractionTarget(
+                bundleIdentifier: original.bundleIdentifier,
+                processIdentifier: original.processIdentifier,
+                windowIdentifier: "99",
+                windowFrame: original.windowFrame
+            ),
+        ]
+
+        for substitution in substitutions {
+            let resolver = WindowResolverStub(
+                results: [.success(.init(window: nil, target: substitution))]
+            )
+            let image = ImageCapturerStub(artifact: Self.captureResult().artifact)
+            let capture = ScreenCaptureKitComputerUseCapture(
+                windowResolver: { selection in try await resolver.resolve(selection) },
+                imageCapturer: { resolved, size in
+                    await image.capture(resolved, size: size)
+                }
+            )
+
+            await #expect(throws: MacOSComputerUseObservationError.invalidCapture) {
+                _ = try await capture.capture(selection)
+            }
+            #expect(await image.callCount == 0)
+        }
+    }
+
+    @Test("Window filtering rejects bundle, process, window, visibility, and focus mismatches")
+    func windowFilteringFailsClosed() {
+        let frame = CGRect(x: 10, y: 20, width: 800, height: 600)
+        let foreground = ScreenCaptureKitComputerUseCapture.ForegroundRecord(
+            bundleIdentifier: selection.bundleIdentifier,
+            processIdentifier: selection.processIdentifier,
+            focusedFrame: frame
+        )
+        let valid = ScreenCaptureKitComputerUseCapture.WindowRecord(
+            windowID: selection.windowID,
+            bundleIdentifier: selection.bundleIdentifier,
+            processIdentifier: selection.processIdentifier,
+            frame: frame,
+            isOnScreen: true
+        )
+        let invalidRecords = [
+            ScreenCaptureKitComputerUseCapture.WindowRecord(
+                windowID: 99,
+                bundleIdentifier: valid.bundleIdentifier,
+                processIdentifier: valid.processIdentifier,
+                frame: frame,
+                isOnScreen: true
+            ),
+            ScreenCaptureKitComputerUseCapture.WindowRecord(
+                windowID: valid.windowID,
+                bundleIdentifier: "com.example.Other",
+                processIdentifier: valid.processIdentifier,
+                frame: frame,
+                isOnScreen: true
+            ),
+            ScreenCaptureKitComputerUseCapture.WindowRecord(
+                windowID: valid.windowID,
+                bundleIdentifier: valid.bundleIdentifier,
+                processIdentifier: 999,
+                frame: frame,
+                isOnScreen: true
+            ),
+            ScreenCaptureKitComputerUseCapture.WindowRecord(
+                windowID: valid.windowID,
+                bundleIdentifier: valid.bundleIdentifier,
+                processIdentifier: valid.processIdentifier,
+                frame: frame,
+                isOnScreen: false
+            ),
+        ]
+
+        for record in invalidRecords {
+            #expect(throws: MacOSComputerUseObservationError.targetUnavailable) {
+                _ = try ScreenCaptureKitComputerUseCapture.validatedTarget(
+                    selection,
+                    foreground: foreground,
+                    windows: [record]
+                )
+            }
+        }
+        #expect(throws: MacOSComputerUseObservationError.targetNotFrontmost) {
+            _ = try ScreenCaptureKitComputerUseCapture.validatedTarget(
+                selection,
+                foreground: .init(
+                    bundleIdentifier: selection.bundleIdentifier,
+                    processIdentifier: selection.processIdentifier,
+                    focusedFrame: CGRect(x: 0, y: 0, width: 10, height: 10)
+                ),
+                windows: [valid]
+            )
+        }
+    }
+
     @Test("A recycled window ID from a different process is rejected")
     func recycledWindowIDFailsClosed() async {
         let original = Self.captureResult()
@@ -176,5 +313,45 @@ private actor CaptureStub: ComputerUseWindowCapturing {
     {
         callCount += 1
         return result
+    }
+}
+
+private actor WindowResolverStub {
+    private var results: [Result<ScreenCaptureKitComputerUseCapture.ResolvedWindow, Error>]
+    private(set) var selections: [ComputerUseWindowSelection] = []
+
+    init(results: [Result<ScreenCaptureKitComputerUseCapture.ResolvedWindow, Error>]) {
+        self.results = results
+    }
+
+    func resolve(_ selection: ComputerUseWindowSelection) throws
+        -> ScreenCaptureKitComputerUseCapture.ResolvedWindow
+    {
+        selections.append(selection)
+        guard !results.isEmpty else {
+            throw MacOSComputerUseObservationError.targetUnavailable
+        }
+        return try results.removeFirst().get()
+    }
+}
+
+private actor ImageCapturerStub {
+    private let artifact: ComputerUseObservationArtifact
+    private(set) var callCount = 0
+    private(set) var requestedTarget: WorkflowInteractionTarget?
+    private(set) var requestedSize: CGSize?
+
+    init(artifact: ComputerUseObservationArtifact) {
+        self.artifact = artifact
+    }
+
+    func capture(
+        _ resolved: ScreenCaptureKitComputerUseCapture.ResolvedWindow,
+        size: CGSize
+    ) -> ComputerUseObservationArtifact {
+        callCount += 1
+        requestedTarget = resolved.target
+        requestedSize = size
+        return artifact
     }
 }

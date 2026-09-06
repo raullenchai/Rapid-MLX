@@ -161,9 +161,45 @@ actor MacOSComputerUseObserver: LocalWorkflowObserving {
 /// It rejects background/focus drift rather than bringing an app forward as a
 /// hidden side effect of observation.
 struct ScreenCaptureKitComputerUseCapture: ComputerUseWindowCapturing {
-    private struct ResolvedWindow {
-        let window: SCWindow
+    struct WindowRecord: Equatable, Sendable {
+        let windowID: CGWindowID
+        let bundleIdentifier: String?
+        let processIdentifier: pid_t?
+        let frame: CGRect
+        let isOnScreen: Bool
+    }
+
+    struct ForegroundRecord: Equatable, Sendable {
+        let bundleIdentifier: String?
+        let processIdentifier: pid_t?
+        let focusedFrame: CGRect?
+    }
+
+    // SCWindow is an immutable system descriptor but is not annotated Sendable.
+    // The wrapper never mutates it and passes it only to ScreenCaptureKit's
+    // async screenshot API; all security decisions use the Sendable target.
+    struct ResolvedWindow: @unchecked Sendable {
+        let window: SCWindow?
         let target: WorkflowInteractionTarget
+    }
+
+    typealias WindowResolver = @Sendable (
+        ComputerUseWindowSelection
+    ) async throws -> ResolvedWindow
+    typealias ImageCapturer = @Sendable (
+        ResolvedWindow,
+        CGSize
+    ) async throws -> ComputerUseObservationArtifact
+
+    private let windowResolver: WindowResolver
+    private let imageCapturer: ImageCapturer
+
+    init(
+        windowResolver: @escaping WindowResolver = Self.resolve,
+        imageCapturer: @escaping ImageCapturer = Self.captureImage
+    ) {
+        self.windowResolver = windowResolver
+        self.imageCapturer = imageCapturer
     }
 
     func capture(_ selection: ComputerUseWindowSelection) async throws
@@ -173,8 +209,17 @@ struct ScreenCaptureKitComputerUseCapture: ComputerUseWindowCapturing {
             throw MacOSComputerUseObservationError.targetNotConfigured
         }
         try Task.checkCancellation()
-        let before = try await Self.resolve(selection)
-        let frame = before.window.frame
+        let before = try await windowResolver(selection)
+        guard Self.target(before.target, matches: selection) else {
+            throw MacOSComputerUseObservationError.invalidCapture
+        }
+        let targetFrame = before.target.windowFrame
+        let frame = CGRect(
+            x: targetFrame.x,
+            y: targetFrame.y,
+            width: targetFrame.width,
+            height: targetFrame.height
+        )
         guard frame.origin.x.isFinite, frame.origin.y.isFinite,
               frame.width.isFinite, frame.height.isFinite,
               frame.width > 0, frame.height > 0
@@ -183,39 +228,26 @@ struct ScreenCaptureKitComputerUseCapture: ComputerUseWindowCapturing {
         }
 
         let output = Self.outputSize(for: frame.size)
-        let configuration = SCStreamConfiguration()
-        configuration.width = output.width
-        configuration.height = output.height
-        configuration.showsCursor = false
-        configuration.ignoreShadowsSingleWindow = true
-
-        let filter = SCContentFilter(desktopIndependentWindow: before.window)
-        let image = try await SCScreenshotManager.captureImage(
-            contentFilter: filter,
-            configuration: configuration
+        let artifact = try await imageCapturer(
+            before,
+            CGSize(width: output.width, height: output.height)
         )
         try Task.checkCancellation()
-        let after = try await Self.resolve(selection)
-        guard MacOSComputerUseWindowIdentity.targetsMatch(
+        let after = try await windowResolver(selection)
+        guard Self.target(after.target, matches: selection),
+              MacOSComputerUseWindowIdentity.targetsMatch(
             before.target,
             after.target
         ) else {
             throw MacOSComputerUseObservationError.invalidCapture
         }
-        guard let png = NSBitmapImageRep(cgImage: image).representation(
-            using: .png,
-            properties: [:]
-        ) else {
+        guard artifact.isStructurallyValid else {
             throw MacOSComputerUseObservationError.invalidCapture
         }
 
         return ComputerUseCapturedWindow(
             target: after.target,
-            artifact: ComputerUseObservationArtifact(
-                pngData: png,
-                pixelWidth: image.width,
-                pixelHeight: image.height
-            )
+            artifact: artifact
         )
     }
 
@@ -240,26 +272,60 @@ struct ScreenCaptureKitComputerUseCapture: ComputerUseWindowCapturing {
                 }
             )
         }
-        guard foreground.0 == selection.bundleIdentifier,
-              foreground.1 == selection.processIdentifier,
-              let focusedFrame = foreground.2
-        else {
-            throw MacOSComputerUseObservationError.targetNotFrontmost
+        let records = content.windows.map {
+            WindowRecord(
+                windowID: $0.windowID,
+                bundleIdentifier: $0.owningApplication?.bundleIdentifier,
+                processIdentifier: $0.owningApplication?.processID,
+                frame: $0.frame,
+                isOnScreen: $0.isOnScreen
+            )
         }
+        let target = try validatedTarget(
+            selection,
+            foreground: ForegroundRecord(
+                bundleIdentifier: foreground.0,
+                processIdentifier: foreground.1,
+                focusedFrame: foreground.2
+            ),
+            windows: records
+        )
         guard let window = content.windows.first(where: {
             $0.windowID == selection.windowID
                 && $0.owningApplication?.bundleIdentifier == selection.bundleIdentifier
                 && $0.owningApplication?.processID == selection.processIdentifier
-        }),
-            let application = window.owningApplication,
-            application.processID == selection.processIdentifier,
-            window.isOnScreen
-        else {
+                && $0.isOnScreen
+        }) else {
             throw MacOSComputerUseObservationError.targetUnavailable
         }
-        let focusedCandidates = content.windows.filter {
+        return ResolvedWindow(
+            window: window,
+            target: target
+        )
+    }
+
+    static func validatedTarget(
+        _ selection: ComputerUseWindowSelection,
+        foreground: ForegroundRecord,
+        windows: [WindowRecord]
+    ) throws -> WorkflowInteractionTarget {
+        guard foreground.bundleIdentifier == selection.bundleIdentifier,
+              foreground.processIdentifier == selection.processIdentifier,
+              let focusedFrame = foreground.focusedFrame
+        else {
+            throw MacOSComputerUseObservationError.targetNotFrontmost
+        }
+        guard let window = windows.first(where: {
+            $0.windowID == selection.windowID
+                && $0.bundleIdentifier == selection.bundleIdentifier
+                && $0.processIdentifier == selection.processIdentifier
+                && $0.isOnScreen
+        }) else {
+            throw MacOSComputerUseObservationError.targetUnavailable
+        }
+        let focusedCandidates = windows.filter {
             $0.isOnScreen
-                && $0.owningApplication?.processID == selection.processIdentifier
+                && $0.processIdentifier == selection.processIdentifier
                 && MacOSComputerUseWindowIdentity.framesMatch($0.frame, focusedFrame)
         }
         guard focusedCandidates.count == 1,
@@ -267,21 +333,55 @@ struct ScreenCaptureKitComputerUseCapture: ComputerUseWindowCapturing {
         else {
             throw MacOSComputerUseObservationError.targetNotFrontmost
         }
-
-        let frame = window.frame
-        return ResolvedWindow(
-            window: window,
-            target: WorkflowInteractionTarget(
-                bundleIdentifier: selection.bundleIdentifier,
-                processIdentifier: selection.processIdentifier,
-                windowIdentifier: String(selection.windowID),
-                windowFrame: WorkflowWindowFrame(
-                    x: frame.origin.x,
-                    y: frame.origin.y,
-                    width: frame.width,
-                    height: frame.height
-                )
+        return WorkflowInteractionTarget(
+            bundleIdentifier: selection.bundleIdentifier,
+            processIdentifier: selection.processIdentifier,
+            windowIdentifier: String(selection.windowID),
+            windowFrame: WorkflowWindowFrame(
+                x: window.frame.origin.x,
+                y: window.frame.origin.y,
+                width: window.frame.width,
+                height: window.frame.height
             )
+        )
+    }
+
+    private static func target(
+        _ target: WorkflowInteractionTarget,
+        matches selection: ComputerUseWindowSelection
+    ) -> Bool {
+        target.bundleIdentifier == selection.bundleIdentifier
+            && target.processIdentifier == selection.processIdentifier
+            && target.windowIdentifier == String(selection.windowID)
+    }
+
+    private static func captureImage(
+        _ resolved: ResolvedWindow,
+        _ outputSize: CGSize
+    ) async throws -> ComputerUseObservationArtifact {
+        guard let window = resolved.window else {
+            throw MacOSComputerUseObservationError.targetUnavailable
+        }
+        let configuration = SCStreamConfiguration()
+        configuration.width = Int(outputSize.width)
+        configuration.height = Int(outputSize.height)
+        configuration.showsCursor = false
+        configuration.ignoreShadowsSingleWindow = true
+        let filter = SCContentFilter(desktopIndependentWindow: window)
+        let image = try await SCScreenshotManager.captureImage(
+            contentFilter: filter,
+            configuration: configuration
+        )
+        guard let png = NSBitmapImageRep(cgImage: image).representation(
+            using: .png,
+            properties: [:]
+        ) else {
+            throw MacOSComputerUseObservationError.invalidCapture
+        }
+        return ComputerUseObservationArtifact(
+            pngData: png,
+            pixelWidth: image.width,
+            pixelHeight: image.height
         )
     }
 

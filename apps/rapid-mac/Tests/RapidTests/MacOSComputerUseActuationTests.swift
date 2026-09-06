@@ -237,9 +237,12 @@ struct MacOSComputerUseActuationTests {
         let recorder = ElementBoundaryRecorder()
         let emitter = AXComputerUseInputEmitter(
             captureSource: ActuationCaptureStub(result: fixture.capture),
-            elementBoundary: { payload, target, required in
-                recorder.calls.append(.init(payload: payload, target: target, required: required))
+            elementResolver: { payload, target in
+                recorder.calls.append(.init(payload: payload, target: target))
                 return recorder.binding
+            },
+            elementPerformer: { binding in
+                recorder.performed.append(binding)
             }
         )
 
@@ -249,9 +252,9 @@ struct MacOSComputerUseActuationTests {
         )
 
         #expect(recorder.calls.count == 2)
-        #expect(recorder.calls[0].required == nil)
-        #expect(recorder.calls[1].required === recorder.binding)
         #expect(recorder.calls.allSatisfy { $0.target == fixture.observation.target })
+        #expect(recorder.performed.count == 1)
+        #expect(recorder.performed[0] === recorder.binding)
     }
 
     @Test("Changed pixels prevent the final AX element boundary")
@@ -269,9 +272,12 @@ struct MacOSComputerUseActuationTests {
         let recorder = ElementBoundaryRecorder()
         let emitter = AXComputerUseInputEmitter(
             captureSource: ActuationCaptureStub(result: changedCapture),
-            elementBoundary: { payload, target, required in
-                recorder.calls.append(.init(payload: payload, target: target, required: required))
+            elementResolver: { payload, target in
+                recorder.calls.append(.init(payload: payload, target: target))
                 return recorder.binding
+            },
+            elementPerformer: { binding in
+                recorder.performed.append(binding)
             }
         )
 
@@ -282,7 +288,7 @@ struct MacOSComputerUseActuationTests {
             )
         }
         #expect(recorder.calls.count == 1)
-        #expect(recorder.calls[0].required == nil)
+        #expect(recorder.performed.isEmpty)
     }
 
     @Test("A changed AX element is rejected at the press boundary")
@@ -290,14 +296,17 @@ struct MacOSComputerUseActuationTests {
     func changedElementPreventsPress() async {
         let fixture = Self.captureFixture()
         let recorder = ElementBoundaryRecorder()
+        let replacement = ComputerUseElementBinding(
+            fingerprint: recorder.binding.fingerprint
+        )
         let emitter = AXComputerUseInputEmitter(
             captureSource: ActuationCaptureStub(result: fixture.capture),
-            elementBoundary: { payload, target, required in
-                recorder.calls.append(.init(payload: payload, target: target, required: required))
-                if required != nil {
-                    throw MacOSComputerUseActuationError.elementChanged
-                }
-                return recorder.binding
+            elementResolver: { payload, target in
+                recorder.calls.append(.init(payload: payload, target: target))
+                return recorder.calls.count == 1 ? recorder.binding : replacement
+            },
+            elementPerformer: { binding in
+                recorder.performed.append(binding)
             }
         )
 
@@ -308,6 +317,7 @@ struct MacOSComputerUseActuationTests {
             )
         }
         #expect(recorder.calls.count == 2)
+        #expect(recorder.performed.isEmpty)
     }
 
     @Test("Window-unbound keyboard payloads fail before desktop access", arguments: [
@@ -428,7 +438,6 @@ struct MacOSComputerUseActuationTests {
 private struct ElementBoundaryCall {
     let payload: WorkflowActionPayload
     let target: WorkflowInteractionTarget
-    let required: ComputerUseElementBinding?
 }
 
 @MainActor
@@ -443,6 +452,7 @@ private final class ElementBoundaryRecorder {
         )
     )
     var calls: [ElementBoundaryCall] = []
+    var performed: [ComputerUseElementBinding] = []
 }
 
 private actor TargetProbe: ComputerUseTargetProbing {

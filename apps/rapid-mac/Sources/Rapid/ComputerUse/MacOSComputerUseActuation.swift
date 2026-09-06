@@ -229,28 +229,47 @@ final class ComputerUseElementBinding {
         self.fingerprint = fingerprint
         self.element = element
     }
+
+    func representsSameElement(as other: ComputerUseElementBinding) -> Bool {
+        guard fingerprint == other.fingerprint else { return false }
+        switch (element, other.element) {
+        case let (original?, current?):
+            return CFEqual(original, current)
+        case (nil, nil):
+            // Synthetic bindings exist only behind the injected unit-test
+            // boundary. Preserve identity semantics there as well.
+            return self === other
+        default:
+            return false
+        }
+    }
 }
 
 /// Element-bound click adapter. A coordinate is used only to resolve the
 /// current Accessibility element; input is delivered with AXPress to that
 /// element rather than through the global pointer event stream.
 struct AXComputerUseInputEmitter: ComputerUseInputEmitting {
-    typealias ElementBoundary = @MainActor @Sendable (
+    typealias ElementResolver = @MainActor @Sendable (
         WorkflowActionPayload,
-        WorkflowInteractionTarget,
-        ComputerUseElementBinding?
+        WorkflowInteractionTarget
     ) throws -> ComputerUseElementBinding
+    typealias ElementPerformer = @MainActor @Sendable (
+        ComputerUseElementBinding
+    ) throws -> Void
 
     private let captureSource: any ComputerUseWindowCapturing
-    private let elementBoundary: ElementBoundary
+    private let elementResolver: ElementResolver
+    private let elementPerformer: ElementPerformer
 
     init(
         captureSource: any ComputerUseWindowCapturing =
             ScreenCaptureKitComputerUseCapture(),
-        elementBoundary: @escaping ElementBoundary = Self.resolveAndOptionallyPress
+        elementResolver: @escaping ElementResolver = Self.resolve,
+        elementPerformer: @escaping ElementPerformer = Self.performPress
     ) {
         self.captureSource = captureSource
-        self.elementBoundary = elementBoundary
+        self.elementResolver = elementResolver
+        self.elementPerformer = elementPerformer
     }
 
     func emit(
@@ -260,7 +279,7 @@ struct AXComputerUseInputEmitter: ComputerUseInputEmitting {
         try Task.checkCancellation()
         let target = observation.target
         let binding = try await MainActor.run {
-            try elementBoundary(payload, target, nil)
+            try elementResolver(payload, target)
         }
 
         guard let windowID = CGWindowID(target.windowIdentifier), windowID != 0 else {
@@ -289,15 +308,19 @@ struct AXComputerUseInputEmitter: ComputerUseInputEmitting {
 
         try await MainActor.run {
             try Task.checkCancellation()
-            _ = try elementBoundary(payload, target, binding)
+            let currentBinding = try elementResolver(payload, target)
+            guard binding.representsSameElement(as: currentBinding) else {
+                throw MacOSComputerUseActuationError.elementChanged
+            }
+            try Task.checkCancellation()
+            try elementPerformer(currentBinding)
         }
     }
 
     @MainActor
-    private static func resolveAndOptionallyPress(
+    private static func resolve(
         _ payload: WorkflowActionPayload,
-        _ expected: WorkflowInteractionTarget,
-        _ requiredBinding: ComputerUseElementBinding?
+        _ expected: WorkflowInteractionTarget
     ) throws -> ComputerUseElementBinding {
         guard case .click(let normalizedX, let normalizedY) = payload else {
             throw MacOSComputerUseActuationError.invalidAction
@@ -355,25 +378,26 @@ struct AXComputerUseInputEmitter: ComputerUseInputEmitting {
             throw MacOSComputerUseActuationError.elementUnavailable
         }
         let fingerprint = try elementFingerprint(element)
-        if let requiredBinding {
-            guard fingerprint == requiredBinding.fingerprint,
-                  requiredBinding.element.map({ CFEqual($0, element) }) ?? true
-            else {
-                throw MacOSComputerUseActuationError.elementChanged
-            }
-            try Task.checkCancellation()
-            guard AXUIElementPerformAction(
-                element,
-                kAXPressAction as CFString
-            ) == .success
-            else {
-                throw MacOSComputerUseActuationError.elementActionFailed
-            }
-        }
         return ComputerUseElementBinding(
             fingerprint: fingerprint,
             element: element
         )
+    }
+
+    @MainActor
+    private static func performPress(
+        _ binding: ComputerUseElementBinding
+    ) throws {
+        guard let element = binding.element else {
+            throw MacOSComputerUseActuationError.elementUnavailable
+        }
+        guard AXUIElementPerformAction(
+            element,
+            kAXPressAction as CFString
+        ) == .success
+        else {
+            throw MacOSComputerUseActuationError.elementActionFailed
+        }
     }
 
     static func clickPoint(
