@@ -16,7 +16,7 @@ Branch / PR: `vector/qwen4-fast-rmsnorm`, PR #3151
   fp32-input candidate versus 1.413971716665x for the rejected bf16-input arm.
 - The QSA synthetic singleton now carries the real parent forward width, so a
   wide prefill cannot enter the narrow route.
-- 156 focused tests, ruff check/format, compileall, and diff check passed.
+- 157 focused tests, ruff check/format, compileall, and diff check passed.
 - Full method, raw summary ranges, commands, and limitations are in
   `docs/engineering/performance/2026-09-06-qwen4-fast-rmsnorm.md`.
 
@@ -28,14 +28,13 @@ Branch / PR: `vector/qwen4-fast-rmsnorm`, PR #3151
   claims.
 - Exactness is class 3. The PR must remain opt-in unless a named owner accepts
   the fidelity scope plus a resident-artifact greedy/digest gate.
-- The independent spark2 review loop could not run because its Codex refresh
-  token is revoked (401). No LGTM was posted; local adversarial review is not a
-  substitute for that required independent pass.
+- Final Codex self-review on the exact PR head found no blocking correctness,
+  routing, scope, benchmark, or documentation issue. The repository owner
+  explicitly selected this review path instead of the unavailable spark2 loop.
 
 ## Next concrete action
 
-1. Re-authenticate Codex on spark2 and rerun `pr-review 3151` to LGTM.
-2. On a host where revision `dcf657e4acda2aae72da99cde65b6c491cd96998`
+1. On a host where revision `dcf657e4acda2aae72da99cde65b6c491cd96998`
    is already resident, run the committed 1K/16K interleaved real-model gate.
-3. Atlas decides whether the independently reproduced kernel and accuracy
+2. Atlas decides whether the independently reproduced kernel and accuracy
    evidence is sufficient to merge the default-off route before that e2e rerun.
