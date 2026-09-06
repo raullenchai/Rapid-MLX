@@ -47,6 +47,8 @@ struct SettingsView: View {
     @State private var restartingSetup = false
     @AppStorage(VideoFeatureConfig.enabledKey)
     private var videoGenerationEnabled = VideoFeatureConfig.defaultEnabled
+    @AppStorage(ComputerUseFeatureConfig.enabledKey)
+    private var computerUseEnabled = ComputerUseFeatureConfig.defaultEnabled
 
     /// Stable reference shared by the sidebar and detail canvas. Keeping the
     /// frequently-mutated category outside this large view's value state means
@@ -531,6 +533,15 @@ struct SettingsView: View {
                 }
                 .toggleStyle(TrailingSettingsToggleStyle())
                 .accessibilityIdentifier("Settings.Experimental.VideoGenerationToggle")
+                Divider()
+                Toggle(isOn: $computerUseEnabled) {
+                    SettingsRowLabel(
+                        title: "Enable Computer Use",
+                        description: "Shows the Computer Use tab with local starter tasks. Nothing observes your screen, downloads a model, or acts until you choose a task. Rapid previews consequential actions for your approval."
+                    )
+                }
+                .toggleStyle(TrailingSettingsToggleStyle())
+                .accessibilityIdentifier("Settings.Experimental.ComputerUseToggle")
             }
         }
         .accessibilityIdentifier("Settings.Experimental.Panel")
