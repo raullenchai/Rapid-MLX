@@ -341,15 +341,25 @@ struct CGEventComputerUseInputEmitter: ComputerUseInputEmitting {
                     windowAtPointReader: windowAtPointReader,
                     eventPoster: eventPoster
                 )
-                try Self.post(
-                    up,
-                    at: point,
-                    expected: target,
-                    targetReader: targetReader,
-                    cancellationCheck: cancellationCheck,
-                    windowAtPointReader: windowAtPointReader,
-                    eventPoster: eventPoster
-                )
+                do {
+                    try Self.post(
+                        up,
+                        at: point,
+                        expected: target,
+                        targetReader: targetReader,
+                        cancellationCheck: cancellationCheck,
+                        windowAtPointReader: windowAtPointReader,
+                        eventPoster: eventPoster
+                    )
+                } catch {
+                    // Once mouse-down has reached the selected process, always
+                    // balance its button state. Leaving it held can turn later
+                    // user movement into an unintended drag. This cleanup is
+                    // still process-bound; the original validation error is
+                    // preserved so the workflow cannot advance.
+                    eventPoster(up, target.processIdentifier)
+                    throw error
+                }
 
             case .typeText, .keyPress:
                 throw MacOSComputerUseActuationError.invalidAction

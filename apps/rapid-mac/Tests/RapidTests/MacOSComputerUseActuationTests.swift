@@ -1,3 +1,4 @@
+import CoreGraphics
 import Foundation
 import Testing
 @testable import Rapid
@@ -341,7 +342,7 @@ struct MacOSComputerUseActuationTests {
         #expect(recorder.processIdentifiers == [42, 42])
     }
 
-    @Test("A target change after mouse-down suppresses mouse-up")
+    @Test("A target change after mouse-down emits only a balancing mouse-up")
     @MainActor
     func mouseUpRevalidatesTarget() async {
         let expected = Self.observation().target
@@ -355,7 +356,7 @@ struct MacOSComputerUseActuationTests {
         let emitter = CGEventComputerUseInputEmitter(
             targetReader: { _ in state.postCount == 0 ? state.expected : state.changed },
             windowAtPointReader: { _ in expected.windowIdentifier },
-            eventPoster: { _, _ in state.postCount += 1 }
+            eventPoster: { event, _ in state.postedEventTypes.append(event.type) }
         )
 
         await #expect(throws: MacOSComputerUseActuationError.targetChanged) {
@@ -364,7 +365,7 @@ struct MacOSComputerUseActuationTests {
                 in: expected
             )
         }
-        #expect(state.postCount == 1)
+        #expect(state.postedEventTypes == [.leftMouseDown, .leftMouseUp])
     }
 
     @Test("Window-unbound keyboard payloads fail before desktop access", arguments: [
@@ -468,7 +469,8 @@ private final class PostedEventRecorder {
 private final class EventBoundaryState {
     let expected: WorkflowInteractionTarget
     let changed: WorkflowInteractionTarget
-    var postCount = 0
+    var postedEventTypes: [CGEventType] = []
+    var postCount: Int { postedEventTypes.count }
 
     init(expected: WorkflowInteractionTarget, changed: WorkflowInteractionTarget) {
         self.expected = expected
