@@ -11,6 +11,7 @@ Includes low-level optimizations:
 """
 
 import logging
+import os
 import time
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
@@ -58,6 +59,56 @@ class MLXModelRunnerOutput:
     generation_time_s: float = 0.0
 
 
+# --------------------------------------------------------------------------
+# Compiled-decode-replay lane (opt-in, fail-closed to eager generate_step)
+# --------------------------------------------------------------------------
+#
+# mlx-lm's ``generate_step`` can trace the width-1 decode step once with
+# ``mx.compile`` and replay it instead of rebuilding ~250 kernels per token
+# (``mlx_lm.compiled_decode``). The gain is exact (bit-identical to eager on
+# the qualified class-1 bucket ladder) and single-digit percent, because
+# decode is near the memory-bandwidth floor. This lane is OFF by default; when
+# on, it declines cleanly to eager for anything it does not cover (a quantized
+# or rotating cache, batched/speculative/PLD requests, an out-of-policy
+# context, or a build whose mlx-lm lacks the module). It is a plain-decode
+# accelerator only.
+_COMPILED_DECODE_ENV = "VLLM_MLX_COMPILED_DECODE"
+_COMPILED_QUALIFICATION_ENV = "MLX_LM_COMPILED_DECODE_QUALIFICATION"
+
+
+def _env_truthy(value: str | None) -> bool:
+    return (value or "").strip().lower() not in ("", "0", "false", "no", "off")
+
+
+def _compiled_decode_available() -> tuple[bool, str | None]:
+    """Whether the loaded mlx-lm exposes the compiled-decode surface.
+
+    A build without the module (or with an older module missing the
+    request-private plumbing) declines the lane; the request still serves on
+    the eager path.
+    """
+    try:
+        from mlx_lm.compiled_decode import (  # noqa: F401
+            compiled_decode_context_policy,
+            model_is_compilable,
+        )
+        from mlx_lm.generate import generate_step  # noqa: F401
+    except Exception as exc:  # ImportError, or a partial/old module
+        return False, f"mlx-lm build has no compiled-decode surface ({exc})"
+    # The request-private prompt-cache argument is required to engage compiled
+    # replay without leaking RingKVCache's class into a shared cache. Older
+    # builds route the same call through the eager path, which is still correct.
+    import inspect
+
+    try:
+        params = inspect.signature(generate_step).parameters
+    except (TypeError, ValueError):
+        return False, "mlx-lm generate_step signature is not introspectable"
+    if "compiled_decode" not in params or "_prompt_cache_is_request_private" not in params:
+        return False, "mlx-lm generate_step predates request-private compiled replay"
+    return True, None
+
+
 class MLXModelRunner:
     """
     Model runner that uses mlx-lm for inference.
@@ -73,13 +124,25 @@ class MLXModelRunner:
     - Prefill chunking for L2 cache utilization
     """
 
-    def __init__(self, vllm_config: "VllmConfig", enable_optimizations: bool = True):
+    def __init__(
+        self,
+        vllm_config: "VllmConfig",
+        enable_optimizations: bool = True,
+        enable_compiled_decode: bool | None = None,
+    ):
         """
         Initialize MLX model runner.
 
         Args:
             vllm_config: vLLM configuration
             enable_optimizations: Whether to enable low-level optimizations
+            enable_compiled_decode: Opt into the compiled-decode-replay
+                plain-decode lane. ``None`` reads ``VLLM_MLX_COMPILED_DECODE``
+                (the ``serve`` CLI sets it from ``--compiled-decode``); the
+                default is off. Enabling it never forces compiled replay: the
+                lane still declines per request to the eager path for anything
+                it does not cover, and refuses to serve compiled without a
+                bound reviewed-qualification manifest.
         """
         self.vllm_config = vllm_config
         self.model_config = vllm_config.model_config
@@ -97,6 +160,21 @@ class MLXModelRunner:
         # Cache for prompt processing
         self._prompt_cache = None
 
+        # Compiled-decode-replay lane (opt-in, fail-closed to eager). When
+        # enabled, plain width-1 decode is routed through mlx-lm's compiled
+        # replay path with a request-private cache.
+        if enable_compiled_decode is None:
+            enable_compiled_decode = _env_truthy(os.environ.get(_COMPILED_DECODE_ENV))
+        self._enable_compiled_decode = bool(enable_compiled_decode)
+        # Single-entry APC (publish-back on hit): the stock-cache form of the
+        # last compiled turn's KV, plus the exact token ids it covers, so a
+        # later turn that extends the same prefix warm-restores instead of
+        # re-prefilling. The RingKVCache the compiled step owns is
+        # request-private and is NEVER stored here (mirrors the mlx-lm server's
+        # publish-back discipline: the APC only ever holds a stock KVCache).
+        self._compiled_apc_tokens: tuple[int, ...] | None = None
+        self._compiled_apc_cache: list | None = None
+
         # KV cache blocks
         self._num_cache_blocks = 0
 
@@ -113,6 +191,10 @@ class MLXModelRunner:
         logger.info(f"MLXModelRunner initialized for model: {self.model_config.model}")
         logger.info(
             f"Low-level optimizations: {'ENABLED' if enable_optimizations else 'disabled'}"
+        )
+        logger.info(
+            "Compiled-decode-replay lane: "
+            f"{'ENABLED (opt-in)' if self._enable_compiled_decode else 'disabled'}"
         )
 
     def load_model(self) -> None:
@@ -349,6 +431,174 @@ class MLXModelRunner:
 
         return logits, cache
 
+    def _compiled_decode_decline_reason(
+        self,
+        prompt_token_ids: list[int],
+        sampling_params: Any,
+        max_tokens: int,
+    ) -> str | None:
+        """Why this request may NOT use the compiled-replay lane, or ``None``.
+
+        Returns a reason string for anything the lane does not cover; the
+        caller then serves the request on the eager path. This gate is
+        deliberately conservative and mirrors ``generate_step``'s own
+        preconditions so a declined request never allocates a private cache
+        it will not use.
+        """
+        if not self._enable_compiled_decode:
+            return "compiled-decode lane disabled"
+        available, why = _compiled_decode_available()
+        if not available:
+            return why
+        # The lane must NOT serve compiled without an operator-approved,
+        # loader-bound checkpoint manifest. Family eligibility alone is only
+        # for direct research use of CompiledDecodeStep. mlx-lm binds a
+        # manifest either from a file (MLX_LM_COMPILED_DECODE_QUALIFICATION,
+        # set by --compiled-decode-qualification) or from an in-process
+        # registered serving record; honor both, but hard-decline when neither
+        # is present. generate_step remains the authoritative gate — it
+        # verifies the bound manifest against the loaded weights and declines
+        # to eager if it does not match, so this check never hashes weights.
+        manifest = os.environ.get(_COMPILED_QUALIFICATION_ENV, "").strip()
+        if not manifest:
+            try:
+                from mlx_lm import compiled_qualification as _cq
+
+                registered = bool(getattr(_cq, "SERVING_QUALIFICATIONS", {}))
+            except Exception:
+                registered = False
+            if not registered:
+                return (
+                    "no reviewed qualification manifest bound "
+                    f"({_COMPILED_QUALIFICATION_ENV} unset and no registered "
+                    "serving record; pass --compiled-decode-qualification)"
+                )
+        if max_tokens is not None and 0 <= max_tokens < 1:
+            return "no decode step requested (max_tokens < 1)"
+        # Width-1, batch-1, non-speculative only.
+        if getattr(sampling_params, "n", 1) not in (None, 1):
+            return "n>1 (compiled replay is width 1, batch 1)"
+        if (getattr(sampling_params, "best_of", 1) or 1) > 1:
+            return "best_of>1 (compiled replay is width 1, batch 1)"
+        if getattr(self.vllm_config, "speculative_config", None) is not None:
+            return "speculative decoding is configured (not shape-stable)"
+        if _env_truthy(os.environ.get("VLLM_MLX_PROMPT_LOOKUP")):
+            return "prompt-lookup (PLD) is enabled (not shape-stable)"
+        # A quantized / bounded KV cache is not shape-stable. This runner never
+        # passes kv_bits/max_kv_size to generate_step, but decline defensively
+        # if a caller ever wires them onto the sampling params.
+        if getattr(sampling_params, "kv_bits", None) is not None:
+            return "kv_bits (a quantized cache is not shape-stable)"
+        if getattr(sampling_params, "max_kv_size", None) is not None:
+            return "max_kv_size (rotating caches are not shape-stable)"
+        # Context must be within the configured compiled context policy. The
+        # env default is ``short`` (4096); generate_step re-checks this too.
+        try:
+            from mlx_lm.compiled_decode import compiled_decode_context_policy
+
+            budget = 0 if max_tokens is None or max_tokens < 0 else max_tokens
+            why, _policy = compiled_decode_context_policy(
+                len(prompt_token_ids), budget
+            )
+        except Exception as exc:
+            return f"context policy check failed ({exc})"
+        if why is not None:
+            return why
+        return None
+
+    def _plan_compiled_decode(
+        self,
+        prompt_token_ids: list[int],
+        sampling_params: Any,
+        max_tokens: int,
+    ) -> dict | None:
+        """Build the compiled-lane plan (cache + tokens to feed), or ``None``.
+
+        On a warm-restore hit the stored stock cache from the previous compiled
+        turn is reused and only the new suffix is prefilled; otherwise a fresh
+        request-private cache is created. Returning ``None`` means serve eager.
+        """
+        reason = self._compiled_decode_decline_reason(
+            prompt_token_ids, sampling_params, max_tokens
+        )
+        if reason is not None:
+            logger.debug("compiled decode declined: %s", reason)
+            return None
+
+        from mlx_lm.models.cache import make_prompt_cache
+
+        tokens = tuple(prompt_token_ids)
+        # Warm restore: the previous compiled turn's cache is reusable when its
+        # covered tokens are a strict prefix of this request and at least one
+        # new token remains to prefill. The stored form is a stock KVCache list
+        # (never a RingKVCache), which generate_step re-converts in place.
+        stored_tokens = self._compiled_apc_tokens
+        stored_cache = self._compiled_apc_cache
+        if (
+            stored_cache is not None
+            and stored_tokens is not None
+            and 0 < len(stored_tokens) < len(tokens)
+            and tokens[: len(stored_tokens)] == stored_tokens
+        ):
+            prefix_len = len(stored_tokens)
+            # Hand the stored list to generate_step, which mutates it in place.
+            # Clear our reference so a mid-flight failure cannot leave a stale,
+            # half-converted cache visible to the next turn; we re-publish on
+            # a clean finish.
+            self._compiled_apc_tokens = None
+            self._compiled_apc_cache = None
+            return {
+                "cache": stored_cache,
+                "feed": list(tokens[prefix_len:]),
+                "hit": True,
+                "prefix_len": prefix_len,
+            }
+        return {
+            "cache": make_prompt_cache(self.model),
+            "feed": list(tokens),
+            "hit": False,
+            "prefix_len": 0,
+        }
+
+    def _record_compiled_result(
+        self,
+        plan: dict,
+        prompt_token_ids: list[int],
+        generated_ids: list[int],
+        status: dict | None,
+    ) -> None:
+        """Publish the finished turn's cache back for later warm restore.
+
+        Mirrors the mlx-lm server's publish-back discipline: convert any
+        RingKVCache to its stock KVCache form (the APC never holds a
+        RingKVCache) and record the exact tokens it covers. A turn that
+        declined compiled still leaves a valid stock cache, so it is published
+        too, preserving prefix reuse across a policy-driven decline.
+        """
+        used = bool(status and status.get("used"))
+        if status is not None and not used and status.get("decline_reason"):
+            logger.debug(
+                "compiled decode declined at prefill: %s",
+                status.get("decline_reason"),
+            )
+        try:
+            from mlx_lm.models.cache import RingKVCache
+
+            cache = plan["cache"]
+            published = [
+                c.to_kv_cache() if isinstance(c, RingKVCache) else c for c in cache
+            ]
+            if any(isinstance(c, RingKVCache) for c in published):
+                raise RuntimeError("a RingKVCache must never be published")
+            self._compiled_apc_cache = published
+            self._compiled_apc_tokens = tuple(prompt_token_ids) + tuple(generated_ids)
+        except Exception as exc:
+            # Never let publish-back break generation; just skip the warm-restore
+            # opportunity for the next turn.
+            logger.debug("compiled decode publish-back skipped: %s", exc)
+            self._compiled_apc_cache = None
+            self._compiled_apc_tokens = None
+
     def _generate_for_request(
         self,
         prompt_token_ids: list[int],
@@ -360,6 +610,7 @@ class MLXModelRunner:
 
         Uses optimizations when enabled:
         - Prefill chunking for long prompts
+        - Compiled-decode-replay lane for plain width-1 decode (opt-in)
 
         Args:
             prompt_token_ids: Input token IDs
@@ -386,18 +637,37 @@ class MLXModelRunner:
             top_p = getattr(sampling_params, "top_p", 0.9)
             sampler = make_sampler(temp=temp, top_p=top_p)
 
-            # Convert token IDs to MLX array
-            prompt = mx.array(prompt_token_ids)
+            # Decide whether this request may use the compiled-replay lane.
+            plan = self._plan_compiled_decode(
+                prompt_token_ids, sampling_params, max_tokens
+            )
+
+            gen_kwargs: dict[str, Any] = dict(
+                prompt=mx.array(prompt_token_ids if plan is None else plan["feed"]),
+                model=self.model,
+                max_tokens=max_tokens,
+                sampler=sampler,
+            )
+            status: dict | None = None
+            if plan is not None:
+                # A request-private cache lets generate_step convert to a
+                # RingKVCache and replay a traced step without leaking that
+                # numerical/performance class into any shared cache. Any
+                # decline inside generate_step falls back to the eager step
+                # for this same request — the lane is fail-closed by
+                # construction.
+                status = {}
+                gen_kwargs.update(
+                    prompt_cache=plan["cache"],
+                    _prompt_cache_is_request_private=True,
+                    compiled_decode=True,
+                    _compiled_decode_status=status,
+                )
 
             generated_ids = []
 
             # Generate tokens
-            for token_info in generate_step(
-                prompt=prompt,
-                model=self.model,
-                max_tokens=max_tokens,
-                sampler=sampler,
-            ):
+            for token_info in generate_step(**gen_kwargs):
                 if hasattr(token_info, "token"):
                     generated_ids.append(token_info.token)
                 elif isinstance(token_info, tuple) and len(token_info) > 0:
@@ -406,10 +676,19 @@ class MLXModelRunner:
                 if len(generated_ids) >= max_tokens:
                     break
 
+            if plan is not None:
+                self._record_compiled_result(
+                    plan, prompt_token_ids, generated_ids, status
+                )
+
             return generated_ids
 
         except Exception as e:
             logger.error(f"Generation failed: {e}")
+            # A compiled attempt that raised may have left a poisoned/partial
+            # cache; drop the warm-restore entry so the next turn re-prefills.
+            self._compiled_apc_cache = None
+            self._compiled_apc_tokens = None
             return []
 
     def _continue_generation(self, req_id: str) -> list[int]:
@@ -458,6 +737,7 @@ class MLXModelRunner:
             info["optimizations"] = {
                 "kernel_fusion": False,
                 "memory_optimized": self._optimizations_applied,
+                "compiled_decode": self._enable_compiled_decode,
             }
 
             if self._hardware_info:

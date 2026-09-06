@@ -2945,6 +2945,27 @@ def serve_command(args):
         print(f"MCP config: {args.mcp_config}")
         os.environ["RAPID_MLX_MCP_CONFIG"] = args.mcp_config
 
+    # Compiled-decode-replay lane: translate the CLI flags into the env the
+    # model runner and mlx-lm read. The lane is env-gated (like the deployed
+    # serve wrapper's mlx-lm levers) so it needs no VllmConfig plumbing.
+    if getattr(args, "compiled_decode", False):
+        os.environ["VLLM_MLX_COMPILED_DECODE"] = "1"
+        # Enablement here is opt-in; keep mlx-lm's own default-on behavior for
+        # the underlying replay unless the operator overrode it explicitly.
+        os.environ.setdefault("MLX_LM_COMPILED_DECODE", "1")
+        print("Compiled-decode-replay lane: enabled")
+    if getattr(args, "compiled_decode_qualification", None):
+        os.environ["MLX_LM_COMPILED_DECODE_QUALIFICATION"] = (
+            args.compiled_decode_qualification
+        )
+        print(
+            f"Compiled-decode qualification: {args.compiled_decode_qualification}"
+        )
+    if getattr(args, "compiled_decode_context_policy", None):
+        os.environ["MLX_LM_COMPILED_DECODE_CONTEXT_POLICY"] = (
+            args.compiled_decode_context_policy
+        )
+
     # Pre-load embedding model if specified.
     #
     # H-08 install guard + D-EMBED-ALIAS alias-resolution + clean
@@ -7176,6 +7197,47 @@ Examples:
             "workloads. An identical exact re-request of a rotated "
             "sliding-window prompt falls back to a full prefill (byte-equal to "
             "cold)."
+        ),
+    )
+    # Compiled-decode-replay lane (opt-in, plain width-1 decode). Traces the
+    # decode step once with mx.compile and replays it instead of rebuilding the
+    # per-token graph, on a shape-stable RingKVCache. Exact (bit-identical to
+    # eager on the qualified class-1 bucket ladder) and single-digit percent;
+    # it declines cleanly to eager for anything it does not cover, and refuses
+    # to serve compiled without a bound reviewed-qualification manifest.
+    # Requires an mlx-lm build that exposes the compiled-decode surface.
+    serve_parser.add_argument(
+        "--compiled-decode",
+        action="store_true",
+        help=(
+            "Enable the compiled-decode-replay lane for plain width-1 decode "
+            "(opt-in; default disabled). Requires --compiled-decode-"
+            "qualification and an mlx-lm build with compiled replay. Declines "
+            "cleanly to eager for quantized/rotating caches, batched/"
+            "speculative/prompt-lookup requests, and out-of-policy contexts."
+        ),
+    )
+    serve_parser.add_argument(
+        "--compiled-decode-qualification",
+        type=str,
+        default=None,
+        metavar="PATH",
+        help=(
+            "Path to the operator-approved compiled-decode serving manifest "
+            "(binds MLX_LM_COMPILED_DECODE_QUALIFICATION). The lane will not "
+            "serve compiled replay without it."
+        ),
+    )
+    serve_parser.add_argument(
+        "--compiled-decode-context-policy",
+        type=str,
+        choices=["short", "memory", "latency", "long"],
+        default=None,
+        help=(
+            "Compiled-decode context policy (binds "
+            "MLX_LM_COMPILED_DECODE_CONTEXT_POLICY): short=4096 (default), "
+            "memory/latency=16384, long=262144. Contexts beyond the policy "
+            "limit decode eagerly."
         ),
     )
     # Opt-in prompt-deterministic RESPONSE CACHE (exact-match short-circuit).
