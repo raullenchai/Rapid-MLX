@@ -178,6 +178,9 @@ NON_ROUTING_FLAGS_ALLOWLIST: frozenset[str] = frozenset(
         "--enable-kv-cache-turboquant",
         "--enable-prefix-cache",
         "--disable-prefix-cache",
+        # Evaluation-only numerical guard override for the explicitly selected
+        # hybrid suffix feature; it does not auto-detect or select a route.
+        "--no-suffix-hybrid-bit-exact",
         # Chat-template toggle, not engine routing.
         "--no-thinking",
         # `--no-think` is a hidden back-compat alias of `--no-thinking` on

@@ -360,8 +360,8 @@ class SchedulerConfig:
     # SuffixDecoding — drafter-free speculative decoding using a suffix
     # tree over prompt + generated tokens. Predicts repeated patterns
     # (tool boilerplate, JSON schemas, ReAct loops) at zero drafter
-    # cost. Pure-attention only; the architecture allowlist is enforced
-    # via ``ModelConfig.supports_spec_decode`` at install time.
+    # cost. Pure-attention only by default; the hybrid (recurrent)
+    # path is additionally gated behind ``suffix_hybrid`` (see below).
     enable_suffix_decoding: bool = False
     suffix_max_draft: int = 8  # Max draft tokens per step (verify cost ∝ this)
     suffix_max_suffix_len: int = 4  # Longest k-gram indexed for matching
@@ -372,7 +372,6 @@ class SchedulerConfig:
     # win. Default 2 keeps chat near regression-floor while still
     # accepting most useful drafts on tool/JSON workloads.
     suffix_min_draft_len: int = 2
-
     # Admission control: hard cap on concurrent in-flight requests
     # (queued + running). A buggy client (or simple fork bomb) used to
     # be able to OOM the Metal allocator and crash the server for all
@@ -560,6 +559,18 @@ class SchedulerConfig:
     # not shifted — see ``test_scheduler_config_preserves_the_historical_
     # positional_prefix``.
     kv_cache_dtype_explicit: bool = False
+
+    # APPEND-ONLY: opt-in hybrid (recurrent / GatedDeltaNet / PLE / QSA)
+    # suffix decoding. These fields must remain after the entire historical
+    # SchedulerConfig surface so positional external callers cannot silently
+    # rebind existing arguments.
+    suffix_hybrid: bool = False
+    # The bit-exactness guard is the safe default. Disabling it with
+    # --no-suffix-hybrid-bit-exact is an unsafe evaluation-only knob because
+    # chunked recurrent verification can drift from stepwise greedy decode.
+    suffix_hybrid_bit_exact: bool = True
+    # Drafts below this floor fall through without paying hybrid verify cost.
+    suffix_min_match_len: int = 24
 
     def __post_init__(self) -> None:
         if not isinstance(self.mtp_continuous_batching, bool):
@@ -2274,6 +2285,84 @@ def _config_vetted_mtp_supports_spec_decode(model_type: str | None) -> bool:
     return model_type in {"qwen3_5", "qwen3_5_moe", "hy_v3", "qwen4_exp"}
 
 
+def _verify_scratch(
+    model: Any,
+    live_cache: list[Any],
+    verify_input: mx.array,
+    draft: list[int],
+    commit_head: list[Any],
+) -> dict:
+    """Scratch-verify a hybrid draft WITHOUT touching persistent state.
+
+    Mirrors SGLang NGRAMWorker: the persistent recurrent/conv/PLE/QSA state
+    (``live_cache``) stays untouched during the tentative multi-token verify.
+    ``commit_head`` is a deepcopy of ``live_cache`` taken by the caller and
+    used ONLY as the scratch buffer for the verify forward. Returns
+    ``{"n_accepted", "verify_logits", "preds_list"}``; the caller decides
+    whether to commit (replay the accepted prefix) and how, so a bit-exactness
+    guard can gate the commit.
+
+    ``verify_input`` is the ``(1, K+1)`` [X, d_0..d_{K-1}] batch whose
+    greedy predictions gate acceptance.
+    """
+    verify_logits = model(verify_input, cache=commit_head)
+    preds = mx.argmax(verify_logits, axis=-1)
+    # Materialize BOTH outputs together. Leaving ``verify_logits`` as an
+    # unevaluated lazy graph keeps the scratch forward - and therefore the
+    # scratch cache tensors - referenced even after the caller drops
+    # ``commit_head``, quietly defeating the ~2x-cache envelope once the
+    # bit-exactness probe allocates its own head. Realizing it here releases
+    # the scratch graph as soon as this helper returns.
+    mx.eval(verify_logits, preds)
+    preds_list = preds.tolist()[0]
+    n_accepted = 0
+    for i, tok in enumerate(draft):
+        if preds_list[i] == tok:
+            n_accepted += 1
+        else:
+            break
+    return {
+        "n_accepted": n_accepted,
+        "verify_logits": verify_logits,
+        "preds_list": preds_list,
+    }
+
+
+def _commit_scratch_accepted(
+    model: Any,
+    live_cache: list[Any],
+    committed_input: mx.array,
+    n_accepted: int,
+    snapshot: list[Any] | None = None,
+) -> None:
+    """Commit only the accepted prefix of a scratch verify onto live cache.
+
+    ``committed_input = [X, d_0..d_{K-1}]``; the accepted prefix
+    ``[X, d_0..d_{n_accepted-1}]`` is replayed one step at a time onto a
+    FRESH copy of the pre-verify state, which then replaces ``live_cache``.
+    The rejected tail is dropped (never replayed), so the persistent
+    recurrent/conv/PLE/QSA state holds exactly the greedy-committed prefix.
+
+    ``snapshot`` is an optional pre-verify deepcopy of ``live_cache`` already
+    held by the caller (the decode hot path retains one for terminal replay).
+    When provided it is copied instead of deep-copying the live cache again,
+    so the commit adds only ONE extra context-sized head rather than two.
+    """
+    import copy
+
+    commit_head = copy.deepcopy(snapshot if snapshot is not None else live_cache)
+    # The committed prefix is [X, d_0..d_{n_accepted-1}] = the first
+    # ``n_accepted + 1`` tokens of ``committed_input``. ``live_cache`` is the
+    # PRE-verify state and does NOT contain X yet (X is fed during the verify
+    # forward in production), so ALL ``n_accepted + 1`` tokens are replayed —
+    # X plus the accepted drafts. The rejected tail (tokens past
+    # ``n_accepted``) is dropped by never being replayed, which is what makes
+    # the commit-only-accepted scratch verify lossless.
+    for token in committed_input[0, 0 : n_accepted + 1].tolist():
+        mx.eval(model(mx.array([[token]]), cache=commit_head))
+    live_cache[:] = commit_head
+
+
 def _replay_dspark_committed(
     model: Any,
     cache_snapshot: list[Any],
@@ -2831,6 +2920,88 @@ def _install_dspark(
     return True
 
 
+def _retain_hybrid_replay(replay_dict, uid, snapshot, verify_input) -> None:
+    """Retain the pristine pre-verify snapshot + verify batch for a uid.
+
+    Module-level so the post-commit replay-retain step is patchable in tests
+    (``_pending_hybrid_replay`` is a closure dict and cannot be monkeypatched
+    directly). Raising from here simulates a post-commit exception and lets a
+    test assert ``_suffix_step`` restores the pristine cache before falling
+    through.
+    """
+    replay_dict[uid] = (snapshot, verify_input)
+
+
+def _restore_pending_emits(current: dict, snapshot: dict) -> None:
+    """Roll the pending-emit map back to a pre-transaction snapshot per-uid.
+
+    Codex round-9l finding #2: the post-commit rollback must remove ONLY the
+    entries the failed transaction added/changed and restore the pre-existing
+    ones — never ``clear()`` the whole map, which would silently drop ANOTHER
+    request's queued accepted tokens. ``snapshot`` is the pre-transaction map
+    (deep-copied list values); every current uid present in the snapshot is
+    restored to its snapshot value, any current uid absent from the snapshot
+    (added by the failed step) is popped. Module-level so the rollback is
+    unit-testable (``_pending_emits`` is a closure dict).
+    """
+    for u in list(current):
+        if u in snapshot:
+            current[u] = snapshot[u]
+        else:
+            current.pop(u, None)
+
+
+def _restore_hybrid_cache_after_exception(gb, result: dict) -> None:
+    """Restore the live cache to the pristine pre-verify snapshot after a
+    hybrid-verify exception, when the commit head was already swapped in.
+
+    The hybrid scratch-verify runs in TWO phases inside the ``_suffix_step``
+    try block: (1) the verify/commit (which swaps ``gb.prompt_cache`` to the
+    committed head — guard-on rebinds it to the probe head, guard-off mutates
+    it in place) and (2) retaining the replay head bookkeeping. If an exception
+    lands in the try AFTER the commit but before that bookkeeping (e.g.
+    MemoryError), running ``_orig_step`` against the already-advanced cache
+    would corrupt cache/token alignment. This restores the pristine snapshot
+    retained as ``result["replay_snapshot"]`` first.
+
+    When ``result`` is empty (the helper raised pre-commit) or the commit never
+    happened (``committed`` unset), the live cache is still the pre-verify state
+    and no restore is needed.
+    """
+    if result.get("committed") and result.get("replay_snapshot") is not None:
+        gb.prompt_cache = result["replay_snapshot"]
+
+
+def _repair_hybrid_terminal(model, snapshot, verify_input_batch, surfaced_len):
+    """Rebuild a delivered cache from the pristine snapshot + surfaced prefix.
+
+    The Qwen4 recurrent cache cannot ``trim_all`` an un-surfaced accepted tail
+    (the B2.1 scratch path sidesteps attention-only rollback for exactly this
+    reason). When a finish stops part-way through the accepted drafts — whether
+    on the primary token or on a synthetic emit — we rebuild the DELIVERED
+    response cache from the retained pristine pre-verify snapshot plus ONLY
+    the surfaced prefix, dropping the tail by never replaying it (the DSpark
+    ``_pending_replay`` terminal-repair pattern).
+
+    ``surfaced_len`` is the number of surfaced tokens: 1 for a primary-terminal
+    (only X), ``emit_idx + 2`` for a synthetic-drain terminal (X + drained
+    drafts). We step the surfaced prefix one token at a time on a scratch copy
+    so recurrent state advances exactly as an equivalent single-token decode
+    would (chunked != step-update is the known recurrent caveat).
+
+    Suffix decode is a single-request fast path, so the rebuilt head IS the
+    per-request cache; no per-cell ``extract``. The result is an INDEPENDENT
+    head (deep-copied from the snapshot) — the caller must NOT alias the live
+    cache to it.
+    """
+    import copy
+
+    repaired = copy.deepcopy(snapshot)
+    for s in range(surfaced_len):
+        mx.eval(model(verify_input_batch[:, s : s + 1], cache=repaired))
+    return repaired
+
+
 def _install_suffix_decoding(
     batch_gen: "BatchGenerator",
     model: Any,
@@ -2841,6 +3012,9 @@ def _install_suffix_decoding(
     requests: dict[str, Any],
     uid_to_request_id: dict[int, str],
     min_draft_len: int = 2,
+    suffix_hybrid: bool = False,
+    suffix_min_match_len: int = 24,
+    suffix_hybrid_bit_exact: bool = True,
 ) -> bool:
     """Monkey-patch BatchGenerator's GenerationBatch to add SuffixDecoding.
 
@@ -2873,18 +3047,24 @@ def _install_suffix_decoding(
     The architecture allowlist is enforced upstream via
     ``ModelConfig.supports_spec_decode``: hybrid linear-attention models
     (Qwen3.5/3.6 GatedDeltaNet, Granite 4 Mamba2) skip install entirely
-    because chunked-batched verify isn't numerically equivalent to
-    step-update on recurrent layers — see SUFFIX_POC_REPORT.md.
+    by default because chunked-batched verify isn't numerically equivalent
+    to step-update on recurrent layers — see SUFFIX_POC_REPORT.md. When the
+    operator explicitly opts into the hybrid path (``suffix_hybrid=True``),
+    the verify runs against cache scratch (the Qwen4 recurrent/conv/PLE/QSA
+    state is snapshotted in the tentative forward) and only accepted
+    positions are committed, mirroring SGLang's NGRAMWorker.
     """
     from .speculative.suffix_counter import get_global_counter as _suffix_counter
     from .speculative.suffix_decoding import SuffixDecodingDrafter
 
-    if profile is not None and not profile.supports_spec_decode:
+    hybrid = bool(suffix_hybrid) and profile is not None and profile.is_hybrid
+    if profile is not None and not profile.supports_spec_decode and not hybrid:
         logger.warning(
             "[SuffixDecoding] disabled: model is hybrid (linear-attention/"
             "Mamba). Multi-token verify path is not numerically equivalent "
             "to step-update on recurrent layers. See "
-            "evals/results/SUFFIX_POC_REPORT.md."
+            "evals/results/SUFFIX_POC_REPORT.md. Pass suffix_hybrid=True to "
+            "opt into the scratch-verify hybrid path."
         )
         return False
 
@@ -2912,6 +3092,15 @@ def _install_suffix_decoding(
     # ``next()`` then drains the queue, producing one synthetic Response
     # per token so the engine surface stays consistent.
     _pending_emits: dict[int, list[tuple[int, mx.array]]] = {}
+    # For the hybrid path only: retain the pre-verify pristine snapshot plus
+    # the verify batch so a terminal (stop/length) finish part-way through the
+    # accepted drafts can rebuild the delivered response cache from ONLY the
+    # surfaced tokens, dropping the un-surfaced accepted tail. The Qwen4
+    # recurrent cache cannot ``trim_all`` a rejected tail (B2.1 sidesteps the
+    # attention-only rollback on purpose), so exact replay from the pristine
+    # snapshot is the only safe way to keep the saved prefix consistent —
+    # mirroring the DSpark ``_pending_replay`` terminal-repair pattern.
+    _pending_hybrid_replay: dict[int, tuple[list[Any], mx.array]] = {}
 
     _stats = {
         "verify_steps": 0,
@@ -2932,6 +3121,8 @@ def _install_suffix_decoding(
         "ft_no_draft": 0,
         "ft_cooldown": 0,
         "ft_non_trimmable_cache": 0,
+        "ft_short_match": 0,
+        "ft_hybrid_drift": 0,
         # Error fallbacks are fallthroughs too. Without this key the
         # breakdown stops summing to ``fallthrough_steps`` exactly when
         # something is going wrong — which is when the breakdown is being
@@ -2946,6 +3137,15 @@ def _install_suffix_decoding(
         "cooldown_level": 0,
         # Current adaptive draft width (see _current_k).
         "k_current": 0,
+        # Hybrid-path bookkeeping (only populated when suffix_hybrid installs).
+        "suffix_hybrid": hybrid,
+        "suffix_min_match_len": suffix_min_match_len,
+        # Evidence: how many drift refusals the bit-exactness guard recorded.
+        # Kept as an additive locally-scoped counter (new key), NOT a new
+        # exported metric name — the shared counter surface (verify_steps /
+        # fallthrough_steps / draft_tokens_proposed / tokens_accepted) is
+        # unchanged. Short-match fallthroughs surface via ``ft_short_match``.
+        "hybrid_drifts": 0,
     }
 
     # Per-UID drafting state. MUST be keyed by request: the drafter itself
@@ -2963,6 +3163,152 @@ def _install_suffix_decoding(
     #
     # Cleared alongside ``_drafters`` when the request finishes.
     _uid_state: dict[int, dict] = {}
+
+    # Hybrid scratch-verify is opt-in and only meaningful for hybrid models.
+    # ``_hybrid_active`` is False on the pure-attention path so the existing
+    # (attention-tuned) verify flow is untouched.
+    _hybrid_active = bool(hybrid)
+    _hybrid_bit_exact = bool(suffix_hybrid_bit_exact)
+
+    # The hybrid path has a 24-token minimum-match floor (a draft shorter
+    # falls through without paying the multi-token verify cost). ``max_draft``
+    # is the operator's hard cap on verify width and is honored as-is on every
+    # path. The CLI raises the DEFAULT cap to the floor for a CONFIRMED hybrid
+    # model (model-resolution time), so a below-floor cap here is either an
+    # explicit operator override or a programmatic call — in either case the
+    # hybrid path becomes a no-op, and the install block below WARNs loudly
+    # naming ``--suffix-max-draft`` to raise (rather than silently overriding
+    # the documented width limit or silently disabling the feature). A pure-
+    # attention model with ``--suffix-hybrid`` (a no-op flag there) keeps its
+    # configured ``max_draft`` unchanged. The bit-exactness guard probes EVERY
+    # committed position (the full accepted prefix), so there is no probe-length
+    # knob to tune.
+    _effective_max_draft = max_draft
+
+    def _hybrid_scratch_verify(
+        verify_input: mx.array, committed_input: mx.array, draft: list[int]
+    ) -> dict:
+        """Scratch-verify a hybrid draft against the live cache.
+
+        Runs the tentative forward on a *copied* commit head so the persistent
+        recurrent/conv/PLE/QSA state stays untouched, and replays only the
+        accepted prefix back onto the live cache — the SGLang NGRAMWorker
+        commit-only-accepted, drop-the-tail pattern, which is step-equivalent.
+        The bit-exactness guard (default ON) replays the committed prefix
+        stepwise on the SAME pre-verify snapshot before committing; a drift
+        refusal never mutates the live cache.
+        """
+        import copy
+
+        if _hybrid_bit_exact:
+            # Bit-exactness guard ON (the default / lossless path): the ORIGINAL
+            # live cache doubles as the retained pristine state — we never copy
+            # it, we SWAP it out at commit time. So at any instant there are at
+            # most TWO full caches: the pristine live cache plus one working
+            # head (the verify scratch, then the probe/commit head, never both —
+            # the scratch is dropped before the probe allocates). That is the
+            # SGLang/DSpark scratch-verify envelope (~2x the live cache), not
+            # the 3x a naive "snapshot + verify head + probe head" would hold.
+            pristine = gb.prompt_cache
+            committed_head = copy.deepcopy(pristine)
+            result = _verify_scratch(
+                gb.model, pristine, verify_input, draft, committed_head
+            )
+            n_accepted = result["n_accepted"]
+            # The verify scratch is spent — drop it so the probe below does not
+            # hold two working heads simultaneously (context-sized deepcopies).
+            del committed_head
+            # Bit-exactness guard: replay the committed prefix stepwise on a
+            # head derived from the pristine live cache and compare each step's
+            # greedy pred to the chunked verify's pred at that position. Any
+            # mismatch means the chunked-batched forward DRIFTED from step-
+            # update on the recurrent layers (quantized-hybrid signature) —
+            # refuse to commit rather than surface silently-wrong accepted
+            # tokens. Nothing has been committed yet, so a refusal is a clean
+            # fall-through.
+            probe_head = copy.deepcopy(pristine)
+            # Probe EVERY committed position (X plus each accepted draft). A
+            # fixed probe window could let drift after the Nth position commit
+            # silently under a "bit-exact" contract, so the replay must cover
+            # the full committed prefix through ``n_accepted``.
+            probe_len = n_accepted + 1
+            drift = False
+            # Capture the STEPWISE logits for each committed position. The chunked
+            # ``verify_logits`` can drift from true single-token decode on
+            # quantized hybrids even when argmax agrees; deriving the returned
+            # logprobs from those would violate the lossless contract. The guard
+            # replay below produces the numerically step-equivalent logits, so
+            # they are used for logprobs when the guard is ON.
+            probe_logits: list[mx.array] = []
+            # The chunked verify predict at ``preds_list[j]`` is the model's
+            # greedy prediction AFTER consuming ``verify_input[:, :j+1]``. The
+            # stepwise probe feeds token ``j`` at iteration ``j`` (so X at j=0,
+            # then d_0, ...) and compares each stepwise pred to the chunk row.
+            for j in range(probe_len):
+                step_logits = gb.model(verify_input[:, j : j + 1], cache=probe_head)
+                step_pred = mx.argmax(step_logits, axis=-1)
+                mx.eval(step_logits, step_pred)
+                if int(step_pred[0, 0].item()) != result["preds_list"][j]:
+                    drift = True
+                    break
+                probe_logits.append(step_logits)
+            if drift:
+                result["drift"] = True
+                return result
+            # Guard passed: ``probe_head`` has replayed exactly the committed
+            # prefix ``[X, d_0..d_{n_accepted-1}]`` one step at a time, so it IS
+            # the commit state. Build the COMPLETE result (including the replay
+            # bookkeeping) BEFORE swapping the live cache: if constructing it
+            # raises (e.g. MemoryError), the live cache is still pristine and
+            # ``_suffix_step``'s exception path falls through to ``_orig_step``
+            # on the un-advanced cache. Only after the result is fully built do
+            # we SWAP the commit head in by rebinding ``gb.prompt_cache`` — the
+            # original live list (still pristine) is retained as ``pristine``
+            # for terminal replay, and its tensors are now referenced only
+            # there, so we stay at 2x (pristine + committed).
+            result["replay_snapshot"] = pristine
+            # Stepwise logits per committed position (X + accepted drafts),
+            # used for lossless logprobs instead of the chunked verify logits.
+            result["stepwise_logits"] = probe_logits
+            # Mark that the commit head has been swapped in (the live cache is
+            # now NOT the pre-verify state). ``_suffix_step``'s exception path
+            # uses this to restore ``gb.prompt_cache`` to the pristine snapshot
+            # before falling through to ``_orig_step`` — a post-swap exception
+            # (e.g. MemoryError while retaining the replay head) must not run
+            # the vanilla step against the already-advanced cache.
+            result["committed"] = True
+            gb.prompt_cache = probe_head
+            return result
+        # Guard OFF (non-lossless/debug mode, ``--no-suffix-hybrid-bit-exact``):
+        # no drift check and the stepwise commit helper deep-copies its base. We
+        # therefore keep a dedicated pre-verify copy as the replay base, and the
+        # commit helper copies that once more — this debug path may hold up to
+        # 3 full caches transiently, which is acceptable off-default (it is an
+        # explicit escape hatch, not the production path).
+        snapshot = copy.deepcopy(gb.prompt_cache)
+        committed_head = copy.deepcopy(snapshot)
+        result = _verify_scratch(
+            gb.model, gb.prompt_cache, verify_input, draft, committed_head
+        )
+        n_accepted = result["n_accepted"]
+        del committed_head
+        # Build the FULL result (with ``committed`` + ``replay_snapshot``) BEFORE
+        # the in-place commit (codex round-9j finding #1): ``_commit_scratch_accepted``
+        # mutates ``gb.prompt_cache`` in place, so if anything between the commit
+        # and the result-population previously raised, the outer handler saw an
+        # incomplete result and skipped restoration — running ``_orig_step()``
+        # against an already-advanced cache. Stamping the restore info first
+        # guarantees every post-commit exception unconditionally restores it.
+        result["replay_snapshot"] = snapshot
+        result["committed"] = True
+        _commit_scratch_accepted(
+            gb.model,
+            gb.prompt_cache,
+            committed_input,
+            n_accepted,
+            snapshot=snapshot,
+        )
+        return result
 
     def _reset_state_gauges_if_idle() -> None:
         """Return the state gauges to their at-rest values when no request
@@ -2988,6 +3334,7 @@ def _install_suffix_decoding(
         _pending_emits.pop(uid, None)
         _drafters.pop(uid, None)
         _uid_state.pop(uid, None)
+        _pending_hybrid_replay.pop(uid, None)
 
     def _state_for(uid: int) -> dict:
         st = _uid_state.get(uid)
@@ -3051,7 +3398,35 @@ def _install_suffix_decoding(
     # ``max_draft`` on the other side, since ``num_speculative_tokens``
     # accepts 1 and a floor of 2 would issue two-token drafts against a
     # configured cap of one.
-    _K_MIN = min(max(2, min_draft_len), max_draft)
+    #
+    # On the hybrid path this floor deadlock is exactly the trap that would
+    # silently disable the feature: width only grows AFTER a full-accept
+    # VERIFY, but a below-floor draft falls back BEFORE the width-update code
+    # runs — so starting at the default 2 deadlocks there even though the
+    # effective cap was raised above the match floor. Seed the hybrid width
+    # AT the match floor so a floor-length repeat is issued on the first step
+    # and the verify path is actually reachable; the adaptive ``*2`` growth
+    # below then climbs to ``_effective_max_draft`` once acceptance is proven.
+    if _hybrid_active:
+        # Seed the hybrid width AT the match floor so a floor-length repeat is
+        # issued on the first step and the verify path is reachable — but never
+        # above ``max_draft``. In a normal install the CLI raises the DEFAULT
+        # cap to the floor for a confirmed hybrid (so this equals the floor).
+        # An EXPLICIT below-floor cap (operator override) degrades the hybrid
+        # path to an unreachable no-op: every draft is shorter than the floor,
+        # hits ``ft_short_match`` before the width-update code runs, and the
+        # verify path is never reached. Warn loudly, naming the flag to raise,
+        # so the operator knows the opt-in is inert rather than silently so.
+        if max_draft < suffix_min_match_len:
+            logger.warning(
+                "[SuffixDecoding] hybrid path is UNREACHABLE: --suffix-max-draft "
+                f"{max_draft} < match floor {suffix_min_match_len}. Every draft "
+                "falls through before verify. Raise --suffix-max-draft to at "
+                f"least {suffix_min_match_len} to enable the hybrid scratch-verify."
+            )
+        _K_MIN = min(suffix_min_match_len, max_draft)
+    else:
+        _K_MIN = min(max(2, min_draft_len), max_draft)
 
     def _is_greedy_for_uid(uid: int) -> bool:
         """Detect whether the request's sampler is effectively greedy.
@@ -3083,6 +3458,10 @@ def _install_suffix_decoding(
         logprobs. Additional emitted tokens (accepted drafts + bonus)
         are stashed in ``_pending_emits`` for ``_suffix_next`` to drain.
         """
+        # Set on the hybrid guard-on path (stepwise logprobs); always None on
+        # the pure-attention path so the shared logprobs code falls back cleanly.
+        stepwise_logits: list[mx.array] | None = None
+
         # Single-request guard. _next_tokens has shape (B,).
         if gb._next_tokens is None or gb._next_tokens.shape[0] != 1:
             _stats["fallthrough_steps"] += 1
@@ -3127,7 +3506,13 @@ def _install_suffix_decoding(
                 else []
             )
             drafter = SuffixDecodingDrafter(
-                max_draft_tokens=max_draft,
+                # On the hybrid path the adaptive width is raised to at least
+                # ``suffix_min_match_len`` by ``_effective_max_draft``; the
+                # drafter's OWN cap must match, or its drafts stay below the
+                # 24-token floor and the opt-in hybrid path is dead (every
+                # draft lands on ``ft_short_match``). Pure-attention is
+                # unaffected — ``_effective_max_draft == max_draft`` there.
+                max_draft_tokens=_effective_max_draft,
                 max_suffix_len=max_suffix_len,
                 min_confidence=min_confidence,
             )
@@ -3202,218 +3587,519 @@ def _install_suffix_decoding(
 
         K = len(draft)
 
-        # Defense-in-depth: even though ``profile.supports_spec_decode``
-        # already gates installation on hybrid arches, verify that EVERY
-        # cache layer is trimmable before paying the verify-forward cost.
-        # If any layer can't trim and we end up needing to roll back, the
-        # cache state would silently diverge — better to fall through.
-        # Preflight the maximum possible rollback amount before the verify
-        # forward mutates anything. Composite caches are checked recursively,
-        # so one side-cache cannot refuse after its sibling already trimmed.
-        from .cache_rollback import can_advance
+        # Retained pristine pre-verify snapshot for the POST-COMMIT exception
+        # envelope (codex round-9e finding #3). Set on a successful hybrid
+        # commit; ``None`` on the pure-attention path (which uses trimmable
+        # rollback, not snapshot-restore) and when nothing was committed. The
+        # post-commit ``except`` restores this before re-raising when a step
+        # after the commit head fails.
+        _hybrid_pc_snapshot = None
+        # Stepwise (bit-exactness guard) logits; only the hybrid path sets it.
+        # Defaulted here so the shared post-commit compute step can reference it
+        # on the pure-attention path too (reachable via --force-spec-decode),
+        # where it is legitimately absent.
+        stepwise_logits = None
+        # Transactional snapshot of the mutation tail (set AFTER the fallible
+        # compute section completes, before any bookkeeping write). ``None`` until
+        # the snapshot is taken, so a pre-snapshot (compute) exception must not
+        # attempt a rollback that would reference unbound state.
+        _tx: dict | None = None
+        # Cooldown-trip level to publish to the counter in the FINAL commit
+        # (deferred so a mid-tail failure doesn't half-publish). None = no trip.
+        _cooldown_tripped: int | None = None
 
-        if not all(can_advance(c, K) for c in gb.prompt_cache):
-            _stats["fallthrough_steps"] += 1
-            _stats["ft_non_trimmable_cache"] += 1
-            _counter.record_fallthrough("non_trimmable_cache")
-            return _orig_step()
+        n_rejected_to_trim = 0
+        if _hybrid_active:
+            # Hybrid path. The 24-token minimum-match floor (issue #2561)
+            # means a draft shorter than the floor falls through WITHOUT
+            # paying the multi-token verify cost at all — novel text (which
+            # the suffix drafter proposes short drafts for) is the common
+            # case and must never touch the tentative-verify path.
+            if suffix_min_match_len > K:
+                _stats["fallthrough_steps"] += 1
+                _stats["ft_short_match"] += 1
+                _counter.record_fallthrough("short_match")
+                return _orig_step()
 
-        _stats["verify_steps"] += 1
-        _stats["draft_tokens_proposed"] += K
+            _stats["verify_steps"] += 1
+            _stats["draft_tokens_proposed"] += K
 
-        # Verify forward: [last_token, d_0..d_{K-1}] of shape (1, K+1).
+            # Scratch-verify: run the tentative forward on a COPY of the
+            # committed cache so the persistent recurrent/conv/PLE/QSA state
+            # stays untouched, then commit ONLY accepted positions. This
+            # sidesteps the attention-only ``can_advance`` preflight below
+            # (which the Qwen4 recurrent budget cannot satisfy anyway —
+            # trim_all on Qwen4ExpStateCache cannot roll a rejection back).
+            # ``result`` is initialized BEFORE the helper so the ``except``
+            # below can safely test ``result.get("committed")`` even when the
+            # helper raises pre-commit (then ``result`` stays {} and no restore
+            # runs — the live cache is still pristine).
+            result: dict = {}
+            try:
+                draft_arr = mx.array([draft], dtype=inputs.dtype)
+                verify_input = mx.concatenate([inputs[:, None], draft_arr], axis=1)
+                # ``committed_input`` == ``verify_input`` here: the accepted
+                # prefix is a prefix of the verify batch, so the same tensor
+                # is replayed on the commit head (the helper slices it by
+                # ``n_accepted``).
+                committed_input = verify_input
+                result = _hybrid_scratch_verify(verify_input, committed_input, draft)
+                n_accepted = result["n_accepted"]
+                verify_logits = result["verify_logits"]
+                # When the bit-exactness guard ran and passed it produced the
+                # stepwise (numerically step-equivalent) logits for the committed
+                # prefix; prefer those for logprobs so the "lossless" contract
+                # extends to the returned distributions, not just argmax (a
+                # chunked verify_logits can drift from true single-token decode
+                # on quantized hybrids even when argmax agrees).
+                stepwise_logits = result.get("stepwise_logits")
+                preds_list = result["preds_list"]
+                n_rejected_to_trim = 0
+                if result.get("drift"):
+                    # Bit-exactness guard fired: the chunked-batched verify
+                    # drifted from greedy on the recurrent layers. Refuse to
+                    # draft this step (nothing was committed) rather than
+                    # surface silently-wrong accepted tokens.
+                    _stats["hybrid_drifts"] += 1
+                    _stats["fallthrough_steps"] += 1
+                    _stats["ft_hybrid_drift"] += 1
+                    _counter.record_verify(K, 0)
+                    _counter.record_fallthrough("hybrid_drift")
+                    return _orig_step()
+                # The committed prefix is now on the live cache ([X, d_0..
+                # d_{n_accepted-1}]) and the extra accepted drafts are queued
+                # for emission. Retain the pristine pre-verify snapshot (plus
+                # the verify batch) ONLY while there are accepted drafts to
+                # drain, so a terminal stop part-way through the synthetic
+                # emits can rebuild the delivered response cache from only the
+                # surfaced tokens — the Qwen4 recurrent cache cannot roll an
+                # un-surfaced accepted tail back any other way. With
+                # ``n_accepted == 0`` there are no synthetic emits, so the
+                # live cache already holds exactly what will be surfaced and
+                # no replay head is retained (avoids a sustained 2x hold for
+                # the common reject/vanilla fast path).
+                # NOTE: this is the LAST statement inside the hybrid ``try``.
+                # Anything after the commit head is swapped in (guard path
+                # rebinds ``gb.prompt_cache`` to the probe head; guard-off
+                # mutates it in place) and before this point is a potential
+                # post-commit exception site. The ``except`` below restores the
+                # pristine snapshot so a post-commit raise never runs
+                # ``_orig_step`` against the already-advanced cache.
+                # Capture the pristine pre-verify snapshot for the post-commit
+                # exception envelope REGARDLESS of acceptance (codex round-9f
+                # finding): even a zero-accept hybrid commit advances the live
+                # cache through the primary X (the commit head is swapped in),
+                # so if the shared post-commit phase below raises, the ``except``
+                # must restore pristine to let the caller fall through and
+                # re-generate X. The replay HEAD (used only for draining accepted
+                # synthetic emits) is retained separately, gated on
+                # ``n_accepted > 0``.
+                _hybrid_pc_snapshot = result["replay_snapshot"]
+
+                if n_accepted > 0:
+                    # Retain the replay snapshot via the module-level helper so
+                    # a post-commit exception here is testable (see
+                    # ``_retain_hybrid_replay``).
+                    _retain_hybrid_replay(
+                        _pending_hybrid_replay,
+                        uid,
+                        result["replay_snapshot"],
+                        verify_input,
+                    )
+            except Exception as e:  # noqa: BLE001
+                logger.debug(f"[SuffixDecoding] hybrid verify failed: {e!r}")
+                _stats["errors"] += 1
+                _stats["fallthrough_steps"] += 1
+                _stats["ft_error"] += 1
+                _counter.record_verify(K, 0)
+                _counter.record_error()
+                # If the commit head was already swapped in before the raise
+                # (guard path rebinds ``gb.prompt_cache`` to the probe head;
+                # guard-off mutates it in place), restore the pristine pre-
+                # verify snapshot before falling through — running
+                # ``_orig_step`` against the already-advanced cache would
+                # corrupt cache/token alignment. When no commit happened (or
+                # ``result`` is empty because the helper raised pre-commit),
+                # the live cache is still the pre-verify state and no restore
+                # is needed.
+                _restore_hybrid_cache_after_exception(gb, result)
+                return _orig_step()
+
+        else:
+            # Pure-attention path (unchanged).
+            # Defense-in-depth: even though ``profile.supports_spec_decode``
+            # already gates installation on hybrid arches, verify that EVERY
+            # cache layer is trimmable before paying the verify-forward cost.
+            # If any layer can't trim and we end up needing to roll back, the
+            # cache state would silently diverge — better to fall through.
+            # Preflight the maximum possible rollback amount before the verify
+            # forward mutates anything. Composite caches are checked
+            # recursively, so one side-cache cannot refuse after its sibling
+            # already trimmed.
+            from .cache_rollback import can_advance
+
+            if not all(can_advance(c, K) for c in gb.prompt_cache):
+                _stats["fallthrough_steps"] += 1
+                _stats["ft_non_trimmable_cache"] += 1
+                _counter.record_fallthrough("non_trimmable_cache")
+                return _orig_step()
+
+            _stats["verify_steps"] += 1
+            _stats["draft_tokens_proposed"] += K
+
+            # Verify forward: [last_token, d_0..d_{K-1}] of shape (1, K+1).
+            try:
+                draft_arr = mx.array([draft], dtype=inputs.dtype)
+                verify_input = mx.concatenate([inputs[:, None], draft_arr], axis=1)
+                verify_logits = gb.model(verify_input, cache=gb.prompt_cache)
+                # logits shape (1, K+1, V); greedy verify.
+                preds = mx.argmax(verify_logits, axis=-1)
+                mx.eval(preds)
+                preds_list = preds.tolist()[0]
+            except Exception as e:  # noqa: BLE001
+                logger.debug(f"[SuffixDecoding] verify forward failed: {e!r}")
+                _stats["errors"] += 1
+                _stats["fallthrough_steps"] += 1
+                _stats["ft_error"] += 1
+                # The attempt happened — ``_stats`` counted it above the
+                # forward and the exported totals must agree, or a model that
+                # fails verification repeatedly shows an attempt rate that
+                # quietly understates the work being done.
+                _counter.record_verify(K, 0)
+                _counter.record_error()
+                # Cache was not advanced because the forward raised; safe to
+                # retry via vanilla path below.
+                return _orig_step()
+
+            # Accept up to first mismatch (greedy).
+            n_accepted = 0
+            for i in range(K):
+                if preds_list[i] == draft[i]:
+                    n_accepted += 1
+                else:
+                    break
+
+        # POST-COMMIT phase (codex round-9e finding #3, reordered per round-9g):
+        # from here through the emit stash, ``gb.prompt_cache`` on the hybrid path
+        # holds the commit head advanced through all ``n_accepted`` drafts. All
+        # FALLIBLE MLX ops run FIRST (logprob compute) with zero prior mutation,
+        # then the pure-Python mutation tail (cooldown/rollback/drafter/counter/
+        # state/emits) which cannot raise. If any fallible op
+        # raises after the commit, restore the pristine snapshot (retained as
+        # ``_hybrid_pc_snapshot``) so the live cache never stays advanced beyond the
+        # surfaced tokens, then re-raise so the caller falls through as a normal
+        # step failure.
         try:
-            draft_arr = mx.array([draft], dtype=inputs.dtype)
-            verify_input = mx.concatenate([inputs[:, None], draft_arr], axis=1)
-            verify_logits = gb.model(verify_input, cache=gb.prompt_cache)
-            # logits shape (1, K+1, V); greedy verify.
-            preds = mx.argmax(verify_logits, axis=-1)
-            mx.eval(preds)
-            preds_list = preds.tolist()[0]
+            # Token emission accounting.
+            #
+            # _orig_step emits one token per call: the ``inputs`` it just
+            # fed through the model (= what was previously in
+            # ``_next_tokens``). The newly-sampled token is stashed in
+            # ``_next_tokens`` for the next step.
+            #
+            # For spec-decode the verify forward consumed K+1 tokens
+            # (last_token + K drafts), so we have committed to the cache
+            # ``[..., last_token, d_0..d_{n_accepted-1}]`` after trim.
+            # Tokens that NEED to surface on the response stream:
+            #
+            #   - last_token   ← primary, returned by this _step (1 token)
+            #   - d_0..d_{n-1} ← accepted drafts (n tokens, drained by
+            #                    _suffix_next as synthetic responses)
+            #
+            # The bonus (= preds[n_accepted], the correction at the
+            # rejection point or the post-K bonus) is **NOT** emitted this
+            # step — it gets stashed in _next_tokens and surfaces as the
+            # primary of the NEXT _step call. Otherwise it would duplicate
+            # (see early bug: every-other-token doubling).
+            bonus = preds_list[n_accepted]
+
+            if stepwise_logits is not None:
+                # Lossless logprobs from the stepwise guard replay. Each committed
+                # position's logits are the stepwise ``(1,1,V)`` row; stack them
+                # into a ``(1, probe_len, V)`` tensor. Accepted positions and the
+                # bonus (position n_accepted) are all within probe_len, so the same
+                # downstream slicing applies. Row 0 (the primary's own pred is not
+                # surfaced; ``primary_logprobs`` comes from the previous step).
+                verify_logits = mx.concatenate(stepwise_logits, axis=1)
+            full_logprobs = verify_logits - mx.logsumexp(
+                verify_logits, axis=-1, keepdims=True
+            )
+            # Materialize the verify logprobs promptly. ``verify_logits`` is a lazy
+            # MLX graph over the scratch cache; leaving it unevaluated keeps the
+            # scratch tensors referenced into the NEXT step's verify deepcopy,
+            # quietly defeating the 2x-cache envelope. Realizing it here frees the
+            # scratch arrays as soon as the logprobs row slices are taken below.
+            mx.eval(full_logprobs)
+            # The primary's logprobs come from the PREVIOUS step (saved in
+            # gb._next_logprobs). Passing them through preserves the same
+            # contract as _orig_step.
+            primary_logprobs = (
+                gb._next_logprobs[0]
+                if gb._next_logprobs is not None and len(gb._next_logprobs) > 0
+                else full_logprobs[0, 0, :]
+            )
+            extra_tokens = list(draft[:n_accepted])
+            extra_logprobs: list[mx.array] = []
+            for i in range(n_accepted):
+                # full_logprobs[0, i, :] is the logprobs row that PRODUCED
+                # the token at sequence position N+i+1, i.e. d_i.
+                extra_logprobs.append(full_logprobs[0, i, :])
+            # logprobs row at position n_accepted is the one that produced
+            # the bonus — used for the bonus surfacing in the next step.
+            bonus_logprobs = full_logprobs[0, n_accepted, :]
+            # Schedule the bonus for the next step's primary EARLY. ``async_eval``
+            # is a fallible MLX op (device work), so per codex round-9h finding #2
+            # it must complete while still in the compute section, BEFORE any
+            # bookkeeping mutation. The mutation tail only points ``gb`` at these
+            # already-scheduled arrays — no fallible op remains past that point.
+            bonus_arr = mx.array([bonus], dtype=inputs.dtype)
+            mx.async_eval(bonus_arr, bonus_logprobs)
+            # TRANSACTIONAL SNAPSHOT (codex round-9j finding #2): capture the
+            # small mutable state the mutation tail writes, so a post-commit
+            # failure can roll it ALL back before ``_orig_step()`` re-runs the
+            # token. Everything still-mutable downstream (drafter history,
+            # cooldown ``st``, ``_stats``, counter, ``gb._next_*``, ``gb.tokens``,
+            # ``_pending_emits``, ``_pending_hybrid_replay``) is captured here —
+            # the compute section above is pure (no public state written yet).
+            _tx = {
+                "st": dict(st),
+                "stats": dict(_stats),
+                # Drafter rollback via snapshot/restore (codex round-9k finding #1):
+                # captures _shift + full history so restore is correct even when the
+                # accepted-token add crossed the max_history head-trim boundary. Test
+                # stubs need not expose snapshot_state; None => no drafter rollback.
+                "drafter_state": (
+                    drafter.snapshot_state()
+                    if hasattr(drafter, "snapshot_state")
+                    else None
+                ),
+                "drafter_acc": getattr(
+                    getattr(drafter, "stats", None), "total_draft_tokens_accepted", 0
+                ),
+                "next_tokens": gb._next_tokens,
+                "next_logprobs": gb._next_logprobs,
+                "n_tokens_in_tokens": len(gb.tokens[0]) if gb.tokens else 0,
+                # Snapshot the pending-emits map itself (list value copied per
+                # uid), NOT just a count: the rollback must remove ONLY entries
+                # created/changed by THIS failed transaction, restoring the
+                # pre-existing ones (codex round-9l finding #2). ``clear()``
+                # would silently drop another request's queued accepted tokens.
+                "pending_emits": {u: list(v) for u, v in _pending_emits.items()},
+            }
+            # Drafter history += newly-committed tokens. We add ONLY the
+            # accepted drafts here; ``bonus`` will be added on the next
+            # ``_suffix_step`` call (line ~1235 ``drafter.add_generated_token
+            # (last_token)`` where ``last_token = bonus`` since we just
+            # stashed it in ``_next_tokens``). Adding it here too would
+            # double-index it in the suffix tree and skew future drafts.
+            for tok in extra_tokens:
+                drafter.add_generated_token(tok)
+            drafter.record_acceptance(n_accepted)
+            _stats["tokens_accepted"] += n_accepted
+            # Counter publication for THIS step is DEFERRED to the final commit
+            # block (see below), so a failure anywhere before it leaves the
+            # shared global counter untouched — no partial/double counting.
+            # Cooldown bookkeeping: track consecutive zero-accept verifies
+            # so workloads with weak drafter signal (e.g., free-form chat)
+            # automatically stop paying verify overhead.
+            #
+            # First trip needs ``_COOLDOWN_TRIGGER`` misses so a brief stumble in
+            # otherwise-accepting traffic doesn't cost a skip window. Once we
+            # HAVE backed off, a single miss re-arms: the previous window already
+            # established this traffic has no drafter signal, so waiting for two
+            # more misses just buys two more wasted verifies. Each re-trip
+            # doubles the window (10, 20, 40 … capped), so a low-overlap request
+            # converges to ~no drafting after a handful of probes.
+            # Adaptive width update. Full acceptance means the draft was too
+            # SHORT — we left tokens on the table — so double. A partial accept
+            # means we paid for K but only n landed; retarget just above n.
+            if n_accepted >= K:
+                st["k"] = min(st["k"] * 2, _effective_max_draft)
+            else:
+                st["k"] = max(_K_MIN, min(n_accepted + 1, _effective_max_draft))
+            _stats["k_current"] = st["k"]
+
+            if n_accepted == 0:
+                st["zeros"] += 1
+                trigger = _COOLDOWN_TRIGGER if st["level"] == 0 else 1
+                if st["zeros"] >= trigger:
+                    st["level"] += 1
+                    st["cooldown"] = min(
+                        _COOLDOWN_BASE * (2 ** (st["level"] - 1)),
+                        _COOLDOWN_MAX,
+                    )
+                    st["zeros"] = 0
+                    _stats["cooldown_trips"] += 1
+                    _stats["cooldown_level"] = st["level"]
+                    _cooldown_tripped = st["level"]
+            else:
+                st["zeros"] = 0
+                # DECAY one level, don't reset to eager. A single lucky accept in
+                # otherwise-signalless traffic must not undo several levels of
+                # backoff — with a full reset, low-overlap traffic kept
+                # re-arming (measured: 8 trips, level back to 0, still -24%).
+                # Sustained acceptance walks the level back down within a few
+                # verifies, so a chat that starts emitting a repeated code block
+                # still reaches full speed quickly.
+                #
+                # A 1-of-K accept is noise, not signal: require at least
+                # ``_BACKOFF_DECAY_MIN_ACCEPT`` accepted draft tokens before
+                # crediting the traffic with having drafter signal.
+                #
+                # The noise floor has to be checked BEFORE the strong-signal
+                # branch, not alongside it. After a back-off the adaptive width
+                # is ``_K_MIN`` (2), where a single accepted token satisfies
+                # ``n_accepted * 2 >= K`` — so without this guard the one
+                # outcome the policy calls noise would reset the whole level,
+                # and low-overlap traffic with the occasional 1-of-2 accept
+                # would bounce back to eager drafting instead of converging.
+                # That is precisely the regression the back-off exists to stop.
+                # Clamped to the configured width, not absolute: with
+                # ``max_draft=1`` a 1-of-1 accept IS full acceptance, and an
+                # absolute floor of 2 would make that configuration unable to
+                # ever leave a back-off — every later isolated miss would arm a
+                # longer cooldown however well the drafts in between landed.
+                _decay_floor = min(_BACKOFF_DECAY_MIN_ACCEPT, K)
+                if st["level"] and n_accepted >= _decay_floor:
+                    if n_accepted * 2 >= K:
+                        # STRONG signal — at least half the draft landed. This is
+                        # unambiguously high-overlap traffic; go straight back to
+                        # eager rather than walking down one level per verify,
+                        # which a deep window gives too few chances to do.
+                        st["level"] = 0
+                    else:
+                        # Real but weak signal — walk down one level.
+                        st["level"] -= 1
+                    _stats["cooldown_level"] = st["level"]
+
+            # Backoff transition complete; gauge publication is DEFERRED to the
+            # final commit block (so a late failure does not half-publish).
+
+            n_rejected = K - n_accepted
+            if _hybrid_active:
+                # Hybrid commit-only path: the rejected tail was never advanced
+                # onto the live cache (scratch verify), so there is nothing to
+                # roll back. ``n_rejected_to_trim`` stays 0.
+                n_rejected_for_rollback = n_rejected_to_trim
+            else:
+                n_rejected_for_rollback = n_rejected
+            if n_rejected_for_rollback > 0:
+                from .cache_rollback import trim_all
+
+                if not trim_all(gb.prompt_cache, n_rejected_for_rollback):
+                    raise RuntimeError(
+                        "suffix verification cache rollback violated its preflight"
+                    )
+
+            # Update gb state for the next _step call. Bonus becomes the
+            # next step's primary input. ``bonus_arr``/``bonus_logprobs`` were
+            # scheduled (async_eval'd) back in the compute section; the tail
+            # just rebinds gb to those arrays — pure Python, cannot raise here.
+            gb._next_tokens = bonus_arr
+            gb._next_logprobs = [bonus_logprobs]
+
+            # _step normally appends inputs.tolist()[i] to gb.tokens[i].
+            # We do the same for last_token (the primary that we return).
+            # The extra tokens get appended in the next() wrapper as each
+            # synthetic Response is built, mirroring _orig_step's flow.
+            gb.tokens[0].append(last_token)
+
+            # Stash extras for next() to drain.
+            _pending_emits[uid] = list(zip(extra_tokens, extra_logprobs))
+
+            # FINAL COMMIT: publish the shared counter ONLY after every fallible
+            # mutation above succeeded (codex round-9k finding #2). Deferring
+            # here means a failure anywhere in the tail leaves the global counter
+            # untouched — no partial ``record_verify``/``record_cooldown_trip``
+            # and no gauge set_state half-way. These are monotonic/pointed
+            # in-place updates: they cannot raise.
+            _counter.record_verify(K, n_accepted)
+            if _cooldown_tripped is not None:
+                _counter.record_cooldown_trip(_cooldown_tripped)
+            _counter.set_state(st["k"], st["level"])
+
+            return [last_token], [primary_logprobs]
+
         except Exception as e:  # noqa: BLE001
-            logger.debug(f"[SuffixDecoding] verify forward failed: {e!r}")
+            logger.debug(f"[SuffixDecoding] post-commit phase failed: {e!r}")
+            if _hybrid_active:
+                # Reorder matters (codex round-9l finding #1): the FULL
+                # transactional rollback must run BEFORE recording the
+                # error/fallthrough metrics, because the rollback restores
+                # ``_stats`` from the pre-error snapshot. If the counters were
+                # bumped first, the restore would erase them — yet the shared
+                # counter (recorded below, NOT rolled back) would still carry
+                # the failure, so the exported ``_stats`` and the global counter
+                # would diverge. Roll back, THEN bump both surfaces together so
+                # they stay in agreement.
+                #
+                # HYBRID post-commit exception -> advertise the VANILLA
+                # fallthrough (codex round-9i finding #1): restore the pristine
+                # pre-verify cache so the live cache never stays advanced beyond
+                # the surfaced tokens, drop any partially-mutated state, then
+                # run ``_orig_step()`` directly (the same "treat as never-
+                # committed, re-generate the primary from scratch" contract the
+                # narrow hybrid-verify except path uses) — NOT re-raise, which
+                # would abort generation instead.
+                #
+                # FULL TRANSACTIONAL ROLLBACK (codex round-9j finding #2): the
+                # pre-tail snapshot captured every field the mutation tail
+                # touches. Restore them all so the fallthrough ``_orig_step()``
+                # runs from an identical pre-commit state — NOT just the cache
+                # and replay/emit entries. ``_tx`` is None when the exception
+                # fired during the (pre-snapshot) compute section, in which case
+                # no public state was mutated yet.
+                if _tx is not None:
+                    st.clear()
+                    st.update(_tx["st"])
+                    _stats.clear()
+                    _stats.update(_tx["stats"])
+                    if _tx["drafter_state"] is not None and hasattr(
+                        drafter, "restore_state"
+                    ):
+                        drafter.restore_state(_tx["drafter_state"])
+                    if hasattr(
+                        getattr(drafter, "stats", None), "total_draft_tokens_accepted"
+                    ):
+                        drafter.stats.total_draft_tokens_accepted = _tx["drafter_acc"]
+                    gb._next_tokens = _tx["next_tokens"]
+                    gb._next_logprobs = _tx["next_logprobs"]
+                    if gb.tokens:
+                        del gb.tokens[0][_tx["n_tokens_in_tokens"] :]
+                    _restore_pending_emits(_pending_emits, _tx["pending_emits"])
+                # Record the error/fallthrough after the rollback so the
+                # restored ``_stats`` is not erased retroactively (round-9l #1).
+                _stats["errors"] += 1
+                # fallthrough buckets must reconcile with the aggregate (round-9i #3).
+                _stats["fallthrough_steps"] += 1
+                _stats["ft_error"] += 1
+                # Counter consistency: every other error fallthrough records the
+                # attempt + error on the shared counter, so the exported counter
+                # does not diverge from ``_stats`` for exactly this failure class.
+                _counter.record_error()
+                _counter.record_verify(K, 0)
+                # Restore the retained replay head for this uid UNCONDITIONALLY
+                # (findings #1/#2): it was retained BEFORE the compute section
+                # (in the hybrid branch), so even a compute-section exception
+                # (where ``_tx`` is None) must drop it — a later terminal must
+                # not rebuild from the now-stale cache, and the full duplicate
+                # snapshot would leak until UID cleanup.
+                _pending_hybrid_replay.pop(uid, None)
+                if _hybrid_pc_snapshot is not None:
+                    gb.prompt_cache = _hybrid_pc_snapshot
+                return _orig_step()
+            # PURE-ATTENTION post-commit exception: FAIL CLOSED. On this path a
+            # rollback ``trim_all`` preflight violation is a genuine invariant
+            # breach (the cache can't be rolled back), so it must propagate, not
+            # silently fall through to a re-generated primary that would leave
+            # the untrimmable cache inconsistent. Re-raise (pre-existing
+            # behavior, unchanged by this diff).
             _stats["errors"] += 1
             _stats["fallthrough_steps"] += 1
             _stats["ft_error"] += 1
-            # The attempt happened — ``_stats`` counted it above the forward
-            # and the exported totals must agree, or a model that fails
-            # verification repeatedly shows an attempt rate that quietly
-            # understates the work being done.
-            _counter.record_verify(K, 0)
             _counter.record_error()
-            # Cache was not advanced because the forward raised; safe to
-            # retry via vanilla path below.
-            return _orig_step()
-
-        # Accept up to first mismatch (greedy).
-        n_accepted = 0
-        for i in range(K):
-            if preds_list[i] == draft[i]:
-                n_accepted += 1
-            else:
-                break
-
-        # Cooldown bookkeeping: track consecutive zero-accept verifies
-        # so workloads with weak drafter signal (e.g., free-form chat)
-        # automatically stop paying verify overhead.
-        #
-        # First trip needs ``_COOLDOWN_TRIGGER`` misses so a brief stumble in
-        # otherwise-accepting traffic doesn't cost a skip window. Once we
-        # HAVE backed off, a single miss re-arms: the previous window already
-        # established this traffic has no drafter signal, so waiting for two
-        # more misses just buys two more wasted verifies. Each re-trip
-        # doubles the window (10, 20, 40 … capped), so a low-overlap request
-        # converges to ~no drafting after a handful of probes.
-        # Adaptive width update. Full acceptance means the draft was too
-        # SHORT — we left tokens on the table — so double. A partial accept
-        # means we paid for K but only n landed; retarget just above n.
-        if n_accepted >= K:
-            st["k"] = min(st["k"] * 2, max_draft)
-        else:
-            st["k"] = max(_K_MIN, min(n_accepted + 1, max_draft))
-        _stats["k_current"] = st["k"]
-
-        if n_accepted == 0:
-            st["zeros"] += 1
-            trigger = _COOLDOWN_TRIGGER if st["level"] == 0 else 1
-            if st["zeros"] >= trigger:
-                st["level"] += 1
-                st["cooldown"] = min(
-                    _COOLDOWN_BASE * (2 ** (st["level"] - 1)),
-                    _COOLDOWN_MAX,
-                )
-                st["zeros"] = 0
-                _stats["cooldown_trips"] += 1
-                _stats["cooldown_level"] = st["level"]
-                _counter.record_cooldown_trip(st["level"])
-        else:
-            st["zeros"] = 0
-            # DECAY one level, don't reset to eager. A single lucky accept in
-            # otherwise-signalless traffic must not undo several levels of
-            # backoff — with a full reset, low-overlap traffic kept
-            # re-arming (measured: 8 trips, level back to 0, still -24%).
-            # Sustained acceptance walks the level back down within a few
-            # verifies, so a chat that starts emitting a repeated code block
-            # still reaches full speed quickly.
-            #
-            # A 1-of-K accept is noise, not signal: require at least
-            # ``_BACKOFF_DECAY_MIN_ACCEPT`` accepted draft tokens before
-            # crediting the traffic with having drafter signal.
-            #
-            # The noise floor has to be checked BEFORE the strong-signal
-            # branch, not alongside it. After a back-off the adaptive width
-            # is ``_K_MIN`` (2), where a single accepted token satisfies
-            # ``n_accepted * 2 >= K`` — so without this guard the one
-            # outcome the policy calls noise would reset the whole level,
-            # and low-overlap traffic with the occasional 1-of-2 accept
-            # would bounce back to eager drafting instead of converging.
-            # That is precisely the regression the back-off exists to stop.
-            # Clamped to the configured width, not absolute: with
-            # ``max_draft=1`` a 1-of-1 accept IS full acceptance, and an
-            # absolute floor of 2 would make that configuration unable to
-            # ever leave a back-off — every later isolated miss would arm a
-            # longer cooldown however well the drafts in between landed.
-            _decay_floor = min(_BACKOFF_DECAY_MIN_ACCEPT, K)
-            if st["level"] and n_accepted >= _decay_floor:
-                if n_accepted * 2 >= K:
-                    # STRONG signal — at least half the draft landed. This is
-                    # unambiguously high-overlap traffic; go straight back to
-                    # eager rather than walking down one level per verify,
-                    # which a deep window gives too few chances to do.
-                    st["level"] = 0
-                else:
-                    # Real but weak signal — walk down one level.
-                    st["level"] -= 1
-                _stats["cooldown_level"] = st["level"]
-
-        # Publish AFTER the backoff transition. Publishing before it left the
-        # gauge showing the pre-reset level, permanently so if the request
-        # finished on that burst.
-        _counter.set_state(st["k"], st["level"])
-
-        n_rejected = K - n_accepted
-        if n_rejected > 0:
-            from .cache_rollback import trim_all
-
-            if not trim_all(gb.prompt_cache, n_rejected):
-                raise RuntimeError(
-                    "suffix verification cache rollback violated its preflight"
-                )
-
-        # Token emission accounting.
-        #
-        # _orig_step emits one token per call: the ``inputs`` it just
-        # fed through the model (= what was previously in
-        # ``_next_tokens``). The newly-sampled token is stashed in
-        # ``_next_tokens`` for the next step.
-        #
-        # For spec-decode the verify forward consumed K+1 tokens
-        # (last_token + K drafts), so we have committed to the cache
-        # ``[..., last_token, d_0..d_{n_accepted-1}]`` after trim.
-        # Tokens that NEED to surface on the response stream:
-        #
-        #   - last_token   ← primary, returned by this _step (1 token)
-        #   - d_0..d_{n-1} ← accepted drafts (n tokens, drained by
-        #                    _suffix_next as synthetic responses)
-        #
-        # The bonus (= preds[n_accepted], the correction at the
-        # rejection point or the post-K bonus) is **NOT** emitted this
-        # step — it gets stashed in _next_tokens and surfaces as the
-        # primary of the NEXT _step call. Otherwise it would duplicate
-        # (see early bug: every-other-token doubling).
-        bonus = preds_list[n_accepted]
-
-        full_logprobs = verify_logits - mx.logsumexp(
-            verify_logits, axis=-1, keepdims=True
-        )
-        # The primary's logprobs come from the PREVIOUS step (saved in
-        # gb._next_logprobs). Passing them through preserves the same
-        # contract as _orig_step.
-        primary_logprobs = (
-            gb._next_logprobs[0]
-            if gb._next_logprobs is not None and len(gb._next_logprobs) > 0
-            else full_logprobs[0, 0, :]
-        )
-        extra_tokens = list(draft[:n_accepted])
-        extra_logprobs: list[mx.array] = []
-        for i in range(n_accepted):
-            # full_logprobs[0, i, :] is the logprobs row that PRODUCED
-            # the token at sequence position N+i+1, i.e. d_i.
-            extra_logprobs.append(full_logprobs[0, i, :])
-        # logprobs row at position n_accepted is the one that produced
-        # the bonus — used for the bonus surfacing in the next step.
-        bonus_logprobs = full_logprobs[0, n_accepted, :]
-
-        # Drafter history += newly-committed tokens. We add ONLY the
-        # accepted drafts here; ``bonus`` will be added on the next
-        # ``_suffix_step`` call (line ~1235 ``drafter.add_generated_token
-        # (last_token)`` where ``last_token = bonus`` since we just
-        # stashed it in ``_next_tokens``). Adding it here too would
-        # double-index it in the suffix tree and skew future drafts.
-        for tok in extra_tokens:
-            drafter.add_generated_token(tok)
-        drafter.record_acceptance(n_accepted)
-        _stats["tokens_accepted"] += n_accepted
-        _counter.record_verify(K, n_accepted)
-
-        # Update gb state for the next _step call. Bonus becomes the
-        # next step's primary input. async_eval overlaps device work
-        # with engine bookkeeping (matches _orig_step's pattern).
-        bonus_arr = mx.array([bonus], dtype=inputs.dtype)
-        gb._next_tokens = bonus_arr
-        gb._next_logprobs = [bonus_logprobs]
-        mx.async_eval(bonus_arr, bonus_logprobs)
-
-        # _step normally appends inputs.tolist()[i] to gb.tokens[i].
-        # We do the same for last_token (the primary that we return).
-        # The extra tokens get appended in the next() wrapper as each
-        # synthetic Response is built, mirroring _orig_step's flow.
-        gb.tokens[0].append(last_token)
-
-        # Stash extras for next() to drain.
-        _pending_emits[uid] = list(zip(extra_tokens, extra_logprobs))
-
-        return [last_token], [primary_logprobs]
+            _counter.record_verify(K, 0)
+            raise
 
     def _suffix_next():
         """Wrapped GenerationBatch.next.
@@ -3430,9 +4116,29 @@ def _install_suffix_decoding(
         # up over a long-running server even on workloads that never hit
         # the synthetic-emit path. Run this before the early-return so
         # plain (non-spec-decode) finishes are also reaped.
+        #
+        # PRIMARY-TERMINAL repair (codex round-9e finding #1): when the
+        # PRIMARY response is terminal (finish_reason set by _orig_next),
+        # the cache was advanced through ALL accepted drafts but ONLY the
+        # primary token (X) was surfaced — the synthetic-emit loop below
+        # never runs for this uid. If we delivered this response as-is, its
+        # returned prefix cache would still hold the un-surfaced accepted
+        # tail and poison prefix-cache reuse for the next request. Repair it
+        # from the retained pristine snapshot + the surfaced primary (X
+        # only), exactly like the synthetic-drain terminal repair but with
+        # ``surfaced_len == 1``.
         if responses:
             for r in responses:
                 if r.finish_reason is not None:
+                    replay_state = _pending_hybrid_replay.pop(r.uid, None)
+                    if replay_state is not None:
+                        snapshot, verify_input_batch = replay_state
+                        # The primary token (X) was surfaced; rebuild the
+                        # delivered cache as pristine + X, dropping any
+                        # accepted drafts that were never surfaced.
+                        r.prompt_cache = _repair_hybrid_terminal(
+                            model, snapshot, verify_input_batch, surfaced_len=1
+                        )
                     _reap_uid(r.uid)
             _reset_state_gauges_if_idle()
 
@@ -3498,12 +4204,46 @@ def _install_suffix_decoding(
                     # reuse for the next request that hits this prefix.
                     unused = len(pending) - emit_idx - 1
                     if unused > 0:
-                        from .cache_rollback import trim_all
-
-                        if not trim_all(gb.prompt_cache, unused):
-                            raise RuntimeError(
-                                "suffix terminal cache rollback violated its preflight"
+                        replay_state = _pending_hybrid_replay.get(uid)
+                        if replay_state is not None:
+                            # Hybrid terminal: the Qwen4 recurrent cache
+                            # cannot ``trim_all`` an un-surfaced accepted tail
+                            # (the B2.1 scratch path sidesteps attention-only
+                            # rollback for exactly this reason). Instead
+                            # rebuild the delivered response cache from the
+                            # retained pristine pre-verify snapshot plus only
+                            # the surfaced prefix (X + the ``emit_idx + 1``
+                            # drafts already drained by this loop), dropping
+                            # the tail by never replaying it — the DSpark
+                            # ``_pending_replay`` terminal-repair pattern.
+                            snapshot, verify_input_batch = replay_state
+                            surfaced_len = emit_idx + 2  # X + drained drafts
+                            # Suffix decode is a single-request fast path, so
+                            # the rebuilt head IS the per-request cache; no
+                            # per-cell ``extract`` (whose inner KVCache cells
+                            # can lack ``extract``). The finishing uid is about
+                            # to be filtered out of the live batch, so we do
+                            # NOT alias ``gb.prompt_cache`` to ``repaired`` —
+                            # the delivered response cache must stay an
+                            # independent head, and the live cache (which still
+                            # holds the un-surfaced accepted tails) is
+                            # discarded along with the removed uid.
+                            prompt_cache = _repair_hybrid_terminal(
+                                model, snapshot, verify_input_batch, surfaced_len
                             )
+                        else:
+                            from .cache_rollback import trim_all
+
+                            # Real missing snapshot on a pure-attention finish
+                            # is impossible (slot only set on hybrid), but the
+                            # pure-attention path still trims as before.
+                            if not trim_all(gb.prompt_cache, unused):
+                                raise RuntimeError(
+                                    "suffix terminal cache rollback violated its preflight"
+                                )
+                            prompt_cache = gb.extract_cache(row)
+                    else:
+                        prompt_cache = gb.extract_cache(row)
                     augmented.append(
                         gb.Response(
                             uid=uid,
@@ -3512,7 +4252,7 @@ def _install_suffix_decoding(
                             finish_reason=finish_reason,
                             current_state=current_state,
                             match_sequence=match_sequence,
-                            prompt_cache=gb.extract_cache(row),
+                            prompt_cache=prompt_cache,
                             all_tokens=gb.tokens[row],
                         )
                     )
@@ -3543,6 +4283,12 @@ def _install_suffix_decoding(
                         all_tokens=None,
                     )
                 )
+            # All pending synthetic emits for this uid were drained WITHOUT a
+            # terminal firing, so there is no un-surfaced accepted tail to
+            # repair — release the retained pristine replay head now (it would
+            # otherwise hold a full 2nd cache for the rest of the request).
+            # A terminal path already reaped it via ``_reap_uid`` above.
+            _pending_hybrid_replay.pop(uid, None)
 
         return augmented
 
@@ -3621,6 +4367,10 @@ def _install_suffix_decoding(
     # cleanup. Production code should not mutate this directly.
     gb._suffix_drafters = _drafters
     gb._suffix_uid_state = _uid_state
+    # Expose the per-uid hybrid replay slot (retained pristine snapshot + verify
+    # batch) for tests to assert its lifecycle (stored only when accepted drafts
+    # are pending, released when they drain). Test-only.
+    gb._suffix_hybrid_replay = _pending_hybrid_replay
 
     logger.info(
         "[SuffixDecoding] installed: max_draft=%d, max_suffix_len=%d, "
@@ -4785,6 +5535,11 @@ class Scheduler:
                 max_suffix_len=self.config.suffix_max_suffix_len,
                 min_confidence=self.config.suffix_min_confidence,
                 min_draft_len=self.config.suffix_min_draft_len,
+                suffix_hybrid=getattr(self.config, "suffix_hybrid", False),
+                suffix_min_match_len=getattr(self.config, "suffix_min_match_len", 24),
+                suffix_hybrid_bit_exact=getattr(
+                    self.config, "suffix_hybrid_bit_exact", True
+                ),
                 requests=self.requests,
                 uid_to_request_id=self.uid_to_request_id,
             ):

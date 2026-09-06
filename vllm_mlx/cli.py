@@ -2331,6 +2331,31 @@ def _normalize_speculative_config_or_exit(args):
         return fields
 
     def _fill_suffix_defaults() -> None:
+        if getattr(args, "suffix_hybrid", None) is None:
+            args.suffix_hybrid = False
+        if getattr(args, "suffix_min_match_len", None) is None:
+            args.suffix_min_match_len = 24
+        # Record whether the operator explicitly set --suffix-max-draft (vs the
+        # 8 default). The hybrid path raises the effective width to the match
+        # floor for a CONFIRMED HYBRID model when the cap was NOT explicitly set
+        # — an explicit below-floor cap is the operator's bound and gets an
+        # install-time warning instead. This lets --suffix-hybrid work out of
+        # the box on a real hybrid while never tripling a pure-attention model's
+        # verify width (pure-attention is not hybrid-gated, so it keeps 8/its
+        # normal adaptive width).
+        # The sentinel is initialized ONLY when absent so it survives repeated
+        # normalization: a defaulted cap must stay "implicit" (so the hybrid
+        # path can still raise it to the floor), not flip to "explicit" merely
+        # because a second call now sees the filled-in 8.
+        if not hasattr(args, "_suffix_max_draft_was_explicit"):
+            args._suffix_max_draft_was_explicit = (
+                getattr(args, "suffix_max_draft", None) is not None
+            )
+        # Fill the default ONLY when the value is actually unset. The sentinel
+        # is tracked independently (above) so a repeated normalization does not
+        # re-default a value a programmatic caller changed between calls (codex
+        # round-9l NIT): the explicit/implicit intent is recorded once, and the
+        # default fill only ever applies to a genuinely-None cap.
         if getattr(args, "suffix_max_draft", None) is None:
             args.suffix_max_draft = 8
         if getattr(args, "suffix_max_suffix_len", None) is None:
@@ -2339,6 +2364,16 @@ def _normalize_speculative_config_or_exit(args):
             args.suffix_min_confidence = 0.3
         if getattr(args, "suffix_min_draft_len", None) is None:
             args.suffix_min_draft_len = 2
+        # Bit-exactness guard is DEFAULT ON (the hybrid path is only lossless
+        # when bit-exact). --no-suffix-hybrid-bit-exact explicitly turns it
+        # off — a NON-LOSSLESS / unsafe mode for eval/measurement — and wins
+        # over the default. ``--suffix-hybrid-bit-exact`` (store_true) needs
+        # an explicit False sentinel so the flag is distinguishable from the
+        # default-fill path.
+        if bool(getattr(args, "no_suffix_hybrid_bit_exact", False)):
+            args.suffix_hybrid_bit_exact = False
+        elif getattr(args, "suffix_hybrid_bit_exact", None) is None:
+            args.suffix_hybrid_bit_exact = True
 
     def _legacy_speculative_config_payload() -> dict | None:
         methods: list[tuple[str, dict]] = []
@@ -3410,6 +3445,29 @@ def _auto_config_lookup_key(config_identity: str) -> str:
     from .utils.tokenizer import _resolve_subfolder_checkpoint
 
     return _resolve_subfolder_checkpoint(config_identity)
+
+
+def _hybrid_suffix_cap(args, profile) -> int:
+    """Effective ``--suffix-max-draft`` for the SuffixDecoding config.
+
+    Deferred to model resolution because the CLI cannot know the model is
+    hybrid until the ``serve`` profile is resolved. For a CONFIRMED hybrid
+    model with ``--suffix-hybrid`` and NO explicit ``--suffix-max-draft``,
+    raise the cap to the match floor so the opt-in works out of the box (the
+    pure-attention default 8 cannot clear the 24-token match floor). An
+    EXPLICIT below-floor cap is the operator's bound and is honored as-is
+    (the scheduler install issues a no-op warning). A pure-attention model
+    with ``--suffix-hybrid`` (a documented no-op flag there) keeps its cap.
+    """
+    effective = args.suffix_max_draft
+    if (
+        args.suffix_hybrid
+        and profile is not None
+        and getattr(profile, "is_hybrid", False)
+        and not getattr(args, "_suffix_max_draft_was_explicit", False)
+    ):
+        effective = max(args.suffix_max_draft, args.suffix_min_match_len)
+    return int(effective)
 
 
 def serve_command(args):
@@ -4684,6 +4742,11 @@ def serve_command(args):
         except Exception:  # pragma: no cover — best-effort
             _cli_mtp_model_type = None
 
+    # SuffixDecoding hybrid cap: DEFERRED to model resolution (see
+    # ``_hybrid_suffix_cap``) — the CLI cannot know the model is hybrid until
+    # the resolved ``_serve_profile`` is available here.
+    _effective_suffix_max_draft = _hybrid_suffix_cap(args, _serve_profile)
+
     scheduler_config = SchedulerConfig(
         max_num_seqs=args.max_num_seqs,
         max_concurrent_requests=args.max_concurrent_requests,
@@ -4749,12 +4812,21 @@ def serve_command(args):
         mtp_allow_dynamic_membership=getattr(
             args, "mtp_allow_dynamic_membership", False
         ),
-        # SuffixDecoding
+        # SuffixDecoding. For a CONFIRMED hybrid model with --suffix-hybrid and
+        # no explicit --suffix-max-draft, raise the cap to the match floor so
+        # the opt-in works out of the box (the pure-attention default 8 cannot
+        # clear the 24-token floor). An EXPLICIT below-floor cap is the
+        # operator's bound and is honored as-is (WARNING at install). A pure-
+        # attention model with --suffix-hybrid (a no-op flag) keeps its cap, so
+        # its verify width is never tripled.
         enable_suffix_decoding=args.suffix_decoding,
-        suffix_max_draft=args.suffix_max_draft,
+        suffix_max_draft=_effective_suffix_max_draft,
         suffix_max_suffix_len=args.suffix_max_suffix_len,
         suffix_min_confidence=args.suffix_min_confidence,
         suffix_min_draft_len=args.suffix_min_draft_len,
+        suffix_hybrid=args.suffix_hybrid,
+        suffix_min_match_len=args.suffix_min_match_len,
+        suffix_hybrid_bit_exact=args.suffix_hybrid_bit_exact,
         # KV cache quantization (R15 #300: dtype string is the canonical
         # observability surface; ``_quantization`` / ``_bits`` are the
         # wire-level toggles that drive ``mlx_lm.QuantizedKVCache``).
@@ -6882,9 +6954,9 @@ def _cached_models_json_payload() -> dict:
                     "subfolder": subfolder,
                     "size_bytes": int(artifact_size),
                     "modified_epoch": int(mtime) if mtime and mtime > 0 else None,
-                    "age_seconds": int(max(0, now - mtime))
-                    if mtime and mtime > 0
-                    else None,
+                    "age_seconds": (
+                        int(max(0, now - mtime)) if mtime and mtime > 0 else None
+                    ),
                     "state": state,
                     "external": is_external,
                 }
@@ -11484,6 +11556,31 @@ Examples:
         "--suffix-min-draft-len",
         type=int,
         default=None,
+        help=argparse.SUPPRESS,
+    )
+    serve_parser.add_argument(
+        "--suffix-hybrid",
+        action="store_true",
+        default=None,
+        help=argparse.SUPPRESS,
+    )
+    serve_parser.add_argument(
+        "--suffix-min-match-len",
+        type=positive_int,
+        default=None,
+        help=argparse.SUPPRESS,
+    )
+    serve_parser.add_argument(
+        "--suffix-hybrid-bit-exact",
+        action="store_true",
+        default=None,
+        help=argparse.SUPPRESS,
+    )
+    serve_parser.add_argument(
+        "--no-suffix-hybrid-bit-exact",
+        dest="no_suffix_hybrid_bit_exact",
+        action="store_true",
+        default=False,
         help=argparse.SUPPRESS,
     )
     # Deprecated no-op flags — accepted-but-ignored for backward compat.

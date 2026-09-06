@@ -395,6 +395,127 @@ def test_no_speculative_config_fills_suffix_runtime_defaults() -> None:
     assert args.suffix_min_draft_len == 2
 
 
+def test_hybrid_default_cap_raises_to_floor_only_for_confirmed_hybrid() -> None:
+    """The hybrid cap-raise is DEFERRED to model resolution (the CLI cannot
+    know the model is hybrid until the ``serve`` profile resolves). A
+    CONFIRMED hybrid model + ``--suffix-hybrid`` + no explicit cap gets its
+    effective width raised to the 24-token match floor so the opt-in works out
+    of the box; an explicit below-floor cap (the operator's bound), a
+    pure-attention model (where ``--suffix-hybrid`` is a no-op flag), and the
+    non-hybrid flag are all unchanged."""
+    from types import SimpleNamespace
+
+    from vllm_mlx.cli import _hybrid_suffix_cap
+    from vllm_mlx.model_profile import ModelProfile
+
+    def _args(**overrides):
+        base = _spec_config_args(
+            suffix_decoding=True,
+            suffix_hybrid=True,
+            suffix_min_match_len=24,
+            suffix_max_draft=8,
+            _suffix_max_draft_was_explicit=False,
+        )
+        for k, v in overrides.items():
+            setattr(base, k, v)
+        return base
+
+    hybrid = SimpleNamespace(is_hybrid=True)
+    pure = SimpleNamespace(is_hybrid=False)
+    # (a) Default cap (8), confirmed hybrid, no explicit cap → raised to floor.
+    assert _hybrid_suffix_cap(_args(), hybrid) == 24
+    # (b) Cap already at the floor → unchanged.
+    assert (
+        _hybrid_suffix_cap(
+            _args(suffix_max_draft=24, _suffix_max_draft_was_explicit=True), hybrid
+        )
+        == 24
+    )
+    # (c) EXPLICIT below-floor cap (operator's bound) → honored as-is.
+    assert (
+        _hybrid_suffix_cap(
+            _args(suffix_max_draft=8, _suffix_max_draft_was_explicit=True), hybrid
+        )
+        == 8
+    )
+    # (d) Confirmed hybrid but flag OFF → unchanged (default 8).
+    assert _hybrid_suffix_cap(_args(suffix_hybrid=False), hybrid) == 8
+    # (e) Pure-attention model + --suffix-hybrid (a no-op flag there) → kept.
+    assert _hybrid_suffix_cap(_args(), pure) == 8
+    # (f) AliasProfile parity: the attribute the serve path reads is
+    # ``is_hybrid`` on the resolved profile — verify the helper reads it via
+    # getattr so a real ModelProfile object behaves identically.
+    assert (
+        _hybrid_suffix_cap(_args(), ModelProfile(is_hybrid=True, hf_path="x/y")) == 24
+    )
+
+
+def test_hybrid_normalizer_fills_cap_and_sentinel() -> None:
+    """``--suffix-hybrid`` with only default knobs must NOT fail fast — the
+    below-floor cap is deferred to model resolution, and the normalizer merely
+    records whether ``--suffix-max-draft`` was explicit (the default 8 is the
+    pure-attention width, valid on its own).
+
+    The sentinel is initialized ONLY when absent (``hasattr`` guard) so it
+    survives repeated normalization: a defaulted cap must stay "implicit" (so
+    ``_hybrid_suffix_cap`` can still raise it to the floor), not flip to
+    "explicit" merely because a later call sees the filled-in 8."""
+    from vllm_mlx.cli import _normalize_speculative_config_or_exit
+
+    args = _spec_config_args(
+        suffix_decoding=True, suffix_hybrid=True, suffix_min_match_len=24
+    )
+    _normalize_speculative_config_or_exit(args)
+    # Default cap filled, flagged as NOT explicit (so the hybrid path can
+    # still raise it to the floor at model resolution).
+    assert args.suffix_max_draft == 8
+    assert args._suffix_max_draft_was_explicit is False
+
+    # An explicit cap keeps the sentinel set so the hybrid raise applies.
+    # Pre-setting the sentinel exercises the ``hasattr`` guard branch: a
+    # pre-existing sentinel is preserved, never recomputed from the cap field
+    # (which has been filled to 8 by the default-fill). This is what allows a
+    # programmatic/pre-normalized args to stay "implicit" across reuse.
+    pre_set = _spec_config_args(
+        suffix_decoding=True,
+        suffix_hybrid=True,
+        suffix_min_match_len=24,
+        suffix_max_draft=8,
+    )
+    pre_set._suffix_max_draft_was_explicit = False
+    _normalize_speculative_config_or_exit(pre_set)
+    assert pre_set.suffix_max_draft == 8
+    assert pre_set._suffix_max_draft_was_explicit is False
+
+    explicit = _spec_config_args(
+        suffix_decoding=True,
+        suffix_hybrid=True,
+        suffix_min_match_len=24,
+        suffix_max_draft=24,
+    )
+    _normalize_speculative_config_or_exit(explicit)
+    assert explicit.suffix_max_draft == 24
+    assert explicit._suffix_max_draft_was_explicit is True
+
+    # Codex round-9l NIT: the sentinel records EXPLICIT intent independently of
+    # the current cap value, and the default-fill must only ever apply to a
+    # still-None cap. A programmatic caller that pre-set the sentinel to False
+    # (i.e. a prior normalize recorded the RUN-TIME default as implicit) and
+    # then set a NON-default cap of 16 must keep 16 — the pre-fix code re-set
+    # it to 8 on every normalize because it keyed the fill on the (False)
+    # sentinel rather than on ``suffix_max_draft is None``.
+    prog = _spec_config_args(
+        suffix_decoding=True,
+        suffix_hybrid=True,
+        suffix_min_match_len=24,
+        suffix_max_draft=16,  # programmatic override, set after prior normalize
+    )
+    prog._suffix_max_draft_was_explicit = False  # intent: run-time default
+    _normalize_speculative_config_or_exit(prog)
+    assert prog.suffix_max_draft == 16  # NOT clobbered back to 8
+    assert prog._suffix_max_draft_was_explicit is False  # intent unchanged
+
+
 def test_no_speculative_config_preserves_programmatic_runtime_fields() -> None:
     from vllm_mlx.cli import _normalize_speculative_config_or_exit
 
