@@ -295,6 +295,17 @@ struct DraftPostFlowTests {
         #expect(contract.contains("setDraft"))
         #expect(!contract.lowercased().contains("publish"))
         #expect(!contract.lowercased().contains("send("))
+
+        let driverSlice = try #require(source.range(
+            of: "protocol DraftPostFlowDriving: Sendable"
+        )).lowerBound ..< #require(source.range(
+            of: "/// Runs one idempotent local transfer"
+        )).lowerBound
+        let driverContract = String(source[driverSlice])
+        #expect(driverContract.contains("transferDraft"))
+        #expect(!driverContract.lowercased().contains("publish"))
+        #expect(!driverContract.lowercased().contains("send("))
+        #expect(!driverContract.lowercased().contains("submit"))
     }
 
     @MainActor
@@ -307,6 +318,26 @@ struct DraftPostFlowTests {
         try actuator.focusComposer(element)
         try actuator.setDraft("Fixture", on: element)
         #expect(actuator.actions == [.focusComposer, .setDraft("Fixture")])
+    }
+
+    @MainActor
+    @Test("Run accepts only one active transfer")
+    func singleActiveTransfer() async {
+        let driver = CancellationIgnoringDraftPostDriver()
+        let viewModel = DraftPostFlowViewModel(
+            catalog: StaticWindowCatalog(windows: [Self.source, Self.destination]),
+            driver: driver
+        )
+        await viewModel.load()
+        viewModel.sourceID = Self.source.id
+        viewModel.destinationID = Self.destination.id
+        viewModel.run()
+        viewModel.run()
+        while !(await driver.didStart) {
+            await Task.yield()
+        }
+        #expect(await driver.callCount == 1)
+        await driver.complete()
     }
 
     private static let source = option(
@@ -526,12 +557,14 @@ private actor UnexpectedDraftPostDriver: DraftPostFlowDriving {
 
 private actor CancellationIgnoringDraftPostDriver: DraftPostFlowDriving {
     private(set) var didStart = false
+    private(set) var callCount = 0
     private var mayComplete = false
 
     func transferDraft(
         from _: ComputerUseWindowOption,
         to _: ComputerUseWindowOption
     ) async throws {
+        callCount += 1
         didStart = true
         while !mayComplete {
             await Task.yield()

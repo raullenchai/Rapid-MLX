@@ -871,7 +871,8 @@ final class DraftPostFlowViewModel {
     }
 
     func run() {
-        guard let source = windows.first(where: { $0.id == sourceID }),
+        guard phase == .ready, runTask == nil,
+              let source = windows.first(where: { $0.id == sourceID }),
               let destination = windows.first(where: { $0.id == destinationID })
         else { return }
         phase = .running
