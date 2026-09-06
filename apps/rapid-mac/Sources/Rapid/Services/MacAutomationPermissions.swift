@@ -74,7 +74,7 @@ enum MacAutomationPermissions {
     }
 
     @MainActor
-    static func openSettings(for permission: MacAutomationPermission) {
+    static func openSystemPrivacyPane(for permission: MacAutomationPermission) {
         let anchor: String
         switch permission {
         case .screenRecording:

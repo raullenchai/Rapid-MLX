@@ -105,7 +105,7 @@ final class DictationHotkey {
     /// Opens the exact Accessibility pane. The prompt above only appears once per
     /// app version, so returning users need a direct route.
     static func openAccessibilitySettings() {
-        MacAutomationPermissions.openSettings(for: .accessibility)
+        MacAutomationPermissions.openSystemPrivacyPane(for: .accessibility)
     }
 
     // MARK: - Lifecycle
