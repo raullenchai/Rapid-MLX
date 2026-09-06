@@ -3242,6 +3242,29 @@ def _resolve_turboquant_with_mtp_policy(
     return resolve_turboquant_mode_default(args, model_name=model_name, **detection)
 
 
+def _auto_config_lookup_key(config_identity: str) -> str:
+    """Return the key ``detect_model_config`` should resolve for ``serve``.
+
+    A curated alias (or its ``hf_path``) resolves its profile by name, and
+    the profile is the single source of truth for parser/cache defaults.
+    Joining the catalog subfolder onto the cached snapshot first (#2558)
+    produced a local ``…/snapshots/<sha>/<subfolder>`` path that no profile
+    matches, so the only subfolder alias (``lfm2.5-2.6b-4bit``) silently
+    lost its ``tool_call_parser``/``reasoning_parser`` (#3114). Only a
+    profile-less identity — a bare multi-variant repo selected via
+    ``pull --bits/--format`` — needs the concrete checkpoint directory so
+    the metadata fallback reads a real ``config.json`` instead of the
+    config-less repository root.
+    """
+    from .model_aliases import resolve_profile
+
+    if resolve_profile(config_identity) is not None:
+        return config_identity
+    from .utils.tokenizer import _resolve_subfolder_checkpoint
+
+    return _resolve_subfolder_checkpoint(config_identity)
+
+
 def serve_command(args):
     """Start the OpenAI-compatible server."""
     import logging
@@ -3681,11 +3704,8 @@ def serve_command(args):
             # checkpoint, not the config-less repository root. Preserve an
             # explicit alias because its catalog subfolder outranks a repo
             # marker by contract.
-            from .utils.tokenizer import _resolve_subfolder_checkpoint
-
             config_identity = getattr(args, "_original_alias", None) or args.model
-            config_path = _resolve_subfolder_checkpoint(config_identity)
-            auto_config = detect_model_config(config_path)
+            auto_config = detect_model_config(_auto_config_lookup_key(config_identity))
         except Exception as e:
             if not non_fatal:
                 raise
