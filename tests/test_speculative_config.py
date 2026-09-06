@@ -395,6 +395,34 @@ def test_no_speculative_config_fills_suffix_runtime_defaults() -> None:
     assert args.suffix_min_draft_len == 2
 
 
+def test_hybrid_default_raises_draft_cap_to_floor() -> None:
+    """``--suffix-hybrid`` alone must default the draft cap to the 24-token
+    match floor (the pure-attention default 8 would make the hybrid opt-in a
+    no-op, since no draft could clear the floor)."""
+    from vllm_mlx.cli import _normalize_speculative_config_or_exit
+
+    args = _spec_config_args(
+        suffix_decoding=True, suffix_hybrid=True, suffix_min_match_len=24
+    )
+    _normalize_speculative_config_or_exit(args)
+    assert args.suffix_max_draft == 24
+
+
+def test_hybrid_explicit_below_floor_cap_is_preserved() -> None:
+    """An EXPLICIT below-floor ``--suffix-max-draft`` is the operator's bound
+    and wins over the hybrid default raise."""
+    from vllm_mlx.cli import _normalize_speculative_config_or_exit
+
+    args = _spec_config_args(
+        suffix_decoding=True,
+        suffix_hybrid=True,
+        suffix_min_match_len=24,
+        suffix_max_draft=8,
+    )
+    _normalize_speculative_config_or_exit(args)
+    assert args.suffix_max_draft == 8
+
+
 def test_no_speculative_config_preserves_programmatic_runtime_fields() -> None:
     from vllm_mlx.cli import _normalize_speculative_config_or_exit
 
