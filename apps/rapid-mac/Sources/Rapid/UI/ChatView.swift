@@ -1142,6 +1142,11 @@ struct ChatView: View {
                         }
                         Button {
                             attachmentDraft.removeFile(id: attachment.id)
+                            // Removing the chip is the user deleting the
+                            // document: stop any background extraction still
+                            // running for it, and delete the plaintext extract
+                            // rather than leaving it in Application Support.
+                            DocumentContentCache.shared.remove(attachment.id)
                         } label: {
                             Image(systemName: "xmark.circle.fill")
                                 .foregroundStyle(.secondary)
@@ -1309,19 +1314,39 @@ struct ChatView: View {
             let notice = selection.rejectedCount > 0
                 ? "Attach up to \(ChatFileAttachment.maxAttachmentsPerMessage) PDF, CSV, or TXT files per message."
                 : outcome.1
-            attachmentDrafts.finishFileImport(
+            let adopted = attachmentDrafts.finishFileImport(
                 request: importRequest,
                 outcome.0,
                 notice: notice
             )
+            // The import registered each document's full text in the shared
+            // cache the moment it parsed, which is BEFORE any draft agreed to
+            // take ownership of it. When the draft is gone — its conversation
+            // was deleted, or a never-sent draft was replaced by a new
+            // conversation — nothing on screen references these documents, so
+            // no chip and no ``deleteConversation`` can ever clean them up.
+            // Delete them here; ``remove`` also cancels the background OCR,
+            // which for a large scan is minutes of Vision work nobody awaits.
+            if !adopted {
+                DocumentContentCache.shared.remove(
+                    contentsOf: outcome.0.map(\.attachment.id)
+                )
+            }
         }
         return true
     }
 
     private func pruneAttachmentDrafts() {
-        attachmentDrafts.retainDrafts(
+        // A dropped draft takes its documents with it. The import registered
+        // their full text in the shared cache before any draft owned it, so
+        // once the chip is unreachable — the conversation was deleted, or a
+        // never-sent draft was replaced by New Chat — this is the only
+        // remaining opportunity to delete that plaintext. ``remove`` also
+        // cancels any extraction still running for them.
+        let discarded = attachmentDrafts.retainDrafts(
             for: Set(viewModel.conversations.map(\.id)).union([viewModel.activeConversationID])
         )
+        DocumentContentCache.shared.remove(contentsOf: discarded)
     }
 
     /// Parse candidates without losing which source produced each attachment.

@@ -181,7 +181,7 @@ struct SettingsToolsPanel: View {
     // MARK: - Presentation of tool identity
     //
     // Display names and summaries are PRESENTATION ONLY. The wire
-    // identifiers (`web_search`, `browse`, `weather`) are what the
+    // identifiers (`web_search`, `browse`, `weather`, `read_document`) are what the
     // registry, the request body, the disabled-tool set, the dispatch
     // guard and every accessibility identifier still use — none of that
     // is touched by anything below.
@@ -195,6 +195,7 @@ struct SettingsToolsPanel: View {
         case "web_search": return "Web Search"
         case "browse":     return "Browse Web Page"
         case "weather":    return "Weather"
+        case "read_document": return "Read Attached Document"
         default:           return toolName
         }
     }
@@ -210,6 +211,13 @@ struct SettingsToolsPanel: View {
             return "Opens a web page you or the model names and reads it. You approve each page."
         case "weather":
             return "Gets the current weather for a place you name."
+        case "read_document":
+            // States the retention window because it is the one thing about
+            // this tool a user cannot discover by using it: everything else is
+            // visible in the transcript, but "the full text is kept for N days,
+            // then you are asked to attach the file again" is only observable
+            // by waiting a quarter and being surprised.
+            return "Reads the rest of a PDF, CSV, or text file you attached. Only files you attach; never other files on your Mac. The full text is kept on this Mac for \(DocumentContentCache.retentionDays) days, and is deleted when you remove the attachment or delete the conversation."
         default:
             return fallback
         }
@@ -227,6 +235,7 @@ struct SettingsToolsPanel: View {
         case "web_search": "Web search"
         case "browse": "Browse pages"
         case "weather": "Weather"
+        case "read_document": "Read attached document"
         default: toolName.replacingOccurrences(of: "_", with: " ")
         }
     }
