@@ -22,9 +22,6 @@ struct DraftPostFlowTests {
         let actuator = RecordingDraftPostComposerActuator(
             base: AXDraftPostComposerActuator()
         )
-        try await Self.clearLiveComposer(
-            processIdentifier: destination.selection.processIdentifier
-        )
         var successes = 0
         for _ in 0 ..< 30 {
             let outcome = await DraftPostFlowCoordinator(
@@ -37,7 +34,7 @@ struct DraftPostFlowTests {
             successes += 1
             #expect(metrics.attempts <= 3)
             #expect(metrics.completedSteps == 3)
-            try await Self.clearLiveComposer(processIdentifier: destination.selection.processIdentifier)
+            try actuator.clearLastDraftIfUnchanged()
         }
         #expect(successes == 30)
         let actions = actuator.actions
@@ -54,10 +51,12 @@ struct DraftPostFlowTests {
     @Test(.enabled(if: ProcessInfo.processInfo.environment["RAPID_LIVE_CUA_DOGFOOD"] == "1"))
     func liveFocusStealRecovery() async throws {
         let (source, destination) = try await Self.liveOptions()
-        try await Self.clearLiveComposer(
-            processIdentifier: destination.selection.processIdentifier
+        let actuator = RecordingDraftPostComposerActuator(
+            base: AXDraftPostComposerActuator()
         )
-        let driver = FocusStealingDraftPostDriver(base: MacOSDraftPostFlowDriver())
+        let driver = FocusStealingDraftPostDriver(
+            base: MacOSDraftPostFlowDriver(actuator: actuator)
+        )
         let outcome = await DraftPostFlowCoordinator(driver: driver).run(
             source: source,
             destination: destination
@@ -68,6 +67,7 @@ struct DraftPostFlowTests {
         }
         #expect(metrics.attempts == 2)
         #expect(metrics.automaticRecoveries == 1)
+        try actuator.clearLastDraftIfUnchanged()
     }
 
     @Test("The first runnable starter is draft and post")
@@ -256,6 +256,30 @@ struct DraftPostFlowTests {
     }
 
     @MainActor
+    @Test("Untitled Safari windows are not offered as destinations")
+    func untitledBrowserIsExcluded() async {
+        let untitled = ComputerUseWindowOption(
+            id: "2:21",
+            applicationName: "Safari",
+            windowTitle: "   ",
+            selection: ComputerUseWindowSelection(
+                bundleIdentifier: "com.apple.Safari",
+                processIdentifier: 2,
+                processLaunchDate: Date(timeIntervalSince1970: 1),
+                windowID: 21
+            )
+        )
+        let viewModel = DraftPostFlowViewModel(
+            catalog: StaticWindowCatalog(windows: [Self.destination, untitled]),
+            driver: ScriptedDraftPostDriver(results: [.success(())])
+        )
+
+        await viewModel.load()
+
+        #expect(viewModel.destinationOptions.map(\.id) == [Self.destination.id])
+    }
+
+    @MainActor
     @Test("A late cancellation reports the definitive driver outcome")
     func lateCancellationIsHonest() async {
         let driver = CancellationIgnoringDraftPostDriver()
@@ -386,71 +410,6 @@ struct DraftPostFlowTests {
         return (source, destination)
     }
 
-    @MainActor
-    private static func clearLiveComposer(processIdentifier: pid_t) throws {
-        let application = AXUIElementCreateApplication(processIdentifier)
-        var focusedValue: CFTypeRef?
-        guard AXUIElementCopyAttributeValue(
-            application,
-            kAXFocusedWindowAttribute as CFString,
-            &focusedValue
-        ) == .success,
-            let window = focusedValue,
-            CFGetTypeID(window) == AXUIElementGetTypeID()
-        else {
-            throw DraftPostFlowFailure.verificationFailed
-        }
-        var queue = [unsafeDowncast(window, to: AXUIElement.self)]
-        var cursor = 0
-        while cursor < queue.count, cursor < 2_048 {
-            let element = queue[cursor]
-            cursor += 1
-            let labels = [
-                liveStringAttribute(kAXTitleAttribute as CFString, from: element),
-                liveStringAttribute(kAXDescriptionAttribute as CFString, from: element),
-                liveStringAttribute(kAXHelpAttribute as CFString, from: element),
-                liveStringAttribute("AXPlaceholderValue" as CFString, from: element),
-            ].compactMap { $0 }
-            if liveStringAttribute(kAXRoleAttribute as CFString, from: element)
-                == kAXTextAreaRole as String,
-                labels.contains(where: MacOSDraftPostFlowDriver.isExplicitComposerLabel)
-            {
-                guard AXUIElementSetAttributeValue(
-                    element,
-                    kAXValueAttribute as CFString,
-                    "" as CFString
-                ) == .success,
-                    liveStringAttribute(kAXValueAttribute as CFString, from: element) == ""
-                else {
-                    throw DraftPostFlowFailure.verificationFailed
-                }
-                return
-            }
-            var childrenValue: CFTypeRef?
-            if AXUIElementCopyAttributeValue(
-                element,
-                kAXChildrenAttribute as CFString,
-                &childrenValue
-            ) == .success,
-                let children = childrenValue as? [AXUIElement]
-            {
-                queue.append(contentsOf: children)
-            }
-        }
-        throw DraftPostFlowFailure.composerMissing
-    }
-
-    @MainActor
-    private static func liveStringAttribute(
-        _ attribute: CFString,
-        from element: AXUIElement
-    ) -> String? {
-        var value: CFTypeRef?
-        guard AXUIElementCopyAttributeValue(element, attribute, &value) == .success else {
-            return nil
-        }
-        return value as? String
-    }
 }
 
 private enum RecordedDraftPostComposerAction: Equatable {
@@ -464,6 +423,7 @@ private final class RecordingDraftPostComposerActuator: DraftPostComposerActuati
     private let base: any DraftPostComposerActuating
     private let lock = NSLock()
     private var recordedActions: [RecordedDraftPostComposerAction] = []
+    private var lastWrite: (element: AXUIElement, draft: String)?
 
     var actions: [RecordedDraftPostComposerAction] {
         lock.withLock { recordedActions }
@@ -481,6 +441,42 @@ private final class RecordingDraftPostComposerActuator: DraftPostComposerActuati
     func setDraft(_ draft: String, on composer: AXUIElement) throws {
         lock.withLock { recordedActions.append(.setDraft(draft)) }
         try base.setDraft(draft, on: composer)
+        lock.withLock { lastWrite = (composer, draft) }
+    }
+
+    /// The live test resets only the exact element that this actuator wrote,
+    /// and only while its bytes still match that write. It never searches or
+    /// clears a process's currently focused control.
+    func clearLastDraftIfUnchanged() throws {
+        let write = lock.withLock { lastWrite }
+        guard let write else {
+            throw DraftPostFlowFailure.verificationFailed
+        }
+        var value: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(
+            write.element,
+            kAXValueAttribute as CFString,
+            &value
+        ) == .success,
+            let current = value as? String,
+            MacOSDraftPostFlowDriver.utf8Matches(current, write.draft),
+            AXUIElementSetAttributeValue(
+                write.element,
+                kAXValueAttribute as CFString,
+                "" as CFString
+            ) == .success
+        else {
+            throw DraftPostFlowFailure.verificationFailed
+        }
+        var clearedValue: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(
+            write.element,
+            kAXValueAttribute as CFString,
+            &clearedValue
+        ) == .success, clearedValue as? String == "" else {
+            throw DraftPostFlowFailure.verificationFailed
+        }
+        lock.withLock { lastWrite = nil }
     }
 }
 

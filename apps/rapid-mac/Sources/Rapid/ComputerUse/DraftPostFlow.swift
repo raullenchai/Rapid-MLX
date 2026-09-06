@@ -868,7 +868,9 @@ final class DraftPostFlowViewModel {
         windows.filter {
             MacOSDraftPostFlowDriver.browserBundles.contains(
                 $0.selection.bundleIdentifier
-            )
+            ) && !$0.windowTitle.trimmingCharacters(
+                in: .whitespacesAndNewlines
+            ).isEmpty
         }
     }
 
