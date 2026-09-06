@@ -52,14 +52,21 @@ actor MacOSComputerUseActuator: LocalWorkflowActuating {
 
     func perform(
         _ action: GroundedWorkflowAction,
-        against currentObservation: WorkflowObservation
+        groundedAgainst groundingObservation: WorkflowObservation,
+        currentObservation: WorkflowObservation
     ) async throws {
         try Task.checkCancellation()
-        // The workflow kernel binds the action to its grounding observation,
-        // then deliberately passes a fresh, equivalent observation here. Its
-        // UUID is expected to differ; target/content equivalence was checked
-        // at that orchestration boundary.
-        guard currentObservation.isStructurallyValid else {
+        // The kernel deliberately re-observes before actuation, so the two
+        // observation UUIDs differ. Carry both states across this boundary so
+        // the adapter can independently verify the action's original binding
+        // and the fresh observation's target/content equivalence.
+        guard groundingObservation.isStructurallyValid,
+              currentObservation.isStructurallyValid,
+              action.observationID == groundingObservation.id,
+              groundingObservation.representsSameInteractionState(
+                as: currentObservation
+              )
+        else {
             throw MacOSComputerUseActuationError.staleObservation
         }
         guard Self.isSafeForWindowActuation(action.payload) else {

@@ -22,11 +22,67 @@ struct MacOSComputerUseActuationTests {
 
         try await actuator.perform(
             Self.action(for: groundedObservation),
-            against: currentObservation
+            groundedAgainst: groundedObservation,
+            currentObservation: currentObservation
         )
 
         let emissions = await emitter.emissions
         #expect(emissions == [.click(normalizedX: 0.25, normalizedY: 0.75)])
+    }
+
+    @Test("A forged action binding is rejected before desktop access")
+    func mismatchedGroundingIDIsRejected() async {
+        let groundingObservation = Self.observation()
+        let probe = TargetProbe(result: .success(groundingObservation.target))
+        let emitter = InputEmitter()
+        let actuator = MacOSComputerUseActuator(
+            targetProbe: probe,
+            inputEmitter: emitter,
+            permissionReader: { .init(screenRecording: true, accessibility: true) }
+        )
+        let forged = GroundedWorkflowAction(
+            observationID: UUID(),
+            payload: .click(normalizedX: 0.25, normalizedY: 0.75),
+            source: .visualGrounding,
+            safeSummary: "Forged",
+            risk: .readOnly
+        )
+
+        await #expect(throws: MacOSComputerUseActuationError.staleObservation) {
+            try await actuator.perform(
+                forged,
+                groundedAgainst: groundingObservation,
+                currentObservation: groundingObservation
+            )
+        }
+        #expect(await probe.callCount == 0)
+        #expect(await emitter.emissions.isEmpty)
+    }
+
+    @Test("Changed content cannot be substituted at the actuation boundary")
+    func changedGroundingStateIsRejected() async {
+        let groundingObservation = Self.observation()
+        let currentObservation = WorkflowObservation(
+            target: groundingObservation.target,
+            contentRevision: "different-revision"
+        )
+        let probe = TargetProbe(result: .success(groundingObservation.target))
+        let emitter = InputEmitter()
+        let actuator = MacOSComputerUseActuator(
+            targetProbe: probe,
+            inputEmitter: emitter,
+            permissionReader: { .init(screenRecording: true, accessibility: true) }
+        )
+
+        await #expect(throws: MacOSComputerUseActuationError.staleObservation) {
+            try await actuator.perform(
+                Self.action(for: groundingObservation),
+                groundedAgainst: groundingObservation,
+                currentObservation: currentObservation
+            )
+        }
+        #expect(await probe.callCount == 0)
+        #expect(await emitter.emissions.isEmpty)
     }
 
     @Test("An invalid current observation is rejected before probing the desktop")
@@ -51,7 +107,8 @@ struct MacOSComputerUseActuationTests {
         await #expect(throws: MacOSComputerUseActuationError.staleObservation) {
             try await actuator.perform(
                 Self.action(for: groundedObservation),
-                against: invalidCurrent
+                groundedAgainst: groundedObservation,
+                currentObservation: invalidCurrent
             )
         }
         #expect(await probe.callCount == 0)
@@ -72,7 +129,11 @@ struct MacOSComputerUseActuationTests {
         await #expect(
             throws: MacOSComputerUseActuationError.permissionMissing([.accessibility])
         ) {
-            try await actuator.perform(Self.action(for: observation), against: observation)
+            try await actuator.perform(
+                Self.action(for: observation),
+                groundedAgainst: observation,
+                currentObservation: observation
+            )
         }
         #expect(await probe.callCount == 0)
         #expect(await emitter.emissions.isEmpty)
@@ -96,7 +157,11 @@ struct MacOSComputerUseActuationTests {
         )
 
         await #expect(throws: MacOSComputerUseActuationError.targetChanged) {
-            try await actuator.perform(Self.action(for: observation), against: observation)
+            try await actuator.perform(
+                Self.action(for: observation),
+                groundedAgainst: observation,
+                currentObservation: observation
+            )
         }
         #expect(await emitter.emissions.isEmpty)
     }
@@ -120,7 +185,11 @@ struct MacOSComputerUseActuationTests {
         )
 
         await #expect(throws: MacOSComputerUseActuationError.invalidAction) {
-            try await actuator.perform(invalid, against: observation)
+            try await actuator.perform(
+                invalid,
+                groundedAgainst: observation,
+                currentObservation: observation
+            )
         }
         #expect(await probe.callCount == 0)
         #expect(await emitter.emissions.isEmpty)
@@ -150,7 +219,11 @@ struct MacOSComputerUseActuationTests {
         )
 
         await #expect(throws: MacOSComputerUseActuationError.invalidAction) {
-            try await actuator.perform(action, against: observation)
+            try await actuator.perform(
+                action,
+                groundedAgainst: observation,
+                currentObservation: observation
+            )
         }
         #expect(await probe.callCount == 0)
         #expect(await emitter.emissions.isEmpty)
