@@ -124,3 +124,78 @@ def test_metrics_render_cold_start_has_no_depth_samples():
         'rapid_mlx_spec_decode_verify_calls_total{family="qwen3.5-9b-4bit",method="mtp"} 0'
         in body
     )
+
+
+def test_zero_depth_verify_is_a_noop():
+    """codex r1 on #3158: a verify with no draft (EOS cut every position)
+    must not count as a verify call or a bonus token, matching
+    ``record_round(0, 0)``."""
+    counter = MTPAcceptCounter()
+    counter.record_verify(0, 0)
+    counter.record_round(0, 0)
+    snap = counter.snapshot()
+    assert snap.verify_calls == 0
+    assert snap.bonus_tokens == 0
+    assert snap.correction_tokens == 0
+    assert snap.drafted_by_depth == ()
+
+
+def test_record_round_is_atomic_under_snapshot_and_reset():
+    """codex r1 on #3158: legacy counters and the verify histogram move
+    under one lock, so a concurrent snapshot never sees attempts without
+    the matching verify call (or vice versa) and a reset never strands
+    verify counters."""
+    import threading
+
+    counter = MTPAcceptCounter()
+    rounds = 2000
+    stop = threading.Event()
+    torn: list[tuple[int, int]] = []
+
+    def observer():
+        while not stop.is_set():
+            snap = counter.snapshot()
+            if snap.attempts != 2 * snap.verify_calls:
+                torn.append((snap.attempts, snap.verify_calls))
+
+    t = threading.Thread(target=observer)
+    t.start()
+    try:
+        for _ in range(rounds):
+            counter.record_round(2, 1)
+    finally:
+        stop.set()
+        t.join()
+    assert torn == []
+    counter.reset()
+    snap = counter.snapshot()
+    assert (snap.attempts, snap.verify_calls, snap.correction_tokens) == (0, 0, 0)
+
+
+def test_metrics_accepted_family_zero_filled_when_nothing_accepted():
+    """codex r1 on #3158: drafts recorded but none accepted must not leave
+    the accepted-depth family header-only (parser-invalid); it renders a
+    zero sample for every drafted depth."""
+    from prometheus_client.parser import text_string_to_metric_families
+
+    from vllm_mlx.routes.metrics import _render_spec_decode_mtp_counters
+
+    reset_global_counter_for_tests()
+    try:
+        get_global_counter().record_round(2, 0)
+
+        class _Cfg:
+            model_alias = "qwen3.5-9b-4bit"
+            model = "mlx-community/Qwen3.5-9B-4bit"
+
+        body = "\n".join(_render_spec_decode_mtp_counters(_Cfg())) + "\n"
+    finally:
+        reset_global_counter_for_tests()
+    lbl = 'family="qwen3.5-9b-4bit",method="mtp"'
+    for depth in (1, 2):
+        assert (
+            f'rapid_mlx_spec_decode_accepted_by_depth_total{{{lbl},depth="{depth}"}} 0'
+            in body
+        )
+    families = {f.name: f for f in text_string_to_metric_families(body)}
+    assert len(families["rapid_mlx_spec_decode_accepted_by_depth"].samples) == 2

@@ -193,21 +193,33 @@ class MTPAcceptCounter:
         split MTPLX reports as ``bonus_tokens`` / ``correction_tokens``.
         Verify-only bookkeeping; callers on the single-request path keep
         their existing ``record_attempt`` / ``record_accept`` calls.
+        ``depth == 0`` (no draft proposed, nothing verified) records
+        nothing, matching :meth:`record_round`.
         """
+        self._check_outcome(depth, accepted)
+        if depth == 0:
+            return
+        with self._lock:
+            self._record_verify_locked(depth, accepted)
+
+    @staticmethod
+    def _check_outcome(depth: int, accepted: int) -> None:
         if depth < 0 or accepted < 0 or accepted > depth:
             raise ValueError(
                 f"invalid verify outcome depth={depth} accepted={accepted}"
             )
-        with self._lock:
-            self._verify_calls += 1
-            for d in range(1, depth + 1):
-                self._drafted_by_depth[d] = self._drafted_by_depth.get(d, 0) + 1
-            for d in range(1, accepted + 1):
-                self._accepted_by_depth[d] = self._accepted_by_depth.get(d, 0) + 1
-            if accepted < depth:
-                self._correction_tokens += 1
-            else:
-                self._bonus_tokens += 1
+
+    def _record_verify_locked(self, depth: int, accepted: int) -> None:
+        """Body of :meth:`record_verify`; caller holds ``_lock``."""
+        self._verify_calls += 1
+        for d in range(1, depth + 1):
+            self._drafted_by_depth[d] = self._drafted_by_depth.get(d, 0) + 1
+        for d in range(1, accepted + 1):
+            self._accepted_by_depth[d] = self._accepted_by_depth.get(d, 0) + 1
+        if accepted < depth:
+            self._correction_tokens += 1
+        else:
+            self._bonus_tokens += 1
 
     def record_round(self, depth: int, accepted: int) -> None:
         """Record a whole verify round at once (continuous-batching path).
@@ -217,17 +229,14 @@ class MTPAcceptCounter:
         lock acquisition.  ``depth == 0`` (a target-only cycle) records
         nothing: no draft was proposed, so there is nothing to verify.
         """
-        if depth < 0 or accepted < 0 or accepted > depth:
-            raise ValueError(
-                f"invalid verify outcome depth={depth} accepted={accepted}"
-            )
+        self._check_outcome(depth, accepted)
         if depth == 0:
             return
         with self._lock:
             self._attempts += depth
             self._accepts += accepted
             self._tokens_saved += accepted
-        self.record_verify(depth, accepted)
+            self._record_verify_locked(depth, accepted)
 
     def record_reject(self) -> None:
         """No-op kept for symmetry. Rejections don't bump any counter —

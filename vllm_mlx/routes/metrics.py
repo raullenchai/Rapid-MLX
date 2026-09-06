@@ -963,6 +963,7 @@ def _render_spec_decode_mtp_counters(cfg: Any) -> list[str]:
     # prometheus_client parser (and tests/test_metrics_route.py) reject a
     # HELP/TYPE header with no sample line.
     if snapshot.drafted_by_depth:
+        accepted_by_depth = dict(snapshot.accepted_by_depth)
         out.extend(
             _fmt_metric_family(
                 "rapid_mlx_spec_decode_drafted_by_depth_total",
@@ -987,9 +988,15 @@ def _render_spec_decode_mtp_counters(cfg: Any) -> list[str]:
                     "rate; chain acceptance is a prefix so it is non-increasing "
                     "in depth."
                 ),
+                # One sample per drafted depth (zero when nothing at that
+                # depth was accepted yet) so the family is never header-only
+                # and accepted/drafted joins line up depth for depth.
                 [
-                    (int(count), {**common_labels, "depth": str(depth)})
-                    for depth, count in snapshot.accepted_by_depth
+                    (
+                        int(accepted_by_depth.get(depth, 0)),
+                        {**common_labels, "depth": str(depth)},
+                    )
+                    for depth, _count in snapshot.drafted_by_depth
                 ],
             )
         )
