@@ -216,6 +216,108 @@ def test_zero_centered_grouped_rms_norm_matches_numpy():
 def test_zero_centered_rms_norm_rejects_partial_group():
     with pytest.raises(ValueError, match="divide the feature width"):
         ZeroCenteredRMSNorm(7, group_size=4)
+    with pytest.raises(ValueError, match="unknown fast RMSNorm mode"):
+        ZeroCenteredRMSNorm(4).set_fast_rmsnorm_mode("bf16")
+
+
+def test_zero_centered_fast_rms_norm_uses_fp32_and_matches_stock(monkeypatch):
+    rng = np.random.default_rng(23)
+    norm = ZeroCenteredRMSNorm(8, group_size=4, eps=1e-6)
+    norm.weight = mx.array(rng.normal(0, 0.1, (8,)).astype(np.float32))
+    inputs = mx.array(rng.normal(size=(1, 2, 8)).astype(np.float16))
+
+    stock = norm(inputs)
+    seen_dtypes = []
+    original_fast_rms_norm = mx.fast.rms_norm
+
+    def record_fast_rms_norm(x, weight, eps):
+        seen_dtypes.append((x.dtype, weight))
+        return original_fast_rms_norm(x, weight, eps)
+
+    monkeypatch.setattr(mx.fast, "rms_norm", record_fast_rms_norm)
+    norm.set_fast_rmsnorm_mode("fast_fp32")
+    fast = norm(inputs)
+    mx.eval(stock, fast)
+
+    assert seen_dtypes == [(mx.float32, None)]
+    assert fast.dtype == inputs.dtype
+    assert norm.fast_rmsnorm_calls == 1
+    np.testing.assert_allclose(
+        np.asarray(fast), np.asarray(stock), rtol=2e-3, atol=2e-3
+    )
+
+
+def test_zero_centered_fast_rms_norm_declines_wide_parent_forward(monkeypatch):
+    norm = ZeroCenteredRMSNorm(4)
+    norm.set_fast_rmsnorm_mode("fast_fp32")
+
+    def unexpected_fast_rms_norm(*_args, **_kwargs):
+        raise AssertionError("wide prefill must remain on the stock RMSNorm path")
+
+    monkeypatch.setattr(mx.fast, "rms_norm", unexpected_fast_rms_norm)
+    output = norm(mx.ones((2, 1, 4)), sequence_length=16)
+    mx.eval(output)
+
+    assert norm.fast_rmsnorm_calls == 0
+    assert norm.fast_rmsnorm_declines == 1
+    assert norm.fast_rmsnorm_decline_reasons == {"sequence_too_wide": 1}
+
+
+def test_zero_centered_fast_fp32_avoids_bf16_extra_rounding():
+    rng = np.random.default_rng(3058)
+    norm = ZeroCenteredRMSNorm(256, eps=1e-6)
+    norm.weight = mx.array(
+        rng.normal(0, 0.05, size=(256,)).astype(np.float32), dtype=mx.bfloat16
+    )
+    inputs = mx.array(
+        rng.normal(size=(1, 8, 256)).astype(np.float32), dtype=mx.bfloat16
+    )
+
+    stock = norm(inputs)
+    norm.set_fast_rmsnorm_mode("fast_fp32")
+    candidate = norm(inputs)
+    bad = (
+        mx.fast.rms_norm(inputs, None, norm.eps).astype(mx.float32)
+        * (1 + norm.weight.astype(mx.float32))
+    ).astype(inputs.dtype)
+    mx.eval(stock, candidate, bad)
+
+    x64 = np.asarray(inputs.astype(mx.float32)).astype(np.float64)
+    weight64 = np.asarray(norm.weight.astype(mx.float32)).astype(np.float64)
+    reference = x64 / np.sqrt(np.mean(x64**2, axis=-1, keepdims=True) + norm.eps)
+    reference *= 1 + weight64
+
+    def rms_error(value):
+        delta = np.asarray(value.astype(mx.float32)).astype(np.float64) - reference
+        return float(np.sqrt(np.mean(delta**2)))
+
+    stock_error = rms_error(stock)
+    candidate_error = rms_error(candidate)
+    bad_error = rms_error(bad)
+    assert candidate_error / stock_error == pytest.approx(1.0, rel=1e-5)
+    assert bad_error / stock_error > 1.3
+
+
+def test_qwen4_fast_rms_norm_mode_and_stats_cover_all_resident_norms():
+    layer = GatedResidual(_args())
+    with pytest.raises(ValueError, match="unknown fast RMSNorm mode"):
+        qwen4_exp.set_qwen4_fast_rmsnorm_mode(layer, "bf16")
+    assert qwen4_exp.qwen4_fast_rmsnorm_mode_counts(layer) == {
+        "stock": 1,
+        "fast_fp32": 0,
+    }
+    assert qwen4_exp.set_qwen4_fast_rmsnorm_mode(layer, "fast_fp32") == 1
+    layer.hc_norm(mx.ones((1, 1, 32)))
+    layer.hc_norm(mx.ones((1, 9, 32)))
+    assert qwen4_exp.qwen4_fast_rmsnorm_mode_counts(layer) == {
+        "stock": 0,
+        "fast_fp32": 1,
+    }
+    assert qwen4_exp.qwen4_fast_rmsnorm_stats(layer) == {
+        "fast_calls": 1,
+        "declines": 1,
+        "decline_reasons": {"sequence_too_wide": 1},
+    }
 
 
 def test_gated_residual_matches_reference_equations():
@@ -1226,6 +1328,24 @@ def test_qsa_batch_prefill_builds_mask_before_kv_update(monkeypatch):
     output = attention(mx.zeros((1, 5, args.hidden_size)), cache)
     mx.eval(output, cache.state)
     assert observed == [(5, 5)]
+
+
+def test_qsa_prefill_synthetic_singleton_cannot_enter_fast_rms_norm():
+    args = _args(indexer_budget=8, indexer_compress_ratio=2)
+    indexer = QSAIndexer(args)
+    qwen4_exp.set_qwen4_fast_rmsnorm_mode(indexer, "fast_fp32")
+    selected = indexer(
+        mx.zeros((1, 65, args.hidden_size), dtype=mx.bfloat16),
+        QSAIndexCache(compress_ratio=2),
+        physical_kv_length=65,
+    )
+    assert selected is not None
+    mx.eval(selected.token_indices, selected.valid)
+
+    stats = qwen4_exp.qwen4_fast_rmsnorm_stats(indexer)
+    assert stats["fast_calls"] == 0
+    assert stats["declines"] > 0
+    assert stats["decline_reasons"] == {"sequence_too_wide": stats["declines"]}
 
 
 def test_scheduler_mid_prefill_restores_qsa_cachelist():

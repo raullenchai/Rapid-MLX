@@ -185,6 +185,10 @@ ALLOWED_RAPID_MLX_ENV_VARS: frozenset[str] = frozenset(
         # bit-exact kernel for an already-selected model and falls back for
         # unsupported shapes; it does not select a model, parser, or lane.
         "RAPID_MLX_QWEN4_FUSED_GDN_DECODE",
+        # Opt-in fp32-input fast RMSNorm for narrow Qwen4 decode/verify. This
+        # changes only the normalization implementation after model selection;
+        # prefill and other model families retain their existing path.
+        "RAPID_MLX_QWEN4_FAST_RMSNORM",
         # Opt-in re-quantization of the lm_head when serving fp8-block
         # checkpoints through the load-time mxfp8 repack
         # (vllm_mlx/fp8_repack.py). A precision/speed knob on an
