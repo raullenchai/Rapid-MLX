@@ -167,6 +167,15 @@ ALLOWED_RAPID_MLX_ENV_VARS: frozenset[str] = frozenset(
         # unqualified query shapes, MLX builds, and Metal architectures remain
         # on the existing dense attention implementation.
         "RAPID_MLX_QSA_INDEXED_SPLITK",
+        # Opt-in absorbed MLA factorization for short verification blocks on
+        # an already-selected MLA model. This changes only the attention math
+        # path after a measured cache crossover; it cannot select a model,
+        # parser, tier, or serving lane. Unknown mlx-lm implementations remain
+        # untouched.
+        "RAPID_MLX_MLA_ABSORBED_VERIFY",
+        # Optional diagnostic counters for the MLA benchmark and debugging.
+        # This cannot change model or kernel selection.
+        "RAPID_MLX_MLA_ABSORBED_VERIFY_STATS",
         # Opt-out of the blocked-seq GDN prefill Metal kernel
         # (vllm_mlx/gdn_prefill.py). Same shape as DISABLE_FUSED_SAMPLER —
         # a kernel-selection perf toggle computing the exact same

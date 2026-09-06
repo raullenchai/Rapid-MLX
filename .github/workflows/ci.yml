@@ -487,6 +487,7 @@ jobs:
             tests/test_glm5_next_processor_patch.py \
             tests/test_glm5_next_forget_gate_quant.py \
             tests/test_glm5_next_runtime_patch.py \
+            tests/test_mla_absorbed_verify.py \
             tests/test_mllm_hybrid_probe.py \
             tests/test_hidream_o1_alias.py \
             tests/test_sdxl_alias.py \
