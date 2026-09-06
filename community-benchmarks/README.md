@@ -8,7 +8,7 @@ There are two flows. Both are consent-gated, both talk HTTPS to rapidmlx.com, an
 |---|---|---|
 | What it measures | Registered protocols for text, image and video models | Text only |
 | Record shape | Atomic `BenchmarkRun` (`proto/community-benchmark/v1`) | `schema.json` in this directory |
-| Runs locally first | Yes — every run is archived under `~/.rapid-mlx/benchmarks/` and nothing leaves the Mac until you run `share` | No — the run and the submission are one command |
+| Runs locally first | Yes — every run is archived under `~/.rapid-mlx/benchmarks/`; no benchmark data leaves the Mac until you run `share` (the model itself may be downloaded from Hugging Face during `run`, as with any other load) | No — the run and the submission are one command |
 | Upload endpoint | `POST https://rapidmlx.com/api/benchmarks/atomic` | `POST https://rapidmlx.com/api/benchmarks` |
 | Where it shows up | "Community Benchmark beta" on <https://rapidmlx.com/leaderboard> and your contributor page | The comparable board on the same page |
 
@@ -30,7 +30,7 @@ $ rapid-mlx benchmark inspect <run_id>        # the full record
 $ rapid-mlx benchmark share <run_id>          # preview the exact upload, then y/N
 ```
 
-The Desktop app's Community Benchmark page drives exactly these commands (`--json`) and shows the same consent sheet before a share.
+The Desktop app's Community Benchmark page drives the same CLI (`catalog`, `run`, `results`, and the two-stage `share --preview` / `share --yes`, all with `--json`) and shows the same consent sheet before a share.
 
 ### What a run does
 
@@ -41,16 +41,16 @@ The registered text protocol (`rapid-community-speed` v2) is two fixed workloads
 | `pp512-tg128` | 512 | 128 |
 | `pp2048-tg512` | 2048 | 512 |
 
-Prompts are synthetic token sequences (`rapid-synthetic-token-corpus` v2, seeded per case), so no user content is ever measured or recorded. The image and video protocols are a fixed prompt, seed and size (see `rapid-image-speed-v1.json` / `rapid-video-speed-v1.json` under `vllm_mlx/catalog/schemas/`). The protocol files are immutable; a new version is a new file and a new `protocol_version`.
+Prompts are synthetic token sequences (`rapid-synthetic-token-corpus` v2, seeded per case), so no user content is ever measured or recorded. If the model is not in the local Hugging Face cache yet, `run` downloads it first — that network call is model loading, not a submission. The image and video protocols are a fixed prompt, seed and size (see `rapid-image-speed-v1.json` / `rapid-video-speed-v1.json` under `vllm_mlx/catalog/schemas/`). The protocol files are immutable; a new version is a new file and a new `protocol_version`.
 
-Per round, a text measurement records `prompt_tokens`, `output_tokens`, `ttft_ms`, `decode_duration_ms`, `total_duration_ms` and `peak_active_memory_mib`. Decode throughput is derived by readers as `(output_tokens − 1) / decode_duration_ms` — the first token lands at `ttft_ms` — which matches llama.cpp `tg` and vLLM TPOT semantics. The CLI summary and the website use the same formula.
+Per round, a text measurement records `prompt_tokens`, `output_tokens`, `ttft_ms`, `decode_duration_ms`, `total_duration_ms` and `peak_active_memory_mib`. Decode throughput is derived by readers as `(output_tokens − 1) / decode_duration_ms` — the first token lands at `ttft_ms` — which matches llama.cpp `tg` and vLLM TPOT semantics. The website uses this formula; the CLI summary matches it from #3148 onwards.
 
 ### What `share` sends
 
 `rapid-mlx benchmark share <run_id>` prints the exact request body and asks for `y/N` (default no). `--preview` prints it without asking. The body is the archived run plus one field, `install_id`:
 
-- `model` — the Hugging Face repo id, artifact format, and the quantization facts read from the cached `config.json`.
-- `machine` — chip, unified memory, CPU/GPU core counts, macOS version, and the run conditions (AC/battery, Low Power Mode, thermal state, memory pressure, available memory) sampled before and after the measurements.
+- `model` — the Hugging Face repo id (and subfolder), artifact format, and the quantization block. Releases up to 0.13.4 record the quantization as `unknown`; from #3147 it is read from the cached `config.json` (kind, method, bit width, group size) together with the resolved snapshot revision.
+- `machine` — chip, unified memory, CPU/GPU core counts, macOS version, and the run conditions (AC/battery, Low Power Mode, thermal state, memory pressure, available memory). Releases up to 0.13.4 record these as `unknown`; from #3146 they are sampled before the model loads and again after the last measured round.
 - `execution` — Rapid-MLX / MLX / Python versions, source revision when running from a checkout, and the effective inference settings (context length, speculative decoding, KV-cache mode, prefill backend).
 - `workload` — the protocol id, version and digest that produced the numbers.
 - `measurements` — the raw per-round samples above.
@@ -58,7 +58,7 @@ Per round, a text measurement records `prompt_tokens`, `output_tokens`, `ttft_ms
 
 **Never sent:** username, hostname, hardware serial or UUID, IP address (the endpoint observes the source IP for short-lived rate limiting and does not store it in the record), file paths, environment variables, prompts, model output.
 
-On acceptance the server returns a receipt (`submission_id` = your `run_id`, the payload digest, and your contributor identity). The CLI stores it under `~/.rapid-mlx/benchmarks/receipts/<run_id>.json` and prints your contributor URL. Sharing the same run twice is idempotent: the server answers with the same receipt and `already_exists: true`.
+On acceptance the server returns a receipt (`submission_id` = your `run_id`, the payload digest, and — when the server assigned one — your contributor identity). The CLI stores it under `~/.rapid-mlx/benchmarks/receipts/<run_id>.json` and prints your contributor URL, or the general leaderboard URL if the receipt carries no identity. Sharing the same run twice is idempotent: the server answers with the same receipt and `already_exists: true`.
 
 ### Contract
 
@@ -74,11 +74,11 @@ $ rapid-mlx bench qwen3.5-9b-4bit --submit
 
 Runs the same two-bucket workload (512/128 and 2048/512, 1 warmup + 5 rounds, greedy), pretty-prints the submission JSON, asks for `y/N`, saves a local copy, then POSTs it to `https://rapidmlx.com/api/benchmarks`. The payload is the shape in [`schema.json`](schema.json): `hardware`, `software`, `model`, `config`, `buckets.short` / `buckets.long` (median + raw rounds of `decode_tps`, `prefill_tps`, `ttft_ms`), `peak_ram_mb`, optional `--notes`. `--sampled` submits a second row at temp 0.7 / top_p 0.9. The hardware allowlist for this flow lives in `vllm_mlx/community_bench/hardware.py`.
 
-Rows accepted here feed the comparable board (`GET https://rapidmlx.com/api/benchmarks`), grouped by chip × memory × model × Rapid-MLX version with median + IQR per metric.
+Rows accepted here feed the comparable board (`GET https://rapidmlx.com/api/benchmarks`). The checked-in aggregator groups by `(chip, model alias, rapid_mlx_version)` with median + IQR per metric; memory size is recorded on every row but is not part of that key.
 
 ## Choosing between them
 
-Use `rapid-mlx benchmark` unless you specifically want a row on the legacy comparable board. The local-first flow measures image and video models, records the machine conditions the numbers were produced under, keeps every run on disk so you can inspect it before deciding, and gives you a contributor page.
+Use `rapid-mlx benchmark` unless you specifically want a row on the legacy comparable board. The local-first flow measures image and video models, keeps every run on disk so you can inspect it before deciding, gives you a contributor page, and (from the changes referenced above) records the quantization and the machine conditions the numbers were produced under.
 
 ## History
 
