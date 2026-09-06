@@ -133,6 +133,16 @@ class ImageEngine:
         """Live denoise progress for the single in-flight render."""
         return self._engine.progress_snapshot()
 
+    def performance_snapshot(self) -> dict[str, float | int | None]:
+        """Timing for the last fully completed denoise loop."""
+        return self._engine.performance_snapshot()
+
+    def generate_with_performance(
+        self, **kwargs
+    ) -> tuple[bytes, dict[str, float | int | None]]:  # noqa: ANN003
+        """Generate one image and atomically return its denoise timing."""
+        return self._engine.generate_with_performance(**kwargs)
+
     def generate(
         self,
         *,
