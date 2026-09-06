@@ -60,6 +60,25 @@ struct MacOSComputerUseObservationTests {
         #expect(await capture.callCount == 2)
     }
 
+    @Test("The final content probe hashes one exact selected-window capture")
+    func finalContentProbe() async throws {
+        let result = Self.captureResult()
+        let capture = CaptureStub(result: result)
+        let probe = ScreenCaptureKitComputerUseContentProbe(captureSource: capture)
+
+        let observation = try await probe.currentObservation(for: result.target)
+
+        #expect(observation.target == result.target)
+        #expect(
+            observation.contentRevision
+                == MacOSComputerUseObserver.contentRevision(
+                    target: result.target,
+                    pngData: result.artifact.pngData
+                )
+        )
+        #expect(await capture.callCount == 1)
+    }
+
     @Test("A recycled window ID from a different process is rejected")
     func recycledWindowIDFailsClosed() async {
         let original = Self.captureResult()

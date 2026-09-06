@@ -18,6 +18,11 @@ protocol ComputerUseTargetProbing: Sendable {
         -> WorkflowInteractionTarget
 }
 
+protocol ComputerUseContentProbing: Sendable {
+    func currentObservation(for expected: WorkflowInteractionTarget) async throws
+        -> WorkflowObservation
+}
+
 protocol ComputerUseInputEmitting: Sendable {
     func emit(
         _ payload: WorkflowActionPayload,
@@ -37,14 +42,18 @@ actor MacOSComputerUseActuator: LocalWorkflowActuating {
 
     private let permissionReader: PermissionReader
     private let targetProbe: any ComputerUseTargetProbing
+    private let contentProbe: any ComputerUseContentProbing
     private let inputEmitter: any ComputerUseInputEmitting
 
     init(
         targetProbe: any ComputerUseTargetProbing = CGWindowComputerUseTargetProbe(),
+        contentProbe: any ComputerUseContentProbing =
+            ScreenCaptureKitComputerUseContentProbe(),
         inputEmitter: any ComputerUseInputEmitting = CGEventComputerUseInputEmitter(),
         permissionReader: @escaping PermissionReader = MacAutomationPermissions.snapshot
     ) {
         self.targetProbe = targetProbe
+        self.contentProbe = contentProbe
         self.inputEmitter = inputEmitter
         self.permissionReader = permissionReader
     }
@@ -89,6 +98,19 @@ actor MacOSComputerUseActuator: LocalWorkflowActuating {
         ) else {
             throw MacOSComputerUseActuationError.targetChanged
         }
+        // Capture once more after the target preflight. A matching frame alone
+        // is insufficient: controls can move while the window identity and
+        // geometry remain unchanged. Do not emit coordinates grounded against
+        // pixels that are no longer current.
+        let finalObservation = try await contentProbe.currentObservation(
+            for: currentObservation.target
+        )
+        try Task.checkCancellation()
+        guard currentObservation.representsSameInteractionState(
+            as: finalObservation
+        ) else {
+            throw MacOSComputerUseActuationError.staleObservation
+        }
         // The production emitter repeats this probe synchronously in the same
         // MainActor turn as each CGEvent post. The preflight here keeps all
         // emitters testable and rejects drift before entering the input layer.
@@ -109,6 +131,49 @@ actor MacOSComputerUseActuator: LocalWorkflowActuating {
         // can bind text/key input to a verified element in this window, these
         // payloads must fail closed rather than rely on focus timing.
         return false
+    }
+}
+
+/// Performs the final content-revision check without retaining another image.
+struct ScreenCaptureKitComputerUseContentProbe: ComputerUseContentProbing {
+    private let captureSource: any ComputerUseWindowCapturing
+
+    init(
+        captureSource: any ComputerUseWindowCapturing =
+            ScreenCaptureKitComputerUseCapture()
+    ) {
+        self.captureSource = captureSource
+    }
+
+    func currentObservation(
+        for expected: WorkflowInteractionTarget
+    ) async throws -> WorkflowObservation {
+        guard let windowID = CGWindowID(expected.windowIdentifier), windowID != 0 else {
+            throw MacOSComputerUseActuationError.targetUnavailable
+        }
+        let captured = try await captureSource.capture(
+            ComputerUseWindowSelection(
+                bundleIdentifier: expected.bundleIdentifier,
+                processIdentifier: expected.processIdentifier,
+                windowID: windowID
+            )
+        )
+        try Task.checkCancellation()
+        guard captured.isStructurallyValid,
+              MacOSComputerUseWindowIdentity.targetsMatch(
+                captured.target,
+                expected
+              )
+        else {
+            throw MacOSComputerUseActuationError.targetChanged
+        }
+        return WorkflowObservation(
+            target: captured.target,
+            contentRevision: MacOSComputerUseObserver.contentRevision(
+                target: captured.target,
+                pngData: captured.artifact.pngData
+            )
+        )
     }
 }
 
@@ -242,7 +307,7 @@ struct CGEventComputerUseInputEmitter: ComputerUseInputEmitting {
 
             switch payload {
             case .click(let normalizedX, let normalizedY):
-                let current = try Self.requireCurrent(
+                let initial = try Self.requireCurrent(
                     target,
                     using: targetReader,
                     cancellationCheck: cancellationCheck
@@ -250,7 +315,7 @@ struct CGEventComputerUseInputEmitter: ComputerUseInputEmitting {
                 let point = try Self.clickPoint(
                     normalizedX: normalizedX,
                     normalizedY: normalizedY,
-                    in: current.windowFrame
+                    in: initial.windowFrame
                 )
                 guard let down = CGEvent(
                     mouseEventSource: source,
@@ -267,17 +332,51 @@ struct CGEventComputerUseInputEmitter: ComputerUseInputEmitting {
                 else {
                     throw MacOSComputerUseActuationError.eventCreationFailed
                 }
-                guard windowAtPointReader(point) == target.windowIdentifier else {
-                    throw MacOSComputerUseActuationError.targetOccluded
-                }
-                try cancellationCheck()
-                eventPoster(down, target.processIdentifier)
-                eventPoster(up, target.processIdentifier)
+                try Self.post(
+                    down,
+                    at: point,
+                    expected: target,
+                    targetReader: targetReader,
+                    cancellationCheck: cancellationCheck,
+                    windowAtPointReader: windowAtPointReader,
+                    eventPoster: eventPoster
+                )
+                try Self.post(
+                    up,
+                    at: point,
+                    expected: target,
+                    targetReader: targetReader,
+                    cancellationCheck: cancellationCheck,
+                    windowAtPointReader: windowAtPointReader,
+                    eventPoster: eventPoster
+                )
 
             case .typeText, .keyPress:
                 throw MacOSComputerUseActuationError.invalidAction
             }
         }
+    }
+
+    @MainActor
+    private static func post(
+        _ event: CGEvent,
+        at point: CGPoint,
+        expected: WorkflowInteractionTarget,
+        targetReader: TargetReader,
+        cancellationCheck: CancellationCheck,
+        windowAtPointReader: WindowAtPointReader,
+        eventPoster: EventPoster
+    ) throws {
+        _ = try requireCurrent(
+            expected,
+            using: targetReader,
+            cancellationCheck: cancellationCheck
+        )
+        guard windowAtPointReader(point) == expected.windowIdentifier else {
+            throw MacOSComputerUseActuationError.targetOccluded
+        }
+        try cancellationCheck()
+        eventPoster(event, expected.processIdentifier)
     }
 
     static func clickPoint(

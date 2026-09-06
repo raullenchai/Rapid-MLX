@@ -141,7 +141,7 @@ actor MacOSComputerUseObserver: LocalWorkflowObserving {
         return observation
     }
 
-    private static func contentRevision(
+    static func contentRevision(
         target: WorkflowInteractionTarget,
         pngData: Data
     ) -> String {
