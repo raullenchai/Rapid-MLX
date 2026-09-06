@@ -90,6 +90,13 @@ struct CommunityBenchmarkModel: Identifiable, Hashable {
         if models.contains(where: { $0.entry.alias == current }) { return current }
         return models.first?.entry.alias ?? ""
     }
+
+    static func resolvedCatalog(
+        product: [ModelEntry]?,
+        fallback: [ModelEntry]
+    ) -> [ModelEntry] {
+        product ?? fallback
+    }
 }
 
 struct CommunityBenchmarkCatalogModel: Decodable, Sendable {
@@ -600,9 +607,20 @@ struct CommunityBenchmarkView: View {
     @State private var receipts: [String: CommunityBenchmarkReceipt] = [:]
     @State private var benchmarkMetadata: [String: CommunityBenchmarkCatalogModel] = [:]
     @State private var benchmarkCLIAvailable = false
+    @State private var productCatalog: [ModelEntry]?
+
+    private var resolvedCatalog: [ModelEntry] {
+        CommunityBenchmarkModel.resolvedCatalog(
+            product: productCatalog,
+            fallback: catalog
+        )
+    }
 
     private var models: [CommunityBenchmarkModel] {
-        CommunityBenchmarkModel.models(from: catalog, metadata: benchmarkMetadata)
+        CommunityBenchmarkModel.models(
+            from: resolvedCatalog,
+            metadata: benchmarkMetadata
+        )
     }
 
     private var selected: CommunityBenchmarkModel? {
@@ -622,6 +640,7 @@ struct CommunityBenchmarkView: View {
         }
         .background(RapidTheme.surfaceCanvas)
         .task {
+            await refreshProductCatalog()
             if selectedAlias.isEmpty { selectedAlias = models.first?.entry.alias ?? "" }
             await refreshBenchmarkCatalog()
             await refreshResults()
@@ -842,7 +861,7 @@ struct CommunityBenchmarkView: View {
     }
 
     private func alias(for repoID: String) -> String {
-        catalog.first { $0.hfRepo == repoID }?.alias ?? repoID
+        resolvedCatalog.first { $0.hfRepo == repoID }?.alias ?? repoID
     }
 
     private func memoryCopy(_ memory: Int, fit: String) -> String {
@@ -867,6 +886,7 @@ struct CommunityBenchmarkView: View {
                     ),
                     onDeferredReap: retainServerDuringDeferredReap
                 )
+                await refreshProductCatalog()
                 await refreshResults()
             } catch is CancellationError {
                 errorMessage = acquiredReservation
@@ -959,6 +979,18 @@ struct CommunityBenchmarkView: View {
         } catch {
             if results.isEmpty { errorMessage = "Couldn’t read local results: \(error.localizedDescription)" }
         }
+    }
+
+    private func refreshProductCatalog() async {
+        guard let binary,
+              let entries = await ModelCatalog.productEntries(binary: binary),
+              !Task.isCancelled
+        else { return }
+        productCatalog = entries
+        selectedAlias = CommunityBenchmarkModel.reconciledSelection(
+            current: selectedAlias,
+            models: models
+        )
     }
 
     private func refreshBenchmarkCatalog() async {
