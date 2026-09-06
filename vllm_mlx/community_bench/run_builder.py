@@ -78,8 +78,8 @@ def machine_observation(
         "profile": profile,
         "profile_digest": rcj_digest(profile),
         "os": {"name": "macOS", "version": software.macos, "architecture": "arm64"},
-        "conditions_before": before or run_conditions(),
-        "conditions_after": after or _unknown_conditions(),
+        "conditions_before": (before if before is not None else run_conditions()),
+        "conditions_after": after if after is not None else _unknown_conditions(),
     }
 
 
