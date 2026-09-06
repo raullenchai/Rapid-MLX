@@ -1516,6 +1516,17 @@ _MFLUX_EXTRA_TOKENIZERS: dict[str, tuple[str, ...]] = {
 _MFLUX_EXTRA_COMPONENTS: dict[str, tuple[str, ...]] = {
     "mflux-community/flux-1-schnell-mflux-q4": ("text_encoder_2",),
 }
+# Most curated mflux checkpoints shard every component behind
+# ``model.safetensors.index.json``.  The pinned Klein BF16 package follows the
+# standard Diffusers single-file spelling for its transformer and VAE instead.
+# Keep this exception revision-bound through ``IMAGE_MODEL_REVISIONS`` rather
+# than accepting an arbitrary lone safetensors file from every repository.
+_MFLUX_SINGLE_FILE_COMPONENTS: dict[str, dict[str, str]] = {
+    "mflux-community/flux2-klein-4b-mflux-bf16": {
+        "transformer": "diffusion_pytorch_model.safetensors",
+        "vae": "diffusion_pytorch_model.safetensors",
+    },
+}
 
 
 def _mflux_snapshot_dir(repo_id: str) -> tuple[str, str] | None:
@@ -1700,6 +1711,12 @@ def mflux_missing_weights(repo_id: str) -> list[str] | None:
     )
     for component in components:
         component_dir = os.path.join(snap_dir, component)
+        single_file = _MFLUX_SINGLE_FILE_COMPONENTS.get(repo_id, {}).get(component)
+        if single_file is not None:
+            single_rel = f"{component}/{single_file}"
+            if not _is_nonempty_repo_file(os.path.join(component_dir, single_file)):
+                missing.append(single_rel)
+            continue
         index_rel = f"{component}/model.safetensors.index.json"
         index_path = os.path.join(component_dir, "model.safetensors.index.json")
         if not _is_nonempty_repo_file(index_path):
