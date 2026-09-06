@@ -219,6 +219,18 @@ def test_memory_estimate_precedence_and_parameter_floor() -> None:
     ) == (3, "artifact_size_fallback")
 
 
+def test_curated_footprints_degrade_to_empty_when_the_tiers_cannot_load(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from vllm_mlx.community_bench.workspace import curated_footprints
+
+    def boom():
+        raise RuntimeError("policy unreadable")
+
+    monkeypatch.setattr("vllm_mlx.recommendations.load_recommendation_tiers", boom)
+    assert curated_footprints() == {}
+
+
 def test_catalog_never_calls_a_full_memory_model_a_fit() -> None:
     catalog = benchmark_catalog(memory_gib=18)
     by_alias = {model["alias"]: model for model in catalog["models"]}
