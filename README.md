@@ -147,6 +147,50 @@ With a server running (step 2), this patches Claude Code's local config (`~/.cla
 
 ---
 
+## Image generation
+
+Generate images locally from the Desktop **Images** tab or the
+OpenAI-compatible Images API. Install the image runtime when using the CLI:
+
+```bash
+pip install 'rapid-mlx[image]'
+rapid-mlx serve flux2-klein-4b
+```
+
+```bash
+curl http://localhost:8000/v1/images/generations \
+  -H 'Content-Type: application/json' \
+  -d '{"model":"flux2-klein-4b","prompt":"A red sailboat on an alpine lake","size":"1024x1024","seed":42}'
+```
+
+`flux2-klein-4b` is the recommended starting point. Download sizes are the
+currently cataloged model payloads; minimum unified memory includes practical
+headroom for macOS and the serving process. Omit `steps` to use the validated
+family default shown below.
+
+<!-- image-model-matrix:start -->
+| Alias | Best fit | Modes | Download | Minimum unified memory | Default steps |
+| --- | --- | --- | ---: | ---: | ---: |
+| `flux2-klein-4b` | Recommended; fast everyday images | Generate + edit | 4.3 GiB | 12 GB | 4 |
+| `bonsai-image-4b-2bit` | Smallest download | Generate | 3.6 GiB | 12 GB | 4 |
+| `z-image-turbo` | Photorealistic images | Generate | 5.5 GiB | 16 GB | 8 |
+| `flux-schnell` | FLUX.1 compatibility | Generate | 9.0 GiB | 16 GB | 4 |
+| `sdxl-base` | SDXL compatibility | Generate | 6.5 GiB | 16 GB | 30 |
+| `flux2-klein-4b-bf16` | Explicit full-precision Klein path | Generate + edit | 14.9 GiB | 32 GB | 4 |
+| `hidream-o1-dev` | Complex compositions | Generate | 16.4 GiB | 32 GB | 28 |
+| `sd35-large-4bit` | Stable Diffusion 3.5 | Generate | 15.3 GiB | 32 GB | 28 |
+| `qwen-image` | Text inside images | Generate | 28.9 GiB | 64 GB | 20 |
+<!-- image-model-matrix:end -->
+
+Image work is single-flight: one generation runs at a time so two diffusion
+pipelines cannot exhaust unified memory. Model weights retain their own
+licenses and use restrictions; review the upstream model card before commercial
+deployment.
+
+→ [Release dogfood coverage and reproducible acceptance contract](docs/engineering/operations/image-release-dogfood-matrix.md)
+
+---
+
 ## Video generation
 
 Run text-to-video or image-to-video locally through the OpenAI-compatible
@@ -352,7 +396,7 @@ reached a 27.1 GB MLX allocator peak before non-MLX process and macOS memory;
 on a 32 GB Mac, reduce context/cache use or choose a larger-memory machine.
 
 → [Full RAM tier map + serve flags per tier](https://rapidmlx.com/docs/hardware-tiers.html)
-→ [Every alias, quant, and family (170 text + 2 text-diffusion + 2 image + 8 video + 44 audio aliases, 226 total)](https://rapidmlx.com/docs/aliases.html) · interactive at [models.rapidmlx.com](https://models.rapidmlx.com/)
+→ [Every alias, quant, and family (186 text + 9 image + 10 video + 44 audio aliases, 249 total)](https://rapidmlx.com/docs/aliases.html) · interactive at [models.rapidmlx.com](https://models.rapidmlx.com/)
 
 ---
 
