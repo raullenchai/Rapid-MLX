@@ -43,6 +43,7 @@ _STATS = {
     "materialized": 0,
     "disabled": 0,
     "single_token": 0,
+    "unsupported_cache": 0,
     "short_cache": 0,
 }
 
@@ -121,7 +122,7 @@ def max_absorbed_queries(
 
 
 def latent_length(kv_latent: Any) -> int:
-    """Read the sequence length from a plain or quantized MLA latent."""
+    """Read the sequence length from an MLA latent representation."""
     array = kv_latent[0] if isinstance(kv_latent, tuple) else kv_latent
     shape = getattr(array, "shape", None)
     if shape is None or len(shape) < 2:
@@ -308,6 +309,12 @@ def install_mla_absorbed_verify() -> None:
                 _increment_stat("forwards")
                 if not _ENABLED:
                     _increment_stat("disabled")
+                    return _orig(self, x, mask, cache)
+                if cache is not None and hasattr(cache, "bits"):
+                    # mlx-lm 0.31.3 MLA attention cannot consume the quantized
+                    # positional-key tuple. Preserve that upstream path rather
+                    # than expanding this BF16 compatibility patch's scope.
+                    _increment_stat("unsupported_cache")
                     return _orig(self, x, mask, cache)
                 if int(x.shape[1]) == 1:
                     _increment_stat("single_token")

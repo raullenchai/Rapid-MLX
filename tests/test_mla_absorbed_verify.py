@@ -477,3 +477,33 @@ def test_disabled_and_single_token_paths_delegate_to_stock(
     mx.eval(attention(x))
     enabled = patch.mla_absorbed_verify_stats()
     assert enabled["single_token"] == disabled["single_token"] + 1
+
+
+@requires_mlx
+@pytest.mark.requires_mlx
+def test_quantized_cache_shape_delegates_to_stock(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from vllm_mlx.patches import mla_absorbed_verify as patch
+
+    class QuantizedLikeCache:
+        bits = 4
+        offset = 0
+
+        def update_and_fetch(self, keys, values):
+            raise RuntimeError("stock quantized MLA path")
+
+    _isolate_installer_state(monkeypatch)
+    monkeypatch.setenv("RAPID_MLX_MLA_ABSORBED_VERIFY", "1")
+    _, _, attention = _tiny_attention("deepseek_v3")
+    patch.install_mla_absorbed_verify()
+    x = mx.zeros((1, 3, 32), dtype=mx.bfloat16)
+    before = patch.mla_absorbed_verify_stats()
+
+    with pytest.raises(RuntimeError, match="stock quantized MLA path"):
+        attention(x, cache=QuantizedLikeCache())
+
+    after = patch.mla_absorbed_verify_stats()
+    assert after["unsupported_cache"] == before["unsupported_cache"] + 1
+    assert after["absorbed"] == before["absorbed"]
+    assert after["materialized"] == before["materialized"]

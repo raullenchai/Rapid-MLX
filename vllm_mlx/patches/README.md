@@ -20,4 +20,5 @@ for short multi-token forwards. It is opt-in via
 and keeps detailed hot-path counters off unless
 `RAPID_MLX_MLA_ABSORBED_VERIFY_STATS=1` is also set. It
 requires a post-update cache of at least 1024 tokens, and retires itself
-automatically once mlx-lm exposes the upstream helper.
+automatically once mlx-lm exposes the upstream helper. Quantized MLA caches
+remain on mlx-lm's existing path and require separate qualification.
