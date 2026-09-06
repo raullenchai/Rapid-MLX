@@ -39,6 +39,59 @@ struct CommunityBenchmarkModelTests {
         #expect(models.allSatisfy { $0.isFocus })
     }
 
+    @Test("Full product catalog replaces the chat-only launch fallback")
+    func productCatalogFeedIncludesMedia() {
+        let chat = ModelEntry(
+            alias: "qwen3.5-9b-4bit",
+            hfRepo: "mlx-community/qwen",
+            sizeOnDisk: nil,
+            cached: true,
+            taskTypes: [.textGeneration]
+        )
+        let image = ModelEntry(
+            alias: "flux2-klein-4b",
+            hfRepo: "mlx-community/flux",
+            sizeOnDisk: nil,
+            cached: false,
+            taskTypes: [.imageGeneration],
+            operationModes: [.textToImage]
+        )
+        let video = ModelEntry(
+            alias: "wan2.2-ti2v-5b-q8",
+            hfRepo: "mlx-community/wan",
+            sizeOnDisk: nil,
+            cached: false,
+            taskTypes: [.videoGeneration],
+            operationModes: [.textToVideo]
+        )
+
+        let catalog = CommunityBenchmarkModel.resolvedCatalog(
+            product: [chat, image, video],
+            fallback: [chat]
+        )
+
+        #expect(Set(CommunityBenchmarkModel.models(from: catalog).map(\.entry.alias)) == [
+            chat.alias, image.alias, video.alias,
+        ])
+    }
+
+    @Test("Older runtimes retain the launch catalog fallback")
+    func productCatalogFeedFallsBack() {
+        let chat = ModelEntry(
+            alias: "legacy-chat",
+            hfRepo: nil,
+            sizeOnDisk: nil,
+            cached: true
+        )
+
+        #expect(
+            CommunityBenchmarkModel.resolvedCatalog(
+                product: nil,
+                fallback: [chat]
+            ) == [chat]
+        )
+    }
+
     @Test("Legacy catalog rows remain usable during the atomic migration")
     func legacyFallback() throws {
         let text = ModelEntry(
