@@ -55,7 +55,12 @@ from typing import Literal, get_args
 # Adding a new value requires editing this Literal AND the dispatch table
 # in cli.py / routes/models.py so the surface-level UX (info, ls, chat)
 # doesn't silently expose LLM-only columns on a non-LLM alias.
-Modality = Literal["text", "text-diffusion", "vision", "image-gen", "video-gen"]
+# ``"embedding"`` marks a sentence-embedding checkpoint (embeddinggemma):
+# it is served through ``--embedding-model`` and never has a chat surface,
+# so catalogs must not advertise it as a text-generation model (#3116).
+Modality = Literal[
+    "text", "text-diffusion", "vision", "image-gen", "video-gen", "embedding"
+]
 VideoGenerationMode = Literal["text-to-video", "image-to-video"]
 VIDEO_GENERATION_MODES: tuple[VideoGenerationMode, ...] = get_args(VideoGenerationMode)
 

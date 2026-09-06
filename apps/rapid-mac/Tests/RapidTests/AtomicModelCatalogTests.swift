@@ -428,6 +428,53 @@ struct AtomicModelCatalogTests {
         #expect(preset.isDefaultEnabled)
     }
 
+    private static func embeddingRow(operation: String) -> [String: Any] {
+        [
+            "schema_version": 2,
+            "alias": "embed",
+            "origin": "builtin",
+            "target": ["registry_model_id": "legacy/hf/chat", "resolution_status": "unresolved"],
+            "capabilities": [
+                "task_types": ["embedding"],
+                "is_text_only": false,
+                "operation_modes": [operation],
+                "runtime_adapter": "mlx_embeddings",
+            ],
+            "availability": ["cli": true, "server": true, "desktop": true, "website": true],
+            "default_execution_preset_id": NSNull(),
+            "execution_presets": [],
+        ]
+    }
+
+    private static func withEmbeddingRow(operation: String) -> String {
+        mutated { root in
+            var atomic = root["atomic"] as! [String: Any]
+            var snapshot = atomic["snapshot"] as! [String: Any]
+            var aliases = snapshot["aliases"] as! [[String: Any]]
+            aliases.append(embeddingRow(operation: operation))
+            snapshot["aliases"] = aliases
+            atomic["snapshot"] = snapshot
+            root["atomic"] = atomic
+        }
+    }
+
+    @Test("an embeddings-only alias keeps the envelope valid and is left out of every picker")
+    func embeddingAliasIsParsedAndOmitted() {
+        // #3116: embeddinggemma now advertises `embedding`/`embed`. The
+        // envelope must not fall back to the legacy projection (which would
+        // file it under Chat again), and the row must reach no Desktop picker.
+        let entries = ModelCatalog.parseAtomicModelEntriesJSON(
+            Self.withEmbeddingRow(operation: "embed")
+        )
+        #expect(entries != nil)
+        #expect(entries?.contains { $0.alias == "embed" } == false)
+        #expect(entries?.contains { $0.alias == "chat" } == true)
+        // An embedding task paired with a chat operation is still malformed.
+        #expect(ModelCatalog.parseAtomicModelEntriesJSON(
+            Self.withEmbeddingRow(operation: "chat")
+        ) == nil)
+    }
+
     @Test("unknown atomic tasks fail closed into the legacy downgrade path")
     func unknownTaskRejectsAtomicEnvelope() {
         let future = Self.signed(Self.payload.replacingOccurrences(

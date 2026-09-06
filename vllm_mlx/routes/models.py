@@ -466,6 +466,10 @@ def _reported_modality(
     bypass the detector entirely so existing dispatched lanes still
     advertise their canonical value.
     """
+    if profile_modality == "embedding":
+        # Embedding models accept text input; the ``"embedding"`` capability
+        # tag is what distinguishes the lane on the wire (F-D01).
+        return _reported_modality_for_embedding()
     if profile_modality != "text":
         return profile_modality
     if is_text_only:
@@ -665,6 +669,11 @@ def _detect_capabilities(
         # ``"embedding"`` exclusively. Combining it with ``"text"``
         # would mislead clients into routing chat traffic at the
         # embedding model id — the chat surface is not wired.
+        return ["embedding"]
+
+    if profile_modality == "embedding":
+        # Curated embedding alias (embeddinggemma): same exclusive tag as the
+        # locked ``--embedding-model`` entry — no chat surface (#3116).
         return ["embedding"]
 
     if profile_modality == "video-gen":
