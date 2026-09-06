@@ -25,6 +25,7 @@ import time
 from pathlib import Path
 
 os.environ["RAPID_MLX_MLA_ABSORBED_VERIFY"] = "1"
+os.environ["RAPID_MLX_MLA_ABSORBED_VERIFY_STATS"] = "1"
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import mlx.core as mx
@@ -129,6 +130,12 @@ def _token_differences(left: list[int], right: list[int]) -> int:
     return abs(len(left) - len(right)) + sum(a != b for a, b in zip(left, right))
 
 
+def _require_absorbed(before: int, label: str) -> None:
+    after = patch.mla_absorbed_verify_stats()["absorbed"]
+    if after <= before:
+        raise RuntimeError(f"Rapid arm did not use absorbed MLA during {label}")
+
+
 def main() -> None:
     args = _parse_args()
     invalid = []
@@ -191,7 +198,10 @@ def main() -> None:
         arm_logits = {}
         for arm in ("stock", "rapid"):
             _set_arm(targets, originals, arm)
+            absorbed_before = patch.mla_absorbed_verify_stats()["absorbed"]
             _, arm_logits[arm] = _timed_forward(model, verify, _clone_cache(base_cache))
+            if arm == "rapid":
+                _require_absorbed(absorbed_before, f"{context}-token warmup")
         samples = {"stock": [], "rapid": []}
         order = ("stock", "rapid", "rapid", "stock")
         while len(samples["stock"]) < args.repeats:
@@ -199,9 +209,12 @@ def main() -> None:
                 if len(samples[arm]) >= args.repeats:
                     continue
                 _set_arm(targets, originals, arm)
+                absorbed_before = patch.mla_absorbed_verify_stats()["absorbed"]
                 elapsed, arm_logits[arm] = _timed_forward(
                     model, verify, _clone_cache(base_cache)
                 )
+                if arm == "rapid":
+                    _require_absorbed(absorbed_before, f"{context}-token sample")
                 samples[arm].append(round(elapsed, 3))
 
         stock = arm_logits["stock"][:, -1].astype(mx.float32)
@@ -247,8 +260,10 @@ def main() -> None:
             for token_id in ids:
                 oracle = model(mx.array([[token_id]], mx.uint32), cache=oracle_cache)
             _set_arm(targets, originals, "rapid")
+            absorbed_before = patch.mla_absorbed_verify_stats()["absorbed"]
             rapid = model(tokens, cache=_clone_cache(base_cache))
             mx.eval(stock, rapid, oracle)
+            _require_absorbed(absorbed_before, f"oracle case {case}")
             oracle_rows.append(
                 {
                     "case": case,
@@ -280,13 +295,14 @@ def main() -> None:
             model, tokenizer, LONG_CODE_EDIT_PROMPT, args.suffix_max_tokens
         )
         runs = {"stock": [], "rapid": []}
-        outputs = {}
+        outputs = {"stock": [], "rapid": []}
         order = ("stock", "rapid", "rapid", "stock")
         while len(runs["stock"]) < args.suffix_repeats:
             for arm in order:
                 if len(runs[arm]) >= args.suffix_repeats:
                     continue
                 _set_arm(targets, originals, arm)
+                absorbed_before = patch.mla_absorbed_verify_stats()["absorbed"]
                 run = _run_suffix(
                     model,
                     tokenizer,
@@ -297,7 +313,18 @@ def main() -> None:
                     min_conf=0.3,
                 )
                 runs[arm].append(run.tps)
-                outputs[arm] = run.out_tokens
+                outputs[arm].append(run.out_tokens)
+                if arm == "rapid":
+                    _require_absorbed(absorbed_before, "suffix repetition")
+        for arm, repetitions in outputs.items():
+            if any(tokens != repetitions[0] for tokens in repetitions[1:]):
+                raise RuntimeError(f"{arm} suffix output changed between repetitions")
+        paired_diffs = [
+            _token_differences(stock, rapid)
+            for stock, rapid in zip(outputs["stock"], outputs["rapid"])
+        ]
+        stock_output = outputs["stock"][0]
+        rapid_output = outputs["rapid"][0]
         stock_median = statistics.median(runs["stock"])
         rapid_median = statistics.median(runs["rapid"])
         suffix_result = {
@@ -310,17 +337,16 @@ def main() -> None:
             "rapid_median_tps": rapid_median,
             "speedup": rapid_median / stock_median,
             "vanilla_output_tokens": len(vanilla.out_tokens),
-            "stock_output_tokens": len(outputs["stock"]),
-            "rapid_output_tokens": len(outputs["rapid"]),
+            "stock_output_tokens": len(stock_output),
+            "rapid_output_tokens": len(rapid_output),
             "stock_vs_vanilla_diffs": _token_differences(
-                outputs["stock"], vanilla.out_tokens
+                stock_output, vanilla.out_tokens
             ),
             "rapid_vs_vanilla_diffs": _token_differences(
-                outputs["rapid"], vanilla.out_tokens
+                rapid_output, vanilla.out_tokens
             ),
-            "stock_vs_rapid_diffs": _token_differences(
-                outputs["stock"], outputs["rapid"]
-            ),
+            "stock_vs_rapid_diffs": paired_diffs[0],
+            "stock_vs_rapid_diffs_by_repeat": paired_diffs,
         }
 
     result = {

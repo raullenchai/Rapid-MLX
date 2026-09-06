@@ -25,6 +25,7 @@ from typing import Any
 logger = logging.getLogger(__name__)
 
 _ENV = "RAPID_MLX_MLA_ABSORBED_VERIFY"
+_STATS_ENV = "RAPID_MLX_MLA_ABSORBED_VERIFY_STATS"
 _QUALIFIED_MLX_LM_VERSION = "0.31.3"
 _TRUE_VALUES = frozenset({"1", "true", "yes", "on"})
 _MIN_CACHE_LENGTH = 1024
@@ -33,6 +34,7 @@ _STATS_LOCK = threading.Lock()
 _INSTALLED = False
 _PROVIDER = "none"
 _ENABLED = False
+_STATS_ENABLED = os.environ.get(_STATS_ENV, "").strip().lower() in _TRUE_VALUES
 _PATCHED_TARGETS: set[tuple[str, str]] = set()
 
 _STATS = {
@@ -46,6 +48,8 @@ _STATS = {
 
 
 def _increment_stat(name: str) -> None:
+    if not _STATS_ENABLED:
+        return
     with _STATS_LOCK:
         _STATS[name] += 1
 
@@ -328,6 +332,7 @@ def mla_absorbed_verify_stats() -> dict[str, Any]:
         **counters,
         "installed": _INSTALLED,
         "enabled": _ENABLED,
+        "stats_enabled": _STATS_ENABLED,
         "provider": _PROVIDER,
         "targets": tuple(f"{module}.{cls}" for module, cls in sorted(_PATCHED_TARGETS)),
     }

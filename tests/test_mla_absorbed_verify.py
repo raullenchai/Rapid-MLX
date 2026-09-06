@@ -71,6 +71,25 @@ def test_latent_length_rejects_missing_sequence_axis() -> None:
         latent_length(type("Scalar", (), {"shape": (1,)})())
 
 
+def test_disabled_stats_do_not_acquire_hot_path_lock(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from vllm_mlx.patches import mla_absorbed_verify as patch
+
+    class ExplodingLock:
+        def __enter__(self):
+            raise AssertionError("disabled counters must not acquire the stats lock")
+
+        def __exit__(self, *args):
+            return False
+
+    monkeypatch.setattr(patch, "_STATS_ENABLED", False)
+    monkeypatch.setattr(patch, "_STATS_LOCK", ExplodingLock())
+    before = dict(patch._STATS)
+    patch._increment_stat("forwards")
+    assert before == patch._STATS
+
+
 def test_rapid_gate_requires_qualified_warm_cache() -> None:
     attention = type(
         "Attention",
@@ -269,6 +288,7 @@ def _isolate_installer_state(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(patch, "_INSTALLED", False)
     monkeypatch.setattr(patch, "_PROVIDER", "none")
     monkeypatch.setattr(patch, "_ENABLED", False)
+    monkeypatch.setattr(patch, "_STATS_ENABLED", True)
     monkeypatch.setattr(patch, "_PATCHED_TARGETS", set())
     monkeypatch.setattr(patch, "_STATS", {key: 0 for key in patch._STATS})
 

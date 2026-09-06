@@ -17,5 +17,7 @@ See `test_install_fires_on_real_serve_import_path` in
 `mla_absorbed_verify.py` carries the pending mlx-lm absorbed-MLA crossover
 for short multi-token forwards. It is opt-in via
 `RAPID_MLX_MLA_ABSORBED_VERIFY=1`, refuses unknown upstream method bodies,
+and keeps detailed hot-path counters off unless
+`RAPID_MLX_MLA_ABSORBED_VERIFY_STATS=1` is also set. It
 requires a post-update cache of at least 1024 tokens, and retires itself
 automatically once mlx-lm exposes the upstream helper.
