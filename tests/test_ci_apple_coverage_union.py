@@ -153,6 +153,14 @@ def test_qwen4_fused_gdn_coverage_runs_on_apple_silicon() -> None:
     assert "tests/test_qsa_indexed_splitk.py" in apple_run
 
 
+def test_mla_absorbed_verify_coverage_runs_on_apple_silicon() -> None:
+    """MLX-only absorbed-MLA paths must contribute to changed-line coverage."""
+    _, workflow = _workflow()
+    apple_run = workflow["jobs"]["test-apple-silicon"]["steps"][-2]["run"]
+
+    assert "tests/test_mla_absorbed_verify.py" in apple_run
+
+
 def test_hidream_runtime_coverage_runs_on_apple_silicon() -> None:
     """The MLX-only image runtime must contribute to the coverage union."""
     _, workflow = _workflow()

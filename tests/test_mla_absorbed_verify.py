@@ -304,7 +304,7 @@ def _isolate_installer_state(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(patch, "_STATS", {key: 0 for key in patch._STATS})
 
 
-def _tiny_attention(module_name: str):
+def _tiny_attention(module_name: str, *, q_lora_rank: int | None = 16):
     if module_name in {"deepseek_v3", "glm4_moe_lite"}:
         module = __import__(f"mlx_lm.models.{module_name}", fromlist=["ModelArgs"])
         class_name = (
@@ -315,7 +315,7 @@ def _tiny_attention(module_name: str):
         config = module.ModelArgs(
             hidden_size=32,
             num_attention_heads=2,
-            q_lora_rank=16,
+            q_lora_rank=q_lora_rank,
             kv_lora_rank=8,
             qk_nope_head_dim=4,
             qk_rope_head_dim=4,
@@ -452,6 +452,116 @@ def test_patched_attention_matches_stock_contract(
     assert float(mx.max(follow_delta)) < 1e-5
     after_warm = patch.mla_absorbed_verify_stats()
     assert after_warm["absorbed"] == after_cold["absorbed"] + 1
+
+
+@requires_mlx
+@pytest.mark.requires_mlx
+def test_standard_attention_without_q_lora_matches_stock(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from mlx_lm.models import mla
+
+    from vllm_mlx.patches import mla_absorbed_verify as patch
+
+    _isolate_installer_state(monkeypatch)
+    monkeypatch.setenv("RAPID_MLX_MLA_ABSORBED_VERIFY", "1")
+    _, class_name, attention = _tiny_attention("deepseek_v3", q_lora_rank=None)
+    patch.install_mla_absorbed_verify()
+    original = mla._RAPID_MLX_MLA_ABSORBED_ORIGINALS[("deepseek_v3", class_name)]
+    x = mx.random.normal((1, 3, 32)).astype(mx.bfloat16)
+
+    stock = original(attention, x, None, None)
+    candidate = attention(x, None, None)
+    mx.eval(stock, candidate)
+
+    assert mx.array_equal(stock, candidate).item()
+
+
+@requires_mlx
+@pytest.mark.requires_mlx
+def test_installer_idempotence_and_default_off_contract(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from vllm_mlx.patches import mla_absorbed_verify as patch
+
+    _isolate_installer_state(monkeypatch)
+    monkeypatch.delenv("RAPID_MLX_MLA_ABSORBED_VERIFY", raising=False)
+    patch.install_mla_absorbed_verify()
+    assert patch.is_installed() is True
+    assert patch.mla_absorbed_verify_stats()["provider"] == "disabled"
+
+    # A second install is a literal no-op.
+    patch.install_mla_absorbed_verify()
+    assert patch.mla_absorbed_verify_stats()["provider"] == "disabled"
+
+
+@requires_mlx
+@pytest.mark.requires_mlx
+def test_in_process_upstream_provider_wins(monkeypatch: pytest.MonkeyPatch) -> None:
+    from mlx_lm.models import mla
+
+    from vllm_mlx.patches import mla_absorbed_verify as patch
+
+    _isolate_installer_state(monkeypatch)
+    monkeypatch.setattr(mla, "max_absorbed_queries", lambda *args: 1, raising=False)
+    monkeypatch.setenv("RAPID_MLX_MLA_ABSORBED_VERIFY", "1")
+    patch.install_mla_absorbed_verify()
+
+    assert patch.mla_absorbed_verify_stats()["provider"] == "upstream"
+
+
+@requires_mlx
+@pytest.mark.requires_mlx
+def test_in_process_unqualified_version_fails_closed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from vllm_mlx.patches import mla_absorbed_verify as patch
+
+    _isolate_installer_state(monkeypatch)
+    monkeypatch.setenv("RAPID_MLX_MLA_ABSORBED_VERIFY", "1")
+    monkeypatch.setattr(patch, "_mlx_lm_version", lambda: None)
+    patch.install_mla_absorbed_verify()
+
+    assert patch.mla_absorbed_verify_stats()["provider"] == "unsupported"
+
+
+@requires_mlx
+@pytest.mark.requires_mlx
+@pytest.mark.parametrize("case", ["missing", "marked", "unknown"])
+def test_in_process_target_compatibility_gates(
+    monkeypatch: pytest.MonkeyPatch, case: str
+) -> None:
+    from mlx_lm.models import deepseek_v3
+
+    from vllm_mlx.patches import mla_absorbed_verify as patch
+
+    _isolate_installer_state(monkeypatch)
+    monkeypatch.setenv("RAPID_MLX_MLA_ABSORBED_VERIFY", "1")
+    monkeypatch.setattr(patch, "_mlx_lm_version", lambda: "0.31.3")
+
+    if case == "missing":
+        targets = {("not_a_real_mlx_lm_model", "MissingAttention"): "hash"}
+    else:
+        key = ("deepseek_v3", "DeepseekV3Attention")
+        targets = {key: "not-the-real-source-hash"}
+        if case == "marked":
+            marker = "_RAPID_MLX_MLA_ABSORBED_DeepseekV3Attention"
+            monkeypatch.setattr(deepseek_v3, marker, True, raising=False)
+    monkeypatch.setattr(patch, "_SUPPORTED_SOURCE_HASHES", targets)
+    patch.install_mla_absorbed_verify()
+
+    stats = patch.mla_absorbed_verify_stats()
+    assert stats["provider"] == "none"
+    if case == "marked":
+        assert stats["targets"] == ("deepseek_v3.DeepseekV3Attention",)
+    else:
+        assert stats["targets"] == ()
+
+
+def test_source_hash_fails_closed_for_uninspectable_callable() -> None:
+    from vllm_mlx.patches import mla_absorbed_verify as patch
+
+    assert patch._source_hash(len) is None
 
 
 @requires_mlx
