@@ -28,7 +28,7 @@ _ENV = "RAPID_MLX_MLA_ABSORBED_VERIFY"
 _STATS_ENV = "RAPID_MLX_MLA_ABSORBED_VERIFY_STATS"
 _QUALIFIED_MLX_LM_VERSION = "0.31.3"
 _TRUE_VALUES = frozenset({"1", "true", "yes", "on"})
-_MIN_CACHE_LENGTH = 1024
+MIN_CACHE_LENGTH = 1024
 _LOCK = threading.Lock()
 _STATS_LOCK = threading.Lock()
 _INSTALLED = False
@@ -132,7 +132,7 @@ def latent_length(kv_latent: Any) -> int:
 
 def _use_absorbed(self: Any, query_len: int, kv_latent: Any) -> bool:
     cache_len = latent_length(kv_latent)
-    if cache_len < _MIN_CACHE_LENGTH:
+    if cache_len < MIN_CACHE_LENGTH:
         return False
     return query_len <= max_absorbed_queries(
         int(self.kv_lora_rank),
@@ -197,7 +197,7 @@ def _attention_call(
 
     cache_len = latent_length(kv_latent)
     absorbed = _use_absorbed(self, L, kv_latent)
-    if not absorbed and cache_len < _MIN_CACHE_LENGTH:
+    if not absorbed and cache_len < MIN_CACHE_LENGTH:
         _increment_stat("short_cache")
     _increment_stat("absorbed" if absorbed else "materialized")
     if absorbed:

@@ -136,6 +136,27 @@ def _require_absorbed(before: int, label: str) -> None:
         raise RuntimeError(f"Rapid arm did not use absorbed MLA during {label}")
 
 
+def _validate_absorbed_point(context: int, width: int, modules: list) -> None:
+    cache_len = context + width
+    if cache_len < patch.MIN_CACHE_LENGTH:
+        raise SystemExit(
+            f"context={context}, width={width} has post-update cache {cache_len}; "
+            f"absorbed MLA requires at least {patch.MIN_CACHE_LENGTH}"
+        )
+    for module in modules:
+        limit = patch.max_absorbed_queries(
+            int(module.kv_lora_rank),
+            int(module.qk_nope_head_dim),
+            int(module.v_head_dim),
+            cache_len,
+        )
+        if width > limit:
+            raise SystemExit(
+                f"context={context}, width={width} exceeds absorbed MLA "
+                f"crossover {limit} for {type(module).__name__}"
+            )
+
+
 def main() -> None:
     args = _parse_args()
     invalid = []
@@ -176,11 +197,18 @@ def main() -> None:
     mx.random.seed(args.seed)
     model, tokenizer = load(args.model, revision=args.revision)
     active_classes = tuple(targets.values())
-    if not any(isinstance(module, active_classes) for module in model.modules()):
+    active_modules = [
+        module for module in model.modules() if isinstance(module, active_classes)
+    ]
+    if not active_modules:
         supported = ", ".join(f"{mod}.{cls}" for mod, cls in sorted(targets))
         raise SystemExit(
             f"loaded model does not contain a patched MLA class; supported: {supported}"
         )
+    for context in args.contexts:
+        _validate_absorbed_point(context, args.width, active_modules)
+    if args.oracle_context:
+        _validate_absorbed_point(args.oracle_context, args.width, active_modules)
     seed_ids = tokenizer.encode(" reproducible MLA benchmark")
     if not seed_ids:
         raise SystemExit("tokenizer produced no input IDs")
@@ -329,7 +357,7 @@ def main() -> None:
         rapid_median = statistics.median(runs["rapid"])
         suffix_result = {
             "prompt_tokens": len(tokenizer.encode(LONG_CODE_EDIT_PROMPT)),
-            "completion_tokens": args.suffix_max_tokens,
+            "max_completion_tokens": args.suffix_max_tokens,
             "vanilla_tps": vanilla.tps,
             "stock_tps": runs["stock"],
             "rapid_tps": runs["rapid"],
