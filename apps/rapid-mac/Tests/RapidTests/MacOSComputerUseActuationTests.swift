@@ -322,6 +322,35 @@ struct MacOSComputerUseActuationTests {
         #expect(recorder.performed.isEmpty)
     }
 
+    @Test("A focus change at the final resolver prevents AXPress")
+    @MainActor
+    func finalFocusChangePreventsPress() async {
+        let fixture = Self.captureFixture()
+        let recorder = ElementBoundaryRecorder()
+        let emitter = AXComputerUseInputEmitter(
+            captureSource: ActuationCaptureStub(result: fixture.capture),
+            elementResolver: { payload, target in
+                recorder.calls.append(.init(payload: payload, target: target))
+                if recorder.calls.count == 2 {
+                    throw MacOSComputerUseActuationError.targetNotFrontmost
+                }
+                return recorder.binding
+            },
+            elementPerformer: { binding in
+                recorder.performed.append(binding)
+            }
+        )
+
+        await #expect(throws: MacOSComputerUseActuationError.targetNotFrontmost) {
+            try await emitter.emit(
+                .click(normalizedX: 0.25, normalizedY: 0.75),
+                verifiedAgainst: fixture.observation
+            )
+        }
+        #expect(recorder.calls.count == 2)
+        #expect(recorder.performed.isEmpty)
+    }
+
     @Test("Window-unbound keyboard payloads fail before desktop access", arguments: [
         WorkflowActionPayload.typeText("draft"),
         WorkflowActionPayload.keyPress(key: "tab", modifiers: []),

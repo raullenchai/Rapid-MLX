@@ -314,13 +314,32 @@ struct AXComputerUseInputEmitter: ComputerUseInputEmitting {
 
         try await MainActor.run {
             try Task.checkCancellation()
-            let currentBinding = try elementResolver(payload, target)
-            guard binding.representsSameElement(as: currentBinding) else {
-                throw MacOSComputerUseActuationError.elementChanged
-            }
-            try Task.checkCancellation()
-            try elementPerformer(currentBinding)
+            try Self.revalidateAndPerform(
+                payload,
+                target: target,
+                requiredBinding: binding,
+                resolver: elementResolver,
+                performer: elementPerformer
+            )
         }
+    }
+
+    /// Keeps the final focus/window/occlusion/element resolution and AX action
+    /// in one synchronous MainActor operation. There is deliberately no
+    /// suspension or cancellation check between the last validation and input.
+    @MainActor
+    private static func revalidateAndPerform(
+        _ payload: WorkflowActionPayload,
+        target: WorkflowInteractionTarget,
+        requiredBinding: ComputerUseElementBinding,
+        resolver: ElementResolver,
+        performer: ElementPerformer
+    ) throws {
+        let currentBinding = try resolver(payload, target)
+        guard requiredBinding.representsSameElement(as: currentBinding) else {
+            throw MacOSComputerUseActuationError.elementChanged
+        }
+        try performer(currentBinding)
     }
 
     @MainActor
