@@ -30,17 +30,24 @@ _BASE_DTYPES = {
 }
 
 
-def _cached_config(repo_id: str) -> tuple[dict[str, Any], str | None] | None:
+def _cached_config(
+    repo_id: str, subfolder: str | None = None
+) -> tuple[dict[str, Any], str | None] | None:
     """Return ``(config.json, resolved_revision)`` from the local HF cache.
 
     The benchmark just loaded this repo, so its snapshot is on disk. Only the
     cache is consulted — never the network — and any failure means "no
     facts", never an exception: identity facts are best-effort provenance.
+    ``subfolder`` selects a nested variant (``4bit/config.json``) for repos
+    that ship several quantisations side by side.
     """
     try:
         from huggingface_hub import try_to_load_from_cache
 
-        path = try_to_load_from_cache(repo_id, "config.json")
+        filename = "config.json"
+        if subfolder:
+            filename = f"{subfolder.strip('/')}/config.json"
+        path = try_to_load_from_cache(repo_id, filename)
         if not isinstance(path, str):
             return None
         with open(path, encoding="utf-8") as handle:
@@ -97,7 +104,9 @@ def quantization_facts(config: dict[str, Any]) -> dict[str, Any]:
     return facts
 
 
-def unresolved_model_identity(repo_id: str, task_type: str) -> dict[str, Any]:
+def unresolved_model_identity(
+    repo_id: str, task_type: str, subfolder: str | None = None
+) -> dict[str, Any]:
     """Identity with every fact the local cache can vouch for.
 
     ``identity_strength`` stays ``unresolved`` (no manifest digest is
@@ -106,8 +115,10 @@ def unresolved_model_identity(repo_id: str, task_type: str) -> dict[str, Any]:
     ``...-4bit`` model no longer reports ``quantization.kind: unknown``.
     """
     source: dict[str, Any] = {"kind": "huggingface", "repo_id": repo_id}
+    if subfolder:
+        source["subfolder"] = subfolder
     quantization: dict[str, Any] = {"kind": "unknown", "base_dtype": "unknown"}
-    cached = _cached_config(repo_id)
+    cached = _cached_config(repo_id, subfolder)
     if cached is not None:
         config, revision = cached
         quantization = quantization_facts(config)
@@ -298,6 +309,7 @@ def build_run(
     repo_id: str,
     task_type: str,
     hardware: Hardware | None,
+    subfolder: str | None = None,
     software: Software | None,
     started_at: str,
     measurements: list[dict[str, Any]] | None = None,
@@ -317,7 +329,7 @@ def build_run(
         "started_at": started_at,
         "completed_at": utc_now(),
         "collector": {"name": "rapid-mlx-community-bench", "version": __version__},
-        "model": unresolved_model_identity(repo_id, task_type),
+        "model": unresolved_model_identity(repo_id, task_type, subfolder),
         "execution": (
             execution
             if execution is not None

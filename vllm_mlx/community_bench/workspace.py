@@ -223,6 +223,10 @@ def benchmark_catalog(*, memory_gib: int | None = None) -> dict[str, Any]:
             {
                 "alias": alias["alias"],
                 "repo_id": model["source"]["repo_id"],
+                # Some repos host several quantisations in subfolders
+                # (``LiquidAI/LFM2.5-2.6B-MLX`` -> ``4bit/``); the identity
+                # facts must be read from that folder's config, not the root.
+                "subfolder": model["source"].get("subfolder"),
                 "task_type": task,
                 "protocol_id": _TASK_PROTOCOL[task],
                 "protocol_version": workload["protocol_version"],

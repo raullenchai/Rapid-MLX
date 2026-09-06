@@ -840,6 +840,7 @@ def run_local(
         execution = execution_config(task_type, context_length=context_length)
         run = build_run(
             repo_id=model["repo_id"],
+            subfolder=model.get("subfolder"),
             task_type=task_type,
             hardware=hardware,
             software=software,
@@ -871,6 +872,7 @@ def run_local(
                 execution = execution_config(task_type, context_length=context_length)
             failed = build_run(
                 repo_id=model["repo_id"],
+                subfolder=model.get("subfolder"),
                 task_type=task_type,
                 hardware=hardware,
                 software=software,

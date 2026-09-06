@@ -4725,6 +4725,48 @@ def test_model_identity_reads_quantization_and_revision_from_the_cache(
     ContractValidator().validate_model_identity(identity)
 
 
+def test_model_identity_reads_the_subfolder_config_for_nested_variants(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """``LiquidAI/LFM2.5-2.6B-MLX`` keeps ``4bit/`` and ``8bit/`` side by side."""
+    import huggingface_hub
+
+    from vllm_mlx.catalog.validation import ContractValidator
+    from vllm_mlx.community_bench import run_builder
+
+    revision = "b41f2b65685e95418f1ac809bb022d4f79e1ab27"
+    snapshot = tmp_path / "snapshots" / revision
+    (snapshot / "4bit").mkdir(parents=True)
+    (snapshot / "config.json").write_text(json.dumps({}))
+    (snapshot / "4bit" / "config.json").write_text(
+        json.dumps({"quantization": {"group_size": 64, "bits": 4, "mode": "affine"}})
+    )
+    requested: list[str] = []
+
+    def fake_cache(repo_id: str, filename: str, **_: object):
+        requested.append(filename)
+        return str(snapshot / filename)
+
+    monkeypatch.setattr(huggingface_hub, "try_to_load_from_cache", fake_cache)
+    identity = run_builder.unresolved_model_identity(
+        "LiquidAI/LFM2.5-2.6B-MLX", "text_generation", "4bit"
+    )
+    component = identity["components"][0]
+    assert requested == ["4bit/config.json"]
+    assert component["source"]["subfolder"] == "4bit"
+    assert component["source"]["resolved_revision"] == revision
+    assert component["quantization"]["weight_bits_x2"] == 8
+    ContractValidator().validate_model_identity(identity)
+
+
+def test_benchmark_catalog_exposes_the_alias_subfolder() -> None:
+    from vllm_mlx.community_bench.workspace import benchmark_catalog
+
+    by_alias = {m["alias"]: m for m in benchmark_catalog(memory_gib=18)["models"]}
+    assert by_alias["lfm2.5-2.6b-4bit"]["subfolder"] == "4bit"
+    assert by_alias["qwen3.5-4b-4bit"]["subfolder"] is None
+
+
 def test_model_identity_stays_unknown_when_the_cache_cannot_answer(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
