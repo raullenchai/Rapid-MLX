@@ -89,7 +89,9 @@ final class DictationHotkey {
     // MARK: - Permission
 
     /// Whether the process may install a listening event tap.
-    static var hasAccessibilityPermission: Bool { AXIsProcessTrusted() }
+    static var hasAccessibilityPermission: Bool {
+        MacAutomationPermissions.isGranted(.accessibility)
+    }
 
     /// Ask the system to show the Accessibility prompt. Returns the trust state
     /// *at call time* — macOS grants asynchronously, and the app must be
@@ -97,20 +99,13 @@ final class DictationHotkey {
     /// treat `false` as final.
     @discardableResult
     static func requestAccessibilityPermission() -> Bool {
-        // The SDK exposes `kAXTrustedCheckOptionPrompt` as a mutable global,
-        // which Swift 6 rejects as shared mutable state. Its value is a stable
-        // documented constant, so spell it directly.
-        let key = "AXTrustedCheckOptionPrompt" as CFString
-        return AXIsProcessTrustedWithOptions([key: true] as CFDictionary)
+        MacAutomationPermissions.request(.accessibility)
     }
 
     /// Opens the exact Accessibility pane. The prompt above only appears once per
     /// app version, so returning users need a direct route.
     static func openAccessibilitySettings() {
-        guard let url = URL(
-            string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility"
-        ) else { return }
-        NSWorkspace.shared.open(url)
+        MacAutomationPermissions.openSystemPrivacyPane(for: .accessibility)
     }
 
     // MARK: - Lifecycle
