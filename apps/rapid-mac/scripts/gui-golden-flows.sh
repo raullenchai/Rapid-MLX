@@ -5155,12 +5155,14 @@ flow_audio_readiness() {
     local speech_resident=0
     for ((i=0; i<120; i++)); do
         see_main "$OUT/speech-resident.json"
-        if jq -e '.data.ui_elements as $elements
-                  | any(range(1; $elements | length);
-                        $elements[.].identifier == "Sidebar.Residency"
-                        and $elements[.].value == "fake-qwen3-tts"
-                        and $elements[. - 1].identifier == "Sidebar.Residency"
-                        and $elements[. - 1].description == "Lock")' \
+        if jq -e '[.data.ui_elements[]?
+                   | select(.identifier == "Sidebar.ResidentModel.fake-qwen3-tts")]
+                  | (any(.[];
+                         .role == "AXImage"
+                         and .description == "Lock"))
+                    and (any(.[];
+                             .role == "AXStaticText"
+                             and .value == "fake-qwen3-tts"))' \
                  "$OUT/speech-resident.json" >/dev/null; then
             speech_resident=1; break
         fi

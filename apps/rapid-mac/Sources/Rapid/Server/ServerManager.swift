@@ -3194,6 +3194,38 @@ final class ServerManager {
         _ = await stop(preservingLastServedAlias: false)
     }
 
+    enum ResidentUnloadResult: Equatable, Sendable {
+        case stopped
+        case busy
+        case unavailable
+    }
+
+    /// Release the resident pool only after asking the live sidecar for its
+    /// freshest request counts. The sidecar does not expose an atomic drain
+    /// operation, so this is deliberately an advisory last-moment guard: a
+    /// request that arrives after the response is still subject to an explicit
+    /// user stop, exactly like the existing model-switch confirmation path.
+    func unloadResidentModelsIfIdle() async -> ResidentUnloadResult {
+        guard await refreshResidency() else { return .unavailable }
+        guard !residency.models.contains(where: { $0.activeRequests > 0 }) else {
+            return .busy
+        }
+        let residentAudio = residency.audioLanes.filter { $0.state == "resident" }
+        guard !residentAudio.contains(where: { $0.activeRequests == nil }) else {
+            return .unavailable
+        }
+        guard !residentAudio.contains(where: { ($0.activeRequests ?? 0) > 0 }) else {
+            return .busy
+        }
+        // This is an explicit unload, so clear the persisted auto-resume alias.
+        // ContentView owns the current picker selection independently; keeping
+        // that in-memory selection supplies the immediate Start recovery action
+        // without surprising the user by reloading on their next app launch.
+        _ = await stop(preservingLastServedAlias: false)
+        guard case .stopped = state else { return .unavailable }
+        return .stopped
+    }
+
     /// Reserve the server lifecycle for a local Community Benchmark and
     /// return only after no embedded model process can contend for unified
     /// memory. A start already inside its short spawn critical section is
@@ -3507,6 +3539,10 @@ final class ServerManager {
         reason: String?, cancelMonitor: Bool = true
     ) async -> pid_t? {
         guard let process = child else { return nil }
+        let clearsResumeAlias = Self.shouldClearLastServedAlias(
+            expectedStop: reason == nil,
+            preservingLastServedAlias: preservingLastServedAliasDuringStop
+        )
         let alias: String
         switch state {
         case .starting(let a), .ready(let a), .crashed(let a, _):
@@ -3575,6 +3611,11 @@ final class ServerManager {
             // ``handleChildExit`` may not get a chance to run if
             // the termination handler is starved by app teardown.
             OwnedServerRecord.clear()
+            if clearsResumeAlias {
+                (sessionDefaults ?? .standard).removeObject(
+                    forKey: Self.lastServedAliasKey
+                )
+            }
             if let message = reason {
                 state = .crashed(alias: alias, message: message)
             } else {
@@ -3670,7 +3711,7 @@ final class ServerManager {
                 expectedStop: wasExpected,
                 preservingLastServedAlias: preservedLastServedAlias
             ) {
-                UserDefaults.standard.removeObject(forKey: Self.lastServedAliasKey)
+                (sessionDefaults ?? .standard).removeObject(forKey: Self.lastServedAliasKey)
             }
             return
         }
