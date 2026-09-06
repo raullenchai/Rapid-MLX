@@ -10,7 +10,7 @@ There are two flows. Both are consent-gated, both talk HTTPS to rapidmlx.com, an
 | Record shape | Atomic `BenchmarkRun` (`proto/community-benchmark/v1`) | `schema.json` in this directory |
 | Runs locally first | Yes — every run is archived under `~/.rapid-mlx/benchmarks/`; no benchmark data leaves the Mac until you run `share` (the model itself may be downloaded from Hugging Face during `run`, as with any other load) | No — the run and the submission are one command |
 | Upload endpoint | `POST https://rapidmlx.com/api/benchmarks/atomic` | `POST https://rapidmlx.com/api/benchmarks` |
-| Where it shows up | "Community Benchmark beta" on <https://rapidmlx.com/leaderboard> and your contributor page | The comparable board on the same page |
+| Where it shows up | "Community Benchmark beta" on <https://rapidmlx.com/leaderboard> and, when the server assigns an identity, your contributor page | The comparable board on the same page |
 
 The board's history (the `submissions/` directory here and `aggregated.json`) predates both HTTP flows: those rows arrived as pull requests. That path is gone; see [History](#history).
 
@@ -43,7 +43,7 @@ The registered text protocol (`rapid-community-speed` v2) is two fixed workloads
 
 Prompts are synthetic token sequences (`rapid-synthetic-token-corpus` v2, seeded per case), so no user content is ever measured or recorded. If the model is not in the local Hugging Face cache yet, `run` downloads it first — that network call is model loading, not a submission. The image and video protocols are a fixed prompt, seed and size (see `rapid-image-speed-v1.json` / `rapid-video-speed-v1.json` under `vllm_mlx/catalog/schemas/`). The protocol files are immutable; a new version is a new file and a new `protocol_version`.
 
-Per round, a text measurement records `prompt_tokens`, `output_tokens`, `ttft_ms`, `decode_duration_ms`, `total_duration_ms` and `peak_active_memory_mib`. Decode throughput is derived by readers as `(output_tokens − 1) / decode_duration_ms` — the first token lands at `ttft_ms` — which matches llama.cpp `tg` and vLLM TPOT semantics. The website uses this formula; the CLI summary matches it from #3148 onwards.
+Per round, a text measurement records `prompt_tokens`, `output_tokens`, `ttft_ms`, `decode_duration_ms`, `total_duration_ms` and `peak_active_memory_mib`. Decode throughput is derived by readers as `(output_tokens − 1) / (decode_duration_ms / 1000)` tokens per second — the first token lands at `ttft_ms` — which matches llama.cpp `tg` and vLLM TPOT semantics. The website uses this formula; the CLI summary matches it from #3148 onwards.
 
 ### What `share` sends
 
@@ -51,7 +51,7 @@ Per round, a text measurement records `prompt_tokens`, `output_tokens`, `ttft_ms
 
 - `model` — the Hugging Face repo id (and subfolder), artifact format, and the quantization block. Releases up to 0.13.4 record the quantization as `unknown`; from #3147 it is read from the cached `config.json` (kind, method, bit width, group size) together with the resolved snapshot revision.
 - `machine` — chip, unified memory, CPU/GPU core counts, macOS version, and the run conditions (AC/battery, Low Power Mode, thermal state, memory pressure, available memory). Releases up to 0.13.4 record these as `unknown`; from #3146 they are sampled before the model loads and again after the last measured round.
-- `execution` — Rapid-MLX / MLX / Python versions, source revision when running from a checkout, and the effective inference settings (context length, speculative decoding, KV-cache mode, prefill backend).
+- `execution` — Rapid-MLX / MLX / Python versions, source revision when running from a checkout, and the execution fields (context length, speculative decoding, KV-cache mode/dtype, prefill backend); settings the runner did not observe are recorded explicitly as `unknown` / `null`, never guessed.
 - `workload` — the protocol id, version and digest that produced the numbers.
 - `measurements` — the raw per-round samples above.
 - `install_id` — 12 hex characters generated once per install and stored in `~/.rapid-mlx/bench-install-id` (mode 0600). The server derives your public pseudonym (for example `northern-windy-numbat ·0a9`) from it. Delete the file to get a new identity.
@@ -78,7 +78,7 @@ Rows accepted here feed the comparable board (`GET https://rapidmlx.com/api/benc
 
 ## Choosing between them
 
-Use `rapid-mlx benchmark` unless you specifically want a row on the legacy comparable board. The local-first flow measures image and video models, keeps every run on disk so you can inspect it before deciding, gives you a contributor page, and (from the changes referenced above) records the quantization and the machine conditions the numbers were produced under.
+Use `rapid-mlx benchmark` unless you specifically want a row on the legacy comparable board. The local-first flow measures image and video models, keeps every run on disk so you can inspect it before deciding, gives you a contributor page when the server assigns an identity, and (from the changes referenced above) records the quantization and the machine conditions the numbers were produced under.
 
 ## History
 
@@ -93,4 +93,4 @@ Nothing new is written to `submissions/` by either current flow.
 
 ## License
 
-All submissions, in both flows, are CC0 (`SPDX-License-Identifier: CC0-1.0`). The data is community-owned.
+The files in this directory (`submissions/`, `aggregated.json`) are CC0 (`SPDX-License-Identifier: CC0-1.0`). For rows submitted over HTTP, the licence under which rapidmlx.com publishes them is the one stated on the leaderboard page itself (its footer reads "Submissions: CC0" at the time of writing); the upload contract and consent text carry no licence term of their own.
