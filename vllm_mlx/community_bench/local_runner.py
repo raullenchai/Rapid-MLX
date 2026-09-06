@@ -533,8 +533,19 @@ def _format_duration(seconds: float) -> str:
 
 
 def _report(progress: Progress | None, line: str) -> None:
-    if progress is not None:
+    """Hand one line to the progress sink; a failing sink is never fatal.
+
+    Progress is presentation. A closed pipe, an encoding error, or a buggy
+    sink must not abort a benchmark that is otherwise measuring correctly,
+    let alone archive it as failed, so every sink call goes through here.
+    """
+
+    if progress is None:
+        return
+    try:
         progress(line)
+    except Exception:
+        pass
 
 
 def _stage_started(progress: Progress | None) -> float | None:
@@ -548,7 +559,7 @@ def _stage_finished(
 ) -> None:
     if progress is None or started is None:
         return
-    progress(f"{what} in {_format_duration(time.monotonic() - started)}")
+    _report(progress, f"{what} in {_format_duration(time.monotonic() - started)}")
 
 
 def _run_image(
@@ -779,19 +790,20 @@ def _text_round_observer(progress: Progress, cases: list[dict[str, Any]]):
         nonlocal estimated
         if phase == "warmup":
             suffix = f" {index}/{total}" if total > 1 else ""
-            progress(f"{label:<16} warmup{suffix}")
+            _report(progress, f"{label:<16} warmup{suffix}")
             if not estimated:
                 estimated = True
                 remaining = _estimate_remaining_s(cases, result, done_label=label)
                 if remaining is not None:
-                    progress(
+                    _report(
+                        progress,
                         "Estimated time remaining: "
-                        f"~{_format_duration(remaining)} (from the warmup rate)"
+                        f"~{_format_duration(remaining)} (from the warmup rate)",
                     )
             return
         tps = getattr(result, "decode_tps", None)
         rate = f"  {tps:6.1f} tok/s" if isinstance(tps, int | float) else ""
-        progress(f"{label:<16} round {index}/{total}{rate}")
+        _report(progress, f"{label:<16} round {index}/{total}{rate}")
 
     return on_round
 
@@ -823,7 +835,7 @@ async def _text_measurements(
                 source = "not cached yet; downloading from Hugging Face first"
             else:
                 source = "cache state unknown; downloads anything missing"
-            progress(f"Loading {repo_id} ({source})...")
+            _report(progress, f"Loading {repo_id} ({source})...")
         load_started = _stage_started(progress)
         model, tokenizer = executor.submit(load_model_with_fallback, repo_id).result()
         _stage_finished(progress, load_started, "Model loaded")
@@ -922,13 +934,14 @@ def _announce_plan(progress: Progress | None, plan: dict[str, Any]) -> None:
     cases = plan.get("workload", {}).get("cases", [])
     warmup = sum(int(case.get("warmup_rounds", 0)) for case in cases)
     measured = sum(int(case.get("measured_rounds", 0)) for case in cases)
-    progress(
+    _report(
+        progress,
         f"Benchmarking {model['alias']} ({model['task_type']}): "
         f"{len(cases)} case{'s' if len(cases) != 1 else ''}, "
-        f"{warmup} warmup + {measured} measured rounds in total"
+        f"{warmup} warmup + {measured} measured rounds in total",
     )
     for case in cases:
-        progress(f"  {describe_case(case)}")
+        _report(progress, f"  {describe_case(case)}")
 
 
 def run_local(

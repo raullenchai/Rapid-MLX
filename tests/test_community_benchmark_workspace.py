@@ -4984,6 +4984,33 @@ def test_run_local_announces_plan_and_forwards_progress(
     )
     local_runner.run_local("example-image", archive=archive)
 
+    # A sink that blows up (closed pipe, encoding error, a buggy caller) is a
+    # presentation problem: the benchmark still completes and is archived as
+    # completed, whichever stage raised.
+    def run_image_with_progress(alias, *, isolate_process_group, progress=None):
+        local_runner._report(progress, "t2i-1024-square  round 1/1  12 s")
+        return _image_run()["measurements"]
+
+    monkeypatch.setattr(local_runner, "_run_image", run_image_with_progress)
+    attempts: list[str] = []
+
+    def exploding_sink(line: str) -> None:
+        attempts.append(line)
+        raise BrokenPipeError("stderr went away")
+
+    run = local_runner.run_local(
+        "example-image", archive=archive, progress=exploding_sink
+    )
+    assert run["outcome"]["status"] == "completed"
+    assert archive.get(run["run_id"])["outcome"]["status"] == "completed"
+    assert len(attempts) == 3  # plan header, case line, round line all attempted
+
+    # The observer path is guarded the same way.
+    observe = local_runner._text_round_observer(exploding_sink, [])
+    observe("pp512-tg128", "warmup", 1, 1, RoundResult(50.0, 500.0, 100.0))
+    observe("pp512-tg128", "measured", 1, 5, RoundResult(50.0, 500.0, 100.0))
+    local_runner._stage_finished(exploding_sink, 0.0, "Server ready")
+
 
 def test_text_round_observer_reports_rounds_and_estimates_remaining_time() -> None:
     cases = registered_workload("text_generation")["cases"]
