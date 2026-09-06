@@ -1624,17 +1624,35 @@ def test_run_local_executes_image_protocol_and_excludes_warmup(
     )
     calls: list[dict] = []
 
+    served = {"open": False}
+
     @contextlib.contextmanager
     def serve(alias: str, **kwargs):
         assert alias == "example-image"
         assert kwargs["isolate_process_group"] is False
-        yield {"base_url": "http://local/v1"}
+        served["open"] = True
+        try:
+            yield {"base_url": "http://local/v1"}
+        finally:
+            served["open"] = False
 
     def post(url: str, *, json: dict, timeout: float) -> _Response:
         calls.append({"url": url, "json": json, "timeout": timeout})
         return _Response({"data": [{"b64_json": _png_base64(1024, 1024)}]})
 
     monkeypatch.setattr(_server, "serve", serve)
+    # The real ``serve()`` hook must snapshot conditions after the last
+    # request, while the server (and the model) is still up.
+    events: list[str] = []
+
+    def probe() -> dict:
+        events.append(f"probe(served={served['open']}, requests={len(calls)})")
+        return dict(
+            run_builder._unknown_conditions(),
+            thermal_state="serious" if events[1:] else "nominal",
+        )
+
+    monkeypatch.setattr(local_runner, "run_conditions", probe)
     monkeypatch.setattr(local_runner.requests, "post", post)
     monkeypatch.setattr(
         local_runner.requests,
@@ -1655,6 +1673,12 @@ def test_run_local_executes_image_protocol_and_excludes_warmup(
     )
 
     assert len(calls) == 2  # one warmup plus one measured round
+    assert events == [
+        "probe(served=False, requests=0)",
+        "probe(served=True, requests=2)",
+    ]
+    assert run["machine"]["conditions_before"]["thermal_state"] == "nominal"
+    assert run["machine"]["conditions_after"]["thermal_state"] == "serious"
     assert calls[0]["url"] == "http://local/v1/images/generations"
     assert calls[0]["json"] == {
         "model": "example-image",
@@ -1901,10 +1925,16 @@ def test_run_local_executes_video_protocol_and_polls_to_completion(
     artifacts: list[tuple] = []
     job_states = iter(("running", "completed"))
 
+    served = {"open": False}
+
     @contextlib.contextmanager
     def serve(alias: str, **kwargs):
         serve_options.update(kwargs)
-        yield {"base_url": "http://local/v1"}
+        served["open"] = True
+        try:
+            yield {"base_url": "http://local/v1"}
+        finally:
+            served["open"] = False
 
     def post(url: str, *, data: dict, timeout: float) -> _Response:
         posts.append({"url": url, "data": data, "timeout": timeout})
@@ -1925,6 +1955,18 @@ def test_run_local_executes_video_protocol_and_polls_to_completion(
         )
 
     monkeypatch.setattr(_server, "serve", serve)
+    # The real ``serve()`` hook must snapshot conditions after the last
+    # request, while the server (and the model) is still up.
+    events: list[str] = []
+
+    def probe() -> dict:
+        events.append(f"probe(served={served['open']}, requests={len(posts)})")
+        return dict(
+            run_builder._unknown_conditions(),
+            thermal_state="serious" if events[1:] else "nominal",
+        )
+
+    monkeypatch.setattr(local_runner, "run_conditions", probe)
     monkeypatch.setattr(local_runner.requests, "post", post)
     monkeypatch.setattr(local_runner.requests, "get", get)
     monkeypatch.setattr(
@@ -1937,6 +1979,13 @@ def test_run_local_executes_video_protocol_and_polls_to_completion(
     monkeypatch.setattr(local_runner.time, "perf_counter", lambda: next(timings))
 
     run = local_runner.run_local("example-video", archive=archive)
+
+    assert events == [
+        "probe(served=False, requests=0)",
+        f"probe(served=True, requests={len(posts)})",
+    ]
+    assert run["machine"]["conditions_before"]["thermal_state"] == "nominal"
+    assert run["machine"]["conditions_after"]["thermal_state"] == "serious"
 
     assert serve_options["extra_env"] == {"RAPID_MLX_WAN_STEPS": "20"}
     assert posts == [
