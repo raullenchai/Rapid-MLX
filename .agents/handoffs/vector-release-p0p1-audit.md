@@ -2,7 +2,7 @@
 
 - Owner/host: Vector, Studio
 - Audit branch: `audit/release-p0p1-20260906`
-- Audit range: `v0.13.4..901611faa` (64 first-parent merged PRs)
+- Audit range: `v0.13.4..28244f4f6` (68 first-parent merged PRs)
 - Durable report: `docs/engineering/operations/2026-09-06-v0.13.4-to-main-release-audit.md`
 
 ## Verified facts
@@ -16,6 +16,10 @@
 - P1 Desktop upgrade port compatibility is fixed in #3177; local focused tests
   and all hosted exact-head checks pass, and the PR is queued.
 - Image qualification #3173 and Qwen3.5 4B MTP default-off #3144 are queued.
+- #3169, #3150, #3158, and #3110 landed together after their full combined
+  Python, Apple Silicon, Desktop, GUI, L1-smoke, coverage, and contract gates
+  passed. Their production diffs were included in the final audit; no new
+  P0/P1 finding survived review.
 - Ten image aliases and Desktop release-mode image journeys have real-weight
   dogfood receipts. The final built artifact still needs the documented rerun.
 - The M3 G0 gate passed four families and hit two honest capacity-skips. The
