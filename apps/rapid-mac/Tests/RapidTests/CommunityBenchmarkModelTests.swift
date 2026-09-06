@@ -502,9 +502,10 @@ struct CommunityBenchmarkModelTests {
                 caseID: "pp512-tg128", completed: false, outputTokens: 3,
                 ttftMS: 90_000, decodeDurationMS: 1, totalDurationMS: 90_001
             ),
-            // Undeclared case still shows up, after the declared ones.
+            // Undeclared case still shows up, after the declared ones. A
+            // record from before the `completed` flag existed (nil) counts.
             CommunityBenchmarkResult.Measurement(
-                caseID: "extra", completed: true, outputTokens: 11,
+                caseID: "extra", completed: nil, outputTokens: 11,
                 ttftMS: nil, decodeDurationMS: 1_000, totalDurationMS: 1_200
             ),
         ]
@@ -522,15 +523,27 @@ struct CommunityBenchmarkModelTests {
 
         // No completed rounds at all → no headline, so the row falls back to
         // the outcome status.
-        let failed = try Self.decodeRun(
+        let noRounds = try Self.decodeRun(
             Self.textRunFixture.replacingOccurrences(
                 of: #""completed":true"#, with: #""completed":false"#
             ).replacingOccurrences(
                 of: #""status":"completed""#, with: #""status":"failed""#
             )
         )
-        #expect(failed.headline == nil)
-        #expect(failed.outcome.status == "failed")
+        #expect(noRounds.headline == nil)
+        #expect(noRounds.secondaryLines.isEmpty)
+        #expect(noRounds.outcome.status == "failed")
+
+        // A run that failed after finishing some rounds must not present its
+        // partial medians as a result either.
+        let failedLate = try Self.decodeRun(
+            Self.textRunFixture.replacingOccurrences(
+                of: #""status":"completed""#, with: #""status":"failed""#
+            )
+        )
+        #expect(failedLate.caseSummaries.count == 2)
+        #expect(failedLate.headline == nil)
+        #expect(failedLate.secondaryLines.isEmpty)
     }
 
     @Test("Image and video runs summarize as median wall seconds")
@@ -698,9 +711,16 @@ struct CommunityBenchmarkModelTests {
         splitter.consume(Data("tail\nround 3/5\n".utf8))
         #expect(seen.drain() == ["round 3/5"])
 
+        // EOF flushes an unterminated final line, once.
+        splitter.consume(Data("round 5/5 done".utf8))
+        splitter.finish()
+        splitter.finish()
+        #expect(seen.drain() == ["round 5/5 done"])
+
         // A nil observer costs nothing and never touches the stream.
         let silent = CommunityBenchmarkCommand.LineSplitter(onLine: nil)
         silent.consume(Data("round 1/5\n".utf8))
+        silent.finish()
     }
 
     @Test("Benchmark run forwards stderr lines without disturbing stdout capture")
@@ -714,6 +734,7 @@ struct CommunityBenchmarkModelTests {
         #!/bin/sh
         echo 'pp512-tg128  round 1/5  45.0 tok/s' >&2
         echo 'pp512-tg128  round 2/5  45.2 tok/s' >&2
+        printf 'pp512-tg128  round 3/5  45.1 tok/s' >&2
         echo '{"ok":true}'
         """.write(to: script, atomically: true, encoding: .utf8)
         chmod(script.path, 0o755)
@@ -728,6 +749,7 @@ struct CommunityBenchmarkModelTests {
         #expect(lines.drain() == [
             "pp512-tg128  round 1/5  45.0 tok/s",
             "pp512-tg128  round 2/5  45.2 tok/s",
+            "pp512-tg128  round 3/5  45.1 tok/s",
         ])
     }
 

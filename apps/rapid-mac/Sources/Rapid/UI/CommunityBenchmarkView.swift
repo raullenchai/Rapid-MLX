@@ -382,7 +382,9 @@ struct CommunityBenchmarkResult: Decodable, Identifiable {
     ) -> [CaseSummary] {
         var order = declaredOrder
         var byCase: [String: [Measurement]] = [:]
-        for sample in measurements where sample.completed ?? false {
+        // Records written before the `completed` flag existed carry only
+        // finished rounds, so a missing flag means completed.
+        for sample in measurements where sample.completed ?? true {
             if byCase[sample.caseID] == nil, !order.contains(sample.caseID) {
                 order.append(sample.caseID)
             }
@@ -418,12 +420,18 @@ struct CommunityBenchmarkResult: Decodable, Identifiable {
             : sorted[mid]
     }
 
+    /// Only a run the CLI marked completed gets numbers; a run that failed
+    /// after some rounds keeps showing its outcome so partial medians are
+    /// never mistaken for a finished benchmark.
+    var isCompleted: Bool { outcome.status == "completed" }
+
     /// The number shown on the result row: the first (short) case.
-    var headline: String? { caseSummaries.first?.headline }
+    var headline: String? { isCompleted ? caseSummaries.first?.headline : nil }
 
     /// Remaining cases, one per line, for the secondary line / tooltip.
     var secondaryLines: [String] {
-        caseSummaries.dropFirst().map { "\($0.caseID): \($0.headline)" }
+        guard isCompleted else { return [] }
+        return caseSummaries.dropFirst().map { "\($0.caseID): \($0.headline)" }
     }
 
     var repoID: String { model.components.first?.source.repoID ?? "Local model" }
@@ -725,12 +733,14 @@ enum CommunityBenchmarkCommand {
                     }
                     let errorTask = Task.detached {
                         let lines = LineSplitter(onLine: onStandardErrorLine)
-                        return readBoundedPipe(
+                        let capture = readBoundedPipe(
                             stderr.fileHandleForReading,
                             maxBytes: maxStderrBytes,
                             retainTail: true,
                             onChunk: lines.consume
                         )
+                        lines.finish()
+                        return capture
                     }
                     // The child owns duplicated write descriptors after spawn.
                     // Drop the parent's copies so both readers observe EOF when
@@ -823,6 +833,16 @@ enum CommunityBenchmarkCommand {
                 // too instead of being reported as a fresh, truncated line.
                 pending = Data(count: maxLineBytes + 1)
             }
+        }
+
+        /// EOF: a final line without a trailing newline is still a line.
+        func finish() {
+            guard let onLine, !pending.isEmpty else { return }
+            if pending.count <= maxLineBytes,
+               let line = String(data: pending, encoding: .utf8) {
+                onLine(line)
+            }
+            pending.removeAll(keepingCapacity: false)
         }
     }
 
