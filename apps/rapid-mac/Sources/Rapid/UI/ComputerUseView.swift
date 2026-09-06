@@ -114,6 +114,7 @@ struct ComputerUseView: View {
                 )
         )
         .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("ComputerUse.Starter.\(starter.kind.rawValue)")
         .accessibilityLabel(starter.title)
     }
 
@@ -299,7 +300,6 @@ private struct DraftPostFlowSheet: View {
                 HStack(spacing: 20) {
                     metric("Attempts", metrics.attempts)
                     metric("Auto-recoveries", metrics.automaticRecoveries)
-                    metric("Human corrections", metrics.humanCorrections)
                     metric("Verified steps", metrics.completedSteps)
                 }
                 .padding(12)

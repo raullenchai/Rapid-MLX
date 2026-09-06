@@ -69,7 +69,6 @@ struct DraftPostFlowTests {
         #expect(outcome == .readyForReview(DraftPostFlowMetrics(
             attempts: 1,
             automaticRecoveries: 0,
-            humanCorrections: 0,
             completedSteps: 3
         )))
         #expect(await driver.callCount == 1)
@@ -89,7 +88,6 @@ struct DraftPostFlowTests {
         #expect(outcome == .readyForReview(DraftPostFlowMetrics(
             attempts: 3,
             automaticRecoveries: 2,
-            humanCorrections: 0,
             completedSteps: 3
         )))
         #expect(await driver.callCount == 3)
@@ -112,7 +110,6 @@ struct DraftPostFlowTests {
             DraftPostFlowMetrics(
                 attempts: 3,
                 automaticRecoveries: 2,
-                humanCorrections: 0,
                 completedSteps: 0
             )
         ))
@@ -138,7 +135,6 @@ struct DraftPostFlowTests {
                 DraftPostFlowMetrics(
                     attempts: 1,
                     automaticRecoveries: 0,
-                    humanCorrections: 0,
                     completedSteps: 0
                 )
             ))
@@ -158,7 +154,6 @@ struct DraftPostFlowTests {
             DraftPostFlowMetrics(
                 attempts: 1,
                 automaticRecoveries: 0,
-                humanCorrections: 0,
                 completedSteps: 0
             )
         ))
@@ -172,6 +167,16 @@ struct DraftPostFlowTests {
         #expect(!MacOSDraftPostFlowDriver.isExplicitComposerLabel("Search posts"))
         #expect(!MacOSDraftPostFlowDriver.isExplicitComposerLabel("Update profile"))
         #expect(!MacOSDraftPostFlowDriver.isExplicitComposerLabel("Post"))
+    }
+
+    @Test("Post-mutation drift is always terminal")
+    func postMutationDriftStops() throws {
+        try MacOSDraftPostFlowDriver.verifyAfterMutation { true }
+        #expect(throws: DraftPostFlowFailure.verificationFailed) {
+            try MacOSDraftPostFlowDriver.verifyAfterMutation {
+                throw DraftPostFlowFailure.focusChanged
+            }
+        }
     }
 
     @Test("TextEdit source must expose one document editor")

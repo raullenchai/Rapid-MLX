@@ -127,7 +127,6 @@ enum DraftPostFlowFailure: Error, Equatable, Sendable {
 struct DraftPostFlowMetrics: Equatable, Sendable {
     var attempts = 0
     var automaticRecoveries = 0
-    var humanCorrections = 0
     var completedSteps = 0
 }
 
@@ -249,6 +248,7 @@ struct MacOSDraftPostFlowDriver: DraftPostFlowDriving {
         to selection: ComputerUseWindowSelection
     ) async throws {
         try await focus(selection)
+        try Task.checkCancellation()
         try await MainActor.run {
             let window = try Self.exactFocusedWindow(selection)
             let composer = try Self.uniqueComposer(in: window)
@@ -279,6 +279,9 @@ struct MacOSDraftPostFlowDriver: DraftPostFlowDriving {
             guard CFEqual(composer, currentComposer) else {
                 throw DraftPostFlowFailure.verificationFailed
             }
+            // This is the final cancellation boundary before the only content
+            // mutation. No suspension occurs between this check and the write.
+            try Task.checkCancellation()
             guard AXUIElementSetAttributeValue(
                 currentComposer,
                 kAXValueAttribute as CFString,
@@ -286,16 +289,28 @@ struct MacOSDraftPostFlowDriver: DraftPostFlowDriving {
             ) == .success else {
                 throw DraftPostFlowFailure.writeRejected
             }
-            let verifiedWindow = try Self.exactFocusedWindow(selection)
-            let verifiedComposer = try Self.uniqueComposer(in: verifiedWindow)
-            guard CFEqual(currentComposer, verifiedComposer),
-                  Self.stringAttribute(
-                    kAXValueAttribute as CFString,
-                    from: verifiedComposer
-                  ) == draft
-            else {
+            // Once content may have changed, no focus/window error is safe to
+            // retry. Collapse every post-mutation observation failure into a
+            // terminal verification failure.
+            try Self.verifyAfterMutation {
+                let verifiedWindow = try Self.exactFocusedWindow(selection)
+                let verifiedComposer = try Self.uniqueComposer(in: verifiedWindow)
+                return CFEqual(currentComposer, verifiedComposer)
+                    && Self.stringAttribute(
+                        kAXValueAttribute as CFString,
+                        from: verifiedComposer
+                      ) == draft
+            }
+        }
+    }
+
+    static func verifyAfterMutation(_ verifier: () throws -> Bool) throws {
+        do {
+            guard try verifier() else {
                 throw DraftPostFlowFailure.verificationFailed
             }
+        } catch {
+            throw DraftPostFlowFailure.verificationFailed
         }
     }
 
