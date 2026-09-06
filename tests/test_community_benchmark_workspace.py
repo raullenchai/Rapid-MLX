@@ -156,6 +156,103 @@ def test_catalog_is_model_first_and_derives_protocol_from_atomic_task() -> None:
     assert all("modality" not in model for model in catalog["models"])
 
 
+def test_memory_fit_requires_headroom_for_the_os_and_kv_cache() -> None:
+    """An 18 GB Mac must not be told an 18 GB model fits."""
+    from vllm_mlx.community_bench.workspace import memory_fit
+
+    assert memory_fit(18, 18) == "does_not_fit"
+    assert memory_fit(17, 18) == "does_not_fit"
+    assert memory_fit(16, 18) == "fits"  # 2 GB headroom on 18 GB
+    assert memory_fit(58, 64) == "does_not_fit"  # 10% headroom on 64 GB
+    assert memory_fit(57, 64) == "fits"
+    assert memory_fit(None, 18) == "unknown"
+    assert memory_fit(8, None) == "unknown"
+    # A profile minimum is a whole-machine floor: qwen-image's 64 GB minimum
+    # fits a 64 GB Mac, exactly as the launch logic admits it.
+    assert memory_fit(64, 64, "profile_minimum") == "fits"
+    assert memory_fit(64, 48, "profile_minimum") == "does_not_fit"
+
+
+def test_memory_estimate_precedence_and_parameter_floor() -> None:
+    from vllm_mlx.community_bench.workspace import (
+        _parameter_floor_gib,
+        estimate_memory_gib,
+    )
+
+    # An explicit profile minimum wins over everything.
+    assert estimate_memory_gib(
+        "qwen3.5-4b-4bit", minimum_memory_gb=12.5, download_size_bytes=1
+    ) == (13, "profile_minimum")
+    # The curated recommendation footprint is the picker's own number.
+    assert estimate_memory_gib(
+        "qwen3.8-27b-4bit",
+        minimum_memory_gb=None,
+        download_size_bytes=1 << 30,
+        footprints={"qwen3.8-27b-4bit": 20.0},
+    ) == (20, "curated_footprint")
+    # A stale curated number is floored the same way.
+    assert estimate_memory_gib(
+        "qwen3.6-35b-mtp-4bit",
+        minimum_memory_gb=None,
+        download_size_bytes=None,
+        footprints={"qwen3.6-35b-mtp-4bit": 3.0},
+    ) == (21, "parameter_count_floor")
+    # A catalog download size that is impossible for the named parameter
+    # count is raised to the parameter floor (the 3 GB "35B MTP" row).
+    assert estimate_memory_gib(
+        "qwen3.6-35b-mtp-4bit", minimum_memory_gb=None, download_size_bytes=1 << 30
+    ) == (21, "parameter_count_floor")
+    # A plausible artifact size keeps the historical +2 GB fallback.
+    assert estimate_memory_gib(
+        "some-new-7b-4bit", minimum_memory_gb=None, download_size_bytes=4 << 30
+    ) == (6, "artifact_size_fallback")
+    assert estimate_memory_gib(
+        "mystery-model", minimum_memory_gb=None, download_size_bytes=None
+    ) == (None, "unknown")
+    # Floor parsing: size × bits/8 × 1.1 + 1, largest size wins, default 4-bit.
+    assert _parameter_floor_gib("bonsai-27b-2bit") == 9
+    assert _parameter_floor_gib("lfm2.5-8b-a1b-4bit") == 6
+    assert _parameter_floor_gib("tmax-9b") == 6
+    assert _parameter_floor_gib("tmax-9b-bf16") == 21
+    assert _parameter_floor_gib("gemma-4-e4b-4bit") == 4
+    assert _parameter_floor_gib("z-image-turbo") is None
+    # Drafters are named after the model they pair with; no floor for them.
+    assert _parameter_floor_gib("gemma-4-31b-assistant") is None
+    assert estimate_memory_gib(
+        "gemma-4-31b-assistant",
+        minimum_memory_gb=None,
+        download_size_bytes=900 << 20,
+        footprints={},
+    ) == (3, "artifact_size_fallback")
+
+
+def test_curated_footprints_degrade_to_empty_when_the_tiers_cannot_load(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from vllm_mlx.community_bench.workspace import curated_footprints
+
+    def boom():
+        raise RuntimeError("policy unreadable")
+
+    monkeypatch.setattr("vllm_mlx.recommendations.load_recommendation_tiers", boom)
+    assert curated_footprints() == {}
+
+
+def test_catalog_never_calls_a_full_memory_model_a_fit() -> None:
+    catalog = benchmark_catalog(memory_gib=18)
+    by_alias = {model["alias"]: model for model in catalog["models"]}
+    assert by_alias["qwen3.8-27b-4bit"]["memory_fit"] == "does_not_fit"
+    assert by_alias["qwen3.6-35b-mtp-4bit"]["memory_fit"] == "does_not_fit"
+    assert by_alias["qwen3.6-35b-mtp-4bit"]["estimated_memory_gib"] >= 20
+    assert by_alias["qwen3.5-4b-4bit"]["memory_fit"] == "fits"
+    assert by_alias["qwen3.5-9b-4bit"]["memory_fit"] == "fits"
+    assert by_alias["gemma-4-31b-assistant"]["memory_fit"] == "fits"
+    assert by_alias["qwen-image"]["memory_fit"] == "does_not_fit"
+    assert benchmark_catalog(memory_gib=64)["models"]
+    big = {m["alias"]: m for m in benchmark_catalog(memory_gib=64)["models"]}
+    assert big["qwen-image"]["memory_fit"] == "fits"
+
+
 def test_unresolved_alias_is_local_evidence_not_formally_comparable() -> None:
     plan = plan_for_alias("flux2-klein-4b")
     assert plan["model"]["identity_strength"] == "unresolved"
