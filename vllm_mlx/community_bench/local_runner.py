@@ -7,6 +7,7 @@ import asyncio
 import base64
 import binascii
 import concurrent.futures
+import contextvars
 import io
 import math
 import multiprocessing
@@ -28,6 +29,23 @@ import requests
 
 from .benchmark_contracts import public_prompt, registered_workload
 from .hardware import collect, run_conditions
+
+#: Where the measurement helpers deposit the "after" run-conditions snapshot.
+#: It must be taken while the model is still resident — after the last
+#: measured round but before the engine/server context tears down — or a
+#: memory-saturated run would report normal pressure once its model is gone.
+_CONDITIONS_AFTER: contextvars.ContextVar[dict[str, Any] | None] = (
+    contextvars.ContextVar("community_bench_conditions_after", default=None)
+)
+
+
+def _record_conditions_after() -> None:
+    """Snapshot run conditions into the active capture, if one is armed."""
+    capture = _CONDITIONS_AFTER.get()
+    if capture is not None:
+        capture["after"] = run_conditions()
+
+
 from .run_builder import build_run, execution_config, utc_now
 from .workspace import LocalRunArchive, plan_for_alias
 
@@ -634,6 +652,9 @@ def _run_video(
             frames=case["frames"],
             fps=case["fps_milli"] / 1000,
         )
+        # Still inside ``serve``: the model is resident, so this reflects
+        # the state the measurement was produced under.
+        _record_conditions_after()
         return [
             {
                 "case_id": case["case_id"],
@@ -684,6 +705,7 @@ async def _text_measurements(repo_id: str) -> tuple[list[dict[str, Any]], int]:
                 sampling="greedy",
                 registered_token_ids=True,
             )
+            _record_conditions_after()
     finally:
         # ThreadPoolExecutor workers are non-daemon and Python joins them again
         # during interpreter shutdown. Leaving this executor live can make the
@@ -787,6 +809,8 @@ def run_local(
         # pressure) before the model is loaded and again right after the last
         # measurement, so a reader can tell a battery/throttled run apart.
         conditions_before = run_conditions()
+        capture: dict[str, Any] = {}
+        capture_token = _CONDITIONS_AFTER.set(capture)
         if task_type == "text_generation":
             measurements, context_length = asyncio.run(
                 _text_measurements(model["repo_id"])
@@ -800,7 +824,11 @@ def run_local(
                 alias, isolate_process_group=not inherit_process_group
             )
         measurements_completed = True
-        conditions_after = run_conditions()
+        _CONDITIONS_AFTER.reset(capture_token)
+        # Taken by the helper before its engine/server context tore down. A
+        # helper that never captured leaves ``after`` unknown; probing here,
+        # after the model is gone, would misreport a memory-saturated run.
+        conditions_after = capture.get("after")
         execution = execution_config(task_type, context_length=context_length)
         run = build_run(
             repo_id=model["repo_id"],

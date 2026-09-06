@@ -1222,6 +1222,10 @@ def test_run_local_records_conditions_before_and_after_the_measurements(
 
     async def fake_measurements(repo_id: str):
         order.append("measure")
+        # The real helper records the "after" snapshot while the model is
+        # still resident, i.e. before its engine context tears down.
+        local_runner._record_conditions_after()
+        order.append("teardown")
         return _text_run()["measurements"], 32768
 
     monkeypatch.setattr(local_runner, "run_conditions", fake_conditions)
@@ -1229,12 +1233,46 @@ def test_run_local_records_conditions_before_and_after_the_measurements(
 
     run = local_runner.run_local("example-text", archive=archive)
 
-    assert order == ["conditions", "measure", "conditions"]
+    assert order == ["conditions", "measure", "conditions", "teardown"]
     assert run["machine"]["conditions_before"]["power_source"] == "ac"
     assert run["machine"]["conditions_before"]["available_memory_mib"] == 9000
     assert run["machine"]["conditions_after"]["thermal_state"] == "serious"
     assert run["machine"]["conditions_after"]["low_power_mode"] is True
     BenchmarkRunValidator().validate(run)
+
+
+def test_after_snapshot_is_never_taken_once_the_model_is_gone(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A helper that did not capture leaves ``after`` unknown; no late probe."""
+    archive = LocalRunArchive(tmp_path)
+    _mock_local_context(
+        monkeypatch, "text_generation", "mlx-community/example-text-model"
+    )
+    calls: list[str] = []
+
+    def counting_conditions():
+        calls.append("probe")
+        return {
+            "power_source": "ac",
+            "low_power_mode": False,
+            "thermal_state": "nominal",
+            "memory_pressure": "normal",
+            "available_memory_mib": 9000,
+        }
+
+    async def silent_measurements(repo_id: str):
+        return _text_run()["measurements"], 32768
+
+    monkeypatch.setattr(local_runner, "run_conditions", counting_conditions)
+    monkeypatch.setattr(local_runner, "_text_measurements", silent_measurements)
+    run = local_runner.run_local("example-text", archive=archive)
+    assert calls == ["probe"]  # only the "before" snapshot
+    assert run["machine"]["conditions_after"]["memory_pressure"] == "unknown"
+    assert run["machine"]["conditions_after"]["available_memory_mib"] is None
+    # The capture is disarmed after the run: a stray late call is a no-op.
+    local_runner._record_conditions_after()
+    assert calls == ["probe"]
 
 
 def test_failed_run_keeps_the_before_snapshot_and_marks_after_unknown(
