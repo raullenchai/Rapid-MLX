@@ -1,19 +1,22 @@
 import Foundation
 
 /// Curated, bounded ways into Computer Use. This is deliberately a catalog,
-/// not four cards hand-written in a view: availability and safety copy are
+/// not cards hand-written in a view: availability and safety copy are
 /// product behavior and must remain testable without rendering SwiftUI.
 struct ComputerUseStarter: Identifiable, Equatable, Sendable {
     enum Kind: String, CaseIterable, Sendable {
         case freeUpSpace
         case tidyInbox
         case draftAndPost
-        case orderLunch
+        case prospectCustomers
+        case createDemoVideo
+        case reserved
     }
 
     enum Availability: Equatable, Sendable {
         case available
         case comingSoon
+        case reserved
     }
 
     let kind: Kind
@@ -55,13 +58,31 @@ struct ComputerUseStarter: Identifiable, Equatable, Sendable {
             availability: .comingSoon
         ),
         ComputerUseStarter(
-            kind: .orderLunch,
-            title: "Order lunch",
-            summary: "Choose from a signed-in lunch site using your preferences and budget.",
-            systemImage: "takeoutbag.and.cup.and.straw",
+            kind: .prospectCustomers,
+            title: "Prospect customers",
+            summary: "Find matching prospects, research each, and draft personal openers for review.",
+            systemImage: "scope",
             applications: "Browser",
-            approvalNote: "Rapid will stop before checkout.",
+            approvalNote: "Rapid will stop before any outreach.",
             availability: .comingSoon
+        ),
+        ComputerUseStarter(
+            kind: .createDemoVideo,
+            title: "Create a demo video",
+            summary: "Walk through your product, narrate each step, and export a polished demo.",
+            systemImage: "video",
+            applications: "Browser + Screen Capture",
+            approvalNote: "You choose the window and review before export.",
+            availability: .comingSoon
+        ),
+        ComputerUseStarter(
+            kind: .reserved,
+            title: "One more starter flow",
+            summary: "Reserved for another broadly useful job instead of filling the catalog with a weak default.",
+            systemImage: "plus",
+            applications: "Product decision pending",
+            approvalNote: "Not available yet.",
+            availability: .reserved
         )
     ]
 }

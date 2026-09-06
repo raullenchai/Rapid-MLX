@@ -35,12 +35,18 @@ struct ComputerUseFeatureTests {
     @Test("Starter catalog is explicit about preview availability")
     func starterCatalog() {
         #expect(ComputerUseStarter.catalog.map(\.kind) == [
-            .freeUpSpace, .tidyInbox, .draftAndPost, .orderLunch
+            .freeUpSpace,
+            .tidyInbox,
+            .draftAndPost,
+            .prospectCustomers,
+            .createDemoVideo,
+            .reserved,
         ])
         #expect(ComputerUseStarter.catalog.first?.availability == .available)
-        #expect(ComputerUseStarter.catalog.dropFirst().allSatisfy {
+        #expect(ComputerUseStarter.catalog.dropFirst().dropLast().allSatisfy {
             $0.availability == .comingSoon
         })
+        #expect(ComputerUseStarter.catalog.last?.availability == .reserved)
         #expect(ComputerUseStarter.catalog.allSatisfy {
             !$0.approvalNote.isEmpty
         })

@@ -55,8 +55,11 @@ struct ComputerUseView: View {
             }
 
             VStack(alignment: .leading, spacing: RapidTheme.Space.md) {
-                Text("Start with a task").font(.headline)
-                LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 12) {
+                Text("Start with a flow").font(.headline)
+                LazyVGrid(
+                    columns: [GridItem(.adaptive(minimum: 220, maximum: 320), spacing: 12)],
+                    spacing: 12
+                ) {
                     ForEach(ComputerUseStarter.catalog) { starter in
                         starterCard(starter)
                     }
@@ -95,9 +98,12 @@ struct ComputerUseView: View {
                 HStack {
                     Image(systemName: starter.systemImage).font(.title2).foregroundStyle(RapidTheme.brandPrimaryDeep)
                     Spacer()
-                    if starter.availability == .comingSoon {
+                    switch starter.availability {
+                    case .comingSoon:
                         Text("COMING NEXT").font(.caption2.weight(.bold)).foregroundStyle(.secondary)
-                    } else {
+                    case .reserved:
+                        Text("RESERVED").font(.caption2.weight(.bold)).foregroundStyle(.secondary)
+                    case .available:
                         Image(systemName: "chevron.right").foregroundStyle(.secondary)
                     }
                 }
@@ -113,11 +119,20 @@ struct ComputerUseView: View {
             .frame(maxWidth: .infinity, minHeight: 118, alignment: .topLeading)
             .padding(16)
             .background(RapidTheme.surfaceRaised, in: RoundedRectangle(cornerRadius: 14))
-            .overlay(RoundedRectangle(cornerRadius: 14).stroke(.secondary.opacity(0.16)))
+            .overlay(
+                RoundedRectangle(cornerRadius: 14)
+                    .stroke(
+                        .secondary.opacity(starter.availability == .reserved ? 0.28 : 0.16),
+                        style: StrokeStyle(
+                            lineWidth: 1,
+                            dash: starter.availability == .reserved ? [5] : []
+                        )
+                    )
+            )
         }
         .buttonStyle(.plain)
-        .disabled(starter.availability == .comingSoon)
-        .opacity(starter.availability == .comingSoon ? 0.58 : 1)
+        .disabled(starter.availability != .available)
+        .opacity(starter.availability == .available ? 1 : 0.58)
         .accessibilityIdentifier("ComputerUse.Starter.\(starter.kind.rawValue)")
     }
 
