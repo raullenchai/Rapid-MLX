@@ -293,7 +293,7 @@ struct MacOSDraftPostFlowDriver: DraftPostFlowDriving {
 
     private func readDraft(from selection: ComputerUseWindowSelection) async throws -> String {
         try await focus(selection)
-        return try await Task.detached {
+        return try await Self.runAXWork {
             let window = try Self.exactFocusedWindow(selection)
             let candidates = try Self.editableElements(in: window)
                 .filter {
@@ -304,7 +304,7 @@ struct MacOSDraftPostFlowDriver: DraftPostFlowDriving {
                 }
                 .map { Self.stringAttribute(kAXValueAttribute as CFString, from: $0) }
             return try Self.uniqueDraft(in: candidates)
-        }.value
+        }
     }
 
     private func writeAndVerify(
@@ -316,7 +316,7 @@ struct MacOSDraftPostFlowDriver: DraftPostFlowDriving {
         let selection = destination.selection
         try await focus(selection)
         try Task.checkCancellation()
-        try await Task.detached {
+        try await Self.runAXWork {
             let window = try Self.exactFocusedBrowserWindow(
                 destination,
                 documentIdentity: documentIdentity
@@ -408,7 +408,7 @@ struct MacOSDraftPostFlowDriver: DraftPostFlowDriving {
                 let verifiedComposer = try Self.uniqueComposer(in: verifiedWindow)
                 return CFEqual(authorizedComposer, verifiedComposer)
             }
-        }.value
+        }
     }
 
     static func utf8Matches(_ lhs: String, _ rhs: String) -> Bool {
@@ -432,7 +432,7 @@ struct MacOSDraftPostFlowDriver: DraftPostFlowDriving {
     ) async throws {
         let selection = destination.selection
         try await focus(selection)
-        try await Task.detached {
+        try await Self.runAXWork {
             let window = try Self.exactFocusedBrowserWindow(
                 destination,
                 documentIdentity: documentIdentity
@@ -444,7 +444,7 @@ struct MacOSDraftPostFlowDriver: DraftPostFlowDriving {
             ).map({ Self.utf8Matches($0, draft) }) == true else {
                 throw DraftPostFlowFailure.verificationFailed
             }
-        }.value
+        }
     }
 
     private static func exactFocusedBrowserWindow(
@@ -476,7 +476,7 @@ struct MacOSDraftPostFlowDriver: DraftPostFlowDriving {
     private func browserDocumentIdentity(
         in destination: ComputerUseWindowOption
     ) async throws -> String {
-        return try await Task.detached {
+        return try await Self.runAXWork {
             let selection = destination.selection
             guard let running = NSRunningApplication(
                 processIdentifier: selection.processIdentifier
@@ -494,7 +494,7 @@ struct MacOSDraftPostFlowDriver: DraftPostFlowDriving {
                   )
             else { throw DraftPostFlowFailure.focusChanged }
             return try Self.currentBrowserDocumentIdentity(in: window)
-        }.value
+        }
     }
 
     private static func currentBrowserDocumentIdentity(
@@ -539,6 +539,22 @@ struct MacOSDraftPostFlowDriver: DraftPostFlowDriving {
             }
             .map { stringAttribute(kAXValueAttribute as CFString, from: $0) }
         return try uniqueDraft(in: candidates)
+    }
+
+    private static func runAXWork<Result: Sendable>(
+        _ operation: @escaping @Sendable () throws -> Result
+    ) async throws -> Result {
+        try Task.checkCancellation()
+        return try await withThrowingTaskGroup(of: Result.self) { group in
+            group.addTask {
+                try Task.checkCancellation()
+                return try operation()
+            }
+            guard let result = try await group.next() else {
+                throw CancellationError()
+            }
+            return result
+        }
     }
 
     private func focus(_ selection: ComputerUseWindowSelection) async throws {
