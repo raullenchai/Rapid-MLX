@@ -502,6 +502,12 @@ struct CommunityBenchmarkModelTests {
                 caseID: "pp512-tg128", completed: false, outputTokens: 3,
                 ttftMS: 90_000, decodeDurationMS: 1, totalDurationMS: 90_001
             ),
+            // A round with a TTFT but no usable decode fields contributes to
+            // neither median: both numbers describe the same rounds.
+            CommunityBenchmarkResult.Measurement(
+                caseID: "pp512-tg128", completed: true, outputTokens: nil,
+                ttftMS: 5, decodeDurationMS: nil, totalDurationMS: 5
+            ),
             // Undeclared case still shows up, after the declared ones. A
             // record from before the `completed` flag existed (nil) counts.
             CommunityBenchmarkResult.Measurement(
@@ -513,7 +519,7 @@ struct CommunityBenchmarkModelTests {
             measurements: measurements, declaredOrder: ["pp512-tg128"]
         )
         #expect(summaries.count == 2)
-        #expect(summaries[0].rounds == 2)
+        #expect(summaries[0].rounds == 3)
         // Even count → mean of the two middle values: (50 + 25) / 2 tok/s.
         #expect(summaries[0].decodeTokensPerSecond == 37.5)
         #expect(summaries[0].ttftMS == 600)
@@ -710,6 +716,14 @@ struct CommunityBenchmarkModelTests {
         splitter.consume(Data(repeating: UInt8(ascii: "a"), count: 5_000))
         splitter.consume(Data("tail\nround 3/5\n".utf8))
         #expect(seen.drain() == ["round 3/5"])
+
+        // A single newline-terminated line past the cap is dropped without
+        // being buffered, and the splitter recovers on the next line.
+        var huge = Data(repeating: UInt8(ascii: "b"), count: 64 * 1_024)
+        huge.append(contentsOf: "\nround 4/5\n".utf8)
+        splitter.consume(huge)
+        #expect(seen.drain() == ["round 4/5"])
+        #expect(splitter._testPendingBytes <= 4 * 1_024 + 1)
 
         // EOF flushes an unterminated final line, once.
         splitter.consume(Data("round 5/5 done".utf8))

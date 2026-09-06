@@ -392,13 +392,15 @@ struct CommunityBenchmarkResult: Decodable, Identifiable {
         }
         return order.compactMap { caseID in
             guard let samples = byCase[caseID], !samples.isEmpty else { return nil }
-            let decode = samples.compactMap { sample -> Double? in
-                guard let tokens = sample.outputTokens, tokens > 1,
-                      let duration = sample.decodeDurationMS, duration > 0
-                else { return nil }
-                return Double(tokens - 1) / duration * 1_000
+            // Decode and TTFT medians come from the same text rounds so the
+            // headline never pairs numbers from different populations.
+            let textRounds = samples.filter { sample in
+                (sample.outputTokens ?? 0) > 1 && (sample.decodeDurationMS ?? 0) > 0
             }
-            let ttft = samples.compactMap(\.ttftMS)
+            let decode = textRounds.map { sample in
+                Double(sample.outputTokens! - 1) / sample.decodeDurationMS! * 1_000
+            }
+            let ttft = textRounds.compactMap(\.ttftMS)
             let total = samples.compactMap(\.totalDurationMS)
             let decodeMedian = median(decode)
             return CaseSummary(
@@ -818,7 +820,7 @@ enum CommunityBenchmarkCommand {
             guard let onLine else { return }
             var rest = chunk[...]
             while let newline = rest.firstIndex(of: UInt8(ascii: "\n")) {
-                pending.append(rest[rest.startIndex..<newline])
+                append(rest[rest.startIndex..<newline])
                 if pending.count <= maxLineBytes,
                    let line = String(data: pending, encoding: .utf8) {
                     onLine(line)
@@ -826,14 +828,22 @@ enum CommunityBenchmarkCommand {
                 pending.removeAll(keepingCapacity: true)
                 rest = rest[rest.index(after: newline)...]
             }
-            if pending.count + rest.count <= maxLineBytes {
-                pending.append(rest)
-            } else {
-                // Poison the oversized line so its eventual tail is dropped
-                // too instead of being reported as a fresh, truncated line.
+            append(rest)
+        }
+
+        /// Never buffers more than `maxLineBytes`: an oversized line is
+        /// poisoned (one byte past the cap) without copying its payload, so
+        /// its eventual tail is dropped too instead of being reported as a
+        /// fresh, truncated line.
+        private func append(_ slice: Data.SubSequence) {
+            if pending.count + slice.count <= maxLineBytes {
+                pending.append(slice)
+            } else if pending.count <= maxLineBytes {
                 pending = Data(count: maxLineBytes + 1)
             }
         }
+
+        internal var _testPendingBytes: Int { pending.count }
 
         /// EOF: a final line without a trailing newline is still a line.
         func finish() {
