@@ -6,6 +6,7 @@ import Testing
 struct MacOSComputerUseObservationTests {
     private let selection = ComputerUseWindowSelection(
         bundleIdentifier: "com.example.Editor",
+        processIdentifier: 123,
         windowID: 42
     )
 
@@ -57,6 +58,31 @@ struct MacOSComputerUseObservationTests {
         #expect(first.contentRevision.count == 64)
         #expect(await vault.artifact(for: first.id) == result.artifact)
         #expect(await capture.callCount == 2)
+    }
+
+    @Test("A recycled window ID from a different process is rejected")
+    func recycledWindowIDFailsClosed() async {
+        let original = Self.captureResult()
+        let recycled = ComputerUseCapturedWindow(
+            target: WorkflowInteractionTarget(
+                bundleIdentifier: original.target.bundleIdentifier,
+                processIdentifier: 124,
+                windowIdentifier: original.target.windowIdentifier,
+                windowFrame: original.target.windowFrame
+            ),
+            artifact: original.artifact
+        )
+        let capture = CaptureStub(result: recycled)
+        let observer = MacOSComputerUseObserver(
+            selections: ["draft": selection],
+            vault: ComputerUseObservationVault(),
+            captureSource: capture,
+            permissionReader: Self.granted
+        )
+
+        await #expect(throws: MacOSComputerUseObservationError.invalidCapture) {
+            _ = try await observer.observe(for: Self.step())
+        }
     }
 
     @Test("Unknown steps cannot widen observation to another window")

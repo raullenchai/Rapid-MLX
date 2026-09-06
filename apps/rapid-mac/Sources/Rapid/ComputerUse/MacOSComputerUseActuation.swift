@@ -238,6 +238,14 @@ struct CGEventComputerUseInputEmitter: ComputerUseInputEmitting {
         "option": .maskAlternate,
         "control": .maskControl,
     ]
+    private static let allowedKeyChords: Set<String> = [
+        "return", "tab", "space", "delete", "escape",
+        "left", "right", "down", "up",
+        "shift+tab",
+        "shift+left", "shift+right", "shift+down", "shift+up",
+        "option+left", "option+right",
+        "command+left", "command+right", "command+down", "command+up",
+    ]
 
     func emit(
         _ payload: WorkflowActionPayload,
@@ -326,12 +334,20 @@ struct CGEventComputerUseInputEmitter: ComputerUseInputEmitting {
                 }
 
             case .keyPress(let key, let modifiers):
-                guard let keyCode = Self.keyCodes[key.lowercased()] else {
+                let normalizedKey = key.lowercased()
+                let normalizedModifiers = modifiers.map { $0.lowercased() }
+                guard Set(normalizedModifiers).count == normalizedModifiers.count,
+                      let keyCode = Self.keyCodes[normalizedKey],
+                      normalizedModifiers.allSatisfy({ Self.modifierFlags[$0] != nil }),
+                      Self.allowedKeyChords.contains(
+                        (normalizedModifiers.sorted() + [normalizedKey]).joined(separator: "+")
+                      )
+                else {
                     throw MacOSComputerUseActuationError.unsupportedKey
                 }
                 var flags: CGEventFlags = []
-                for modifier in modifiers {
-                    guard let flag = Self.modifierFlags[modifier.lowercased()] else {
+                for modifier in normalizedModifiers {
+                    guard let flag = Self.modifierFlags[modifier] else {
                         throw MacOSComputerUseActuationError.unsupportedKey
                     }
                     flags.insert(flag)

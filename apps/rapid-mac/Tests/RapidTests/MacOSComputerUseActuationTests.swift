@@ -284,6 +284,34 @@ struct MacOSComputerUseActuationTests {
         }
     }
 
+    @Test("Destructive modifier combinations are rejected before input")
+    @MainActor
+    func destructiveKeyChordIsRejected() async {
+        let expected = Self.observation().target
+        let emitter = CGEventComputerUseInputEmitter(targetReader: { $0 })
+
+        await #expect(throws: MacOSComputerUseActuationError.unsupportedKey) {
+            try await emitter.emit(
+                .keyPress(key: "delete", modifiers: ["command", "option"]),
+                in: expected
+            )
+        }
+    }
+
+    @Test("Duplicate modifiers cannot bypass the complete-chord allowlist")
+    @MainActor
+    func duplicateModifiersAreRejected() async {
+        let expected = Self.observation().target
+        let emitter = CGEventComputerUseInputEmitter(targetReader: { $0 })
+
+        await #expect(throws: MacOSComputerUseActuationError.unsupportedKey) {
+            try await emitter.emit(
+                .keyPress(key: "tab", modifiers: ["shift", "shift"]),
+                in: expected
+            )
+        }
+    }
+
     @Test("Click coordinates use the tolerated live frame")
     func clickUsesLiveFrame() throws {
         let liveFrame = WorkflowWindowFrame(

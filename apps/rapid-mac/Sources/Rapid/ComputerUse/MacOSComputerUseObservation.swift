@@ -7,10 +7,11 @@ import ScreenCaptureKit
 /// Window IDs are session-scoped and are never treated as durable selectors.
 struct ComputerUseWindowSelection: Equatable, Sendable {
     let bundleIdentifier: String
+    let processIdentifier: pid_t
     let windowID: CGWindowID
 
     var isStructurallyValid: Bool {
-        !bundleIdentifier.isEmpty && windowID != 0
+        !bundleIdentifier.isEmpty && processIdentifier > 0 && windowID != 0
     }
 }
 
@@ -121,6 +122,7 @@ actor MacOSComputerUseObserver: LocalWorkflowObserving {
         try Task.checkCancellation()
         guard captured.isStructurallyValid,
               captured.target.bundleIdentifier == selection.bundleIdentifier,
+              captured.target.processIdentifier == selection.processIdentifier,
               captured.target.windowIdentifier == String(selection.windowID)
         else {
             throw MacOSComputerUseObservationError.invalidCapture
@@ -239,7 +241,7 @@ struct ScreenCaptureKitComputerUseCapture: ComputerUseWindowCapturing {
             )
         }
         guard foreground.0 == selection.bundleIdentifier,
-              let processIdentifier = foreground.1,
+              foreground.1 == selection.processIdentifier,
               let focusedFrame = foreground.2
         else {
             throw MacOSComputerUseObservationError.targetNotFrontmost
@@ -247,16 +249,17 @@ struct ScreenCaptureKitComputerUseCapture: ComputerUseWindowCapturing {
         guard let window = content.windows.first(where: {
             $0.windowID == selection.windowID
                 && $0.owningApplication?.bundleIdentifier == selection.bundleIdentifier
+                && $0.owningApplication?.processID == selection.processIdentifier
         }),
             let application = window.owningApplication,
-            application.processID == processIdentifier,
+            application.processID == selection.processIdentifier,
             window.isOnScreen
         else {
             throw MacOSComputerUseObservationError.targetUnavailable
         }
         let focusedCandidates = content.windows.filter {
             $0.isOnScreen
-                && $0.owningApplication?.processID == processIdentifier
+                && $0.owningApplication?.processID == selection.processIdentifier
                 && MacOSComputerUseWindowIdentity.framesMatch($0.frame, focusedFrame)
         }
         guard focusedCandidates.count == 1,
@@ -270,7 +273,7 @@ struct ScreenCaptureKitComputerUseCapture: ComputerUseWindowCapturing {
             window: window,
             target: WorkflowInteractionTarget(
                 bundleIdentifier: selection.bundleIdentifier,
-                processIdentifier: processIdentifier,
+                processIdentifier: selection.processIdentifier,
                 windowIdentifier: String(selection.windowID),
                 windowFrame: WorkflowWindowFrame(
                     x: frame.origin.x,
