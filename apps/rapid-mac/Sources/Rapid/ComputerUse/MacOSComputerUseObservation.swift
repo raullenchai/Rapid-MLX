@@ -159,6 +159,11 @@ actor MacOSComputerUseObserver: LocalWorkflowObserving {
 /// It rejects background/focus drift rather than bringing an app forward as a
 /// hidden side effect of observation.
 struct ScreenCaptureKitComputerUseCapture: ComputerUseWindowCapturing {
+    private struct ResolvedWindow {
+        let window: SCWindow
+        let target: WorkflowInteractionTarget
+    }
+
     func capture(_ selection: ComputerUseWindowSelection) async throws
         -> ComputerUseCapturedWindow
     {
@@ -166,50 +171,8 @@ struct ScreenCaptureKitComputerUseCapture: ComputerUseWindowCapturing {
             throw MacOSComputerUseObservationError.targetNotConfigured
         }
         try Task.checkCancellation()
-
-        let frontmost = await MainActor.run {
-            let app = NSWorkspace.shared.frontmostApplication
-            return (app?.bundleIdentifier, app?.processIdentifier)
-        }
-        guard frontmost.0 == selection.bundleIdentifier else {
-            throw MacOSComputerUseObservationError.targetNotFrontmost
-        }
-        guard let processIdentifier = frontmost.1,
-              let focusedFrame = MacOSComputerUseWindowIdentity.focusedWindowFrame(
-                processIdentifier: processIdentifier
-              )
-        else {
-            throw MacOSComputerUseObservationError.targetNotFrontmost
-        }
-
-        let content = try await SCShareableContent.excludingDesktopWindows(
-            true,
-            onScreenWindowsOnly: true
-        )
-        try Task.checkCancellation()
-        guard let window = content.windows.first(where: {
-            $0.windowID == selection.windowID
-                && $0.owningApplication?.bundleIdentifier == selection.bundleIdentifier
-        }),
-            let application = window.owningApplication,
-            application.processID == processIdentifier,
-            window.isOnScreen
-        else {
-            throw MacOSComputerUseObservationError.targetUnavailable
-        }
-
-        let focusedCandidates = content.windows.filter {
-            $0.isOnScreen
-                && $0.owningApplication?.processID == processIdentifier
-                && MacOSComputerUseWindowIdentity.framesMatch($0.frame, focusedFrame)
-        }
-        guard focusedCandidates.count == 1,
-              focusedCandidates[0].windowID == selection.windowID
-        else {
-            throw MacOSComputerUseObservationError.targetNotFrontmost
-        }
-
-        let frame = window.frame
+        let before = try await Self.resolve(selection)
+        let frame = before.window.frame
         guard frame.origin.x.isFinite, frame.origin.y.isFinite,
               frame.width.isFinite, frame.height.isFinite,
               frame.width > 0, frame.height > 0
@@ -224,12 +187,19 @@ struct ScreenCaptureKitComputerUseCapture: ComputerUseWindowCapturing {
         configuration.showsCursor = false
         configuration.ignoreShadowsSingleWindow = true
 
-        let filter = SCContentFilter(desktopIndependentWindow: window)
+        let filter = SCContentFilter(desktopIndependentWindow: before.window)
         let image = try await SCScreenshotManager.captureImage(
             contentFilter: filter,
             configuration: configuration
         )
         try Task.checkCancellation()
+        let after = try await Self.resolve(selection)
+        guard MacOSComputerUseWindowIdentity.targetsMatch(
+            before.target,
+            after.target
+        ) else {
+            throw MacOSComputerUseObservationError.invalidCapture
+        }
         guard let png = NSBitmapImageRep(cgImage: image).representation(
             using: .png,
             properties: [:]
@@ -238,9 +208,69 @@ struct ScreenCaptureKitComputerUseCapture: ComputerUseWindowCapturing {
         }
 
         return ComputerUseCapturedWindow(
+            target: after.target,
+            artifact: ComputerUseObservationArtifact(
+                pngData: png,
+                pixelWidth: image.width,
+                pixelHeight: image.height
+            )
+        )
+    }
+
+    private static func resolve(
+        _ selection: ComputerUseWindowSelection
+    ) async throws -> ResolvedWindow {
+        let content = try await SCShareableContent.excludingDesktopWindows(
+            true,
+            onScreenWindowsOnly: true
+        )
+        try Task.checkCancellation()
+        let foreground = await MainActor.run {
+            let application = NSWorkspace.shared.frontmostApplication
+            let processIdentifier = application?.processIdentifier
+            return (
+                application?.bundleIdentifier,
+                processIdentifier,
+                processIdentifier.flatMap {
+                    MacOSComputerUseWindowIdentity.focusedWindowFrame(
+                        processIdentifier: $0
+                    )
+                }
+            )
+        }
+        guard foreground.0 == selection.bundleIdentifier,
+              let processIdentifier = foreground.1,
+              let focusedFrame = foreground.2
+        else {
+            throw MacOSComputerUseObservationError.targetNotFrontmost
+        }
+        guard let window = content.windows.first(where: {
+            $0.windowID == selection.windowID
+                && $0.owningApplication?.bundleIdentifier == selection.bundleIdentifier
+        }),
+            let application = window.owningApplication,
+            application.processID == processIdentifier,
+            window.isOnScreen
+        else {
+            throw MacOSComputerUseObservationError.targetUnavailable
+        }
+        let focusedCandidates = content.windows.filter {
+            $0.isOnScreen
+                && $0.owningApplication?.processID == processIdentifier
+                && MacOSComputerUseWindowIdentity.framesMatch($0.frame, focusedFrame)
+        }
+        guard focusedCandidates.count == 1,
+              focusedCandidates[0].windowID == selection.windowID
+        else {
+            throw MacOSComputerUseObservationError.targetNotFrontmost
+        }
+
+        let frame = window.frame
+        return ResolvedWindow(
+            window: window,
             target: WorkflowInteractionTarget(
                 bundleIdentifier: selection.bundleIdentifier,
-                processIdentifier: application.processID,
+                processIdentifier: processIdentifier,
                 windowIdentifier: String(selection.windowID),
                 windowFrame: WorkflowWindowFrame(
                     x: frame.origin.x,
@@ -248,11 +278,6 @@ struct ScreenCaptureKitComputerUseCapture: ComputerUseWindowCapturing {
                     width: frame.width,
                     height: frame.height
                 )
-            ),
-            artifact: ComputerUseObservationArtifact(
-                pngData: png,
-                pixelWidth: image.width,
-                pixelHeight: image.height
             )
         )
     }

@@ -61,4 +61,21 @@ enum MacOSComputerUseWindowIdentity {
             && abs(lhs.width - rhs.width) <= tolerance
             && abs(lhs.height - rhs.height) <= tolerance
     }
+
+    static func targetsMatch(
+        _ lhs: WorkflowInteractionTarget,
+        _ rhs: WorkflowInteractionTarget
+    ) -> Bool {
+        guard lhs.bundleIdentifier == rhs.bundleIdentifier,
+              lhs.processIdentifier == rhs.processIdentifier,
+              lhs.windowIdentifier == rhs.windowIdentifier
+        else { return false }
+        return framesMatch(lhs.windowFrame.cgRect, rhs.windowFrame.cgRect)
+    }
+}
+
+private extension WorkflowWindowFrame {
+    var cgRect: CGRect {
+        CGRect(x: x, y: y, width: width, height: height)
+    }
 }

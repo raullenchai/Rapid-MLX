@@ -114,6 +114,36 @@ struct MacOSComputerUseActuationTests {
         #expect(await emitter.emissions.isEmpty)
     }
 
+    @Test("The production emitter rechecks target drift at its event boundary")
+    @MainActor
+    func emitterRejectsLastMomentDrift() async {
+        let expected = Self.observation().target
+        let moved = WorkflowInteractionTarget(
+            bundleIdentifier: expected.bundleIdentifier,
+            processIdentifier: expected.processIdentifier,
+            windowIdentifier: expected.windowIdentifier,
+            windowFrame: .init(x: 104, y: 200, width: 800, height: 600)
+        )
+        let emitter = CGEventComputerUseInputEmitter(targetReader: { _ in moved })
+
+        await #expect(throws: MacOSComputerUseActuationError.targetChanged) {
+            try await emitter.emit(
+                .click(normalizedX: 0.25, normalizedY: 0.75),
+                in: expected
+            )
+        }
+    }
+
+    @Test("Unicode chunks never split a surrogate pair")
+    func unicodeChunksPreserveScalars() {
+        let text = String(repeating: "a", count: 1_023) + "😀" + "b"
+        let chunks = CGEventComputerUseInputEmitter.unicodeChunks(for: text)
+
+        #expect(chunks.map(\.count) == [1_023, 3])
+        #expect(chunks.allSatisfy { $0.count <= 1_024 })
+        #expect(String(decoding: chunks.flatMap { $0 }, as: UTF16.self) == text)
+    }
+
     private static func observation() -> WorkflowObservation {
         WorkflowObservation(
             target: WorkflowInteractionTarget(

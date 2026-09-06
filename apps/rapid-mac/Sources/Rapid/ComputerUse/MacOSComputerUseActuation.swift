@@ -74,28 +74,16 @@ actor MacOSComputerUseActuator: LocalWorkflowActuating {
             for: currentObservation.target
         )
         try Task.checkCancellation()
-        guard Self.matches(liveTarget, currentObservation.target) else {
+        guard MacOSComputerUseWindowIdentity.targetsMatch(
+            liveTarget,
+            currentObservation.target
+        ) else {
             throw MacOSComputerUseActuationError.targetChanged
         }
-        try await inputEmitter.emit(action.payload, in: liveTarget)
-    }
-
-    private static func matches(
-        _ live: WorkflowInteractionTarget,
-        _ observed: WorkflowInteractionTarget
-    ) -> Bool {
-        guard live.bundleIdentifier == observed.bundleIdentifier,
-              live.processIdentifier == observed.processIdentifier,
-              live.windowIdentifier == observed.windowIdentifier
-        else { return false }
-
-        let lhs = live.windowFrame
-        let rhs = observed.windowFrame
-        let tolerance = 0.5
-        return abs(lhs.x - rhs.x) <= tolerance
-            && abs(lhs.y - rhs.y) <= tolerance
-            && abs(lhs.width - rhs.width) <= tolerance
-            && abs(lhs.height - rhs.height) <= tolerance
+        // The production emitter repeats this probe synchronously in the same
+        // MainActor turn as each CGEvent post. The preflight here keeps all
+        // emitters testable and rejects drift before entering the input layer.
+        try await inputEmitter.emit(action.payload, in: currentObservation.target)
     }
 }
 
@@ -111,72 +99,96 @@ struct CGWindowComputerUseTargetProbe: ComputerUseTargetProbing {
         }
 
         return try await MainActor.run {
-            guard NSWorkspace.shared.frontmostApplication?.processIdentifier
-                    == expected.processIdentifier
-            else {
-                throw MacOSComputerUseActuationError.targetNotFrontmost
-            }
-            guard let focusedFrame = MacOSComputerUseWindowIdentity.focusedWindowFrame(
-                processIdentifier: expected.processIdentifier
-            ) else {
-                throw MacOSComputerUseActuationError.targetNotFrontmost
-            }
-            guard let records = CGWindowListCopyWindowInfo(
-                [.optionOnScreenOnly, .excludeDesktopElements],
-                kCGNullWindowID
-            ) as? [[CFString: Any]],
-                let record = records.first(where: {
-                    ($0[kCGWindowNumber] as? NSNumber)?.uint32Value == windowID
-                }),
-                let ownerPID = record[kCGWindowOwnerPID] as? NSNumber,
-                ownerPID.int32Value == expected.processIdentifier,
-                let bounds = record[kCGWindowBounds] as? [String: NSNumber],
-                let frame = CGRect(dictionaryRepresentation: bounds as CFDictionary),
-                frame.width > 0,
-                frame.height > 0,
-                let application = NSRunningApplication(
-                    processIdentifier: expected.processIdentifier
-                ),
-                let bundleIdentifier = application.bundleIdentifier
-            else {
-                throw MacOSComputerUseActuationError.targetUnavailable
-            }
-
-            let focusedCandidates = records.filter { record in
-                guard let ownerPID = record[kCGWindowOwnerPID] as? NSNumber,
-                      ownerPID.int32Value == expected.processIdentifier,
-                      let bounds = record[kCGWindowBounds] as? [String: NSNumber],
-                      let frame = CGRect(
-                        dictionaryRepresentation: bounds as CFDictionary
-                      )
-                else { return false }
-                return MacOSComputerUseWindowIdentity.framesMatch(frame, focusedFrame)
-            }
-            guard focusedCandidates.count == 1,
-                  (focusedCandidates[0][kCGWindowNumber] as? NSNumber)?.uint32Value
-                    == windowID
-            else {
-                throw MacOSComputerUseActuationError.targetNotFrontmost
-            }
-
-            return WorkflowInteractionTarget(
-                bundleIdentifier: bundleIdentifier,
-                processIdentifier: expected.processIdentifier,
-                windowIdentifier: String(windowID),
-                windowFrame: WorkflowWindowFrame(
-                    x: frame.origin.x,
-                    y: frame.origin.y,
-                    width: frame.width,
-                    height: frame.height
-                )
-            )
+            try Self.currentTargetSynchronously(for: expected)
         }
+    }
+
+    @MainActor
+    static func currentTargetSynchronously(
+        for expected: WorkflowInteractionTarget
+    ) throws -> WorkflowInteractionTarget {
+        guard let windowID = CGWindowID(expected.windowIdentifier), windowID != 0 else {
+            throw MacOSComputerUseActuationError.targetUnavailable
+        }
+        guard NSWorkspace.shared.frontmostApplication?.processIdentifier
+                == expected.processIdentifier
+        else {
+            throw MacOSComputerUseActuationError.targetNotFrontmost
+        }
+        guard let focusedFrame = MacOSComputerUseWindowIdentity.focusedWindowFrame(
+            processIdentifier: expected.processIdentifier
+        ) else {
+            throw MacOSComputerUseActuationError.targetNotFrontmost
+        }
+        guard let records = CGWindowListCopyWindowInfo(
+            [.optionOnScreenOnly, .excludeDesktopElements],
+            kCGNullWindowID
+        ) as? [[CFString: Any]],
+            let record = records.first(where: {
+                ($0[kCGWindowNumber] as? NSNumber)?.uint32Value == windowID
+            }),
+            let ownerPID = record[kCGWindowOwnerPID] as? NSNumber,
+            ownerPID.int32Value == expected.processIdentifier,
+            let bounds = record[kCGWindowBounds] as? [String: NSNumber],
+            let frame = CGRect(dictionaryRepresentation: bounds as CFDictionary),
+            frame.width > 0,
+            frame.height > 0,
+            let application = NSRunningApplication(
+                processIdentifier: expected.processIdentifier
+            ),
+            let bundleIdentifier = application.bundleIdentifier
+        else {
+            throw MacOSComputerUseActuationError.targetUnavailable
+        }
+
+        let focusedCandidates = records.filter { record in
+            guard let ownerPID = record[kCGWindowOwnerPID] as? NSNumber,
+                  ownerPID.int32Value == expected.processIdentifier,
+                  let bounds = record[kCGWindowBounds] as? [String: NSNumber],
+                  let frame = CGRect(
+                    dictionaryRepresentation: bounds as CFDictionary
+                  )
+            else { return false }
+            return MacOSComputerUseWindowIdentity.framesMatch(frame, focusedFrame)
+        }
+        guard focusedCandidates.count == 1,
+              (focusedCandidates[0][kCGWindowNumber] as? NSNumber)?.uint32Value
+                == windowID
+        else {
+            throw MacOSComputerUseActuationError.targetNotFrontmost
+        }
+
+        return WorkflowInteractionTarget(
+            bundleIdentifier: bundleIdentifier,
+            processIdentifier: expected.processIdentifier,
+            windowIdentifier: String(windowID),
+            windowFrame: WorkflowWindowFrame(
+                x: frame.origin.x,
+                y: frame.origin.y,
+                width: frame.width,
+                height: frame.height
+            )
+        )
     }
 }
 
 /// Narrow CGEvent adapter. It supports only the three payloads authored by the
 /// workflow kernel and an explicit key/modifier allowlist.
 struct CGEventComputerUseInputEmitter: ComputerUseInputEmitting {
+    typealias TargetReader = @MainActor @Sendable (
+        WorkflowInteractionTarget
+    ) throws -> WorkflowInteractionTarget
+
+    private let targetReader: TargetReader
+
+    init(
+        targetReader: @escaping TargetReader = {
+            try CGWindowComputerUseTargetProbe.currentTargetSynchronously(for: $0)
+        }
+    ) {
+        self.targetReader = targetReader
+    }
+
     private static let keyCodes: [String: CGKeyCode] = [
         "return": 36,
         "tab": 48,
@@ -200,92 +212,140 @@ struct CGEventComputerUseInputEmitter: ComputerUseInputEmitting {
         in target: WorkflowInteractionTarget
     ) async throws {
         try Task.checkCancellation()
-        guard let source = CGEventSource(stateID: .combinedSessionState) else {
-            throw MacOSComputerUseActuationError.eventCreationFailed
+        let textChunks: [[UniChar]]
+        if case .typeText(let text) = payload {
+            textChunks = Self.unicodeChunks(for: text)
+        } else {
+            textChunks = []
         }
 
-        switch payload {
-        case .click(let normalizedX, let normalizedY):
-            let frame = target.windowFrame
-            let point = CGPoint(
-                x: frame.x + normalizedX * frame.width,
-                y: frame.y + normalizedY * frame.height
-            )
-            guard let down = CGEvent(
-                mouseEventSource: source,
-                mouseType: .leftMouseDown,
-                mouseCursorPosition: point,
-                mouseButton: .left
-            ),
-                let up = CGEvent(
-                    mouseEventSource: source,
-                    mouseType: .leftMouseUp,
-                    mouseCursorPosition: point,
-                    mouseButton: .left
-                )
-            else {
+        try await MainActor.run {
+            guard let source = CGEventSource(stateID: .combinedSessionState) else {
                 throw MacOSComputerUseActuationError.eventCreationFailed
             }
-            try Task.checkCancellation()
-            down.post(tap: .cgAnnotatedSessionEventTap)
-            up.post(tap: .cgAnnotatedSessionEventTap)
 
-        case .typeText(let text):
-            // CGEvent accepts UTF-16. Chunking bounds each event while keeping
-            // text off the clipboard, so existing clipboard contents remain
-            // untouched and no global pasteboard observer receives the value.
-            let units = Array(text.utf16)
-            for start in stride(from: 0, to: units.count, by: 1_024) {
+            switch payload {
+            case .click(let normalizedX, let normalizedY):
+                let frame = target.windowFrame
+                let point = CGPoint(
+                    x: frame.x + normalizedX * frame.width,
+                    y: frame.y + normalizedY * frame.height
+                )
+                guard let down = CGEvent(
+                    mouseEventSource: source,
+                    mouseType: .leftMouseDown,
+                    mouseCursorPosition: point,
+                    mouseButton: .left
+                ),
+                    let up = CGEvent(
+                        mouseEventSource: source,
+                        mouseType: .leftMouseUp,
+                        mouseCursorPosition: point,
+                        mouseButton: .left
+                    )
+                else {
+                    throw MacOSComputerUseActuationError.eventCreationFailed
+                }
                 try Task.checkCancellation()
-                let chunk = Array(units[start ..< min(start + 1_024, units.count)])
+                try Self.requireCurrent(target, using: targetReader)
+                down.post(tap: .cgAnnotatedSessionEventTap)
+                up.post(tap: .cgAnnotatedSessionEventTap)
+
+            case .typeText:
+                // CGEvent accepts UTF-16. Scalar-safe chunks keep text off the
+                // clipboard without splitting surrogate pairs between events.
+                for chunk in textChunks {
+                    try Task.checkCancellation()
+                    try Self.requireCurrent(target, using: targetReader)
+                    guard let down = CGEvent(
+                        keyboardEventSource: source,
+                        virtualKey: 0,
+                        keyDown: true
+                    ),
+                        let up = CGEvent(
+                            keyboardEventSource: source,
+                            virtualKey: 0,
+                            keyDown: false
+                        )
+                    else {
+                        throw MacOSComputerUseActuationError.eventCreationFailed
+                    }
+                    down.keyboardSetUnicodeString(
+                        stringLength: chunk.count,
+                        unicodeString: chunk
+                    )
+                    up.keyboardSetUnicodeString(
+                        stringLength: chunk.count,
+                        unicodeString: chunk
+                    )
+                    down.post(tap: .cgAnnotatedSessionEventTap)
+                    up.post(tap: .cgAnnotatedSessionEventTap)
+                }
+
+            case .keyPress(let key, let modifiers):
+                guard let keyCode = Self.keyCodes[key.lowercased()] else {
+                    throw MacOSComputerUseActuationError.unsupportedKey
+                }
+                var flags: CGEventFlags = []
+                for modifier in modifiers {
+                    guard let flag = Self.modifierFlags[modifier.lowercased()] else {
+                        throw MacOSComputerUseActuationError.unsupportedKey
+                    }
+                    flags.insert(flag)
+                }
                 guard let down = CGEvent(
                     keyboardEventSource: source,
-                    virtualKey: 0,
+                    virtualKey: keyCode,
                     keyDown: true
                 ),
                     let up = CGEvent(
                         keyboardEventSource: source,
-                        virtualKey: 0,
+                        virtualKey: keyCode,
                         keyDown: false
                     )
                 else {
                     throw MacOSComputerUseActuationError.eventCreationFailed
                 }
-                down.keyboardSetUnicodeString(stringLength: chunk.count, unicodeString: chunk)
-                up.keyboardSetUnicodeString(stringLength: chunk.count, unicodeString: chunk)
+                down.flags = flags
+                up.flags = flags
+                try Task.checkCancellation()
+                try Self.requireCurrent(target, using: targetReader)
                 down.post(tap: .cgAnnotatedSessionEventTap)
                 up.post(tap: .cgAnnotatedSessionEventTap)
             }
+        }
+    }
 
-        case .keyPress(let key, let modifiers):
-            guard let keyCode = Self.keyCodes[key.lowercased()] else {
-                throw MacOSComputerUseActuationError.unsupportedKey
+    static func unicodeChunks(
+        for text: String,
+        maximumUTF16Units: Int = 1_024
+    ) -> [[UniChar]] {
+        precondition(maximumUTF16Units >= 2)
+        var chunks: [[UniChar]] = []
+        var current: [UniChar] = []
+        current.reserveCapacity(maximumUTF16Units)
+
+        for scalar in text.unicodeScalars {
+            let units = Array(String(scalar).utf16)
+            if current.count + units.count > maximumUTF16Units {
+                chunks.append(current)
+                current = []
+                current.reserveCapacity(maximumUTF16Units)
             }
-            var flags: CGEventFlags = []
-            for modifier in modifiers {
-                guard let flag = Self.modifierFlags[modifier.lowercased()] else {
-                    throw MacOSComputerUseActuationError.unsupportedKey
-                }
-                flags.insert(flag)
-            }
-            guard let down = CGEvent(
-                keyboardEventSource: source,
-                virtualKey: keyCode,
-                keyDown: true
-            ),
-                let up = CGEvent(
-                    keyboardEventSource: source,
-                    virtualKey: keyCode,
-                    keyDown: false
-                )
-            else {
-                throw MacOSComputerUseActuationError.eventCreationFailed
-            }
-            down.flags = flags
-            up.flags = flags
-            try Task.checkCancellation()
-            down.post(tap: .cgAnnotatedSessionEventTap)
-            up.post(tap: .cgAnnotatedSessionEventTap)
+            current.append(contentsOf: units)
+        }
+        if !current.isEmpty { chunks.append(current) }
+        return chunks
+    }
+
+    @MainActor
+    private static func requireCurrent(
+        _ expected: WorkflowInteractionTarget,
+        using targetReader: TargetReader
+    ) throws {
+        let current = try targetReader(expected)
+        guard MacOSComputerUseWindowIdentity.targetsMatch(current, expected) else {
+            throw MacOSComputerUseActuationError.targetChanged
         }
     }
 }
