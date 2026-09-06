@@ -46,8 +46,21 @@ def _record_conditions_after() -> None:
         capture["after"] = run_conditions()
 
 
-from .run_builder import build_run, execution_config, utc_now
+from .run_builder import (
+    build_run,
+    consistent_model_identity,
+    execution_config,
+    unresolved_model_identity,
+    utc_now,
+)
 from .workspace import LocalRunArchive, plan_for_alias
+
+#: Where the text helper deposits the identity of the checkpoint the loader
+#: pinned, so a run that fails after loading still archives the facts of
+#: the artifact that was actually loaded.
+_LOADED_IDENTITY: contextvars.ContextVar[dict[str, Any] | None] = (
+    contextvars.ContextVar("community_bench_loaded_identity", default=None)
+)
 
 _VIDEO_JOB_TIMEOUT_S = 3600.0
 _VIDEO_POLL_INTERVAL_S = 1.0
@@ -672,23 +685,77 @@ def _run_video(
         ]
 
 
-async def _text_measurements(repo_id: str) -> tuple[list[dict[str, Any]], int]:
+def _loader_target(model_name: str, repo_id: str) -> str:
+    """What to hand ``load_model_with_fallback`` for ``model_name``.
+
+    The loader only resolves an alias when that alias declares a subfolder
+    (``lfm2.5-2.6b-4bit`` -> ``…/snapshots/<sha>/4bit``); a plain alias would
+    reach the Hub verbatim and 404 (``serve`` resolves ``hf_path`` first for
+    the same reason). So: alias when it pins a subfolder — explicit-alias
+    precedence keeps the measured checkpoint equal to the recorded identity —
+    and the resolved repo id otherwise.
+    """
+    from vllm_mlx.model_aliases import resolve_subfolder
+
+    return model_name if resolve_subfolder(model_name) else repo_id
+
+
+async def _text_measurements(
+    model_name: str,
+    catalog_repo_id: str | None = None,
+) -> tuple[list[dict[str, Any]], int, dict[str, Any] | None]:
+    """Measure ``model_name`` — the catalog alias, not the bare repo id.
+
+    The loader resolves an explicit alias to that alias's checkpoint
+    (repo + subfolder). A bare repo id would instead prefer whatever
+    variant was last ``pull``ed, so a run labelled ``lfm2.5-2.6b-4bit``
+    could silently measure the 8-bit checkpoint. Loading by alias keeps the
+    measured artifact and the recorded identity the same thing.
+    """
     from vllm_mlx.engine_core import (
         AsyncEngineCore,
         EngineConfig,
         _init_mlx_step_thread,
     )
+    from vllm_mlx.model_aliases import resolve_model, resolve_subfolder
     from vllm_mlx.scheduler import SchedulerConfig
     from vllm_mlx.service.helpers import get_model_max_context
     from vllm_mlx.utils.tokenizer import load_model_with_fallback
 
     from .runner import _reported_token_count, run_standardized_bench
 
+    # The catalog's own repo id is authoritative: ``resolve_model`` may answer
+    # with a same-named local directory or an extra-model-root path, which
+    # would measure unrelated weights under the catalog identity.
+    repo_id = catalog_repo_id or resolve_model(model_name)
+    target = _loader_target(model_name, repo_id)
+
     executor = concurrent.futures.ThreadPoolExecutor(
         max_workers=1, thread_name_prefix="mlx-step", initializer=_init_mlx_step_thread
     )
     try:
-        model, tokenizer = executor.submit(load_model_with_fallback, repo_id).result()
+        loaded = executor.submit(
+            load_model_with_fallback, target, return_source=True
+        ).result()
+        # ``return_source`` appends the concrete checkpoint source; a test
+        # double may still answer with the plain pair.
+        model, tokenizer = loaded[0], loaded[1]
+        loaded_source = loaded[2] if len(loaded) > 2 else ""
+        # Identity of the checkpoint the loader just pinned, read now — before
+        # minutes of measurement give another process time to move refs/main.
+        loaded_identity = unresolved_model_identity(
+            repo_id,
+            "text_generation",
+            resolve_subfolder(model_name),
+            snapshot_path=(
+                loaded_source
+                if isinstance(loaded_source, str) and os.path.isdir(loaded_source)
+                else None
+            ),
+        )
+        capture = _LOADED_IDENTITY.get()
+        if capture is not None:
+            capture["identity"] = loaded_identity
         scheduler = SchedulerConfig(
             max_num_seqs=1,
             max_concurrent_requests=1,
@@ -745,7 +812,7 @@ async def _text_measurements(repo_id: str) -> tuple[list[dict[str, Any]], int]:
                     "decode_duration_ms": decode_ms,
                 }
             )
-    return measurements, context_length
+    return measurements, context_length, loaded_identity
 
 
 def _is_dedicated_process_group_leader() -> bool:
@@ -798,6 +865,36 @@ def run_local(
     task_type = model["task_type"]
     if task_type not in {"text_generation", "image_generation", "video_generation"}:
         raise ValueError(f"unsupported task type {task_type!r}")
+    destination = archive or LocalRunArchive.default()
+    # The text helper deposits the identity of the checkpoint the loader
+    # pinned; arm the capture for this run only and disarm on every path.
+    loaded: dict[str, Any] = {}
+    loaded_token = _LOADED_IDENTITY.set(loaded)
+    try:
+        return _run_local_measured(
+            alias,
+            plan,
+            model,
+            task_type,
+            started_at,
+            destination,
+            inherit_process_group,
+            loaded,
+        )
+    finally:
+        _LOADED_IDENTITY.reset(loaded_token)
+
+
+def _run_local_measured(
+    alias: str,
+    plan: dict[str, Any],
+    model: dict[str, Any],
+    task_type: str,
+    started_at: str,
+    destination: LocalRunArchive,
+    inherit_process_group: bool,
+    loaded: dict[str, Any],
+) -> dict[str, Any]:
     context_length = None
     hardware = None
     software = None
@@ -805,7 +902,12 @@ def run_local(
     conditions_before = None
     conditions_after = None
     measurements_completed = False
-    destination = archive or LocalRunArchive.default()
+    # Resolve the identity from the cache BEFORE loading: the loader pins a
+    # snapshot at load time, and reading the config after the run could
+    # describe a newer snapshot if another pull advanced refs/main meanwhile.
+    model_identity = unresolved_model_identity(
+        model["repo_id"], task_type, model.get("subfolder")
+    )
     try:
         hardware, software = collect()
         # Snapshot the volatile machine state (power, thermal, memory
@@ -816,9 +918,12 @@ def run_local(
         capture_token = _CONDITIONS_AFTER.set(capture)
         try:
             if task_type == "text_generation":
-                measurements, context_length = asyncio.run(
-                    _text_measurements(model["repo_id"])
-                )
+                measured = asyncio.run(_text_measurements(alias, model["repo_id"]))
+                measurements, context_length = measured[0], measured[1]
+                # The identity read right after the loader pinned its snapshot
+                # (3-tuple from the real helper; test doubles may return two).
+                if len(measured) > 2 and measured[2] is not None:
+                    model_identity = measured[2]
             elif task_type == "image_generation":
                 measurements = _run_image(
                     alias, isolate_process_group=not inherit_process_group
@@ -832,14 +937,30 @@ def run_local(
             # stray late call in this process can never mutate a stale
             # capture.
             _CONDITIONS_AFTER.reset(capture_token)
+        # ``_LOADED_IDENTITY`` is disarmed by ``run_local`` on every path; if
+        # the helper deposited one, prefer it (covers doubles that return two).
+        if loaded.get("identity") is not None:
+            model_identity = loaded["identity"]
         measurements_completed = True
         # Taken by the helper before its engine/server context tore down. A
         # helper that never captured leaves ``after`` unknown; probing here,
         # after the model is gone, would misreport a memory-saturated run.
         conditions_after = capture.get("after")
+        # Re-read the cache now that the loader has pinned its snapshot and
+        # keep the identity only if it names the same revision.
+        model_identity = consistent_model_identity(
+            model_identity,
+            unresolved_model_identity(
+                model["repo_id"], task_type, model.get("subfolder")
+            ),
+            model["repo_id"],
+            task_type,
+        )
         execution = execution_config(task_type, context_length=context_length)
         run = build_run(
             repo_id=model["repo_id"],
+            subfolder=model.get("subfolder"),
+            model_identity=model_identity,
             task_type=task_type,
             hardware=hardware,
             software=software,
@@ -854,6 +975,10 @@ def run_local(
         # ``CancelledError`` is a BaseException: without naming it here a
         # cancelled benchmark would skip the archived cancellation record
         # (and its before-snapshot) entirely.
+        # A run that failed after loading still describes the checkpoint
+        # that was actually loaded.
+        if loaded.get("identity") is not None:
+            model_identity = loaded["identity"]
         if measurements_completed and execution is None:
             raise LocalBenchmarkError(
                 f"benchmark completed but result could not be constructed: {exc}",
@@ -871,6 +996,8 @@ def run_local(
                 execution = execution_config(task_type, context_length=context_length)
             failed = build_run(
                 repo_id=model["repo_id"],
+                subfolder=model.get("subfolder"),
+                model_identity=model_identity,
                 task_type=task_type,
                 hardware=hardware,
                 software=software,

@@ -1271,7 +1271,7 @@ def test_run_local_archives_registered_token_drift_as_failure(
     measurements = _text_run()["measurements"]
     measurements[0]["prompt_tokens"] = 510
 
-    async def drifted_measurements(repo_id: str):
+    async def drifted_measurements(repo_id: str, *_: object, **__: object):
         return measurements, 32768
 
     monkeypatch.setattr(local_runner, "_text_measurements", drifted_measurements)
@@ -1317,7 +1317,9 @@ def test_run_local_records_conditions_before_and_after_the_measurements(
         order.append("conditions")
         return next(snapshots)
 
-    async def fake_measurements(repo_id: str):
+    async def fake_measurements(alias: str, repo_id: str):
+        assert alias == "example-text"
+        assert repo_id == "mlx-community/example-text-model"
         order.append("measure")
         # The real helper records the "after" snapshot while the model is
         # still resident, i.e. before its engine context tears down.
@@ -1358,7 +1360,9 @@ def test_after_snapshot_is_never_taken_once_the_model_is_gone(
             "available_memory_mib": 9000,
         }
 
-    async def silent_measurements(repo_id: str):
+    async def silent_measurements(alias: str, repo_id: str):
+        assert alias == "example-text"
+        assert repo_id == "mlx-community/example-text-model"
         return _text_run()["measurements"], 32768
 
     monkeypatch.setattr(local_runner, "run_conditions", counting_conditions)
@@ -1391,7 +1395,9 @@ def test_capture_is_disarmed_when_the_helper_raises(
             "available_memory_mib": 9000,
         }
 
-    async def broken(repo_id: str):
+    async def broken(alias: str, repo_id: str):
+        assert alias == "example-text"
+        assert repo_id == "mlx-community/example-text-model"
         raise RuntimeError("boom")
 
     monkeypatch.setattr(local_runner, "run_conditions", counting_conditions)
@@ -1459,7 +1465,9 @@ def test_asyncio_cancellation_is_archived_as_cancelled_with_before_snapshot(
     }
     monkeypatch.setattr(local_runner, "run_conditions", lambda: dict(before))
 
-    async def cancelled(repo_id: str, **_: object):
+    async def cancelled(alias: str, repo_id: str, **_: object):
+        assert alias == "example-text"
+        assert repo_id == "mlx-community/example-text-model"
         raise asyncio.CancelledError()
 
     monkeypatch.setattr(local_runner, "_text_measurements", cancelled)
@@ -1487,7 +1495,9 @@ def test_failed_run_keeps_the_before_snapshot_and_marks_after_unknown(
     }
     monkeypatch.setattr(local_runner, "run_conditions", lambda: dict(before))
 
-    async def broken(repo_id: str):
+    async def broken(alias: str, repo_id: str):
+        assert alias == "example-text"
+        assert repo_id == "mlx-community/example-text-model"
         raise RuntimeError("boom")
 
     monkeypatch.setattr(local_runner, "_text_measurements", broken)
@@ -2799,7 +2809,7 @@ def test_run_local_converts_text_engine_result_to_atomic_measurements(
     monkeypatch.setattr(
         tokenizer_module,
         "load_model_with_fallback",
-        lambda repo_id: (
+        lambda repo_id, **_: (
             SimpleNamespace(args=SimpleNamespace(max_position_embeddings=32768)),
             object(),
         ),
@@ -4618,3 +4628,489 @@ def test_run_bucket_selects_registered_or_synthetic_prompts(
     assert len(synthetic_ids) == 8
     assert observed == [("synthetic prompt text", False)] * 6
     assert len(result.rounds_raw) == 5
+
+
+# ---------------------------------------------------------------------------
+# Model identity facts from the local Hugging Face cache
+# ---------------------------------------------------------------------------
+
+
+def test_quantization_facts_projects_mlx_config_onto_the_contract() -> None:
+    from vllm_mlx.catalog.validation import ContractValidator
+    from vllm_mlx.community_bench.run_builder import quantization_facts
+
+    uniform = {"quantization": {"group_size": 64, "bits": 4, "mode": "affine"}}
+    assert quantization_facts(uniform) == {
+        "kind": "weights",
+        "method": "affine",
+        "weight_bits_x2": 8,
+        "group_size": 64,
+        "base_dtype": "unknown",
+    }
+    mixed = {
+        "torch_dtype": "bfloat16",
+        "quantization": {
+            "group_size": 64,
+            "bits": 4,
+            "mode": "affine",
+            "model.layers.0.mlp.gate": {"group_size": 64, "bits": 8},
+        },
+    }
+    assert quantization_facts(mixed) == {
+        "kind": "mixed",
+        "method": "affine",
+        "group_size": 64,
+        "base_dtype": "bfloat16",
+    }
+    # mflux image models declare ``method`` instead of mlx-lm's ``mode``; it
+    # must never be replaced by the affine default.
+    mflux = {"quantization": {"method": "mflux", "bits": 4, "group_size": 64}}
+    assert quantization_facts(mflux)["method"] == "mflux"
+    assert quantization_facts(mflux)["kind"] == "weights"
+    # A declared scheme that does not fit the contract pattern is "other".
+    odd = {"quantization": {"mode": "Affine/V2", "bits": 4}}
+    assert quantization_facts(odd)["method"] == "other"
+    # Publisher-controlled values outside the contract degrade to unknown
+    # instead of producing an unsavable record.
+    assert quantization_facts({"quantization": {"bits": 64}})["kind"] == "unknown"
+    assert quantization_facts({"quantization": {"bits": float("nan")}})["kind"] == (
+        "unknown"
+    )
+    assert quantization_facts({"quantization": {"bits": True}})["kind"] == "unknown"
+    unparsable_override = quantization_facts(
+        {"quantization": {"bits": 4, "head": {"bits": []}}}
+    )
+    assert unparsable_override["kind"] == "mixed"
+    assert "weight_bits_x2" not in unparsable_override
+    assert "group_size" not in quantization_facts(
+        {"quantization": {"bits": 4, "group_size": 8192}}
+    )
+    # LiquidAI subfolder configs spell the base dtype as ``dtype``.
+    assert quantization_facts({"dtype": "bfloat16"})["base_dtype"] == "bfloat16"
+    # Fractional bit widths are carried as x2 integers (3.5 bpw -> 7).
+    assert quantization_facts({"quantization": {"bits": 3.5}})["weight_bits_x2"] == 7
+    assert quantization_facts({"torch_dtype": "float16"}) == {
+        "kind": "none",
+        "base_dtype": "float16",
+    }
+    assert quantization_facts({"quantization": {"bits": "four"}}) == {
+        "kind": "unknown",
+        "base_dtype": "unknown",
+    }
+    # 3.3 bpw is not a contract value: never rounded into a fact.
+    assert quantization_facts({"quantization": {"bits": 3.3}})["kind"] == "unknown"
+    # A declaration that exists but is unreadable is unknown, not "none".
+    assert quantization_facts({"quantization": 5})["kind"] == "unknown"
+    # transformers-style quantization_config names the scheme quant_method.
+    awq = {"quantization_config": {"bits": 4, "quant_method": "awq"}}
+    assert quantization_facts(awq)["method"] == "awq"
+    # The contract caps method at 64 characters; longer publisher strings
+    # become "other" instead of making the record unsavable.
+    long_method = {"quantization": {"bits": 4, "method": "m" * 65}}
+    assert quantization_facts(long_method)["method"] == "other"
+    # Every projection must satisfy the atomic quantization contract.
+    for config in (
+        uniform,
+        mixed,
+        mflux,
+        odd,
+        {"quantization": {"bits": 3.5}},
+        {},
+        {"quantization": 5},
+    ):
+        identity = {
+            "schema_version": 1,
+            "identity_strength": "unresolved",
+            "pipeline_kind": "text_generation",
+            "components": [
+                {
+                    "component_id": "primary",
+                    "role": "primary",
+                    "source": {"kind": "huggingface", "repo_id": "org/model"},
+                    "artifact": {"format": "mlx-safetensors"},
+                    "quantization": quantization_facts(config),
+                }
+            ],
+        }
+        ContractValidator().validate_model_identity(identity)
+
+
+def test_model_identity_reads_quantization_and_revision_from_the_cache(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    import huggingface_hub
+
+    from vllm_mlx.catalog.validation import ContractValidator
+    from vllm_mlx.community_bench import run_builder
+
+    revision = "32f3e8ecf65426fc3306969496342d504bfa13f3"
+    snapshot = tmp_path / "models--org--model" / "snapshots" / revision
+    snapshot.mkdir(parents=True)
+    (snapshot / "config.json").write_text(
+        json.dumps({"quantization": {"group_size": 32, "bits": 8, "mode": "affine"}})
+    )
+
+    def fake_cache(repo_id: str, filename: str, **_: object):
+        assert (repo_id, filename) == ("org/model", "config.json")
+        return str(snapshot / "config.json")
+
+    monkeypatch.setattr(huggingface_hub, "try_to_load_from_cache", fake_cache)
+    identity = run_builder.unresolved_model_identity("org/model", "text_generation")
+    component = identity["components"][0]
+    assert component["quantization"] == {
+        "kind": "weights",
+        "method": "affine",
+        "weight_bits_x2": 16,
+        "group_size": 32,
+        "base_dtype": "unknown",
+    }
+    assert component["source"] == {
+        "kind": "huggingface",
+        "repo_id": "org/model",
+        "resolved_revision": revision,
+    }
+    assert identity["identity_strength"] == "unresolved"
+    ContractValidator().validate_model_identity(identity)
+
+
+def test_model_identity_reads_the_subfolder_config_for_nested_variants(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """``LiquidAI/LFM2.5-2.6B-MLX`` keeps ``4bit/`` and ``8bit/`` side by side."""
+    import huggingface_hub
+
+    from vllm_mlx.catalog.validation import ContractValidator
+    from vllm_mlx.community_bench import run_builder
+
+    revision = "b41f2b65685e95418f1ac809bb022d4f79e1ab27"
+    snapshot = tmp_path / "snapshots" / revision
+    (snapshot / "4bit").mkdir(parents=True)
+    (snapshot / "config.json").write_text(json.dumps({}))
+    (snapshot / "4bit" / "config.json").write_text(
+        json.dumps({"quantization": {"group_size": 64, "bits": 4, "mode": "affine"}})
+    )
+    requested: list[str] = []
+
+    def fake_cache(repo_id: str, filename: str, **_: object):
+        requested.append(filename)
+        return str(snapshot / filename)
+
+    monkeypatch.setattr(huggingface_hub, "try_to_load_from_cache", fake_cache)
+    identity = run_builder.unresolved_model_identity(
+        "LiquidAI/LFM2.5-2.6B-MLX", "text_generation", "4bit"
+    )
+    component = identity["components"][0]
+    assert requested == ["4bit/config.json"]
+    assert component["source"]["subfolder"] == "4bit"
+    assert component["source"]["resolved_revision"] == revision
+    assert component["quantization"]["weight_bits_x2"] == 8
+    ContractValidator().validate_model_identity(identity)
+
+
+def test_loader_target_is_alias_only_when_it_pins_a_subfolder() -> None:
+    """Caught by dogfood: loading a plain alias sent it to the Hub verbatim
+    (``Repository Not Found ... /api/models/qwen3.5-4b-4bit``)."""
+    assert (
+        local_runner._loader_target(
+            "qwen3.5-4b-4bit", "mlx-community/Qwen3.5-4B-MLX-4bit"
+        )
+        == "mlx-community/Qwen3.5-4B-MLX-4bit"
+    )
+    assert (
+        local_runner._loader_target("lfm2.5-2.6b-4bit", "LiquidAI/LFM2.5-2.6B-MLX")
+        == "lfm2.5-2.6b-4bit"
+    )
+
+
+def test_run_local_measures_text_models_by_alias_not_bare_repo_id(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The loader must see the alias so the measured checkpoint matches the
+    recorded identity (a bare repo id prefers the last pulled variant)."""
+    archive = LocalRunArchive(tmp_path)
+    _mock_local_context(
+        monkeypatch, "text_generation", "mlx-community/example-text-model"
+    )
+    seen: list[str] = []
+
+    async def fake_measurements(model_name: str, *_: object, **__: object):
+        seen.append(model_name)
+        return _text_run()["measurements"], 32768
+
+    monkeypatch.setattr(local_runner, "_text_measurements", fake_measurements)
+    local_runner.run_local("example-text", archive=archive)
+    assert seen == ["example-text"]
+
+
+def test_identity_is_kept_only_when_the_snapshot_did_not_move() -> None:
+    from vllm_mlx.community_bench.run_builder import consistent_model_identity
+
+    def identity(revision: str | None, bits_x2: int = 8) -> dict:
+        source = {"kind": "huggingface", "repo_id": "org/model", "subfolder": "4bit"}
+        if revision:
+            source["resolved_revision"] = revision
+        return {
+            "schema_version": 1,
+            "identity_strength": "unresolved",
+            "pipeline_kind": "text_generation",
+            "components": [
+                {
+                    "component_id": "primary",
+                    "role": "primary",
+                    "source": source,
+                    "artifact": {"format": "mlx-safetensors"},
+                    "quantization": {
+                        "kind": "weights",
+                        "method": "affine",
+                        "weight_bits_x2": bits_x2,
+                        "base_dtype": "unknown",
+                    },
+                }
+            ],
+        }
+
+    a, b = "a" * 40, "b" * 40
+    # Same snapshot before and after: the pre-load facts stand.
+    assert consistent_model_identity(
+        identity(a), identity(a), "org/model", "text_generation"
+    ) == identity(a)
+    # Cold cache: the loader populated the snapshot, so the post-load facts are it.
+    assert consistent_model_identity(
+        identity(None), identity(b), "org/model", "text_generation"
+    ) == identity(b)
+    # refs/main moved mid-run: nothing can be vouched for.
+    degraded = consistent_model_identity(
+        identity(a), identity(b), "org/model", "text_generation"
+    )
+    component = degraded["components"][0]
+    assert component["quantization"] == {"kind": "unknown", "base_dtype": "unknown"}
+    assert component["source"] == {
+        "kind": "huggingface",
+        "repo_id": "org/model",
+        "subfolder": "4bit",
+    }
+    from vllm_mlx.catalog.validation import ContractValidator
+
+    ContractValidator().validate_model_identity(degraded)
+
+
+def test_run_local_prefers_the_identity_read_right_after_loading(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The text helper hands back the identity of the snapshot the loader
+    pinned; run_local uses it over the pre-load read."""
+    archive = LocalRunArchive(tmp_path)
+    _mock_local_context(
+        monkeypatch, "text_generation", "mlx-community/example-text-model"
+    )
+    real = local_runner.unresolved_model_identity
+    loaded = real("mlx-community/example-text-model", "text_generation")
+    loaded["components"][0]["source"]["resolved_revision"] = "c" * 40
+    loaded["components"][0]["quantization"] = {
+        "kind": "weights",
+        "method": "affine",
+        "weight_bits_x2": 8,
+        "base_dtype": "unknown",
+    }
+
+    async def fake_measurements(model_name: str, *_: object, **__: object):
+        return _text_run()["measurements"], 32768, loaded
+
+    def after_read(repo_id, task_type, subfolder=None, snapshot_path=None):
+        identity = real(repo_id, task_type, subfolder)
+        identity["components"][0]["source"]["resolved_revision"] = "c" * 40
+        return identity
+
+    monkeypatch.setattr(local_runner, "unresolved_model_identity", after_read)
+    monkeypatch.setattr(local_runner, "_text_measurements", fake_measurements)
+    run = local_runner.run_local("example-text", archive=archive)
+    component = run["model"]["components"][0]
+    assert component["source"]["resolved_revision"] == "c" * 40
+    assert component["quantization"]["weight_bits_x2"] == 8
+
+
+def test_cached_config_reads_the_exact_snapshot_directory(tmp_path: Path) -> None:
+    from vllm_mlx.community_bench.run_builder import _cached_config
+
+    revision = "d" * 40
+    snapshot = tmp_path / "snapshots" / revision / "4bit"
+    snapshot.mkdir(parents=True)
+    (snapshot / "config.json").write_text(json.dumps({"quantization": {"bits": 4}}))
+    config, found = _cached_config("org/model", "4bit", snapshot_path=str(snapshot))
+    assert config == {"quantization": {"bits": 4}}
+    assert found == revision
+    assert (
+        _cached_config("org/model", None, snapshot_path=str(tmp_path / "nope")) is None
+    )
+
+
+def test_run_local_degrades_identity_when_the_cache_moves_during_the_run(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    archive = LocalRunArchive(tmp_path)
+    _mock_local_context(
+        monkeypatch, "text_generation", "mlx-community/example-text-model"
+    )
+    revisions = iter(["a" * 40, "b" * 40])
+    real = local_runner.unresolved_model_identity
+
+    def moving_cache(repo_id, task_type, subfolder=None):
+        identity = real(repo_id, task_type, subfolder)
+        identity["components"][0]["source"]["resolved_revision"] = next(revisions)
+        identity["components"][0]["quantization"] = {
+            "kind": "weights",
+            "method": "affine",
+            "weight_bits_x2": 8,
+            "base_dtype": "unknown",
+        }
+        return identity
+
+    async def fake_measurements(model_name: str, *_: object, **__: object):
+        return _text_run()["measurements"], 32768
+
+    monkeypatch.setattr(local_runner, "unresolved_model_identity", moving_cache)
+    monkeypatch.setattr(local_runner, "_text_measurements", fake_measurements)
+    run = local_runner.run_local("example-text", archive=archive)
+    component = run["model"]["components"][0]
+    assert component["quantization"]["kind"] == "unknown"
+    assert "resolved_revision" not in component["source"]
+
+
+def test_run_local_resolves_identity_before_loading_the_model(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The recorded identity is the snapshot present before the run, not
+    whatever the cache holds after measurement (a pull may advance it)."""
+    archive = LocalRunArchive(tmp_path)
+    _mock_local_context(
+        monkeypatch, "text_generation", "mlx-community/example-text-model"
+    )
+    order: list[str] = []
+    real_identity = local_runner.unresolved_model_identity
+
+    def identity_first(repo_id, task_type, subfolder=None):
+        order.append("identity")
+        return real_identity(repo_id, task_type, subfolder)
+
+    async def fake_measurements(model_name: str, *_: object, **__: object):
+        order.append("measure")
+        return _text_run()["measurements"], 32768
+
+    monkeypatch.setattr(local_runner, "unresolved_model_identity", identity_first)
+    monkeypatch.setattr(local_runner, "_text_measurements", fake_measurements)
+    local_runner.run_local("example-text", archive=archive)
+    # Resolved before the loader pins its snapshot, then re-read afterwards
+    # to confirm the snapshot did not move.
+    assert order == ["identity", "measure", "identity"]
+
+
+def test_benchmark_catalog_exposes_the_alias_subfolder() -> None:
+    from vllm_mlx.community_bench.workspace import benchmark_catalog
+
+    by_alias = {m["alias"]: m for m in benchmark_catalog(memory_gib=18)["models"]}
+    assert by_alias["lfm2.5-2.6b-4bit"]["subfolder"] == "4bit"
+    assert by_alias["qwen3.5-4b-4bit"]["subfolder"] is None
+
+
+def test_model_identity_stays_unknown_when_the_cache_cannot_answer(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import huggingface_hub
+
+    from vllm_mlx.community_bench import run_builder
+
+    monkeypatch.setattr(huggingface_hub, "try_to_load_from_cache", lambda *a, **k: None)
+    component = run_builder.unresolved_model_identity("org/missing", "text_generation")[
+        "components"
+    ][0]
+    assert component["quantization"] == {"kind": "unknown", "base_dtype": "unknown"}
+    assert "resolved_revision" not in component["source"]
+
+    def explode(*a, **k):
+        raise OSError("cache unreadable")
+
+    monkeypatch.setattr(huggingface_hub, "try_to_load_from_cache", explode)
+    component = run_builder.unresolved_model_identity("org/missing", "text_generation")[
+        "components"
+    ][0]
+    assert component["quantization"] == {"kind": "unknown", "base_dtype": "unknown"}
+
+
+def test_failed_run_after_loading_archives_the_loaded_identity(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The failure path uses the identity the helper deposited after loading."""
+    archive = LocalRunArchive(tmp_path)
+    _mock_local_context(
+        monkeypatch, "text_generation", "mlx-community/example-text-model"
+    )
+    real = local_runner.unresolved_model_identity
+    loaded = real("mlx-community/example-text-model", "text_generation")
+    loaded["components"][0]["source"]["resolved_revision"] = "e" * 40
+
+    async def load_then_fail(model_name: str, *_: object, **__: object):
+        capture = local_runner._LOADED_IDENTITY.get()
+        assert capture is not None
+        capture["identity"] = loaded
+        raise RuntimeError("generation exploded")
+
+    monkeypatch.setattr(local_runner, "_text_measurements", load_then_fail)
+    with pytest.raises(local_runner.LocalBenchmarkError):
+        local_runner.run_local("example-text", archive=archive)
+    failed = archive.list()[0]
+    assert failed["outcome"]["status"] == "failed"
+    assert failed["model"]["components"][0]["source"]["resolved_revision"] == "e" * 40
+    # Disarmed after the run.
+    assert local_runner._LOADED_IDENTITY.get() is None
+
+
+def test_cached_config_and_projection_degrade_on_malformed_input(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    from vllm_mlx.community_bench import run_builder
+
+    snapshot = tmp_path / "snapshots" / ("f" * 40)
+    snapshot.mkdir(parents=True)
+    (snapshot / "config.json").write_text("[1, 2, 3]")
+    assert run_builder._cached_config("org/model", snapshot_path=str(snapshot)) is None
+
+    def explode(config):
+        raise ValueError("publisher config is hostile")
+
+    monkeypatch.setattr(run_builder, "_quantization_facts", explode)
+    assert run_builder.quantization_facts({"quantization": {"bits": 4}}) == {
+        "kind": "unknown",
+        "base_dtype": "unknown",
+    }
+
+
+def test_cached_config_reads_the_revision_after_the_last_snapshots_segment(
+    tmp_path: Path,
+) -> None:
+    from vllm_mlx.community_bench import run_builder
+
+    revision = "a" * 40
+    snapshot = (
+        tmp_path
+        / "snapshots"
+        / "huggingface"
+        / "models--org--model"
+        / "snapshots"
+        / revision
+    )
+    snapshot.mkdir(parents=True)
+    (snapshot / "config.json").write_text('{"quantization": {"bits": 4}}')
+    config, resolved = run_builder._cached_config(
+        "org/model", snapshot_path=str(snapshot)
+    )
+    assert config == {"quantization": {"bits": 4}}
+    assert resolved == revision
+
+    # A trailing "snapshots" directory with nothing after it is not a revision.
+    bare = tmp_path / "models--org--model" / "snapshots"
+    bare.mkdir(parents=True)
+    (bare / "config.json").write_text("{}")
+    assert run_builder._cached_config("org/model", snapshot_path=str(bare)) == (
+        {},
+        None,
+    )

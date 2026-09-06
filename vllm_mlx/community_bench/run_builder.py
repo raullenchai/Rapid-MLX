@@ -3,7 +3,11 @@
 
 from __future__ import annotations
 
+import copy
+import json
+import math
 import platform
+import re
 import subprocess
 import uuid
 from datetime import datetime, timezone
@@ -22,7 +26,221 @@ def utc_now() -> str:
     return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
 
 
-def unresolved_model_identity(repo_id: str, task_type: str) -> dict[str, Any]:
+#: ``model-identity.schema.json#/$defs/quantization/properties/method``.
+_METHOD_PATTERN = re.compile(r"^[a-z0-9][a-z0-9._-]*$")
+_METHOD_MAX_LENGTH = 64
+
+_BASE_DTYPES = {
+    "float32": "float32",
+    "float16": "float16",
+    "bfloat16": "bfloat16",
+}
+
+
+def _cached_config(
+    repo_id: str, subfolder: str | None = None, snapshot_path: str | None = None
+) -> tuple[dict[str, Any], str | None] | None:
+    """Return ``(config.json, resolved_revision)`` from the local HF cache.
+
+    Only the cache is consulted — never the network — and any failure means
+    "no facts", never an exception: identity facts are best-effort
+    provenance. Callers read it before *and* after loading so the recorded
+    snapshot can be checked against the one the loader actually used.
+    ``subfolder`` selects a nested variant (``4bit/config.json``) for repos
+    that ship several quantisations side by side.
+    """
+    try:
+        if snapshot_path:
+            # The loader told us the concrete checkpoint directory it used
+            # (``.../snapshots/<sha>[/<subfolder>]``): read exactly that.
+            path = str(Path(snapshot_path) / "config.json")
+            if not Path(path).is_file():
+                return None
+        else:
+            from huggingface_hub import try_to_load_from_cache
+
+            filename = "config.json"
+            if subfolder:
+                filename = f"{subfolder.strip('/')}/config.json"
+            path = try_to_load_from_cache(repo_id, filename)
+            if not isinstance(path, str):
+                return None
+        with open(path, encoding="utf-8") as handle:
+            config = json.load(handle)
+    except Exception:  # noqa: BLE001 — provenance must never fail a run
+        return None
+    if not isinstance(config, dict):
+        return None
+    revision = None
+    parts = Path(path).parts
+    # The cache root itself may live under a directory called "snapshots";
+    # the hub layout puts the revision right after the *last* one.
+    for index in range(len(parts) - 2, -1, -1):
+        if parts[index] != "snapshots":
+            continue
+        candidate = parts[index + 1]
+        if len(candidate) == 40 and all(c in "0123456789abcdef" for c in candidate):
+            revision = candidate
+        break
+    return config, revision
+
+
+def quantization_facts(config: dict[str, Any]) -> dict[str, Any]:
+    """Project an MLX ``config.json`` onto the atomic quantization contract.
+
+    MLX converters write ``{"quantization": {"bits": 4, "group_size": 64,
+    "mode": "affine", "<layer>": {"bits": 8, ...}}}``; mflux writes
+    ``{"quantization": {"method": "mflux", "bits": 4, ...}}``. Uniform bits
+    are a ``weights`` quantization; per-layer overrides with different bits
+    are ``mixed``; no block means the weights are unquantized (``none``).
+
+    The file is publisher-controlled, so every value is type- and
+    range-checked against the contract and anything unexpected degrades to
+    ``unknown`` — provenance must never make a run unsavable.
+    """
+    try:
+        return _quantization_facts(config)
+    except Exception:  # noqa: BLE001 — see docstring
+        return {"kind": "unknown", "base_dtype": "unknown"}
+
+
+def _bits_x2(value: Any) -> int | None:
+    """``bits`` as the contract's x2 integer (2..64), else ``None``."""
+    if isinstance(value, bool) or not isinstance(value, int | float):
+        return None
+    if not math.isfinite(value) or value <= 0:
+        return None
+    doubled = float(value) * 2
+    if not doubled.is_integer():
+        # 3.3 bpw is not a contract value; recording it as 3.5 would invent
+        # a quantization fact.
+        return None
+    x2 = int(doubled)
+    return x2 if 2 <= x2 <= 64 else None
+
+
+def _quantization_facts(config: dict[str, Any]) -> dict[str, Any]:
+    dtype = config.get("torch_dtype")
+    if dtype is None:
+        dtype = config.get("dtype")
+    base_dtype = _BASE_DTYPES.get(str(dtype), "unknown")
+    block = config.get("quantization")
+    if block is None:
+        block = config.get("quantization_config")
+    if block is None:
+        return {"kind": "none", "base_dtype": base_dtype}
+    if not isinstance(block, dict):
+        # A declaration that exists but cannot be read is not "unquantized".
+        return {"kind": "unknown", "base_dtype": base_dtype}
+    bits_x2 = _bits_x2(block.get("bits"))
+    if bits_x2 is None:
+        return {"kind": "unknown", "base_dtype": base_dtype}
+    override_bits_x2 = {
+        _bits_x2(value.get("bits"))
+        for value in block.values()
+        if isinstance(value, dict) and value.get("bits") is not None
+    }
+    facts: dict[str, Any] = {"base_dtype": base_dtype}
+    if override_bits_x2 - {bits_x2}:
+        # Per-layer overrides at other bit widths (or unparsable ones):
+        # the artifact is not uniformly quantized.
+        facts["kind"] = "mixed"
+    else:
+        facts["kind"] = "weights"
+        facts["weight_bits_x2"] = bits_x2
+    # mlx-lm writes the scheme as ``mode`` ("affine", "mxfp4", ...); mflux
+    # image models write ``method`` ("mflux"). Honour whichever the artifact
+    # declares; only a block that names neither is assumed to be mlx-lm's
+    # historical affine default.
+    declared = None
+    for field in ("method", "quant_method", "mode"):
+        candidate = block.get(field)
+        if isinstance(candidate, str) and candidate:
+            declared = candidate
+            break
+    if isinstance(declared, str) and declared:
+        method = declared.strip().lower()
+        facts["method"] = (
+            method
+            if len(method) <= _METHOD_MAX_LENGTH and _METHOD_PATTERN.fullmatch(method)
+            else "other"
+        )
+    elif facts["kind"] == "weights":
+        facts["method"] = "affine"
+    group_size = block.get("group_size")
+    if (
+        isinstance(group_size, int)
+        and not isinstance(group_size, bool)
+        and 1 <= group_size <= 4096
+    ):
+        facts["group_size"] = group_size
+    return facts
+
+
+def _identity_revision(identity: dict[str, Any]) -> str | None:
+    components = identity.get("components") or []
+    source = components[0].get("source", {}) if components else {}
+    revision = source.get("resolved_revision")
+    return revision if isinstance(revision, str) else None
+
+
+def consistent_model_identity(
+    before: dict[str, Any], after: dict[str, Any], repo_id: str, task_type: str
+) -> dict[str, Any]:
+    """Pick the identity that describes the snapshot the loader used.
+
+    ``before`` was read from the cache before loading, ``after`` right after
+    the measurements. If both name the same snapshot revision, the loader
+    used it. A cold cache has no ``before`` revision: the loader itself
+    populated the snapshot, so ``after`` is the one it used. If the two
+    differ (another pull advanced ``refs/main`` mid-run) nothing can be
+    vouched for, and the identity degrades to unknown facts.
+    """
+    revision_before = _identity_revision(before)
+    revision_after = _identity_revision(after)
+    if revision_before is None:
+        return after
+    if revision_before == revision_after:
+        return before
+    return _unknown_identity(repo_id, task_type, before)
+
+
+def _unknown_identity(
+    repo_id: str, task_type: str, template: dict[str, Any]
+) -> dict[str, Any]:
+    identity = copy.deepcopy(template)
+    component = identity["components"][0]
+    component["source"] = {"kind": "huggingface", "repo_id": repo_id}
+    subfolder = template["components"][0]["source"].get("subfolder")
+    if subfolder:
+        component["source"]["subfolder"] = subfolder
+    component["quantization"] = {"kind": "unknown", "base_dtype": "unknown"}
+    return identity
+
+
+def unresolved_model_identity(
+    repo_id: str,
+    task_type: str,
+    subfolder: str | None = None,
+    snapshot_path: str | None = None,
+) -> dict[str, Any]:
+    """Identity with every fact the local cache can vouch for.
+
+    ``identity_strength`` stays ``unresolved`` (no manifest digest is
+    computed here), but the quantization block and the resolved snapshot
+    revision are filled from the cached ``config.json`` so a
+    ``...-4bit`` model no longer reports ``quantization.kind: unknown``.
+    """
+    source: dict[str, Any] = {"kind": "huggingface", "repo_id": repo_id}
+    if subfolder:
+        source["subfolder"] = subfolder
+    quantization: dict[str, Any] = {"kind": "unknown", "base_dtype": "unknown"}
+    cached = _cached_config(repo_id, subfolder, snapshot_path)
+    if cached is not None:
+        config, revision = cached
+        quantization = quantization_facts(config)
+        if revision is not None:
+            source["resolved_revision"] = revision
     identity = {
         "schema_version": 1,
         "identity_strength": "unresolved",
@@ -31,9 +249,9 @@ def unresolved_model_identity(repo_id: str, task_type: str) -> dict[str, Any]:
             {
                 "component_id": "primary",
                 "role": "primary",
-                "source": {"kind": "huggingface", "repo_id": repo_id},
+                "source": source,
                 "artifact": {"format": "mlx-safetensors"},
-                "quantization": {"kind": "unknown", "base_dtype": "unknown"},
+                "quantization": quantization,
             }
         ],
     }
@@ -208,6 +426,7 @@ def build_run(
     repo_id: str,
     task_type: str,
     hardware: Hardware | None,
+    subfolder: str | None = None,
     software: Software | None,
     started_at: str,
     measurements: list[dict[str, Any]] | None = None,
@@ -217,6 +436,7 @@ def build_run(
     execution: dict[str, Any] | None = None,
     conditions_before: dict[str, Any] | None = None,
     conditions_after: dict[str, Any] | None = None,
+    model_identity: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     outcome = {"status": status}
     if failure_code is not None:
@@ -227,7 +447,14 @@ def build_run(
         "started_at": started_at,
         "completed_at": utc_now(),
         "collector": {"name": "rapid-mlx-community-bench", "version": __version__},
-        "model": unresolved_model_identity(repo_id, task_type),
+        # Callers that resolved the identity before loading pass it in, so
+        # the record describes the snapshot that was measured even if the
+        # cache moves on (another pull) while the benchmark runs.
+        "model": (
+            model_identity
+            if model_identity is not None
+            else unresolved_model_identity(repo_id, task_type, subfolder)
+        ),
         "execution": (
             execution
             if execution is not None
