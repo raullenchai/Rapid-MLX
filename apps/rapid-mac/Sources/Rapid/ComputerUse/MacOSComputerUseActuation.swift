@@ -202,10 +202,12 @@ struct CGEventComputerUseInputEmitter: ComputerUseInputEmitting {
     ) throws -> WorkflowInteractionTarget
     typealias CancellationCheck = @MainActor @Sendable () throws -> Void
     typealias WindowAtPointReader = @MainActor @Sendable (CGPoint) -> String?
+    typealias EventPoster = @MainActor @Sendable (CGEvent, pid_t) -> Void
 
     private let targetReader: TargetReader
     private let cancellationCheck: CancellationCheck
     private let windowAtPointReader: WindowAtPointReader
+    private let eventPoster: EventPoster
 
     init(
         targetReader: @escaping TargetReader = {
@@ -214,11 +216,15 @@ struct CGEventComputerUseInputEmitter: ComputerUseInputEmitting {
         cancellationCheck: @escaping CancellationCheck = { try Task.checkCancellation() },
         windowAtPointReader: @escaping WindowAtPointReader = {
             MacOSComputerUseWindowIdentity.topmostWindowIdentifier(at: $0)
+        },
+        eventPoster: @escaping EventPoster = { event, processIdentifier in
+            event.postToPid(processIdentifier)
         }
     ) {
         self.targetReader = targetReader
         self.cancellationCheck = cancellationCheck
         self.windowAtPointReader = windowAtPointReader
+        self.eventPoster = eventPoster
     }
 
     private static let keyCodes: [String: CGKeyCode] = [
@@ -295,8 +301,8 @@ struct CGEventComputerUseInputEmitter: ComputerUseInputEmitting {
                     throw MacOSComputerUseActuationError.targetOccluded
                 }
                 try cancellationCheck()
-                down.post(tap: .cgAnnotatedSessionEventTap)
-                up.post(tap: .cgAnnotatedSessionEventTap)
+                eventPoster(down, target.processIdentifier)
+                eventPoster(up, target.processIdentifier)
 
             case .typeText:
                 // CGEvent accepts UTF-16. Scalar-safe chunks keep text off the
@@ -329,8 +335,8 @@ struct CGEventComputerUseInputEmitter: ComputerUseInputEmitting {
                         stringLength: chunk.count,
                         unicodeString: chunk
                     )
-                    down.post(tap: .cgAnnotatedSessionEventTap)
-                    up.post(tap: .cgAnnotatedSessionEventTap)
+                    eventPoster(down, target.processIdentifier)
+                    eventPoster(up, target.processIdentifier)
                 }
 
             case .keyPress(let key, let modifiers):
@@ -373,8 +379,8 @@ struct CGEventComputerUseInputEmitter: ComputerUseInputEmitting {
                     using: targetReader,
                     cancellationCheck: cancellationCheck
                 )
-                down.post(tap: .cgAnnotatedSessionEventTap)
-                up.post(tap: .cgAnnotatedSessionEventTap)
+                eventPoster(down, target.processIdentifier)
+                eventPoster(up, target.processIdentifier)
             }
         }
     }

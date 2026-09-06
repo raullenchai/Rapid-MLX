@@ -284,6 +284,27 @@ struct MacOSComputerUseActuationTests {
         }
     }
 
+    @Test("Events are delivered only to the selected process")
+    @MainActor
+    func inputDeliveryIsProcessBound() async throws {
+        let expected = Self.observation().target
+        let recorder = PostedEventRecorder()
+        let emitter = CGEventComputerUseInputEmitter(
+            targetReader: { $0 },
+            windowAtPointReader: { _ in expected.windowIdentifier },
+            eventPoster: { _, processIdentifier in
+                recorder.processIdentifiers.append(processIdentifier)
+            }
+        )
+
+        try await emitter.emit(
+            .click(normalizedX: 0.25, normalizedY: 0.75),
+            in: expected
+        )
+
+        #expect(recorder.processIdentifiers == [42, 42])
+    }
+
     @Test("Destructive modifier combinations are rejected before input")
     @MainActor
     func destructiveKeyChordIsRejected() async {
@@ -375,6 +396,11 @@ struct MacOSComputerUseActuationTests {
             risk: .localChange
         )
     }
+}
+
+@MainActor
+private final class PostedEventRecorder {
+    var processIdentifiers: [pid_t] = []
 }
 
 private actor TargetProbe: ComputerUseTargetProbing {
