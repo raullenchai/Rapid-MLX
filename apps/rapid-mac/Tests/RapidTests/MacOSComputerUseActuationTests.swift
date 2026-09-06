@@ -4,10 +4,15 @@ import Testing
 
 @Suite("macOS Computer Use actuation")
 struct MacOSComputerUseActuationTests {
-    @Test("The exact current observation may emit one bounded action")
-    func exactObservationEmits() async throws {
-        let observation = Self.observation()
-        let probe = TargetProbe(result: .success(observation.target))
+    @Test("A fresh equivalent observation may emit the grounded action")
+    func freshEquivalentObservationEmits() async throws {
+        let groundedObservation = Self.observation()
+        let currentObservation = WorkflowObservation(
+            target: groundedObservation.target,
+            contentRevision: groundedObservation.contentRevision
+        )
+        #expect(groundedObservation.id != currentObservation.id)
+        let probe = TargetProbe(result: .success(currentObservation.target))
         let emitter = InputEmitter()
         let actuator = MacOSComputerUseActuator(
             targetProbe: probe,
@@ -15,32 +20,39 @@ struct MacOSComputerUseActuationTests {
             permissionReader: { .init(screenRecording: true, accessibility: true) }
         )
 
-        try await actuator.perform(Self.action(for: observation), against: observation)
+        try await actuator.perform(
+            Self.action(for: groundedObservation),
+            against: currentObservation
+        )
 
         let emissions = await emitter.emissions
         #expect(emissions == [.click(normalizedX: 0.25, normalizedY: 0.75)])
     }
 
-    @Test("Stale model output is rejected before probing the live desktop")
-    func staleObservationIsRejected() async {
-        let observation = Self.observation()
-        let probe = TargetProbe(result: .success(observation.target))
+    @Test("An invalid current observation is rejected before probing the desktop")
+    func invalidCurrentObservationIsRejected() async {
+        let groundedObservation = Self.observation()
+        let invalidCurrent = WorkflowObservation(
+            target: WorkflowInteractionTarget(
+                bundleIdentifier: groundedObservation.target.bundleIdentifier,
+                processIdentifier: groundedObservation.target.processIdentifier,
+                windowIdentifier: groundedObservation.target.windowIdentifier,
+                windowFrame: .init(x: 0, y: 0, width: 0, height: 600)
+            ),
+            contentRevision: groundedObservation.contentRevision
+        )
+        let probe = TargetProbe(result: .success(groundedObservation.target))
         let emitter = InputEmitter()
         let actuator = MacOSComputerUseActuator(
             targetProbe: probe,
             inputEmitter: emitter,
             permissionReader: { .init(screenRecording: true, accessibility: true) }
         )
-        let stale = GroundedWorkflowAction(
-            observationID: UUID(),
-            payload: .click(normalizedX: 0.25, normalizedY: 0.75),
-            source: .visualGrounding,
-            safeSummary: "Click draft",
-            risk: .localChange
-        )
-
         await #expect(throws: MacOSComputerUseActuationError.staleObservation) {
-            try await actuator.perform(stale, against: observation)
+            try await actuator.perform(
+                Self.action(for: groundedObservation),
+                against: invalidCurrent
+            )
         }
         #expect(await probe.callCount == 0)
         #expect(await emitter.emissions.isEmpty)
@@ -114,6 +126,36 @@ struct MacOSComputerUseActuationTests {
         #expect(await emitter.emissions.isEmpty)
     }
 
+    @Test("Window-edge coordinates are rejected before target probing", arguments: [
+        WorkflowActionPayload.click(normalizedX: 0, normalizedY: 0.5),
+        WorkflowActionPayload.click(normalizedX: 1, normalizedY: 0.5),
+        WorkflowActionPayload.click(normalizedX: 0.5, normalizedY: 0),
+        WorkflowActionPayload.click(normalizedX: 0.5, normalizedY: 1),
+    ])
+    func edgeCoordinatesStopAction(payload: WorkflowActionPayload) async {
+        let observation = Self.observation()
+        let probe = TargetProbe(result: .success(observation.target))
+        let emitter = InputEmitter()
+        let actuator = MacOSComputerUseActuator(
+            targetProbe: probe,
+            inputEmitter: emitter,
+            permissionReader: { .init(screenRecording: true, accessibility: true) }
+        )
+        let action = GroundedWorkflowAction(
+            observationID: observation.id,
+            payload: payload,
+            source: .visualGrounding,
+            safeSummary: "Edge click",
+            risk: .readOnly
+        )
+
+        await #expect(throws: MacOSComputerUseActuationError.invalidAction) {
+            try await actuator.perform(action, against: observation)
+        }
+        #expect(await probe.callCount == 0)
+        #expect(await emitter.emissions.isEmpty)
+    }
+
     @Test("The production emitter rechecks target drift at its event boundary")
     @MainActor
     func emitterRejectsLastMomentDrift() async {
@@ -127,6 +169,23 @@ struct MacOSComputerUseActuationTests {
         let emitter = CGEventComputerUseInputEmitter(targetReader: { _ in moved })
 
         await #expect(throws: MacOSComputerUseActuationError.targetChanged) {
+            try await emitter.emit(
+                .click(normalizedX: 0.25, normalizedY: 0.75),
+                in: expected
+            )
+        }
+    }
+
+    @Test("Cancellation during the final target probe prevents the event")
+    @MainActor
+    func emitterRechecksCancellationAfterProbe() async {
+        let expected = Self.observation().target
+        let emitter = CGEventComputerUseInputEmitter(
+            targetReader: { $0 },
+            cancellationCheck: { throw CancellationError() }
+        )
+
+        await #expect(throws: CancellationError.self) {
             try await emitter.emit(
                 .click(normalizedX: 0.25, normalizedY: 0.75),
                 in: expected

@@ -54,12 +54,14 @@ actor MacOSComputerUseActuator: LocalWorkflowActuating {
         against currentObservation: WorkflowObservation
     ) async throws {
         try Task.checkCancellation()
-        guard currentObservation.isStructurallyValid,
-              action.observationID == currentObservation.id
-        else {
+        // The workflow kernel binds the action to its grounding observation,
+        // then deliberately passes a fresh, equivalent observation here. Its
+        // UUID is expected to differ; target/content equivalence was checked
+        // at that orchestration boundary.
+        guard currentObservation.isStructurallyValid else {
             throw MacOSComputerUseActuationError.staleObservation
         }
-        guard action.payload.isStructurallyValid else {
+        guard Self.isSafeForWindowActuation(action.payload) else {
             throw MacOSComputerUseActuationError.invalidAction
         }
 
@@ -84,6 +86,18 @@ actor MacOSComputerUseActuator: LocalWorkflowActuating {
         // MainActor turn as each CGEvent post. The preflight here keeps all
         // emitters testable and rejects drift before entering the input layer.
         try await inputEmitter.emit(action.payload, in: currentObservation.target)
+    }
+
+    private static func isSafeForWindowActuation(
+        _ payload: WorkflowActionPayload
+    ) -> Bool {
+        guard payload.isStructurallyValid else { return false }
+        if case .click(let x, let y) = payload {
+            // 0 and 1 are window edges, not interior points. A CGEvent at
+            // maxX/maxY can belong to the adjacent or underlying window.
+            return x > 0 && x < 1 && y > 0 && y < 1
+        }
+        return true
     }
 }
 
@@ -178,15 +192,19 @@ struct CGEventComputerUseInputEmitter: ComputerUseInputEmitting {
     typealias TargetReader = @MainActor @Sendable (
         WorkflowInteractionTarget
     ) throws -> WorkflowInteractionTarget
+    typealias CancellationCheck = @MainActor @Sendable () throws -> Void
 
     private let targetReader: TargetReader
+    private let cancellationCheck: CancellationCheck
 
     init(
         targetReader: @escaping TargetReader = {
             try CGWindowComputerUseTargetProbe.currentTargetSynchronously(for: $0)
-        }
+        },
+        cancellationCheck: @escaping CancellationCheck = { try Task.checkCancellation() }
     ) {
         self.targetReader = targetReader
+        self.cancellationCheck = cancellationCheck
     }
 
     private static let keyCodes: [String: CGKeyCode] = [
@@ -247,7 +265,11 @@ struct CGEventComputerUseInputEmitter: ComputerUseInputEmitting {
                     throw MacOSComputerUseActuationError.eventCreationFailed
                 }
                 try Task.checkCancellation()
-                try Self.requireCurrent(target, using: targetReader)
+                try Self.requireCurrent(
+                    target,
+                    using: targetReader,
+                    cancellationCheck: cancellationCheck
+                )
                 down.post(tap: .cgAnnotatedSessionEventTap)
                 up.post(tap: .cgAnnotatedSessionEventTap)
 
@@ -256,7 +278,11 @@ struct CGEventComputerUseInputEmitter: ComputerUseInputEmitting {
                 // clipboard without splitting surrogate pairs between events.
                 for chunk in textChunks {
                     try Task.checkCancellation()
-                    try Self.requireCurrent(target, using: targetReader)
+                    try Self.requireCurrent(
+                        target,
+                        using: targetReader,
+                        cancellationCheck: cancellationCheck
+                    )
                     guard let down = CGEvent(
                         keyboardEventSource: source,
                         virtualKey: 0,
@@ -309,7 +335,11 @@ struct CGEventComputerUseInputEmitter: ComputerUseInputEmitting {
                 down.flags = flags
                 up.flags = flags
                 try Task.checkCancellation()
-                try Self.requireCurrent(target, using: targetReader)
+                try Self.requireCurrent(
+                    target,
+                    using: targetReader,
+                    cancellationCheck: cancellationCheck
+                )
                 down.post(tap: .cgAnnotatedSessionEventTap)
                 up.post(tap: .cgAnnotatedSessionEventTap)
             }
@@ -341,11 +371,13 @@ struct CGEventComputerUseInputEmitter: ComputerUseInputEmitting {
     @MainActor
     private static func requireCurrent(
         _ expected: WorkflowInteractionTarget,
-        using targetReader: TargetReader
+        using targetReader: TargetReader,
+        cancellationCheck: CancellationCheck
     ) throws {
         let current = try targetReader(expected)
         guard MacOSComputerUseWindowIdentity.targetsMatch(current, expected) else {
             throw MacOSComputerUseActuationError.targetChanged
         }
+        try cancellationCheck()
     }
 }
