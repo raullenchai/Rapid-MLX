@@ -389,9 +389,14 @@ class SchedulerConfig:
     # When enabled, the guard replays the committed path stepwise and
     # compares greedy predictions to the chunked verify; on any mismatch it
     # refuses to draft (falls through) rather than silently corrupting.
-    # Default OFF (it costs a replay per verify — it is a correctness net /
-    # eval tool, not a free lunch).
-    suffix_hybrid_bit_exact: bool = False
+    # DEFAULT ON: the hybrid path is only genuinely lossless when bit-exact,
+    # so the guard is the safe default. Disabling it (--no-suffix-hybrid-
+    # bit-exact) turns the hybrid path into a NON-LOSSLESS / unsafe mode —
+    # it can surface silently-wrong accepted tokens on a drifted quantized
+    # hybrid — and is only meant for eval/measurement, not production.
+    # (Each replay costs a stepwise forward per commit; the pure-attention
+    # path is unaffected.)
+    suffix_hybrid_bit_exact: bool = True
     # Hybrid minimum-match floor. A draft shorter than this falls through
     # without paying the (multi-token) hybrid verify cost at all, so novel
     # text never touches the tentative-verify path. Mirrors the issue's
@@ -2935,7 +2940,7 @@ def _install_suffix_decoding(
     min_draft_len: int = 2,
     suffix_hybrid: bool = False,
     suffix_min_match_len: int = 24,
-    suffix_hybrid_bit_exact: bool = False,
+    suffix_hybrid_bit_exact: bool = True,
 ) -> bool:
     """Monkey-patch BatchGenerator's GenerationBatch to add SuffixDecoding.
 
@@ -3104,16 +3109,28 @@ def _install_suffix_decoding(
         """Scratch-verify a hybrid draft against the live cache.
 
         Runs the tentative forward on a *copied* commit head so the persistent
-        recurrent/conv/PLE/QSA state stays untouched, and (when the optional
-        bit-exactness guard is disabled) replays only the accepted prefix back
-        onto the live cache — the SGLang NGRAMWorker commit-only-accepted,
-        drop-the-tail pattern, which is step-equivalent. When the guard IS
-        enabled the commit is deferred to the caller via the ``commit_head``
-        it shares, so a drift refusal never mutates the live cache.
+        recurrent/conv/PLE/QSA state stays untouched, and replays only the
+        accepted prefix back onto the live cache — the SGLang NGRAMWorker
+        commit-only-accepted, drop-the-tail pattern, which is step-equivalent.
+        The bit-exactness guard (default ON) replays the committed prefix
+        stepwise on the SAME pre-verify snapshot before committing; a drift
+        refusal never mutates the live cache.
         """
         import copy
 
-        committed_head = copy.deepcopy(gb.prompt_cache)
+        # ONE pre-verify snapshot of the live cache, reused by every path
+        # that needs a scratch state: the tentative verify, the bit-exactness
+        # probe, and the commit replay each derive their scratch head from
+        # this single pristine copy. Deep-copying the prompt cache is
+        # context-sized, so the previous code hitting it twice on a successful
+        # verify (once here, once in ``_commit_scratch_accepted``, plus the
+        # guard's own copy) drove transient peak memory to ~2-3x the live
+        # cache in the decode hot path. One snapshot keeps it at 1x.
+        snapshot = copy.deepcopy(gb.prompt_cache)
+        # Fresh head for the tentative verify. ``_verify_scratch`` writes into
+        # ``committed_head``, so it must not alias the pristine ``snapshot``
+        # that the probe/commit re-derive from.
+        committed_head = copy.deepcopy(snapshot)
         result = _verify_scratch(
             gb.model,
             gb.prompt_cache,
@@ -3123,15 +3140,15 @@ def _install_suffix_decoding(
         )
         n_accepted = result["n_accepted"]
         if _hybrid_bit_exact:
-            # Bit-exactness guard: replay the committed prefix stepwise on
-            # a fresh pre-verify copy and compare each step's greedy pred
-            # to the chunked verify's pred at that position. Any mismatch
-            # means the chunked-batched forward DRIFTED from step-update
-            # on the recurrent layers (quantized-hybrid signature) — refuse
-            # to commit rather than surface silently-wrong accepted tokens.
-            # Nothing has been committed yet, so a refusal is a clean
+            # Bit-exactness guard: replay the committed prefix stepwise on a
+            # head derived from the SHARED pristine snapshot and compare each
+            # step's greedy pred to the chunked verify's pred at that position.
+            # Any mismatch means the chunked-batched forward DRIFTED from
+            # step-update on the recurrent layers (quantized-hybrid signature)
+            # — refuse to commit rather than surface silently-wrong accepted
+            # tokens. Nothing has been committed yet, so a refusal is a clean
             # fall-through.
-            probe_head = copy.deepcopy(gb.prompt_cache)
+            probe_head = copy.deepcopy(snapshot)
             # Probe EVERY committed position (X plus each accepted draft).
             # A fixed probe window could let drift after the Nth position
             # commit silently under a "bit-exact" contract, so the replay
@@ -3157,12 +3174,25 @@ def _install_suffix_decoding(
         # including the reject-first (``n_accepted == 0``) case where only X is
         # committed. X is emitted as the primary by the caller, so leaving the
         # live cache before X would corrupt the next decode step.
-        _commit_scratch_accepted(
-            gb.model,
-            gb.prompt_cache,
-            committed_input,
-            n_accepted,
-        )
+        if _hybrid_bit_exact and not result.get("drift"):
+            # The guard already replayed the committed prefix stepwise onto
+            # ``probe_head`` (one token per step, ending at exactly the
+            # committed state ``[X, d_0..d_{n_accepted-1}]``) — that IS the
+            # commit. Install it directly so the commit path reuses the single
+            # pre-verify snapshot instead of deep-copying the prompt cache
+            # again (context-sized) and redundantly re-stepping every accepted
+            # token. ``probe_head`` is defined whenever ``_hybrid_bit_exact``
+            # and we reach here on the no-drift path.
+            gb.prompt_cache[:] = probe_head
+        else:
+            # Guard off (non-lossless/debug mode): no probe ran, so fall back
+            # to the stepwise commit replay (deep-copies once and re-steps).
+            _commit_scratch_accepted(
+                gb.model,
+                gb.prompt_cache,
+                committed_input,
+                n_accepted,
+            )
         return result
 
     def _reset_state_gauges_if_idle() -> None:
@@ -5070,7 +5100,7 @@ class Scheduler:
                 suffix_hybrid=getattr(self.config, "suffix_hybrid", False),
                 suffix_min_match_len=getattr(self.config, "suffix_min_match_len", 24),
                 suffix_hybrid_bit_exact=getattr(
-                    self.config, "suffix_hybrid_bit_exact", False
+                    self.config, "suffix_hybrid_bit_exact", True
                 ),
                 requests=self.requests,
                 uid_to_request_id=self.uid_to_request_id,

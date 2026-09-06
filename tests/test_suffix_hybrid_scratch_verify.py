@@ -34,6 +34,7 @@ from vllm_mlx.models.qwen4_exp_cache import (  # noqa: E402
     Qwen4ExpStateCache,
 )
 from vllm_mlx.scheduler import (  # noqa: E402
+    SchedulerConfig,
     _commit_scratch_accepted,
     _verify_scratch,
 )
@@ -87,32 +88,36 @@ class TestScratchVerifyCore:
         import copy
 
         model, cache = _model_and_prompt()
-        # gold: commit [4,5] stepwise
-        gold = model.make_cache()
-        mx.eval(model(mx.array([[1, 2, 3]]), cache=gold))
-        for t in ([4], [5]):
-            mx.eval(model(mx.array([t]), cache=gold))
-
-        draft = [5, 6]
-        commit_head = copy.deepcopy(cache)
-        result = _verify_scratch(
-            model, cache, mx.array([[4, 5, 6]]), draft, commit_head
-        )
-        # Accept-all only if both draft tokens match greedy. Probe first.
+        # Build the draft FROM the model's actual stepwise greedy predictions,
+        # so both draft tokens are guaranteed to match the verify and accept
+        # UNCONDITIONALLY (no ``if``-gated assertion). Probe on a THROWAWAY
+        # copy so the live ``cache`` is not advanced by the probe.
         probe = model.make_cache()
         mx.eval(model(mx.array([[1, 2, 3]]), cache=probe))
-        vlog = model(mx.array([[4, 5, 6]]), cache=probe)
-        mx.eval(vlog)
-        preds = mx.argmax(vlog, axis=-1).tolist()[0]
-        if preds[0] == 5 and preds[1] == 6:
-            assert result["n_accepted"] == 2
+
+        def _next_step(tok):
+            logits = model(mx.array([[tok]]), cache=probe)
+            mx.eval(logits)
+            return int(mx.argmax(logits[:, -1], axis=-1).item())
+
+        x = 4
+        d0 = _next_step(x)  # greedy next after [1,2,3,4]
+        d1 = _next_step(d0)  # greedy next after [1,2,3,4,d0]
+
+        draft = [d0, d1]
+        verify_input = mx.array([[x, d0, d1]])
+        commit_head = copy.deepcopy(cache)
+        result = _verify_scratch(model, cache, verify_input, draft, commit_head)
+        # Both draft tokens are the model's greedy stepwise predictions, so
+        # the chunked verify MUST accept both — assert it unconditionally.
+        assert result["n_accepted"] == 2
         # Commit accepted (whatever it is) and compare to the stepwise gold
-        # of THAT same accepted prefix: gold = prompt + committed [4,5,..].
+        # of THAT same accepted prefix: gold = prompt + committed [x, d0].
         na = result["n_accepted"]
-        _commit_scratch_accepted(model, cache, mx.array([[4, 5, 6]]), na)
+        _commit_scratch_accepted(model, cache, verify_input, na)
         g2 = model.make_cache()
         mx.eval(model(mx.array([[1, 2, 3]]), cache=g2))
-        for t in ([4], [5], [6])[: na + 1]:
+        for t in ([x], [d0], [d1])[: na + 1]:
             mx.eval(model(mx.array([t]), cache=g2))
         _assert_state_equal(cache, g2)
 
@@ -120,20 +125,27 @@ class TestScratchVerifyCore:
         import copy
 
         model, _cache = _model_and_prompt()
-        # Probe the verify predictions to choose a draft whose token 0 is
-        # accepted and token 1 is rejected.
+        # Build a draft with token 0 accepted and token 1 rejected
+        # UNCONDITIONALLY, from the model's ACTUAL greedy predictions (not a
+        # guess): d0 = greedy next after X; d1 = (greedy next after d0) + 1,
+        # which is guaranteed to mismatch the position-1 pred.
         probe = model.make_cache()
         mx.eval(model(mx.array([[1, 2, 3]]), cache=probe))
-        vlog = model(mx.array([[4, 5, 6]]), cache=probe)
-        mx.eval(vlog)
-        preds = mx.argmax(vlog, axis=-1).tolist()[0]
-        d0 = preds[0]  # accepted at position 0
-        d1 = (preds[1] + 1) % 100  # rejected at position 1
+
+        def _next_step(tok):
+            logits = model(mx.array([[tok]]), cache=probe)
+            mx.eval(logits)
+            return int(mx.argmax(logits[:, -1], axis=-1).item())
+
+        x = 4
+        d0 = _next_step(x)  # greedy next after [1,2,3,4] -> accepted at pos 0
+        g1 = _next_step(d0)  # greedy next after [1,2,3,4,d0]
+        d1 = g1 + 1  # guaranteed rejected at position 1
 
         live = model.make_cache()
         mx.eval(model(mx.array([[1, 2, 3]]), cache=live))
         commit_head = copy.deepcopy(live)
-        verify_input = mx.array([[4, d0, d1]])
+        verify_input = mx.array([[x, d0, d1]])
         result = _verify_scratch(model, live, verify_input, [d0, d1], commit_head)
         assert result["n_accepted"] == 1
         _commit_scratch_accepted(model, live, verify_input, 1)
@@ -853,3 +865,370 @@ class TestBitExactnessGuard:
         assert bg._suffix_stats["hybrid_drifts"] == 1
         assert bg._suffix_stats["ft_hybrid_drift"] == 1
         assert result[0] == [7]
+
+
+class TestBitExactDefault:
+    """The bit-exactness guard is DEFAULT ON (finding #1: hybrid is only
+    lossless when the drift guard is on). Disabling is a non-lossless/unsafe
+    mode for eval only."""
+
+    def test_scheduler_config_defaults_guard_on(self):
+        assert SchedulerConfig().suffix_hybrid_bit_exact is True
+
+    def test_install_default_arg_guard_on(self, monkeypatch):
+        """A hybrid install WITHOUT passing ``suffix_hybrid_bit_exact`` must
+        default the bit-exactness guard ON — the drift path is armed by
+        default, not the lossless-bypassing fast path.
+
+        Behaviorally: a model whose chunked verify drifts from stepwise must
+        be refused (hybrid_drifts == 1) even though the caller never passed
+        ``suffix_hybrid_bit_exact=True``. This is exactly
+        ``TestBitExactnessGuard.test_guard_refuses_on_drift`` minus the
+        explicit True flag."""
+        from types import SimpleNamespace
+        from unittest.mock import MagicMock
+
+        import mlx.core as mx
+
+        from vllm_mlx import scheduler
+        from vllm_mlx.model_auto_config import ModelConfig
+        from vllm_mlx.speculative import suffix_decoding
+
+        class DriftingModel:
+            def __call__(self, tokens, cache=None, **kw):
+                L = tokens.shape[1]
+                if L > 1:  # chunked verify forward
+                    logits = mx.full((1, L, 8), -10.0)
+                    for i in range(L):
+                        logits[0, i, 5] = 10.0
+                    return logits
+                logits = mx.full((1, 1, 8), -10.0)
+                logits[0, 0, 6] = 10.0  # stepwise differs -> drift
+                return logits
+
+        cache = [SimpleNamespace(offset=0, max_size=100, size=lambda: 0)]
+
+        class Drafter:
+            max_draft_tokens = 2
+
+            def __init__(self, **_kw):
+                pass
+
+            def add_prompt_tokens(self, _t):
+                pass
+
+            def add_generated_token(self, _t):
+                pass
+
+            def record_acceptance(self, _c):
+                pass
+
+            def get_draft(self):
+                return [5, 5]
+
+        gb = SimpleNamespace(
+            _next_tokens=mx.array([7], dtype=mx.int32),
+            _next_logprobs=[mx.zeros((8,))],
+            uids=[1],
+            tokens=[[]],
+            logits_processors=[],
+            prompt_cache=cache,
+            _num_tokens=[0],
+            max_tokens=[10],
+            state_machines=[SimpleNamespace(match=lambda s, _t: (s, None, None))],
+            _matcher_states=[None],
+            extract_cache=lambda _r: [],
+            model=DriftingModel(),
+        )
+        gb.Response = SimpleNamespace
+        gb._step = lambda: ([7], [])
+        gb.next = lambda: []
+        bg = MagicMock()
+        bg._generation_batch = gb
+        bg.remove = lambda *a, **k: {}
+        profile = ModelConfig(is_hybrid=True, supports_spec_decode=False)
+        monkeypatch.setattr(suffix_decoding, "SuffixDecodingDrafter", Drafter)
+        scheduler._install_suffix_decoding(
+            bg,
+            model=gb.model,
+            profile=profile,
+            max_draft=2,
+            max_suffix_len=4,
+            min_confidence=0.3,
+            requests={},
+            uid_to_request_id={},
+            suffix_hybrid=True,
+            suffix_min_match_len=2,
+            # NOTE: suffix_hybrid_bit_exact intentionally omitted -> must be True.
+        )
+        result = gb._step()
+        # Guard armed by default: drift is refused even without the flag.
+        assert bg._suffix_stats["hybrid_drifts"] == 1
+        assert bg._suffix_stats["ft_hybrid_drift"] == 1
+        assert result[0] == [7]
+
+    def test_default_guard_misfire_free_on_step_exact_model(self, monkeypatch):
+        """With the guard now default-on, the real step-exact tiny hybrid must
+        still accept fully (no spurious drift) — mirrors
+        ``TestBitExactnessGuard.test_guard_does_not_misfire_on_step_exact_model``
+        but WITHOUT passing ``suffix_hybrid_bit_exact=True``."""
+        from types import SimpleNamespace
+        from unittest.mock import MagicMock
+
+        from vllm_mlx import scheduler
+        from vllm_mlx.model_auto_config import ModelConfig
+        from vllm_mlx.speculative import suffix_decoding
+
+        model, _ = _model_and_prompt()
+        probe = model.make_cache()
+        mx.eval(model(mx.array([[1, 2, 3]]), cache=probe))
+        l0 = model(mx.array([[7]]), cache=probe)
+        mx.eval(l0)
+        d0 = int(mx.argmax(l0[:, -1], axis=-1).item())
+        l1 = model(mx.array([[d0]]), cache=probe)
+        mx.eval(l1)
+        d1 = int(mx.argmax(l1[:, -1], axis=-1).item())
+        greedy_draft = [d0, d1]
+
+        drafter = [greedy_draft]
+
+        class MockDrafter:
+            max_draft_tokens = 2
+
+            def __init__(self, **_kw):
+                pass
+
+            def add_prompt_tokens(self, _t):
+                pass
+
+            def add_generated_token(self, _t):
+                pass
+
+            def record_acceptance(self, _c):
+                pass
+
+            def get_draft(self):
+                return list(drafter[0])
+
+        cache = model.make_cache()
+        mx.eval(model(mx.array([[1, 2, 3]]), cache=cache))
+        gb = SimpleNamespace(
+            _next_tokens=mx.array([7], dtype=mx.int32),
+            _next_logprobs=[mx.zeros((64,))],
+            uids=[1],
+            tokens=[[]],
+            logits_processors=[],
+            prompt_cache=cache,
+            _num_tokens=[0],
+            max_tokens=[10],
+            state_machines=[SimpleNamespace(match=lambda s, _t: (s, None, None))],
+            _matcher_states=[None],
+            extract_cache=lambda _r: [],
+            model=model,
+        )
+        gb.Response = SimpleNamespace
+        gb._step = lambda: ([7], [])
+        gb.next = lambda: []
+        bg = MagicMock()
+        bg._generation_batch = gb
+        bg.remove = lambda *a, **k: {}
+        profile = ModelConfig(is_hybrid=True, supports_spec_decode=False)
+        monkeypatch.setattr(suffix_decoding, "SuffixDecodingDrafter", MockDrafter)
+        scheduler._install_suffix_decoding(
+            bg,
+            model=model,
+            profile=profile,
+            max_draft=2,
+            max_suffix_len=4,
+            min_confidence=0.3,
+            requests={},
+            uid_to_request_id={},
+            suffix_hybrid=True,
+            suffix_min_match_len=2,
+        )
+        result = gb._step()
+        assert result[0] == [7]
+        assert bg._suffix_stats["hybrid_drifts"] == 0
+        assert bg._suffix_stats["verify_steps"] == 1
+
+
+class TestHybridCLI:
+    """CLI-level wiring: bit-exact default ON + positive integer validation."""
+
+    @staticmethod
+    def _parse(argv):
+        import sys
+        from unittest import mock
+
+        from vllm_mlx import cli
+
+        captured = {}
+
+        def _capture(args):
+            captured["args"] = args
+
+        with (
+            mock.patch.object(cli, "serve_command", _capture),
+            mock.patch.object(sys, "argv", ["rapid-mlx", *argv]),
+        ):
+            cli.main()
+        assert "args" in captured
+        args = captured["args"]
+        cli._normalize_speculative_config_or_exit(args)
+        return args
+
+    def test_cli_default_guard_on(self):
+        args = self._parse(["serve", "qwen3-1.7b", "--suffix-hybrid"])
+        assert args.suffix_hybrid_bit_exact is True
+        assert args.suffix_min_match_len == 24
+
+    def test_cli_guard_off_via_no_flag(self):
+        args = self._parse(
+            ["serve", "qwen3-1.7b", "--suffix-hybrid", "--no-suffix-hybrid-bit-exact"]
+        )
+        assert args.suffix_hybrid_bit_exact is False
+
+    def test_cli_min_match_len_rejects_non_positive_at_parse_time(self):
+        import sys
+        from unittest import mock
+
+        from vllm_mlx import cli
+
+        # argparse ``type=positive_int`` rejects <=0 BEFORE any engine boot.
+        for bad in ("0", "-1", "-5"):
+            with (
+                mock.patch.object(
+                    sys,
+                    "argv",
+                    [
+                        "rapid-mlx",
+                        "serve",
+                        "qwen3-1.7b",
+                        "--suffix-min-match-len",
+                        bad,
+                    ],
+                ),
+                mock.patch.object(cli, "serve_command", lambda args: None),
+                pytest.raises(SystemExit) as excinfo,
+            ):
+                cli.main()
+            assert excinfo.value.code == 2
+
+    def test_cli_min_match_len_accepts_positive(self):
+        args = self._parse(["serve", "qwen3-1.7b", "--suffix-min-match-len", "16"])
+        assert args.suffix_min_match_len == 16
+
+
+class TestSingleSnapshotCommit:
+    """Finding #4: the successful hybrid verify must use ONE pre-verify
+    snapshot for probe AND commit (no double deepcopy / redundant replay).
+
+    With the bit-exactness guard ON (the default) and no drift, the commit
+    reuses the guard's already-replayed `probe_head` by installing it directly
+    onto the live cache — so ``_commit_scratch_accepted`` (which would deep-copy
+    the cache AGAIN and re-step every accepted token) must NOT run on that path.
+    When the guard is explicitly OFF (non-lossless/debug mode) no probe ran, so
+    the stepwise commit helper IS still used.
+    """
+
+    @staticmethod
+    def _install_and_step(monkeypatch, *, guard_on):
+        from types import SimpleNamespace
+        from unittest.mock import MagicMock
+
+        from vllm_mlx import scheduler
+        from vllm_mlx.model_auto_config import ModelConfig
+        from vllm_mlx.speculative import suffix_decoding
+
+        model, _ = _model_and_prompt()
+        # Greedy accept-all draft (step-exact model -> no drift).
+        probe = model.make_cache()
+        mx.eval(model(mx.array([[1, 2, 3]]), cache=probe))
+        l0 = model(mx.array([[7]]), cache=probe)
+        mx.eval(l0)
+        d0 = int(mx.argmax(l0[:, -1], axis=-1).item())
+        l1 = model(mx.array([[d0]]), cache=probe)
+        mx.eval(l1)
+        d1 = int(mx.argmax(l1[:, -1], axis=-1).item())
+
+        drafter = [[d0, d1]]
+
+        class MockDrafter:
+            max_draft_tokens = 2
+
+            def __init__(self, **_kw):
+                pass
+
+            def add_prompt_tokens(self, _t):
+                pass
+
+            def add_generated_token(self, _t):
+                pass
+
+            def record_acceptance(self, _c):
+                pass
+
+            def get_draft(self):
+                return list(drafter[0])
+
+        cache = model.make_cache()
+        mx.eval(model(mx.array([[1, 2, 3]]), cache=cache))
+        gb = SimpleNamespace(
+            _next_tokens=mx.array([7], dtype=mx.int32),
+            _next_logprobs=[mx.zeros((64,))],
+            uids=[1],
+            tokens=[[]],
+            logits_processors=[],
+            prompt_cache=cache,
+            _num_tokens=[0],
+            max_tokens=[10],
+            state_machines=[SimpleNamespace(match=lambda s, _t: (s, None, None))],
+            _matcher_states=[None],
+            extract_cache=lambda _r: [],
+            model=model,
+        )
+        gb.Response = SimpleNamespace
+        gb._step = lambda: ([7], [])
+        gb.next = lambda: []
+        bg = MagicMock()
+        bg._generation_batch = gb
+        bg.remove = lambda *a, **k: {}
+        profile = ModelConfig(is_hybrid=True, supports_spec_decode=False)
+        monkeypatch.setattr(suffix_decoding, "SuffixDecodingDrafter", MockDrafter)
+
+        calls = {"commit": 0}
+
+        def spy_commit(*a, **k):
+            calls["commit"] += 1
+            # Keep real behavior so state equality stays meaningful.
+            return _commit_scratch_accepted(*a, **k)
+
+        monkeypatch.setattr(scheduler, "_commit_scratch_accepted", spy_commit)
+        scheduler._install_suffix_decoding(
+            bg,
+            model=model,
+            profile=profile,
+            max_draft=2,
+            max_suffix_len=4,
+            min_confidence=0.3,
+            requests={},
+            uid_to_request_id={},
+            suffix_hybrid=True,
+            suffix_min_match_len=2,
+            suffix_hybrid_bit_exact=guard_on,
+        )
+        result = gb._step()
+        assert result[0] == [7]
+        return calls, bg
+
+    def test_commit_reuses_probe_head_on_default_guard(self, monkeypatch):
+        calls, bg = self._install_and_step(monkeypatch, guard_on=True)
+        # Guard passed (accept-all, no drift): the commit must reuse the
+        # guard's probe head NOT call _commit_scratch_accepted again.
+        assert bg._suffix_stats["hybrid_drifts"] == 0
+        assert calls["commit"] == 0
+
+    def test_commit_uses_step_replay_when_guard_off(self, monkeypatch):
+        calls, bg = self._install_and_step(monkeypatch, guard_on=False)
+        # Guard off -> no probe -> stepwise commit helper replays once.
+        assert calls["commit"] == 1

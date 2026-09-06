@@ -2343,8 +2343,16 @@ def _normalize_speculative_config_or_exit(args):
             args.suffix_hybrid = False
         if getattr(args, "suffix_min_match_len", None) is None:
             args.suffix_min_match_len = 24
-        if getattr(args, "suffix_hybrid_bit_exact", None) is None:
+        # Bit-exactness guard is DEFAULT ON (the hybrid path is only lossless
+        # when bit-exact). --no-suffix-hybrid-bit-exact explicitly turns it
+        # off — a NON-LOSSLESS / unsafe mode for eval/measurement — and wins
+        # over the default. ``--suffix-hybrid-bit-exact`` (store_true) needs
+        # an explicit False sentinel so the flag is distinguishable from the
+        # default-fill path.
+        if bool(getattr(args, "no_suffix_hybrid_bit_exact", False)):
             args.suffix_hybrid_bit_exact = False
+        elif getattr(args, "suffix_hybrid_bit_exact", None) is None:
+            args.suffix_hybrid_bit_exact = True
 
     def _legacy_speculative_config_payload() -> dict | None:
         methods: list[tuple[str, dict]] = []
@@ -11503,7 +11511,7 @@ Examples:
     )
     serve_parser.add_argument(
         "--suffix-min-match-len",
-        type=int,
+        type=positive_int,
         default=None,
         help=argparse.SUPPRESS,
     )
@@ -11511,6 +11519,13 @@ Examples:
         "--suffix-hybrid-bit-exact",
         action="store_true",
         default=None,
+        help=argparse.SUPPRESS,
+    )
+    serve_parser.add_argument(
+        "--no-suffix-hybrid-bit-exact",
+        dest="no_suffix_hybrid_bit_exact",
+        action="store_true",
+        default=False,
         help=argparse.SUPPRESS,
     )
     # Deprecated no-op flags — accepted-but-ignored for backward compat.
