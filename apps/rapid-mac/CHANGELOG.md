@@ -20,6 +20,9 @@ can actually understand.
 ### Added
 - `/metrics` now breaks MTP speculative decoding down per verify call: `rapid_mlx_spec_decode_verify_calls_total`, `..._correction_tokens_total`, `..._bonus_tokens_total`, and per-depth `..._drafted_by_depth_total{depth=}` / `..._accepted_by_depth_total{depth=}` alongside the existing attempts/accepts counters, so a workload that loses with MTP can be attributed to wrong drafts, verify cost, or rollback churn. The continuous-batching MTP route (the default for tier-verified aliases) now feeds these counters too; previously it bypassed them and every `rapid_mlx_spec_decode_*` series stayed at 0. (#3155)
 
+### Changed
+- `qwen3.5-4b-4bit` no longer turns MTP speculative decoding on by default. Measured single-stream decode was 25–37% slower with the MTP drafter on M2 Pro and M3 Ultra, with no gain under concurrency. The preset stays available: `rapid-mlx serve qwen3.5-4b-4bit --speculative-config '{"method":"mtp"}'`, or the Speculative decoding toggle in Desktop Performance settings. New catalog field `mtp_default_enabled` carries the product default separately from the qualification tier. (#3115)
+
 ## [0.13.4] — 2026-09-02
 
 Rapid-MLX 0.13.4 makes qualified local models faster under concurrent work,
