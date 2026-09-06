@@ -112,19 +112,35 @@ class Qwen4ExpStateCache(ArraysCache):
     # non-trimmable. Only the spec-verify window is trimmable (matches DSpark's
     # ``is_trimmable == has undo record``), and only rollback as far as the
     # captured boundary.
+    # Boundary convention — MUST match the ``restore_rollback`` callers in
+    # ``spec_decode/mtp/generator.py`` and the producers in ``qwen4_exp.py``:
+    # a verify forward of ``L = K + 1`` tokens ``[committed, d_0..d_{K-1}]``
+    # records ``L - 1`` boundaries, the recurrent state after positions
+    # ``1..L-1`` (``range(1, length)``); the state after all ``L`` tokens is
+    # the live ``cache`` itself and the pre-verify state is never needed
+    # because the first token is already committed. Hence
+    # ``verify_size == len(rollback_state) + 1``, dropping ``n`` rejected
+    # tokens keeps ``L - n`` and restores ``snapshots[L - n - 1]``, and ``n``
+    # ranges over ``1..K == len(rollback_state)``. (QSA differs: its record
+    # holds exactly ``verify_size`` entries, so it may pass ``len(...)``
+    # straight through — do not copy that here.)
+    def _verify_size(self) -> int | None:
+        snapshots = self.rollback_state
+        if snapshots is None:
+            return None
+        return len(snapshots) + 1
+
     def is_trimmable(self) -> bool:
         return self.rollback_state is not None
 
     def can_trim(self, n: int) -> bool:
         # ``n <= 0`` is degenerate: ``trim(0)`` would invoke ``restore_rollback``
         # and discard the undo record without dropping any tokens, breaking the
-        # verify window. Mirror QSA's leaf contract: only a positive trim may
-        # roll back.
-        if n <= 0:
+        # verify window. Only a positive trim may roll back.
+        snapshots = self.rollback_state
+        if n <= 0 or snapshots is None:
             return False
-        if self.rollback_state is None:
-            return False
-        return 1 <= len(self.rollback_state) - n <= len(self.rollback_state)
+        return n <= len(snapshots)
 
     def trim_checkpoint(self):
         return (
@@ -145,9 +161,10 @@ class Qwen4ExpStateCache(ArraysCache):
         ) = state
 
     def trim(self, n: int) -> int:
-        if not self.can_trim(n):
+        verify_size = self._verify_size()
+        if verify_size is None or not self.can_trim(n):
             return 0
-        self.restore_rollback(n, len(self.rollback_state))
+        self.restore_rollback(n, verify_size)
         return n
 
 
