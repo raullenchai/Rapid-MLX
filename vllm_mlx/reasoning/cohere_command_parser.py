@@ -26,6 +26,7 @@ THINK_END = "<|END_THINKING|>"
 TEXT_START = "<|START_TEXT|>"
 TEXT_END = "<|END_TEXT|>"
 ACTION_START = "<|START_ACTION|>"
+ACTION_END = "<|END_ACTION|>"
 
 _REASONING_TRANSITIONS = (THINK_END, TEXT_START, ACTION_START)
 _OUTPUT_TRANSITIONS = (TEXT_START, ACTION_START)
@@ -164,6 +165,7 @@ class CohereCommand4ReasoningParser(ReasoningParser):
         self._buffer = ""
         self._phase = "reasoning"
         self._reasoning_started = False
+        self._action_resumes_reasoning = False
         self._forced_end_pending = False
         self._json_protocol_undecided = self._json_mode
         self._json_depth = 0
@@ -259,6 +261,24 @@ class CohereCommand4ReasoningParser(ReasoningParser):
         output_index, output_marker = output_transition
         output = output[output_index:]
         if output_marker == ACTION_START:
+            if marker == ACTION_START:
+                # The action opened inside the thinking lane (no closing
+                # thinking marker preceded it). Bytes after its envelope are
+                # still private reasoning until the protocol closes thinking,
+                # so split them off and parse the tail as a fresh turn.
+                end = _first_marker_outside_json_strings(
+                    output[len(ACTION_START) :], (ACTION_END,)
+                )
+                if end is not None:
+                    cut = len(ACTION_START) + end[0] + len(ACTION_END)
+                    envelope, tail = output[:cut], output[cut:]
+                    if tail:
+                        tail_reasoning, tail_content = self.extract_reasoning(
+                            tail, json_mode=False
+                        )
+                        reasoning = ((reasoning or "") + (tail_reasoning or "")) or None
+                        return reasoning, envelope + (tail_content or "")
+                    return reasoning, envelope
             return reasoning, output
         return reasoning, self._extract_text_block(output)
 
@@ -327,6 +347,10 @@ class CohereCommand4ReasoningParser(ReasoningParser):
                     if marker == ACTION_START:
                         self._buffer = self._buffer[index:]
                         self._phase = "action"
+                        # No closing thinking marker yet: the action opened
+                        # inside the thinking lane, so once its envelope
+                        # closes the stream is still private reasoning.
+                        self._action_resumes_reasoning = True
                     elif marker == TEXT_START:
                         self._buffer = self._buffer[index + len(marker) :]
                         self._phase = "text"
@@ -371,6 +395,7 @@ class CohereCommand4ReasoningParser(ReasoningParser):
                 if marker == ACTION_START:
                     self._buffer = self._buffer[index:]
                     self._phase = "action"
+                    self._action_resumes_reasoning = False
                 else:
                     self._buffer = self._buffer[index + len(marker) :]
                     self._phase = "text"
@@ -393,6 +418,25 @@ class CohereCommand4ReasoningParser(ReasoningParser):
                 break
 
             if self._phase == "action":
+                if self._action_resumes_reasoning:
+                    # Hold the envelope until it closes; a quoted marker in
+                    # JSON string data does not close it. When the action
+                    # opened mid-thinking, the bytes after the envelope are
+                    # still private reasoning, not public content.
+                    end = _first_marker_outside_json_strings(
+                        self._buffer[len(ACTION_START) :], (ACTION_END,)
+                    )
+                    if end is None:
+                        if flush:
+                            content_parts.append(self._buffer)
+                            self._buffer = ""
+                        break
+                    cut = len(ACTION_START) + end[0] + len(ACTION_END)
+                    content_parts.append(self._buffer[:cut])
+                    self._buffer = self._buffer[cut:]
+                    self._phase = "reasoning"
+                    self._action_resumes_reasoning = False
+                    continue
                 content_parts.append(self._buffer)
                 self._buffer = ""
                 break

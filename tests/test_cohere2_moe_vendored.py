@@ -17,6 +17,8 @@ pytestmark = pytest.mark.requires_mlx
 import sys
 from types import SimpleNamespace
 
+import pytest
+
 from vllm_mlx.model_aliases import resolve_model
 from vllm_mlx.model_auto_config import detect_model_config
 from vllm_mlx.models import cohere2_moe
@@ -98,18 +100,18 @@ def test_cache_layout_and_weight_key_cleanup_need_no_model_weights() -> None:
     }
 
 
-def test_checkpoint_profile_defaults_and_conservative_capabilities() -> None:
+def test_checkpoint_profile_uses_native_parser_and_conservative_capabilities() -> None:
     profile = detect_model_config("mlx-community/North-Mini-Code-1.0-bf16")
 
     assert profile is not None
-    assert profile.tool_call_parser is None
+    assert profile.tool_call_parser == "north"
     assert profile.reasoning_parser == "cohere_command4"
     assert profile.is_hybrid is False
     assert profile.is_moe is True
     assert profile.supports_spec_decode is False
 
 
-def test_public_4bit_alias_defaults_and_conservative_capabilities() -> None:
+def test_public_4bit_alias_uses_native_parser_and_conservative_capabilities() -> None:
     assert (
         resolve_model("north-mini-code-4bit")
         == "mlx-community/North-Mini-Code-1.0-4bit"
@@ -119,7 +121,26 @@ def test_public_4bit_alias_defaults_and_conservative_capabilities() -> None:
 
     assert profile is not None
     assert profile.hf_path == "mlx-community/North-Mini-Code-1.0-4bit"
-    assert profile.tool_call_parser is None
+    assert profile.tool_call_parser == "north"
+    assert profile.reasoning_parser == "cohere_command4"
+    assert profile.is_moe is True
+    assert profile.supports_spec_decode is False
+
+
+@pytest.mark.parametrize(
+    "model_path",
+    [
+        "mlx-community/North-Mini-Code-1.0-4bit",
+        "/Users/example/models/North-Mini-Code-1.0-4bit",
+    ],
+)
+def test_public_4bit_hf_and_local_paths_auto_select_native_parsers(
+    model_path: str,
+) -> None:
+    profile = detect_model_config(model_path)
+
+    assert profile is not None
+    assert profile.tool_call_parser == "north"
     assert profile.reasoning_parser == "cohere_command4"
     assert profile.is_hybrid is False
     assert profile.is_moe is True

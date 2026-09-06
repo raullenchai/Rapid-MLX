@@ -3146,10 +3146,14 @@ def _run_tool_parser(
             ]
             return result.content or "", tool_calls
         else:
-            if cfg.tool_call_parser == "qwen3_coder_xml":
+            if cfg.tool_call_parser == "qwen3_coder_xml" or (
+                getattr(result, "rejection_authoritative", False) is True
+            ):
                 # The Qwen parser made an authoritative declared-name decision.
-                # Falling through to the generic parser would re-promote the
-                # exact undeclared/tool_choice=none span it rejected.
+                # North reports the same contract per result after positively
+                # matching an action envelope. Falling through to the generic
+                # parser would re-promote the exact undeclared/tool_choice=none
+                # span either parser rejected.
                 return result.content or "", None
             return parse_tool_calls(output_text, request_dict)
     except Exception as e:

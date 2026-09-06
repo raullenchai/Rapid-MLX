@@ -110,9 +110,14 @@ _FINAL_SANITIZER_ALTERNATIVES = (
     # `call:name{...}` body would be left orphaned in content.
     r"<\|tool_call>.*?<tool_call\|>"
     # Any <|...> or <...|> token (Gemma 4 asymmetric: <|channel>, <tool_call|>, etc.)
-    r"|<\|[a-z_\"]+>|<[a-z_\"]+\|>"
+    r"|<\|[a-z0-9_\"]+>|<[a-z0-9_\"]+\|>"
     # Any <|...|> token (symmetric: <|im_end|>, <|channel|>, etc.)
-    r"|<\|[a-z_]+\|>"
+    r"|<\|[a-z0-9_]+\|>"
+    # Cohere North declares these uppercase sentinels as ordinary added
+    # tokens (``special=false``), so tokenizer-level skip_special_tokens does
+    # not remove them. Keep the exception exact rather than broadening the
+    # global sanitizer to every uppercase angle-token a user might quote.
+    r"|<\|(?:START|END)_(?:THINKING|TEXT|ACTION)\|>"
     # [Calling tool:...] or [Calling tool="..."] or bare "[Calling tool" (Gemma 4 mimicry)
     r"|\[Calling\s+tool[^\]]*\]?"
     # Stray closing tags

@@ -9,6 +9,7 @@ import pytest
 from vllm_mlx.reasoning.base import DeltaMessage, ReasoningParser
 from vllm_mlx.reasoning.deepseek_r1_parser import DeepSeekR1DistillReasoningParser
 from vllm_mlx.service.postprocessor import StreamingPostProcessor
+from vllm_mlx.tool_parsers.cohere_tool_parser import NorthToolParser
 from vllm_mlx.tool_parsers.llama_tool_parser import LlamaToolParser
 
 
@@ -426,6 +427,38 @@ class TestStreamingPostProcessorToolCalls:
         }
         events = pp.process_chunk(_make_output("extra text"))
         assert len(events) == 0
+
+    def test_north_preserves_content_after_completed_action(self):
+        cfg = _make_cfg(
+            enable_auto_tool_choice=True,
+            tool_call_parser="north",
+        )
+        request = {
+            "tools": [
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "read_file",
+                        "parameters": {"type": "object"},
+                    },
+                }
+            ]
+        }
+        pp = StreamingPostProcessor(
+            cfg, tools_requested=True, enable_thinking=False, request=request
+        )
+        pp.reset()
+        assert isinstance(pp.tool_parser, NorthToolParser)
+        action = (
+            '<|START_ACTION|>{"tool_call_id":"north-a",'
+            '"tool_name":"read_file","parameters":{}}<|END_ACTION|>'
+        )
+
+        call_events = pp.process_chunk(_make_output(action))
+        content_events = pp.process_chunk(_make_output("Done."))
+
+        assert [event.type for event in call_events] == ["tool_call"]
+        assert [event.content for event in content_events] == ["Done."]
 
     def test_fallback_tool_detection_on_finalize(self):
         """Finalize detects tool calls when streaming detection missed them."""
