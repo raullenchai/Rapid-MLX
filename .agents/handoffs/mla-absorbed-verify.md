@@ -8,7 +8,7 @@ Host: Mac Studio, Apple M3 Ultra 256 GB
 
 Branch: `vector/mla-absorbed-verify`
 
-PR: #3110 (Draft)
+PR: #3110
 
 ## Verified facts
 
@@ -36,6 +36,8 @@ PR: #3110 (Draft)
 
 ## Next concrete action
 
-Atlas should decide whether this experimental compatibility lever is useful
-enough to merge before upstream mlx-lm PR #1817 lands. Keep it opt-in; do not
-queue or promote it to a default based on the current evidence alone.
+The repository owner accepted this as a default-off release compatibility
+lever after final Vector review on 2026-09-06. Land it through the Mac merge
+queue, but do not promote it to a default without a supported speculative-route
+trajectory battery. Retire the local patch when upstream mlx-lm PR #1817 is
+released and Rapid adopts that provider.
