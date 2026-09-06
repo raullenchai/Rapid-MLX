@@ -1317,7 +1317,9 @@ def test_run_local_records_conditions_before_and_after_the_measurements(
         order.append("conditions")
         return next(snapshots)
 
-    async def fake_measurements(repo_id: str):
+    async def fake_measurements(alias: str, repo_id: str):
+        assert alias == "example-text"
+        assert repo_id == "mlx-community/example-text-model"
         order.append("measure")
         # The real helper records the "after" snapshot while the model is
         # still resident, i.e. before its engine context tears down.
@@ -1358,7 +1360,9 @@ def test_after_snapshot_is_never_taken_once_the_model_is_gone(
             "available_memory_mib": 9000,
         }
 
-    async def silent_measurements(repo_id: str):
+    async def silent_measurements(alias: str, repo_id: str):
+        assert alias == "example-text"
+        assert repo_id == "mlx-community/example-text-model"
         return _text_run()["measurements"], 32768
 
     monkeypatch.setattr(local_runner, "run_conditions", counting_conditions)
@@ -1391,7 +1395,9 @@ def test_capture_is_disarmed_when_the_helper_raises(
             "available_memory_mib": 9000,
         }
 
-    async def broken(repo_id: str):
+    async def broken(alias: str, repo_id: str):
+        assert alias == "example-text"
+        assert repo_id == "mlx-community/example-text-model"
         raise RuntimeError("boom")
 
     monkeypatch.setattr(local_runner, "run_conditions", counting_conditions)
@@ -1459,7 +1465,9 @@ def test_asyncio_cancellation_is_archived_as_cancelled_with_before_snapshot(
     }
     monkeypatch.setattr(local_runner, "run_conditions", lambda: dict(before))
 
-    async def cancelled(repo_id: str, **_: object):
+    async def cancelled(alias: str, repo_id: str, **_: object):
+        assert alias == "example-text"
+        assert repo_id == "mlx-community/example-text-model"
         raise asyncio.CancelledError()
 
     monkeypatch.setattr(local_runner, "_text_measurements", cancelled)
@@ -1487,7 +1495,9 @@ def test_failed_run_keeps_the_before_snapshot_and_marks_after_unknown(
     }
     monkeypatch.setattr(local_runner, "run_conditions", lambda: dict(before))
 
-    async def broken(repo_id: str):
+    async def broken(alias: str, repo_id: str):
+        assert alias == "example-text"
+        assert repo_id == "mlx-community/example-text-model"
         raise RuntimeError("boom")
 
     monkeypatch.setattr(local_runner, "_text_measurements", broken)
