@@ -3025,7 +3025,6 @@ _BATT_AC = "Now drawing from 'AC Power'\n -InternalBattery-0 (id=1)\t100%; charg
 _BATT_BATTERY = (
     "Now drawing from 'Battery Power'\n -InternalBattery-0 (id=1)\t61%; discharging"
 )
-_PMSET_G = "System-wide power settings:\nCurrently in use:\n lowpowermode         1\n standby              1\n"
 
 
 def test_run_conditions_maps_every_probe_onto_the_schema_enums(monkeypatch) -> None:
@@ -3037,7 +3036,6 @@ def test_run_conditions_maps_every_probe_onto_the_schema_enums(monkeypatch) -> N
         _fake_probe(
             {
                 "/usr/bin/pmset -g batt": _BATT_BATTERY,
-                "/usr/bin/pmset -g": _PMSET_G,
                 "/usr/sbin/sysctl -n kern.memorystatus_vm_pressure_level": "2",
                 "/usr/sbin/sysctl -n vm.page_free_count vm.page_speculative_count "
                 "vm.page_purgeable_count hw.pagesize": "1024\n1024\n2048\n16384",
@@ -3045,6 +3043,7 @@ def test_run_conditions_maps_every_probe_onto_the_schema_enums(monkeypatch) -> N
         ),
     )
     monkeypatch.setattr(hardware, "_thermal_state", lambda: "fair")
+    monkeypatch.setattr(hardware, "_low_power_mode", lambda: True)
     conditions = hardware.run_conditions()
     assert conditions == {
         "power_source": "battery",
@@ -3065,14 +3064,12 @@ def test_run_conditions_reads_ac_and_normal_pressure(monkeypatch) -> None:
         _fake_probe(
             {
                 "/usr/bin/pmset -g batt": _BATT_AC,
-                "/usr/bin/pmset -g": _PMSET_G.replace(
-                    "lowpowermode         1", "lowpowermode         0"
-                ),
                 "/usr/sbin/sysctl -n kern.memorystatus_vm_pressure_level": "1",
             }
         ),
     )
     monkeypatch.setattr(hardware, "_thermal_state", lambda: "nominal")
+    monkeypatch.setattr(hardware, "_low_power_mode", lambda: False)
     conditions = hardware.run_conditions()
     assert conditions["power_source"] == "ac"
     assert conditions["low_power_mode"] is False
@@ -3088,6 +3085,7 @@ def test_run_conditions_degrades_each_field_independently(monkeypatch) -> None:
 
     monkeypatch.setattr(hardware, "_run", _fake_probe({}))
     monkeypatch.setattr(hardware, "_thermal_state", lambda: "unknown")
+    monkeypatch.setattr(hardware, "_low_power_mode", lambda: None)
     conditions = hardware.run_conditions()
     assert conditions == {
         "power_source": "unknown",
@@ -3130,10 +3128,43 @@ def test_run_conditions_degrades_each_field_independently(monkeypatch) -> None:
 @pytest.mark.skipif(
     sys.platform != "darwin", reason="Objective-C runtime is macOS-only"
 )
-def test_thermal_state_reads_a_real_enum_value_on_macos() -> None:
+def test_process_info_probes_read_real_values_on_macos() -> None:
     from vllm_mlx.community_bench import hardware
 
     assert hardware._thermal_state() in {"nominal", "fair", "serious", "critical"}
+    assert isinstance(hardware._low_power_mode(), bool)
+
+
+def test_process_info_probes_degrade_when_the_runtime_is_unavailable(
+    monkeypatch,
+) -> None:
+    from vllm_mlx.community_bench import hardware
+
+    monkeypatch.setattr(hardware, "_process_info", lambda selector, restype: None)
+    assert hardware._thermal_state() == "unknown"
+    assert hardware._low_power_mode() is None
+    # An out-of-range raw thermal value is "unknown", never a wrong bucket.
+    monkeypatch.setattr(hardware, "_process_info", lambda selector, restype: 7)
+    assert hardware._thermal_state() == "unknown"
+
+
+def test_run_normalises_process_creation_failures(monkeypatch) -> None:
+    """An ``OSError`` from spawning must surface as the documented RuntimeError.
+
+    Otherwise the optional post-measurement probe in ``run_local`` would
+    abort after the benchmark completed and the result would be lost.
+    """
+    from vllm_mlx.community_bench import hardware
+
+    def cannot_spawn(*args, **kwargs):
+        raise OSError(35, "Resource temporarily unavailable")
+
+    monkeypatch.setattr(hardware.subprocess, "run", cannot_spawn)
+    with pytest.raises(RuntimeError, match="probe .* failed"):
+        hardware._run(["/usr/sbin/sysctl", "-n", "hw.ncpu"], timeout=1.0)
+    # And the composed snapshot still comes back schema-valid.
+    monkeypatch.setattr(hardware, "_process_info", lambda selector, restype: None)
+    assert hardware.run_conditions()["power_source"] == "unknown"
 
 
 def test_pmset_is_on_the_allowlist_and_nothing_else_was_added() -> None:

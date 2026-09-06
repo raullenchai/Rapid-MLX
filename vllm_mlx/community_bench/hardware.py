@@ -35,8 +35,8 @@ _PERMITTED_BINARIES: frozenset[str] = frozenset(
         "/usr/sbin/sysctl",
         "/usr/bin/sw_vers",
         "/usr/sbin/system_profiler",
-        # ``pmset -g batt`` / ``pmset -g`` for the volatile run conditions
-        # (AC vs battery, Low Power Mode). Read-only, unprivileged.
+        # ``pmset -g batt`` for the volatile power-source condition (AC vs
+        # battery). Read-only, unprivileged.
         "/usr/bin/pmset",
     }
 )
@@ -106,7 +106,11 @@ def _run(cmd: list[str], timeout: float) -> str:
             # NIT.)
             shell=False,
         )
-    except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as e:
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired, OSError) as e:
+        # ``OSError`` covers process-creation failures (EAGAIN, EMFILE, a
+        # missing executable). Every caller treats ``RuntimeError`` as
+        # "this probe is unavailable"; letting ``OSError`` escape would turn
+        # an optional post-measurement probe into a lost benchmark result.
         raise RuntimeError(f"probe {cmd!r} failed: {e}") from e
     return result.stdout.strip()
 
@@ -316,28 +320,16 @@ def _power_source() -> str:
     return "unknown"
 
 
-def _low_power_mode() -> bool | None:
-    """Low Power Mode from the ``lowpowermode`` row of ``pmset -g``."""
-    try:
-        out = _run(["/usr/bin/pmset", "-g"], _PMSET_TIMEOUT_S)
-    except RuntimeError:
-        return None
-    match = re.search(r"^\s*lowpowermode\s+(\d)\s*$", out, flags=re.MULTILINE)
-    if not match:
-        return None
-    return match.group(1) == "1"
+def _process_info(selector: bytes, restype):
+    """Send one no-argument message to ``NSProcessInfo.processInfo``.
 
-
-def _thermal_state() -> str:
-    """``NSProcessInfo.thermalState`` through the Objective-C runtime.
-
-    This is the same signal the Desktop app and macOS itself use, and it is
-    read in-process (no subprocess, no entitlement, no data beyond one
-    integer). Any failure — non-Darwin, missing runtime, unexpected value —
-    degrades to ``unknown``.
+    Read in-process through the Objective-C runtime — no subprocess, no
+    entitlement, nothing beyond one scalar leaves the call. Returns ``None``
+    on any failure (non-Darwin, missing runtime, unexpected value) so each
+    caller degrades its own field.
     """
     if sys.platform != "darwin":
-        return "unknown"
+        return None
     try:
         import ctypes
 
@@ -350,20 +342,42 @@ def _thermal_state() -> str:
             objc.objc_msgSend,
             ctypes.CFUNCTYPE(ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p),
         )
-        send_int = ctypes.cast(
+        send = ctypes.cast(
             objc.objc_msgSend,
-            ctypes.CFUNCTYPE(ctypes.c_long, ctypes.c_void_p, ctypes.c_void_p),
+            ctypes.CFUNCTYPE(restype, ctypes.c_void_p, ctypes.c_void_p),
         )
         process_info = send_id(
             objc.objc_getClass(b"NSProcessInfo"),
             objc.sel_registerName(b"processInfo"),
         )
         if not process_info:
-            return "unknown"
-        raw = send_int(process_info, objc.sel_registerName(b"thermalState"))
+            return None
+        return send(process_info, objc.sel_registerName(selector))
     except (OSError, AttributeError, ValueError):
+        return None
+
+
+def _low_power_mode() -> bool | None:
+    """``NSProcessInfo.isLowPowerModeEnabled`` — the live setting.
+
+    ``pmset -g`` was tried first and rejected: its output differs between
+    hosts (some print the ``lowpowermode`` row, some only the header), so it
+    silently reported ``null`` on machines where Low Power Mode was on.
+    """
+    import ctypes
+
+    value = _process_info(b"isLowPowerModeEnabled", ctypes.c_bool)
+    return None if value is None else bool(value)
+
+
+def _thermal_state() -> str:
+    """``NSProcessInfo.thermalState`` — the signal macOS and the Desktop app use."""
+    import ctypes
+
+    value = _process_info(b"thermalState", ctypes.c_long)
+    if value is None:
         return "unknown"
-    return _THERMAL_STATES.get(int(raw), "unknown")
+    return _THERMAL_STATES.get(int(value), "unknown")
 
 
 def _memory_pressure() -> str:
