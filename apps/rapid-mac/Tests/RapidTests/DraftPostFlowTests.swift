@@ -205,6 +205,7 @@ struct DraftPostFlowTests {
             driver: ScriptedDraftPostDriver(results: [.success(())])
         )
         await viewModel.load()
+        #expect(viewModel.sourceID == nil)
         viewModel.sourceID = Self.source.id
         viewModel.destinationID = Self.destination.id
         #expect(viewModel.canRun)

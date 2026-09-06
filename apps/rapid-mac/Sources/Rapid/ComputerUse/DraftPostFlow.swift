@@ -11,7 +11,10 @@ struct ComputerUseWindowOption: Identifiable, Equatable, Sendable {
     let selection: ComputerUseWindowSelection
 
     var displayName: String {
-        windowTitle.isEmpty ? applicationName : "\(applicationName) — \(windowTitle)"
+        let readableName = windowTitle.isEmpty
+            ? applicationName
+            : "\(applicationName) — \(windowTitle)"
+        return "\(readableName) · Window \(selection.windowID)"
     }
 }
 
@@ -265,6 +268,19 @@ struct MacOSDraftPostFlowDriver: DraftPostFlowDriving {
             }
             guard existing.isEmpty || Self.utf8Matches(existing, draft) else {
                 throw DraftPostFlowFailure.composerNotEmpty
+            }
+            if Self.utf8Matches(existing, draft) {
+                let currentWindow = try Self.exactFocusedWindow(selection)
+                let currentComposer = try Self.uniqueComposer(in: currentWindow)
+                guard CFEqual(composer, currentComposer),
+                      Self.stringAttribute(
+                        kAXValueAttribute as CFString,
+                        from: currentComposer
+                      ).map({ Self.utf8Matches($0, draft) }) == true
+                else {
+                    throw DraftPostFlowFailure.verificationFailed
+                }
+                return
             }
             var settable: DarwinBoolean = false
             guard AXUIElementIsAttributeSettable(
@@ -601,7 +617,7 @@ final class DraftPostFlowViewModel {
         phase = .loading
         do {
             windows = try await catalog.windows()
-            sourceID = sourceOptions.count == 1 ? sourceOptions[0].id : nil
+            sourceID = nil
             destinationID = nil
             phase = .ready
         } catch let error as ComputerUseWindowCatalogError {
