@@ -860,11 +860,12 @@ def run_local(
                 None,
                 saved=False,
             ) from exc
-        failure_code = (
-            "machine_probe_failed"
-            if hardware is None or software is None
-            else _failure_code(exc)
-        )
+        if hardware is None or software is None:
+            failure_code = "machine_probe_failed"
+        elif isinstance(exc, asyncio.CancelledError):
+            failure_code = "user_cancelled"
+        else:
+            failure_code = _failure_code(exc)
         try:
             if execution is None:
                 execution = execution_config(task_type, context_length=context_length)
