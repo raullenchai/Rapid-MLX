@@ -16,6 +16,14 @@ from vllm_mlx.patches.mla_absorbed_verify import (
     max_absorbed_queries,
 )
 
+_HAS_MLX = find_spec("mlx") is not None and find_spec("mlx.core") is not None
+if _HAS_MLX:
+    import mlx.core as mx
+else:  # pragma: no cover - exercised by the no-MLX CI lane
+    mx = None
+
+requires_mlx = pytest.mark.skipif(not _HAS_MLX, reason="requires MLX")
+
 
 def test_asymptotic_thresholds_match_model_geometry() -> None:
     assert max_absorbed_queries(512, 128, 128) == 170
@@ -103,6 +111,8 @@ def test_rapid_gate_requires_qualified_warm_cache() -> None:
 
 
 @pytest.mark.parametrize("enabled", [False, True])
+@requires_mlx
+@pytest.mark.requires_mlx
 def test_real_serve_import_installs_exact_supported_targets(enabled: bool) -> None:
     root = Path(__file__).resolve().parents[1]
     code = """
@@ -164,6 +174,8 @@ def _run_install_probe(code: str, *, enabled: bool = True) -> dict:
     return json.loads(result.stdout.strip().splitlines()[-1])
 
 
+@requires_mlx
+@pytest.mark.requires_mlx
 def test_default_off_does_not_wrap_attention() -> None:
     stats = _run_install_probe(
         """
@@ -182,6 +194,8 @@ print(json.dumps(stats))
     assert stats["unchanged"] is True
 
 
+@requires_mlx
+@pytest.mark.requires_mlx
 def test_unknown_upstream_method_fails_closed_for_that_family() -> None:
     stats = _run_install_probe(
         """
@@ -200,6 +214,8 @@ print(json.dumps(mla_absorbed_verify_stats()))
     assert "glm4_moe_lite.Glm4MoeLiteAttention" in stats["targets"]
 
 
+@requires_mlx
+@pytest.mark.requires_mlx
 def test_upstream_provider_prevents_double_patch() -> None:
     stats = _run_install_probe(
         """
@@ -218,6 +234,8 @@ print(json.dumps(stats))
     assert stats["unchanged"] is True
 
 
+@requires_mlx
+@pytest.mark.requires_mlx
 def test_unqualified_mlx_lm_version_fails_closed() -> None:
     stats = _run_install_probe(
         """
@@ -239,6 +257,8 @@ print(json.dumps(stats))
     assert stats["unchanged"] is True
 
 
+@requires_mlx
+@pytest.mark.requires_mlx
 def test_deepseek_v32_indexer_patch_is_not_replaced() -> None:
     stats = _run_install_probe(
         """
@@ -256,15 +276,6 @@ print(json.dumps(stats))
     )
     assert stats["unchanged"] is True
     assert all(not target.startswith("deepseek_v32.") for target in stats["targets"])
-
-
-_HAS_MLX = find_spec("mlx") is not None and find_spec("mlx.core") is not None
-if _HAS_MLX:
-    import mlx.core as mx
-else:  # pragma: no cover - exercised by the no-MLX CI lane
-    mx = None
-
-requires_mlx = pytest.mark.skipif(not _HAS_MLX, reason="requires MLX")
 
 
 def _isolate_installer_state(monkeypatch: pytest.MonkeyPatch) -> None:
