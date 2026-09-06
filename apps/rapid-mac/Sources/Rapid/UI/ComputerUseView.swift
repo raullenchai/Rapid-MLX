@@ -217,7 +217,7 @@ struct ComputerUseView: View {
         }
         scanning = true
         errorMessage = nil
-        self.resultMessage = nil
+        self.resultMessage = resultMessage
         operationGeneration += 1
         let generation = operationGeneration
         Task {
@@ -228,7 +228,6 @@ struct ComputerUseView: View {
                 guard generation == operationGeneration else { return }
                 candidates = result
                 selected = []
-                self.resultMessage = resultMessage
             } catch {
                 guard generation == operationGeneration else { return }
                 errorMessage = "Rapid could not read Downloads: \(error.localizedDescription)"
@@ -274,9 +273,14 @@ struct ComputerUseView: View {
             }.value
             guard generation == operationGeneration else { return }
             if let failure = result.failureDescription {
-                let prefix = result.movedCount == 0
-                    ? "No files were moved."
-                    : "Moved \(result.movedCount) of \(count) files to Trash."
+                let prefix: String
+                if result.outcomeUncertain {
+                    prefix = "Rapid could not verify the selected file's outcome."
+                } else if result.movedCount == 0 {
+                    prefix = "No files were moved."
+                } else {
+                    prefix = "Moved \(result.movedCount) of \(count) files to Trash."
+                }
                 let message = "\(prefix) Cleanup stopped safely: \(failure)"
                 do {
                     let refreshed = try await Task.detached {

@@ -32,7 +32,7 @@ struct DownloadCleanupTests {
         let root = try temporaryDirectory()
         defer { try? FileManager.default.removeItem(at: root) }
         let old = Date(timeIntervalSince1970: 1_000_000_000)
-        let target = try write("candidate.txt", bytes: 16, in: root, modifiedAt: old)
+        _ = try write("candidate.txt", bytes: 16, in: root, modifiedAt: old)
         let candidate = try #require(
             DownloadCleanup.scan(
                 downloadsURL: root,
@@ -41,18 +41,33 @@ struct DownloadCleanupTests {
         )
         var trashed: URL?
 
-        try DownloadCleanup.moveToTrash(candidate, downloadsURL: root) { trashed = $0 }
-        #expect(trashed == target.standardizedFileURL)
+        try DownloadCleanup.moveToTrash(
+            candidate,
+            downloadsURL: root,
+            trash: { trashed = $0 }
+        )
+        #expect(trashed?.lastPathComponent == "candidate.txt")
+        #expect(trashed?.deletingLastPathComponent() != root.standardizedFileURL)
 
+        let changed = try write("changed.txt", bytes: 16, in: root, modifiedAt: old)
+        let changedCandidate = try #require(
+            DownloadCleanup.scan(
+                downloadsURL: root,
+                now: old.addingTimeInterval(100 * 86_400)
+            ).first { $0.url == changed }
+        )
         try FileManager.default.setAttributes(
             [.modificationDate: old.addingTimeInterval(1)],
-            ofItemAtPath: target.path
+            ofItemAtPath: changed.path
         )
         #expect(throws: DownloadCleanup.Failure.targetChanged) {
-            try DownloadCleanup.moveToTrash(candidate, downloadsURL: root) { _ in
-                Issue.record("A changed file must not reach Trash")
-            }
+            try DownloadCleanup.moveToTrash(
+                changedCandidate,
+                downloadsURL: root,
+                trash: { _ in Issue.record("A changed file must not reach Trash") }
+            )
         }
+        #expect(FileManager.default.fileExists(atPath: changed.path))
     }
 
     @Test("Move rejects a candidate outside Downloads")
@@ -73,9 +88,11 @@ struct DownloadCleanupTests {
         )
 
         #expect(throws: DownloadCleanup.Failure.targetEscapedDownloads) {
-            try DownloadCleanup.moveToTrash(candidate, downloadsURL: root) { _ in
-                Issue.record("An out-of-scope file must not reach Trash")
-            }
+            try DownloadCleanup.moveToTrash(
+                candidate,
+                downloadsURL: root,
+                trash: { _ in Issue.record("An out-of-scope file must not reach Trash") }
+            )
         }
     }
 
@@ -93,10 +110,43 @@ struct DownloadCleanupTests {
         try FileManager.default.createSymbolicLink(at: original, withDestinationURL: target)
 
         #expect(throws: DownloadCleanup.Failure.targetChanged) {
-            try DownloadCleanup.moveToTrash(candidate, downloadsURL: root) { _ in
-                Issue.record("A replacement symlink must not reach Trash")
-            }
+            try DownloadCleanup.moveToTrash(
+                candidate,
+                downloadsURL: root,
+                trash: { _ in Issue.record("A replacement symlink must not reach Trash") }
+            )
         }
+    }
+
+    @Test("A path replacement during the atomic claim is restored, not trashed")
+    func claimRaceIsRejected() throws {
+        let root = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let old = Date(timeIntervalSince1970: 1_000_000_000)
+        let original = try write("selected.txt", bytes: 4, in: root, modifiedAt: old)
+        let candidate = try #require(DownloadCleanup.scan(
+            downloadsURL: root,
+            now: old.addingTimeInterval(100 * 86_400)
+        ).first)
+        let approvedBackup = root.appendingPathComponent("approved-backup.txt")
+        var trashCalled = false
+
+        #expect(throws: DownloadCleanup.Failure.targetChanged) {
+            try DownloadCleanup.moveToTrash(
+                candidate,
+                downloadsURL: root,
+                claim: { source, destination in
+                    try FileManager.default.moveItem(at: source, to: approvedBackup)
+                    _ = try write("selected.txt", bytes: 4, in: root, modifiedAt: old)
+                    try FileManager.default.moveItem(at: source, to: destination)
+                },
+                trash: { _ in trashCalled = true }
+            )
+        }
+
+        #expect(!trashCalled)
+        #expect(FileManager.default.fileExists(atPath: original.path))
+        #expect(FileManager.default.fileExists(atPath: approvedBackup.path))
     }
 
     @Test("Batch result reports files moved before a failure")
@@ -117,6 +167,29 @@ struct DownloadCleanupTests {
 
         #expect(result.movedCount == 1)
         #expect(result.failureDescription != nil)
+        #expect(!result.outcomeUncertain)
+    }
+
+    @Test("A Trash failure restores the claimed file")
+    func trashFailureRestoresClaim() throws {
+        let root = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let old = Date(timeIntervalSince1970: 1_000_000_000)
+        let original = try write("selected.txt", bytes: 4, in: root, modifiedAt: old)
+        let candidate = try #require(DownloadCleanup.scan(
+            downloadsURL: root,
+            now: old.addingTimeInterval(100 * 86_400)
+        ).first)
+
+        #expect(throws: CocoaError.self) {
+            try DownloadCleanup.moveToTrash(
+                candidate,
+                downloadsURL: root,
+                trash: { _ in throw CocoaError(.fileWriteUnknown) }
+            )
+        }
+        #expect(FileManager.default.fileExists(atPath: original.path))
+        #expect(try Data(contentsOf: original) == Data(repeating: 0x41, count: 4))
     }
 
     private func temporaryDirectory() throws -> URL {

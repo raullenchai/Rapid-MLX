@@ -22,10 +22,13 @@ struct DownloadCleanup {
     struct BatchResult: Equatable, Sendable {
         let movedCount: Int
         let failureDescription: String?
+        let outcomeUncertain: Bool
     }
     enum Failure: LocalizedError, Equatable {
         case targetEscapedDownloads
         case targetChanged
+        case recoveryRequired(String)
+        case trashOutcomeUnknown(String)
 
         var errorDescription: String? {
             switch self {
@@ -33,6 +36,10 @@ struct DownloadCleanup {
                 return "The file is no longer directly inside Downloads."
             case .targetChanged:
                 return "The file changed after the preview. Review the refreshed list before trying again."
+            case .recoveryRequired(let path):
+                return "Cleanup stopped, but Rapid could not restore the file automatically. Recover it from \(path)."
+            case .trashOutcomeUnknown(let name):
+                return "Rapid could not confirm whether \(name) moved to Trash. Check Trash before trying again."
             }
         }
     }
@@ -58,8 +65,8 @@ struct DownloadCleanup {
             options: [.skipsSubdirectoryDescendants]
         )
 
-        return try children.compactMap { url in
-            let values = try url.resourceValues(forKeys: keys)
+        return children.compactMap { url in
+            guard let values = try? url.resourceValues(forKeys: keys) else { return nil }
             guard values.isRegularFile == true,
                   values.isSymbolicLink != true,
                   values.isHidden != true,
@@ -83,6 +90,8 @@ struct DownloadCleanup {
     static func moveToTrash(
         _ candidate: DownloadCleanupCandidate,
         downloadsURL: URL,
+        fileManager: FileManager = .default,
+        claim: ((URL, URL) throws -> Void)? = nil,
         trash: (URL) throws -> Void = { url in
             _ = try FileManager.default.trashItem(at: url, resultingItemURL: nil)
         }
@@ -92,10 +101,49 @@ struct DownloadCleanup {
         guard current.deletingLastPathComponent().resolvingSymlinksInPath() == root else {
             throw Failure.targetEscapedDownloads
         }
-        let values = try current.resourceValues(forKeys: [
-            .isRegularFileKey, .isSymbolicLinkKey, .contentModificationDateKey,
-            .fileAllocatedSizeKey, .fileSizeKey, .fileResourceIdentifierKey
-        ])
+        let stagingDirectory = root.appendingPathComponent(
+            ".rapid-cleanup-\(UUID().uuidString)",
+            isDirectory: true
+        )
+        try fileManager.createDirectory(
+            at: stagingDirectory,
+            withIntermediateDirectories: false,
+            attributes: [.posixPermissions: 0o700]
+        )
+        var removeStagingDirectory = true
+        defer {
+            if removeStagingDirectory {
+                try? fileManager.removeItem(at: stagingDirectory)
+            }
+        }
+        let staged = stagingDirectory.appendingPathComponent(candidate.name)
+        try (claim ?? { source, destination in
+            try fileManager.moveItem(at: source, to: destination)
+        })(current, staged)
+
+        let restoreClaimedFile: () throws -> Void = {
+            guard !fileManager.fileExists(atPath: current.path) else {
+                removeStagingDirectory = false
+                throw Failure.recoveryRequired(staged.path)
+            }
+            do {
+                try fileManager.moveItem(at: staged, to: current)
+            } catch {
+                removeStagingDirectory = false
+                throw Failure.recoveryRequired(staged.path)
+            }
+        }
+
+        let values: URLResourceValues
+        do {
+            values = try staged.resourceValues(forKeys: [
+                .isRegularFileKey, .isSymbolicLinkKey, .contentModificationDateKey,
+                .fileAllocatedSizeKey, .fileSizeKey, .fileResourceIdentifierKey
+            ])
+        } catch {
+            try restoreClaimedFile()
+            throw error
+        }
         let currentBytes = Int64(values.fileAllocatedSize ?? values.fileSize ?? 0)
         let currentIdentifier = (values.fileResourceIdentifier as? NSData).map { $0 as Data }
         guard values.isRegularFile == true,
@@ -103,9 +151,18 @@ struct DownloadCleanup {
               values.contentModificationDate == candidate.modifiedAt,
               currentBytes == candidate.byteCount,
               currentIdentifier == candidate.resourceIdentifier else {
+            try restoreClaimedFile()
             throw Failure.targetChanged
         }
-        try trash(current)
+        do {
+            try trash(staged)
+        } catch {
+            guard fileManager.fileExists(atPath: staged.path) else {
+                throw Failure.trashOutcomeUnknown(candidate.name)
+            }
+            try restoreClaimedFile()
+            throw error
+        }
     }
 
     static func moveToTrash(
@@ -121,9 +178,18 @@ struct DownloadCleanup {
                 try moveToTrash(candidate, downloadsURL: downloadsURL, trash: trash)
                 moved += 1
             } catch {
-                return BatchResult(movedCount: moved, failureDescription: error.localizedDescription)
+                var outcomeUncertain = false
+                if let failure = error as? Failure,
+                   case .trashOutcomeUnknown = failure {
+                    outcomeUncertain = true
+                }
+                return BatchResult(
+                    movedCount: moved,
+                    failureDescription: error.localizedDescription,
+                    outcomeUncertain: outcomeUncertain
+                )
             }
         }
-        return BatchResult(movedCount: moved, failureDescription: nil)
+        return BatchResult(movedCount: moved, failureDescription: nil, outcomeUncertain: false)
     }
 }
