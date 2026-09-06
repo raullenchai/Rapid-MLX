@@ -216,6 +216,8 @@ def test_zero_centered_grouped_rms_norm_matches_numpy():
 def test_zero_centered_rms_norm_rejects_partial_group():
     with pytest.raises(ValueError, match="divide the feature width"):
         ZeroCenteredRMSNorm(7, group_size=4)
+    with pytest.raises(ValueError, match="unknown fast RMSNorm mode"):
+        ZeroCenteredRMSNorm(4).set_fast_rmsnorm_mode("bf16")
 
 
 def test_zero_centered_fast_rms_norm_uses_fp32_and_matches_stock(monkeypatch):
