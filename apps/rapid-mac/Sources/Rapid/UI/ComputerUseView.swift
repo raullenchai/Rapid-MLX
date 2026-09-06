@@ -237,19 +237,24 @@ struct ComputerUseView: View {
 
     private func trashSelection() {
         guard let downloadsURL else { return }
-        let count = selectedCandidates.count
+        let selection = selectedCandidates
+        let count = selection.count
         let size = selectedSize
-        do {
-            for candidate in selectedCandidates {
-                try DownloadCleanup.moveToTrash(candidate, downloadsURL: downloadsURL)
-            }
-            scanDownloads(
-                resultMessage: "Moved \(count) file\(count == 1 ? "" : "s") (\(size)) to Trash."
-            )
-        } catch {
-            let message = "Cleanup stopped safely: \(error.localizedDescription)"
-            scanning = true
-            Task {
+        scanning = true
+        errorMessage = nil
+        resultMessage = nil
+        Task {
+            do {
+                try await Task.detached {
+                    for candidate in selection {
+                        try DownloadCleanup.moveToTrash(candidate, downloadsURL: downloadsURL)
+                    }
+                }.value
+                scanDownloads(
+                    resultMessage: "Moved \(count) file\(count == 1 ? "" : "s") (\(size)) to Trash."
+                )
+            } catch {
+                let message = "Cleanup stopped safely: \(error.localizedDescription)"
                 do {
                     candidates = try await Task.detached {
                         try DownloadCleanup.scan(downloadsURL: downloadsURL)
