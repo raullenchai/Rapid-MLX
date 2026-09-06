@@ -77,6 +77,56 @@ its download size, memory demand, and output bytes. The explicit BF16 alias is
 the stable policy until each additional hardware/model combination has
 independent qualification.
 
+## M1/M2 qualification expansion attempt (2026-09-06)
+
+Commit `9c5ff8bdbfd46dab8f2c7c177ba31b09b1ff5dab` adds a fail-closed,
+real-server qualification harness. It requires both immutable checkpoints to be
+complete before starting, accepts only Apple M1/M2 family names with at least
+32 GiB, rejects a non-clean swap baseline, alternates independent q4/BF16
+server processes, validates non-uniform PNG dimensions and deterministic
+per-precision hashes, and records process footprint and system swap. It never
+downloads weights or changes the product's precision default.
+
+No M1 host with enough memory was available for this qualification. The hosted
+Apple runner has 16 GiB and is below the BF16 alias's existing 32 GiB admission
+floor, so it cannot supply a q4/BF16 comparison. **M1 therefore remains
+unqualified**; no M2 number is relabeled as M1 evidence.
+
+On the same M2 Pro 32 GiB mini used above, the exact candidate at
+`96a32e7ef756db3e5326cbb534744e41ac1acf2b` used wheel SHA-256
+`8c4ece191370d74c232f2a921f4e5848bb797927057bd7ba60e3d9fc0f5e7781`,
+Python 3.12.13, Rapid-MLX 0.13.4, mflux 0.19.1, MLX 0.32.2, and Pillow
+12.3.0. Low-power mode was off. A real BF16 512×512, four-step generation
+returned a non-uniform 262,993-byte PNG in 13.651 seconds after a discarded
+17.330-second warm-up. Peak process footprint was 23.0 GiB. The fixed snapshot
+was `4d8e1bae8eb47c7766705de2cda7dabd6cc4ba67`; the response SHA-256 was
+`6360cb555c33b88f669aad1b20f015ecc89907935cff38dba3bec94c3ec6627c`.
+
+That run is correctness evidence, **not an accepted performance row**: system
+swap was already 1,586.19 MiB after restoring the host's resident service and
+grew by another 994.0 MiB during the BF16 session. The harness subsequently
+adopted a 256 MiB maximum starting-swap gate, so the host now fails before model
+launch instead of producing a misleading A/B from a contaminated baseline.
+Fresh zero-swap runs on at least one 32-GiB-or-larger M1 host and an additional
+M2 configuration, plus a clean repeat on this M2 Pro, are still required before
+considering any automatic hardware selection. No reboot was performed as part
+of this work.
+
+Reproduce the intended matrix on an otherwise-idle qualifying host with:
+
+```bash
+python3 scripts/benchmark_image_precision.py \
+  --output /tmp/image-precision.json \
+  --candidate-git-sha "$(git rev-parse HEAD)" \
+  --wheel-sha256 '<sha256-of-installed-candidate-wheel>' \
+  --hf-cache /path/to/huggingface/hub
+```
+
+The default order is q4, BF16, BF16, q4. Each independent process warms and
+then measures 512-square generation, 1024-square generation, and 1024-square
+editing three times. Keep the JSON as private raw evidence and distill only
+reviewed, reproducible results into this report.
+
 ## Completion telemetry
 
 The Images generation route logs one completion line per image. mflux exposes
