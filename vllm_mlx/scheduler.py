@@ -372,38 +372,6 @@ class SchedulerConfig:
     # win. Default 2 keeps chat near regression-floor while still
     # accepting most useful drafts on tool/JSON workloads.
     suffix_min_draft_len: int = 2
-    # Opt-in hybrid (recurrent / GatedDeltaNet / PLE / QSA) suffix
-    # decoding. Off by default: SUFFIX_POC_REPORT.md shows multi-token
-    # verify can drift from step-update on recurrent layers. When enabled,
-    # the scheduler runs the verify in cache-scratch (the Qwen4 recurrent /
-    # conv / PLE state is snapshotted by the model forward) and commits
-    # only the accepted positions, so a rejected tail is dropped without
-    # corrupting persistent state. A bit-exactness guard refuses to draft
-    # if the quantized hybrid verify drifts from greedy (see
-    # ``_hybrid_scratch_verify_drift_free``).
-    suffix_hybrid: bool = False
-    # Bit-exactness guard for the hybrid path (issue #2561). A quantized
-    # hybrid can DRIFT from greedy because the chunked-batched verify
-    # forward is not step-update-equivalent on recurrent layers; even with
-    # commit-only-accepted scratch replay, accepted tokens can be wrong.
-    # When enabled, the guard replays the committed path stepwise and
-    # compares greedy predictions to the chunked verify; on any mismatch it
-    # refuses to draft (falls through) rather than silently corrupting.
-    # DEFAULT ON: the hybrid path is only genuinely lossless when bit-exact,
-    # so the guard is the safe default. Disabling it (--no-suffix-hybrid-
-    # bit-exact) turns the hybrid path into a NON-LOSSLESS / unsafe mode —
-    # it can surface silently-wrong accepted tokens on a drifted quantized
-    # hybrid — and is only meant for eval/measurement, not production.
-    # (Each replay costs a stepwise forward per commit; the pure-attention
-    # path is unaffected.)
-    suffix_hybrid_bit_exact: bool = True
-    # Hybrid minimum-match floor. A draft shorter than this falls through
-    # without paying the (multi-token) hybrid verify cost at all, so novel
-    # text never touches the tentative-verify path. Mirrors the issue's
-    # 24-token figure; see design note gap-1. Pure-attention path keeps its
-    # own ``suffix_min_draft_len`` (default 2) for chat-economy.
-    suffix_min_match_len: int = 24
-
     # Admission control: hard cap on concurrent in-flight requests
     # (queued + running). A buggy client (or simple fork bomb) used to
     # be able to OOM the Metal allocator and crash the server for all
@@ -591,6 +559,18 @@ class SchedulerConfig:
     # not shifted — see ``test_scheduler_config_preserves_the_historical_
     # positional_prefix``.
     kv_cache_dtype_explicit: bool = False
+
+    # APPEND-ONLY: opt-in hybrid (recurrent / GatedDeltaNet / PLE / QSA)
+    # suffix decoding. These fields must remain after the entire historical
+    # SchedulerConfig surface so positional external callers cannot silently
+    # rebind existing arguments.
+    suffix_hybrid: bool = False
+    # The bit-exactness guard is the safe default. Disabling it with
+    # --no-suffix-hybrid-bit-exact is an unsafe evaluation-only knob because
+    # chunked recurrent verification can drift from stepwise greedy decode.
+    suffix_hybrid_bit_exact: bool = True
+    # Drafts below this floor fall through without paying hybrid verify cost.
+    suffix_min_match_len: int = 24
 
     def __post_init__(self) -> None:
         if not isinstance(self.mtp_continuous_batching, bool):
