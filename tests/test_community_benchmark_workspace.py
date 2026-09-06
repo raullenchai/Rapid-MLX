@@ -2940,11 +2940,22 @@ def test_summarize_measurements_matches_the_board_decode_formula() -> None:
                 "decode_duration_ms": 500.0,
                 "ttft_ms": 100.0,
             },
+            {
+                "case_id": "empty",
+                "completed": True,
+                "output_tokens": 0,
+                "decode_duration_ms": 500.0,
+                "ttft_ms": 100.0,
+                "total_duration_ms": 600.0,
+            },
         ]
     }
     lines = community_cli.summarize_measurements(run)
     assert lines[0].startswith("  pp512-tg128         45.5 tok/s decode")
     assert lines[1].startswith("  single               2.0 tok/s decode")
+    # A zero-token sample has no decode rate: it falls back to wall time
+    # instead of being shown as positive throughput.
+    assert lines[2].startswith("  empty               0.60 s per run")
 
 
 def test_summarize_measurements_reports_wall_time_for_image_and_video() -> None:

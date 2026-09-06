@@ -87,16 +87,20 @@ def summarize_measurements(run: dict[str, Any]) -> list[str]:
             by_case.setdefault(case_id, []).append(sample)
     lines: list[str] = []
     for case_id, samples in by_case.items():
-        # Same formula as the board (rapidmlx.com) and the legacy
+        # Same formula as the board (rapidmlx.com) and the standardized
         # ``bench`` runner: the first token lands at ``ttft_ms``, so the
         # decode window covers ``output_tokens - 1`` tokens (llama.cpp
-        # ``tg`` / vLLM TPOT semantics). ``N == 1`` falls back to ``N``
-        # to avoid a 0/0. Printing ``N / window`` here made the CLI read
-        # 45.8 tok/s for a run the site then showed as 45.5.
+        # ``tg`` / vLLM TPOT semantics). A single-token completion has no
+        # inter-token window, so ``N == 1`` reports ``N / window`` like the
+        # runner; zero-token samples carry no rate and are skipped.
+        # Printing ``N / window`` here made the CLI read 45.8 tok/s for a
+        # run the site then showed as 45.5.
         decode = [
-            max(s["output_tokens"] - 1, 1) / (s["decode_duration_ms"] / 1000.0)
+            (s["output_tokens"] - 1 if s["output_tokens"] > 1 else 1)
+            / (s["decode_duration_ms"] / 1000.0)
             for s in samples
             if isinstance(s.get("output_tokens"), int | float)
+            and s["output_tokens"] >= 1
             and isinstance(s.get("decode_duration_ms"), int | float)
             and s["decode_duration_ms"] > 0
         ]
