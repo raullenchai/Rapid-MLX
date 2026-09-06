@@ -891,8 +891,10 @@ def test_qwen4_state_cache_trim_matches_mtp_generator_restore():
             np.array(via_trim.cache[0]), np.array(expected[0])
         )
 
-    # Dropping more than the K drafts is refused rather than aliased.
+    # Dropping more than the K drafts is refused rather than aliased, and a
+    # cache with no undo record (outside a verify window) refuses any trim.
     assert fresh().trim(k_len + 1) == 0
+    assert Qwen4ExpStateCache(size=2).trim(1) == 0
 
 
 def test_qwen4_state_cache_zero_trim_is_side_effect_free():
