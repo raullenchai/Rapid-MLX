@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import json
 import platform
+import re
 import subprocess
 import uuid
 from datetime import datetime, timezone
@@ -22,6 +23,9 @@ from .hardware import Hardware, Software, run_conditions
 def utc_now() -> str:
     return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
 
+
+#: ``model-identity.schema.json#/$defs/quantization/properties/method``.
+_METHOD_PATTERN = re.compile(r"^[a-z0-9][a-z0-9._-]*$")
 
 _BASE_DTYPES = {
     "float32": "float32",
@@ -94,9 +98,16 @@ def quantization_facts(config: dict[str, Any]) -> dict[str, Any]:
     else:
         facts["kind"] = "weights"
         facts["weight_bits_x2"] = int(round(float(bits) * 2))
-    method = block.get("mode")
-    if isinstance(method, str) and method:
-        facts["method"] = method.lower()
+    # mlx-lm writes the scheme as ``mode`` ("affine", "mxfp4", ...); mflux
+    # image models write ``method`` ("mflux"). Honour whichever the artifact
+    # declares; only a block that names neither is assumed to be mlx-lm's
+    # historical affine default.
+    declared = block.get("method")
+    if not (isinstance(declared, str) and declared):
+        declared = block.get("mode")
+    if isinstance(declared, str) and declared:
+        method = declared.strip().lower()
+        facts["method"] = method if _METHOD_PATTERN.fullmatch(method) else "other"
     elif facts["kind"] == "weights":
         facts["method"] = "affine"
     if isinstance(group_size, int) and group_size > 0:
