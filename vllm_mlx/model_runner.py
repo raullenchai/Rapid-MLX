@@ -487,14 +487,26 @@ class MLXModelRunner:
                     max_tokens=max_tokens,
                     sampler=sampler,
                 )
-            for token_info in token_stream:
-                if hasattr(token_info, "token"):
-                    generated_ids.append(token_info.token)
-                elif isinstance(token_info, tuple) and len(token_info) > 0:
-                    generated_ids.append(token_info[0])
+            try:
+                for token_info in token_stream:
+                    if hasattr(token_info, "token"):
+                        generated_ids.append(token_info.token)
+                    elif isinstance(token_info, tuple) and len(token_info) > 0:
+                        generated_ids.append(token_info[0])
 
-                if len(generated_ids) >= max_tokens:
-                    break
+                    if len(generated_ids) >= max_tokens:
+                        break
+            finally:
+                # Deterministically close the generator. generate_step owns the
+                # megakernel lane's process-wide lock and its device-acknowledged
+                # transaction; closing here raises GeneratorExit into its
+                # ``finally`` so the lane drains/commits and releases the lock
+                # immediately, instead of leaving it held until GC — which would
+                # make the NEXT request decline ("another megakernel lane is
+                # active"). No-op for the ordinary eager generator.
+                close = getattr(token_stream, "close", None)
+                if callable(close):
+                    close()
 
             # Record whether the lane actually engaged (generate_step writes
             # ``used``/``decline_reason`` into the status dict). Observability
