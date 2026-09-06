@@ -17,6 +17,7 @@ from typing import TYPE_CHECKING, Any
 
 import mlx.core as mx
 
+from vllm_mlx import _megakernel_decode_lane as _mk_lane
 from vllm_mlx.patches.deepseek_v32_indexer_gate import (
     install_deepseek_v32_indexer_gate as _install_dsv32_indexer_gate,
 )
@@ -102,6 +103,32 @@ class MLXModelRunner:
 
         # Optimization settings
         self._enable_optimizations = enable_optimizations
+
+        # Opt-in plain-decode megakernel lane (default OFF, fail-closed to
+        # generate_step). Config comes from the environment the CLI populated
+        # (``--megakernel-decode-lane`` / ``--megakernel-geometry``). The
+        # per-model arming decision is taken in ``load_model`` once the model
+        # is resident; until then no lane is possible.
+        self._megakernel_config = _mk_lane.MegakernelLaneConfig.from_env()
+        self._megakernel_decision = _mk_lane.LaneDecision(
+            False, "model not loaded"
+        )
+        # A runner in engine-level speculative mode never uses the plain lane:
+        # the lane is the fastest *non-speculative* path, not a spec replacement.
+        self._speculative_engine = (
+            getattr(vllm_config, "speculative_config", None) is not None
+        )
+        if self._megakernel_config.enabled:
+            # Flip the build's master switch before the model loads so a build
+            # that captures it at import sees it on. No-op if not opted in.
+            _mk_lane.configure_process_env(self._megakernel_config)
+            logger.info(
+                "Megakernel decode lane requested (geometry=%s, max_context=%s); "
+                "arming deferred to load_model",
+                self._megakernel_config.geometry,
+                self._megakernel_config.max_context or "geometry-profile",
+            )
+
         self._hardware_info = None  # Detected hardware profile
         # Set True only after ``_apply_optimizations`` completes without
         # raising. ``_hardware_info`` being populated is NOT proof of
@@ -146,6 +173,26 @@ class MLXModelRunner:
             # Apply low-level optimizations
             if self._enable_optimizations:
                 self._apply_optimizations()
+
+            # Arm the megakernel decode lane for this model, if opted in. This
+            # is fail-closed: a stock mlx-lm (no lane module), a model with no
+            # registered geometry, or a geometry mismatch all leave the stock
+            # generate_step path in place. When the runner is in engine-level
+            # speculative mode the plain lane is intentionally never armed.
+            if self._speculative_engine:
+                self._megakernel_decision = _mk_lane.LaneDecision(
+                    False, "runner is in speculative mode; plain lane not used"
+                )
+            else:
+                self._megakernel_decision = _mk_lane.enable_for_model(
+                    self._megakernel_config, self.model
+                )
+            if self._megakernel_config.enabled:
+                logger.info(
+                    "Megakernel decode lane: %s (%s)",
+                    "ARMED" if self._megakernel_decision.route else "not armed",
+                    self._megakernel_decision.reason,
+                )
 
         except ImportError:
             raise ImportError(
@@ -389,15 +436,58 @@ class MLXModelRunner:
             # Convert token IDs to MLX array
             prompt = mx.array(prompt_token_ids)
 
+            # Decide whether this request rides the plain-decode megakernel
+            # lane. Fail-closed: any negative decision uses generate_step
+            # exactly as before. The lane itself lives inside generate_step —
+            # when armed and the request is width-1 plain, generate_step
+            # attaches it and drives it through this same loop; we only pass a
+            # status dict so we can observe engagement. Passing the status is a
+            # no-op on a stock mlx-lm that does not accept the kwarg.
+            capacity = (
+                _mk_lane.geometry_profile_capacity(self.model)
+                if self._megakernel_decision.route
+                else None
+            )
+            lane_route = _mk_lane.route_decision(
+                self._megakernel_config,
+                armed=self._megakernel_decision.route,
+                context_len=len(prompt_token_ids),
+                max_tokens=max_tokens,
+                batch_size=1,
+                is_speculative=self._speculative_engine,
+                sampling_params=sampling_params,
+                capacity=capacity,
+            )
+            step_kwargs: dict[str, Any] = {}
+            mk_status: dict[str, Any] | None = None
+            if lane_route.route:
+                mk_status = _mk_lane.new_status_dict()
+                step_kwargs["_megakernel_status"] = mk_status
+            elif self._megakernel_config.enabled and self._megakernel_decision.route:
+                logger.debug("megakernel lane not routed: %s", lane_route.reason)
+
             generated_ids = []
 
             # Generate tokens
-            for token_info in generate_step(
-                prompt=prompt,
-                model=self.model,
-                max_tokens=max_tokens,
-                sampler=sampler,
-            ):
+            try:
+                token_stream = generate_step(
+                    prompt=prompt,
+                    model=self.model,
+                    max_tokens=max_tokens,
+                    sampler=sampler,
+                    **step_kwargs,
+                )
+            except TypeError:
+                # A stock mlx-lm build does not accept ``_megakernel_status``.
+                # Retry on the plain path so the lane never becomes a hard dep.
+                mk_status = None
+                token_stream = generate_step(
+                    prompt=prompt,
+                    model=self.model,
+                    max_tokens=max_tokens,
+                    sampler=sampler,
+                )
+            for token_info in token_stream:
                 if hasattr(token_info, "token"):
                     generated_ids.append(token_info.token)
                 elif isinstance(token_info, tuple) and len(token_info) > 0:
@@ -405,6 +495,17 @@ class MLXModelRunner:
 
                 if len(generated_ids) >= max_tokens:
                     break
+
+            # Record whether the lane actually engaged (generate_step writes
+            # ``used``/``decline_reason`` into the status dict). Observability
+            # only — never changes the tokens returned.
+            if mk_status is not None:
+                engaged = _mk_lane.note_engagement(mk_status)
+                logger.debug(
+                    "megakernel lane %s: %s",
+                    "engaged" if engaged else "declined",
+                    mk_status.get("decline_reason") or mk_status.get("geometry"),
+                )
 
             return generated_ids
 
@@ -458,6 +559,17 @@ class MLXModelRunner:
             info["optimizations"] = {
                 "kernel_fusion": False,
                 "memory_optimized": self._optimizations_applied,
+            }
+
+            # Plain-decode megakernel lane status (opt-in). ``armed`` means the
+            # loaded model mapped to a geometry and the build exposes the lane;
+            # per-request engagement is reported by the counters snapshot.
+            info["megakernel_lane"] = {
+                "enabled": self._megakernel_config.enabled,
+                "armed": self._megakernel_decision.route,
+                "reason": self._megakernel_decision.reason,
+                "geometry": _mk_lane.geometry_name_for_model(self.model),
+                "counters": _mk_lane.snapshot_counters(),
             }
 
             if self._hardware_info:

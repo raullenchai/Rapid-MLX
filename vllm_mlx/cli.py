@@ -2189,6 +2189,21 @@ def serve_command(args):
 
     install_parent_watchdog(resolve_expected_ppid(getattr(args, "watchdog_ppid", None)))
 
+    # Plain-decode megakernel lane (opt-in, default OFF). Translate the CLI
+    # flags into the environment the model runner reads at construction, before
+    # the engine loads the model — an mlx-lm build that captures its master
+    # switch at import then sees it on. This is a no-op unless the operator
+    # passed --megakernel-decode-lane, and the runner is fail-closed to the
+    # ordinary decode path on any build/model/request that cannot use the lane.
+    if getattr(args, "megakernel_decode_lane", False):
+        from ._megakernel_decode_lane import (
+            ENV_ENABLE as _MK_ENV_ENABLE,
+            ENV_GEOMETRY as _MK_ENV_GEOMETRY,
+        )
+
+        os.environ[_MK_ENV_ENABLE] = "1"
+        os.environ[_MK_ENV_GEOMETRY] = getattr(args, "megakernel_geometry", "auto")
+
     _arg_max_tokens = getattr(args, "max_tokens", None)
     _max_tokens_is_explicit = _arg_max_tokens is not None
     effective_max_tokens = _arg_max_tokens if _arg_max_tokens is not None else 32768
@@ -7118,6 +7133,35 @@ Examples:
     )
     serve_parser.add_argument(
         "--completion-batch-size", type=int, default=32, help="Completion batch size"
+    )
+    serve_parser.add_argument(
+        "--megakernel-decode-lane",
+        action="store_true",
+        default=False,
+        help=(
+            "Opt in to the plain-decode megakernel lane (default OFF). This is "
+            "the fastest NON-speculative decode path — for temperature "
+            "sampling, tool-constrained, or low-acceptance requests where "
+            "self-MTP is off or ineffective. It is NOT a speculative-decode "
+            "replacement (it does not beat Flash-Next self-MTP). Requires an "
+            "mlx-lm build that exposes the megakernel lane; on a stock build, "
+            "or for a model with no megakernel geometry, or for a "
+            "speculative/tool/batched request, decode falls back to the "
+            "ordinary path with no change. Only width-1 plain requests within "
+            "the geometry's context profile ride the lane."
+        ),
+    )
+    serve_parser.add_argument(
+        "--megakernel-geometry",
+        type=str,
+        default="auto",
+        choices=["auto", "qwen4_exp", "qwen36_35b_a3b"],
+        help=(
+            "Pin the megakernel geometry the loaded model must match, or "
+            "'auto' (default) to accept whichever geometry the model maps to. "
+            "A mismatch leaves the lane off (fail-closed). Only meaningful "
+            "with --megakernel-decode-lane."
+        ),
     )
     serve_parser.add_argument(
         "--enable-prefix-cache",
