@@ -98,6 +98,8 @@ def test_harness_manifest_and_workflow_changes_fail_closed():
     for path in (
         "apps/rapid-mac/Tests/GUIGoldenFlows/journeys.yaml",
         "apps/rapid-mac/scripts/gui-golden-flows.sh",
+        "apps/rapid-mac/scripts/mac-ci-ax-preflight.sh",
+        "apps/rapid-mac/scripts/rapid-ax.swift",
         ".github/workflows/rapid-mac-ci.yml",
         "scripts/select_gui_flows.py",
     ):
