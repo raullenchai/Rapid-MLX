@@ -195,6 +195,53 @@ struct DownloadCleanupTests {
         #expect(try Data(contentsOf: original) == Data(repeating: 0x41, count: 4))
     }
 
+    @Test("A later scan recovers a claim interrupted by app termination")
+    func scanRecoversInterruptedClaim() throws {
+        let root = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let old = Date(timeIntervalSince1970: 1_000_000_000)
+        let original = try write("selected.txt", bytes: 4, in: root, modifiedAt: old)
+        let staging = root.appendingPathComponent(".rapid-cleanup-interrupted", isDirectory: true)
+        try FileManager.default.createDirectory(at: staging, withIntermediateDirectories: false)
+        try Data(#"{"originalName":"selected.txt"}"#.utf8).write(
+            to: staging.appendingPathComponent("claim.json")
+        )
+        try FileManager.default.moveItem(
+            at: original,
+            to: staging.appendingPathComponent("selected.txt")
+        )
+
+        let candidates = try DownloadCleanup.scan(
+            downloadsURL: root,
+            now: old.addingTimeInterval(100 * 86_400)
+        )
+
+        #expect(candidates.map(\.name) == ["selected.txt"])
+        #expect(FileManager.default.fileExists(atPath: original.path))
+        #expect(!FileManager.default.fileExists(atPath: staging.path))
+    }
+
+    @Test("An indeterminate Trash result is not reported as a safe stop")
+    func batchReportsUnknownTrashOutcome() throws {
+        let root = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let old = Date(timeIntervalSince1970: 1_000_000_000)
+        _ = try write("selected.txt", bytes: 4, in: root, modifiedAt: old)
+        let candidate = try #require(DownloadCleanup.scan(
+            downloadsURL: root,
+            now: old.addingTimeInterval(100 * 86_400)
+        ).first)
+
+        let result = DownloadCleanup.moveToTrash([candidate], downloadsURL: root) { staged in
+            try FileManager.default.removeItem(at: staged)
+            throw CocoaError(.fileWriteUnknown)
+        }
+
+        #expect(result.movedCount == 0)
+        #expect(result.outcomeUncertain)
+        #expect(result.failureDescription?.contains("Check Trash") == true)
+    }
+
     private func temporaryDirectory() throws -> URL {
         let url = FileManager.default.temporaryDirectory
             .appendingPathComponent("rapid-download-cleanup-\(UUID().uuidString)", isDirectory: true)

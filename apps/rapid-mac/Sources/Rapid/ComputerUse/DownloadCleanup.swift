@@ -19,6 +19,13 @@ struct DownloadCleanupCandidate: Identifiable, Equatable, Sendable {
 /// every returned URL is understandable, independently selectable, and moved
 /// through macOS Trash rather than unlinked.
 struct DownloadCleanup {
+    private struct ClaimRecord: Codable {
+        let originalName: String
+    }
+
+    private static let stagingPrefix = ".rapid-cleanup-"
+    private static let claimRecordName = "claim.json"
+
     struct BatchResult: Equatable, Sendable {
         let movedCount: Int
         let failureDescription: String?
@@ -53,6 +60,7 @@ struct DownloadCleanup {
         fileManager: FileManager = .default
     ) throws -> [DownloadCleanupCandidate] {
         let root = downloadsURL.standardizedFileURL.resolvingSymlinksInPath()
+        try reconcileInterruptedClaims(in: root, fileManager: fileManager)
         let cutoff = now.addingTimeInterval(-Double(minimumAgeDays) * 86_400)
         let keys: Set<URLResourceKey> = [
             .isRegularFileKey, .isSymbolicLinkKey, .isHiddenKey,
@@ -102,7 +110,7 @@ struct DownloadCleanup {
             throw Failure.targetEscapedDownloads
         }
         let stagingDirectory = root.appendingPathComponent(
-            ".rapid-cleanup-\(UUID().uuidString)",
+            "\(stagingPrefix)\(UUID().uuidString)",
             isDirectory: true
         )
         try fileManager.createDirectory(
@@ -117,6 +125,11 @@ struct DownloadCleanup {
             }
         }
         let staged = stagingDirectory.appendingPathComponent(candidate.name)
+        let claimRecord = try JSONEncoder().encode(ClaimRecord(originalName: candidate.name))
+        try claimRecord.write(
+            to: stagingDirectory.appendingPathComponent(claimRecordName),
+            options: [.atomic]
+        )
         try (claim ?? { source, destination in
             try fileManager.moveItem(at: source, to: destination)
         })(current, staged)
@@ -191,5 +204,59 @@ struct DownloadCleanup {
             }
         }
         return BatchResult(movedCount: moved, failureDescription: nil, outcomeUncertain: false)
+    }
+
+    /// Completes the recovery side of the tiny on-disk claim transaction.
+    ///
+    /// The record is written before the source is renamed, so every crash
+    /// point has a deterministic interpretation:
+    /// - source present, staged absent: the claim never happened;
+    /// - source absent, staged present: restore the claimed file;
+    /// - both absent: Trash completed before staging cleanup;
+    /// - both present: do not guess; preserve both and report the recovery path.
+    private static func reconcileInterruptedClaims(
+        in root: URL,
+        fileManager: FileManager
+    ) throws {
+        let keys: Set<URLResourceKey> = [.isDirectoryKey, .isSymbolicLinkKey]
+        let children = try fileManager.contentsOfDirectory(
+            at: root,
+            includingPropertiesForKeys: Array(keys),
+            options: [.skipsSubdirectoryDescendants]
+        )
+        for directory in children where directory.lastPathComponent.hasPrefix(stagingPrefix) {
+            guard let values = try? directory.resourceValues(forKeys: keys),
+                  values.isDirectory == true,
+                  values.isSymbolicLink != true else { continue }
+            let recordURL = directory.appendingPathComponent(claimRecordName)
+            guard let data = try? Data(contentsOf: recordURL),
+                  let record = try? JSONDecoder().decode(ClaimRecord.self, from: data),
+                  record.originalName == URL(fileURLWithPath: record.originalName).lastPathComponent,
+                  record.originalName != ".",
+                  record.originalName != "..",
+                  !record.originalName.contains("/"),
+                  !record.originalName.isEmpty else {
+                // An empty directory can only precede record creation. Never
+                // inspect or delete an unrecognized non-empty directory.
+                let contents = try? fileManager.contentsOfDirectory(atPath: directory.path)
+                if contents?.isEmpty == true { try? fileManager.removeItem(at: directory) }
+                continue
+            }
+            let original = root.appendingPathComponent(record.originalName)
+            let staged = directory.appendingPathComponent(record.originalName)
+            let originalExists = fileManager.fileExists(atPath: original.path)
+            let stagedExists = fileManager.fileExists(atPath: staged.path)
+
+            if !originalExists && stagedExists {
+                do {
+                    try fileManager.moveItem(at: staged, to: original)
+                } catch {
+                    throw Failure.recoveryRequired(staged.path)
+                }
+            } else if originalExists && stagedExists {
+                throw Failure.recoveryRequired(staged.path)
+            }
+            try? fileManager.removeItem(at: directory)
+        }
     }
 }

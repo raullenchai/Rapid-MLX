@@ -281,7 +281,10 @@ struct ComputerUseView: View {
                 } else {
                     prefix = "Moved \(result.movedCount) of \(count) files to Trash."
                 }
-                let message = "\(prefix) Cleanup stopped safely: \(failure)"
+                let suffix = result.outcomeUncertain
+                    ? failure
+                    : "Cleanup stopped safely: \(failure)"
+                let message = "\(prefix) \(suffix)"
                 do {
                     let refreshed = try await Task.detached {
                         try DownloadCleanup.scan(downloadsURL: downloadsURL)
