@@ -430,6 +430,7 @@ jobs:
         run: |
           pytest \
             tests/test_cancellation_protocol.py \
+            tests/test_community_bench_conditions.py \
             tests/test_model_performance_metrics.py \
             tests/test_mllm.py \
             tests/test_server.py \

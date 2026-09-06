@@ -850,7 +850,10 @@ def run_local(
             conditions_before=conditions_before,
             conditions_after=conditions_after,
         )
-    except Exception as exc:
+    except (Exception, asyncio.CancelledError) as exc:
+        # ``CancelledError`` is a BaseException: without naming it here a
+        # cancelled benchmark would skip the archived cancellation record
+        # (and its before-snapshot) entirely.
         if measurements_completed and execution is None:
             raise LocalBenchmarkError(
                 f"benchmark completed but result could not be constructed: {exc}",
@@ -873,7 +876,7 @@ def run_local(
                 started_at=started_at,
                 status=(
                     "cancelled"
-                    if isinstance(exc, BenchmarkCancelledError)
+                    if isinstance(exc, BenchmarkCancelledError | asyncio.CancelledError)
                     else "failed"
                 ),
                 failure_code=failure_code,

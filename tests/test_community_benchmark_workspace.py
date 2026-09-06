@@ -1346,6 +1346,34 @@ def test_image_runs_capture_conditions_inside_the_server_context(
     assert run["machine"]["conditions_after"]["available_memory_mib"] == 300
 
 
+def test_asyncio_cancellation_is_archived_as_cancelled_with_before_snapshot(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    archive = LocalRunArchive(tmp_path)
+    _mock_local_context(
+        monkeypatch, "text_generation", "mlx-community/example-text-model"
+    )
+    before = {
+        "power_source": "battery",
+        "low_power_mode": True,
+        "thermal_state": "fair",
+        "memory_pressure": "normal",
+        "available_memory_mib": 2048,
+    }
+    monkeypatch.setattr(local_runner, "run_conditions", lambda: dict(before))
+
+    async def cancelled(repo_id: str, **_: object):
+        raise asyncio.CancelledError()
+
+    monkeypatch.setattr(local_runner, "_text_measurements", cancelled)
+    with pytest.raises(local_runner.LocalBenchmarkError):
+        local_runner.run_local("example-text", archive=archive)
+    archived = archive.list()[0]
+    assert archived["outcome"]["status"] == "cancelled"
+    assert archived["machine"]["conditions_before"] == before
+    assert archived["machine"]["conditions_after"]["thermal_state"] == "unknown"
+
+
 def test_failed_run_keeps_the_before_snapshot_and_marks_after_unknown(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
