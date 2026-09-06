@@ -213,6 +213,24 @@ struct ComputerUseElementFingerprint: Equatable, Sendable {
     let frame: WorkflowWindowFrame
 }
 
+/// Main-actor token that retains the exact Accessibility object resolved
+/// before the final window capture. Metadata is kept as a second, defensive
+/// check, but is not sufficient by itself: a replacement control can expose
+/// identical role, title, identifier, and geometry.
+@MainActor
+final class ComputerUseElementBinding {
+    let fingerprint: ComputerUseElementFingerprint
+    fileprivate let element: AXUIElement?
+
+    init(
+        fingerprint: ComputerUseElementFingerprint,
+        element: AXUIElement? = nil
+    ) {
+        self.fingerprint = fingerprint
+        self.element = element
+    }
+}
+
 /// Element-bound click adapter. A coordinate is used only to resolve the
 /// current Accessibility element; input is delivered with AXPress to that
 /// element rather than through the global pointer event stream.
@@ -220,8 +238,8 @@ struct AXComputerUseInputEmitter: ComputerUseInputEmitting {
     typealias ElementBoundary = @MainActor @Sendable (
         WorkflowActionPayload,
         WorkflowInteractionTarget,
-        ComputerUseElementFingerprint?
-    ) throws -> ComputerUseElementFingerprint
+        ComputerUseElementBinding?
+    ) throws -> ComputerUseElementBinding
 
     private let captureSource: any ComputerUseWindowCapturing
     private let elementBoundary: ElementBoundary
@@ -241,7 +259,7 @@ struct AXComputerUseInputEmitter: ComputerUseInputEmitting {
     ) async throws {
         try Task.checkCancellation()
         let target = observation.target
-        let fingerprint = try await MainActor.run {
+        let binding = try await MainActor.run {
             try elementBoundary(payload, target, nil)
         }
 
@@ -271,7 +289,7 @@ struct AXComputerUseInputEmitter: ComputerUseInputEmitting {
 
         try await MainActor.run {
             try Task.checkCancellation()
-            _ = try elementBoundary(payload, target, fingerprint)
+            _ = try elementBoundary(payload, target, binding)
         }
     }
 
@@ -279,8 +297,8 @@ struct AXComputerUseInputEmitter: ComputerUseInputEmitting {
     private static func resolveAndOptionallyPress(
         _ payload: WorkflowActionPayload,
         _ expected: WorkflowInteractionTarget,
-        _ requiredFingerprint: ComputerUseElementFingerprint?
-    ) throws -> ComputerUseElementFingerprint {
+        _ requiredBinding: ComputerUseElementBinding?
+    ) throws -> ComputerUseElementBinding {
         guard case .click(let normalizedX, let normalizedY) = payload else {
             throw MacOSComputerUseActuationError.invalidAction
         }
@@ -337,8 +355,10 @@ struct AXComputerUseInputEmitter: ComputerUseInputEmitting {
             throw MacOSComputerUseActuationError.elementUnavailable
         }
         let fingerprint = try elementFingerprint(element)
-        if let requiredFingerprint {
-            guard fingerprint == requiredFingerprint else {
+        if let requiredBinding {
+            guard fingerprint == requiredBinding.fingerprint,
+                  requiredBinding.element.map({ CFEqual($0, element) }) ?? true
+            else {
                 throw MacOSComputerUseActuationError.elementChanged
             }
             try Task.checkCancellation()
@@ -350,7 +370,10 @@ struct AXComputerUseInputEmitter: ComputerUseInputEmitting {
                 throw MacOSComputerUseActuationError.elementActionFailed
             }
         }
-        return fingerprint
+        return ComputerUseElementBinding(
+            fingerprint: fingerprint,
+            element: element
+        )
     }
 
     static func clickPoint(

@@ -239,7 +239,7 @@ struct MacOSComputerUseActuationTests {
             captureSource: ActuationCaptureStub(result: fixture.capture),
             elementBoundary: { payload, target, required in
                 recorder.calls.append(.init(payload: payload, target: target, required: required))
-                return recorder.fingerprint
+                return recorder.binding
             }
         )
 
@@ -250,7 +250,7 @@ struct MacOSComputerUseActuationTests {
 
         #expect(recorder.calls.count == 2)
         #expect(recorder.calls[0].required == nil)
-        #expect(recorder.calls[1].required == recorder.fingerprint)
+        #expect(recorder.calls[1].required === recorder.binding)
         #expect(recorder.calls.allSatisfy { $0.target == fixture.observation.target })
     }
 
@@ -271,7 +271,7 @@ struct MacOSComputerUseActuationTests {
             captureSource: ActuationCaptureStub(result: changedCapture),
             elementBoundary: { payload, target, required in
                 recorder.calls.append(.init(payload: payload, target: target, required: required))
-                return recorder.fingerprint
+                return recorder.binding
             }
         )
 
@@ -297,7 +297,7 @@ struct MacOSComputerUseActuationTests {
                 if required != nil {
                     throw MacOSComputerUseActuationError.elementChanged
                 }
-                return recorder.fingerprint
+                return recorder.binding
             }
         )
 
@@ -428,17 +428,19 @@ struct MacOSComputerUseActuationTests {
 private struct ElementBoundaryCall {
     let payload: WorkflowActionPayload
     let target: WorkflowInteractionTarget
-    let required: ComputerUseElementFingerprint?
+    let required: ComputerUseElementBinding?
 }
 
 @MainActor
 private final class ElementBoundaryRecorder {
-    let fingerprint = ComputerUseElementFingerprint(
-        role: "AXButton",
-        subrole: nil,
-        identifier: "submit",
-        title: "Submit",
-        frame: .init(x: 200, y: 300, width: 80, height: 30)
+    let binding = ComputerUseElementBinding(
+        fingerprint: ComputerUseElementFingerprint(
+            role: "AXButton",
+            subrole: nil,
+            identifier: "submit",
+            title: "Submit",
+            frame: .init(x: 200, y: 300, width: 80, height: 30)
+        )
     )
     var calls: [ElementBoundaryCall] = []
 }
