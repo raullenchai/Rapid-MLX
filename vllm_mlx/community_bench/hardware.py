@@ -333,6 +333,9 @@ def _process_info(selector: bytes, restype):
     try:
         import ctypes
 
+        # NSProcessInfo lives in Foundation; make sure the framework is
+        # mapped into a clean process before asking the runtime for the class.
+        ctypes.CDLL("/System/Library/Frameworks/Foundation.framework/Foundation")
         objc = ctypes.CDLL("/usr/lib/libobjc.A.dylib")
         objc.objc_getClass.restype = ctypes.c_void_p
         objc.objc_getClass.argtypes = [ctypes.c_char_p]

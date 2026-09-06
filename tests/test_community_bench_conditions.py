@@ -209,3 +209,26 @@ def test_process_info_degrades_when_the_objc_runtime_cannot_load(monkeypatch) ->
     assert hardware._process_info(b"thermalState", ctypes.c_long) is None
     assert hardware._thermal_state() == "unknown"
     assert hardware._low_power_mode() is None
+
+
+@pytest.mark.skipif(
+    sys.platform != "darwin", reason="Objective-C runtime is macOS-only"
+)
+def test_process_info_probes_work_in_a_fresh_interpreter() -> None:
+    """A clean process (no Foundation imported by anything else) must still
+    resolve NSProcessInfo — pr_validate codex on #3146."""
+    import json
+    import subprocess
+
+    code = (
+        "import json, sys; "
+        "from vllm_mlx.community_bench import hardware; "
+        "print(json.dumps([hardware._thermal_state(), hardware._low_power_mode()]))"
+    )
+    out = subprocess.run(
+        [sys.executable, "-S", "-c", code], capture_output=True, text=True, timeout=60
+    )
+    assert out.returncode == 0, out.stderr
+    thermal, low_power = json.loads(out.stdout.strip().splitlines()[-1])
+    assert thermal in {"nominal", "fair", "serious", "critical"}
+    assert isinstance(low_power, bool)
