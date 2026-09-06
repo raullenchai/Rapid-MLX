@@ -14,7 +14,8 @@ protocol LocalWorkflowGrounding: Sendable {
 protocol LocalWorkflowActuating: Sendable {
     func perform(
         _ action: GroundedWorkflowAction,
-        against currentObservation: WorkflowObservation
+        groundedAgainst groundingObservation: WorkflowObservation,
+        currentObservation: WorkflowObservation
     ) async throws
 }
 
@@ -489,7 +490,11 @@ actor LocalWorkflowExecutor {
 
         if Task.isCancelled { throw CancellationError() }
         do {
-            try await actuator.perform(action, against: current)
+            try await actuator.perform(
+                action,
+                groundedAgainst: observed,
+                currentObservation: current
+            )
         } catch is CancellationError {
             throw WorkflowKernelError.cancelled(actionMayHaveOccurred: true)
         } catch {
