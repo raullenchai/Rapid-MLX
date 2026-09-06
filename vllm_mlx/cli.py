@@ -3091,6 +3091,25 @@ def _needs_bounded_trim_free_reuse(
     return is_deepseek_v4_0731(model_name)
 
 
+def _reject_embedding_alias_serve(profile, model_name: str) -> None:
+    """Exit 2 when ``serve`` is pointed at a sentence-embedding alias.
+
+    embeddinggemma has no chat surface; loading it on the text lane boots a
+    server whose every chat request fails. Point the operator at
+    ``--embedding-model``, which is how the engine actually serves it (#3116).
+    """
+    if profile is None or getattr(profile, "modality", "text") != "embedding":
+        return
+    print(
+        f"error: '{model_name}' is a sentence-embedding alias and has no chat "
+        "surface, so it cannot be served as the main model.\n"
+        "Serve a chat model and attach it as the embeddings backend instead:\n"
+        f"    rapid-mlx serve <chat-alias> --embedding-model {model_name}",
+        file=sys.stderr,
+    )
+    sys.exit(2)
+
+
 def _serve_will_run_on_mllm_lane(args) -> bool:
     """Whether ``serve`` will actually run this model on the MLLM/VLM
     continuous-batching lane — the ONLY lane that needs the optional
@@ -3322,6 +3341,9 @@ def serve_command(args):
         getattr(args, "_original_alias", None) or getattr(args, "model", "")
     )
     _is_wan_video = False
+    _reject_embedding_alias_serve(
+        _serve_profile, getattr(args, "_original_alias", None) or args.model
+    )
     from ._download_gate import IMAGE_MODEL_DATA_FILES
 
     _owns_pinned_image_download = bool(

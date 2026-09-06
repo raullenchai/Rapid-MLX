@@ -36,7 +36,7 @@ from .model_profile import (
 # loud right now — otherwise an aliases.json typo would pass schema validation
 # and crash at request time with an unrouted lane (pr_validate codex r13 NIT).
 _VALID_MODALITIES: frozenset[str] = frozenset(
-    {"text", "text-diffusion", "video-gen", "image-gen"}
+    {"text", "text-diffusion", "video-gen", "image-gen", "embedding"}
 )
 _RESERVED_MODALITIES: frozenset[str] = frozenset({"vision"})
 

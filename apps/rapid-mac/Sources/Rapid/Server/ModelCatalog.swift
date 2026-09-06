@@ -30,6 +30,10 @@ enum ModelTask: String, Sendable, Hashable {
     case videoGeneration = "video_generation"
     case speechSynthesis = "speech_synthesis"
     case speechRecognition = "speech_recognition"
+    /// Sentence embeddings (embeddinggemma). Desktop has no embeddings
+    /// surface, so an alias advertising only this task is parsed (the
+    /// envelope stays valid) and then left out of every picker (#3116).
+    case embedding
 }
 
 enum ModelOperation: String, Sendable, Hashable {
@@ -47,6 +51,7 @@ enum ModelOperation: String, Sendable, Hashable {
     case transcription
     case translation
     case forcedAlignment = "forced_alignment"
+    case embed
 }
 
 /// The user-facing operation an audio checkpoint can actually perform.
@@ -1091,8 +1096,18 @@ enum ModelCatalog {
                     return !operations.isDisjoint(with: [
                         .transcription, .translation, .forcedAlignment,
                     ])
+                case .embedding:
+                    return operations.contains(.embed)
                 }
             }) else { return nil }
+            // An embedding alias has no Desktop surface: it is neither a
+            // chat, image, audio nor video model. Skip any row that carries
+            // the task — a hypothetical `embedding` + `text_generation` combo
+            // included — rather than let the `kind` fallback file it under
+            // Chat (#3116, codex).
+            if tasks.contains(.embedding) {
+                continue
+            }
             let kind: ModelKind
             if tasks.contains(.imageGeneration) {
                 kind = .image
