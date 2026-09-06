@@ -86,6 +86,41 @@ struct CommunityBenchmarkModel: Identifiable, Hashable {
         }
     }
 
+    /// One labelled group of the model picker menu.
+    struct PickerSection: Equatable {
+        let title: String
+        let models: [CommunityBenchmarkModel]
+    }
+
+    static let recommendedSectionTitle = "Recommended for this Mac"
+    static let downloadedSectionTitle = "Downloaded"
+    static let allModelsSectionTitle = "All models"
+
+    /// Splits the flat (already sorted) model list into the three menu
+    /// groups: focus models that fit this Mac first, then anything else that
+    /// is already on disk, then the long tail. Empty groups are dropped so the
+    /// menu never shows a header with nothing under it. Every alias appears in
+    /// exactly one section, so `Picker` tags stay unique.
+    static func pickerSections(_ models: [Self]) -> [PickerSection] {
+        var recommended: [Self] = []
+        var downloaded: [Self] = []
+        var rest: [Self] = []
+        for model in models {
+            if model.isFocus, model.memoryFit != "does_not_fit" {
+                recommended.append(model)
+            } else if model.entry.cached {
+                downloaded.append(model)
+            } else {
+                rest.append(model)
+            }
+        }
+        return [
+            PickerSection(title: recommendedSectionTitle, models: recommended),
+            PickerSection(title: downloadedSectionTitle, models: downloaded),
+            PickerSection(title: allModelsSectionTitle, models: rest),
+        ].filter { !$0.models.isEmpty }
+    }
+
     static func reconciledSelection(current: String, models: [Self]) -> String {
         if models.contains(where: { $0.entry.alias == current }) { return current }
         return models.first?.entry.alias ?? ""
@@ -118,7 +153,7 @@ private struct CommunityBenchmarkCatalogEnvelope: Decodable {
     let models: [CommunityBenchmarkCatalogModel]
 }
 
-private struct CommunityBenchmarkResults: Decodable {
+struct CommunityBenchmarkResults: Decodable {
     let runs: [CommunityBenchmarkResult]
     let receipts: [String: CommunityBenchmarkReceipt]?
 }
@@ -194,16 +229,43 @@ struct CommunityBenchmarkUploadPreview: Identifiable {
     var id: String { runID }
 }
 
-private struct CommunityBenchmarkResult: Decodable, Identifiable {
-    struct Workload: Decodable { let taskType: String
-        enum CodingKeys: String, CodingKey { case taskType = "task_type" }
+struct CommunityBenchmarkResult: Decodable, Identifiable {
+    struct Workload: Decodable {
+        struct Case: Decodable {
+            let caseID: String
+            let targetPromptTokens: Int?
+            let targetOutputTokens: Int?
+            let warmupRounds: Int?
+            let measuredRounds: Int?
+            enum CodingKeys: String, CodingKey {
+                case caseID = "case_id"
+                case targetPromptTokens = "target_prompt_tokens"
+                case targetOutputTokens = "target_output_tokens"
+                case warmupRounds = "warmup_rounds"
+                case measuredRounds = "measured_rounds"
+            }
+        }
+        let taskType: String
+        let cases: [Case]?
+        enum CodingKeys: String, CodingKey {
+            case taskType = "task_type"
+            case cases
+        }
     }
     struct Outcome: Decodable { let status: String }
     struct Measurement: Decodable {
         let caseID: String
-        let totalDurationMS: Double
+        let completed: Bool?
+        let outputTokens: Int?
+        let ttftMS: Double?
+        let decodeDurationMS: Double?
+        let totalDurationMS: Double?
         enum CodingKeys: String, CodingKey {
             case caseID = "case_id"
+            case completed
+            case outputTokens = "output_tokens"
+            case ttftMS = "ttft_ms"
+            case decodeDurationMS = "decode_duration_ms"
             case totalDurationMS = "total_duration_ms"
         }
     }
@@ -268,18 +330,195 @@ private struct CommunityBenchmarkResult: Decodable, Identifiable {
         case workload, outcome, measurements, model, machine, execution
     }
 
-    var duration: String? {
-        guard let values = measurements?.map(\.totalDurationMS), !values.isEmpty else { return nil }
-        let average = values.reduce(0, +) / Double(values.count)
-        let spansCases = Set(measurements?.map(\.caseID) ?? []).count > 1
-        let value = average >= 1_000
-            ? String(format: "%.1f s avg", average / 1_000)
-            : String(format: "%.0f ms avg", average)
-        return spansCases ? "\(value) across cases" : value
+    /// Per-case medians over completed rounds — the same numbers the CLI
+    /// prints after `benchmark run` (`summarize_measurements`), so Desktop
+    /// and terminal users read the same result.
+    struct CaseSummary: Equatable {
+        let caseID: String
+        let rounds: Int
+        /// Median decode throughput using the website's formula
+        /// `(output_tokens - 1) / decode_duration`, so the number matches the
+        /// public leaderboard rather than a private variant of it.
+        let decodeTokensPerSecond: Double?
+        let ttftMS: Double?
+        /// Median wall time per round; the headline for image/video cases.
+        let wallSeconds: Double?
+
+        var headline: String {
+            if let decodeTokensPerSecond {
+                var text = String(format: "%.1f tok/s", decodeTokensPerSecond)
+                if let ttftMS {
+                    text += " · TTFT " + Self.formatMilliseconds(ttftMS)
+                }
+                return text
+            }
+            if let wallSeconds {
+                return String(format: "%.1f s per run", wallSeconds)
+            }
+            return "\(rounds) rounds"
+        }
+
+        static func formatMilliseconds(_ value: Double) -> String {
+            value >= 10_000
+                ? String(format: "%.1f s", value / 1_000)
+                : String(format: "%.0f ms", value)
+        }
+    }
+
+    /// Case order follows the workload declaration (short case first), then
+    /// first appearance for measurements the workload did not declare.
+    var caseSummaries: [CaseSummary] {
+        Self.summarize(
+            measurements: measurements ?? [],
+            declaredOrder: workload.cases?.map(\.caseID) ?? []
+        )
+    }
+
+    static func summarize(
+        measurements: [Measurement],
+        declaredOrder: [String]
+    ) -> [CaseSummary] {
+        var order = declaredOrder
+        var byCase: [String: [Measurement]] = [:]
+        for sample in measurements where sample.completed ?? false {
+            if byCase[sample.caseID] == nil, !order.contains(sample.caseID) {
+                order.append(sample.caseID)
+            }
+            byCase[sample.caseID, default: []].append(sample)
+        }
+        return order.compactMap { caseID in
+            guard let samples = byCase[caseID], !samples.isEmpty else { return nil }
+            let decode = samples.compactMap { sample -> Double? in
+                guard let tokens = sample.outputTokens, tokens > 1,
+                      let duration = sample.decodeDurationMS, duration > 0
+                else { return nil }
+                return Double(tokens - 1) / duration * 1_000
+            }
+            let ttft = samples.compactMap(\.ttftMS)
+            let total = samples.compactMap(\.totalDurationMS)
+            let decodeMedian = median(decode)
+            return CaseSummary(
+                caseID: caseID,
+                rounds: samples.count,
+                decodeTokensPerSecond: decodeMedian,
+                ttftMS: decodeMedian == nil ? nil : median(ttft),
+                wallSeconds: median(total).map { $0 / 1_000 }
+            )
+        }
+    }
+
+    static func median(_ values: [Double]) -> Double? {
+        guard !values.isEmpty else { return nil }
+        let sorted = values.sorted()
+        let mid = sorted.count / 2
+        return sorted.count.isMultiple(of: 2)
+            ? (sorted[mid - 1] + sorted[mid]) / 2
+            : sorted[mid]
+    }
+
+    /// The number shown on the result row: the first (short) case.
+    var headline: String? { caseSummaries.first?.headline }
+
+    /// Remaining cases, one per line, for the secondary line / tooltip.
+    var secondaryLines: [String] {
+        caseSummaries.dropFirst().map { "\($0.caseID): \($0.headline)" }
     }
 
     var repoID: String { model.components.first?.source.repoID ?? "Local model" }
 
+    /// `completed_at` is a UTC ISO-8601 stamp with or without fractional
+    /// seconds, depending on the CLI version that wrote the record.
+    var completedDate: Date? { Self.parseTimestamp(completedAt) }
+
+    static func parseTimestamp(_ raw: String) -> Date? {
+        let fractional = ISO8601DateFormatter()
+        fractional.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        if let date = fractional.date(from: raw) { return date }
+        return ISO8601DateFormatter().date(from: raw)
+    }
+
+    /// "Today 21:33", "Yesterday 09:10", "Sep 5, 21:33" or "Sep 5, 2025,
+    /// 21:33" in the user's locale and time zone; falls back to the raw
+    /// stamp when it cannot be parsed so a malformed record still renders.
+    static func formatCompletedAt(
+        _ raw: String,
+        now: Date = Date(),
+        calendar: Calendar = .current,
+        locale: Locale = .current,
+        timeZone: TimeZone = .current
+    ) -> String {
+        guard let date = parseTimestamp(raw) else { return raw }
+        var calendar = calendar
+        calendar.timeZone = timeZone
+        calendar.locale = locale
+        let time = DateFormatter()
+        time.locale = locale
+        time.timeZone = timeZone
+        time.setLocalizedDateFormatFromTemplate("jm")
+        if calendar.isDate(date, inSameDayAs: now) {
+            return "Today \(time.string(from: date))"
+        }
+        if let yesterday = calendar.date(byAdding: .day, value: -1, to: now),
+           calendar.isDate(date, inSameDayAs: yesterday) {
+            return "Yesterday \(time.string(from: date))"
+        }
+        let day = DateFormatter()
+        day.locale = locale
+        day.timeZone = timeZone
+        let sameYear = calendar.component(.year, from: date)
+            == calendar.component(.year, from: now)
+        day.setLocalizedDateFormatFromTemplate(sameYear ? "MMMd" : "yMMMd")
+        return "\(day.string(from: date)), \(time.string(from: date))"
+    }
+}
+
+/// Copy shown next to the spinner while `benchmark run` is measuring, so the
+/// user knows what is being measured, how much work that is, and roughly how
+/// long to expect before the result row appears.
+enum CommunityBenchmarkRunStatus {
+    /// `Measuring qwen3.5-9b-4bit · 2 cases × (1 warmup + 5 rounds) · usually 2–5 minutes`
+    static func description(for model: CommunityBenchmarkModel) -> String {
+        var parts = ["Measuring \(model.entry.alias)", scope(for: model.task)]
+        parts.append(expectedDuration(for: model.task))
+        if !model.entry.cached { parts.append("plus the download") }
+        return parts.joined(separator: " · ")
+    }
+
+    static func scope(for task: ModelTask) -> String {
+        switch task {
+        case .imageGeneration: return "1 warmup + 1 measured render"
+        case .videoGeneration: return "1 measured render"
+        default: return "2 cases × (1 warmup + 5 rounds)"
+        }
+    }
+
+    static func expectedDuration(for task: ModelTask) -> String {
+        switch task {
+        case .imageGeneration: return "usually 1–3 minutes"
+        case .videoGeneration: return "usually 5–15 minutes"
+        default: return "usually 2–5 minutes"
+        }
+    }
+
+    /// `m:ss` elapsed clock, clamped at zero so a clock adjustment mid-run
+    /// cannot render a negative time.
+    static func elapsed(from start: Date, to now: Date) -> String {
+        let seconds = Int(max(0, now.timeIntervalSince(start)))
+        return String(format: "%d:%02d", seconds / 60, seconds % 60)
+    }
+
+    /// Picks the per-round progress lines the CLI writes to stderr
+    /// (`pp512-tg128  round 3/5  46.1 tok/s`) out of everything else on that
+    /// stream (warnings, tracebacks, download logs). Returns nil for anything
+    /// that is not a progress line so the view never mirrors arbitrary
+    /// stderr, and collapses whitespace so the row renders on one line.
+    static func progressLine(from line: String) -> String? {
+        let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty, trimmed.count <= 200,
+              trimmed.range(of: #"\bround \d+/\d+\b"#, options: .regularExpression) != nil
+        else { return nil }
+        return trimmed.split(whereSeparator: \.isWhitespace).joined(separator: " ")
+    }
 }
 
 final class BenchmarkProcessBox: @unchecked Sendable {
@@ -453,7 +692,8 @@ enum CommunityBenchmarkCommand {
     static func run(
         binary: URL,
         arguments: [String],
-        onDeferredReap: ((pid_t) -> Void)? = nil
+        onDeferredReap: ((pid_t) -> Void)? = nil,
+        onStandardErrorLine: (@Sendable (String) -> Void)? = nil
     ) async throws -> Data {
         let box = BenchmarkProcessBox()
         return try await withTaskCancellationHandler {
@@ -476,10 +716,12 @@ enum CommunityBenchmarkCommand {
                         )
                     }
                     let errorTask = Task.detached {
-                        readBoundedPipe(
+                        let lines = LineSplitter(onLine: onStandardErrorLine)
+                        return readBoundedPipe(
                             stderr.fileHandleForReading,
                             maxBytes: maxStderrBytes,
-                            retainTail: true
+                            retainTail: true,
+                            onChunk: lines.consume
                         )
                     }
                     // The child owns duplicated write descriptors after spawn.
@@ -540,10 +782,47 @@ enum CommunityBenchmarkCommand {
         }
     }
 
+    /// Re-assembles newline-delimited text out of arbitrary pipe chunks and
+    /// hands each complete line to the observer. Purely advisory: the bounded
+    /// capture above is still what error messages are built from, and a
+    /// partial line longer than `maxLineBytes` is dropped rather than buffered
+    /// without limit, so a chatty or malformed stream cannot grow memory.
+    final class LineSplitter: @unchecked Sendable {
+        private let onLine: (@Sendable (String) -> Void)?
+        private var pending = Data()
+        private let maxLineBytes = 4 * 1_024
+
+        init(onLine: (@Sendable (String) -> Void)?) {
+            self.onLine = onLine
+        }
+
+        func consume(_ chunk: Data) {
+            guard let onLine else { return }
+            var rest = chunk[...]
+            while let newline = rest.firstIndex(of: UInt8(ascii: "\n")) {
+                pending.append(rest[rest.startIndex..<newline])
+                if pending.count <= maxLineBytes,
+                   let line = String(data: pending, encoding: .utf8) {
+                    onLine(line)
+                }
+                pending.removeAll(keepingCapacity: true)
+                rest = rest[rest.index(after: newline)...]
+            }
+            if pending.count + rest.count <= maxLineBytes {
+                pending.append(rest)
+            } else {
+                // Poison the oversized line so its eventual tail is dropped
+                // too instead of being reported as a fresh, truncated line.
+                pending = Data(count: maxLineBytes + 1)
+            }
+        }
+    }
+
     private static func readBoundedPipe(
         _ handle: FileHandle,
         maxBytes: Int,
-        retainTail: Bool
+        retainTail: Bool,
+        onChunk: ((Data) -> Void)? = nil
     ) -> PipeCapture {
         var data = Data()
         var truncated = false
@@ -555,6 +834,7 @@ enum CommunityBenchmarkCommand {
                 break
             }
             guard let chunk, !chunk.isEmpty else { break }
+            onChunk?(chunk)
             if chunk.count >= maxBytes {
                 truncated = truncated || !data.isEmpty || chunk.count > maxBytes
                 data = retainTail ? Data(chunk.suffix(maxBytes)) : Data(chunk.prefix(maxBytes))
@@ -598,6 +878,10 @@ struct CommunityBenchmarkView: View {
     @State private var selectedAlias = ""
     @State private var results: [CommunityBenchmarkResult] = []
     @State private var isRunning = false
+    @State private var runStartedAt: Date?
+    @State private var runningModel: CommunityBenchmarkModel?
+    @State private var runProgressLine: String?
+    @State private var currentRunID: UUID?
     @State private var errorMessage: String?
     @State private var runTask: Task<Void, Never>?
     @State private var shareTask: Task<Void, Never>?
@@ -749,9 +1033,15 @@ struct CommunityBenchmarkView: View {
         VStack(alignment: .leading, spacing: 18) {
             Text("Run a benchmark").font(.headline)
             Picker("Model", selection: $selectedAlias) {
-                ForEach(models) { model in
-                    Text("\(model.isFocus ? "★ " : "")\(model.entry.alias)")
-                        .tag(model.entry.alias)
+                ForEach(
+                    CommunityBenchmarkModel.pickerSections(models), id: \.title
+                ) { section in
+                    Section(section.title) {
+                        ForEach(section.models) { model in
+                            Text("\(model.isFocus ? "★ " : "")\(model.entry.alias)")
+                                .tag(model.entry.alias)
+                        }
+                    }
                 }
             }
             .labelsHidden()
@@ -782,7 +1072,7 @@ struct CommunityBenchmarkView: View {
                 Text(errorMessage).font(.callout).foregroundStyle(.red)
             }
 
-            HStack {
+            HStack(alignment: .top) {
                 Button(isRunning ? "Stop" : "Run locally") {
                     isRunning ? runTask?.cancel() : startRun()
                 }
@@ -794,13 +1084,44 @@ struct CommunityBenchmarkView: View {
                 )
                 if isRunning {
                     ProgressView().controlSize(.small)
-                    Text("The active server will stop while this model is measured.")
-                        .font(.caption).foregroundStyle(.secondary)
+                    runningStatus
                 }
             }
         }
         .padding(20)
         .background(RapidTheme.surfaceRaised, in: RoundedRectangle(cornerRadius: 14))
+    }
+
+    /// What is being measured, its scope, the expected wall time, and a
+    /// live elapsed clock — the only feedback the user gets for several
+    /// minutes while the CLI owns the machine.
+    private var runningStatus: some View {
+        VStack(alignment: .leading, spacing: 3) {
+            if let runningModel {
+                Text(CommunityBenchmarkRunStatus.description(for: runningModel))
+                    .font(.callout)
+                    .accessibilityIdentifier("CommunityBenchmark.RunStatus")
+            }
+            HStack(spacing: 8) {
+                if let runStartedAt {
+                    TimelineView(.periodic(from: runStartedAt, by: 1)) { context in
+                        Text("Elapsed \(CommunityBenchmarkRunStatus.elapsed(from: runStartedAt, to: context.date))")
+                            .monospacedDigit()
+                    }
+                    .accessibilityIdentifier("CommunityBenchmark.RunElapsed")
+                }
+                if let runProgressLine {
+                    Text(runProgressLine)
+                        .font(.caption.monospaced())
+                        .lineLimit(1)
+                        .accessibilityIdentifier("CommunityBenchmark.RunProgress")
+                }
+            }
+            .font(.caption)
+            .foregroundStyle(.secondary)
+            Text("The active server will stop while this model is measured.")
+                .font(.caption).foregroundStyle(.secondary)
+        }
     }
 
     private var recentResults: some View {
@@ -815,12 +1136,18 @@ struct CommunityBenchmarkView: View {
                     HStack {
                         VStack(alignment: .leading, spacing: 3) {
                             Text(alias(for: result.repoID)).fontWeight(.medium)
-                            Text("\(result.workload.taskType.replacingOccurrences(of: "_", with: " ")) · \(result.completedAt)")
-                                .font(.caption).foregroundStyle(.secondary)
+                            Text(
+                                "\(result.workload.taskType.replacingOccurrences(of: "_", with: " ")) · "
+                                    + CommunityBenchmarkResult.formatCompletedAt(result.completedAt)
+                            )
+                            .font(.caption).foregroundStyle(.secondary)
+                            .accessibilityLabel(
+                                "\(result.workload.taskType.replacingOccurrences(of: "_", with: " ")), completed \(result.completedAt)"
+                            )
                         }
                         Spacer()
                         VStack(alignment: .trailing, spacing: 5) {
-                            Text(result.duration ?? result.outcome.status.capitalized)
+                            resultHeadline(result)
                             if let receipt = receipts[result.id] {
                                 Label("Shared", systemImage: "checkmark.circle.fill")
                                     .font(.caption)
@@ -852,6 +1179,35 @@ struct CommunityBenchmarkView: View {
         }
     }
 
+    /// Median decode tok/s + TTFT for the short case (or wall seconds for
+    /// image/video), with the remaining cases underneath and in the tooltip.
+    /// Failed or incomplete runs keep showing their outcome status instead.
+    @ViewBuilder
+    private func resultHeadline(_ result: CommunityBenchmarkResult) -> some View {
+        if let headline = result.headline {
+            let secondary = result.secondaryLines
+            VStack(alignment: .trailing, spacing: 2) {
+                Text(headline)
+                    .monospacedDigit()
+                    .accessibilityIdentifier("CommunityBenchmark.Result.\(result.id)")
+                ForEach(secondary, id: \.self) { line in
+                    Text(line)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .monospacedDigit()
+                }
+            }
+            .help(
+                result.caseSummaries
+                    .map { "\($0.caseID): \($0.headline) (\($0.rounds) rounds)" }
+                    .joined(separator: "\n")
+            )
+        } else {
+            Text(result.outcome.status.capitalized)
+                .accessibilityIdentifier("CommunityBenchmark.Result.\(result.id)")
+        }
+    }
+
     private func protocolDescription(_ task: ModelTask) -> String {
         switch task {
         case .imageGeneration: return "1 warmup + 1 measured 1024×1024 render · fixed prompt, seed and 20 steps"
@@ -872,6 +1228,11 @@ struct CommunityBenchmarkView: View {
         guard benchmarkCLIAvailable, let selected, let binary else { return }
         errorMessage = nil
         isRunning = true
+        runningModel = selected
+        runStartedAt = Date()
+        runProgressLine = nil
+        let activeRunID = UUID()
+        currentRunID = activeRunID
         runTask = Task {
             var acquiredReservation = false
             do {
@@ -884,7 +1245,19 @@ struct CommunityBenchmarkView: View {
                     arguments: CommunityBenchmarkCommand.benchmarkRunArguments(
                         alias: selected.entry.alias
                     ),
-                    onDeferredReap: retainServerDuringDeferredReap
+                    onDeferredReap: retainServerDuringDeferredReap,
+                    onStandardErrorLine: { line in
+                        guard let progress = CommunityBenchmarkRunStatus.progressLine(
+                            from: line
+                        ) else { return }
+                        Task { @MainActor in
+                            // A line that arrives after Stop / a new run must
+                            // not resurrect stale progress on the next run.
+                            guard isRunning, runStartedAt != nil,
+                                  currentRunID == activeRunID else { return }
+                            runProgressLine = progress
+                        }
+                    }
                 )
                 await refreshProductCatalog()
                 await refreshResults()
@@ -896,6 +1269,9 @@ struct CommunityBenchmarkView: View {
                 errorMessage = error.localizedDescription
             }
             isRunning = false
+            runningModel = nil
+            runStartedAt = nil
+            runProgressLine = nil
             runTask = nil
         }
     }

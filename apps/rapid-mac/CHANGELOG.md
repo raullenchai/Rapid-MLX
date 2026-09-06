@@ -17,6 +17,16 @@ can actually understand.
 
 ## [Unreleased]
 
+### Fixed
+
+- Community Benchmark result rows now show the numbers the CLI prints: median
+  decode tok/s and TTFT for the short case (median wall seconds for image and
+  video), with the long case underneath, instead of an average duration across
+  cases; timestamps render as `Today 21:33` / `Sep 5, 21:33` instead of the raw
+  UTC stamp. The model menu groups recommended-for-this-Mac models first, then
+  downloaded ones. While a run is measuring, the tab names the model, scope,
+  expected duration, and an elapsed clock.
+
 ## [0.13.4] — 2026-09-02
 
 Rapid-MLX 0.13.4 makes qualified local models faster under concurrent work,
