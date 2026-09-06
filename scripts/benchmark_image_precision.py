@@ -285,6 +285,14 @@ def cache_identity(hf_cache: Path, alias: str) -> dict[str, object]:
     }
 
 
+def server_environment(hf_cache: Path) -> dict[str, str]:
+    environment = os.environ.copy()
+    environment["HF_HUB_CACHE"] = str(hf_cache.expanduser())
+    environment["HF_HUB_OFFLINE"] = "1"
+    environment["TRANSFORMERS_OFFLINE"] = "1"
+    return environment
+
+
 def run_session(
     precision: str,
     session_index: int,
@@ -294,8 +302,7 @@ def run_session(
     alias = ALIASES[precision]
     log_path = Path(args.log_dir) / f"{session_index:02d}-{precision}.log"
     log_path.parent.mkdir(parents=True, exist_ok=True)
-    environment = os.environ.copy()
-    environment["HF_HUB_CACHE"] = str(Path(args.hf_cache).expanduser())
+    environment = server_environment(Path(args.hf_cache))
     swap_before = swap_used_mb()
     ensure_port_free(args.port)
     with log_path.open("w") as log:
@@ -462,6 +469,8 @@ def main() -> int:
 
     hf_cache = Path(args.hf_cache).expanduser()
     os.environ["HF_HUB_CACHE"] = str(hf_cache)
+    os.environ["HF_HUB_OFFLINE"] = "1"
+    os.environ["TRANSFORMERS_OFFLINE"] = "1"
     identities = {
         precision: cache_identity(hf_cache, alias)
         for precision, alias in ALIASES.items()

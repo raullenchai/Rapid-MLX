@@ -4,6 +4,7 @@ import argparse
 import base64
 import io
 import socket
+from pathlib import Path
 
 import pytest
 from PIL import Image
@@ -85,6 +86,15 @@ def test_running_rapid_servers_ignores_unrelated_processes(monkeypatch):
         ),
     )
     assert bench.running_rapid_servers() == [30]
+
+
+def test_server_environment_forces_pinned_cache_offline(monkeypatch):
+    monkeypatch.setenv("HF_HUB_OFFLINE", "0")
+    monkeypatch.delenv("TRANSFORMERS_OFFLINE", raising=False)
+    environment = bench.server_environment(Path("/tmp/qualification-cache"))
+    assert environment["HF_HUB_CACHE"] == "/tmp/qualification-cache"
+    assert environment["HF_HUB_OFFLINE"] == "1"
+    assert environment["TRANSFORMERS_OFFLINE"] == "1"
 
 
 def test_validate_png_checks_format_dimensions_and_nonuniformity():
