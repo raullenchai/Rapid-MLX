@@ -42,9 +42,11 @@ from vllm_mlx.scheduler import (  # noqa: E402
 
 def _offsets(cache):
     return [
-        None
-        if not isinstance(lc, CacheList)
-        else (int(lc[0].offset), int(lc[1].offset))
+        (
+            None
+            if not isinstance(lc, CacheList)
+            else (int(lc[0].offset), int(lc[1].offset))
+        )
         for lc in cache
     ]
 
@@ -1314,6 +1316,128 @@ class TestSingleSnapshotCommit:
         calls, bg = self._install_and_step(monkeypatch, guard_on=False)
         # Guard off -> no probe -> stepwise commit helper replays once.
         assert calls["commit"] == 1
+
+    def test_post_commit_exception_restores_pristine_cache_then_falls_through(
+        self, monkeypatch
+    ):
+        """Codex BLOCKING (round-9c): an exception raised AFTER the hybrid
+        commit head is swapped in must NOT run ``_orig_step`` against the
+        already-advanced cache. The hybrid ``except`` in ``_suffix_step``
+        restores ``gb.prompt_cache`` to the pristine pre-verify snapshot before
+        falling through.
+
+        The restore logic lives in the module-level
+        ``_restore_hybrid_cache_after_exception`` (unit-tested directly below);
+        both invocations of it (pre-commit no-op + post-commit restore) are
+        covered there. The pre-commit exception path through the real
+        ``_suffix_step`` is covered here: when the verify forward raises before
+        commit, ``result`` is the empty init dict and the fall-through must
+        leave the pristine cache untouched."""
+        from types import SimpleNamespace
+        from unittest.mock import MagicMock
+
+        import vllm_mlx.scheduler as scheduler
+        from vllm_mlx.model_auto_config import ModelConfig
+        from vllm_mlx.speculative import suffix_decoding
+
+        model, _ = _model_and_prompt()
+
+        class MockDrafter:
+            max_draft_tokens = 2
+
+            def __init__(self, **_kw):
+                pass
+
+            def add_prompt_tokens(self, _t):
+                pass
+
+            def add_generated_token(self, _t):
+                pass
+
+            def record_acceptance(self, _c):
+                pass
+
+            def get_draft(self):
+                return [5, 6]
+
+        pristine = model.make_cache()
+        mx.eval(model(mx.array([[1, 2, 3]]), cache=pristine))
+
+        gb = SimpleNamespace(
+            _next_tokens=mx.array([7], dtype=mx.int32),
+            _next_logprobs=[mx.zeros((64,))],
+            uids=[1],
+            tokens=[[]],
+            logits_processors=[],
+            prompt_cache=pristine,
+            _num_tokens=[0],
+            max_tokens=[10],
+            state_machines=[SimpleNamespace(match=lambda s, _t: (s, None, None))],
+            _matcher_states=[None],
+            extract_cache=lambda _r: [],
+            model=model,
+        )
+        gb.Response = SimpleNamespace
+        gb._step = lambda: ([7], [])
+        gb.next = lambda: []
+        bg = MagicMock()
+        bg._generation_batch = gb
+        bg.remove = lambda *a, **k: {}
+        # Force the guard probe to raise during the stepwise replay: a cache
+        # whose layer can't forward cleanly. We make the probe replay blow up
+        # by swapping in a model that raises on the SECOND decode (the probe
+        # step), i.e. BEFORE commit. This exercises the `result={}` init +
+        # exception path (no restore needed, pristine cache untouched).
+        real_call = {"n": 0}
+
+        def _flaky_model(inp, cache=None, **kw):
+            real_call["n"] += 1
+            raise RuntimeError("flaky decode before commit")
+
+        gb.model = _flaky_model
+        monkeypatch.setattr(suffix_decoding, "SuffixDecodingDrafter", MockDrafter)
+        profile = ModelConfig(is_hybrid=True, supports_spec_decode=False)
+        scheduler._install_suffix_decoding(
+            bg,
+            model=_flaky_model,
+            profile=profile,
+            max_draft=2,
+            max_suffix_len=4,
+            min_confidence=0.3,
+            requests={},
+            uid_to_request_id={},
+            suffix_hybrid=True,
+            suffix_min_match_len=2,
+            suffix_hybrid_bit_exact=True,
+        )
+        # The pre-commit exception is absorbed by the hybrid except -> clean
+        # fall-through (no raise to caller), and the pristine cache is intact.
+        gb._step()
+        _assert_state_equal(gb.prompt_cache, pristine)
+
+    def test_restore_hybrid_cache_helper(self):
+        """Direct unit test of ``_restore_hybrid_cache_after_exception``: a
+        committed result (``committed`` + ``replay_snapshot``) restores the
+        cache; an empty / pre-commit result is a no-op."""
+        from types import SimpleNamespace
+
+        import vllm_mlx.scheduler as scheduler
+
+        gb = SimpleNamespace(prompt_cache="committed_head")
+        # (a) post-commit exception -> restore to pristine snapshot.
+        result = {"committed": True, "replay_snapshot": "pristine_snapshot"}
+        scheduler._restore_hybrid_cache_after_exception(gb, result)
+        assert gb.prompt_cache == "pristine_snapshot"
+        # (b) pre-commit exception (empty result) -> no restore.
+        gb2 = SimpleNamespace(prompt_cache="live")
+        scheduler._restore_hybrid_cache_after_exception(gb2, {})
+        assert gb2.prompt_cache == "live"
+        # (c) committed but no snapshot (shouldn't happen) -> no restore.
+        gb3 = SimpleNamespace(prompt_cache="live2")
+        scheduler._restore_hybrid_cache_after_exception(
+            gb3, {"committed": True, "replay_snapshot": None}
+        )
+        assert gb3.prompt_cache == "live2"
 
 
 class TestHybridTerminalRepair:

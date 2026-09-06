@@ -446,10 +446,7 @@ def test_hybrid_default_cap_raises_to_floor_only_for_confirmed_hybrid() -> None:
     # ``is_hybrid`` on the resolved profile — verify the helper reads it via
     # getattr so a real ModelProfile object behaves identically.
     assert (
-        _hybrid_suffix_cap(
-            _args(), ModelProfile(is_hybrid=True, hf_path="x/y")
-        )
-        == 24
+        _hybrid_suffix_cap(_args(), ModelProfile(is_hybrid=True, hf_path="x/y")) == 24
     )
 
 

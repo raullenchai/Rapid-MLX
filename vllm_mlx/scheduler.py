@@ -2940,6 +2940,27 @@ def _install_dspark(
     return True
 
 
+def _restore_hybrid_cache_after_exception(gb, result: dict) -> None:
+    """Restore the live cache to the pristine pre-verify snapshot after a
+    hybrid-verify exception, when the commit head was already swapped in.
+
+    The hybrid scratch-verify runs in TWO phases inside the ``_suffix_step``
+    try block: (1) the verify/commit (which swaps ``gb.prompt_cache`` to the
+    committed head — guard-on rebinds it to the probe head, guard-off mutates
+    it in place) and (2) retaining the replay head bookkeeping. If an exception
+    lands in the try AFTER the commit but before that bookkeeping (e.g.
+    MemoryError), running ``_orig_step`` against the already-advanced cache
+    would corrupt cache/token alignment. This restores the pristine snapshot
+    retained as ``result["replay_snapshot"]`` first.
+
+    When ``result`` is empty (the helper raised pre-commit) or the commit never
+    happened (``committed`` unset), the live cache is still the pre-verify state
+    and no restore is needed.
+    """
+    if result.get("committed") and result.get("replay_snapshot") is not None:
+        gb.prompt_cache = result["replay_snapshot"]
+
+
 def _install_suffix_decoding(
     batch_gen: "BatchGenerator",
     model: Any,
@@ -3113,13 +3134,14 @@ def _install_suffix_decoding(
     # is the operator's hard cap on verify width and is honored as-is on every
     # path. The CLI raises the DEFAULT cap to the floor for a CONFIRMED hybrid
     # model (model-resolution time), so a below-floor cap here is either an
-    # explicit operator override (documented) or a programmatic call — in
-    # either case it makes the hybrid path a no-op rather than silently
-    # overriding the documented width limit. A pure-attention model with
-    # ``--suffix-hybrid`` (a no-op flag there) keeps its configured
-    # ``max_draft`` unchanged. The bit-exactness guard probes EVERY committed
-    # position (the full accepted prefix), so there is no probe-length knob to
-    # tune.
+    # explicit operator override or a programmatic call — in either case the
+    # hybrid path becomes a no-op, and the install block below WARNs loudly
+    # naming ``--suffix-max-draft`` to raise (rather than silently overriding
+    # the documented width limit or silently disabling the feature). A pure-
+    # attention model with ``--suffix-hybrid`` (a no-op flag there) keeps its
+    # configured ``max_draft`` unchanged. The bit-exactness guard probes EVERY
+    # committed position (the full accepted prefix), so there is no probe-length
+    # knob to tune.
     _effective_max_draft = max_draft
 
     def _hybrid_scratch_verify(
@@ -3207,6 +3229,13 @@ def _install_suffix_decoding(
             # Stepwise logits per committed position (X + accepted drafts),
             # used for lossless logprobs instead of the chunked verify logits.
             result["stepwise_logits"] = probe_logits
+            # Mark that the commit head has been swapped in (the live cache is
+            # now NOT the pre-verify state). ``_suffix_step``'s exception path
+            # uses this to restore ``gb.prompt_cache`` to the pristine snapshot
+            # before falling through to ``_orig_step`` — a post-swap exception
+            # (e.g. MemoryError while retaining the replay head) must not run
+            # the vanilla step against the already-advanced cache.
+            result["committed"] = True
             gb.prompt_cache = probe_head
             return result
         # Guard OFF (non-lossless/debug mode, ``--no-suffix-hybrid-bit-exact``):
@@ -3230,6 +3259,10 @@ def _install_suffix_decoding(
             snapshot=snapshot,
         )
         result["replay_snapshot"] = snapshot
+        # The live cache was committed in place by ``_commit_scratch_accepted``
+        # — same post-commit semantics as the guard-on path, so a later
+        # ``_suffix_step`` exception restores it before falling through.
+        result["committed"] = True
         return result
 
     def _reset_state_gauges_if_idle() -> None:
@@ -3332,9 +3365,20 @@ def _install_suffix_decoding(
     if _hybrid_active:
         # Seed the hybrid width AT the match floor so a floor-length repeat is
         # issued on the first step and the verify path is reachable — but never
-        # above ``max_draft`` (CLI validation guarantees cap >= floor, so this
-        # equals the floor in a normal install; a programmatic below-floor cap
-        # degrades cleanly instead of deadlocking).
+        # above ``max_draft``. In a normal install the CLI raises the DEFAULT
+        # cap to the floor for a confirmed hybrid (so this equals the floor).
+        # An EXPLICIT below-floor cap (operator override) degrades the hybrid
+        # path to an unreachable no-op: every draft is shorter than the floor,
+        # hits ``ft_short_match`` before the width-update code runs, and the
+        # verify path is never reached. Warn loudly, naming the flag to raise,
+        # so the operator knows the opt-in is inert rather than silently so.
+        if max_draft < suffix_min_match_len:
+            logger.warning(
+                "[SuffixDecoding] hybrid path is UNREACHABLE: --suffix-max-draft "
+                f"{max_draft} < match floor {suffix_min_match_len}. Every draft "
+                "falls through before verify. Raise --suffix-max-draft to at "
+                f"least {suffix_min_match_len} to enable the hybrid scratch-verify."
+            )
         _K_MIN = min(suffix_min_match_len, max_draft)
     else:
         _K_MIN = min(max(2, min_draft_len), max_draft)
@@ -3520,6 +3564,11 @@ def _install_suffix_decoding(
             # sidesteps the attention-only ``can_advance`` preflight below
             # (which the Qwen4 recurrent budget cannot satisfy anyway —
             # trim_all on Qwen4ExpStateCache cannot roll a rejection back).
+            # ``result`` is initialized BEFORE the helper so the ``except``
+            # below can safely test ``result.get("committed")`` even when the
+            # helper raises pre-commit (then ``result`` stays {} and no restore
+            # runs — the live cache is still pristine).
+            result: dict = {}
             try:
                 draft_arr = mx.array([draft], dtype=inputs.dtype)
                 verify_input = mx.concatenate([inputs[:, None], draft_arr], axis=1)
@@ -3563,6 +3612,13 @@ def _install_suffix_decoding(
                 # live cache already holds exactly what will be surfaced and
                 # no replay head is retained (avoids a sustained 2x hold for
                 # the common reject/vanilla fast path).
+                # NOTE: this is the LAST statement inside the hybrid ``try``.
+                # Anything after the commit head is swapped in (guard path
+                # rebinds ``gb.prompt_cache`` to the probe head; guard-off
+                # mutates it in place) and before this point is a potential
+                # post-commit exception site. The ``except`` below restores the
+                # pristine snapshot so a post-commit raise never runs
+                # ``_orig_step`` against the already-advanced cache.
                 if n_accepted > 0:
                     _pending_hybrid_replay[uid] = (
                         result["replay_snapshot"],
@@ -3575,10 +3631,16 @@ def _install_suffix_decoding(
                 _stats["ft_error"] += 1
                 _counter.record_verify(K, 0)
                 _counter.record_error()
-                # On failure the scratch head was not installed (the raised
-                # forward predates the ``live_cache[:] = committed_head`` in
-                # ``_verify_accept_and_commit_scratch``), so the live cache
-                # is still the pre-verify state — safe to fall through.
+                # If the commit head was already swapped in before the raise
+                # (guard path rebinds ``gb.prompt_cache`` to the probe head;
+                # guard-off mutates it in place), restore the pristine pre-
+                # verify snapshot before falling through — running
+                # ``_orig_step`` against the already-advanced cache would
+                # corrupt cache/token alignment. When no commit happened (or
+                # ``result`` is empty because the helper raised pre-commit),
+                # the live cache is still the pre-verify state and no restore
+                # is needed.
+                _restore_hybrid_cache_after_exception(gb, result)
                 return _orig_step()
 
         else:
@@ -8652,8 +8714,9 @@ class Scheduler:
                         "_cache_snapshot_boundary",
                         getattr(request, "prefix_boundary", 0),
                     )
-                    if self.memory_aware_cache is not None and 0 < retry_boundary < len(
-                        tokens_to_process
+                    if (
+                        self.memory_aware_cache is not None
+                        and 0 < retry_boundary < len(tokens_to_process)
                     ):
                         uids = self.batch_generator.insert_segments(
                             [

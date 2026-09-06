@@ -2348,9 +2348,9 @@ def _normalize_speculative_config_or_exit(args):
         # path can still raise it to the floor), not flip to "explicit" merely
         # because a second call now sees the filled-in 8.
         if not hasattr(args, "_suffix_max_draft_was_explicit"):
-            args._suffix_max_draft_was_explicit = getattr(
-                args, "suffix_max_draft", None
-            ) is not None
+            args._suffix_max_draft_was_explicit = (
+                getattr(args, "suffix_max_draft", None) is not None
+            )
         if not args._suffix_max_draft_was_explicit:
             args.suffix_max_draft = 8
         if getattr(args, "suffix_max_suffix_len", None) is None:
@@ -6949,9 +6949,9 @@ def _cached_models_json_payload() -> dict:
                     "subfolder": subfolder,
                     "size_bytes": int(artifact_size),
                     "modified_epoch": int(mtime) if mtime and mtime > 0 else None,
-                    "age_seconds": int(max(0, now - mtime))
-                    if mtime and mtime > 0
-                    else None,
+                    "age_seconds": (
+                        int(max(0, now - mtime)) if mtime and mtime > 0 else None
+                    ),
                     "state": state,
                     "external": is_external,
                 }
