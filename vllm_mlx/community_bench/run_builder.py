@@ -73,10 +73,15 @@ def _cached_config(
         return None
     revision = None
     parts = Path(path).parts
-    if "snapshots" in parts:
-        candidate = parts[parts.index("snapshots") + 1]
+    # The cache root itself may live under a directory called "snapshots";
+    # the hub layout puts the revision right after the *last* one.
+    for index in range(len(parts) - 2, -1, -1):
+        if parts[index] != "snapshots":
+            continue
+        candidate = parts[index + 1]
         if len(candidate) == 40 and all(c in "0123456789abcdef" for c in candidate):
             revision = candidate
+        break
     return config, revision
 
 

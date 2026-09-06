@@ -4832,32 +4832,6 @@ def test_run_local_measures_text_models_by_alias_not_bare_repo_id(
     assert seen == ["example-text"]
 
 
-def test_text_measurements_prefer_the_catalog_repo_id_over_resolution(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """A same-named local directory must not be measured under the catalog
-    identity (codex on #3147)."""
-    targets: list[str] = []
-
-    def fake_loader(target, **_):
-        targets.append(target)
-        raise RuntimeError("stop here")
-
-    monkeypatch.setattr(
-        "vllm_mlx.utils.tokenizer.load_model_with_fallback", fake_loader
-    )
-    monkeypatch.setattr(
-        "vllm_mlx.model_aliases.resolve_model", lambda name: "/tmp/same-named-dir"
-    )
-    with pytest.raises(RuntimeError, match="stop here"):
-        asyncio.run(
-            local_runner._text_measurements(
-                "qwen3.5-4b-4bit", "mlx-community/Qwen3.5-4B-MLX-4bit"
-            )
-        )
-    assert targets == ["mlx-community/Qwen3.5-4B-MLX-4bit"]
-
-
 def test_identity_is_kept_only_when_the_snapshot_did_not_move() -> None:
     from vllm_mlx.community_bench.run_builder import consistent_model_identity
 
@@ -5098,3 +5072,35 @@ def test_cached_config_and_projection_degrade_on_malformed_input(
         "kind": "unknown",
         "base_dtype": "unknown",
     }
+
+
+def test_cached_config_reads_the_revision_after_the_last_snapshots_segment(
+    tmp_path: Path,
+) -> None:
+    from vllm_mlx.community_bench import run_builder
+
+    revision = "a" * 40
+    snapshot = (
+        tmp_path
+        / "snapshots"
+        / "huggingface"
+        / "models--org--model"
+        / "snapshots"
+        / revision
+    )
+    snapshot.mkdir(parents=True)
+    (snapshot / "config.json").write_text('{"quantization": {"bits": 4}}')
+    config, resolved = run_builder._cached_config(
+        "org/model", snapshot_path=str(snapshot)
+    )
+    assert config == {"quantization": {"bits": 4}}
+    assert resolved == revision
+
+    # A trailing "snapshots" directory with nothing after it is not a revision.
+    bare = tmp_path / "models--org--model" / "snapshots"
+    bare.mkdir(parents=True)
+    (bare / "config.json").write_text("{}")
+    assert run_builder._cached_config("org/model", snapshot_path=str(bare)) == (
+        {},
+        None,
+    )

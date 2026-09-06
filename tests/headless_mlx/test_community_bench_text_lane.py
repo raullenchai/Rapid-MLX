@@ -11,6 +11,7 @@ The measurement-conversion contract itself is identical to the Apple-lane
 
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -155,3 +156,28 @@ def test_text_lane_converts_engine_result_and_reaps_executor(
     ]
     assert run["machine"]["conditions_before"]["thermal_state"] == "nominal"
     assert run["machine"]["conditions_after"]["thermal_state"] == "serious"
+
+
+def test_text_lane_measures_the_catalog_repo_id_not_a_same_named_directory(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A same-named local directory must not be measured under the catalog
+    identity (codex on #3147)."""
+    from vllm_mlx import model_aliases
+    from vllm_mlx.utils import tokenizer as tokenizer_module
+
+    targets: list[str] = []
+
+    def fake_loader(target, **_):
+        targets.append(target)
+        raise RuntimeError("stop here")
+
+    monkeypatch.setattr(tokenizer_module, "load_model_with_fallback", fake_loader)
+    monkeypatch.setattr(model_aliases, "resolve_model", lambda name: "/tmp/same-dir")
+    with pytest.raises(RuntimeError, match="stop here"):
+        asyncio.run(
+            local_runner._text_measurements(
+                "qwen3.5-4b-4bit", "mlx-community/Qwen3.5-4B-MLX-4bit"
+            )
+        )
+    assert targets == ["mlx-community/Qwen3.5-4B-MLX-4bit"]
