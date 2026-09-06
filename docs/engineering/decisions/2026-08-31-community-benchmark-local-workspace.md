@@ -115,6 +115,12 @@ derived protocol and download state, one local run/stop action, then recent
 local results. There is no home-page campaign card and no button repeated on
 every model card in the internal beta.
 
+During the internal beta, Desktop keeps the Community Benchmark destination
+behind Settings → Experimental Features and defaults it off. Enabling the
+preference reveals the sidebar destination immediately; disabling it while the
+page is active returns navigation to Chat. This gate affects Desktop
+discoverability only: it does not remove the local runner, archive, or CLI.
+
 If CLI metadata loading is unavailable, Desktop's legacy fallback is
 conservative: chat remains usable, while image/video rows without atomic
 capability evidence are hidden. Atomic video rows still require a registered

@@ -17,6 +17,12 @@ can actually understand.
 
 ## [Unreleased]
 
+### Changed
+
+- The Desktop Community Benchmark workspace is now an opt-in experimental
+  feature. Enable it in Settings → Experimental Features to reveal its sidebar
+  destination; the CLI benchmark workflow remains available independently.
+
 ## [0.13.4] — 2026-09-02
 
 Rapid-MLX 0.13.4 makes qualified local models faster under concurrent work,
