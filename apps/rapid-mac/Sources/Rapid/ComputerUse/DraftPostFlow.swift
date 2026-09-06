@@ -83,6 +83,7 @@ enum DraftPostFlowFailure: Error, Equatable, Sendable {
     case targetUnavailable
     case focusChanged
     case draftMissing
+    case draftAmbiguous
     case draftTooLarge
     case composerMissing
     case composerAmbiguous
@@ -91,6 +92,7 @@ enum DraftPostFlowFailure: Error, Equatable, Sendable {
     case verificationFailed
     case permissionMissing
     case cancelled
+    case dependencyFailure
 
     var isRecoverable: Bool {
         switch self {
@@ -108,6 +110,7 @@ enum DraftPostFlowFailure: Error, Equatable, Sendable {
         case .targetUnavailable: "A selected window is no longer available."
         case .focusChanged: "Rapid could not safely focus the selected window."
         case .draftMissing: "The selected TextEdit document has no readable draft."
+        case .draftAmbiguous: "More than one TextEdit document editor was found. Close auxiliary editors and try again."
         case .draftTooLarge: "The draft is too large for this preview (64 KB maximum)."
         case .composerMissing: "No editable post composer was found in the browser window."
         case .composerAmbiguous: "More than one possible composer was found. Close other editors and try again."
@@ -116,6 +119,7 @@ enum DraftPostFlowFailure: Error, Equatable, Sendable {
         case .verificationFailed: "The browser content did not match the TextEdit draft."
         case .permissionMissing: "Screen Recording and Accessibility access are required."
         case .cancelled: "The flow was stopped."
+        case .dependencyFailure: "The flow stopped because a local system operation failed."
         }
     }
 }
@@ -173,7 +177,10 @@ actor DraftPostFlowCoordinator {
             } catch is CancellationError {
                 return .failed(.cancelled, metrics)
             } catch {
-                return .failed(.targetUnavailable, metrics)
+                // Only typed, known pre-mutation focus/window failures may
+                // retry. An unknown adapter failure could have happened after
+                // a local mutation, so it must fail closed.
+                return .failed(.dependencyFailure, metrics)
             }
         }
         return .failed(.targetUnavailable, metrics)
@@ -225,12 +232,15 @@ struct MacOSDraftPostFlowDriver: DraftPostFlowDriving {
         return try await MainActor.run {
             let window = try Self.exactFocusedWindow(selection)
             let candidates = Self.editableElements(in: window)
+                .filter {
+                    Self.stringAttribute(
+                        kAXRoleAttribute as CFString,
+                        from: $0
+                    ) == kAXTextAreaRole as String
+                }
                 .compactMap { Self.stringAttribute(kAXValueAttribute as CFString, from: $0) }
                 .filter { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
-            guard let draft = candidates.max(by: { $0.utf8.count < $1.utf8.count }) else {
-                throw DraftPostFlowFailure.draftMissing
-            }
-            return draft
+            return try Self.uniqueDraft(in: candidates)
         }
     }
 
@@ -407,33 +417,51 @@ struct MacOSDraftPostFlowDriver: DraftPostFlowDriving {
     }
 
     @MainActor
-    private static func composerScore(_ element: AXUIElement) -> Int {
+    private static func isExplicitComposer(_ element: AXUIElement) -> Bool {
         let fields = [
             stringAttribute(kAXTitleAttribute as CFString, from: element),
             stringAttribute(kAXDescriptionAttribute as CFString, from: element),
             stringAttribute(kAXHelpAttribute as CFString, from: element),
             stringAttribute("AXPlaceholderValue" as CFString, from: element),
-        ].compactMap { $0?.lowercased() }.joined(separator: " ")
-        let hints = ["post", "tweet", "what is happening", "what's happening", "compose", "update"]
-        // No generic "first empty field" fallback: that can be a search box
-        // or browser chrome. A composer needs an explicit semantic hint, and
-        // equal matches fail closed rather than relying on tree order.
-        return hints.reduce(0) { $0 + (fields.contains($1) ? 10 : 0) }
+        ].compactMap { $0 }
+        return fields.contains(where: isExplicitComposerLabel)
     }
 
     @MainActor
     private static func uniqueComposer(in window: AXUIElement) throws -> AXUIElement {
-        let ranked = editableElements(in: window)
-            .map { ($0, composerScore($0)) }
-            .filter { $0.1 > 0 }
-            .sorted { $0.1 > $1.1 }
-        guard let best = ranked.first else {
+        let matches = editableElements(in: window).filter(isExplicitComposer)
+        guard let match = matches.first else {
             throw DraftPostFlowFailure.composerMissing
         }
-        if ranked.count > 1, ranked[1].1 == best.1 {
+        if matches.count > 1 {
             throw DraftPostFlowFailure.composerAmbiguous
         }
-        return best.0
+        return match
+    }
+
+    static func isExplicitComposerLabel(_ raw: String) -> Bool {
+        let label = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+            .replacingOccurrences(of: "’", with: "'")
+        return [
+            "post text",
+            "compose post",
+            "write your post",
+            "what is happening?",
+            "what's happening?",
+            "what is on your mind?",
+            "what's on your mind?",
+        ].contains(label)
+    }
+
+    static func uniqueDraft(in candidates: [String]) throws -> String {
+        guard let draft = candidates.first else {
+            throw DraftPostFlowFailure.draftMissing
+        }
+        guard candidates.count == 1 else {
+            throw DraftPostFlowFailure.draftAmbiguous
+        }
+        return draft
     }
 
     @MainActor
@@ -522,7 +550,13 @@ final class DraftPostFlowViewModel {
     }
 
     var canRun: Bool {
-        sourceID != nil && destinationID != nil && phase == .ready
+        guard phase == .ready,
+              let sourceID,
+              let destinationID,
+              sourceID != destinationID
+        else { return false }
+        return sourceOptions.contains(where: { $0.id == sourceID })
+            && destinationOptions.contains(where: { $0.id == destinationID })
     }
 
     func load() async {
@@ -530,6 +564,7 @@ final class DraftPostFlowViewModel {
         do {
             windows = try await catalog.windows()
             sourceID = sourceOptions.count == 1 ? sourceOptions[0].id : nil
+            destinationID = nil
             phase = .ready
         } catch let error as ComputerUseWindowCatalogError {
             switch error {
@@ -551,7 +586,9 @@ final class DraftPostFlowViewModel {
         let coordinator = DraftPostFlowCoordinator(driver: driver)
         runTask = Task { [weak self] in
             let outcome = await coordinator.run(source: source, destination: destination)
-            guard let self else { return }
+            // Dismissing the sheet owns cancellation. Do not let the completed
+            // task race with stop() and overwrite the cancellation state.
+            guard !Task.isCancelled, let self else { return }
             switch outcome {
             case .readyForReview(let metrics):
                 self.phase = .readyForReview(metrics)
@@ -564,5 +601,8 @@ final class DraftPostFlowViewModel {
     func stop() {
         runTask?.cancel()
         runTask = nil
+        if phase == .running {
+            phase = .failed(DraftPostFlowFailure.cancelled.userMessage, nil)
+        }
     }
 }

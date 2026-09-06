@@ -146,6 +146,64 @@ struct DraftPostFlowTests {
         }
     }
 
+    @Test("Unexpected adapter errors fail closed without retry")
+    func unexpectedErrorStops() async {
+        let driver = UnexpectedDraftPostDriver()
+        let outcome = await DraftPostFlowCoordinator(driver: driver).run(
+            source: Self.source,
+            destination: Self.destination
+        )
+        #expect(outcome == .failed(
+            .dependencyFailure,
+            DraftPostFlowMetrics(
+                attempts: 1,
+                automaticRecoveries: 0,
+                humanCorrections: 0,
+                completedSteps: 0
+            )
+        ))
+        #expect(await driver.callCount == 1)
+    }
+
+    @Test("Only exact composer labels are accepted")
+    func exactComposerLabels() {
+        #expect(MacOSDraftPostFlowDriver.isExplicitComposerLabel("Post text"))
+        #expect(MacOSDraftPostFlowDriver.isExplicitComposerLabel("What’s happening?"))
+        #expect(!MacOSDraftPostFlowDriver.isExplicitComposerLabel("Search posts"))
+        #expect(!MacOSDraftPostFlowDriver.isExplicitComposerLabel("Update profile"))
+        #expect(!MacOSDraftPostFlowDriver.isExplicitComposerLabel("Post"))
+    }
+
+    @Test("TextEdit source must expose one document editor")
+    func uniqueDraft() throws {
+        #expect(try MacOSDraftPostFlowDriver.uniqueDraft(in: ["Draft"]) == "Draft")
+        #expect(throws: DraftPostFlowFailure.draftMissing) {
+            try MacOSDraftPostFlowDriver.uniqueDraft(in: [])
+        }
+        #expect(throws: DraftPostFlowFailure.draftAmbiguous) {
+            try MacOSDraftPostFlowDriver.uniqueDraft(in: ["Draft", "Find text"])
+        }
+    }
+
+    @MainActor
+    @Test("Catalog refresh clears stale selections")
+    func refreshClearsSelections() async {
+        let catalog = StaticWindowCatalog(windows: [Self.source, Self.destination])
+        let viewModel = DraftPostFlowViewModel(
+            catalog: catalog,
+            driver: ScriptedDraftPostDriver(results: [.success(())])
+        )
+        await viewModel.load()
+        viewModel.sourceID = Self.source.id
+        viewModel.destinationID = Self.destination.id
+        #expect(viewModel.canRun)
+
+        await catalog.replace(with: [Self.source])
+        await viewModel.load()
+        #expect(viewModel.destinationID == nil)
+        #expect(!viewModel.canRun)
+    }
+
     @Test("The driver contract exposes no publish action")
     func noPublishSurface() throws {
         let source = try String(
@@ -267,5 +325,33 @@ private actor FocusStealingDraftPostDriver: DraftPostFlowDriving {
             }
         }
         try await base.transferDraft(from: source, to: destination)
+    }
+}
+
+private actor UnexpectedDraftPostDriver: DraftPostFlowDriving {
+    private(set) var callCount = 0
+
+    func transferDraft(
+        from _: ComputerUseWindowOption,
+        to _: ComputerUseWindowOption
+    ) async throws {
+        callCount += 1
+        throw CocoaError(.fileReadUnknown)
+    }
+}
+
+private actor StaticWindowCatalog: ComputerUseWindowListing {
+    private var storedWindows: [ComputerUseWindowOption]
+
+    init(windows: [ComputerUseWindowOption]) {
+        storedWindows = windows
+    }
+
+    func windows() async throws -> [ComputerUseWindowOption] {
+        storedWindows
+    }
+
+    func replace(with windows: [ComputerUseWindowOption]) {
+        storedWindows = windows
     }
 }

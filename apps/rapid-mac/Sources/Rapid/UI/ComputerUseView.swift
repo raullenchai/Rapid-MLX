@@ -143,7 +143,10 @@ private struct DraftPostFlowSheet: View {
                         .foregroundStyle(.secondary)
                 }
                 Spacer()
-                Button("Close") { dismiss() }
+                Button("Close") {
+                    viewModel.stop()
+                    dismiss()
+                }
                     .buttonStyle(.rapidSecondaryCompact)
                     .accessibilityIdentifier("ComputerUse.DraftPost.Close")
             }
@@ -216,6 +219,7 @@ private struct DraftPostFlowSheet: View {
         .padding(24)
         .frame(width: 620, height: 450)
         .task { await viewModel.load() }
+        .onDisappear { viewModel.stop() }
         .accessibilityElement(children: .contain)
         .accessibilityLabel("Draft and post setup")
     }
