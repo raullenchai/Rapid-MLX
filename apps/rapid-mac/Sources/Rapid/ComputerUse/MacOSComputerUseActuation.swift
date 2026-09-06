@@ -10,7 +10,6 @@ enum MacOSComputerUseActuationError: Error, Equatable {
     case targetNotFrontmost
     case targetChanged
     case targetOccluded
-    case unsupportedKey
     case eventCreationFailed
 }
 
@@ -105,7 +104,11 @@ actor MacOSComputerUseActuator: LocalWorkflowActuating {
             // maxX/maxY can belong to the adjacent or underlying window.
             return x > 0 && x < 1 && y > 0 && y < 1
         }
-        return true
+        // Public macOS event APIs can target a process, but not one exact
+        // window inside that process. Until a semantic Accessibility adapter
+        // can bind text/key input to a verified element in this window, these
+        // payloads must fail closed rather than rely on focus timing.
+        return false
     }
 }
 
@@ -194,8 +197,7 @@ struct CGWindowComputerUseTargetProbe: ComputerUseTargetProbing {
     }
 }
 
-/// Narrow CGEvent adapter. It supports only the three payloads authored by the
-/// workflow kernel and an explicit key/modifier allowlist.
+/// Narrow CGEvent adapter for process-bound clicks in one verified window.
 struct CGEventComputerUseInputEmitter: ComputerUseInputEmitting {
     typealias TargetReader = @MainActor @Sendable (
         WorkflowInteractionTarget
@@ -227,43 +229,11 @@ struct CGEventComputerUseInputEmitter: ComputerUseInputEmitting {
         self.eventPoster = eventPoster
     }
 
-    private static let keyCodes: [String: CGKeyCode] = [
-        "return": 36,
-        "tab": 48,
-        "space": 49,
-        "delete": 51,
-        "escape": 53,
-        "left": 123,
-        "right": 124,
-        "down": 125,
-        "up": 126,
-    ]
-    private static let modifierFlags: [String: CGEventFlags] = [
-        "command": .maskCommand,
-        "shift": .maskShift,
-        "option": .maskAlternate,
-        "control": .maskControl,
-    ]
-    private static let allowedKeyChords: Set<String> = [
-        "return", "tab", "space", "delete", "escape",
-        "left", "right", "down", "up",
-        "shift+tab",
-        "shift+left", "shift+right", "shift+down", "shift+up",
-        "option+left", "option+right",
-        "command+left", "command+right", "command+down", "command+up",
-    ]
-
     func emit(
         _ payload: WorkflowActionPayload,
         in target: WorkflowInteractionTarget
     ) async throws {
         try Task.checkCancellation()
-        let textChunks: [[UniChar]]
-        if case .typeText(let text) = payload {
-            textChunks = Self.unicodeChunks(for: text)
-        } else {
-            textChunks = []
-        }
 
         try await MainActor.run {
             guard let source = CGEventSource(stateID: .combinedSessionState) else {
@@ -304,107 +274,10 @@ struct CGEventComputerUseInputEmitter: ComputerUseInputEmitting {
                 eventPoster(down, target.processIdentifier)
                 eventPoster(up, target.processIdentifier)
 
-            case .typeText:
-                // CGEvent accepts UTF-16. Scalar-safe chunks keep text off the
-                // clipboard without splitting surrogate pairs between events.
-                for chunk in textChunks {
-                    try Task.checkCancellation()
-                    _ = try Self.requireCurrent(
-                        target,
-                        using: targetReader,
-                        cancellationCheck: cancellationCheck
-                    )
-                    guard let down = CGEvent(
-                        keyboardEventSource: source,
-                        virtualKey: 0,
-                        keyDown: true
-                    ),
-                        let up = CGEvent(
-                            keyboardEventSource: source,
-                            virtualKey: 0,
-                            keyDown: false
-                        )
-                    else {
-                        throw MacOSComputerUseActuationError.eventCreationFailed
-                    }
-                    down.keyboardSetUnicodeString(
-                        stringLength: chunk.count,
-                        unicodeString: chunk
-                    )
-                    up.keyboardSetUnicodeString(
-                        stringLength: chunk.count,
-                        unicodeString: chunk
-                    )
-                    eventPoster(down, target.processIdentifier)
-                    eventPoster(up, target.processIdentifier)
-                }
-
-            case .keyPress(let key, let modifiers):
-                let normalizedKey = key.lowercased()
-                let normalizedModifiers = modifiers.map { $0.lowercased() }
-                guard Set(normalizedModifiers).count == normalizedModifiers.count,
-                      let keyCode = Self.keyCodes[normalizedKey],
-                      normalizedModifiers.allSatisfy({ Self.modifierFlags[$0] != nil }),
-                      Self.allowedKeyChords.contains(
-                        (normalizedModifiers.sorted() + [normalizedKey]).joined(separator: "+")
-                      )
-                else {
-                    throw MacOSComputerUseActuationError.unsupportedKey
-                }
-                var flags: CGEventFlags = []
-                for modifier in normalizedModifiers {
-                    guard let flag = Self.modifierFlags[modifier] else {
-                        throw MacOSComputerUseActuationError.unsupportedKey
-                    }
-                    flags.insert(flag)
-                }
-                guard let down = CGEvent(
-                    keyboardEventSource: source,
-                    virtualKey: keyCode,
-                    keyDown: true
-                ),
-                    let up = CGEvent(
-                        keyboardEventSource: source,
-                        virtualKey: keyCode,
-                        keyDown: false
-                    )
-                else {
-                    throw MacOSComputerUseActuationError.eventCreationFailed
-                }
-                down.flags = flags
-                up.flags = flags
-                try Task.checkCancellation()
-                _ = try Self.requireCurrent(
-                    target,
-                    using: targetReader,
-                    cancellationCheck: cancellationCheck
-                )
-                eventPoster(down, target.processIdentifier)
-                eventPoster(up, target.processIdentifier)
+            case .typeText, .keyPress:
+                throw MacOSComputerUseActuationError.invalidAction
             }
         }
-    }
-
-    static func unicodeChunks(
-        for text: String,
-        maximumUTF16Units: Int = 1_024
-    ) -> [[UniChar]] {
-        precondition(maximumUTF16Units >= 2)
-        var chunks: [[UniChar]] = []
-        var current: [UniChar] = []
-        current.reserveCapacity(maximumUTF16Units)
-
-        for scalar in text.unicodeScalars {
-            let units = Array(String(scalar).utf16)
-            if current.count + units.count > maximumUTF16Units {
-                chunks.append(current)
-                current = []
-                current.reserveCapacity(maximumUTF16Units)
-            }
-            current.append(contentsOf: units)
-        }
-        if !current.isEmpty { chunks.append(current) }
-        return chunks
     }
 
     static func clickPoint(

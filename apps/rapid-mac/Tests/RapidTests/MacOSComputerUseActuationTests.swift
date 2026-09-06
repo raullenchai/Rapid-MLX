@@ -305,32 +305,40 @@ struct MacOSComputerUseActuationTests {
         #expect(recorder.processIdentifiers == [42, 42])
     }
 
-    @Test("Destructive modifier combinations are rejected before input")
-    @MainActor
-    func destructiveKeyChordIsRejected() async {
-        let expected = Self.observation().target
-        let emitter = CGEventComputerUseInputEmitter(targetReader: { $0 })
+    @Test("Window-unbound keyboard payloads fail before desktop access", arguments: [
+        WorkflowActionPayload.typeText("draft"),
+        WorkflowActionPayload.keyPress(key: "tab", modifiers: []),
+        WorkflowActionPayload.keyPress(
+            key: "delete",
+            modifiers: ["command", "option"]
+        ),
+    ])
+    func keyboardPayloadsFailClosed(payload: WorkflowActionPayload) async {
+        let observation = Self.observation()
+        let probe = TargetProbe(result: .success(observation.target))
+        let emitter = InputEmitter()
+        let actuator = MacOSComputerUseActuator(
+            targetProbe: probe,
+            inputEmitter: emitter,
+            permissionReader: { .init(screenRecording: true, accessibility: true) }
+        )
+        let action = GroundedWorkflowAction(
+            observationID: observation.id,
+            payload: payload,
+            source: .visualGrounding,
+            safeSummary: "Keyboard input",
+            risk: .localChange
+        )
 
-        await #expect(throws: MacOSComputerUseActuationError.unsupportedKey) {
-            try await emitter.emit(
-                .keyPress(key: "delete", modifiers: ["command", "option"]),
-                in: expected
+        await #expect(throws: MacOSComputerUseActuationError.invalidAction) {
+            try await actuator.perform(
+                action,
+                groundedAgainst: observation,
+                currentObservation: observation
             )
         }
-    }
-
-    @Test("Duplicate modifiers cannot bypass the complete-chord allowlist")
-    @MainActor
-    func duplicateModifiersAreRejected() async {
-        let expected = Self.observation().target
-        let emitter = CGEventComputerUseInputEmitter(targetReader: { $0 })
-
-        await #expect(throws: MacOSComputerUseActuationError.unsupportedKey) {
-            try await emitter.emit(
-                .keyPress(key: "tab", modifiers: ["shift", "shift"]),
-                in: expected
-            )
-        }
+        #expect(await probe.callCount == 0)
+        #expect(await emitter.emissions.isEmpty)
     }
 
     @Test("Click coordinates use the tolerated live frame")
@@ -363,16 +371,6 @@ struct MacOSComputerUseActuationTests {
                 in: frame
             )
         }
-    }
-
-    @Test("Unicode chunks never split a surrogate pair")
-    func unicodeChunksPreserveScalars() {
-        let text = String(repeating: "a", count: 1_023) + "😀" + "b"
-        let chunks = CGEventComputerUseInputEmitter.unicodeChunks(for: text)
-
-        #expect(chunks.map(\.count) == [1_023, 3])
-        #expect(chunks.allSatisfy { $0.count <= 1_024 })
-        #expect(String(decoding: chunks.flatMap { $0 }, as: UTF16.self) == text)
     }
 
     private static func observation() -> WorkflowObservation {
