@@ -233,10 +233,12 @@ def test_real_bf16_single_file_layout_is_complete(monkeypatch, tmp_path):
     monkeypatch.setattr(huggingface_hub.constants, "HF_HUB_CACHE", str(tmp_path))
 
     assert download_gate.mflux_missing_weights(FLUX2_KLEIN_BF16_REPO) == []
+    assert download_gate.mflux_local_snapshot(FLUX2_KLEIN_BF16_REPO) == str(snapshot)
     (snapshot / "transformer" / "diffusion_pytorch_model.safetensors").unlink()
     assert download_gate.mflux_missing_weights(FLUX2_KLEIN_BF16_REPO) == [
         "transformer/diffusion_pytorch_model.safetensors"
     ]
+    assert download_gate.mflux_local_snapshot(FLUX2_KLEIN_BF16_REPO) is None
     outside = tmp_path / "outside-transformer.safetensors"
     outside.write_bytes(b"borrowed weights")
     (snapshot / "transformer" / "diffusion_pytorch_model.safetensors").symlink_to(
