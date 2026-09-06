@@ -160,6 +160,12 @@ def _asset_path(repo_id: str, filename: str) -> str:
     return str(path)
 
 
+def _load_safetensors(path):
+    """Load a reviewed weight file even when its HF blob has no extension."""
+
+    return mx.load(path, format="safetensors")
+
+
 def flux_state_dict_adjustments(state_dict, prefix="", hidden_size=3072, mlp_ratio=4):
     state_dict = {
         k.replace("double_blocks", "multimodal_transformer_blocks"): v
@@ -726,7 +732,7 @@ https://github.com/ml-explore/mlx-examples/blob/main/stable_diffusion/stable_dif
 
 def _load_safetensor_weights(mapper, model, weight_file, float16: bool = False):
     dtype = _FLOAT16 if float16 else mx.float32
-    weights = mx.load(weight_file)
+    weights = _load_safetensors(weight_file)
     weights = _flatten([mapper(k, v.astype(dtype)) for k, v in weights.items()])
     model.update(tree_unflatten(weights))
 
@@ -755,7 +761,7 @@ def load_mmdit(
     mmdit_weights = _MMDIT[key][model_key]
     mmdit_weights_ckpt = LOCAl_SD3_CKPT or _asset_path(key, mmdit_weights)
     _asset_path(key, "config.json")
-    weights = mx.load(mmdit_weights_ckpt)
+    weights = _load_safetensors(mmdit_weights_ckpt)
     prefix = "model.diffusion_model."
 
     if key != "argmaxinc/mlx-stable-diffusion-3.5-large-4bit-quantized":
@@ -793,7 +799,7 @@ def load_flux(
     flux_weights = _MMDIT[key][model_key]
     flux_weights_ckpt = LOCAl_SD3_CKPT or _asset_path(key, flux_weights)
     _asset_path(key, "config.json")
-    weights = mx.load(flux_weights_ckpt)
+    weights = _load_safetensors(flux_weights_ckpt)
 
     if model_key in ["argmaxinc/mlx-FLUX.1-schnell", "argmaxinc/mlx-FLUX.1-dev"]:
         weights = flux_state_dict_adjustments(
@@ -906,7 +912,7 @@ def load_vae_decoder(
     dtype = _FLOAT16 if float16 else mx.float32
     vae_weights = _MMDIT[key][model_key]
     vae_weights_ckpt = LOCAl_SD3_CKPT or _asset_path(key, vae_weights)
-    weights = mx.load(vae_weights_ckpt)
+    weights = _load_safetensors(vae_weights_ckpt)
     prefix = _PREFIX[key]["vae_decoder"]
 
     if key != "argmaxinc/mlx-stable-diffusion-3.5-large-4bit-quantized":
@@ -938,7 +944,7 @@ def load_vae_encoder(
     dtype = _FLOAT16 if float16 else mx.float32
     vae_weights = _MMDIT[key][model_key]
     vae_weights_ckpt = LOCAl_SD3_CKPT or _asset_path(key, vae_weights)
-    weights = mx.load(vae_weights_ckpt)
+    weights = _load_safetensors(vae_weights_ckpt)
     prefix = _PREFIX[key]["vae_encoder"]
 
     if key != "argmaxinc/mlx-stable-diffusion-3.5-large-4bit-quantized":
@@ -965,7 +971,7 @@ def load_t5_encoder(
 
     dtype = _FLOAT16 if float16 else mx.float32
     t5_weights = _MODELS[key][model_key]
-    weights = mx.load(_asset_path(key, t5_weights))
+    weights = _load_safetensors(_asset_path(key, t5_weights))
     weights = t5_encoder_state_dict_adjustments(weights, prefix="")
     weights = {k: v.astype(dtype) for k, v in weights.items()}
     model.update(tree_unflatten(tree_flatten(weights)))
