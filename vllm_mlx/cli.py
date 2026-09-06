@@ -2343,9 +2343,14 @@ def _normalize_speculative_config_or_exit(args):
         # the box on a real hybrid while never tripling a pure-attention model's
         # verify width (pure-attention is not hybrid-gated, so it keeps 8/its
         # normal adaptive width).
-        args._suffix_max_draft_was_explicit = getattr(
-            args, "suffix_max_draft", None
-        ) is not None
+        # The sentinel is initialized ONLY when absent so it survives repeated
+        # normalization: a defaulted cap must stay "implicit" (so the hybrid
+        # path can still raise it to the floor), not flip to "explicit" merely
+        # because a second call now sees the filled-in 8.
+        if not hasattr(args, "_suffix_max_draft_was_explicit"):
+            args._suffix_max_draft_was_explicit = getattr(
+                args, "suffix_max_draft", None
+            ) is not None
         if not args._suffix_max_draft_was_explicit:
             args.suffix_max_draft = 8
         if getattr(args, "suffix_max_suffix_len", None) is None:

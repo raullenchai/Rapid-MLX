@@ -3194,15 +3194,20 @@ def _install_suffix_decoding(
                 return result
             # Guard passed: ``probe_head`` has replayed exactly the committed
             # prefix ``[X, d_0..d_{n_accepted-1}]`` one step at a time, so it IS
-            # the commit state. SWAP it in by rebinding ``gb.prompt_cache`` to
-            # ``probe_head`` — the original live list (still pristine) is
-            # retained as ``pristine`` for terminal replay, and its tensors are
-            # now referenced only there, so we stay at 2x (pristine + committed).
-            gb.prompt_cache = probe_head
+            # the commit state. Build the COMPLETE result (including the replay
+            # bookkeeping) BEFORE swapping the live cache: if constructing it
+            # raises (e.g. MemoryError), the live cache is still pristine and
+            # ``_suffix_step``'s exception path falls through to ``_orig_step``
+            # on the un-advanced cache. Only after the result is fully built do
+            # we SWAP the commit head in by rebinding ``gb.prompt_cache`` — the
+            # original live list (still pristine) is retained as ``pristine``
+            # for terminal replay, and its tensors are now referenced only
+            # there, so we stay at 2x (pristine + committed).
             result["replay_snapshot"] = pristine
             # Stepwise logits per committed position (X + accepted drafts),
             # used for lossless logprobs instead of the chunked verify logits.
             result["stepwise_logits"] = probe_logits
+            gb.prompt_cache = probe_head
             return result
         # Guard OFF (non-lossless/debug mode, ``--no-suffix-hybrid-bit-exact``):
         # no drift check and the stepwise commit helper deep-copies its base. We

@@ -453,22 +453,43 @@ def test_hybrid_default_cap_raises_to_floor_only_for_confirmed_hybrid() -> None:
     )
 
 
-def test_hybrid_does_not_fail_fast_on_defaults() -> None:
+def test_hybrid_normalizer_fills_cap_and_sentinel() -> None:
     """``--suffix-hybrid`` with only default knobs must NOT fail fast — the
     below-floor cap is deferred to model resolution, and the normalizer merely
     records whether ``--suffix-max-draft`` was explicit (the default 8 is the
-    pure-attention width, valid on its own)."""
+    pure-attention width, valid on its own).
+
+    The sentinel is initialized ONLY when absent (``hasattr`` guard) so it
+    survives repeated normalization: a defaulted cap must stay "implicit" (so
+    ``_hybrid_suffix_cap`` can still raise it to the floor), not flip to
+    "explicit" merely because a later call sees the filled-in 8."""
     from vllm_mlx.cli import _normalize_speculative_config_or_exit
 
     args = _spec_config_args(
         suffix_decoding=True, suffix_hybrid=True, suffix_min_match_len=24
     )
     _normalize_speculative_config_or_exit(args)
-    # Default cap filled, flagged as NOT explicit.
+    # Default cap filled, flagged as NOT explicit (so the hybrid path can
+    # still raise it to the floor at model resolution).
     assert args.suffix_max_draft == 8
     assert args._suffix_max_draft_was_explicit is False
 
     # An explicit cap keeps the sentinel set so the hybrid raise applies.
+    # Pre-setting the sentinel exercises the ``hasattr`` guard branch: a
+    # pre-existing sentinel is preserved, never recomputed from the cap field
+    # (which has been filled to 8 by the default-fill). This is what allows a
+    # programmatic/pre-normalized args to stay "implicit" across reuse.
+    pre_set = _spec_config_args(
+        suffix_decoding=True,
+        suffix_hybrid=True,
+        suffix_min_match_len=24,
+        suffix_max_draft=8,
+    )
+    pre_set._suffix_max_draft_was_explicit = False
+    _normalize_speculative_config_or_exit(pre_set)
+    assert pre_set.suffix_max_draft == 8
+    assert pre_set._suffix_max_draft_was_explicit is False
+
     explicit = _spec_config_args(
         suffix_decoding=True,
         suffix_hybrid=True,
