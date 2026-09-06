@@ -12351,18 +12351,44 @@ Examples:
     community_catalog = community_subparsers.add_parser(
         "catalog", help="List models with a registered benchmark protocol"
     )
-    community_catalog.add_argument("--memory-gib", type=positive_int, default=None)
-    community_catalog.add_argument("--json", action="store_true")
+    community_catalog.add_argument(
+        "--memory-gib",
+        type=positive_int,
+        default=None,
+        help="Compute the fit column for a Mac with this much unified memory instead of this one",
+    )
+    community_catalog.add_argument(
+        "--all",
+        action="store_true",
+        help="List every model with a protocol, not only the recommended ones",
+    )
+    community_catalog.add_argument(
+        "--json",
+        action="store_true",
+        help="Print machine-readable JSON instead of the text summary",
+    )
     community_plan = community_subparsers.add_parser(
         "plan", help="Preview the exact local workload for a model"
     )
-    community_plan.add_argument("benchmark_model")
-    community_plan.add_argument("--json", action="store_true")
+    community_plan.add_argument(
+        "benchmark_model", help="Model alias from `rapid-mlx benchmark catalog`"
+    )
+    community_plan.add_argument(
+        "--json",
+        action="store_true",
+        help="Print machine-readable JSON instead of the text summary",
+    )
     community_run = community_subparsers.add_parser(
         "run", help="Run the registered protocol and save the result locally"
     )
-    community_run.add_argument("benchmark_model")
-    community_run.add_argument("--json", action="store_true")
+    community_run.add_argument(
+        "benchmark_model", help="Model alias from `rapid-mlx benchmark catalog`"
+    )
+    community_run.add_argument(
+        "--json",
+        action="store_true",
+        help="Print machine-readable JSON instead of the text summary",
+    )
     community_run.add_argument(
         "--inherit-process-group",
         action="store_true",
@@ -12374,16 +12400,30 @@ Examples:
     community_results.add_argument(
         "--limit", type=positive_int, default=None, help="Return only the latest N runs"
     )
-    community_results.add_argument("--json", action="store_true")
+    community_results.add_argument(
+        "--json",
+        action="store_true",
+        help="Print machine-readable JSON instead of the text summary",
+    )
     community_inspect = community_subparsers.add_parser(
         "inspect", help="Print one locally saved benchmark result"
     )
-    community_inspect.add_argument("run_id")
-    community_inspect.add_argument("--json", action="store_true")
+    community_inspect.add_argument(
+        "run_id",
+        help="Run id printed by `benchmark run` or listed by `benchmark results`",
+    )
+    community_inspect.add_argument(
+        "--json",
+        action="store_true",
+        help="Print machine-readable JSON instead of the text summary",
+    )
     community_share = community_subparsers.add_parser(
         "share", help="Explicitly upload one locally saved benchmark result"
     )
-    community_share.add_argument("run_id")
+    community_share.add_argument(
+        "run_id",
+        help="Run id printed by `benchmark run` or listed by `benchmark results`",
+    )
     community_share.add_argument(
         "--yes",
         action="store_true",
@@ -12410,7 +12450,11 @@ Examples:
         "--target",
         help=argparse.SUPPRESS,
     )
-    community_share.add_argument("--json", action="store_true")
+    community_share.add_argument(
+        "--json",
+        action="store_true",
+        help="Print machine-readable JSON instead of the text summary",
+    )
 
     # Models command. ``ls`` is registered as a top-level alias that
     # defaults to ``models --cached`` (the locally-cached view) — two

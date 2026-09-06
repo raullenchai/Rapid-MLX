@@ -5,6 +5,7 @@ import asyncio
 import base64
 import builtins
 import contextlib
+import hashlib
 import io
 import json
 import multiprocessing
@@ -49,6 +50,7 @@ from vllm_mlx.community_bench.upload import SubmitError
 from vllm_mlx.community_bench.workspace import (
     LocalRunArchive,
     benchmark_catalog,
+    describe_case,
     plan_for_alias,
 )
 
@@ -376,10 +378,16 @@ def test_atomic_upload_decline_has_no_disk_or_network_side_effect(
     assert not (tmp_path / "bench-install-id").exists()
     assert "observes the source IP" in output.getvalue()
     assert "does not put it in the benchmark record" in output.getvalue()
-    exact_body = benchmark_upload.submission_body(
-        {**run, "install_id": "a" * 12}
-    ).decode()
-    assert exact_body in output.getvalue()
+    # The consent shows a readable (indent=2) rendering of exactly the wire
+    # document plus the digest of the single-line body that is actually sent.
+    wire = {**run, "install_id": "a" * 12}
+    exact_body = benchmark_upload.submission_body(wire)
+    shown = output.getvalue()
+    assert json.dumps(wire, indent=2) in shown
+    assert exact_body.decode() not in shown  # no 5 KB single-line dump
+    assert f"{len(exact_body)} bytes" in shown
+    assert f"sha256:{hashlib.sha256(exact_body).hexdigest()}" in shown
+    assert atomic_upload.preview_run(run, install_id="a" * 12)["body_digest"] in shown
 
 
 def test_atomic_upload_rejects_cleartext_explicit_destination(
@@ -1271,7 +1279,7 @@ def test_run_local_archives_registered_token_drift_as_failure(
     measurements = _text_run()["measurements"]
     measurements[0]["prompt_tokens"] = 510
 
-    async def drifted_measurements(repo_id: str):
+    async def drifted_measurements(repo_id: str, **kwargs):
         return measurements, 32768
 
     monkeypatch.setattr(local_runner, "_text_measurements", drifted_measurements)
@@ -1317,7 +1325,8 @@ def test_run_local_records_conditions_before_and_after_the_measurements(
         order.append("conditions")
         return next(snapshots)
 
-    async def fake_measurements(repo_id: str):
+    async def fake_measurements(repo_id: str, *, progress=None):
+        assert progress is None
         order.append("measure")
         # The real helper records the "after" snapshot while the model is
         # still resident, i.e. before its engine context tears down.
@@ -1358,7 +1367,8 @@ def test_after_snapshot_is_never_taken_once_the_model_is_gone(
             "available_memory_mib": 9000,
         }
 
-    async def silent_measurements(repo_id: str):
+    async def silent_measurements(repo_id: str, *, progress=None):
+        assert progress is None
         return _text_run()["measurements"], 32768
 
     monkeypatch.setattr(local_runner, "run_conditions", counting_conditions)
@@ -1433,7 +1443,8 @@ def test_image_runs_capture_conditions_inside_the_server_context(
     monkeypatch.setattr(local_runner, "run_conditions", lambda: next(snapshots))
     measurements = _image_run()["measurements"]
 
-    def fake_image(alias: str, *, isolate_process_group: bool):
+    def fake_image(alias: str, *, isolate_process_group: bool, progress=None):
+        assert progress is None
         local_runner._record_conditions_after()
         return measurements
 
@@ -1765,8 +1776,12 @@ def test_run_local_executes_image_protocol_and_excludes_warmup(
         local_runner, "_is_dedicated_process_group_leader", lambda: True
     )
 
+    progress: list[str] = []
     run = local_runner.run_local(
-        "example-image", archive=archive, inherit_process_group=True
+        "example-image",
+        archive=archive,
+        inherit_process_group=True,
+        progress=progress.append,
     )
 
     assert len(calls) == 2  # one warmup plus one measured round
@@ -1776,6 +1791,13 @@ def test_run_local_executes_image_protocol_and_excludes_warmup(
     ]
     assert run["machine"]["conditions_before"]["thermal_state"] == "nominal"
     assert run["machine"]["conditions_after"]["thermal_state"] == "serious"
+    # A user watching the terminal sees the server boot and each round,
+    # warmup included, with the round's wall time.
+    assert progress[0].startswith("Benchmarking example-image (image_generation)")
+    assert progress[1].startswith("Starting local image server for example-image")
+    assert any(line.startswith("Server ready in ") for line in progress)
+    assert progress[-2] == "t2i-1024-square  warmup   1 s"
+    assert progress[-1] == "t2i-1024-square  round 1/1  2 s"
     assert calls[0]["url"] == "http://local/v1/images/generations"
     assert calls[0]["json"] == {
         "model": "example-image",
@@ -1874,7 +1896,9 @@ def test_run_local_without_flag_never_consults_group_topology(
     )
     observed: dict[str, bool] = {}
 
-    def run_image(alias: str, *, isolate_process_group: bool) -> list[dict]:
+    def run_image(
+        alias: str, *, isolate_process_group: bool, progress=None
+    ) -> list[dict]:
         observed["isolate_process_group"] = isolate_process_group
         return [
             {
@@ -2075,7 +2099,10 @@ def test_run_local_executes_video_protocol_and_polls_to_completion(
     timings = iter((10.0, 15.0))
     monkeypatch.setattr(local_runner.time, "perf_counter", lambda: next(timings))
 
-    run = local_runner.run_local("example-video", archive=archive)
+    progress: list[str] = []
+    run = local_runner.run_local(
+        "example-video", archive=archive, progress=progress.append
+    )
 
     assert events == [
         "probe(served=False, requests=0)",
@@ -2085,6 +2112,9 @@ def test_run_local_executes_video_protocol_and_polls_to_completion(
     assert run["machine"]["conditions_after"]["thermal_state"] == "serious"
 
     assert serve_options["extra_env"] == {"RAPID_MLX_WAN_STEPS": "20"}
+    assert progress[1].startswith("Starting local video server for example-video")
+    assert progress[-2] == "t2v-480p-81f     round 1/1  generating..."
+    assert progress[-1] == "t2v-480p-81f     round 1/1  5 s"
     assert posts == [
         {
             "url": "http://local/v1/videos",
@@ -2649,7 +2679,7 @@ def test_run_local_does_not_infer_cancellation_from_error_text(
     monkeypatch.setattr(
         local_runner,
         "_run_video",
-        lambda alias, *, isolate_process_group: (_ for _ in ()).throw(
+        lambda alias, **kwargs: (_ for _ in ()).throw(
             RuntimeError("backend cancelled an internal request")
         ),
     )
@@ -2780,9 +2810,10 @@ def test_run_local_converts_text_engine_result_to_atomic_measurements(
             pass
 
     async def standardized(
-        engine, tokenizer, *, sampling: str, registered_token_ids: bool
+        engine, tokenizer, *, sampling: str, registered_token_ids: bool, on_round=None
     ) -> BenchResult:
         assert sampling == "greedy"
+        assert on_round is None  # no progress sink, no observer
         assert registered_token_ids is True
         short = [RoundResult(100, 200, 10, prompt_tokens=512, output_tokens=128)] * 5
         long = [RoundResult(50, 150, 20, prompt_tokens=2048, output_tokens=512)] * 5
@@ -2990,30 +3021,124 @@ def test_cli_catalog_prints_focus_marker_and_run_hint(
         lambda **kwargs: {
             "models": [
                 {
-                    "alias": "focus-model",
+                    "alias": "big-focus-model",
                     "task_type": "text_generation",
                     "memory_fit": "does_not_fit",
+                    "estimated_memory_gib": 64,
                     "focus": True,
                 },
                 {
-                    "alias": "other-model",
+                    "alias": "focus-model",
+                    "task_type": "text_generation",
+                    "memory_fit": "fits",
+                    "estimated_memory_gib": 6,
+                    "focus": True,
+                },
+                {
+                    "alias": "aaa-other-model",
                     "task_type": "image_generation",
                     "memory_fit": "fits",
+                    "estimated_memory_gib": 4,
                     "focus": False,
+                },
+                {
+                    "alias": "zzz-other-model",
+                    "task_type": "image_generation",
+                    "memory_fit": "unknown",
+                    "estimated_memory_gib": None,
+                    "focus": False,
+                },
+                {
+                    "alias": "unknown-focus-model",
+                    "task_type": "text_generation",
+                    "memory_fit": "unknown",
+                    "estimated_memory_gib": None,
+                    "focus": True,
                 },
             ]
         },
     )
-    args = SimpleNamespace(benchmark_action="catalog", memory_gib=8, json=False)
+    args = SimpleNamespace(
+        benchmark_action="catalog", memory_gib=8, json=False, all=False
+    )
 
     assert community_cli.benchmark_command(args) == 0
     out = capsys.readouterr().out
     assert "Community Benchmark models (local by default)" in out
     assert "Fit column assumes 8 GB (--memory-gib), not this Mac's memory" in out
     assert "This Mac:" not in out
+    # Recommended = focus models that fit, listed first under a heading; the
+    # long tail is summarised, not dumped, unless --all is passed.
+    assert "Recommended" in out
     assert "★ focus-model" in out
-    assert "does not fit" in out
+    assert "~6 GB  fits" in out
+    assert "big-focus-model" not in out
+    # Memory is known, so a focus model with no estimate is not a verified
+    # fit and must not be recommended as one.
+    assert "unknown-focus-model" not in out
+    assert "aaa-other-model" not in out
+    assert "4 more models have a registered protocol (1 fit this Mac)" in out
+    assert "catalog --all" in out
     assert "Run: rapid-mlx benchmark run <model>" in out
+
+    args.all = True
+    assert community_cli.benchmark_command(args) == 0
+    out = capsys.readouterr().out
+    assert out.index("Recommended") < out.index("★ focus-model")
+    assert out.index("★ focus-model") < out.index("All other models")
+    assert out.index("All other models") < out.index("★ big-focus-model")
+    assert "~64 GB  does not fit" in out
+    assert "aaa-other-model" in out
+    assert "zzz-other-model" in out
+    assert "★ unknown-focus-model" in out
+    assert "   ?  unknown" in out
+    assert "more models have a registered protocol" not in out
+
+
+def test_cli_catalog_recommends_focus_models_when_memory_is_unknown(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Without a fit verdict a focus model is still worth recommending; only a
+    known does-not-fit demotes it."""
+    _cli_archive(monkeypatch, SimpleNamespace())
+    monkeypatch.setattr(
+        community_cli,
+        "benchmark_catalog",
+        lambda **kwargs: {
+            "models": [
+                {
+                    "alias": "focus-model",
+                    "task_type": "text_generation",
+                    "memory_fit": "unknown",
+                    "estimated_memory_gib": 6,
+                    "focus": True,
+                }
+            ]
+        },
+    )
+    monkeypatch.setattr(community_cli, "host_memory_gib", lambda: None)
+    args = SimpleNamespace(
+        benchmark_action="catalog", memory_gib=None, json=False, all=False
+    )
+    assert community_cli.benchmark_command(args) == 0
+    out = capsys.readouterr().out
+    assert "★ focus-model" in out
+    # The heading must not claim a fit that was never computed.
+    assert "memory fit unknown" in out
+    assert "fit this Mac" not in out
+    assert "0 more models have a registered protocol (fit unknown)" in out
+
+    monkeypatch.setattr(
+        community_cli, "benchmark_catalog", lambda **kwargs: {"models": []}
+    )
+    assert community_cli.benchmark_command(args) == 0
+    assert "(no focus models in this catalog)" in capsys.readouterr().out
+
+    monkeypatch.setattr(community_cli, "host_memory_gib", lambda: 8)
+    assert community_cli.benchmark_command(args) == 0
+    out = capsys.readouterr().out
+    assert "Recommended (★ focus models that fit this Mac)" in out
+    assert "none of the focus models fit this Mac's memory" in out
 
 
 def test_cli_catalog_defaults_memory_to_this_mac(
@@ -3030,7 +3155,9 @@ def test_cli_catalog_defaults_memory_to_this_mac(
 
     monkeypatch.setattr(community_cli, "benchmark_catalog", fake_catalog)
     monkeypatch.setattr(community_cli, "host_memory_gib", lambda: 48)
-    args = SimpleNamespace(benchmark_action="catalog", memory_gib=None, json=False)
+    args = SimpleNamespace(
+        benchmark_action="catalog", memory_gib=None, json=False, all=False
+    )
 
     assert community_cli.benchmark_command(args) == 0
     assert seen == {"memory_gib": 48}
@@ -3072,33 +3199,110 @@ def test_cli_plan_prints_protocol_and_local_storage(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     _cli_archive(monkeypatch, SimpleNamespace())
-    monkeypatch.setattr(
-        community_cli,
-        "plan_for_alias",
-        lambda alias: {
+    seen: dict[str, object] = {}
+
+    def fake_plan(alias, **kwargs):
+        seen.update(kwargs)
+        return {
             "model": {
                 "alias": alias,
+                "repo_id": "mlx-community/example-text",
                 "task_type": "text_generation",
                 "protocol_id": "rapid-community-speed",
+                "estimated_memory_gib": 6,
+                "memory_estimate_source": "artifact_size_fallback",
+                "memory_fit": "fits",
             },
-            "workload": {"protocol_version": 2},
-        },
-    )
+            "workload": {
+                "protocol_version": 2,
+                "cases": registered_workload("text_generation")["cases"],
+            },
+            "memory_gib": 18,
+            "model_cached": False,
+        }
+
+    monkeypatch.setattr(community_cli, "plan_for_alias", fake_plan)
+    monkeypatch.setattr(community_cli, "host_memory_gib", lambda: 18)
     args = SimpleNamespace(
         benchmark_action="plan", benchmark_model="example-text", json=False
     )
 
     assert community_cli.benchmark_command(args) == 0
     out = capsys.readouterr().out
-    assert "Model:    example-text" in out
+    assert seen == {"memory_gib": 18, "check_cache": True}
+    assert "Model:    example-text  (mlx-community/example-text)" in out
     assert "Protocol: rapid-community-speed v2" in out
+    # Every case with its token plan and rounds, so "plan" actually plans.
+    assert "Cases:    2" in out
+    assert (
+        "pp512-tg128      512 prompt tokens -> 128 output tokens   "
+        "(1 warmup + 5 measured)"
+    ) in out
+    assert "pp2048-tg512     2048 prompt tokens -> 512 output tokens" in out
+    assert (
+        "Memory:   ~6 GB estimated (from download size); fits this Mac (18 GB)" in out
+    )
+    assert "Download: not cached yet; `benchmark run` downloads it" in out
     assert (
         "Storage:  local; upload requires a separate share command and consent" in out
     )
+    assert "Nothing is uploaded by this command or by `benchmark run`." in out
+
+    # JSON keeps the original keys and only gains the new ones.
+    args.json = True
+    assert community_cli.benchmark_command(args) == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["model"]["alias"] == "example-text"
+    assert payload["workload"]["protocol_version"] == 2
+    assert payload["memory_gib"] == 18
+    assert payload["model_cached"] is False
+
+
+def test_cli_plan_memory_and_download_lines_cover_every_verdict(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _cli_archive(monkeypatch, SimpleNamespace())
+    plan = {
+        "model": {
+            "alias": "m",
+            "task_type": "image_generation",
+            "protocol_id": "rapid-image-speed",
+            "estimated_memory_gib": 64,
+            "memory_estimate_source": "profile_minimum",
+            "memory_fit": "does_not_fit",
+        },
+        "workload": {"protocol_version": 1, "cases": []},
+        "memory_gib": 18,
+        "model_cached": True,
+    }
+    monkeypatch.setattr(community_cli, "plan_for_alias", lambda alias, **kw: plan)
+    monkeypatch.setattr(community_cli, "host_memory_gib", lambda: 18)
+    args = SimpleNamespace(benchmark_action="plan", benchmark_model="m", json=False)
+
+    assert community_cli.benchmark_command(args) == 0
+    out = capsys.readouterr().out
+    assert "Memory:   ~64 GB estimated; does NOT fit this Mac (18 GB)" in out
+    assert "Download: already in the local Hugging Face cache" in out
+    assert "Cases:" not in out
+
+    plan["model"]["estimated_memory_gib"] = None
+    plan["model"]["memory_fit"] = "unknown"
+    del plan["memory_gib"]
+    plan["model_cached"] = None  # probe was inconclusive: say so, do not guess
+    assert community_cli.benchmark_command(args) == 0
+    out = capsys.readouterr().out
+    assert "Memory:   unknown (no estimate for this model)" in out
+    assert "Download: could not verify the local cache" in out
+
+    del plan["model_cached"]
+    assert community_cli.benchmark_command(args) == 0
+    assert "Download:" not in capsys.readouterr().out
 
 
 def test_cli_results_prints_empty_hint_then_rows(
-    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    pin_timezone,
 ) -> None:
     rows: list[dict] = []
 
@@ -3110,6 +3314,7 @@ def test_cli_results_prints_empty_hint_then_rows(
             return None
 
     _cli_archive(monkeypatch, Archive())
+    pin_timezone("America/Los_Angeles")
     args = SimpleNamespace(benchmark_action="results", limit=None, json=False)
 
     assert community_cli.benchmark_command(args) == 0
@@ -3141,6 +3346,9 @@ def test_cli_results_prints_empty_hint_then_rows(
     assert "completed" in out
     # A run list without the model is unusable (0.13.5 dogfood F2).
     assert "mlx-community/Qwen3.5-9B-4bit" in out
+    # Timestamps are shown on the user's clock, not raw UTC ISO-8601.
+    assert "2026-08-31 17:00 local" in out
+    assert "2026-09-01T00:00:00Z" not in out
 
     rows.append(
         {
@@ -3154,7 +3362,7 @@ def test_cli_results_prints_empty_hint_then_rows(
     out = capsys.readouterr().out
     assert (
         "00000000-0000-4000-8000-000000000002  image_generation   failed"
-        "     2026-09-01T00:00:01Z  -\n"
+        "     2026-08-31 17:00 local  -\n"
     ) in out
 
     # The primary component wins even when an auxiliary component (e.g. a
@@ -3206,8 +3414,51 @@ def test_cli_results_prints_empty_hint_then_rows(
     assert community_cli.benchmark_command(args) == 0
     out = capsys.readouterr().out
     assert "00000000-0000-4000-8000-000000000004" in out
-    assert "2026-09-01T00:00:03Z  -\n" in out
+    assert "2026-08-31 17:00 local  -\n" in out
     assert "org/draft" not in out
+
+    # --json is untouched: the archived UTC instant is what callers parse.
+    args.json = True
+    assert community_cli.benchmark_command(args) == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["runs"][0]["completed_at"] == "2026-09-01T00:00:00Z"
+
+
+@pytest.fixture
+def pin_timezone(monkeypatch: pytest.MonkeyPatch):
+    """Make ``datetime.astimezone()`` deterministic for one test.
+
+    libc caches the zone, so restoring ``TZ`` alone is not enough; the
+    teardown puts the previous value back and re-runs ``tzset`` before the
+    monkeypatch fixture unwinds.
+    """
+
+    previous = os.environ.get("TZ")
+
+    def pin(zone: str) -> None:
+        monkeypatch.setenv("TZ", zone)
+        time.tzset()
+
+    yield pin
+    if previous is None:
+        os.environ.pop("TZ", None)
+    else:
+        os.environ["TZ"] = previous
+    time.tzset()
+
+
+def test_cli_local_time_rendering_edge_cases(pin_timezone) -> None:
+    pin_timezone("Asia/Tokyo")
+    assert community_cli._local_time("2026-09-06T04:33:13.950359Z") == (
+        "2026-09-06 13:33 local"
+    )
+    assert community_cli._local_time("2026-09-06T04:33:13+02:00") == (
+        "2026-09-06 11:33 local"
+    )
+    # Not an instant: shown verbatim rather than guessed.
+    assert community_cli._local_time("2026-09-06T04:33:13") == "2026-09-06T04:33:13"
+    assert community_cli._local_time("yesterday") == "yesterday"
+    assert community_cli._local_time(None) == "-"
 
 
 def test_cli_inspect_prints_full_json_without_flag(
@@ -4618,3 +4869,387 @@ def test_run_bucket_selects_registered_or_synthetic_prompts(
     assert len(synthetic_ids) == 8
     assert observed == [("synthetic prompt text", False)] * 6
     assert len(result.rounds_raw) == 5
+
+    # The optional observer sees every round, warmup included, labelled with
+    # the registered case-id shape so the CLI can print progress. (Kept in
+    # this no-MLX file so the Linux coverage lane exercises the hook.)
+    seen: list[tuple[str, str, int, int, float]] = []
+    result, _ = asyncio.run(
+        bench_runner._run_bucket(
+            object(),
+            SyntheticTokenizer(),
+            lambda max_tokens: object(),
+            8,
+            4,
+            registered_token_ids=False,
+            on_round=lambda label, phase, index, total, round_result: seen.append(
+                (label, phase, index, total, round_result.decode_tps)
+            ),
+        )
+    )
+    assert seen == [("pp8-tg4", "warmup", 1, 1, 1)] + [
+        ("pp8-tg4", "measured", index, 5, 1) for index in range(1, 6)
+    ]
+    assert len(result.rounds_raw) == 5
+
+
+# ---------------------------------------------------------------------------
+# Run progress (stderr only) and plan/catalog helpers
+# ---------------------------------------------------------------------------
+
+
+def test_cli_run_streams_progress_to_stderr_only_in_text_mode(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _cli_archive(monkeypatch, SimpleNamespace())
+    seen: list[object] = []
+
+    def fake_run_local(alias, **kwargs):
+        progress = kwargs.get("progress")
+        seen.append(progress)
+        if progress is not None:
+            progress("pp512-tg128      warmup")
+            progress("pp512-tg128      round 1/5    46.1 tok/s")
+        return {"run_id": "abc-123", "measurements": []}
+
+    monkeypatch.setattr(community_cli, "run_local", fake_run_local)
+    args = SimpleNamespace(
+        benchmark_action="run",
+        benchmark_model="example-text",
+        inherit_process_group=False,
+        json=False,
+    )
+    assert community_cli.benchmark_command(args) == 0
+    captured = capsys.readouterr()
+    assert callable(seen[-1])
+    assert "pp512-tg128      round 1/5    46.1 tok/s" in captured.err
+    assert "round 1/5" not in captured.out
+    assert "Saved local result abc-123" in captured.out
+
+    # --json: stdout is exactly one JSON document and nothing is written to
+    # stderr, which the Desktop app surfaces verbatim on a non-zero exit.
+    args.json = True
+    assert community_cli.benchmark_command(args) == 0
+    captured = capsys.readouterr()
+    assert seen[-1] is None
+    assert json.loads(captured.out) == {"run_id": "abc-123", "measurements": []}
+    assert captured.err == ""
+
+
+def test_run_local_announces_plan_and_forwards_progress(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    archive = LocalRunArchive(tmp_path)
+    monkeypatch.setattr(
+        local_runner,
+        "plan_for_alias",
+        lambda alias: {
+            "model": {
+                "alias": alias,
+                "repo_id": "mlx-community/example-image-model",
+                "task_type": "image_generation",
+            },
+            "workload": registered_workload("image_generation"),
+        },
+    )
+    monkeypatch.setattr(
+        local_runner,
+        "collect",
+        lambda: (
+            Hardware("Apple M4 Pro", 24, 12, 16),
+            Software("15.6", "0.13.2", "0.32.1", "3.12.1"),
+        ),
+    )
+
+    def run_image(alias, *, isolate_process_group, progress=None):
+        progress("t2i-1024-square  round 1/1  12 s")
+        return _image_run()["measurements"]
+
+    monkeypatch.setattr(local_runner, "_run_image", run_image)
+    lines: list[str] = []
+
+    local_runner.run_local("example-image", archive=archive, progress=lines.append)
+
+    assert lines[0] == (
+        "Benchmarking example-image (image_generation): 1 case, "
+        "1 warmup + 1 measured rounds in total"
+    )
+    assert lines[1] == "  " + describe_case(
+        registered_workload("image_generation")["cases"][0]
+    )
+    assert lines[-1] == "t2i-1024-square  round 1/1  12 s"
+
+    # Without a sink nothing is announced and the runner still works.
+    monkeypatch.setattr(
+        local_runner,
+        "_run_image",
+        lambda alias, **kwargs: _image_run()["measurements"],
+    )
+    local_runner.run_local("example-image", archive=archive)
+
+    # A sink that blows up (closed pipe, encoding error, a buggy caller) is a
+    # presentation problem: the benchmark still completes and is archived as
+    # completed, whichever stage raised.
+    def run_image_with_progress(alias, *, isolate_process_group, progress=None):
+        local_runner._report(progress, "t2i-1024-square  round 1/1  12 s")
+        return _image_run()["measurements"]
+
+    monkeypatch.setattr(local_runner, "_run_image", run_image_with_progress)
+    attempts: list[str] = []
+
+    def exploding_sink(line: str) -> None:
+        attempts.append(line)
+        raise BrokenPipeError("stderr went away")
+
+    run = local_runner.run_local(
+        "example-image", archive=archive, progress=exploding_sink
+    )
+    assert run["outcome"]["status"] == "completed"
+    assert archive.get(run["run_id"])["outcome"]["status"] == "completed"
+    assert len(attempts) == 3  # plan header, case line, round line all attempted
+
+    # The observer path is guarded the same way.
+    observe = local_runner._text_round_observer(exploding_sink, [])
+    observe("pp512-tg128", "warmup", 1, 1, RoundResult(50.0, 500.0, 100.0))
+    observe("pp512-tg128", "measured", 1, 5, RoundResult(50.0, 500.0, 100.0))
+    local_runner._stage_finished(exploding_sink, 0.0, "Server ready")
+
+
+def test_text_round_observer_reports_rounds_and_estimates_remaining_time() -> None:
+    cases = registered_workload("text_generation")["cases"]
+    lines: list[str] = []
+    observe = local_runner._text_round_observer(lines.append, cases)
+    # 512 prompt tokens at 1024 tok/s = 0.5 s prefill; 128 output at 50 tok/s
+    # = 2.56 s decode. Remaining after this warmup: 5 short rounds x 3.06 s +
+    # 6 long rounds x (2 s + 10.24 s) = 15.3 + 73.44 = 88.74 s.
+    warmup = RoundResult(decode_tps=50.0, prefill_tps=1024.0, ttft_ms=500.0)
+    observe("pp512-tg128", "warmup", 1, 1, warmup)
+    assert lines == [
+        "pp512-tg128      warmup",
+        "Estimated time remaining: ~1 min 29 s (from the warmup rate)",
+    ]
+    observe("pp512-tg128", "measured", 3, 5, RoundResult(46.06, 900.0, 480.0))
+    assert lines[-1] == "pp512-tg128      round 3/5    46.1 tok/s"
+    # The estimate is printed once; the long case's warmup does not repeat it.
+    observe("pp2048-tg512", "warmup", 1, 1, warmup)
+    assert lines[-1] == "pp2048-tg512     warmup"
+    assert sum("Estimated" in line for line in lines) == 1
+
+    assert local_runner._estimate_remaining_s(
+        cases, RoundResult(50.0, 1024.0, 1.0), done_label="pp512-tg128"
+    ) == pytest.approx(88.74)
+    assert (
+        local_runner._estimate_remaining_s(
+            cases, RoundResult(0.0, 1024.0, 1.0), done_label="pp512-tg128"
+        )
+        is None
+    )
+    # A multi-warmup protocol numbers its warmups; a missing rate is skipped.
+    lines.clear()
+    observe = local_runner._text_round_observer(lines.append, cases)
+    observe("pp512-tg128", "warmup", 2, 3, object())
+    observe("pp512-tg128", "measured", 1, 5, object())
+    assert lines == ["pp512-tg128      warmup 2/3", "pp512-tg128      round 1/5"]
+
+
+def test_text_measurements_reports_model_load_stage(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The load/download stage is the longest silent part of a run."""
+    lines: list[str] = []
+    cases = registered_workload("text_generation")["cases"]
+
+    class FakeExecutor:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def submit(self, fn, *args):
+            return SimpleNamespace(result=lambda: fn(*args))
+
+        def shutdown(self, **kwargs):
+            pass
+
+    class FakeEngine:
+        engine = object()
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *exc):
+            return False
+
+    fake_engine_core = types.SimpleNamespace(
+        AsyncEngineCore=lambda *args, **kwargs: FakeEngine(),
+        EngineConfig=lambda **kwargs: None,
+        _init_mlx_step_thread=lambda: None,
+    )
+    fake_scheduler = types.SimpleNamespace(SchedulerConfig=lambda **kwargs: None)
+    fake_helpers = types.SimpleNamespace(get_model_max_context=lambda engine: 4096)
+    fake_tokenizer = types.SimpleNamespace(
+        load_model_with_fallback=lambda repo_id: (object(), object())
+    )
+    monkeypatch.setitem(sys.modules, "vllm_mlx.engine_core", fake_engine_core)
+    monkeypatch.setitem(sys.modules, "vllm_mlx.scheduler", fake_scheduler)
+    monkeypatch.setitem(sys.modules, "vllm_mlx.service.helpers", fake_helpers)
+    monkeypatch.setitem(sys.modules, "vllm_mlx.utils.tokenizer", fake_tokenizer)
+    monkeypatch.setattr(
+        local_runner.concurrent.futures, "ThreadPoolExecutor", FakeExecutor
+    )
+    monkeypatch.setattr(local_runner, "model_is_cached", lambda repo_id: False)
+    observed: dict[str, object] = {}
+
+    async def fake_bench(
+        engine, tokenizer, *, sampling, registered_token_ids, on_round
+    ):
+        observed["on_round"] = on_round
+        if on_round is not None:
+            on_round("pp512-tg128", "measured", 1, 5, RoundResult(50.0, 500.0, 100.0))
+        rounds = [
+            RoundResult(50.0, 500.0, 100.0, prompt_tokens=p, output_tokens=o)
+            for _ in range(5)
+        ]
+        return BenchResult(
+            short=BucketResult(rounds_raw=[r for r in rounds[:5]]),
+            long=BucketResult(rounds_raw=[r for r in rounds[:5]]),
+            peak_ram_mb=1234,
+            prompt_hash="0" * 16,
+            sampling=sampling,
+        )
+
+    p, o = cases[0]["target_prompt_tokens"], cases[0]["target_output_tokens"]
+    monkeypatch.setattr(bench_runner, "run_standardized_bench", fake_bench)
+
+    measurements, context = asyncio.run(
+        local_runner._text_measurements("org/model", progress=lines.append)
+    )
+    assert context == 4096
+    assert lines[0] == (
+        "Loading org/model (not cached yet; downloading from Hugging Face first)..."
+    )
+    assert lines[1].startswith("Model loaded in ")
+    assert lines[2] == "pp512-tg128      round 1/5    50.0 tok/s"
+    assert callable(observed["on_round"])
+
+    # No sink: no observer is installed and nothing is logged.
+    monkeypatch.setattr(local_runner, "model_is_cached", lambda repo_id: True)
+    lines.clear()
+    asyncio.run(local_runner._text_measurements("org/model"))
+    assert observed["on_round"] is None
+    assert lines == []
+
+    # An inconclusive cache probe is reported as such, not as "cached".
+    monkeypatch.setattr(local_runner, "model_is_cached", lambda repo_id: None)
+    asyncio.run(local_runner._text_measurements("org/model", progress=lines.append))
+    assert lines[0] == (
+        "Loading org/model (cache state unknown; downloads anything missing)..."
+    )
+
+    lines.clear()
+    monkeypatch.setattr(local_runner, "model_is_cached", lambda repo_id: True)
+    asyncio.run(local_runner._text_measurements("org/model", progress=lines.append))
+    assert lines[0] == "Loading org/model (from the local Hugging Face cache)..."
+
+
+def test_describe_case_covers_every_registered_shape() -> None:
+    text, image, video = (
+        registered_workload(task)["cases"][0]
+        for task in ("text_generation", "image_generation", "video_generation")
+    )
+    assert describe_case(text) == (
+        "pp512-tg128      512 prompt tokens -> 128 output tokens   "
+        "(1 warmup + 5 measured)"
+    )
+    assert describe_case(image) == (
+        "t2i-1024-square  1024x1024, 20 steps, 1 image   (1 warmup + 1 measured)"
+    )
+    assert describe_case(video) == (
+        "t2v-480p-81f     832x480, 81 frames @ 24 fps, 20 steps   "
+        "(0 warmup + 1 measured)"
+    )
+    assert describe_case({**image, "image_count": 4}).count("4 images") == 1
+
+
+def test_plan_for_alias_adds_memory_fit_and_cache_state_without_downloading(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    base = plan_for_alias("qwen3.5-9b-4bit")
+    assert "memory_gib" not in base
+    assert "model_cached" not in base
+    assert base["model"]["memory_fit"] == "unknown"
+
+    # The probe is the modality-aware one behind ``models --cached`` (mflux
+    # image and Wan video layouts are not the text ``model*.safetensors``
+    # rule), and an inconclusive probe stays inconclusive.
+    import vllm_mlx.cli as top_cli
+
+    probed: list[str] = []
+
+    def runnability(repo_id: str):
+        probed.append(repo_id)
+        return {"org/cached": True, "org/absent": False}.get(repo_id)
+
+    monkeypatch.setattr(top_cli, "_cache_runnability", runnability)
+    assert workspace_module.model_is_cached("org/cached") is True
+    assert workspace_module.model_is_cached("org/absent") is False
+    assert workspace_module.model_is_cached("org/inconclusive") is None
+    assert probed == ["org/cached", "org/absent", "org/inconclusive"]
+
+    def boom(repo_id: str) -> bool:
+        raise RuntimeError("probe crashed")
+
+    monkeypatch.setattr(top_cli, "_cache_runnability", boom)
+    assert workspace_module.model_is_cached("org/model") is None
+
+    calls: list[str] = []
+
+    def probe(repo_id: str) -> bool:
+        calls.append(repo_id)
+        return True
+
+    monkeypatch.setattr(workspace_module, "model_is_cached", probe)
+    plan = plan_for_alias("qwen3.5-9b-4bit", memory_gib=4, check_cache=True)
+    assert plan["memory_gib"] == 4
+    assert plan["model"]["memory_fit"] == "does_not_fit"
+    assert plan["model_cached"] is True
+    assert calls == [plan["model"]["repo_id"]]
+    # Everything the v1 plan had is still there.
+    assert set(base) <= set(plan)
+
+
+def test_benchmark_catalog_parser_accepts_all_flag() -> None:
+    from vllm_mlx.cli import build_parser
+
+    parser = build_parser()
+    args = parser.parse_args(["benchmark", "catalog", "--all"])
+    assert args.all is True
+    assert parser.parse_args(["benchmark", "catalog"]).all is False
+
+
+def test_format_duration_is_human_scale() -> None:
+    assert local_runner._format_duration(0.4) == "0 s"
+    assert local_runner._format_duration(45.4) == "45 s"
+    assert local_runner._format_duration(59.6) == "1 min"  # never "60 s"
+    assert local_runner._format_duration(60) == "1 min"
+    assert local_runner._format_duration(190.2) == "3 min 10 s"
+    assert local_runner._format_duration(3599.6) == "60 min"
+    assert local_runner._format_duration(-5) == "0 s"
+
+
+def test_progress_sink_never_aborts_the_benchmark(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A closed or broken stderr is a presentation problem, not a failed run."""
+
+    class BrokenStream(io.StringIO):
+        def write(self, text: str) -> int:
+            raise BrokenPipeError("stderr consumer went away")
+
+    monkeypatch.setattr(sys, "stderr", BrokenStream())
+    community_cli._progress_to_stderr("pp512-tg128      round 1/5")
+
+    class ClosedStream(io.StringIO):
+        def write(self, text: str) -> int:
+            raise ValueError("I/O operation on closed file")
+
+    monkeypatch.setattr(sys, "stderr", ClosedStream())
+    community_cli._progress_to_stderr("pp512-tg128      round 2/5")

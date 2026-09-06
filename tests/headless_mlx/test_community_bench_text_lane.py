@@ -100,7 +100,7 @@ def test_text_lane_converts_engine_result_and_reaps_executor(
     monkeypatch.setattr(local_runner, "run_conditions", probe)
 
     async def standardized(
-        engine, tokenizer, *, sampling: str, registered_token_ids: bool
+        engine, tokenizer, *, sampling: str, registered_token_ids: bool, on_round=None
     ) -> BenchResult:
         assert sampling == "greedy"
         assert registered_token_ids is True

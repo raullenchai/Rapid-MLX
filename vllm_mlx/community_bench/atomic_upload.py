@@ -33,11 +33,22 @@ class AtomicUploadAcceptance:
 def _ask_consent(
     payload: dict[str, Any], *, target: str, stdin: TextIO, stdout: TextIO
 ) -> bool:
+    body = submission_body(payload)
+    body_digest = f"sha256:{hashlib.sha256(body).hexdigest()}"
     print("", file=stdout)
     print(f"About to upload this benchmark to {target}:", file=stdout)
     print("=" * 72, file=stdout)
-    print(submission_body(payload).decode("utf-8"), file=stdout)
+    # Pretty-print the same document (same key order, same escaping) so a
+    # human can actually read it; the wire body is its single-line form.
+    print(json.dumps(payload, indent=2), file=stdout)
     print("=" * 72, file=stdout)
+    print(
+        f"Wire body: the single-line JSON serialization of exactly this "
+        f"document, {len(body)} bytes, {body_digest}. "
+        "`rapid-mlx benchmark share <run> --preview --json` prints those exact "
+        "bytes as payload_json with the same body_digest.",
+        file=stdout,
+    )
     print(
         "Everything shown above leaves this Mac. It includes model source, "
         "Mac configuration, OS/runtime versions, execution settings, timings, "
