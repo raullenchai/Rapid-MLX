@@ -375,10 +375,23 @@ struct MacOSDraftPostFlowDriver: DraftPostFlowDriving {
             guard Self.utf8Matches(currentSource, draft) else {
                 throw DraftPostFlowFailure.verificationFailed
             }
+            let authorizedWindow = try Self.exactFocusedBrowserWindow(
+                destination,
+                documentIdentity: documentIdentity
+            )
+            let authorizedComposer = try Self.uniqueComposer(in: authorizedWindow)
+            guard CFEqual(currentComposer, authorizedComposer),
+                  let authorizedValue = Self.stringAttribute(
+                    kAXValueAttribute as CFString,
+                    from: authorizedComposer
+                  ), authorizedValue.isEmpty
+            else {
+                throw DraftPostFlowFailure.verificationFailed
+            }
             // This is the final cancellation boundary before the only content
             // mutation. No suspension occurs between this check and the write.
             try Task.checkCancellation()
-            try actuator.setDraft(draft, on: currentComposer)
+            try actuator.setDraft(draft, on: authorizedComposer)
             // Once content may have changed, no focus/window error is safe to
             // retry. Collapse every post-mutation observation failure into a
             // terminal verification failure.
@@ -388,7 +401,7 @@ struct MacOSDraftPostFlowDriver: DraftPostFlowDriving {
                     documentIdentity: documentIdentity
                 )
                 let verifiedComposer = try Self.uniqueComposer(in: verifiedWindow)
-                return CFEqual(currentComposer, verifiedComposer)
+                return CFEqual(authorizedComposer, verifiedComposer)
                     && Self.stringAttribute(
                         kAXValueAttribute as CFString,
                         from: verifiedComposer
@@ -793,7 +806,7 @@ final class DraftPostFlowViewModel {
         case running
         case stopping
         case readyForReview(DraftPostFlowMetrics)
-        case failed(String, DraftPostFlowMetrics?)
+        case failed(DraftPostFlowFailure, DraftPostFlowMetrics?)
     }
 
     var phase: Phase = .loading
@@ -848,12 +861,12 @@ final class DraftPostFlowViewModel {
         } catch let error as ComputerUseWindowCatalogError {
             switch error {
             case .permissionsMissing:
-                phase = .failed(DraftPostFlowFailure.permissionMissing.userMessage, nil)
+                phase = .failed(.permissionMissing, nil)
             case .unavailable:
-                phase = .failed("Rapid could not list the available windows.", nil)
+                phase = .failed(.dependencyFailure, nil)
             }
         } catch {
-            phase = .failed("Rapid could not list the available windows.", nil)
+            phase = .failed(.dependencyFailure, nil)
         }
     }
 
@@ -874,7 +887,7 @@ final class DraftPostFlowViewModel {
             case .readyForReview(let metrics):
                 self.phase = .readyForReview(metrics)
             case .failed(let failure, let metrics):
-                self.phase = .failed(failure.userMessage, metrics)
+                self.phase = .failed(failure, metrics)
             }
         }
     }

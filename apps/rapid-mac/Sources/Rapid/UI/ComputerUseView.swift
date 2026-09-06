@@ -192,10 +192,10 @@ private struct DraftPostFlowSheet: View {
                     metrics: metrics
                 )
 
-            case .failed(let message, let metrics):
+            case .failed(let failure, let metrics):
                 result(
                     title: "Rapid paused safely",
-                    message: message,
+                    message: failure.userMessage,
                     symbol: "pause.circle.fill",
                     color: .orange,
                     metrics: metrics
@@ -206,18 +206,20 @@ private struct DraftPostFlowSheet: View {
                     }
                     .buttonStyle(.rapidSecondaryCompact)
                     .accessibilityIdentifier("ComputerUse.DraftPost.RefreshAfterFailure")
-                    Button("Allow Screen Recording") {
-                        _ = MacAutomationPermissions.request(.screenRecording)
-                        Task { await viewModel.load() }
+                    if failure == .permissionMissing {
+                        Button("Allow Screen Recording") {
+                            _ = MacAutomationPermissions.request(.screenRecording)
+                            Task { await viewModel.load() }
+                        }
+                        .buttonStyle(.rapidSecondaryCompact)
+                        .accessibilityIdentifier("ComputerUse.DraftPost.AllowScreenRecording")
+                        Button("Allow Accessibility") {
+                            _ = MacAutomationPermissions.request(.accessibility)
+                            Task { await viewModel.load() }
+                        }
+                        .buttonStyle(.rapidSecondaryCompact)
+                        .accessibilityIdentifier("ComputerUse.DraftPost.AllowAccessibility")
                     }
-                    .buttonStyle(.rapidSecondaryCompact)
-                    .accessibilityIdentifier("ComputerUse.DraftPost.AllowScreenRecording")
-                    Button("Allow Accessibility") {
-                        _ = MacAutomationPermissions.request(.accessibility)
-                        Task { await viewModel.load() }
-                    }
-                    .buttonStyle(.rapidSecondaryCompact)
-                    .accessibilityIdentifier("ComputerUse.DraftPost.AllowAccessibility")
                 }
             }
 
