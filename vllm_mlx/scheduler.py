@@ -3669,6 +3669,17 @@ def _install_suffix_decoding(
                 # post-commit exception site. The ``except`` below restores the
                 # pristine snapshot so a post-commit raise never runs
                 # ``_orig_step`` against the already-advanced cache.
+                # Capture the pristine pre-verify snapshot for the post-commit
+                # exception envelope REGARDLESS of acceptance (codex round-9f
+                # finding): even a zero-accept hybrid commit advances the live
+                # cache through the primary X (the commit head is swapped in),
+                # so if the shared post-commit phase below raises, the ``except``
+                # must restore pristine to let the caller fall through and
+                # re-generate X. The replay HEAD (used only for draining accepted
+                # synthetic emits) is retained separately, gated on
+                # ``n_accepted > 0``.
+                _hybrid_pc_snapshot = result["replay_snapshot"]
+
                 if n_accepted > 0:
                     # Retain the replay snapshot via the module-level helper so
                     # a post-commit exception here is testable (see
@@ -3679,11 +3690,6 @@ def _install_suffix_decoding(
                         result["replay_snapshot"],
                         verify_input,
                     )
-                    # Capture the pristine snapshot for the post-commit
-                    # exception envelope. The shared post-commit phase below
-                    # must NEVER leave the live cache advanced beyond the
-                    # surfaced tokens: if it raises, we restore this.
-                    _hybrid_pc_snapshot = result["replay_snapshot"]
             except Exception as e:  # noqa: BLE001
                 logger.debug(f"[SuffixDecoding] hybrid verify failed: {e!r}")
                 _stats["errors"] += 1

@@ -1548,6 +1548,105 @@ class TestSingleSnapshotCommit:
             gb._step()
         _assert_state_equal(gb.prompt_cache, pristine)
 
+    def test_zero_accept_hybrid_commit_still_restores_pristine_on_post_commit_error(
+        self, monkeypatch
+    ):
+        """Codex round-9f finding: ``_hybrid_pc_snapshot`` used to be captured
+        only when ``n_accepted > 0``. But even a ZERO-accept hybrid commit swaps
+        the commit head in (advancing the live cache through the primary X),
+        so a post-commit exception with no accepted drafts left ``gb.prompt_cache``
+        advanced with no snapshot to restore. Fix captures the pristine snapshot
+        unconditionally after every hybrid commit; the replay HEAD stays gated on
+        ``n_accepted > 0`` (no synthetic emits to drain when nothing was accepted).
+
+        We force a mismatch draft (draft[0] != pred for X) so ``n_accepted == 0``,
+        then fail inside the shared post-commit logprob construction and assert
+        the re-raised exception restores the pristine cache.
+        """
+        from types import SimpleNamespace
+        from unittest.mock import MagicMock, patch
+
+        import vllm_mlx.scheduler as scheduler
+        from vllm_mlx.model_auto_config import ModelConfig
+        from vllm_mlx.speculative import suffix_decoding
+
+        model, _ = _model_and_prompt()
+        # Probe what X predicts so we can build a DELIBERATELY WRONG draft that
+        # guarantees zero acceptance.
+        probe = model.make_cache()
+        mx.eval(model(mx.array([[1, 2, 3]]), cache=probe))
+        l0 = model(mx.array([[7]]), cache=probe)
+        mx.eval(l0)
+        x_pred = int(mx.argmax(l0[:, -1], axis=-1).item())
+        vocab_size = _ple_args().vocab_size or 4**6
+        wrong_draft = [(x_pred + 1) % vocab_size, x_pred + 2]
+
+        class MockDrafter:
+            max_draft_tokens = 2
+
+            def __init__(self, **_kw):
+                pass
+
+            def add_prompt_tokens(self, _t):
+                pass
+
+            def add_generated_token(self, _t):
+                pass
+
+            def record_acceptance(self, _c):
+                pass
+
+            def get_draft(self):
+                return list(wrong_draft)
+
+        pristine = model.make_cache()
+        mx.eval(model(mx.array([[1, 2, 3]]), cache=pristine))
+
+        gb = SimpleNamespace(
+            _next_tokens=mx.array([7], dtype=mx.int32),
+            _next_logprobs=[mx.zeros((64,))],
+            uids=[1],
+            tokens=[[]],
+            logits_processors=[],
+            prompt_cache=pristine,
+            _num_tokens=[0],
+            max_tokens=[10],
+            state_machines=[SimpleNamespace(match=lambda s, _t: (s, None, None))],
+            _matcher_states=[None],
+            extract_cache=lambda _r: [],
+            model=model,
+        )
+        gb.Response = SimpleNamespace
+        gb._step = lambda: ([7], [])
+        gb.next = lambda: []
+        bg = MagicMock()
+        bg._generation_batch = gb
+        bg.remove = lambda *a, **k: {}
+        monkeypatch.setattr(suffix_decoding, "SuffixDecodingDrafter", MockDrafter)
+        profile = ModelConfig(is_hybrid=True, supports_spec_decode=False)
+        scheduler._install_suffix_decoding(
+            bg,
+            model=model,
+            profile=profile,
+            max_draft=2,
+            max_suffix_len=4,
+            min_confidence=0.3,
+            requests={},
+            uid_to_request_id={},
+            suffix_hybrid=True,
+            suffix_min_match_len=2,
+            suffix_hybrid_bit_exact=True,
+        )
+        # Fail after the zero-accept commit head is swapped in (logprob
+        # construction). Must re-raise AND restore the pristine cache — the
+        # regression this guards is the live cache staying advanced through X.
+        with (
+            patch.object(scheduler.mx, "logsumexp", side_effect=RuntimeError("boom")),
+            pytest.raises(RuntimeError, match="boom"),
+        ):
+            gb._step()
+        _assert_state_equal(gb.prompt_cache, pristine)
+
 
 class TestHybridTerminalRepair:
     """Finding #1: a hybrid finish part-way through the accepted drafts must
