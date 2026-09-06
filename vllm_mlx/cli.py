@@ -3467,7 +3467,7 @@ def _hybrid_suffix_cap(args, profile) -> int:
         and not getattr(args, "_suffix_max_draft_was_explicit", False)
     ):
         effective = max(args.suffix_max_draft, args.suffix_min_match_len)
-    return effective
+    return int(effective)
 
 
 def serve_command(args):
