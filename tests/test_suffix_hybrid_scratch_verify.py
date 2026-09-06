@@ -1539,12 +1539,11 @@ class TestSingleSnapshotCommit:
             suffix_hybrid_bit_exact=True,
         )
         # Fail inside the post-commit logprob construction (runs after the
-        # commit head swap). The wrapped _step must re-raise AND restore the
-        # pristine cache.
-        with (
-            patch.object(scheduler.mx, "logsumexp", side_effect=RuntimeError("boom")),
-            pytest.raises(RuntimeError, match="boom"),
-        ):
+        # commit head swap). Per codex round-9i finding #1, the wrapped _step
+        # must advertise the vanilla fallthrough — it absorbs the exception and
+        # runs ``_orig_step()`` on the restored (PRISTINE) cache, rather than
+        # re-raising (which would abort generation).
+        with patch.object(scheduler.mx, "logsumexp", side_effect=RuntimeError("boom")):
             gb._step()
         _assert_state_equal(gb.prompt_cache, pristine)
 
@@ -1579,7 +1578,9 @@ class TestSingleSnapshotCommit:
         mx.eval(l0)
         x_pred = int(mx.argmax(l0[:, -1], axis=-1).item())
         vocab_size = _ple_args().vocab_size or 4**6
-        wrong_draft = [(x_pred + 1) % vocab_size, x_pred + 2]
+        # Wrap BOTH tokens mod vocab_size so neither can exceed vocab-1 and
+        # break the embedding lookup before the zero-accept path is exercised.
+        wrong_draft = [(x_pred + 1) % vocab_size, (x_pred + 2) % vocab_size]
 
         class MockDrafter:
             max_draft_tokens = 2
@@ -1638,12 +1639,11 @@ class TestSingleSnapshotCommit:
             suffix_hybrid_bit_exact=True,
         )
         # Fail after the zero-accept commit head is swapped in (logprob
-        # construction). Must re-raise AND restore the pristine cache — the
-        # regression this guards is the live cache staying advanced through X.
-        with (
-            patch.object(scheduler.mx, "logsumexp", side_effect=RuntimeError("boom")),
-            pytest.raises(RuntimeError, match="boom"),
-        ):
+        # construction). Per round-9i finding #1 the exception is absorbed and
+        # the step falls through to ``_orig_step`` on the restored pristine
+        # cache — the regression this guards is the live cache staying advanced
+        # through X.
+        with patch.object(scheduler.mx, "logsumexp", side_effect=RuntimeError("boom")):
             gb._step()
         _assert_state_equal(gb.prompt_cache, pristine)
 
@@ -1756,12 +1756,10 @@ class TestSingleSnapshotCommit:
         # Fail in the fallible logprob compute (which now runs FIRST, before
         # the mutation tail). Because the mutation tail never runs, the counter
         # ``set_state`` is never called: no cooldown/width state was mutated on
-        # the way to the exception, and the pristine cache is restored. The step
-        # falls through and the caller re-derives state on the re-run.
-        with (
-            patch.object(scheduler.mx, "logsumexp", side_effect=RuntimeError("boom")),
-            pytest.raises(RuntimeError, match="boom"),
-        ):
+        # the way to the exception, and the pristine cache is restored. Per
+        # round-9i finding #1 the step absorbs the exception and falls through
+        # to ``_orig_step``; the caller re-derives state on that re-run.
+        with patch.object(scheduler.mx, "logsumexp", side_effect=RuntimeError("boom")):
             gb._step()
         assert spy.set_state_calls == 0
         _assert_state_equal(gb.prompt_cache, pre_fail)
@@ -1857,11 +1855,9 @@ class TestSingleSnapshotCommit:
         # Force a post-commit exception on the hybrid commit. The handler must
         # (a) restore the pristine cache AND (b) drop the retained replay entry
         # so the subsequent terminal response is NOT rebuilt from a stale
-        # snapshot.
-        with (
-            patch.object(scheduler.mx, "logsumexp", side_effect=RuntimeError("boom")),
-            pytest.raises(RuntimeError, match="boom"),
-        ):
+        # snapshot. (Per round-9i finding #1 the exception is absorbed and the
+        # step falls through to ``_orig_step``.)
+        with patch.object(scheduler.mx, "logsumexp", side_effect=RuntimeError("boom")):
             gb._step()
         _assert_state_equal(gb.prompt_cache, pristine)
         # A terminal (length) primary now flows through _suffix_next. With the

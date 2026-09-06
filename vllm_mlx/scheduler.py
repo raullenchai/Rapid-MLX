@@ -3843,6 +3843,17 @@ def _install_suffix_decoding(
             # already-scheduled arrays — no fallible op remains past that point.
             bonus_arr = mx.array([bonus], dtype=inputs.dtype)
             mx.async_eval(bonus_arr, bonus_logprobs)
+            # Drafter history += newly-committed tokens. We add ONLY the
+            # accepted drafts here; ``bonus`` will be added on the next
+            # ``_suffix_step`` call (line ~1235 ``drafter.add_generated_token
+            # (last_token)`` where ``last_token = bonus`` since we just
+            # stashed it in ``_next_tokens``). Adding it here too would
+            # double-index it in the suffix tree and skew future drafts.
+            for tok in extra_tokens:
+                drafter.add_generated_token(tok)
+            drafter.record_acceptance(n_accepted)
+            _stats["tokens_accepted"] += n_accepted
+            _counter.record_verify(K, n_accepted)
             # Cooldown bookkeeping: track consecutive zero-accept verifies
             # so workloads with weak drafter signal (e.g., free-form chat)
             # automatically stop paying verify overhead.
@@ -3937,18 +3948,6 @@ def _install_suffix_decoding(
                         "suffix verification cache rollback violated its preflight"
                     )
 
-            # Drafter history += newly-committed tokens. We add ONLY the
-            # accepted drafts here; ``bonus`` will be added on the next
-            # ``_suffix_step`` call (line ~1235 ``drafter.add_generated_token
-            # (last_token)`` where ``last_token = bonus`` since we just
-            # stashed it in ``_next_tokens``). Adding it here too would
-            # double-index it in the suffix tree and skew future drafts.
-            for tok in extra_tokens:
-                drafter.add_generated_token(tok)
-            drafter.record_acceptance(n_accepted)
-            _stats["tokens_accepted"] += n_accepted
-            _counter.record_verify(K, n_accepted)
-
             # Update gb state for the next _step call. Bonus becomes the
             # next step's primary input. ``bonus_arr``/``bonus_logprobs`` were
             # scheduled (async_eval'd) back in the compute section; the tail
@@ -3970,33 +3969,44 @@ def _install_suffix_decoding(
         except Exception as e:  # noqa: BLE001
             logger.debug(f"[SuffixDecoding] post-commit phase failed: {e!r}")
             _stats["errors"] += 1
+            # fallthrough buckets must reconcile with the aggregate (round-9i #3).
+            _stats["fallthrough_steps"] += 1
             _stats["ft_error"] += 1
-            # Counter consistency (codex round-9h finding #3): every other
-            # error fallthrough records the attempt + error on the shared
-            # counter; this path must too, so the exported counter does not
-            # diverge from ``_stats`` for exactly this failure class.
+            # Counter consistency: every other error fallthrough records the
+            # attempt + error on the shared counter, so the exported counter
+            # does not diverge from ``_stats`` for exactly this failure class.
             _counter.record_error()
             _counter.record_verify(K, 0)
-            # Post-commit exception: restore the pristine pre-verify cache so the
-            # live cache never stays advanced beyond the surfaced tokens, then
-            # re-raise so the caller handles this step as a normal fall-through.
-            #
-            # Any partial mutation tail (cooldown/width set_state, a stashed
-            # ``_pending_emits`` entry) or the retained hybrid replay head is
-            # discarded too — the step is treated as if it never committed, so
-            # ``_orig_step`` re-runs from the pristine cache and re-samples the
-            # primary from scratch (cooldown/width are re-derived on that run).
-            # By reordering we already ran all fallible MLX ops BEFORE mutating
-            # any bookkeeping, so there is no half-mutated drafter/counter/gb
-            # state to unwind. The retained replay head for this uid (codex
-            # round-9h finding #1) is dropped too: it referenced the pristine
-            # pre-verify snapshot, which is now restored and will be re-advanced
-            # by the fall-through re-run, so a later terminal must NOT rebuild
-            # the delivered cache from the now-stale snapshot (and the full
-            # duplicate cache would otherwise leak until UID cleanup).
-            _pending_hybrid_replay.pop(uid, None)
-            if _hybrid_pc_snapshot is not None:
-                gb.prompt_cache = _hybrid_pc_snapshot
+            if _hybrid_active:
+                # HYBRID post-commit exception -> advertise the VANILLA
+                # fallthrough (codex round-9i finding #1): restore the pristine
+                # pre-verify cache so the live cache never stays advanced beyond
+                # the surfaced tokens, drop any partially-mutated state, then
+                # run ``_orig_step()`` directly (the same "treat as never-
+                # committed, re-generate the primary from scratch" contract the
+                # narrow hybrid-verify except path uses) — NOT re-raise, which
+                # would abort generation instead.
+                #
+                # State discarded here:
+                #  * cooldown/width ``st`` + ``_stats`` counters — re-derived on
+                #    the re-run (the fallthrough epoch is a fresh single-token
+                #    step).
+                #  * the retained replay head for this uid (findings #1/#2): it
+                #    referenced a snapshot that will be re-advanced by the
+                #    re-run, so a later terminal must not rebuild from the
+                #    now-stale cache (and the full duplicate snapshot would leak
+                #    until UID cleanup).
+                _pending_hybrid_replay.pop(uid, None)
+                _pending_emits.pop(uid, None)
+                if _hybrid_pc_snapshot is not None:
+                    gb.prompt_cache = _hybrid_pc_snapshot
+                return _orig_step()
+            # PURE-ATTENTION post-commit exception: FAIL CLOSED. On this path a
+            # rollback ``trim_all`` preflight violation is a genuine invariant
+            # breach (the cache can't be rolled back), so it must propagate, not
+            # silently fall through to a re-generated primary that would leave
+            # the untrimmable cache inconsistent. Re-raise (pre-existing
+            # behavior, unchanged by this diff).
             raise
 
     def _suffix_next():
