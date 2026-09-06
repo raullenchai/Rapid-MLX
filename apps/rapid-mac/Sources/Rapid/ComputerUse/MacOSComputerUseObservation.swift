@@ -174,6 +174,13 @@ struct ScreenCaptureKitComputerUseCapture: ComputerUseWindowCapturing {
         guard frontmost.0 == selection.bundleIdentifier else {
             throw MacOSComputerUseObservationError.targetNotFrontmost
         }
+        guard let processIdentifier = frontmost.1,
+              let focusedFrame = MacOSComputerUseWindowIdentity.focusedWindowFrame(
+                processIdentifier: processIdentifier
+              )
+        else {
+            throw MacOSComputerUseObservationError.targetNotFrontmost
+        }
 
         let content = try await SCShareableContent.excludingDesktopWindows(
             true,
@@ -185,10 +192,21 @@ struct ScreenCaptureKitComputerUseCapture: ComputerUseWindowCapturing {
                 && $0.owningApplication?.bundleIdentifier == selection.bundleIdentifier
         }),
             let application = window.owningApplication,
-            application.processID == frontmost.1,
+            application.processID == processIdentifier,
             window.isOnScreen
         else {
             throw MacOSComputerUseObservationError.targetUnavailable
+        }
+
+        let focusedCandidates = content.windows.filter {
+            $0.isOnScreen
+                && $0.owningApplication?.processID == processIdentifier
+                && MacOSComputerUseWindowIdentity.framesMatch($0.frame, focusedFrame)
+        }
+        guard focusedCandidates.count == 1,
+              focusedCandidates[0].windowID == selection.windowID
+        else {
+            throw MacOSComputerUseObservationError.targetNotFrontmost
         }
 
         let frame = window.frame

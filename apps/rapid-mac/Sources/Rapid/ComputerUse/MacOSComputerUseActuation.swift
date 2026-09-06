@@ -116,11 +116,18 @@ struct CGWindowComputerUseTargetProbe: ComputerUseTargetProbing {
             else {
                 throw MacOSComputerUseActuationError.targetNotFrontmost
             }
+            guard let focusedFrame = MacOSComputerUseWindowIdentity.focusedWindowFrame(
+                processIdentifier: expected.processIdentifier
+            ) else {
+                throw MacOSComputerUseActuationError.targetNotFrontmost
+            }
             guard let records = CGWindowListCopyWindowInfo(
-                [.optionIncludingWindow, .excludeDesktopElements],
-                windowID
+                [.optionOnScreenOnly, .excludeDesktopElements],
+                kCGNullWindowID
             ) as? [[CFString: Any]],
-                let record = records.first,
+                let record = records.first(where: {
+                    ($0[kCGWindowNumber] as? NSNumber)?.uint32Value == windowID
+                }),
                 let ownerPID = record[kCGWindowOwnerPID] as? NSNumber,
                 ownerPID.int32Value == expected.processIdentifier,
                 let bounds = record[kCGWindowBounds] as? [String: NSNumber],
@@ -133,6 +140,23 @@ struct CGWindowComputerUseTargetProbe: ComputerUseTargetProbing {
                 let bundleIdentifier = application.bundleIdentifier
             else {
                 throw MacOSComputerUseActuationError.targetUnavailable
+            }
+
+            let focusedCandidates = records.filter { record in
+                guard let ownerPID = record[kCGWindowOwnerPID] as? NSNumber,
+                      ownerPID.int32Value == expected.processIdentifier,
+                      let bounds = record[kCGWindowBounds] as? [String: NSNumber],
+                      let frame = CGRect(
+                        dictionaryRepresentation: bounds as CFDictionary
+                      )
+                else { return false }
+                return MacOSComputerUseWindowIdentity.framesMatch(frame, focusedFrame)
+            }
+            guard focusedCandidates.count == 1,
+                  (focusedCandidates[0][kCGWindowNumber] as? NSNumber)?.uint32Value
+                    == windowID
+            else {
+                throw MacOSComputerUseActuationError.targetNotFrontmost
             }
 
             return WorkflowInteractionTarget(
