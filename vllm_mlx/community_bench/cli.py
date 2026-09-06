@@ -110,14 +110,17 @@ def _print_catalog(value: dict[str, Any], *, show_all: bool) -> None:
             f"{memory:>7}  {fit}"
         )
 
-    # Recommended = focus models not known to exceed this Mac's memory. With
-    # no memory figure every fit is unknown, and the heading must say so
-    # rather than promise a fit nobody checked.
+    # Recommended = focus models verified to fit this Mac. With no memory
+    # figure every fit is unknown; focus models are still listed first, but
+    # the heading says the fit was not checked rather than promising one.
     memory_known = isinstance(memory_gib, int)
     recommended: list[dict[str, Any]] = []
     rest: list[dict[str, Any]] = []
     for model in value["models"]:
-        if model.get("focus") and model.get("memory_fit") != "does_not_fit":
+        fit = model.get("memory_fit")
+        if model.get("focus") and (
+            fit == "fits" if memory_known else fit != "does_not_fit"
+        ):
             recommended.append(model)
         else:
             rest.append(model)

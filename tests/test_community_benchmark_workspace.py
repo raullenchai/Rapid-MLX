@@ -3045,6 +3045,13 @@ def test_cli_catalog_prints_focus_marker_and_run_hint(
                     "estimated_memory_gib": None,
                     "focus": False,
                 },
+                {
+                    "alias": "unknown-focus-model",
+                    "task_type": "text_generation",
+                    "memory_fit": "unknown",
+                    "estimated_memory_gib": None,
+                    "focus": True,
+                },
             ]
         },
     )
@@ -3063,8 +3070,11 @@ def test_cli_catalog_prints_focus_marker_and_run_hint(
     assert "★ focus-model" in out
     assert "~6 GB  fits" in out
     assert "big-focus-model" not in out
+    # Memory is known, so a focus model with no estimate is not a verified
+    # fit and must not be recommended as one.
+    assert "unknown-focus-model" not in out
     assert "aaa-other-model" not in out
-    assert "3 more models have a registered protocol (1 fit this Mac)" in out
+    assert "4 more models have a registered protocol (1 fit this Mac)" in out
     assert "catalog --all" in out
     assert "Run: rapid-mlx benchmark run <model>" in out
 
@@ -3077,6 +3087,7 @@ def test_cli_catalog_prints_focus_marker_and_run_hint(
     assert "~64 GB  does not fit" in out
     assert "aaa-other-model" in out
     assert "zzz-other-model" in out
+    assert "★ unknown-focus-model" in out
     assert "   ?  unknown" in out
     assert "more models have a registered protocol" not in out
 
@@ -4856,6 +4867,28 @@ def test_run_bucket_selects_registered_or_synthetic_prompts(
     assert observed == [("synthetic prompt text", False)] * 6
     assert len(result.rounds_raw) == 5
 
+    # The optional observer sees every round, warmup included, labelled with
+    # the registered case-id shape so the CLI can print progress. (Kept in
+    # this no-MLX file so the Linux coverage lane exercises the hook.)
+    seen: list[tuple[str, str, int, int, float]] = []
+    result, _ = asyncio.run(
+        bench_runner._run_bucket(
+            object(),
+            SyntheticTokenizer(),
+            lambda max_tokens: object(),
+            8,
+            4,
+            registered_token_ids=False,
+            on_round=lambda label, phase, index, total, round_result: seen.append(
+                (label, phase, index, total, round_result.decode_tps)
+            ),
+        )
+    )
+    assert seen == [("pp8-tg4", "warmup", 1, 1, 1)] + [
+        ("pp8-tg4", "measured", index, 5, 1) for index in range(1, 6)
+    ]
+    assert len(result.rounds_raw) == 5
+
 
 # ---------------------------------------------------------------------------
 # Run progress (stderr only) and plan/catalog helpers
@@ -5080,6 +5113,11 @@ def test_text_measurements_reports_model_load_stage(
     assert lines[0] == (
         "Loading org/model (cache state unknown; downloads anything missing)..."
     )
+
+    lines.clear()
+    monkeypatch.setattr(local_runner, "model_is_cached", lambda repo_id: True)
+    asyncio.run(local_runner._text_measurements("org/model", progress=lines.append))
+    assert lines[0] == "Loading org/model (from the local Hugging Face cache)..."
 
 
 def test_describe_case_covers_every_registered_shape() -> None:
