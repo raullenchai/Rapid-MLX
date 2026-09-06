@@ -72,16 +72,39 @@ def test_text_lane_converts_engine_result_and_reaps_executor(
             self.engine = SimpleNamespace(_model=model, tokenizer=tokenizer)
 
         async def __aenter__(self):
+            nonlocal engine_open
+            engine_open = True
             return self
 
         async def __aexit__(self, *args) -> None:
-            pass
+            nonlocal engine_open
+            engine_open = False
+
+    # The real ``_text_measurements`` hook must snapshot the run conditions
+    # after the last measurement and while the engine is still resident.
+    events: list[str] = []
+    engine_open = False
+
+    def probe() -> dict:
+        events.append(
+            f"probe(engine_open={engine_open}, shutdowns={len(shutdown_calls)})"
+        )
+        return {
+            "power_source": "ac",
+            "low_power_mode": False,
+            "thermal_state": "serious" if events[1:] else "nominal",
+            "memory_pressure": "normal",
+            "available_memory_mib": 1024,
+        }
+
+    monkeypatch.setattr(local_runner, "run_conditions", probe)
 
     async def standardized(
         engine, tokenizer, *, sampling: str, registered_token_ids: bool
     ) -> BenchResult:
         assert sampling == "greedy"
         assert registered_token_ids is True
+        events.append("bench")
         short = [RoundResult(100, 200, 10, prompt_tokens=512, output_tokens=128)] * 5
         long = [RoundResult(50, 150, 20, prompt_tokens=2048, output_tokens=512)] * 5
         return BenchResult(
@@ -125,3 +148,10 @@ def test_text_lane_converts_engine_result_and_reaps_executor(
     assert run["execution"]["task"]["language"]["context_length"] == 32768
     assert archive.get(run["run_id"]) == run
     assert shutdown_calls == [(True, True)]
+    assert events == [
+        "probe(engine_open=False, shutdowns=0)",
+        "bench",
+        "probe(engine_open=True, shutdowns=0)",
+    ]
+    assert run["machine"]["conditions_before"]["thermal_state"] == "nominal"
+    assert run["machine"]["conditions_after"]["thermal_state"] == "serious"

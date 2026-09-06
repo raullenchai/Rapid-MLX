@@ -1188,6 +1188,225 @@ def test_run_local_archives_registered_token_drift_as_failure(
     }
 
 
+def test_run_local_records_conditions_before_and_after_the_measurements(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Both snapshots come from the runner, taken around the measured work."""
+    archive = LocalRunArchive(tmp_path)
+    _mock_local_context(
+        monkeypatch, "text_generation", "mlx-community/example-text-model"
+    )
+    snapshots = iter(
+        [
+            {
+                "power_source": "ac",
+                "low_power_mode": False,
+                "thermal_state": "nominal",
+                "memory_pressure": "normal",
+                "available_memory_mib": 9000,
+            },
+            {
+                "power_source": "battery",
+                "low_power_mode": True,
+                "thermal_state": "serious",
+                "memory_pressure": "warning",
+                "available_memory_mib": 1200,
+            },
+        ]
+    )
+    order: list[str] = []
+
+    def fake_conditions():
+        order.append("conditions")
+        return next(snapshots)
+
+    async def fake_measurements(repo_id: str):
+        order.append("measure")
+        # The real helper records the "after" snapshot while the model is
+        # still resident, i.e. before its engine context tears down.
+        local_runner._record_conditions_after()
+        order.append("teardown")
+        return _text_run()["measurements"], 32768
+
+    monkeypatch.setattr(local_runner, "run_conditions", fake_conditions)
+    monkeypatch.setattr(local_runner, "_text_measurements", fake_measurements)
+
+    run = local_runner.run_local("example-text", archive=archive)
+
+    assert order == ["conditions", "measure", "conditions", "teardown"]
+    assert run["machine"]["conditions_before"]["power_source"] == "ac"
+    assert run["machine"]["conditions_before"]["available_memory_mib"] == 9000
+    assert run["machine"]["conditions_after"]["thermal_state"] == "serious"
+    assert run["machine"]["conditions_after"]["low_power_mode"] is True
+    BenchmarkRunValidator().validate(run)
+
+
+def test_after_snapshot_is_never_taken_once_the_model_is_gone(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A helper that did not capture leaves ``after`` unknown; no late probe."""
+    archive = LocalRunArchive(tmp_path)
+    _mock_local_context(
+        monkeypatch, "text_generation", "mlx-community/example-text-model"
+    )
+    calls: list[str] = []
+
+    def counting_conditions():
+        calls.append("probe")
+        return {
+            "power_source": "ac",
+            "low_power_mode": False,
+            "thermal_state": "nominal",
+            "memory_pressure": "normal",
+            "available_memory_mib": 9000,
+        }
+
+    async def silent_measurements(repo_id: str):
+        return _text_run()["measurements"], 32768
+
+    monkeypatch.setattr(local_runner, "run_conditions", counting_conditions)
+    monkeypatch.setattr(local_runner, "_text_measurements", silent_measurements)
+    run = local_runner.run_local("example-text", archive=archive)
+    assert calls == ["probe"]  # only the "before" snapshot
+    assert run["machine"]["conditions_after"]["memory_pressure"] == "unknown"
+    assert run["machine"]["conditions_after"]["available_memory_mib"] is None
+    # The capture is disarmed after the run: a stray late call is a no-op.
+    local_runner._record_conditions_after()
+    assert calls == ["probe"]
+
+
+def test_capture_is_disarmed_when_the_helper_raises(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    archive = LocalRunArchive(tmp_path)
+    _mock_local_context(
+        monkeypatch, "text_generation", "mlx-community/example-text-model"
+    )
+    probes: list[str] = []
+
+    def counting_conditions():
+        probes.append("probe")
+        return {
+            "power_source": "ac",
+            "low_power_mode": False,
+            "thermal_state": "nominal",
+            "memory_pressure": "normal",
+            "available_memory_mib": 9000,
+        }
+
+    async def broken(repo_id: str):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(local_runner, "run_conditions", counting_conditions)
+    monkeypatch.setattr(local_runner, "_text_measurements", broken)
+    with pytest.raises(local_runner.LocalBenchmarkError):
+        local_runner.run_local("example-text", archive=archive)
+    assert probes == ["probe"]
+    # A late call after the failed run must not probe into a stale capture.
+    local_runner._record_conditions_after()
+    assert probes == ["probe"]
+
+
+def test_image_runs_capture_conditions_inside_the_server_context(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The image helper records the snapshot before ``serve`` tears down."""
+    archive = LocalRunArchive(tmp_path)
+    _mock_local_context(
+        monkeypatch, "image_generation", "mlx-community/example-image-model"
+    )
+    snapshots = iter(
+        [
+            {
+                "power_source": "ac",
+                "low_power_mode": False,
+                "thermal_state": "nominal",
+                "memory_pressure": "normal",
+                "available_memory_mib": 9000,
+            },
+            {
+                "power_source": "ac",
+                "low_power_mode": False,
+                "thermal_state": "serious",
+                "memory_pressure": "critical",
+                "available_memory_mib": 300,
+            },
+        ]
+    )
+    monkeypatch.setattr(local_runner, "run_conditions", lambda: next(snapshots))
+    measurements = _image_run()["measurements"]
+
+    def fake_image(alias: str, *, isolate_process_group: bool):
+        local_runner._record_conditions_after()
+        return measurements
+
+    monkeypatch.setattr(local_runner, "_run_image", fake_image)
+    run = local_runner.run_local("example-image", archive=archive)
+    assert run["machine"]["conditions_after"]["memory_pressure"] == "critical"
+    assert run["machine"]["conditions_after"]["available_memory_mib"] == 300
+
+
+def test_asyncio_cancellation_is_archived_as_cancelled_with_before_snapshot(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    archive = LocalRunArchive(tmp_path)
+    _mock_local_context(
+        monkeypatch, "text_generation", "mlx-community/example-text-model"
+    )
+    before = {
+        "power_source": "battery",
+        "low_power_mode": True,
+        "thermal_state": "fair",
+        "memory_pressure": "normal",
+        "available_memory_mib": 2048,
+    }
+    monkeypatch.setattr(local_runner, "run_conditions", lambda: dict(before))
+
+    async def cancelled(repo_id: str, **_: object):
+        raise asyncio.CancelledError()
+
+    monkeypatch.setattr(local_runner, "_text_measurements", cancelled)
+    with pytest.raises(local_runner.LocalBenchmarkError):
+        local_runner.run_local("example-text", archive=archive)
+    archived = archive.list()[0]
+    assert archived["outcome"]["status"] == "cancelled"
+    assert archived["machine"]["conditions_before"] == before
+    assert archived["machine"]["conditions_after"]["thermal_state"] == "unknown"
+
+
+def test_failed_run_keeps_the_before_snapshot_and_marks_after_unknown(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    archive = LocalRunArchive(tmp_path)
+    _mock_local_context(
+        monkeypatch, "text_generation", "mlx-community/example-text-model"
+    )
+    before = {
+        "power_source": "battery",
+        "low_power_mode": None,
+        "thermal_state": "fair",
+        "memory_pressure": "normal",
+        "available_memory_mib": 4321,
+    }
+    monkeypatch.setattr(local_runner, "run_conditions", lambda: dict(before))
+
+    async def broken(repo_id: str):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(local_runner, "_text_measurements", broken)
+    with pytest.raises(local_runner.LocalBenchmarkError):
+        local_runner.run_local("example-text", archive=archive)
+    failed = archive.list()[0]
+    assert failed["machine"]["conditions_before"] == before
+    assert failed["machine"]["conditions_after"] == {
+        "power_source": "unknown",
+        "low_power_mode": None,
+        "thermal_state": "unknown",
+        "memory_pressure": "unknown",
+        "available_memory_mib": None,
+    }
+
+
 def test_machine_profile_digest_is_recomputed() -> None:
     run = _image_run()
     run["machine"]["profile"]["memory_gib"] = 48
@@ -1405,17 +1624,35 @@ def test_run_local_executes_image_protocol_and_excludes_warmup(
     )
     calls: list[dict] = []
 
+    served = {"open": False}
+
     @contextlib.contextmanager
     def serve(alias: str, **kwargs):
         assert alias == "example-image"
         assert kwargs["isolate_process_group"] is False
-        yield {"base_url": "http://local/v1"}
+        served["open"] = True
+        try:
+            yield {"base_url": "http://local/v1"}
+        finally:
+            served["open"] = False
 
     def post(url: str, *, json: dict, timeout: float) -> _Response:
         calls.append({"url": url, "json": json, "timeout": timeout})
         return _Response({"data": [{"b64_json": _png_base64(1024, 1024)}]})
 
     monkeypatch.setattr(_server, "serve", serve)
+    # The real ``serve()`` hook must snapshot conditions after the last
+    # request, while the server (and the model) is still up.
+    events: list[str] = []
+
+    def probe() -> dict:
+        events.append(f"probe(served={served['open']}, requests={len(calls)})")
+        return dict(
+            run_builder._unknown_conditions(),
+            thermal_state="serious" if events[1:] else "nominal",
+        )
+
+    monkeypatch.setattr(local_runner, "run_conditions", probe)
     monkeypatch.setattr(local_runner.requests, "post", post)
     monkeypatch.setattr(
         local_runner.requests,
@@ -1436,6 +1673,12 @@ def test_run_local_executes_image_protocol_and_excludes_warmup(
     )
 
     assert len(calls) == 2  # one warmup plus one measured round
+    assert events == [
+        "probe(served=False, requests=0)",
+        "probe(served=True, requests=2)",
+    ]
+    assert run["machine"]["conditions_before"]["thermal_state"] == "nominal"
+    assert run["machine"]["conditions_after"]["thermal_state"] == "serious"
     assert calls[0]["url"] == "http://local/v1/images/generations"
     assert calls[0]["json"] == {
         "model": "example-image",
@@ -1682,10 +1925,16 @@ def test_run_local_executes_video_protocol_and_polls_to_completion(
     artifacts: list[tuple] = []
     job_states = iter(("running", "completed"))
 
+    served = {"open": False}
+
     @contextlib.contextmanager
     def serve(alias: str, **kwargs):
         serve_options.update(kwargs)
-        yield {"base_url": "http://local/v1"}
+        served["open"] = True
+        try:
+            yield {"base_url": "http://local/v1"}
+        finally:
+            served["open"] = False
 
     def post(url: str, *, data: dict, timeout: float) -> _Response:
         posts.append({"url": url, "data": data, "timeout": timeout})
@@ -1706,6 +1955,18 @@ def test_run_local_executes_video_protocol_and_polls_to_completion(
         )
 
     monkeypatch.setattr(_server, "serve", serve)
+    # The real ``serve()`` hook must snapshot conditions after the last
+    # request, while the server (and the model) is still up.
+    events: list[str] = []
+
+    def probe() -> dict:
+        events.append(f"probe(served={served['open']}, requests={len(posts)})")
+        return dict(
+            run_builder._unknown_conditions(),
+            thermal_state="serious" if events[1:] else "nominal",
+        )
+
+    monkeypatch.setattr(local_runner, "run_conditions", probe)
     monkeypatch.setattr(local_runner.requests, "post", post)
     monkeypatch.setattr(local_runner.requests, "get", get)
     monkeypatch.setattr(
@@ -1718,6 +1979,13 @@ def test_run_local_executes_video_protocol_and_polls_to_completion(
     monkeypatch.setattr(local_runner.time, "perf_counter", lambda: next(timings))
 
     run = local_runner.run_local("example-video", archive=archive)
+
+    assert events == [
+        "probe(served=False, requests=0)",
+        f"probe(served=True, requests={len(posts)})",
+    ]
+    assert run["machine"]["conditions_before"]["thermal_state"] == "nominal"
+    assert run["machine"]["conditions_after"]["thermal_state"] == "serious"
 
     assert serve_options["extra_env"] == {"RAPID_MLX_WAN_STEPS": "20"}
     assert posts == [
