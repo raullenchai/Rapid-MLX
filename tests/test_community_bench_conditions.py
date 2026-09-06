@@ -253,3 +253,15 @@ def test_process_info_degrades_when_the_class_cannot_be_resolved(monkeypatch) ->
     monkeypatch.setattr(ctypes, "cast", lambda *args, **kwargs: lambda *call: 0)
     assert hardware._process_info(b"thermalState", ctypes.c_long) is None
     assert hardware._thermal_state() == "unknown"
+
+
+def test_process_info_declines_selectors_the_runtime_does_not_recognise() -> None:
+    """An unknown selector degrades to ``None`` instead of an ObjC exception."""
+    import ctypes
+
+    from vllm_mlx.community_bench import hardware
+
+    assert hardware._process_info(b"rapidMlxNoSuchSelector", ctypes.c_long) is None
+    if sys.platform == "darwin":
+        # The guard must not reject selectors NSProcessInfo really has.
+        assert hardware._process_info(b"thermalState", ctypes.c_long) is not None

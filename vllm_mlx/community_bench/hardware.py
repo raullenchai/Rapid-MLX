@@ -355,7 +355,21 @@ def _process_info(selector: bytes, restype):
         )
         if not process_info:
             return None
-        return send(process_info, objc.sel_registerName(selector))
+        # Older macOS releases lack some selectors (``isLowPowerModeEnabled``
+        # arrived in 12.0); an unrecognised selector would raise an
+        # Objective-C exception that ctypes cannot catch, so ask first.
+        responds = ctypes.cast(
+            objc.objc_msgSend,
+            ctypes.CFUNCTYPE(
+                ctypes.c_bool, ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p
+            ),
+        )
+        target = objc.sel_registerName(selector)
+        if not responds(
+            process_info, objc.sel_registerName(b"respondsToSelector:"), target
+        ):
+            return None
+        return send(process_info, target)
     except (OSError, AttributeError, ValueError):
         return None
 
