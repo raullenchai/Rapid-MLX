@@ -187,6 +187,13 @@ class ModelProfile:
     # ``unknown`` remains available only through the existing operator force
     # override.  Ordinary single-request MTP is unaffected by this tier.
     mtp_continuous_batching_tier: str = "unknown"
+    # Whether ``serve <alias>`` (and Desktop) turn the declared MTP preset on
+    # without the user asking.  Independent of the qualification tier above:
+    # the tier is a correctness claim, this is the product default.  A
+    # verified artifact whose measured speedup is negative for the typical
+    # single-stream user keeps its tier (explicit ``--speculative-config mtp``
+    # still runs the qualified continuous route) but ships default-off (#3115).
+    mtp_default_enabled: bool = True
     default_max_tokens: int | None = None  # Per-model default when user omits
     # Bench-verified service prefill chunk.  This is deliberately an explicit
     # per-profile recommendation rather than an architecture inference:
