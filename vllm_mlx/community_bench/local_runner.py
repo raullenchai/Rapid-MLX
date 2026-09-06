@@ -7,6 +7,7 @@ import asyncio
 import base64
 import binascii
 import concurrent.futures
+import contextvars
 import io
 import math
 import multiprocessing
@@ -27,7 +28,24 @@ from typing import Any
 import requests
 
 from .benchmark_contracts import public_prompt, registered_workload
-from .hardware import collect
+from .hardware import collect, run_conditions
+
+#: Where the measurement helpers deposit the "after" run-conditions snapshot.
+#: It must be taken while the model is still resident — after the last
+#: measured round but before the engine/server context tears down — or a
+#: memory-saturated run would report normal pressure once its model is gone.
+_CONDITIONS_AFTER: contextvars.ContextVar[dict[str, Any] | None] = (
+    contextvars.ContextVar("community_bench_conditions_after", default=None)
+)
+
+
+def _record_conditions_after() -> None:
+    """Snapshot run conditions into the active capture, if one is armed."""
+    capture = _CONDITIONS_AFTER.get()
+    if capture is not None:
+        capture["after"] = run_conditions()
+
+
 from .run_builder import build_run, execution_config, utc_now
 from .workspace import LocalRunArchive, plan_for_alias
 
@@ -552,6 +570,9 @@ def _run_image(
                         "height": case["height"],
                     }
                 )
+        # Still inside ``serve``: the model is resident, so this reflects
+        # the state the measurements were produced under.
+        _record_conditions_after()
     return measurements
 
 
@@ -634,6 +655,9 @@ def _run_video(
             frames=case["frames"],
             fps=case["fps_milli"] / 1000,
         )
+        # Still inside ``serve``: the model is resident, so this reflects
+        # the state the measurement was produced under.
+        _record_conditions_after()
         return [
             {
                 "case_id": case["case_id"],
@@ -684,6 +708,7 @@ async def _text_measurements(repo_id: str) -> tuple[list[dict[str, Any]], int]:
                 sampling="greedy",
                 registered_token_ids=True,
             )
+            _record_conditions_after()
     finally:
         # ThreadPoolExecutor workers are non-daemon and Python joins them again
         # during interpreter shutdown. Leaving this executor live can make the
@@ -777,23 +802,41 @@ def run_local(
     hardware = None
     software = None
     execution = None
+    conditions_before = None
+    conditions_after = None
     measurements_completed = False
     destination = archive or LocalRunArchive.default()
     try:
         hardware, software = collect()
-        if task_type == "text_generation":
-            measurements, context_length = asyncio.run(
-                _text_measurements(model["repo_id"])
-            )
-        elif task_type == "image_generation":
-            measurements = _run_image(
-                alias, isolate_process_group=not inherit_process_group
-            )
-        elif task_type == "video_generation":
-            measurements = _run_video(
-                alias, isolate_process_group=not inherit_process_group
-            )
+        # Snapshot the volatile machine state (power, thermal, memory
+        # pressure) before the model is loaded and again right after the last
+        # measurement, so a reader can tell a battery/throttled run apart.
+        conditions_before = run_conditions()
+        capture: dict[str, Any] = {}
+        capture_token = _CONDITIONS_AFTER.set(capture)
+        try:
+            if task_type == "text_generation":
+                measurements, context_length = asyncio.run(
+                    _text_measurements(model["repo_id"])
+                )
+            elif task_type == "image_generation":
+                measurements = _run_image(
+                    alias, isolate_process_group=not inherit_process_group
+                )
+            elif task_type == "video_generation":
+                measurements = _run_video(
+                    alias, isolate_process_group=not inherit_process_group
+                )
+        finally:
+            # Disarm on every path (success, failure, cancellation) so a
+            # stray late call in this process can never mutate a stale
+            # capture.
+            _CONDITIONS_AFTER.reset(capture_token)
         measurements_completed = True
+        # Taken by the helper before its engine/server context tore down. A
+        # helper that never captured leaves ``after`` unknown; probing here,
+        # after the model is gone, would misreport a memory-saturated run.
+        conditions_after = capture.get("after")
         execution = execution_config(task_type, context_length=context_length)
         run = build_run(
             repo_id=model["repo_id"],
@@ -804,19 +847,25 @@ def run_local(
             measurements=measurements,
             context_length=context_length,
             execution=execution,
+            conditions_before=conditions_before,
+            conditions_after=conditions_after,
         )
-    except Exception as exc:
+    except (Exception, asyncio.CancelledError) as exc:
+        # ``CancelledError`` is a BaseException: without naming it here a
+        # cancelled benchmark would skip the archived cancellation record
+        # (and its before-snapshot) entirely.
         if measurements_completed and execution is None:
             raise LocalBenchmarkError(
                 f"benchmark completed but result could not be constructed: {exc}",
                 None,
                 saved=False,
             ) from exc
-        failure_code = (
-            "machine_probe_failed"
-            if hardware is None or software is None
-            else _failure_code(exc)
-        )
+        if hardware is None or software is None:
+            failure_code = "machine_probe_failed"
+        elif isinstance(exc, asyncio.CancelledError):
+            failure_code = "user_cancelled"
+        else:
+            failure_code = _failure_code(exc)
         try:
             if execution is None:
                 execution = execution_config(task_type, context_length=context_length)
@@ -828,12 +877,14 @@ def run_local(
                 started_at=started_at,
                 status=(
                     "cancelled"
-                    if isinstance(exc, BenchmarkCancelledError)
+                    if isinstance(exc, BenchmarkCancelledError | asyncio.CancelledError)
                     else "failed"
                 ),
                 failure_code=failure_code,
                 context_length=context_length,
                 execution=execution,
+                conditions_before=conditions_before,
+                conditions_after=conditions_after,
             )
         except Exception as envelope_exc:
             raise LocalBenchmarkError(

@@ -15,7 +15,7 @@ from vllm_mlx import __version__
 from vllm_mlx.catalog import rcj_digest
 
 from .benchmark_contracts import BenchmarkRunValidator, registered_workload
-from .hardware import Hardware, Software
+from .hardware import Hardware, Software, run_conditions
 
 
 def utc_now() -> str:
@@ -40,7 +40,8 @@ def unresolved_model_identity(repo_id: str, task_type: str) -> dict[str, Any]:
     return identity
 
 
-def _conditions() -> dict[str, Any]:
+def _unknown_conditions() -> dict[str, Any]:
+    """Schema-valid placeholder when no snapshot was taken."""
     return {
         "power_source": "unknown",
         "low_power_mode": None,
@@ -51,8 +52,20 @@ def _conditions() -> dict[str, Any]:
 
 
 def machine_observation(
-    hardware: Hardware, software: Software, *, after: dict[str, Any] | None = None
+    hardware: Hardware,
+    software: Software,
+    *,
+    before: dict[str, Any] | None = None,
+    after: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
+    """Compose the atomic machine observation.
+
+    ``before``/``after`` are ``run_conditions()`` snapshots taken by the
+    runner around the measured work. A missing ``before`` is probed now (the
+    observation is being built, so "now" is the best available "before");
+    a missing ``after`` is recorded as unknown rather than re-probed, because
+    a snapshot taken after result construction would misreport the run.
+    """
     profile = {
         "chip": hardware.chip,
         "memory_gib": hardware.ram_gb,
@@ -65,8 +78,8 @@ def machine_observation(
         "profile": profile,
         "profile_digest": rcj_digest(profile),
         "os": {"name": "macOS", "version": software.macos, "architecture": "arm64"},
-        "conditions_before": _conditions(),
-        "conditions_after": after or _conditions(),
+        "conditions_before": (before if before is not None else run_conditions()),
+        "conditions_after": after if after is not None else _unknown_conditions(),
     }
 
 
@@ -202,6 +215,8 @@ def build_run(
     failure_code: str | None = None,
     context_length: int | None = None,
     execution: dict[str, Any] | None = None,
+    conditions_before: dict[str, Any] | None = None,
+    conditions_after: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     outcome = {"status": status}
     if failure_code is not None:
@@ -222,7 +237,9 @@ def build_run(
         "outcome": outcome,
     }
     if hardware is not None and software is not None:
-        run["machine"] = machine_observation(hardware, software)
+        run["machine"] = machine_observation(
+            hardware, software, before=conditions_before, after=conditions_after
+        )
     if measurements:
         run["measurements"] = measurements
     BenchmarkRunValidator().validate(run)
