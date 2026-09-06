@@ -86,7 +86,7 @@ class TestModalityValidation:
         # is the trigger to do that work. ``image-gen`` joined when the
         # mflux image lane (runtime/image_lane.py) landed.
         assert (
-            frozenset({"text", "text-diffusion", "video-gen", "image-gen"})
+            frozenset({"text", "text-diffusion", "video-gen", "image-gen", "embedding"})
             == _VALID_MODALITIES
         )
 

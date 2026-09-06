@@ -62,6 +62,11 @@ def _main_capabilities(profile: Any) -> dict[str, Any]:
             ["chat", "image_understanding"],
             "mlx_vlm",
         )
+    elif modality == "embedding":
+        # Sentence-embedding checkpoints have no chat surface; advertising
+        # ``text_generation`` here put embeddinggemma into every first-chat
+        # picker (#3116).
+        tasks, operations, adapter = ["embedding"], ["embed"], "mlx_embeddings"
     else:
         tasks, operations = ["text_generation"], ["chat"]
         if bool(getattr(profile, "supports_image_input", False)):
