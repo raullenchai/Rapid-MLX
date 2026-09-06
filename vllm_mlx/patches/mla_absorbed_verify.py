@@ -172,6 +172,9 @@ def _attention_call(
 
     pe_scores = (q_pe * self.scale) @ k_pe.swapaxes(-1, -2)
     if mask is not None:
+        # All four exact supported model wrappers request return_array=True.
+        # Keep the same array-only contract as their hashed upstream attention
+        # methods, which perform this identical mx.where operation.
         pe_scores = mx.where(
             mask,
             pe_scores,
