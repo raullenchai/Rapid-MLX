@@ -28,6 +28,8 @@
 	<string>AccentColor</string>
 	<key>NSHighResolutionCapable</key>
 	<true/>
+	<key>NSScreenCaptureUsageDescription</key>
+	<string>Rapid captures only the window you select while a local Computer Use task is running. Screenshots stay on this Mac.</string>
 	<!--
 	Dictation records from the microphone only while the user is holding a
 	recording session open (hotkey pressed once to start, once to stop). Audio
