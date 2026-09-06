@@ -252,6 +252,8 @@ final class ComputerUseElementBinding {
 /// current Accessibility element; input is delivered with AXPress to that
 /// element rather than through the global pointer event stream.
 struct AXComputerUseInputEmitter: ComputerUseInputEmitting {
+    typealias PermissionReader = @MainActor @Sendable ()
+        -> MacAutomationPermissionSnapshot
     typealias ElementResolver = @MainActor @Sendable (
         WorkflowActionPayload,
         WorkflowInteractionTarget
@@ -263,16 +265,19 @@ struct AXComputerUseInputEmitter: ComputerUseInputEmitting {
     private let captureSource: any ComputerUseWindowCapturing
     private let elementResolver: ElementResolver
     private let elementPerformer: ElementPerformer
+    private let permissionReader: PermissionReader
 
     init(
         captureSource: any ComputerUseWindowCapturing =
             ScreenCaptureKitComputerUseCapture(),
         elementResolver: @escaping ElementResolver = Self.resolve,
-        elementPerformer: @escaping ElementPerformer = Self.performPress
+        elementPerformer: @escaping ElementPerformer = Self.performPress,
+        permissionReader: @escaping PermissionReader = MacAutomationPermissions.snapshot
     ) {
         self.captureSource = captureSource
         self.elementResolver = elementResolver
         self.elementPerformer = elementPerformer
+        self.permissionReader = permissionReader
     }
 
     func emit(
@@ -319,7 +324,8 @@ struct AXComputerUseInputEmitter: ComputerUseInputEmitting {
                 target: target,
                 requiredBinding: binding,
                 resolver: elementResolver,
-                performer: elementPerformer
+                performer: elementPerformer,
+                permissionReader: permissionReader
             )
         }
     }
@@ -333,11 +339,18 @@ struct AXComputerUseInputEmitter: ComputerUseInputEmitting {
         target: WorkflowInteractionTarget,
         requiredBinding: ComputerUseElementBinding,
         resolver: ElementResolver,
-        performer: ElementPerformer
+        performer: ElementPerformer,
+        permissionReader: PermissionReader
     ) throws {
         let currentBinding = try resolver(payload, target)
         guard requiredBinding.representsSameElement(as: currentBinding) else {
             throw MacOSComputerUseActuationError.elementChanged
+        }
+        let permissions = permissionReader()
+        guard permissions.isReadyForComputerUse else {
+            throw MacOSComputerUseActuationError.permissionMissing(
+                permissions.missingForComputerUse
+            )
         }
         try performer(currentBinding)
     }
