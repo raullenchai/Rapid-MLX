@@ -357,6 +357,8 @@ struct CommunityBenchmarkResult: Decodable, Identifiable {
             if let wallSeconds {
                 return String(format: "%.1f s per run", wallSeconds)
             }
+            // Unreachable for summaries produced by `summarize`, which drops
+            // cases without a task-appropriate metric.
             return "\(rounds) rounds"
         }
 
@@ -411,12 +413,16 @@ struct CommunityBenchmarkResult: Decodable, Identifiable {
             let ttft = textRounds.compactMap(\.ttftMS)
             let decodeMedian = median(decode)
             let wall = isText ? [] : samples.compactMap(\.totalDurationMS)
+            let wallMedian = median(wall).map { $0 / 1_000 }
+            // Like the CLI, a case with neither metric contributes nothing,
+            // so a run made only of such cases falls back to its status.
+            guard decodeMedian != nil || wallMedian != nil else { return nil }
             return CaseSummary(
                 caseID: caseID,
                 rounds: samples.count,
                 decodeTokensPerSecond: decodeMedian,
                 ttftMS: ttft.count == textRounds.count ? median(ttft) : nil,
-                wallSeconds: median(wall).map { $0 / 1_000 }
+                wallSeconds: wallMedian
             )
         }
     }
@@ -474,14 +480,18 @@ struct CommunityBenchmarkResult: Decodable, Identifiable {
         time.timeZone = timeZone
         time.setLocalizedDateFormatFromTemplate("jm")
         // "Today"/"Yesterday" already have catalog entries (zh-Hans), so the
-        // relative day follows the app language like the rest of the row.
+        // relative day follows the same locale as the rest of the row.
         if calendar.isDate(date, inSameDayAs: now) {
-            let today = String(localized: String.LocalizationValue("Today"))
+            let today = String(
+                localized: String.LocalizationValue("Today"), locale: locale
+            )
             return "\(today) \(time.string(from: date))"
         }
         if let yesterday = calendar.date(byAdding: .day, value: -1, to: now),
            calendar.isDate(date, inSameDayAs: yesterday) {
-            let label = String(localized: String.LocalizationValue("Yesterday"))
+            let label = String(
+                localized: String.LocalizationValue("Yesterday"), locale: locale
+            )
             return "\(label) \(time.string(from: date))"
         }
         let day = DateFormatter()

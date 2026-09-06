@@ -546,7 +546,8 @@ struct CommunityBenchmarkModelTests {
         #expect(partialTTFT.map(\.headline) == ["37.5 tok/s"])
 
         // A text record with only wall time is not dressed up as an
-        // image-style "s per run" result.
+        // image-style "s per run" result; with no usable metric the case is
+        // dropped so the row falls back to the outcome status.
         let textWithoutDecode = CommunityBenchmarkResult.summarize(
             measurements: [
                 CommunityBenchmarkResult.Measurement(
@@ -556,8 +557,7 @@ struct CommunityBenchmarkModelTests {
             ],
             declaredOrder: [], taskType: "text_generation"
         )
-        #expect(textWithoutDecode.map(\.headline) == ["1 rounds"])
-        #expect(textWithoutDecode.first?.wallSeconds == nil)
+        #expect(textWithoutDecode.isEmpty)
 
         // No completed rounds at all → no headline, so the row falls back to
         // the outcome status.
