@@ -2973,6 +2973,36 @@ def _restore_hybrid_cache_after_exception(gb, result: dict) -> None:
         gb.prompt_cache = result["replay_snapshot"]
 
 
+def _repair_hybrid_terminal(model, snapshot, verify_input_batch, surfaced_len):
+    """Rebuild a delivered cache from the pristine snapshot + surfaced prefix.
+
+    The Qwen4 recurrent cache cannot ``trim_all`` an un-surfaced accepted tail
+    (the B2.1 scratch path sidesteps attention-only rollback for exactly this
+    reason). When a finish stops part-way through the accepted drafts — whether
+    on the primary token or on a synthetic emit — we rebuild the DELIVERED
+    response cache from the retained pristine pre-verify snapshot plus ONLY
+    the surfaced prefix, dropping the tail by never replaying it (the DSpark
+    ``_pending_replay`` terminal-repair pattern).
+
+    ``surfaced_len`` is the number of surfaced tokens: 1 for a primary-terminal
+    (only X), ``emit_idx + 2`` for a synthetic-drain terminal (X + drained
+    drafts). We step the surfaced prefix one token at a time on a scratch copy
+    so recurrent state advances exactly as an equivalent single-token decode
+    would (chunked != step-update is the known recurrent caveat).
+
+    Suffix decode is a single-request fast path, so the rebuilt head IS the
+    per-request cache; no per-cell ``extract``. The result is an INDEPENDENT
+    head (deep-copied from the snapshot) — the caller must NOT alias the live
+    cache to it.
+    """
+    import copy
+
+    repaired = copy.deepcopy(snapshot)
+    for s in range(surfaced_len):
+        mx.eval(model(verify_input_batch[:, s : s + 1], cache=repaired))
+    return repaired
+
+
 def _install_suffix_decoding(
     batch_gen: "BatchGenerator",
     model: Any,
@@ -3554,6 +3584,14 @@ def _install_suffix_decoding(
 
         K = len(draft)
 
+        # Retained pristine pre-verify snapshot for the POST-COMMIT exception
+        # envelope (codex round-9e finding #3). Set on a successful hybrid
+        # commit; ``None`` on the pure-attention path (which uses trimmable
+        # rollback, not snapshot-restore) and when nothing was committed. The
+        # post-commit ``except`` restores this before re-raising when a step
+        # after the commit head fails.
+        _hybrid_pc_snapshot = None
+
         n_rejected_to_trim = 0
         if _hybrid_active:
             # Hybrid path. The 24-token minimum-match floor (issue #2561)
@@ -3641,6 +3679,11 @@ def _install_suffix_decoding(
                         result["replay_snapshot"],
                         verify_input,
                     )
+                    # Capture the pristine snapshot for the post-commit
+                    # exception envelope. The shared post-commit phase below
+                    # must NEVER leave the live cache advanced beyond the
+                    # surfaced tokens: if it raises, we restore this.
+                    _hybrid_pc_snapshot = result["replay_snapshot"]
             except Exception as e:  # noqa: BLE001
                 logger.debug(f"[SuffixDecoding] hybrid verify failed: {e!r}")
                 _stats["errors"] += 1
@@ -3714,188 +3757,209 @@ def _install_suffix_decoding(
                 else:
                     break
 
-        # Cooldown bookkeeping: track consecutive zero-accept verifies
-        # so workloads with weak drafter signal (e.g., free-form chat)
-        # automatically stop paying verify overhead.
-        #
-        # First trip needs ``_COOLDOWN_TRIGGER`` misses so a brief stumble in
-        # otherwise-accepting traffic doesn't cost a skip window. Once we
-        # HAVE backed off, a single miss re-arms: the previous window already
-        # established this traffic has no drafter signal, so waiting for two
-        # more misses just buys two more wasted verifies. Each re-trip
-        # doubles the window (10, 20, 40 … capped), so a low-overlap request
-        # converges to ~no drafting after a handful of probes.
-        # Adaptive width update. Full acceptance means the draft was too
-        # SHORT — we left tokens on the table — so double. A partial accept
-        # means we paid for K but only n landed; retarget just above n.
-        if n_accepted >= K:
-            st["k"] = min(st["k"] * 2, _effective_max_draft)
-        else:
-            st["k"] = max(_K_MIN, min(n_accepted + 1, _effective_max_draft))
-        _stats["k_current"] = st["k"]
+        # POST-COMMIT phase (codex round-9e finding #3): from here through the
+        # emit stash, ``gb.prompt_cache`` on the hybrid path holds the commit head
+        # advanced through all ``n_accepted`` drafts. Cooldown bookkeeping, rollback,
+        # logprob construction, state-machine processing, and pending-emission
+        # creation must ALL complete before any of it is trustworthy. If any of them
+        # raises after the commit, restore the pristine snapshot (retained as
+        # ``_hybrid_pc_snapshot``) so the live cache never stays advanced beyond the
+        # surfaced tokens, then re-raise so the caller falls through as a normal
+        # step failure.
+        try:
+            # Cooldown bookkeeping: track consecutive zero-accept verifies
+            # so workloads with weak drafter signal (e.g., free-form chat)
+            # automatically stop paying verify overhead.
+            #
+            # First trip needs ``_COOLDOWN_TRIGGER`` misses so a brief stumble in
+            # otherwise-accepting traffic doesn't cost a skip window. Once we
+            # HAVE backed off, a single miss re-arms: the previous window already
+            # established this traffic has no drafter signal, so waiting for two
+            # more misses just buys two more wasted verifies. Each re-trip
+            # doubles the window (10, 20, 40 … capped), so a low-overlap request
+            # converges to ~no drafting after a handful of probes.
+            # Adaptive width update. Full acceptance means the draft was too
+            # SHORT — we left tokens on the table — so double. A partial accept
+            # means we paid for K but only n landed; retarget just above n.
+            if n_accepted >= K:
+                st["k"] = min(st["k"] * 2, _effective_max_draft)
+            else:
+                st["k"] = max(_K_MIN, min(n_accepted + 1, _effective_max_draft))
+            _stats["k_current"] = st["k"]
 
-        if n_accepted == 0:
-            st["zeros"] += 1
-            trigger = _COOLDOWN_TRIGGER if st["level"] == 0 else 1
-            if st["zeros"] >= trigger:
-                st["level"] += 1
-                st["cooldown"] = min(
-                    _COOLDOWN_BASE * (2 ** (st["level"] - 1)),
-                    _COOLDOWN_MAX,
-                )
+            if n_accepted == 0:
+                st["zeros"] += 1
+                trigger = _COOLDOWN_TRIGGER if st["level"] == 0 else 1
+                if st["zeros"] >= trigger:
+                    st["level"] += 1
+                    st["cooldown"] = min(
+                        _COOLDOWN_BASE * (2 ** (st["level"] - 1)),
+                        _COOLDOWN_MAX,
+                    )
+                    st["zeros"] = 0
+                    _stats["cooldown_trips"] += 1
+                    _stats["cooldown_level"] = st["level"]
+                    _counter.record_cooldown_trip(st["level"])
+            else:
                 st["zeros"] = 0
-                _stats["cooldown_trips"] += 1
-                _stats["cooldown_level"] = st["level"]
-                _counter.record_cooldown_trip(st["level"])
-        else:
-            st["zeros"] = 0
-            # DECAY one level, don't reset to eager. A single lucky accept in
-            # otherwise-signalless traffic must not undo several levels of
-            # backoff — with a full reset, low-overlap traffic kept
-            # re-arming (measured: 8 trips, level back to 0, still -24%).
-            # Sustained acceptance walks the level back down within a few
-            # verifies, so a chat that starts emitting a repeated code block
-            # still reaches full speed quickly.
+                # DECAY one level, don't reset to eager. A single lucky accept in
+                # otherwise-signalless traffic must not undo several levels of
+                # backoff — with a full reset, low-overlap traffic kept
+                # re-arming (measured: 8 trips, level back to 0, still -24%).
+                # Sustained acceptance walks the level back down within a few
+                # verifies, so a chat that starts emitting a repeated code block
+                # still reaches full speed quickly.
+                #
+                # A 1-of-K accept is noise, not signal: require at least
+                # ``_BACKOFF_DECAY_MIN_ACCEPT`` accepted draft tokens before
+                # crediting the traffic with having drafter signal.
+                #
+                # The noise floor has to be checked BEFORE the strong-signal
+                # branch, not alongside it. After a back-off the adaptive width
+                # is ``_K_MIN`` (2), where a single accepted token satisfies
+                # ``n_accepted * 2 >= K`` — so without this guard the one
+                # outcome the policy calls noise would reset the whole level,
+                # and low-overlap traffic with the occasional 1-of-2 accept
+                # would bounce back to eager drafting instead of converging.
+                # That is precisely the regression the back-off exists to stop.
+                # Clamped to the configured width, not absolute: with
+                # ``max_draft=1`` a 1-of-1 accept IS full acceptance, and an
+                # absolute floor of 2 would make that configuration unable to
+                # ever leave a back-off — every later isolated miss would arm a
+                # longer cooldown however well the drafts in between landed.
+                _decay_floor = min(_BACKOFF_DECAY_MIN_ACCEPT, K)
+                if st["level"] and n_accepted >= _decay_floor:
+                    if n_accepted * 2 >= K:
+                        # STRONG signal — at least half the draft landed. This is
+                        # unambiguously high-overlap traffic; go straight back to
+                        # eager rather than walking down one level per verify,
+                        # which a deep window gives too few chances to do.
+                        st["level"] = 0
+                    else:
+                        # Real but weak signal — walk down one level.
+                        st["level"] -= 1
+                    _stats["cooldown_level"] = st["level"]
+
+            # Publish AFTER the backoff transition. Publishing before it left the
+            # gauge showing the pre-reset level, permanently so if the request
+            # finished on that burst.
+            _counter.set_state(st["k"], st["level"])
+
+            n_rejected = K - n_accepted
+            if _hybrid_active:
+                # Hybrid commit-only path: the rejected tail was never advanced
+                # onto the live cache (scratch verify), so there is nothing to
+                # roll back. ``n_rejected_to_trim`` stays 0.
+                n_rejected_for_rollback = n_rejected_to_trim
+            else:
+                n_rejected_for_rollback = n_rejected
+            if n_rejected_for_rollback > 0:
+                from .cache_rollback import trim_all
+
+                if not trim_all(gb.prompt_cache, n_rejected_for_rollback):
+                    raise RuntimeError(
+                        "suffix verification cache rollback violated its preflight"
+                    )
+
+            # Token emission accounting.
             #
-            # A 1-of-K accept is noise, not signal: require at least
-            # ``_BACKOFF_DECAY_MIN_ACCEPT`` accepted draft tokens before
-            # crediting the traffic with having drafter signal.
+            # _orig_step emits one token per call: the ``inputs`` it just
+            # fed through the model (= what was previously in
+            # ``_next_tokens``). The newly-sampled token is stashed in
+            # ``_next_tokens`` for the next step.
             #
-            # The noise floor has to be checked BEFORE the strong-signal
-            # branch, not alongside it. After a back-off the adaptive width
-            # is ``_K_MIN`` (2), where a single accepted token satisfies
-            # ``n_accepted * 2 >= K`` — so without this guard the one
-            # outcome the policy calls noise would reset the whole level,
-            # and low-overlap traffic with the occasional 1-of-2 accept
-            # would bounce back to eager drafting instead of converging.
-            # That is precisely the regression the back-off exists to stop.
-            # Clamped to the configured width, not absolute: with
-            # ``max_draft=1`` a 1-of-1 accept IS full acceptance, and an
-            # absolute floor of 2 would make that configuration unable to
-            # ever leave a back-off — every later isolated miss would arm a
-            # longer cooldown however well the drafts in between landed.
-            _decay_floor = min(_BACKOFF_DECAY_MIN_ACCEPT, K)
-            if st["level"] and n_accepted >= _decay_floor:
-                if n_accepted * 2 >= K:
-                    # STRONG signal — at least half the draft landed. This is
-                    # unambiguously high-overlap traffic; go straight back to
-                    # eager rather than walking down one level per verify,
-                    # which a deep window gives too few chances to do.
-                    st["level"] = 0
-                else:
-                    # Real but weak signal — walk down one level.
-                    st["level"] -= 1
-                _stats["cooldown_level"] = st["level"]
+            # For spec-decode the verify forward consumed K+1 tokens
+            # (last_token + K drafts), so we have committed to the cache
+            # ``[..., last_token, d_0..d_{n_accepted-1}]`` after trim.
+            # Tokens that NEED to surface on the response stream:
+            #
+            #   - last_token   ← primary, returned by this _step (1 token)
+            #   - d_0..d_{n-1} ← accepted drafts (n tokens, drained by
+            #                    _suffix_next as synthetic responses)
+            #
+            # The bonus (= preds[n_accepted], the correction at the
+            # rejection point or the post-K bonus) is **NOT** emitted this
+            # step — it gets stashed in _next_tokens and surfaces as the
+            # primary of the NEXT _step call. Otherwise it would duplicate
+            # (see early bug: every-other-token doubling).
+            bonus = preds_list[n_accepted]
 
-        # Publish AFTER the backoff transition. Publishing before it left the
-        # gauge showing the pre-reset level, permanently so if the request
-        # finished on that burst.
-        _counter.set_state(st["k"], st["level"])
+            if stepwise_logits is not None:
+                # Lossless logprobs from the stepwise guard replay. Each committed
+                # position's logits are the stepwise ``(1,1,V)`` row; stack them
+                # into a ``(1, probe_len, V)`` tensor. Accepted positions and the
+                # bonus (position n_accepted) are all within probe_len, so the same
+                # downstream slicing applies. Row 0 (the primary's own pred is not
+                # surfaced; ``primary_logprobs`` comes from the previous step).
+                verify_logits = mx.concatenate(stepwise_logits, axis=1)
+            full_logprobs = verify_logits - mx.logsumexp(
+                verify_logits, axis=-1, keepdims=True
+            )
+            # Materialize the verify logprobs promptly. ``verify_logits`` is a lazy
+            # MLX graph over the scratch cache; leaving it unevaluated keeps the
+            # scratch tensors referenced into the NEXT step's verify deepcopy,
+            # quietly defeating the 2x-cache envelope. Realizing it here frees the
+            # scratch arrays as soon as the logprobs row slices are taken below.
+            mx.eval(full_logprobs)
+            # The primary's logprobs come from the PREVIOUS step (saved in
+            # gb._next_logprobs). Passing them through preserves the same
+            # contract as _orig_step.
+            primary_logprobs = (
+                gb._next_logprobs[0]
+                if gb._next_logprobs is not None and len(gb._next_logprobs) > 0
+                else full_logprobs[0, 0, :]
+            )
+            extra_tokens = list(draft[:n_accepted])
+            extra_logprobs: list[mx.array] = []
+            for i in range(n_accepted):
+                # full_logprobs[0, i, :] is the logprobs row that PRODUCED
+                # the token at sequence position N+i+1, i.e. d_i.
+                extra_logprobs.append(full_logprobs[0, i, :])
+            # logprobs row at position n_accepted is the one that produced
+            # the bonus — used for the bonus surfacing in the next step.
+            bonus_logprobs = full_logprobs[0, n_accepted, :]
 
-        n_rejected = K - n_accepted
-        if _hybrid_active:
-            # Hybrid commit-only path: the rejected tail was never advanced
-            # onto the live cache (scratch verify), so there is nothing to
-            # roll back. ``n_rejected_to_trim`` stays 0.
-            n_rejected_for_rollback = n_rejected_to_trim
-        else:
-            n_rejected_for_rollback = n_rejected
-        if n_rejected_for_rollback > 0:
-            from .cache_rollback import trim_all
+            # Drafter history += newly-committed tokens. We add ONLY the
+            # accepted drafts here; ``bonus`` will be added on the next
+            # ``_suffix_step`` call (line ~1235 ``drafter.add_generated_token
+            # (last_token)`` where ``last_token = bonus`` since we just
+            # stashed it in ``_next_tokens``). Adding it here too would
+            # double-index it in the suffix tree and skew future drafts.
+            for tok in extra_tokens:
+                drafter.add_generated_token(tok)
+            drafter.record_acceptance(n_accepted)
+            _stats["tokens_accepted"] += n_accepted
+            _counter.record_verify(K, n_accepted)
 
-            if not trim_all(gb.prompt_cache, n_rejected_for_rollback):
-                raise RuntimeError(
-                    "suffix verification cache rollback violated its preflight"
-                )
+            # Update gb state for the next _step call. Bonus becomes the
+            # next step's primary input. async_eval overlaps device work
+            # with engine bookkeeping (matches _orig_step's pattern).
+            bonus_arr = mx.array([bonus], dtype=inputs.dtype)
+            gb._next_tokens = bonus_arr
+            gb._next_logprobs = [bonus_logprobs]
+            mx.async_eval(bonus_arr, bonus_logprobs)
 
-        # Token emission accounting.
-        #
-        # _orig_step emits one token per call: the ``inputs`` it just
-        # fed through the model (= what was previously in
-        # ``_next_tokens``). The newly-sampled token is stashed in
-        # ``_next_tokens`` for the next step.
-        #
-        # For spec-decode the verify forward consumed K+1 tokens
-        # (last_token + K drafts), so we have committed to the cache
-        # ``[..., last_token, d_0..d_{n_accepted-1}]`` after trim.
-        # Tokens that NEED to surface on the response stream:
-        #
-        #   - last_token   ← primary, returned by this _step (1 token)
-        #   - d_0..d_{n-1} ← accepted drafts (n tokens, drained by
-        #                    _suffix_next as synthetic responses)
-        #
-        # The bonus (= preds[n_accepted], the correction at the
-        # rejection point or the post-K bonus) is **NOT** emitted this
-        # step — it gets stashed in _next_tokens and surfaces as the
-        # primary of the NEXT _step call. Otherwise it would duplicate
-        # (see early bug: every-other-token doubling).
-        bonus = preds_list[n_accepted]
+            # _step normally appends inputs.tolist()[i] to gb.tokens[i].
+            # We do the same for last_token (the primary that we return).
+            # The extra tokens get appended in the next() wrapper as each
+            # synthetic Response is built, mirroring _orig_step's flow.
+            gb.tokens[0].append(last_token)
 
-        if stepwise_logits is not None:
-            # Lossless logprobs from the stepwise guard replay. Each committed
-            # position's logits are the stepwise ``(1,1,V)`` row; stack them
-            # into a ``(1, probe_len, V)`` tensor. Accepted positions and the
-            # bonus (position n_accepted) are all within probe_len, so the same
-            # downstream slicing applies. Row 0 (the primary's own pred is not
-            # surfaced; ``primary_logprobs`` comes from the previous step).
-            verify_logits = mx.concatenate(stepwise_logits, axis=1)
-        full_logprobs = verify_logits - mx.logsumexp(
-            verify_logits, axis=-1, keepdims=True
-        )
-        # Materialize the verify logprobs promptly. ``verify_logits`` is a lazy
-        # MLX graph over the scratch cache; leaving it unevaluated keeps the
-        # scratch tensors referenced into the NEXT step's verify deepcopy,
-        # quietly defeating the 2x-cache envelope. Realizing it here frees the
-        # scratch arrays as soon as the logprobs row slices are taken below.
-        mx.eval(full_logprobs)
-        # The primary's logprobs come from the PREVIOUS step (saved in
-        # gb._next_logprobs). Passing them through preserves the same
-        # contract as _orig_step.
-        primary_logprobs = (
-            gb._next_logprobs[0]
-            if gb._next_logprobs is not None and len(gb._next_logprobs) > 0
-            else full_logprobs[0, 0, :]
-        )
-        extra_tokens = list(draft[:n_accepted])
-        extra_logprobs: list[mx.array] = []
-        for i in range(n_accepted):
-            # full_logprobs[0, i, :] is the logprobs row that PRODUCED
-            # the token at sequence position N+i+1, i.e. d_i.
-            extra_logprobs.append(full_logprobs[0, i, :])
-        # logprobs row at position n_accepted is the one that produced
-        # the bonus — used for the bonus surfacing in the next step.
-        bonus_logprobs = full_logprobs[0, n_accepted, :]
+            # Stash extras for next() to drain.
+            _pending_emits[uid] = list(zip(extra_tokens, extra_logprobs))
 
-        # Drafter history += newly-committed tokens. We add ONLY the
-        # accepted drafts here; ``bonus`` will be added on the next
-        # ``_suffix_step`` call (line ~1235 ``drafter.add_generated_token
-        # (last_token)`` where ``last_token = bonus`` since we just
-        # stashed it in ``_next_tokens``). Adding it here too would
-        # double-index it in the suffix tree and skew future drafts.
-        for tok in extra_tokens:
-            drafter.add_generated_token(tok)
-        drafter.record_acceptance(n_accepted)
-        _stats["tokens_accepted"] += n_accepted
-        _counter.record_verify(K, n_accepted)
+            return [last_token], [primary_logprobs]
 
-        # Update gb state for the next _step call. Bonus becomes the
-        # next step's primary input. async_eval overlaps device work
-        # with engine bookkeeping (matches _orig_step's pattern).
-        bonus_arr = mx.array([bonus], dtype=inputs.dtype)
-        gb._next_tokens = bonus_arr
-        gb._next_logprobs = [bonus_logprobs]
-        mx.async_eval(bonus_arr, bonus_logprobs)
-
-        # _step normally appends inputs.tolist()[i] to gb.tokens[i].
-        # We do the same for last_token (the primary that we return).
-        # The extra tokens get appended in the next() wrapper as each
-        # synthetic Response is built, mirroring _orig_step's flow.
-        gb.tokens[0].append(last_token)
-
-        # Stash extras for next() to drain.
-        _pending_emits[uid] = list(zip(extra_tokens, extra_logprobs))
-
-        return [last_token], [primary_logprobs]
+        except Exception as e:  # noqa: BLE001
+            logger.debug(f"[SuffixDecoding] post-commit phase failed: {e!r}")
+            _stats["errors"] += 1
+            _stats["ft_error"] += 1
+            # Post-commit exception: restore the pristine pre-verify cache so the
+            # live cache never stays advanced beyond the surfaced tokens, then
+            # re-raise so the caller handles this step as a normal fall-through.
+            if _hybrid_pc_snapshot is not None:
+                gb.prompt_cache = _hybrid_pc_snapshot
+            raise
 
     def _suffix_next():
         """Wrapped GenerationBatch.next.
@@ -3912,9 +3976,29 @@ def _install_suffix_decoding(
         # up over a long-running server even on workloads that never hit
         # the synthetic-emit path. Run this before the early-return so
         # plain (non-spec-decode) finishes are also reaped.
+        #
+        # PRIMARY-TERMINAL repair (codex round-9e finding #1): when the
+        # PRIMARY response is terminal (finish_reason set by _orig_next),
+        # the cache was advanced through ALL accepted drafts but ONLY the
+        # primary token (X) was surfaced — the synthetic-emit loop below
+        # never runs for this uid. If we delivered this response as-is, its
+        # returned prefix cache would still hold the un-surfaced accepted
+        # tail and poison prefix-cache reuse for the next request. Repair it
+        # from the retained pristine snapshot + the surfaced primary (X
+        # only), exactly like the synthetic-drain terminal repair but with
+        # ``surfaced_len == 1``.
         if responses:
             for r in responses:
                 if r.finish_reason is not None:
+                    replay_state = _pending_hybrid_replay.pop(r.uid, None)
+                    if replay_state is not None:
+                        snapshot, verify_input_batch = replay_state
+                        # The primary token (X) was surfaced; rebuild the
+                        # delivered cache as pristine + X, dropping any
+                        # accepted drafts that were never surfaced.
+                        r.prompt_cache = _repair_hybrid_terminal(
+                            model, snapshot, verify_input_batch, surfaced_len=1
+                        )
                     _reap_uid(r.uid)
             _reset_state_gauges_if_idle()
 
@@ -3988,33 +4072,12 @@ def _install_suffix_decoding(
                             # rollback for exactly this reason). Instead
                             # rebuild the delivered response cache from the
                             # retained pristine pre-verify snapshot plus only
-                            # the surfaced prefix, dropping the tail by never
-                            # replaying it — the same terminal-repair pattern
-                            # as the DSpark ``_pending_replay`` slot. Compute
-                            # the surfaced prefix: X (1) + the ``emit_idx + 1``
-                            # drafts already drained by this loop.
+                            # the surfaced prefix (X + the ``emit_idx + 1``
+                            # drafts already drained by this loop), dropping
+                            # the tail by never replaying it — the DSpark
+                            # ``_pending_replay`` terminal-repair pattern.
                             snapshot, verify_input_batch = replay_state
-                            # Replay onto the pristine snapshot chunks of
-                            # the surfaced prefix? No — the B2.1 scratch
-                            # machinery is lossless on chunked forward for
-                            # the ACCEPTED prefix (the probe proved it),
-                            # but to be strictly safe across the whole slice
-                            # we step the surfaced prefix one token at a
-                            # time on a scratch copy so recurrent state is
-                            # advanced exactly as an equivalent single-token
-                            # decode would have (chunked != step-update is
-                            # the known recurrent caveat).
-                            import copy
-
-                            repaired = copy.deepcopy(snapshot)
                             surfaced_len = emit_idx + 2  # X + drained drafts
-                            for s in range(surfaced_len):
-                                mx.eval(
-                                    model(
-                                        verify_input_batch[:, s : s + 1],
-                                        cache=repaired,
-                                    )
-                                )
                             # Suffix decode is a single-request fast path, so
                             # the rebuilt head IS the per-request cache; no
                             # per-cell ``extract`` (whose inner KVCache cells
@@ -4025,7 +4088,9 @@ def _install_suffix_decoding(
                             # independent head, and the live cache (which still
                             # holds the un-surfaced accepted tails) is
                             # discarded along with the removed uid.
-                            prompt_cache = repaired
+                            prompt_cache = _repair_hybrid_terminal(
+                                model, snapshot, verify_input_batch, surfaced_len
+                            )
                         else:
                             from .cache_rollback import trim_all
 
@@ -8731,9 +8796,8 @@ class Scheduler:
                         "_cache_snapshot_boundary",
                         getattr(request, "prefix_boundary", 0),
                     )
-                    if (
-                        self.memory_aware_cache is not None
-                        and 0 < retry_boundary < len(tokens_to_process)
+                    if self.memory_aware_cache is not None and 0 < retry_boundary < len(
+                        tokens_to_process
                     ):
                         uids = self.batch_generator.insert_segments(
                             [

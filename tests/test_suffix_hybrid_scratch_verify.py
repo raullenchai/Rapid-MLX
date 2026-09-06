@@ -1454,6 +1454,100 @@ class TestSingleSnapshotCommit:
         )
         assert gb3.prompt_cache == "live2"
 
+    def test_post_commit_phase_exception_restores_cache(self, monkeypatch):
+        """Codex round-9e finding #3: a failure AFTER the hybrid commit but in
+        the shared post-commit preparation phase (cooldown bookkeeping / logprob
+        construction / pending-emission creation) must restore the pristine
+        pre-verify cache, never leaving ``gb.prompt_cache`` advanced beyond the
+        surfaced tokens.
+
+        We inject the failure in the logprob construction (``mx.logsumexp``),
+        which runs inside the post-commit envelope AFTER the commit head was
+        swapped in, and assert the re-raised exception propagates to the wrapper
+        while the live cache has been restored to the pristine snapshot."""
+        from types import SimpleNamespace
+        from unittest.mock import MagicMock, patch
+
+        import vllm_mlx.scheduler as scheduler
+        from vllm_mlx.model_auto_config import ModelConfig
+        from vllm_mlx.speculative import suffix_decoding
+
+        model, _ = _model_and_prompt()
+        probe = model.make_cache()
+        mx.eval(model(mx.array([[1, 2, 3]]), cache=probe))
+        l0 = model(mx.array([[7]]), cache=probe)
+        mx.eval(l0)
+        d0 = int(mx.argmax(l0[:, -1], axis=-1).item())
+        l1 = model(mx.array([[d0]]), cache=probe)
+        mx.eval(l1)
+        d1 = int(mx.argmax(l1[:, -1], axis=-1).item())
+
+        class MockDrafter:
+            max_draft_tokens = 2
+
+            def __init__(self, **_kw):
+                pass
+
+            def add_prompt_tokens(self, _t):
+                pass
+
+            def add_generated_token(self, _t):
+                pass
+
+            def record_acceptance(self, _c):
+                pass
+
+            def get_draft(self):
+                return [d0, d1]
+
+        pristine = model.make_cache()
+        mx.eval(model(mx.array([[1, 2, 3]]), cache=pristine))
+
+        gb = SimpleNamespace(
+            _next_tokens=mx.array([7], dtype=mx.int32),
+            _next_logprobs=[mx.zeros((64,))],
+            uids=[1],
+            tokens=[[]],
+            logits_processors=[],
+            prompt_cache=pristine,
+            _num_tokens=[0],
+            max_tokens=[10],
+            state_machines=[SimpleNamespace(match=lambda s, _t: (s, None, None))],
+            _matcher_states=[None],
+            extract_cache=lambda _r: [],
+            model=model,
+        )
+        gb.Response = SimpleNamespace
+        gb._step = lambda: ([7], [])
+        gb.next = lambda: []
+        bg = MagicMock()
+        bg._generation_batch = gb
+        bg.remove = lambda *a, **k: {}
+        monkeypatch.setattr(suffix_decoding, "SuffixDecodingDrafter", MockDrafter)
+        profile = ModelConfig(is_hybrid=True, supports_spec_decode=False)
+        scheduler._install_suffix_decoding(
+            bg,
+            model=model,
+            profile=profile,
+            max_draft=2,
+            max_suffix_len=4,
+            min_confidence=0.3,
+            requests={},
+            uid_to_request_id={},
+            suffix_hybrid=True,
+            suffix_min_match_len=2,
+            suffix_hybrid_bit_exact=True,
+        )
+        # Fail inside the post-commit logprob construction (runs after the
+        # commit head swap). The wrapped _step must re-raise AND restore the
+        # pristine cache.
+        with (
+            patch.object(scheduler.mx, "logsumexp", side_effect=RuntimeError("boom")),
+            pytest.raises(RuntimeError, match="boom"),
+        ):
+            gb._step()
+        _assert_state_equal(gb.prompt_cache, pristine)
+
 
 class TestHybridTerminalRepair:
     """Finding #1: a hybrid finish part-way through the accepted drafts must
@@ -1586,3 +1680,107 @@ class TestHybridTerminalRepair:
         assert int(mx.argmax(nxt_raw[:, -1], axis=-1).item()) == int(
             mx.argmax(nxt_gold[:, -1], axis=-1).item()
         )
+
+    def test_primary_terminal_drops_every_queued_accepted_draft(self, monkeypatch):
+        """Codex round-9e finding #2: the PRIMARY can be terminal (a length
+        finish on the primary token X itself), leaving every queued accepted
+        draft un-surfaced. The delivered response cache must then hold ONLY
+        pristine + X (the Finding-1 repair), dropping all accepted drafts.
+
+        Model the real generation path: the primary _step advances
+        ``_num_tokens`` to 1, so the synthetic emits are never reached (the
+        primary's length limit stops the request). The returning primary
+        response is terminal, and ``_suffix_next`` must repair its cache to
+        pristine + X via the primary-terminal repair (not the synthetic-drain
+        loop, which never runs)."""
+        from types import SimpleNamespace
+        from unittest.mock import MagicMock
+
+        from vllm_mlx import scheduler
+        from vllm_mlx.model_auto_config import ModelConfig
+        from vllm_mlx.speculative import suffix_decoding
+
+        model, _ = _model_and_prompt()
+        probe = model.make_cache()
+        mx.eval(model(mx.array([[1, 2, 3]]), cache=probe))
+        l0 = model(mx.array([[7]]), cache=probe)
+        mx.eval(l0)
+        d0 = int(mx.argmax(l0[:, -1], axis=-1).item())
+        l1 = model(mx.array([[d0]]), cache=probe)
+        mx.eval(l1)
+        d1 = int(mx.argmax(l1[:, -1], axis=-1).item())
+
+        class MockDrafter:
+            max_draft_tokens = 2
+
+            def __init__(self, **_kw):
+                pass
+
+            def add_prompt_tokens(self, _t):
+                pass
+
+            def add_generated_token(self, _t):
+                pass
+
+            def record_acceptance(self, _c):
+                pass
+
+            def get_draft(self):
+                return [d0, d1]
+
+        pristine = model.make_cache()
+        mx.eval(model(mx.array([[1, 2, 3]]), cache=pristine))
+
+        gb = SimpleNamespace(
+            _next_tokens=mx.array([7], dtype=mx.int32),
+            _next_logprobs=[mx.zeros((64,))],
+            uids=[1],
+            tokens=[[]],
+            logits_processors=[],
+            prompt_cache=pristine,
+            _num_tokens=[0],
+            max_tokens=[1],  # length-limit: the PRIMARY X saturates it
+            state_machines=[SimpleNamespace(match=lambda s, _t: (s, None, None))],
+            _matcher_states=[None],
+            extract_cache=lambda _r: [],
+            model=model,
+        )
+        gb.Response = SimpleNamespace
+        # The PRIMARY _step commits X (increments _num_tokens to 1) and
+        # stashes [d0, d1] as pending emits. The primary is terminal (length).
+        gb._step = lambda: ([7], [])
+        # The returned primary is the terminal length response.
+        gb.next = lambda: [SimpleNamespace(uid=1, finish_reason="length")]
+        bg = MagicMock()
+        bg._generation_batch = gb
+        bg.remove = lambda *a, **k: {}
+        profile = ModelConfig(is_hybrid=True, supports_spec_decode=False)
+        monkeypatch.setattr(suffix_decoding, "SuffixDecodingDrafter", MockDrafter)
+        scheduler._install_suffix_decoding(
+            bg,
+            model=model,
+            profile=profile,
+            max_draft=2,
+            max_suffix_len=4,
+            min_confidence=0.3,
+            requests={},
+            uid_to_request_id={},
+            suffix_hybrid=True,
+            suffix_min_match_len=2,
+            suffix_hybrid_bit_exact=True,
+        )
+
+        # Commit the hybrid verify: X + d0 + d1 all accepted, [d0, d1] queued.
+        gb._step()
+        # The next() wrapper returns the terminal primary; Finding-1 repair
+        # must rebuild its cache to pristine + X ONLY (d0, d1 dropped because
+        # they were never surfaced).
+        outs = gb.next()
+        terminals = [o for o in outs if o.finish_reason is not None]
+        assert len(terminals) == 1
+        delivered = terminals[0].prompt_cache
+        # Gold = pristine + X (no accepted drafts surfaced).
+        gold = model.make_cache()
+        mx.eval(model(mx.array([[1, 2, 3]]), cache=gold))
+        mx.eval(model(mx.array([[7]]), cache=gold))
+        _assert_state_equal(delivered, gold)
