@@ -9,6 +9,7 @@ struct ComputerUseView: View {
     @State private var errorMessage: String?
     @State private var resultMessage: String?
     @State private var confirmingCleanup = false
+    @State private var operationGeneration = 0
 
     var body: some View {
         ScrollView {
@@ -137,8 +138,10 @@ struct ComputerUseView: View {
             }
             if scanning {
                 HStack { ProgressView(); Text("Checking Downloads…").foregroundStyle(.secondary) }
+                    .accessibilityIdentifier("ComputerUse.Cleanup.Loading")
             } else if let errorMessage {
                 Text(errorMessage).foregroundStyle(.red)
+                    .accessibilityIdentifier("ComputerUse.Cleanup.Error")
                 Button("Try again") { scanDownloads() }
                     .buttonStyle(.rapidSecondaryCompact)
                     .accessibilityIdentifier("ComputerUse.Cleanup.Retry")
@@ -148,6 +151,7 @@ struct ComputerUseView: View {
                     systemImage: "checkmark.circle",
                     description: Text("Rapid found no top-level files in Downloads older than 90 days.")
                 )
+                .accessibilityIdentifier("ComputerUse.Cleanup.Empty")
             } else {
                 Text("\(candidates.count) files found · Select only files you recognize")
                     .font(.callout).foregroundStyle(.secondary)
@@ -199,15 +203,19 @@ struct ComputerUseView: View {
         scanning = true
         errorMessage = nil
         self.resultMessage = nil
+        operationGeneration += 1
+        let generation = operationGeneration
         Task {
             do {
                 let result = try await Task.detached {
                     try DownloadCleanup.scan(downloadsURL: downloadsURL)
                 }.value
+                guard generation == operationGeneration else { return }
                 candidates = result
                 selected = []
                 self.resultMessage = resultMessage
             } catch {
+                guard generation == operationGeneration else { return }
                 errorMessage = "Rapid could not read Downloads: \(error.localizedDescription)"
             }
             scanning = false
@@ -243,29 +251,33 @@ struct ComputerUseView: View {
         scanning = true
         errorMessage = nil
         resultMessage = nil
+        operationGeneration += 1
+        let generation = operationGeneration
         Task {
-            do {
-                try await Task.detached {
-                    for candidate in selection {
-                        try DownloadCleanup.moveToTrash(candidate, downloadsURL: downloadsURL)
-                    }
-                }.value
-                scanDownloads(
-                    resultMessage: "Moved \(count) file\(count == 1 ? "" : "s") (\(size)) to Trash."
-                )
-            } catch {
-                let message = "Cleanup stopped safely: \(error.localizedDescription)"
+            let result = await Task.detached {
+                DownloadCleanup.moveToTrash(selection, downloadsURL: downloadsURL)
+            }.value
+            guard generation == operationGeneration else { return }
+            if let failure = result.failureDescription {
+                let prefix = result.movedCount == 0
+                    ? "No files were moved."
+                    : "Moved \(result.movedCount) of \(count) files to Trash."
+                let message = "\(prefix) Cleanup stopped safely: \(failure)"
                 do {
                     candidates = try await Task.detached {
                         try DownloadCleanup.scan(downloadsURL: downloadsURL)
                     }.value
                     selected = []
                 } catch {
-                    // The move failure is the actionable fact. Do not hide it
-                    // behind a secondary refresh failure.
+                    // Preserve the actionable move failure.
                 }
+                guard generation == operationGeneration else { return }
                 errorMessage = message
                 scanning = false
+            } else {
+                scanDownloads(
+                    resultMessage: "Moved \(count) file\(count == 1 ? "" : "s") (\(size)) to Trash."
+                )
             }
         }
     }

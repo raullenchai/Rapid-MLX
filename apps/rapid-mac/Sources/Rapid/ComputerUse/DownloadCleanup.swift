@@ -4,6 +4,7 @@ struct DownloadCleanupCandidate: Identifiable, Equatable, Sendable {
     let url: URL
     let byteCount: Int64
     let modifiedAt: Date
+    let resourceIdentifier: Data
 
     var id: URL { url }
     var name: String { url.lastPathComponent }
@@ -18,6 +19,10 @@ struct DownloadCleanupCandidate: Identifiable, Equatable, Sendable {
 /// every returned URL is understandable, independently selectable, and moved
 /// through macOS Trash rather than unlinked.
 struct DownloadCleanup {
+    struct BatchResult: Equatable, Sendable {
+        let movedCount: Int
+        let failureDescription: String?
+    }
     enum Failure: LocalizedError, Equatable {
         case targetEscapedDownloads
         case targetChanged
@@ -44,7 +49,8 @@ struct DownloadCleanup {
         let cutoff = now.addingTimeInterval(-Double(minimumAgeDays) * 86_400)
         let keys: Set<URLResourceKey> = [
             .isRegularFileKey, .isSymbolicLinkKey, .isHiddenKey,
-            .contentModificationDateKey, .fileAllocatedSizeKey, .fileSizeKey
+            .contentModificationDateKey, .fileAllocatedSizeKey, .fileSizeKey,
+            .fileResourceIdentifierKey
         ]
         let children = try fileManager.contentsOfDirectory(
             at: root,
@@ -58,12 +64,14 @@ struct DownloadCleanup {
                   values.isSymbolicLink != true,
                   values.isHidden != true,
                   let modifiedAt = values.contentModificationDate,
+                  let identifier = values.fileResourceIdentifier as? NSData,
                   modifiedAt <= cutoff else { return nil }
             let bytes = Int64(values.fileAllocatedSize ?? values.fileSize ?? 0)
             return DownloadCleanupCandidate(
                 url: url.standardizedFileURL,
                 byteCount: max(0, bytes),
-                modifiedAt: modifiedAt
+                modifiedAt: modifiedAt,
+                resourceIdentifier: identifier as Data
             )
         }
         .sorted {
@@ -80,18 +88,42 @@ struct DownloadCleanup {
         }
     ) throws {
         let root = downloadsURL.standardizedFileURL.resolvingSymlinksInPath()
-        let current = candidate.url.standardizedFileURL.resolvingSymlinksInPath()
-        guard current.deletingLastPathComponent() == root else {
+        let current = candidate.url.standardizedFileURL
+        guard current.deletingLastPathComponent().resolvingSymlinksInPath() == root else {
             throw Failure.targetEscapedDownloads
         }
         let values = try current.resourceValues(forKeys: [
-            .isRegularFileKey, .isSymbolicLinkKey, .contentModificationDateKey
+            .isRegularFileKey, .isSymbolicLinkKey, .contentModificationDateKey,
+            .fileAllocatedSizeKey, .fileSizeKey, .fileResourceIdentifierKey
         ])
+        let currentBytes = Int64(values.fileAllocatedSize ?? values.fileSize ?? 0)
+        let currentIdentifier = (values.fileResourceIdentifier as? NSData).map { $0 as Data }
         guard values.isRegularFile == true,
               values.isSymbolicLink != true,
-              values.contentModificationDate == candidate.modifiedAt else {
+              values.contentModificationDate == candidate.modifiedAt,
+              currentBytes == candidate.byteCount,
+              currentIdentifier == candidate.resourceIdentifier else {
             throw Failure.targetChanged
         }
         try trash(current)
+    }
+
+    static func moveToTrash(
+        _ candidates: [DownloadCleanupCandidate],
+        downloadsURL: URL,
+        trash: (URL) throws -> Void = { url in
+            _ = try FileManager.default.trashItem(at: url, resultingItemURL: nil)
+        }
+    ) -> BatchResult {
+        var moved = 0
+        for candidate in candidates {
+            do {
+                try moveToTrash(candidate, downloadsURL: downloadsURL, trash: trash)
+                moved += 1
+            } catch {
+                return BatchResult(movedCount: moved, failureDescription: error.localizedDescription)
+            }
+        }
+        return BatchResult(movedCount: moved, failureDescription: nil)
     }
 }

@@ -64,14 +64,59 @@ struct DownloadCleanupTests {
             try? FileManager.default.removeItem(at: outside)
         }
         let old = Date(timeIntervalSince1970: 1_000_000_000)
-        let url = try write("outside.txt", bytes: 4, in: outside, modifiedAt: old)
-        let candidate = DownloadCleanupCandidate(url: url, byteCount: 4, modifiedAt: old)
+        _ = try write("outside.txt", bytes: 4, in: outside, modifiedAt: old)
+        let candidate = try #require(
+            DownloadCleanup.scan(
+                downloadsURL: outside,
+                now: old.addingTimeInterval(100 * 86_400)
+            ).first
+        )
 
         #expect(throws: DownloadCleanup.Failure.targetEscapedDownloads) {
             try DownloadCleanup.moveToTrash(candidate, downloadsURL: root) { _ in
                 Issue.record("An out-of-scope file must not reach Trash")
             }
         }
+    }
+
+    @Test("A replacement symlink cannot move its target")
+    func replacementSymlinkIsRejected() throws {
+        let root = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let old = Date(timeIntervalSince1970: 1_000_000_000)
+        let original = try write("selected.txt", bytes: 4, in: root, modifiedAt: old)
+        let target = try write("target.txt", bytes: 4, in: root, modifiedAt: old)
+        let candidate = try #require(DownloadCleanup.scan(
+            downloadsURL: root, now: old.addingTimeInterval(100 * 86_400)
+        ).first { $0.url == original })
+        try FileManager.default.removeItem(at: original)
+        try FileManager.default.createSymbolicLink(at: original, withDestinationURL: target)
+
+        #expect(throws: DownloadCleanup.Failure.targetChanged) {
+            try DownloadCleanup.moveToTrash(candidate, downloadsURL: root) { _ in
+                Issue.record("A replacement symlink must not reach Trash")
+            }
+        }
+    }
+
+    @Test("Batch result reports files moved before a failure")
+    func batchReportsPartialSuccess() throws {
+        let root = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let old = Date(timeIntervalSince1970: 1_000_000_000)
+        _ = try write("a.txt", bytes: 4, in: root, modifiedAt: old)
+        _ = try write("b.txt", bytes: 4, in: root, modifiedAt: old)
+        let candidates = try DownloadCleanup.scan(
+            downloadsURL: root, now: old.addingTimeInterval(100 * 86_400)
+        )
+        var calls = 0
+        let result = DownloadCleanup.moveToTrash(candidates, downloadsURL: root) { _ in
+            calls += 1
+            if calls == 2 { throw CocoaError(.fileWriteUnknown) }
+        }
+
+        #expect(result.movedCount == 1)
+        #expect(result.failureDescription != nil)
     }
 
     private func temporaryDirectory() throws -> URL {
