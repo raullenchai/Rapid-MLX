@@ -100,6 +100,8 @@ struct ContentView: View {
     @State private var section: SidebarSection = .chat
     @AppStorage(VideoFeatureConfig.enabledKey)
     private var videoGenerationEnabled = VideoFeatureConfig.defaultEnabled
+    @AppStorage(ComputerUseFeatureConfig.enabledKey)
+    private var computerUseEnabled = ComputerUseFeatureConfig.defaultEnabled
     /// Window-level conversation search, opened from the toolbar.
     @State private var showConversationSearch = false
     // Was @SceneStorage. Moved to @AppStorage so the View menu command in
@@ -302,10 +304,19 @@ struct ContentView: View {
                 mcpCatalog.clear()
             }
         }
-        .onChange(of: videoGenerationEnabled) { _, enabled in
+        .onChange(of: experimentalDestinationState) { _, state in
             // Removing an experimental destination while it is active must
-            // never leave an unreachable detail pane on screen.
-            section = Self.sectionAfterVideoGateChange(current: section, enabled: enabled)
+            // never leave an unreachable detail pane on screen. Keep both
+            // gates in one observation node so the already-large shell body
+            // remains tractable for Swift's type checker.
+            section = Self.sectionAfterVideoGateChange(
+                current: section,
+                enabled: state.videoEnabled
+            )
+            section = Self.sectionAfterComputerUseGateChange(
+                current: section,
+                enabled: state.computerUseEnabled
+            )
         }
         .onChange(of: server.state) { _, newState in
             // Sync the picker breadcrumb when the server lands in
@@ -565,6 +576,7 @@ struct ContentView: View {
                 SidebarView(
                     selection: $section,
                     videoGenerationEnabled: videoGenerationEnabled,
+                    computerUseEnabled: computerUseEnabled,
                     chat: chat,
                 onNewChat: {
                     chat.newConversation()
@@ -1129,6 +1141,12 @@ struct ContentView: View {
             } else {
                 mainArea
             }
+        case .computerUse:
+            if computerUseEnabled {
+                ComputerUseView()
+            } else {
+                mainArea
+            }
         case .launch:
             LaunchView(
                 server: server,
@@ -1351,6 +1369,25 @@ struct ContentView: View {
         enabled: Bool
     ) -> SidebarSection {
         !enabled && current == .video ? .chat : current
+    }
+
+    static func sectionAfterComputerUseGateChange(
+        current: SidebarSection,
+        enabled: Bool
+    ) -> SidebarSection {
+        !enabled && current == .computerUse ? .chat : current
+    }
+
+    private struct ExperimentalDestinationState: Equatable {
+        let videoEnabled: Bool
+        let computerUseEnabled: Bool
+    }
+
+    private var experimentalDestinationState: ExperimentalDestinationState {
+        ExperimentalDestinationState(
+            videoEnabled: videoGenerationEnabled,
+            computerUseEnabled: computerUseEnabled
+        )
     }
 
     /// The chat catalog intentionally omits every media row, so aliases from
