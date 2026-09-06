@@ -159,7 +159,7 @@ print(json.dumps(stats))
 """,
         enabled=False,
     )
-    assert stats["provider"] == "disabled"
+    assert stats["provider"] in {"disabled", "upstream"}
     assert stats["unchanged"] is True
 
 

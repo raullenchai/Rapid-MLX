@@ -131,8 +131,25 @@ def _token_differences(left: list[int], right: list[int]) -> int:
 
 def main() -> None:
     args = _parse_args()
-    if args.width < 2 or args.repeats < 2 or any(c < 1 for c in args.contexts):
-        raise SystemExit("width, repeats, and contexts must be positive; width >= 2")
+    invalid = []
+    if args.width < 2:
+        invalid.append("width must be >= 2")
+    if args.repeats < 2:
+        invalid.append("repeats must be >= 2")
+    if any(context < 1 for context in args.contexts):
+        invalid.append("contexts must be positive")
+    if args.chunk_size < 1:
+        invalid.append("chunk-size must be positive")
+    if args.oracle_context < 0:
+        invalid.append("oracle-context must be non-negative")
+    if args.oracle_context and args.oracle_cases < 1:
+        invalid.append("oracle-cases must be positive when oracle is enabled")
+    if args.suffix_repeats < 0:
+        invalid.append("suffix-repeats must be non-negative")
+    if args.suffix_repeats and args.suffix_max_tokens < 1:
+        invalid.append("suffix-max-tokens must be positive when suffix is enabled")
+    if invalid:
+        raise SystemExit("; ".join(invalid))
 
     patch.install_mla_absorbed_verify()
     stats = patch.mla_absorbed_verify_stats()
