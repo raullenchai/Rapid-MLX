@@ -257,7 +257,7 @@ struct MacOSDraftPostFlowDriver: DraftPostFlowDriving {
         }
 
         let documentIdentity = try await browserDocumentIdentity(in: destination)
-        let draft = try await readDraft(from: source.selection)
+        let draft = try await readDraft(from: source)
         guard !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             throw DraftPostFlowFailure.draftMissing
         }
@@ -266,7 +266,7 @@ struct MacOSDraftPostFlowDriver: DraftPostFlowDriving {
         }
         try await writeAndVerify(
             draft,
-            from: source.selection,
+            from: source,
             to: destination,
             documentIdentity: documentIdentity
         )
@@ -275,7 +275,7 @@ struct MacOSDraftPostFlowDriver: DraftPostFlowDriving {
         do {
             try await Self.verifyDefinitivePostMutationState(
                 draft: draft,
-                source: source.selection,
+                source: source,
                 destination: destination,
                 documentIdentity: documentIdentity
             )
@@ -284,10 +284,10 @@ struct MacOSDraftPostFlowDriver: DraftPostFlowDriving {
         }
     }
 
-    private func readDraft(from selection: ComputerUseWindowSelection) async throws -> String {
-        try await focus(selection)
+    private func readDraft(from source: ComputerUseWindowOption) async throws -> String {
+        try await focus(source)
         return try await Self.runAXWork {
-            let window = try Self.exactFocusedWindow(selection)
+            let window = try Self.exactFocusedWindow(source)
             let candidates = try Self.editableElements(in: window)
                 .filter {
                     Self.stringAttribute(
@@ -302,12 +302,11 @@ struct MacOSDraftPostFlowDriver: DraftPostFlowDriving {
 
     private func writeAndVerify(
         _ draft: String,
-        from source: ComputerUseWindowSelection,
+        from source: ComputerUseWindowOption,
         to destination: ComputerUseWindowOption,
         documentIdentity: String
     ) async throws {
-        let selection = destination.selection
-        try await focus(selection)
+        try await focus(destination)
         try Task.checkCancellation()
         try await Self.runAXWork {
             let window = try Self.exactFocusedBrowserWindow(
@@ -420,7 +419,7 @@ struct MacOSDraftPostFlowDriver: DraftPostFlowDriving {
 
     private static func verifyDefinitivePostMutationState(
         draft: String,
-        source: ComputerUseWindowSelection,
+        source: ComputerUseWindowOption,
         destination: ComputerUseWindowOption,
         documentIdentity: String
     ) async throws {
@@ -440,14 +439,8 @@ struct MacOSDraftPostFlowDriver: DraftPostFlowDriving {
                 running.launchDate == selection.processLaunchDate
             else { throw DraftPostFlowFailure.verificationFailed }
             let application = applicationElement(selection.processIdentifier)
-            guard let window = window(matching: selection, in: application),
-                  browserDocumentMatches(
-                    currentTitle: stringAttribute(
-                        kAXTitleAttribute as CFString,
-                        from: window
-                    ),
-                    selectedTitle: destination.windowTitle
-                  ), try currentBrowserDocumentIdentity(in: window) == documentIdentity
+            guard let window = window(matching: destination, in: application),
+                  try currentBrowserDocumentIdentity(in: window) == documentIdentity
             else { throw DraftPostFlowFailure.verificationFailed }
             let composer = try uniqueComposer(in: window)
             guard stringAttribute(
@@ -463,7 +456,7 @@ struct MacOSDraftPostFlowDriver: DraftPostFlowDriving {
         _ destination: ComputerUseWindowOption,
         documentIdentity: String
     ) throws -> AXUIElement {
-        let window = try exactFocusedWindow(destination.selection)
+        let window = try exactFocusedWindow(destination)
         guard browserDocumentMatches(
             currentTitle: stringAttribute(
             kAXTitleAttribute as CFString,
@@ -496,14 +489,7 @@ struct MacOSDraftPostFlowDriver: DraftPostFlowDriving {
                 running.launchDate == selection.processLaunchDate
             else { throw DraftPostFlowFailure.targetUnavailable }
             let application = Self.applicationElement(selection.processIdentifier)
-            guard let window = Self.window(matching: selection, in: application),
-                  Self.browserDocumentMatches(
-                    currentTitle: Self.stringAttribute(
-                        kAXTitleAttribute as CFString,
-                        from: window
-                    ),
-                    selectedTitle: destination.windowTitle
-                  )
+            guard let window = Self.window(matching: destination, in: application)
             else { throw DraftPostFlowFailure.focusChanged }
             return try Self.currentBrowserDocumentIdentity(in: window)
         }
@@ -533,15 +519,16 @@ struct MacOSDraftPostFlowDriver: DraftPostFlowDriving {
     }
 
     private static func readDraftWithoutFocusing(
-        from selection: ComputerUseWindowSelection
+        from source: ComputerUseWindowOption
     ) throws -> String {
+        let selection = source.selection
         guard let running = NSRunningApplication(
             processIdentifier: selection.processIdentifier
         ), running.bundleIdentifier == selection.bundleIdentifier,
             running.launchDate == selection.processLaunchDate
         else { throw DraftPostFlowFailure.targetUnavailable }
         let application = applicationElement(selection.processIdentifier)
-        guard let window = window(matching: selection, in: application) else {
+        guard let window = window(matching: source, in: application) else {
             throw DraftPostFlowFailure.targetUnavailable
         }
         let candidates = try editableElements(in: window)
@@ -569,7 +556,8 @@ struct MacOSDraftPostFlowDriver: DraftPostFlowDriving {
         }
     }
 
-    private func focus(_ selection: ComputerUseWindowSelection) async throws {
+    private func focus(_ option: ComputerUseWindowOption) async throws {
+        let selection = option.selection
         try Task.checkCancellation()
         try await MainActor.run {
             guard let app = NSRunningApplication(processIdentifier: selection.processIdentifier),
@@ -578,20 +566,21 @@ struct MacOSDraftPostFlowDriver: DraftPostFlowDriving {
             else { throw DraftPostFlowFailure.targetUnavailable }
             app.activate()
             let application = Self.applicationElement(selection.processIdentifier)
-            guard let window = Self.window(matching: selection, in: application),
+            guard let window = Self.window(matching: option, in: application),
                   AXUIElementPerformAction(window, kAXRaiseAction as CFString) == .success
             else { throw DraftPostFlowFailure.targetUnavailable }
         }
         try await Task.sleep(for: .milliseconds(180))
         try Task.checkCancellation()
         try await MainActor.run {
-            _ = try Self.exactFocusedWindow(selection)
+            _ = try Self.exactFocusedWindow(option)
         }
     }
 
     private static func exactFocusedWindow(
-        _ selection: ComputerUseWindowSelection
+        _ option: ComputerUseWindowOption
     ) throws -> AXUIElement {
+        let selection = option.selection
         guard let running = NSRunningApplication(
             processIdentifier: selection.processIdentifier
         ),
@@ -601,7 +590,7 @@ struct MacOSDraftPostFlowDriver: DraftPostFlowDriving {
                 == selection.processIdentifier
         else { throw DraftPostFlowFailure.focusChanged }
         let application = applicationElement(selection.processIdentifier)
-        guard let selected = window(matching: selection, in: application) else {
+        guard let selected = window(matching: option, in: application) else {
             throw DraftPostFlowFailure.targetUnavailable
         }
         var focusedValue: CFTypeRef?
@@ -621,6 +610,22 @@ struct MacOSDraftPostFlowDriver: DraftPostFlowDriving {
         let application = AXUIElementCreateApplication(processIdentifier)
         AXUIElementSetMessagingTimeout(application, 0.35)
         return application
+    }
+
+    private static func window(
+        matching option: ComputerUseWindowOption,
+        in application: AXUIElement
+    ) -> AXUIElement? {
+        guard let candidate = window(matching: option.selection, in: application),
+              browserDocumentMatches(
+                currentTitle: stringAttribute(
+                    kAXTitleAttribute as CFString,
+                    from: candidate
+                ),
+                selectedTitle: option.windowTitle
+              )
+        else { return nil }
+        return candidate
     }
 
     private static func window(
