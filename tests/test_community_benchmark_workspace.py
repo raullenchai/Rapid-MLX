@@ -1271,7 +1271,7 @@ def test_run_local_archives_registered_token_drift_as_failure(
     measurements = _text_run()["measurements"]
     measurements[0]["prompt_tokens"] = 510
 
-    async def drifted_measurements(repo_id: str):
+    async def drifted_measurements(repo_id: str, *_: object, **__: object):
         return measurements, 32768
 
     monkeypatch.setattr(local_runner, "_text_measurements", drifted_measurements)
@@ -4823,13 +4823,39 @@ def test_run_local_measures_text_models_by_alias_not_bare_repo_id(
     )
     seen: list[str] = []
 
-    async def fake_measurements(model_name: str):
+    async def fake_measurements(model_name: str, *_: object, **__: object):
         seen.append(model_name)
         return _text_run()["measurements"], 32768
 
     monkeypatch.setattr(local_runner, "_text_measurements", fake_measurements)
     local_runner.run_local("example-text", archive=archive)
     assert seen == ["example-text"]
+
+
+def test_text_measurements_prefer_the_catalog_repo_id_over_resolution(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A same-named local directory must not be measured under the catalog
+    identity (codex on #3147)."""
+    targets: list[str] = []
+
+    def fake_loader(target, **_):
+        targets.append(target)
+        raise RuntimeError("stop here")
+
+    monkeypatch.setattr(
+        "vllm_mlx.utils.tokenizer.load_model_with_fallback", fake_loader
+    )
+    monkeypatch.setattr(
+        "vllm_mlx.model_aliases.resolve_model", lambda name: "/tmp/same-named-dir"
+    )
+    with pytest.raises(RuntimeError, match="stop here"):
+        asyncio.run(
+            local_runner._text_measurements(
+                "qwen3.5-4b-4bit", "mlx-community/Qwen3.5-4B-MLX-4bit"
+            )
+        )
+    assert targets == ["mlx-community/Qwen3.5-4B-MLX-4bit"]
 
 
 def test_identity_is_kept_only_when_the_snapshot_did_not_move() -> None:
@@ -4903,7 +4929,7 @@ def test_run_local_prefers_the_identity_read_right_after_loading(
         "base_dtype": "unknown",
     }
 
-    async def fake_measurements(model_name: str, **_: object):
+    async def fake_measurements(model_name: str, *_: object, **__: object):
         return _text_run()["measurements"], 32768, loaded
 
     def after_read(repo_id, task_type, subfolder=None, snapshot_path=None):
@@ -4955,7 +4981,7 @@ def test_run_local_degrades_identity_when_the_cache_moves_during_the_run(
         }
         return identity
 
-    async def fake_measurements(model_name: str, **_: object):
+    async def fake_measurements(model_name: str, *_: object, **__: object):
         return _text_run()["measurements"], 32768
 
     monkeypatch.setattr(local_runner, "unresolved_model_identity", moving_cache)
@@ -4982,7 +5008,7 @@ def test_run_local_resolves_identity_before_loading_the_model(
         order.append("identity")
         return real_identity(repo_id, task_type, subfolder)
 
-    async def fake_measurements(model_name: str):
+    async def fake_measurements(model_name: str, *_: object, **__: object):
         order.append("measure")
         return _text_run()["measurements"], 32768
 

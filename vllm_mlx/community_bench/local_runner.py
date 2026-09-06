@@ -695,6 +695,7 @@ def _loader_target(model_name: str, repo_id: str) -> str:
 
 async def _text_measurements(
     model_name: str,
+    catalog_repo_id: str | None = None,
 ) -> tuple[list[dict[str, Any]], int, dict[str, Any] | None]:
     """Measure ``model_name`` — the catalog alias, not the bare repo id.
 
@@ -716,7 +717,10 @@ async def _text_measurements(
 
     from .runner import _reported_token_count, run_standardized_bench
 
-    repo_id = resolve_model(model_name)
+    # The catalog's own repo id is authoritative: ``resolve_model`` may answer
+    # with a same-named local directory or an extra-model-root path, which
+    # would measure unrelated weights under the catalog identity.
+    repo_id = catalog_repo_id or resolve_model(model_name)
     target = _loader_target(model_name, repo_id)
 
     executor = concurrent.futures.ThreadPoolExecutor(
@@ -875,7 +879,7 @@ def run_local(
         capture_token = _CONDITIONS_AFTER.set(capture)
         try:
             if task_type == "text_generation":
-                measured = asyncio.run(_text_measurements(alias))
+                measured = asyncio.run(_text_measurements(alias, model["repo_id"]))
                 measurements, context_length = measured[0], measured[1]
                 # The identity read right after the loader pinned its snapshot
                 # (3-tuple from the real helper; test doubles may return two).
