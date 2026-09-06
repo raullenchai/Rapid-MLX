@@ -856,6 +856,7 @@ final class DraftPostFlowViewModel {
     private let catalog: any ComputerUseWindowListing
     private let driver: any DraftPostFlowDriving
     private var runTask: Task<Void, Never>?
+    private var loadGeneration = 0
 
     init(
         catalog: any ComputerUseWindowListing = MacOSComputerUseWindowCatalog(),
@@ -866,7 +867,12 @@ final class DraftPostFlowViewModel {
     }
 
     var sourceOptions: [ComputerUseWindowOption] {
-        windows.filter { $0.selection.bundleIdentifier == "com.apple.TextEdit" }
+        windows.filter {
+            $0.selection.bundleIdentifier == "com.apple.TextEdit"
+                && !$0.windowTitle.trimmingCharacters(
+                    in: .whitespacesAndNewlines
+                ).isEmpty
+        }
     }
 
     var destinationOptions: [ComputerUseWindowOption] {
@@ -894,13 +900,18 @@ final class DraftPostFlowViewModel {
     }
 
     func load() async {
+        loadGeneration += 1
+        let generation = loadGeneration
         phase = .loading
         do {
-            windows = try await catalog.windows()
+            let refreshedWindows = try await catalog.windows()
+            guard generation == loadGeneration else { return }
+            windows = refreshedWindows
             sourceID = nil
             destinationID = nil
             phase = .ready
         } catch let error as ComputerUseWindowCatalogError {
+            guard generation == loadGeneration else { return }
             switch error {
             case .permissionsMissing:
                 phase = .failed(.permissionMissing, nil)
@@ -908,6 +919,7 @@ final class DraftPostFlowViewModel {
                 phase = .failed(.dependencyFailure, nil)
             }
         } catch {
+            guard generation == loadGeneration else { return }
             phase = .failed(.dependencyFailure, nil)
         }
     }

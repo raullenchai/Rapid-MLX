@@ -256,9 +256,9 @@ struct DraftPostFlowTests {
     }
 
     @MainActor
-    @Test("Untitled Safari windows are not offered as destinations")
-    func untitledBrowserIsExcluded() async {
-        let untitled = ComputerUseWindowOption(
+    @Test("Untitled windows are not offered to the flow")
+    func untitledWindowsAreExcluded() async {
+        let untitledBrowser = ComputerUseWindowOption(
             id: "2:21",
             applicationName: "Safari",
             windowTitle: "   ",
@@ -269,14 +269,52 @@ struct DraftPostFlowTests {
                 windowID: 21
             )
         )
+        let untitledSource = ComputerUseWindowOption(
+            id: "1:11",
+            applicationName: "TextEdit",
+            windowTitle: "",
+            selection: ComputerUseWindowSelection(
+                bundleIdentifier: "com.apple.TextEdit",
+                processIdentifier: 1,
+                processLaunchDate: Date(timeIntervalSince1970: 1),
+                windowID: 11
+            )
+        )
         let viewModel = DraftPostFlowViewModel(
-            catalog: StaticWindowCatalog(windows: [Self.destination, untitled]),
+            catalog: StaticWindowCatalog(windows: [
+                Self.source, untitledSource, Self.destination, untitledBrowser,
+            ]),
             driver: ScriptedDraftPostDriver(results: [.success(())])
         )
 
         await viewModel.load()
 
+        #expect(viewModel.sourceOptions.map(\.id) == [Self.source.id])
         #expect(viewModel.destinationOptions.map(\.id) == [Self.destination.id])
+    }
+
+    @MainActor
+    @Test("An older window refresh cannot overwrite a newer result")
+    func staleRefreshIsIgnored() async {
+        let catalog = OutOfOrderWindowCatalog(
+            older: [Self.source],
+            newer: [Self.destination]
+        )
+        let viewModel = DraftPostFlowViewModel(
+            catalog: catalog,
+            driver: ScriptedDraftPostDriver(results: [.success(())])
+        )
+
+        let olderLoad = Task { await viewModel.load() }
+        while await catalog.callCount == 0 {
+            await Task.yield()
+        }
+        let newerLoad = Task { await viewModel.load() }
+        await newerLoad.value
+        await olderLoad.value
+
+        #expect(viewModel.windows == [Self.destination])
+        #expect(viewModel.phase == .ready)
     }
 
     @MainActor
@@ -587,5 +625,25 @@ private actor StaticWindowCatalog: ComputerUseWindowListing {
 
     func replace(with windows: [ComputerUseWindowOption]) {
         storedWindows = windows
+    }
+}
+
+private actor OutOfOrderWindowCatalog: ComputerUseWindowListing {
+    private let older: [ComputerUseWindowOption]
+    private let newer: [ComputerUseWindowOption]
+    private(set) var callCount = 0
+
+    init(older: [ComputerUseWindowOption], newer: [ComputerUseWindowOption]) {
+        self.older = older
+        self.newer = newer
+    }
+
+    func windows() async throws -> [ComputerUseWindowOption] {
+        callCount += 1
+        if callCount == 1 {
+            try await Task.sleep(for: .milliseconds(100))
+            return older
+        }
+        return newer
     }
 }
