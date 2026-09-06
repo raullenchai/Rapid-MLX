@@ -206,6 +206,7 @@ def _installed_config(monkeypatch, tmp_path):
     from vllm_mlx.headless_service import configure
 
     home = tmp_path / "home"
+    home.mkdir(parents=True)
     monkeypatch.setattr(
         config_module, "SERVICE_CONFIG_ROOT", tmp_path / "system-config"
     )
@@ -469,16 +470,25 @@ def test_definition_and_secret_directory_helpers(monkeypatch, tmp_path):
     monkeypatch.setattr(config_module, "SERVICE_CONFIG_ROOT", tmp_path / "definitions")
     monkeypatch.setattr(config_module.os, "geteuid", lambda: 0)
     chowns = []
+    fchowns = []
     monkeypatch.setattr(
         config_module.os,
         "chown",
         lambda path, uid, gid: chowns.append((path, uid, gid)),
     )
+    monkeypatch.setattr(
+        config_module.os,
+        "fchown",
+        lambda fd, uid, gid: fchowns.append((fd, uid, gid)),
+    )
     target = config_module.ensure_config_dir(tmp_path, uid=501, gid=20)
     assert target.is_dir() and stat.S_IMODE(target.stat().st_mode) == 0o755
-    secret_dir = config_module.ensure_credential_dir(tmp_path, uid=501, gid=20)
+    secret_dir = config_module.ensure_credential_dir(
+        tmp_path, uid=os.getuid(), gid=os.getgid()
+    )
     assert secret_dir.is_dir() and stat.S_IMODE(secret_dir.stat().st_mode) == 0o700
-    assert chowns == [(target, 0, 0), (secret_dir, 501, 20)]
+    assert chowns == [(target, 0, 0)]
+    assert [(uid, gid) for _, uid, gid in fchowns] == [(os.getuid(), os.getgid())]
 
     calls = []
     monkeypatch.setattr(
@@ -486,6 +496,76 @@ def test_definition_and_secret_directory_helpers(monkeypatch, tmp_path):
     )
     config_module.atomic_write_definition(tmp_path / "x", b"data")
     assert calls[0][1]["uid"] == calls[0][1]["gid"] == 0
+
+
+def test_credential_directory_symlink_is_refused_without_touching_target(tmp_path):
+    from vllm_mlx.headless_service import config as config_module
+
+    home = tmp_path / "home"
+    home.mkdir()
+    victim = tmp_path / "victim"
+    victim.mkdir(mode=0o755)
+    (home / ".rapid-mlx-secrets").symlink_to(victim, target_is_directory=True)
+    before = stat.S_IMODE(victim.stat().st_mode)
+
+    with pytest.raises(OSError):
+        config_module.ensure_credential_dir(home, uid=os.getuid() + 1, gid=os.getgid())
+
+    assert stat.S_IMODE(victim.stat().st_mode) == before
+    assert victim.stat().st_uid == os.getuid()
+
+
+def test_credential_write_detects_directory_swap_and_never_writes_victim(
+    monkeypatch, tmp_path
+):
+    from vllm_mlx.headless_service import config as config_module
+
+    home = tmp_path / "home"
+    home.mkdir()
+    victim = tmp_path / "victim"
+    victim.mkdir()
+    credential_dir = home / ".rapid-mlx-secrets"
+    moved = home / ".rapid-mlx-secrets.moved"
+    real_replace = config_module.os.replace
+
+    def swap_then_replace(src, dst, **kwargs):
+        credential_dir.rename(moved)
+        credential_dir.symlink_to(victim, target_is_directory=True)
+        return real_replace(src, dst, **kwargs)
+
+    monkeypatch.setattr(config_module.os, "replace", swap_then_replace)
+    with pytest.raises(ServiceConfigError, match="changed during update"):
+        config_module.atomic_write_credential(
+            home,
+            "com.rapidmlx.server",
+            b"secret\n",
+            uid=os.getuid(),
+            gid=os.getgid(),
+        )
+
+    assert not (victim / "com.rapidmlx.server.credential").exists()
+    assert not (moved / "com.rapidmlx.server.credential").exists()
+
+
+def test_credential_unset_refuses_symlinked_directory(tmp_path):
+    from vllm_mlx.headless_service import config as config_module
+
+    home = tmp_path / "home"
+    home.mkdir()
+    victim = tmp_path / "victim"
+    victim.mkdir()
+    victim_file = victim / "com.rapidmlx.server.credential"
+    victim_file.write_text("do-not-delete")
+    (home / ".rapid-mlx-secrets").symlink_to(victim, target_is_directory=True)
+
+    with pytest.raises(OSError):
+        config_module.remove_credential(
+            home,
+            "com.rapidmlx.server",
+            uid=os.getuid(),
+            gid=os.getgid(),
+        )
+    assert victim_file.read_text() == "do-not-delete"
 
 
 def test_private_file_guards_and_presence(monkeypatch, tmp_path):
@@ -668,7 +748,7 @@ def test_credential_rejects_tty_and_write_failure(monkeypatch, tmp_path):
     monkeypatch.setattr(configure.sys, "stdin", stream)
     monkeypatch.setattr(
         configure,
-        "ensure_credential_dir",
+        "atomic_write_credential",
         lambda *_a, **_k: (_ for _ in ()).throw(OSError("disk")),
     )
     assert (
@@ -957,7 +1037,9 @@ def test_credential_unset_oserror(monkeypatch, tmp_path):
     configure, _, _, _ = _installed_config(monkeypatch, tmp_path)
     monkeypatch.setattr(configure, "is_root", lambda: True)
     monkeypatch.setattr(
-        Path, "unlink", lambda *_a, **_k: (_ for _ in ()).throw(OSError("busy"))
+        configure,
+        "remove_credential",
+        lambda *_a, **_k: (_ for _ in ()).throw(OSError("busy")),
     )
     assert (
         configure.credential_command(

@@ -13,6 +13,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import secrets
 import stat
 import tempfile
 from dataclasses import dataclass, replace
@@ -263,12 +264,127 @@ def ensure_config_dir(home: Path, *, uid: int, gid: int) -> Path:
 
 
 def ensure_credential_dir(home: Path, *, uid: int, gid: int) -> Path:
-    """Create the private secret directory traversable by the service only."""
-    target = credential_path(home).parent
-    target.mkdir(mode=0o700, parents=True, exist_ok=True)
-    os.chmod(target, 0o700)
-    os.chown(target, uid, gid)
+    """Create/open the private secret directory without following symlinks."""
+
+    target, dir_fd = _open_credential_dir(home, uid=uid, gid=gid, create=True)
+    os.close(dir_fd)
     return target
+
+
+def _open_credential_dir(
+    home: Path, *, uid: int, gid: int, create: bool
+) -> tuple[Path, int]:
+    """Return an fd for the real credential directory, never a symlink target."""
+
+    target = credential_path(home).parent
+    if create:
+        try:
+            os.mkdir(target, mode=0o700)
+        except FileExistsError:
+            pass
+    flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+    dir_fd = os.open(target, flags)
+    try:
+        info = os.fstat(dir_fd)
+        if not stat.S_ISDIR(info.st_mode):
+            raise ServiceConfigError("credential directory must be a real directory")
+        if info.st_uid not in {0, uid}:
+            raise ServiceConfigError(
+                f"credential directory is owned by uid {info.st_uid}, expected {uid}"
+            )
+        os.fchmod(dir_fd, 0o700)
+        os.fchown(dir_fd, uid, gid)
+        return target, dir_fd
+    except BaseException:
+        os.close(dir_fd)
+        raise
+
+
+def atomic_write_credential(
+    home: Path,
+    label: str,
+    data: bytes,
+    *,
+    uid: int,
+    gid: int,
+) -> Path:
+    """Replace a credential through a pinned directory fd.
+
+    The service account owns its home and can race a root-run credential
+    command. All file creation/replacement therefore stays relative to an
+    ``O_NOFOLLOW`` directory fd; path-based chmod/chown/write operations are
+    forbidden at this boundary.
+    """
+
+    from .common import validate_label
+
+    validate_label(label)
+    target, dir_fd = _open_credential_dir(home, uid=uid, gid=gid, create=True)
+    filename = f"{label}.credential"
+    tmp_name = f".{filename}.{secrets.token_hex(12)}"
+    file_fd = -1
+    installed = False
+    try:
+        file_fd = os.open(
+            tmp_name,
+            os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+            0o600,
+            dir_fd=dir_fd,
+        )
+        os.fchmod(file_fd, 0o600)
+        os.fchown(file_fd, uid, gid)
+        with os.fdopen(file_fd, "wb") as handle:
+            file_fd = -1
+            handle.write(data)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(tmp_name, filename, src_dir_fd=dir_fd, dst_dir_fd=dir_fd)
+        installed = True
+        os.fsync(dir_fd)
+
+        # Detect a rename/symlink swap of the directory name while the fd was
+        # pinned. The root operation remained contained either way, but a
+        # detached secret must not be reported as successfully installed.
+        named = target.stat(follow_symlinks=False)
+        opened = os.fstat(dir_fd)
+        if not stat.S_ISDIR(named.st_mode) or (named.st_dev, named.st_ino) != (
+            opened.st_dev,
+            opened.st_ino,
+        ):
+            os.unlink(filename, dir_fd=dir_fd)
+            installed = False
+            raise ServiceConfigError("credential directory changed during update")
+        return target / filename
+    finally:
+        if file_fd >= 0:
+            os.close(file_fd)
+        if not installed:
+            try:
+                os.unlink(tmp_name, dir_fd=dir_fd)
+            except OSError:
+                pass
+        os.close(dir_fd)
+
+
+def remove_credential(home: Path, label: str, *, uid: int, gid: int) -> bool:
+    """Remove a credential relative to a no-follow directory fd."""
+
+    from .common import validate_label
+
+    validate_label(label)
+    try:
+        _, dir_fd = _open_credential_dir(home, uid=uid, gid=gid, create=False)
+    except FileNotFoundError:
+        return False
+    try:
+        try:
+            os.unlink(f"{label}.credential", dir_fd=dir_fd)
+        except FileNotFoundError:
+            return False
+        os.fsync(dir_fd)
+        return True
+    finally:
+        os.close(dir_fd)
 
 
 def assert_private_file(path: Path, *, expected_uid: int | None = None) -> None:
