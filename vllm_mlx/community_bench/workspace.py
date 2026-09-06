@@ -144,10 +144,15 @@ def estimate_memory_gib(
         return int(minimum_memory_gb + 0.999999), "profile_minimum"
     if footprints is None:
         footprints = curated_footprints()
+    floor = _parameter_floor_gib(alias)
     footprint = footprints.get(alias.casefold())
     if isinstance(footprint, int | float) and footprint > 0:
-        return int(math.ceil(footprint)), "curated_footprint"
-    floor = _parameter_floor_gib(alias)
+        estimate = int(math.ceil(footprint))
+        # Curated numbers are hand-maintained; the parameter floor guards
+        # against a stale one just like it guards the artifact size.
+        if floor is not None and floor > estimate:
+            return floor, "parameter_count_floor"
+        return estimate, "curated_footprint"
     if isinstance(download_size_bytes, int):
         # This is deliberately a planning estimate, not benchmark evidence.
         estimate = max(1, (download_size_bytes + (1 << 30) - 1) // (1 << 30) + 2)

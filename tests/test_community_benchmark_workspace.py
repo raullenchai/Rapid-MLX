@@ -190,6 +190,13 @@ def test_memory_estimate_precedence_and_parameter_floor() -> None:
         download_size_bytes=1 << 30,
         footprints={"qwen3.8-27b-4bit": 20.0},
     ) == (20, "curated_footprint")
+    # A stale curated number is floored the same way.
+    assert estimate_memory_gib(
+        "qwen3.6-35b-mtp-4bit",
+        minimum_memory_gb=None,
+        download_size_bytes=None,
+        footprints={"qwen3.6-35b-mtp-4bit": 3.0},
+    ) == (21, "parameter_count_floor")
     # A catalog download size that is impossible for the named parameter
     # count is raised to the parameter floor (the 3 GB "35B MTP" row).
     assert estimate_memory_gib(
