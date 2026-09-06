@@ -732,8 +732,7 @@ def set_qwen4_fast_rmsnorm_mode(model: nn.Module, mode: str) -> int:
     """Switch every zero-centered Qwen4 RMSNorm between stock and fast fp32."""
     if mode not in _FAST_RMSNORM_MODES:
         raise ValueError(
-            f"unknown fast RMSNorm mode {mode!r}; "
-            f"expected one of {_FAST_RMSNORM_MODES}"
+            f"unknown fast RMSNorm mode {mode!r}; expected one of {_FAST_RMSNORM_MODES}"
         )
     norms = [
         module
@@ -1027,9 +1026,9 @@ class QSAIndexer(nn.Module):
             # The singleton axis is synthetic: preserve the parent forward's
             # real width so prefill cannot accidentally enter the decode-only
             # fast RMSNorm route.
-            normalized = self.k_layernorm(
-                group[:, None, :], sequence_length=length
-            )[:, 0, :]
+            normalized = self.k_layernorm(group[:, None, :], sequence_length=length)[
+                :, 0, :
+            ]
             return apply_qwen4_exp_rope(
                 normalized[:, None, None, :],
                 mx.array([[start]], dtype=mx.int64),

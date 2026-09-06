@@ -240,7 +240,9 @@ def test_zero_centered_fast_rms_norm_uses_fp32_and_matches_stock(monkeypatch):
     assert seen_dtypes == [(mx.float32, None)]
     assert fast.dtype == inputs.dtype
     assert norm.fast_rmsnorm_calls == 1
-    np.testing.assert_allclose(np.asarray(fast), np.asarray(stock), rtol=2e-3, atol=2e-3)
+    np.testing.assert_allclose(
+        np.asarray(fast), np.asarray(stock), rtol=2e-3, atol=2e-3
+    )
 
 
 def test_zero_centered_fast_rms_norm_declines_wide_parent_forward(monkeypatch):
