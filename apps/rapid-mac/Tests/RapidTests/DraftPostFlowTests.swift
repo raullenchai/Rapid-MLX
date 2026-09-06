@@ -54,6 +54,9 @@ struct DraftPostFlowTests {
     @Test(.enabled(if: ProcessInfo.processInfo.environment["RAPID_LIVE_CUA_DOGFOOD"] == "1"))
     func liveFocusStealRecovery() async throws {
         let (source, destination) = try await Self.liveOptions()
+        try await Self.clearLiveComposer(
+            processIdentifier: destination.selection.processIdentifier
+        )
         let driver = FocusStealingDraftPostDriver(base: MacOSDraftPostFlowDriver())
         let outcome = await DraftPostFlowCoordinator(driver: driver).run(
             source: source,

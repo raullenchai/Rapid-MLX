@@ -101,6 +101,7 @@ enum DraftPostFlowFailure: Error, Equatable, Sendable {
     case permissionMissing
     case cancelled
     case dependencyFailure
+    case accessibilityTreeTooLarge
 
     var isRecoverable: Bool {
         switch self {
@@ -128,6 +129,7 @@ enum DraftPostFlowFailure: Error, Equatable, Sendable {
         case .permissionMissing: "Screen Recording and Accessibility access are required."
         case .cancelled: "The flow was stopped."
         case .dependencyFailure: "The flow stopped because a local system operation failed."
+        case .accessibilityTreeTooLarge: "The selected window is too complex for this preview flow."
         }
     }
 }
@@ -294,7 +296,7 @@ struct MacOSDraftPostFlowDriver: DraftPostFlowDriving {
         try await focus(selection)
         return try await MainActor.run {
             let window = try Self.exactFocusedWindow(selection)
-            let candidates = Self.editableElements(in: window)
+            let candidates = try Self.editableElements(in: window)
                 .filter {
                     Self.stringAttribute(
                         kAXRoleAttribute as CFString,
@@ -487,7 +489,7 @@ struct MacOSDraftPostFlowDriver: DraftPostFlowDriving {
             ), running.bundleIdentifier == selection.bundleIdentifier,
                 running.launchDate == selection.processLaunchDate
             else { throw DraftPostFlowFailure.targetUnavailable }
-            let application = AXUIElementCreateApplication(selection.processIdentifier)
+            let application = Self.applicationElement(selection.processIdentifier)
             guard let window = Self.window(matching: selection, in: application),
                   Self.browserDocumentMatches(
                     currentTitle: Self.stringAttribute(
@@ -508,7 +510,7 @@ struct MacOSDraftPostFlowDriver: DraftPostFlowDriving {
         guard let windowFrame = elementFrame(window) else {
             throw DraftPostFlowFailure.composerAmbiguous
         }
-        let addressFields = allElements(in: window).filter { element in
+        let addressFields = try allElements(in: window).filter { element in
             guard stringAttribute(kAXIdentifierAttribute as CFString, from: element)
                 == "WEB_BROWSER_ADDRESS_AND_SEARCH_FIELD",
                 boolAttribute(kAXEnabledAttribute as CFString, from: element) == true,
@@ -534,11 +536,11 @@ struct MacOSDraftPostFlowDriver: DraftPostFlowDriving {
         ), running.bundleIdentifier == selection.bundleIdentifier,
             running.launchDate == selection.processLaunchDate
         else { throw DraftPostFlowFailure.targetUnavailable }
-        let application = AXUIElementCreateApplication(selection.processIdentifier)
+        let application = applicationElement(selection.processIdentifier)
         guard let window = window(matching: selection, in: application) else {
             throw DraftPostFlowFailure.targetUnavailable
         }
-        let candidates = editableElements(in: window)
+        let candidates = try editableElements(in: window)
             .filter {
                 stringAttribute(kAXRoleAttribute as CFString, from: $0)
                     == kAXTextAreaRole as String
@@ -555,7 +557,7 @@ struct MacOSDraftPostFlowDriver: DraftPostFlowDriving {
                   app.launchDate == selection.processLaunchDate
             else { throw DraftPostFlowFailure.targetUnavailable }
             app.activate()
-            let application = AXUIElementCreateApplication(selection.processIdentifier)
+            let application = Self.applicationElement(selection.processIdentifier)
             guard let window = Self.window(matching: selection, in: application),
                   AXUIElementPerformAction(window, kAXRaiseAction as CFString) == .success
             else { throw DraftPostFlowFailure.targetUnavailable }
@@ -579,7 +581,7 @@ struct MacOSDraftPostFlowDriver: DraftPostFlowDriving {
             NSWorkspace.shared.frontmostApplication?.processIdentifier
                 == selection.processIdentifier
         else { throw DraftPostFlowFailure.focusChanged }
-        let application = AXUIElementCreateApplication(selection.processIdentifier)
+        let application = applicationElement(selection.processIdentifier)
         guard let selected = window(matching: selection, in: application) else {
             throw DraftPostFlowFailure.targetUnavailable
         }
@@ -594,6 +596,13 @@ struct MacOSDraftPostFlowDriver: DraftPostFlowDriving {
             CFEqual(selected, unsafeDowncast(focusedValue, to: AXUIElement.self))
         else { throw DraftPostFlowFailure.focusChanged }
         return selected
+    }
+
+    @MainActor
+    private static func applicationElement(_ processIdentifier: pid_t) -> AXUIElement {
+        let application = AXUIElementCreateApplication(processIdentifier)
+        AXUIElementSetMessagingTimeout(application, 0.35)
+        return application
     }
 
     @MainActor
@@ -636,7 +645,7 @@ struct MacOSDraftPostFlowDriver: DraftPostFlowDriving {
     }
 
     @MainActor
-    private static func allElements(in root: AXUIElement) -> [AXUIElement] {
+    private static func allElements(in root: AXUIElement) throws -> [AXUIElement] {
         var queue: [(AXUIElement, Int)] = [(root, 0)]
         var result: [AXUIElement] = []
         var visited = Set<AXUIElement>()
@@ -648,22 +657,30 @@ struct MacOSDraftPostFlowDriver: DraftPostFlowDriving {
             result.append(element)
             guard depth < 32 else { continue }
             var value: CFTypeRef?
-            if AXUIElementCopyAttributeValue(
+            let childrenResult = AXUIElementCopyAttributeValue(
                 element,
                 kAXChildrenAttribute as CFString,
                 &value
-            ) == .success,
+            )
+            if childrenResult == .success,
                 let children = value as? [AXUIElement]
             {
                 queue.append(contentsOf: children.map { ($0, depth + 1) })
+            } else if childrenResult != .noValue,
+                      childrenResult != .attributeUnsupported
+            {
+                throw DraftPostFlowFailure.dependencyFailure
             }
+        }
+        guard cursor >= queue.count else {
+            throw DraftPostFlowFailure.accessibilityTreeTooLarge
         }
         return result
     }
 
     @MainActor
-    private static func editableElements(in root: AXUIElement) -> [AXUIElement] {
-        allElements(in: root).filter { element in
+    private static func editableElements(in root: AXUIElement) throws -> [AXUIElement] {
+        try allElements(in: root).filter { element in
             let role = stringAttribute(kAXRoleAttribute as CFString, from: element)
             let subrole = stringAttribute(kAXSubroleAttribute as CFString, from: element)
             return (role == kAXTextAreaRole as String || role == kAXTextFieldRole as String)
@@ -713,7 +730,7 @@ struct MacOSDraftPostFlowDriver: DraftPostFlowDriving {
         guard let windowFrame = elementFrame(window) else {
             throw DraftPostFlowFailure.composerMissing
         }
-        let matches = editableElements(in: window).filter {
+        let matches = try editableElements(in: window).filter {
             isExplicitComposer($0, windowFrame: windowFrame)
         }
         guard let match = matches.first else {
