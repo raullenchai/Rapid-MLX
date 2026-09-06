@@ -48,6 +48,7 @@ def _record_conditions_after() -> None:
 
 from .run_builder import (
     build_run,
+    consistent_model_identity,
     execution_config,
     unresolved_model_identity,
     utc_now,
@@ -875,6 +876,16 @@ def run_local(
         # helper that never captured leaves ``after`` unknown; probing here,
         # after the model is gone, would misreport a memory-saturated run.
         conditions_after = capture.get("after")
+        # Re-read the cache now that the loader has pinned its snapshot and
+        # keep the identity only if it names the same revision.
+        model_identity = consistent_model_identity(
+            model_identity,
+            unresolved_model_identity(
+                model["repo_id"], task_type, model.get("subfolder")
+            ),
+            model["repo_id"],
+            task_type,
+        )
         execution = execution_config(task_type, context_length=context_length)
         run = build_run(
             repo_id=model["repo_id"],

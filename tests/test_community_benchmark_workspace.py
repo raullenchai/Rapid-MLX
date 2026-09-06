@@ -4694,6 +4694,10 @@ def test_quantization_facts_projects_mlx_config_onto_the_contract() -> None:
     # transformers-style quantization_config names the scheme quant_method.
     awq = {"quantization_config": {"bits": 4, "quant_method": "awq"}}
     assert quantization_facts(awq)["method"] == "awq"
+    # The contract caps method at 64 characters; longer publisher strings
+    # become "other" instead of making the record unsavable.
+    long_method = {"quantization": {"bits": 4, "method": "m" * 65}}
+    assert quantization_facts(long_method)["method"] == "other"
     # Every projection must satisfy the atomic quantization contract.
     for config in (
         uniform,
@@ -4828,6 +4832,90 @@ def test_run_local_measures_text_models_by_alias_not_bare_repo_id(
     assert seen == ["example-text"]
 
 
+def test_identity_is_kept_only_when_the_snapshot_did_not_move() -> None:
+    from vllm_mlx.community_bench.run_builder import consistent_model_identity
+
+    def identity(revision: str | None, bits_x2: int = 8) -> dict:
+        source = {"kind": "huggingface", "repo_id": "org/model", "subfolder": "4bit"}
+        if revision:
+            source["resolved_revision"] = revision
+        return {
+            "schema_version": 1,
+            "identity_strength": "unresolved",
+            "pipeline_kind": "text_generation",
+            "components": [
+                {
+                    "component_id": "primary",
+                    "role": "primary",
+                    "source": source,
+                    "artifact": {"format": "mlx-safetensors"},
+                    "quantization": {
+                        "kind": "weights",
+                        "method": "affine",
+                        "weight_bits_x2": bits_x2,
+                        "base_dtype": "unknown",
+                    },
+                }
+            ],
+        }
+
+    a, b = "a" * 40, "b" * 40
+    # Same snapshot before and after: the pre-load facts stand.
+    assert consistent_model_identity(
+        identity(a), identity(a), "org/model", "text_generation"
+    ) == identity(a)
+    # Cold cache: the loader populated the snapshot, so the post-load facts are it.
+    assert consistent_model_identity(
+        identity(None), identity(b), "org/model", "text_generation"
+    ) == identity(b)
+    # refs/main moved mid-run: nothing can be vouched for.
+    degraded = consistent_model_identity(
+        identity(a), identity(b), "org/model", "text_generation"
+    )
+    component = degraded["components"][0]
+    assert component["quantization"] == {"kind": "unknown", "base_dtype": "unknown"}
+    assert component["source"] == {
+        "kind": "huggingface",
+        "repo_id": "org/model",
+        "subfolder": "4bit",
+    }
+    from vllm_mlx.catalog.validation import ContractValidator
+
+    ContractValidator().validate_model_identity(degraded)
+
+
+def test_run_local_degrades_identity_when_the_cache_moves_during_the_run(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    archive = LocalRunArchive(tmp_path)
+    _mock_local_context(
+        monkeypatch, "text_generation", "mlx-community/example-text-model"
+    )
+    revisions = iter(["a" * 40, "b" * 40])
+    real = local_runner.unresolved_model_identity
+
+    def moving_cache(repo_id, task_type, subfolder=None):
+        identity = real(repo_id, task_type, subfolder)
+        identity["components"][0]["source"]["resolved_revision"] = next(revisions)
+        identity["components"][0]["quantization"] = {
+            "kind": "weights",
+            "method": "affine",
+            "weight_bits_x2": 8,
+            "base_dtype": "unknown",
+        }
+        return identity
+
+    async def fake_measurements(model_name: str, **_: object):
+        return _text_run()["measurements"], 32768
+
+    monkeypatch.setattr(local_runner, "unresolved_model_identity", moving_cache)
+    monkeypatch.setattr(local_runner, "_text_measurements", fake_measurements)
+    run = local_runner.run_local("example-text", archive=archive)
+    component = run["model"]["components"][0]
+    assert component["quantization"]["kind"] == "unknown"
+    assert "resolved_revision" not in component["source"]
+
+
 def test_run_local_resolves_identity_before_loading_the_model(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
@@ -4851,7 +4939,9 @@ def test_run_local_resolves_identity_before_loading_the_model(
     monkeypatch.setattr(local_runner, "unresolved_model_identity", identity_first)
     monkeypatch.setattr(local_runner, "_text_measurements", fake_measurements)
     local_runner.run_local("example-text", archive=archive)
-    assert order == ["identity", "measure"]
+    # Resolved before the loader pins its snapshot, then re-read afterwards
+    # to confirm the snapshot did not move.
+    assert order == ["identity", "measure", "identity"]
 
 
 def test_benchmark_catalog_exposes_the_alias_subfolder() -> None:

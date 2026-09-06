@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import copy
 import json
 import math
 import platform
@@ -27,6 +28,7 @@ def utc_now() -> str:
 
 #: ``model-identity.schema.json#/$defs/quantization/properties/method``.
 _METHOD_PATTERN = re.compile(r"^[a-z0-9][a-z0-9._-]*$")
+_METHOD_MAX_LENGTH = 64
 
 _BASE_DTYPES = {
     "float32": "float32",
@@ -40,9 +42,10 @@ def _cached_config(
 ) -> tuple[dict[str, Any], str | None] | None:
     """Return ``(config.json, resolved_revision)`` from the local HF cache.
 
-    The benchmark just loaded this repo, so its snapshot is on disk. Only the
-    cache is consulted — never the network — and any failure means "no
-    facts", never an exception: identity facts are best-effort provenance.
+    Only the cache is consulted — never the network — and any failure means
+    "no facts", never an exception: identity facts are best-effort
+    provenance. Callers read it before *and* after loading so the recorded
+    snapshot can be checked against the one the loader actually used.
     ``subfolder`` selects a nested variant (``4bit/config.json``) for repos
     that ship several quantisations side by side.
     """
@@ -145,7 +148,11 @@ def _quantization_facts(config: dict[str, Any]) -> dict[str, Any]:
             break
     if isinstance(declared, str) and declared:
         method = declared.strip().lower()
-        facts["method"] = method if _METHOD_PATTERN.fullmatch(method) else "other"
+        facts["method"] = (
+            method
+            if len(method) <= _METHOD_MAX_LENGTH and _METHOD_PATTERN.fullmatch(method)
+            else "other"
+        )
     elif facts["kind"] == "weights":
         facts["method"] = "affine"
     group_size = block.get("group_size")
@@ -156,6 +163,47 @@ def _quantization_facts(config: dict[str, Any]) -> dict[str, Any]:
     ):
         facts["group_size"] = group_size
     return facts
+
+
+def _identity_revision(identity: dict[str, Any]) -> str | None:
+    components = identity.get("components") or []
+    source = components[0].get("source", {}) if components else {}
+    revision = source.get("resolved_revision")
+    return revision if isinstance(revision, str) else None
+
+
+def consistent_model_identity(
+    before: dict[str, Any], after: dict[str, Any], repo_id: str, task_type: str
+) -> dict[str, Any]:
+    """Pick the identity that describes the snapshot the loader used.
+
+    ``before`` was read from the cache before loading, ``after`` right after
+    the measurements. If both name the same snapshot revision, the loader
+    used it. A cold cache has no ``before`` revision: the loader itself
+    populated the snapshot, so ``after`` is the one it used. If the two
+    differ (another pull advanced ``refs/main`` mid-run) nothing can be
+    vouched for, and the identity degrades to unknown facts.
+    """
+    revision_before = _identity_revision(before)
+    revision_after = _identity_revision(after)
+    if revision_before is None:
+        return after
+    if revision_before == revision_after:
+        return before
+    return _unknown_identity(repo_id, task_type, before)
+
+
+def _unknown_identity(
+    repo_id: str, task_type: str, template: dict[str, Any]
+) -> dict[str, Any]:
+    identity = copy.deepcopy(template)
+    component = identity["components"][0]
+    component["source"] = {"kind": "huggingface", "repo_id": repo_id}
+    subfolder = template["components"][0]["source"].get("subfolder")
+    if subfolder:
+        component["source"]["subfolder"] = subfolder
+    component["quantization"] = {"kind": "unknown", "base_dtype": "unknown"}
+    return identity
 
 
 def unresolved_model_identity(
