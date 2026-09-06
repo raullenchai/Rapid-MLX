@@ -1330,6 +1330,24 @@ def test_qsa_batch_prefill_builds_mask_before_kv_update(monkeypatch):
     assert observed == [(5, 5)]
 
 
+def test_qsa_prefill_synthetic_singleton_cannot_enter_fast_rms_norm():
+    args = _args(indexer_budget=8, indexer_compress_ratio=2)
+    indexer = QSAIndexer(args)
+    qwen4_exp.set_qwen4_fast_rmsnorm_mode(indexer, "fast_fp32")
+    selected = indexer(
+        mx.zeros((1, 65, args.hidden_size), dtype=mx.bfloat16),
+        QSAIndexCache(compress_ratio=2),
+        physical_kv_length=65,
+    )
+    assert selected is not None
+    mx.eval(selected.token_indices, selected.valid)
+
+    stats = qwen4_exp.qwen4_fast_rmsnorm_stats(indexer)
+    assert stats["fast_calls"] == 0
+    assert stats["declines"] > 0
+    assert stats["decline_reasons"] == {"sequence_too_wide": stats["declines"]}
+
+
 def test_scheduler_mid_prefill_restores_qsa_cachelist():
     """The live restore path recognizes the same vendored QSA side-cache."""
     from vllm_mlx.scheduler import Scheduler
