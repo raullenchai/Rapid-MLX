@@ -1325,7 +1325,8 @@ def test_run_local_records_conditions_before_and_after_the_measurements(
         order.append("conditions")
         return next(snapshots)
 
-    async def fake_measurements(repo_id: str):
+    async def fake_measurements(repo_id: str, *, progress=None):
+        assert progress is None
         order.append("measure")
         # The real helper records the "after" snapshot while the model is
         # still resident, i.e. before its engine context tears down.
@@ -1366,7 +1367,8 @@ def test_after_snapshot_is_never_taken_once_the_model_is_gone(
             "available_memory_mib": 9000,
         }
 
-    async def silent_measurements(repo_id: str):
+    async def silent_measurements(repo_id: str, *, progress=None):
+        assert progress is None
         return _text_run()["measurements"], 32768
 
     monkeypatch.setattr(local_runner, "run_conditions", counting_conditions)
@@ -1441,7 +1443,8 @@ def test_image_runs_capture_conditions_inside_the_server_context(
     monkeypatch.setattr(local_runner, "run_conditions", lambda: next(snapshots))
     measurements = _image_run()["measurements"]
 
-    def fake_image(alias: str, *, isolate_process_group: bool):
+    def fake_image(alias: str, *, isolate_process_group: bool, progress=None):
+        assert progress is None
         local_runner._record_conditions_after()
         return measurements
 
