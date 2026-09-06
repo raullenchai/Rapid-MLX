@@ -1,0 +1,52 @@
+/* Global resets and the platform-specific rules that are not component-scoped. */
+
+*,
+*::before,
+*::after {
+  -webkit-tap-highlight-color: transparent;
+}
+
+/*
+  100dvh, not 100vh. On iOS Safari 100vh is the viewport with the URL bar
+  *hidden*, so a bottom-anchored composer sits underneath the bar until the
+  user scrolls. dvh tracks the bar as it collapses.
+*/
+body {
+  height: 100dvh;
+  overflow: hidden;
+  -webkit-font-smoothing: antialiased;
+}
+
+#root {
+  height: 100dvh;
+}
+
+/*
+  Reduce Motion suppresses perpetual loops entirely rather than shortening
+  them (RapidMotion.shouldPulse takes the same position). A pulsing status dot
+  that merely pulses faster is still the thing the setting exists to stop.
+*/
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+/* Visually hidden, still announced. Used by the live region and by labels
+   that would otherwise duplicate a visible icon's meaning. */
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}

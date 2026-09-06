@@ -1,0 +1,32 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <!--
+      viewport-fit=cover is required for the env(safe-area-inset-*) values to
+      be anything other than zero; without it iOS letterboxes the page and the
+      composer floats above the home indicator instead of sitting against it.
+
+      The old page also set maximum-scale=1, which disables pinch zoom on iOS.
+      That is a WCAG 1.4.4 failure and it is gone. The 16px floor on every
+      input (styles/base.css) is what actually stops Safari's focus zoom, so
+      blocking the user's own zoom bought nothing.
+    -->
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1, viewport-fit=cover"
+    />
+    <meta name="color-scheme" content="light dark" />
+    <!--
+      Keep this title contiguous. tests/test_app.py:136-142 asserts the literal
+      string "Rapid-MLX" appears in GET /, and the wordmark in the page renders
+      as Rapid<span>-MLX</span>, which is not contiguous in the HTML. This
+      element is the only thing satisfying that assertion.
+    -->
+    <title>Rapid-MLX</title>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>

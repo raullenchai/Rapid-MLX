@@ -1,0 +1,354 @@
+@import 'tailwindcss';
+@import 'tw-animate-css';
+
+/*
+  `dark:` must track BOTH ways the palette flips (tokens.css): the explicit
+  attribute, and the OS preference when the user has not chosen. shadcn's
+  component source uses `dark:` utilities, so a variant covering only the
+  attribute would leave them stuck on light values under a dark OS.
+*/
+@custom-variant dark {
+  &:where([data-theme='dark'], [data-theme='dark'] *) {
+    @slot;
+  }
+  @media (prefers-color-scheme: dark) {
+    &:where(:root:not([data-theme]), :root:not([data-theme]) *) {
+      @slot;
+    }
+  }
+}
+
+/* `inline` so utilities reference var(--background) directly rather than
+   copying its value — otherwise the theme switch would not move them. */
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+
+  --color-chart-1: var(--chart-1);
+  --color-chart-2: var(--chart-2);
+  --color-chart-3: var(--chart-3);
+  --color-chart-4: var(--chart-4);
+  --color-chart-5: var(--chart-5);
+
+  --color-sidebar: var(--sidebar);
+  --color-sidebar-foreground: var(--sidebar-foreground);
+  --color-sidebar-primary: var(--sidebar-primary);
+  --color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
+  --color-sidebar-accent: var(--sidebar-accent);
+  --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
+  --color-sidebar-border: var(--sidebar-border);
+  --color-sidebar-ring: var(--sidebar-ring);
+
+  --color-success: var(--success);
+  --color-warning: var(--warning);
+
+  --radius-sm: calc(var(--radius) - 4px);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) + 4px);
+
+  --font-sans: var(--font-sans);
+  --font-mono: var(--font-mono);
+}
+
+@layer base {
+  * {
+    @apply border-border outline-ring/50;
+  }
+  body {
+    @apply bg-background text-foreground;
+  }
+}
+
+/* Restored after preflight, which would otherwise undo them. */
+
+/* Below 16px iOS Safari zooms on focus and never zooms back. */
+input,
+textarea,
+select {
+  font-size: 16px;
+}
+
+/* Tailwind v4 dropped this from preflight. */
+button:not(:disabled) {
+  cursor: pointer;
+}
+
+@keyframes status-pulse {
+  0%,
+  100% {
+    opacity: 1;
+    box-shadow: 0 0 0 0 color-mix(in oklab, var(--warning) 45%, transparent);
+  }
+  50% {
+    opacity: 0.65;
+    box-shadow: 0 0 0 5px color-mix(in oklab, var(--warning) 0%, transparent);
+  }
+}
+
+@keyframes caret-blink {
+  50% {
+    opacity: 0;
+  }
+}
+
+/* The image HUD's indeterminate shuttle. Travels from fully outside the left
+   edge to fully outside the right, so it enters and leaves rather than
+   popping into existence at the edges. */
+@keyframes hud-sweep {
+  from {
+    transform: translateX(-100%);
+  }
+  to {
+    transform: translateX(300%);
+  }
+}
+
+/*
+  Markdown prose. These stay as CSS rather than utilities for two reasons:
+  they target DESCENDANTS the JSX never names (table cells, and the .hljs-*
+  spans lowlight emits at runtime, which Tailwind's scanner cannot see), and
+  the vertical rhythm is em-based so it tracks the prose font size.
+*/
+@layer components {
+  /* A <details> marker cannot be expressed as a utility. */
+  .reasoning-summary {
+    list-style: none;
+    cursor: pointer;
+  }
+  .reasoning-summary::-webkit-details-marker {
+    display: none;
+  }
+  .reasoning-summary::before {
+    content: '▸ ';
+    display: inline-block;
+  }
+  details[open] > .reasoning-summary::before {
+    content: '▾ ';
+  }
+
+  .md-p {
+    margin: 0 0 0.85em;
+  }
+  .md-p:last-child {
+    margin-bottom: 0;
+  }
+
+  .md-h {
+    margin: 1.1em 0 0.5em;
+    font-weight: 600;
+    letter-spacing: -0.01em;
+    line-height: 1.28;
+  }
+  .md-h:first-child {
+    margin-top: 0;
+  }
+  h1.md-h {
+    font-size: 1.45em;
+  }
+  h2.md-h {
+    font-size: 1.25em;
+  }
+  h3.md-h {
+    font-size: 1.1em;
+  }
+  h4.md-h,
+  h5.md-h,
+  h6.md-h {
+    font-size: 1em;
+  }
+
+  /* Preflight sets `list-style: none` on ul/ol, so the padding below was
+     reserving space for markers that never rendered — every list read as an
+     indented block of loose lines. Restored explicitly, per type. */
+  .md-list {
+    margin: 0 0 0.85em;
+    padding-left: 1.4em;
+  }
+  ul.md-list {
+    list-style: disc;
+  }
+  ol.md-list {
+    list-style: decimal;
+  }
+  /* A task list draws its own checkbox; a bullet beside it is a second,
+     conflicting marker. */
+  .md-li:has(> input[type='checkbox']) {
+    list-style: none;
+  }
+  .md-li {
+    margin: 0.2em 0;
+  }
+  /* Or every item grows a blank line under it. */
+  .md-li > .md-p {
+    margin-bottom: 0.2em;
+  }
+
+  .md-quote {
+    margin: 0 0 0.85em;
+    padding: 0.1em 0 0.1em 0.9em;
+    border-left: 3px solid var(--border);
+    color: var(--muted-foreground);
+  }
+
+  .md-rule {
+    margin: 1.2em 0;
+    border: none;
+    border-top: 1px solid var(--border);
+  }
+
+  .md-code-wrap {
+    margin: 0 0 0.85em;
+    border: 1px solid var(--border);
+    border-radius: calc(var(--radius) - 2px);
+    overflow: hidden;
+    background: var(--muted);
+  }
+
+  .md-pre {
+    margin: 0;
+    padding: 12px;
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+    font-family: var(--font-mono);
+    font-size: 13px;
+    line-height: 1.55;
+    /* Code does NOT wrap: breaking a shell command mid-path makes it
+       uncopyable by eye. */
+    white-space: pre;
+  }
+
+  .md-codespan {
+    font-family: var(--font-mono);
+    font-size: 0.88em;
+    padding: 0.12em 0.34em;
+    border-radius: 4px;
+    background: var(--muted);
+    /* A long identifier would otherwise force the bubble wider than the
+       screen. */
+    overflow-wrap: anywhere;
+  }
+
+  /* Mapped onto tokens.css rather than imported from a highlight.js theme, so
+     no second colour system enters the page. */
+  .md-pre .hljs-comment,
+  .md-pre .hljs-quote {
+    color: var(--code-comment);
+    font-style: italic;
+  }
+  .md-pre .hljs-keyword,
+  .md-pre .hljs-selector-tag,
+  .md-pre .hljs-literal {
+    color: var(--code-keyword);
+  }
+  .md-pre .hljs-string,
+  .md-pre .hljs-regexp {
+    color: var(--code-string);
+  }
+  .md-pre .hljs-number {
+    color: var(--code-number);
+  }
+  .md-pre .hljs-title,
+  .md-pre .hljs-title.function_,
+  .md-pre .hljs-section {
+    color: var(--code-title);
+  }
+  .md-pre .hljs-type,
+  .md-pre .hljs-class,
+  .md-pre .hljs-attr,
+  .md-pre .hljs-attribute {
+    color: var(--code-type);
+  }
+  .md-pre .hljs-built_in,
+  .md-pre .hljs-builtin-name {
+    color: var(--code-builtin);
+  }
+  .md-pre .hljs-deletion {
+    color: var(--destructive);
+  }
+  .md-pre .hljs-addition {
+    color: var(--success);
+  }
+
+  .md-table-wrap {
+    margin: 0 0 0.85em;
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+    border: 1px solid var(--border);
+    border-radius: calc(var(--radius) - 2px);
+  }
+  .md-table {
+    border-collapse: collapse;
+    width: 100%;
+    font-family: var(--font-sans);
+    font-size: 14px;
+  }
+  .md-table th,
+  .md-table td {
+    padding: 7px 11px;
+    border-bottom: 1px solid var(--border);
+    text-align: left;
+    white-space: nowrap;
+  }
+  .md-table th {
+    font-weight: 600;
+    background: var(--muted);
+  }
+  .md-table tr:last-child td {
+    border-bottom: none;
+  }
+
+  /* Tailwind preflight strips the UA's anchor colour and underline, so a link
+     with no rule of its own renders as plain prose — indistinguishable from
+     the text around it, with nothing to say it can be clicked. A class rather
+     than a bare `a` selector, so this cannot leak into UI chrome. */
+  .md-link {
+    color: var(--primary);
+    text-decoration: underline;
+    text-underline-offset: 2px;
+    /* A model often emits a bare URL as its own label; without this a long
+       one widens the transcript instead of wrapping. */
+    overflow-wrap: anywhere;
+  }
+  .md-link:hover {
+    text-decoration-thickness: 2px;
+  }
+
+  /* A refused scheme: underlined so the model's intent stays legible, but no
+     pointer affordance, because the click does nothing. */
+  .md-dead-link {
+    text-decoration: underline dotted;
+    text-underline-offset: 2px;
+    color: var(--muted-foreground);
+    cursor: text;
+  }
+
+  /* MathML inherits the surrounding size, which is slightly large on the
+     prose face. */
+  .md-math-inline {
+    font-size: 1.02em;
+  }
+  .md-math-display {
+    display: block;
+    margin: 0.7em 0;
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+    text-align: center;
+  }
+}

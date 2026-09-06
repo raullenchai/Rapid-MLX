@@ -1,0 +1,16 @@
+{
+  "$comment": [
+    "Total bytes of apps/rapid-web/rmlx_web/static/ (shell + hashed assets).",
+    "",
+    "The shell is served with an ETag and the assets under /static/assets/ are",
+    "immutable, so these bytes cross the wire once per build rather than once",
+    "per page load. The gate exists to make growth visible, not because size is",
+    "tight — that was the constraint while everything was inlined into one",
+    "uncached index.html.",
+    "",
+    "`npm run build` writes measuredBytes back."
+  ],
+  "warnBytes": 1200000,
+  "failBytes": 2000000,
+  "measuredBytes": 947215
+}
