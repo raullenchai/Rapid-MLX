@@ -65,9 +65,14 @@ struct MacOSComputerUseWindowCatalog: ComputerUseWindowListing {
             ))
         }
         return result.sorted {
-            ($0.applicationName.localizedCaseInsensitiveCompare($1.applicationName) == .orderedAscending)
-                || ($0.applicationName == $1.applicationName
-                    && $0.windowTitle.localizedCaseInsensitiveCompare($1.windowTitle) == .orderedAscending)
+            let applicationOrder = $0.applicationName.localizedCaseInsensitiveCompare(
+                $1.applicationName
+            )
+            return applicationOrder == .orderedAscending
+                || (applicationOrder == .orderedSame
+                    && $0.windowTitle.localizedCaseInsensitiveCompare(
+                        $1.windowTitle
+                    ) == .orderedAscending)
         }
     }
 
@@ -252,8 +257,13 @@ struct MacOSDraftPostFlowDriver: DraftPostFlowDriving {
         try await MainActor.run {
             let window = try Self.exactFocusedWindow(selection)
             let composer = try Self.uniqueComposer(in: window)
-            let existing = Self.stringAttribute(kAXValueAttribute as CFString, from: composer) ?? ""
-            guard existing.isEmpty || existing == draft else {
+            guard let existing = Self.stringAttribute(
+                kAXValueAttribute as CFString,
+                from: composer
+            ) else {
+                throw DraftPostFlowFailure.verificationFailed
+            }
+            guard existing.isEmpty || Self.utf8Matches(existing, draft) else {
                 throw DraftPostFlowFailure.composerNotEmpty
             }
             var settable: DarwinBoolean = false
@@ -279,6 +289,15 @@ struct MacOSDraftPostFlowDriver: DraftPostFlowDriving {
             guard CFEqual(composer, currentComposer) else {
                 throw DraftPostFlowFailure.verificationFailed
             }
+            guard let currentValue = Self.stringAttribute(
+                kAXValueAttribute as CFString,
+                from: currentComposer
+            ) else {
+                throw DraftPostFlowFailure.verificationFailed
+            }
+            guard currentValue.isEmpty || Self.utf8Matches(currentValue, draft) else {
+                throw DraftPostFlowFailure.composerNotEmpty
+            }
             // This is the final cancellation boundary before the only content
             // mutation. No suspension occurs between this check and the write.
             try Task.checkCancellation()
@@ -299,9 +318,13 @@ struct MacOSDraftPostFlowDriver: DraftPostFlowDriving {
                     && Self.stringAttribute(
                         kAXValueAttribute as CFString,
                         from: verifiedComposer
-                      ) == draft
+                      ).map { Self.utf8Matches($0, draft) } == true
             }
         }
+    }
+
+    static func utf8Matches(_ lhs: String, _ rhs: String) -> Bool {
+        lhs.utf8.elementsEqual(rhs.utf8)
     }
 
     static func verifyAfterMutation(_ verifier: () throws -> Bool) throws {
@@ -406,10 +429,10 @@ struct MacOSDraftPostFlowDriver: DraftPostFlowDriving {
     private static func editableElements(in root: AXUIElement) -> [AXUIElement] {
         var queue: [(AXUIElement, Int)] = [(root, 0)]
         var result: [AXUIElement] = []
-        var visited = 0
-        while !queue.isEmpty, visited < 2_048 {
-            let (element, depth) = queue.removeFirst()
-            visited += 1
+        var cursor = 0
+        while cursor < queue.count, cursor < 2_048 {
+            let (element, depth) = queue[cursor]
+            cursor += 1
             let role = stringAttribute(kAXRoleAttribute as CFString, from: element)
             let subrole = stringAttribute(kAXSubroleAttribute as CFString, from: element)
             if (role == kAXTextAreaRole as String || role == kAXTextFieldRole as String),

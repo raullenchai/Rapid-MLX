@@ -179,6 +179,12 @@ struct DraftPostFlowTests {
         }
     }
 
+    @Test("Verification compares exact UTF-8 bytes")
+    func exactUTF8Verification() {
+        #expect(MacOSDraftPostFlowDriver.utf8Matches("draft", "draft"))
+        #expect(!MacOSDraftPostFlowDriver.utf8Matches("é", "e\u{301}"))
+    }
+
     @Test("TextEdit source must expose one document editor")
     func uniqueDraft() throws {
         #expect(try MacOSDraftPostFlowDriver.uniqueDraft(in: ["Draft"]) == "Draft")
