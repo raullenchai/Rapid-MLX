@@ -570,6 +570,9 @@ def _run_image(
                         "height": case["height"],
                     }
                 )
+        # Still inside ``serve``: the model is resident, so this reflects
+        # the state the measurements were produced under.
+        _record_conditions_after()
     return measurements
 
 
@@ -811,20 +814,25 @@ def run_local(
         conditions_before = run_conditions()
         capture: dict[str, Any] = {}
         capture_token = _CONDITIONS_AFTER.set(capture)
-        if task_type == "text_generation":
-            measurements, context_length = asyncio.run(
-                _text_measurements(model["repo_id"])
-            )
-        elif task_type == "image_generation":
-            measurements = _run_image(
-                alias, isolate_process_group=not inherit_process_group
-            )
-        elif task_type == "video_generation":
-            measurements = _run_video(
-                alias, isolate_process_group=not inherit_process_group
-            )
+        try:
+            if task_type == "text_generation":
+                measurements, context_length = asyncio.run(
+                    _text_measurements(model["repo_id"])
+                )
+            elif task_type == "image_generation":
+                measurements = _run_image(
+                    alias, isolate_process_group=not inherit_process_group
+                )
+            elif task_type == "video_generation":
+                measurements = _run_video(
+                    alias, isolate_process_group=not inherit_process_group
+                )
+        finally:
+            # Disarm on every path (success, failure, cancellation) so a
+            # stray late call in this process can never mutate a stale
+            # capture.
+            _CONDITIONS_AFTER.reset(capture_token)
         measurements_completed = True
-        _CONDITIONS_AFTER.reset(capture_token)
         # Taken by the helper before its engine/server context tore down. A
         # helper that never captured leaves ``after`` unknown; probing here,
         # after the model is gone, would misreport a memory-saturated run.

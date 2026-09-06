@@ -1275,6 +1275,77 @@ def test_after_snapshot_is_never_taken_once_the_model_is_gone(
     assert calls == ["probe"]
 
 
+def test_capture_is_disarmed_when_the_helper_raises(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    archive = LocalRunArchive(tmp_path)
+    _mock_local_context(
+        monkeypatch, "text_generation", "mlx-community/example-text-model"
+    )
+    probes: list[str] = []
+
+    def counting_conditions():
+        probes.append("probe")
+        return {
+            "power_source": "ac",
+            "low_power_mode": False,
+            "thermal_state": "nominal",
+            "memory_pressure": "normal",
+            "available_memory_mib": 9000,
+        }
+
+    async def broken(repo_id: str):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(local_runner, "run_conditions", counting_conditions)
+    monkeypatch.setattr(local_runner, "_text_measurements", broken)
+    with pytest.raises(local_runner.LocalBenchmarkError):
+        local_runner.run_local("example-text", archive=archive)
+    assert probes == ["probe"]
+    # A late call after the failed run must not probe into a stale capture.
+    local_runner._record_conditions_after()
+    assert probes == ["probe"]
+
+
+def test_image_runs_capture_conditions_inside_the_server_context(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The image helper records the snapshot before ``serve`` tears down."""
+    archive = LocalRunArchive(tmp_path)
+    _mock_local_context(
+        monkeypatch, "image_generation", "mlx-community/example-image-model"
+    )
+    snapshots = iter(
+        [
+            {
+                "power_source": "ac",
+                "low_power_mode": False,
+                "thermal_state": "nominal",
+                "memory_pressure": "normal",
+                "available_memory_mib": 9000,
+            },
+            {
+                "power_source": "ac",
+                "low_power_mode": False,
+                "thermal_state": "serious",
+                "memory_pressure": "critical",
+                "available_memory_mib": 300,
+            },
+        ]
+    )
+    monkeypatch.setattr(local_runner, "run_conditions", lambda: next(snapshots))
+    measurements = _image_run()["measurements"]
+
+    def fake_image(alias: str, *, isolate_process_group: bool):
+        local_runner._record_conditions_after()
+        return measurements
+
+    monkeypatch.setattr(local_runner, "_run_image", fake_image)
+    run = local_runner.run_local("example-image", archive=archive)
+    assert run["machine"]["conditions_after"]["memory_pressure"] == "critical"
+    assert run["machine"]["conditions_after"]["available_memory_mib"] == 300
+
+
 def test_failed_run_keeps_the_before_snapshot_and_marks_after_unknown(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
