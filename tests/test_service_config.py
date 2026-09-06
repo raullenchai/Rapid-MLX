@@ -610,6 +610,34 @@ def test_credential_write_detects_directory_swap_and_never_writes_victim(
     assert not (moved / "com.rapidmlx.server.credential").exists()
 
 
+def test_credential_write_cleans_up_when_directory_name_disappears(
+    monkeypatch, tmp_path
+):
+    from vllm_mlx.headless_service import config as config_module
+
+    home = tmp_path / "home"
+    home.mkdir()
+    credential_dir = home / ".rapid-mlx-secrets"
+    moved = home / ".rapid-mlx-secrets.moved"
+    real_replace = config_module.os.replace
+
+    def replace_then_rename(src, dst, **kwargs):
+        real_replace(src, dst, **kwargs)
+        credential_dir.rename(moved)
+
+    monkeypatch.setattr(config_module.os, "replace", replace_then_rename)
+    with pytest.raises(ServiceConfigError, match="changed during update"):
+        config_module.atomic_write_credential(
+            home,
+            "com.rapidmlx.server",
+            b"secret\n",
+            uid=os.getuid(),
+            gid=os.getgid(),
+        )
+
+    assert not (moved / "com.rapidmlx.server.credential").exists()
+
+
 def test_remove_credential_covers_present_and_missing_file(tmp_path):
     from vllm_mlx.headless_service import config as config_module
 

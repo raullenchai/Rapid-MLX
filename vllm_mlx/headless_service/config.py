@@ -345,14 +345,25 @@ def atomic_write_credential(
         # Detect a rename/symlink swap of the directory name while the fd was
         # pinned. The root operation remained contained either way, but a
         # detached secret must not be reported as successfully installed.
-        named = target.stat(follow_symlinks=False)
+        try:
+            named = target.stat(follow_symlinks=False)
+        except OSError as exc:
+            try:
+                os.unlink(filename, dir_fd=dir_fd)
+            finally:
+                installed = False
+            raise ServiceConfigError(
+                "credential directory changed during update"
+            ) from exc
         opened = os.fstat(dir_fd)
         if not stat.S_ISDIR(named.st_mode) or (named.st_dev, named.st_ino) != (
             opened.st_dev,
             opened.st_ino,
         ):
-            os.unlink(filename, dir_fd=dir_fd)
-            installed = False
+            try:
+                os.unlink(filename, dir_fd=dir_fd)
+            finally:
+                installed = False
             raise ServiceConfigError("credential directory changed during update")
         return target / filename
     finally:
