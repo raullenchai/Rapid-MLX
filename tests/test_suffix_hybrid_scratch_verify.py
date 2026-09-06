@@ -1776,9 +1776,42 @@ class TestSingleSnapshotCommit:
         from types import SimpleNamespace
         from unittest.mock import MagicMock
 
-        from vllm_mlx import scheduler
+        import vllm_mlx.scheduler as scheduler
         from vllm_mlx.model_auto_config import ModelConfig
-        from vllm_mlx.speculative import suffix_decoding
+        from vllm_mlx.speculative import suffix_counter, suffix_decoding
+
+        # Spy on the shared counter: the deferred-publication fix (round-9k
+        # finding #2) means a failure in the mutation tail must leave the
+        # global counter COMPLETELY untouched — no record_verify, no
+        # record_cooldown_trip, no set_state. Guard-proofed below.
+        class SpyCounter(suffix_counter.SuffixAcceptCounter):
+            def __init__(self):
+                super().__init__()
+                self.success_publish_calls = 0  # record_verify with n_accepted>0
+
+            def record_verify(self, *a, **k):
+                # The success-path publish passes the accepted count; the
+                # handler's error-parity publish always passes 0. The deferred
+                # publication (round-9k finding #2) must keep the n_accepted>0
+                # call OUT of a tail that then fails.
+                accepted = a[1] if len(a) > 1 else 0
+                if accepted > 0:
+                    self.success_publish_calls += 1
+                return super().record_verify(*a, **k)
+
+            def record_cooldown_trip(self, *a, **k):
+                # Only called from the final commit block — an error-parity call
+                # never fires it. Any call here before the tail succeeds is
+                # premature publication.
+                self.success_publish_calls += 1
+                return super().record_cooldown_trip(*a, **k)
+
+            def set_state(self, *a, **k):
+                self.success_publish_calls += 1
+                return super().set_state(*a, **k)
+
+        spy = SpyCounter()
+        monkeypatch.setattr(suffix_counter, "get_global_counter", lambda: spy)
 
         model, _ = _model_and_prompt()
         probe = model.make_cache()
@@ -1790,24 +1823,38 @@ class TestSingleSnapshotCommit:
         mx.eval(l1)
         d1 = int(mx.argmax(l1[:, -1], axis=-1).item())
 
+        # Capture the REAL class BEFORE the patch below, so the wrapper's
+        # __init__ (which runs after install, i.e. after the patch) still
+        # constructs a genuine SuffixDecodingDrafter rather than recursing.
+        real_drafter_cls = suffix_decoding.SuffixDecodingDrafter
+
         class MockDrafter:
             max_draft_tokens = 2
 
             def __init__(self, **_kw):
-                self._tokens = []
-                self.rewind_to = lambda _n: None
+                # A REAL drafter: the scheduler's transactional rollback calls
+                # snapshot_state/restore_state on it, so the assertion below
+                # genuinely checks the drafter history was restored (codex
+                # round-9k NIT — a no-op stub could not detect corruption).
+                self._real = real_drafter_cls(max_draft_tokens=2, max_suffix_len=2)
 
-            def add_prompt_tokens(self, _t):
-                pass
+            def add_prompt_tokens(self, toks):
+                self._real.add_prompt_tokens(toks)
 
-            def add_generated_token(self, _t):
-                self._tokens.append(_t)
+            def add_generated_token(self, t):
+                self._real.add_generated_token(t)
 
-            def record_acceptance(self, _c):
-                pass
+            def record_acceptance(self, c):
+                self._real.record_acceptance(c)
 
             def get_draft(self):
                 return [d0, d1]
+
+            def snapshot_state(self):
+                return self._real.snapshot_state()
+
+            def restore_state(self, snap):
+                self._real.restore_state(snap)
 
         pristine = model.make_cache()
         mx.eval(model(mx.array([[1, 2, 3]]), cache=pristine))
@@ -1850,6 +1897,10 @@ class TestSingleSnapshotCommit:
         # Warm-up: seed _uid_state and let the commit path run once.
         gb._step()
         pre_fail = _copy.deepcopy(gb.prompt_cache)
+        # The warm-up step legitimately published the counter; reset the spy so
+        # it only observes the FAILING step. Any deferred-counter call from here
+        # on is corruption.
+        spy.success_publish_calls = 0
         # Record the observable pre-state of the mutated surfaces.
         pre_tokens_len = len(gb.tokens[0])
         pre_next_tokens = gb._next_tokens
@@ -1874,6 +1925,9 @@ class TestSingleSnapshotCommit:
         assert len(gb.tokens[0]) == pre_tokens_len
         # _next_tokens restored (the commit didn't stash the bonus).
         assert gb._next_tokens is pre_next_tokens
+        # Deferred counter publication (round-9k finding #2): a failure in the
+        # mutation tail must leave the shared counter completely untouched.
+        assert spy.success_publish_calls == 0
 
     def test_post_commit_exception_drops_retained_replay_entry(self, monkeypatch):
         """Codex round-9h finding #1: a post-commit exception must pop the

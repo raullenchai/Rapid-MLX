@@ -86,31 +86,44 @@ class TestDrafterBasics:
         # ourselves is forbidden, so no draft.
         assert drafter.get_draft() == []
 
-    def test_rewind_to_restores_history_and_drafts(self):
+    def test_snapshot_restore_restores_history_and_drafts(self):
         # The scheduler's post-commit rollback undoes accepted-draft
-        # add_generated_token calls via rewind_to(len_before). Rewinding must
-        # restore the exact pre-add history so the proposed draft is unchanged.
+        # add_generated_token calls via snapshot_state/restore_state. Restoring
+        # must reproduce the exact pre-add history so the proposed draft is
+        # unchanged.
         drafter = SuffixDecodingDrafter(max_draft_tokens=4, max_suffix_len=4)
         drafter.add_prompt_tokens([1, 2, 3, 4, 5, 1, 2, 3, 4, 5, 1, 2])
-        lens_before = len(drafter._tokens)
+        snap = drafter.snapshot_state()
         draft_before = drafter.get_draft()
         drafter.add_generated_token(3)
         drafter.add_generated_token(4)
         drafter.add_generated_token(5)
-        assert len(drafter._tokens) == lens_before + 3
-        drafter.rewind_to(lens_before)
-        assert len(drafter._tokens) == lens_before
+        drafter.restore_state(snap)
         # History identical -> identical draft (the rollback must be lossless).
         assert drafter.get_draft() == draft_before
 
-    def test_rewind_to_noop_at_boundary(self):
-        drafter = SuffixDecodingDrafter(max_draft_tokens=4, max_suffix_len=2)
-        drafter.add_prompt_tokens([1, 2, 3])
-        n = len(drafter._tokens)
-        drafter.rewind_to(n)  # no-op
-        assert len(drafter._tokens) == n
-        drafter.rewind_to(n + 99)  # clamp to existing length, still no-op
-        assert len(drafter._tokens) == n
+    def test_snapshot_restore_survives_max_history_head_trim(self):
+        # Codex round-9k finding #1: appending can cross max_history and trim the
+        # HEAD (evicting tokens + advancing _shift) while keeping the length
+        # unchanged. A length-based rewind can't recover that; snapshot/restore
+        # must reproduce the exact pre-add history (incl. _shift) even after a
+        # trim crossed the boundary.
+        drafter = SuffixDecodingDrafter(
+            max_draft_tokens=4, max_suffix_len=2, max_history=6
+        )
+        drafter.add_prompt_tokens([1, 2, 3, 4, 5])  # 5 tokens, shift 0
+        snap = drafter.snapshot_state()
+        draft_before = drafter.get_draft()
+        # Add several tokens so the head trims (len stays <= max_history, but
+        # _shift advances and old history is evicted).
+        for t in [8, 9, 8, 9]:
+            drafter.add_generated_token(t)
+        # Sanity: a trim actually happened (shift advanced past 0).
+        assert drafter._shift > 0, "test must actually cross the trim boundary"
+        drafter.restore_state(snap)
+        # Restored _shift + tokens -> the index is exactly the pre-add state.
+        assert drafter._shift == 0
+        assert drafter.get_draft() == draft_before
 
 
 class TestHistoryTrimming:

@@ -188,39 +188,35 @@ class SuffixDecodingDrafter:
                 for key in stale_keys:
                     del bucket[key]
 
-    def rewind_to(self, n_tokens: int) -> None:
-        """Roll the index back to the first ``n_tokens`` of ``_tokens``.
+    def snapshot_state(self):
+        """Capture a restorable snapshot of the mutable index state.
 
-        Used by the scheduler's post-commit exception path to undo the accepted-
-        draft ``add_generated_token`` calls when the committed step falls through
-        to a vanilla re-generate. Undoes exactly the tokens appended after
-        position ``n_tokens``: truncates ``_tokens`` and removes the k-groups
-        that end in the dropped range (guaranteed absent from any pre-existing
-        bucket because ``_add_one`` appends positions monotonically). Cheap --
-        O(dropped tokens * max_suffix_len). ``_shift`` is untouched because a
-        rewind never crosses the max_history head-trim boundary (it only removes
-        the most-recent additions).
+        Used by the scheduler's post-commit exception path to roll the drafter
+        back before a vanilla re-generate. Captures ``_shift`` and a copy of
+        ``_tokens`` so ``restore_state`` can recover the EXACT pre-add history
+        even when appending crossed the ``max_history`` head-trim boundary
+        (which evicts the head and advances ``_shift`` — a length-only rewind
+        cannot restore that).
         """
-        n = len(self._tokens)
-        if n_tokens >= n:
-            return
-        dropped = n - n_tokens
-        for k in range(1, self.max_suffix_len + 1):
-            bucket = self._suffix_index[k]
-            # End-positions we appended for the dropped tokens are the last
-            # ``dropped`` entries that land in this bucket; drop any list tail
-            # whose end >= the end of the first kept token (n_tokens + shift).
-            kept_end = self._shift + n_tokens  # first end-pos kept (exclusive)
-            stale_keys = []
-            for kgram, ends in bucket.items():
-                fresh = [e for e in ends if e < kept_end]
-                if fresh:
-                    bucket[kgram] = fresh
-                else:
-                    stale_keys.append(kgram)
-            for key in stale_keys:
-                del bucket[key]
-        self._tokens = self._tokens[:n_tokens]
+        return (list(self._tokens), self._shift)
+
+    def restore_state(self, state) -> None:
+        """Restore ``_tokens``/``_shift`` to a captured snapshot and rebuild the
+        k-gram index from them. Correct after a head-trim: re-indexing from the
+        restored tokens reproduces exactly the pre-add index. O(len *
+        max_suffix_len) — only run on the exceptional rollback path."""
+        tokens, shift = state
+        self._tokens = list(tokens)
+        self._shift = shift
+        self._suffix_index = [defaultdict(list) for _ in range(self.max_suffix_len + 1)]
+        for i, tok in enumerate(self._tokens):
+            abs_pos = shift + i
+            for k in range(1, self.max_suffix_len + 1):
+                local = i + 1 - k
+                if local < 0:
+                    continue
+                kgram = tuple(self._tokens[local : local + k])
+                self._suffix_index[k][kgram].append(abs_pos)
 
     # --- Drafting ------------------------------------------------------
 

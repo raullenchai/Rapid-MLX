@@ -3605,6 +3605,9 @@ def _install_suffix_decoding(
         # the snapshot is taken, so a pre-snapshot (compute) exception must not
         # attempt a rollback that would reference unbound state.
         _tx: dict | None = None
+        # Cooldown-trip level to publish to the counter in the FINAL commit
+        # (deferred so a mid-tail failure doesn't half-publish). None = no trip.
+        _cooldown_tripped: int | None = None
 
         n_rejected_to_trim = 0
         if _hybrid_active:
@@ -3862,12 +3865,15 @@ def _install_suffix_decoding(
             _tx = {
                 "st": dict(st),
                 "stats": dict(_stats),
-                # Drafter rollback is only meaningful/safe on the real drafter
-                # (a test stub need not expose ``_tokens``/``stats``); fall back
-                # to a no-op rewind by capturing ``None`` (rewind_to(0) on the
-                # real drafter would already be handled, but we never call it
-                # when absent).
-                "drafter_len": len(getattr(drafter, "_tokens", [])),
+                # Drafter rollback via snapshot/restore (codex round-9k finding #1):
+                # captures _shift + full history so restore is correct even when the
+                # accepted-token add crossed the max_history head-trim boundary. Test
+                # stubs need not expose snapshot_state; None => no drafter rollback.
+                "drafter_state": (
+                    drafter.snapshot_state()
+                    if hasattr(drafter, "snapshot_state")
+                    else None
+                ),
                 "drafter_acc": getattr(
                     getattr(drafter, "stats", None), "total_draft_tokens_accepted", 0
                 ),
@@ -3887,7 +3893,9 @@ def _install_suffix_decoding(
                 drafter.add_generated_token(tok)
             drafter.record_acceptance(n_accepted)
             _stats["tokens_accepted"] += n_accepted
-            _counter.record_verify(K, n_accepted)
+            # Counter publication for THIS step is DEFERRED to the final commit
+            # block (see below), so a failure anywhere before it leaves the
+            # shared global counter untouched — no partial/double counting.
             # Cooldown bookkeeping: track consecutive zero-accept verifies
             # so workloads with weak drafter signal (e.g., free-form chat)
             # automatically stop paying verify overhead.
@@ -3920,7 +3928,7 @@ def _install_suffix_decoding(
                     st["zeros"] = 0
                     _stats["cooldown_trips"] += 1
                     _stats["cooldown_level"] = st["level"]
-                    _counter.record_cooldown_trip(st["level"])
+                    _cooldown_tripped = st["level"]
             else:
                 st["zeros"] = 0
                 # DECAY one level, don't reset to eager. A single lucky accept in
@@ -3961,10 +3969,8 @@ def _install_suffix_decoding(
                         st["level"] -= 1
                     _stats["cooldown_level"] = st["level"]
 
-            # Publish AFTER the backoff transition. Publishing before it left the
-            # gauge showing the pre-reset level, permanently so if the request
-            # finished on that burst.
-            _counter.set_state(st["k"], st["level"])
+            # Backoff transition complete; gauge publication is DEFERRED to the
+            # final commit block (so a late failure does not half-publish).
 
             n_rejected = K - n_accepted
             if _hybrid_active:
@@ -3997,6 +4003,17 @@ def _install_suffix_decoding(
 
             # Stash extras for next() to drain.
             _pending_emits[uid] = list(zip(extra_tokens, extra_logprobs))
+
+            # FINAL COMMIT: publish the shared counter ONLY after every fallible
+            # mutation above succeeded (codex round-9k finding #2). Deferring
+            # here means a failure anywhere in the tail leaves the global counter
+            # untouched — no partial ``record_verify``/``record_cooldown_trip``
+            # and no gauge set_state half-way. These are monotonic/pointed
+            # in-place updates: they cannot raise.
+            _counter.record_verify(K, n_accepted)
+            if _cooldown_tripped is not None:
+                _counter.record_cooldown_trip(_cooldown_tripped)
+            _counter.set_state(st["k"], st["level"])
 
             return [last_token], [primary_logprobs]
 
@@ -4033,8 +4050,10 @@ def _install_suffix_decoding(
                     st.update(_tx["st"])
                     _stats.clear()
                     _stats.update(_tx["stats"])
-                    if hasattr(drafter, "rewind_to"):
-                        drafter.rewind_to(_tx["drafter_len"])
+                    if _tx["drafter_state"] is not None and hasattr(
+                        drafter, "restore_state"
+                    ):
+                        drafter.restore_state(_tx["drafter_state"])
                     if hasattr(
                         getattr(drafter, "stats", None), "total_draft_tokens_accepted"
                     ):
