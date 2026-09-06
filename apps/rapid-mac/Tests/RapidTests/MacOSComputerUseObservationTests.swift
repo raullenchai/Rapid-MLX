@@ -7,6 +7,7 @@ struct MacOSComputerUseObservationTests {
     private let selection = ComputerUseWindowSelection(
         bundleIdentifier: "com.example.Editor",
         processIdentifier: 123,
+        processLaunchDate: Date(timeIntervalSinceReferenceDate: 1_000),
         windowID: 42
     )
 
@@ -93,18 +94,28 @@ struct MacOSComputerUseObservationTests {
             WorkflowInteractionTarget(
                 bundleIdentifier: "com.example.Other",
                 processIdentifier: original.processIdentifier,
+                processLaunchDate: original.processLaunchDate,
                 windowIdentifier: original.windowIdentifier,
                 windowFrame: original.windowFrame
             ),
             WorkflowInteractionTarget(
                 bundleIdentifier: original.bundleIdentifier,
                 processIdentifier: 999,
+                processLaunchDate: original.processLaunchDate,
                 windowIdentifier: original.windowIdentifier,
                 windowFrame: original.windowFrame
             ),
             WorkflowInteractionTarget(
                 bundleIdentifier: original.bundleIdentifier,
                 processIdentifier: original.processIdentifier,
+                processLaunchDate: Date(timeIntervalSinceReferenceDate: 2_000),
+                windowIdentifier: original.windowIdentifier,
+                windowFrame: original.windowFrame
+            ),
+            WorkflowInteractionTarget(
+                bundleIdentifier: original.bundleIdentifier,
+                processIdentifier: original.processIdentifier,
+                processLaunchDate: original.processLaunchDate,
                 windowIdentifier: "99",
                 windowFrame: original.windowFrame
             ),
@@ -135,6 +146,7 @@ struct MacOSComputerUseObservationTests {
         let foreground = ScreenCaptureKitComputerUseCapture.ForegroundRecord(
             bundleIdentifier: selection.bundleIdentifier,
             processIdentifier: selection.processIdentifier,
+            processLaunchDate: selection.processLaunchDate,
             focusedFrame: frame
         )
         let valid = ScreenCaptureKitComputerUseCapture.WindowRecord(
@@ -190,6 +202,19 @@ struct MacOSComputerUseObservationTests {
                 foreground: .init(
                     bundleIdentifier: selection.bundleIdentifier,
                     processIdentifier: selection.processIdentifier,
+                    processLaunchDate: Date(timeIntervalSinceReferenceDate: 2_000),
+                    focusedFrame: frame
+                ),
+                windows: [valid]
+            )
+        }
+        #expect(throws: MacOSComputerUseObservationError.targetNotFrontmost) {
+            _ = try ScreenCaptureKitComputerUseCapture.validatedTarget(
+                selection,
+                foreground: .init(
+                    bundleIdentifier: selection.bundleIdentifier,
+                    processIdentifier: selection.processIdentifier,
+                    processLaunchDate: selection.processLaunchDate,
                     focusedFrame: CGRect(x: 0, y: 0, width: 10, height: 10)
                 ),
                 windows: [valid]
@@ -204,6 +229,7 @@ struct MacOSComputerUseObservationTests {
             target: WorkflowInteractionTarget(
                 bundleIdentifier: original.target.bundleIdentifier,
                 processIdentifier: 124,
+                processLaunchDate: original.target.processLaunchDate,
                 windowIdentifier: original.target.windowIdentifier,
                 windowFrame: original.target.windowFrame
             ),
@@ -283,6 +309,7 @@ struct MacOSComputerUseObservationTests {
             target: WorkflowInteractionTarget(
                 bundleIdentifier: "com.example.Editor",
                 processIdentifier: 123,
+                processLaunchDate: Date(timeIntervalSinceReferenceDate: 1_000),
                 windowIdentifier: "42",
                 windowFrame: WorkflowWindowFrame(
                     x: 10,

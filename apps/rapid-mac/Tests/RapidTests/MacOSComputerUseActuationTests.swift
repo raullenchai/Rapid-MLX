@@ -93,6 +93,7 @@ struct MacOSComputerUseActuationTests {
             target: WorkflowInteractionTarget(
                 bundleIdentifier: groundedObservation.target.bundleIdentifier,
                 processIdentifier: groundedObservation.target.processIdentifier,
+                processLaunchDate: groundedObservation.target.processLaunchDate,
                 windowIdentifier: groundedObservation.target.windowIdentifier,
                 windowFrame: .init(x: 0, y: 0, width: 0, height: 600)
             ),
@@ -146,6 +147,7 @@ struct MacOSComputerUseActuationTests {
         let moved = WorkflowInteractionTarget(
             bundleIdentifier: observation.target.bundleIdentifier,
             processIdentifier: observation.target.processIdentifier,
+            processLaunchDate: observation.target.processLaunchDate,
             windowIdentifier: observation.target.windowIdentifier,
             windowFrame: .init(x: 101, y: 200, width: 800, height: 600)
         )
@@ -393,6 +395,7 @@ struct MacOSComputerUseActuationTests {
             target: WorkflowInteractionTarget(
                 bundleIdentifier: "com.example.Editor",
                 processIdentifier: 42,
+                processLaunchDate: Date(timeIntervalSinceReferenceDate: 1_000),
                 windowIdentifier: "7",
                 windowFrame: .init(x: 100, y: 200, width: 800, height: 600)
             ),

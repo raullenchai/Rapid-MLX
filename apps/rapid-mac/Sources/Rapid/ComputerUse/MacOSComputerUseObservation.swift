@@ -8,10 +8,12 @@ import ScreenCaptureKit
 struct ComputerUseWindowSelection: Equatable, Sendable {
     let bundleIdentifier: String
     let processIdentifier: pid_t
+    let processLaunchDate: Date
     let windowID: CGWindowID
 
     var isStructurallyValid: Bool {
         !bundleIdentifier.isEmpty && processIdentifier > 0 && windowID != 0
+            && processLaunchDate.timeIntervalSinceReferenceDate.isFinite
     }
 }
 
@@ -149,6 +151,9 @@ actor MacOSComputerUseObserver: LocalWorkflowObserving {
             "\(target.bundleIdentifier)|\(target.processIdentifier)|"
                 .utf8
         )
+        bytes.append(
+            Data("\(target.processLaunchDate?.timeIntervalSinceReferenceDate.bitPattern ?? 0)|".utf8)
+        )
         bytes.append(Data("\(target.windowIdentifier)|".utf8))
         let frame = target.windowFrame
         bytes.append(Data("\(frame.x)|\(frame.y)|\(frame.width)|\(frame.height)|".utf8))
@@ -172,6 +177,7 @@ struct ScreenCaptureKitComputerUseCapture: ComputerUseWindowCapturing {
     struct ForegroundRecord: Equatable, Sendable {
         let bundleIdentifier: String?
         let processIdentifier: pid_t?
+        let processLaunchDate: Date?
         let focusedFrame: CGRect?
     }
 
@@ -265,6 +271,7 @@ struct ScreenCaptureKitComputerUseCapture: ComputerUseWindowCapturing {
             return (
                 application?.bundleIdentifier,
                 processIdentifier,
+                application?.launchDate,
                 processIdentifier.flatMap {
                     MacOSComputerUseWindowIdentity.focusedWindowFrame(
                         processIdentifier: $0
@@ -286,7 +293,8 @@ struct ScreenCaptureKitComputerUseCapture: ComputerUseWindowCapturing {
             foreground: ForegroundRecord(
                 bundleIdentifier: foreground.0,
                 processIdentifier: foreground.1,
-                focusedFrame: foreground.2
+                processLaunchDate: foreground.2,
+                focusedFrame: foreground.3
             ),
             windows: records
         )
@@ -311,6 +319,7 @@ struct ScreenCaptureKitComputerUseCapture: ComputerUseWindowCapturing {
     ) throws -> WorkflowInteractionTarget {
         guard foreground.bundleIdentifier == selection.bundleIdentifier,
               foreground.processIdentifier == selection.processIdentifier,
+              foreground.processLaunchDate == selection.processLaunchDate,
               let focusedFrame = foreground.focusedFrame
         else {
             throw MacOSComputerUseObservationError.targetNotFrontmost
@@ -336,6 +345,7 @@ struct ScreenCaptureKitComputerUseCapture: ComputerUseWindowCapturing {
         return WorkflowInteractionTarget(
             bundleIdentifier: selection.bundleIdentifier,
             processIdentifier: selection.processIdentifier,
+            processLaunchDate: selection.processLaunchDate,
             windowIdentifier: String(selection.windowID),
             windowFrame: WorkflowWindowFrame(
                 x: window.frame.origin.x,
@@ -352,6 +362,7 @@ struct ScreenCaptureKitComputerUseCapture: ComputerUseWindowCapturing {
     ) -> Bool {
         target.bundleIdentifier == selection.bundleIdentifier
             && target.processIdentifier == selection.processIdentifier
+            && target.processLaunchDate == selection.processLaunchDate
             && target.windowIdentifier == String(selection.windowID)
     }
 

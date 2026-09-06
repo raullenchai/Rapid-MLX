@@ -169,7 +169,9 @@ struct CGWindowComputerUseTargetProbe: ComputerUseTargetProbing {
             let application = NSRunningApplication(
                 processIdentifier: expected.processIdentifier
             ),
-            let bundleIdentifier = application.bundleIdentifier
+            let bundleIdentifier = application.bundleIdentifier,
+            let launchDate = application.launchDate,
+            launchDate == expected.processLaunchDate
         else {
             throw MacOSComputerUseActuationError.targetUnavailable
         }
@@ -194,6 +196,7 @@ struct CGWindowComputerUseTargetProbe: ComputerUseTargetProbing {
         return WorkflowInteractionTarget(
             bundleIdentifier: bundleIdentifier,
             processIdentifier: expected.processIdentifier,
+            processLaunchDate: launchDate,
             windowIdentifier: String(windowID),
             windowFrame: WorkflowWindowFrame(
                 x: frame.origin.x,
@@ -282,13 +285,16 @@ struct AXComputerUseInputEmitter: ComputerUseInputEmitting {
             try elementResolver(payload, target)
         }
 
-        guard let windowID = CGWindowID(target.windowIdentifier), windowID != 0 else {
+        guard let windowID = CGWindowID(target.windowIdentifier), windowID != 0,
+              let processLaunchDate = target.processLaunchDate
+        else {
             throw MacOSComputerUseActuationError.targetUnavailable
         }
         let captured = try await captureSource.capture(
             ComputerUseWindowSelection(
                 bundleIdentifier: target.bundleIdentifier,
                 processIdentifier: target.processIdentifier,
+                processLaunchDate: processLaunchDate,
                 windowID: windowID
             )
         )

@@ -91,6 +91,7 @@ enum MacOSComputerUseWindowIdentity {
     ) -> Bool {
         guard lhs.bundleIdentifier == rhs.bundleIdentifier,
               lhs.processIdentifier == rhs.processIdentifier,
+              lhs.processLaunchDate == rhs.processLaunchDate,
               lhs.windowIdentifier == rhs.windowIdentifier
         else { return false }
         return framesMatch(lhs.windowFrame.cgRect, rhs.windowFrame.cgRect)
