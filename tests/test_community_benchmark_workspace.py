@@ -4652,6 +4652,14 @@ def test_quantization_facts_projects_mlx_config_onto_the_contract() -> None:
         "group_size": 64,
         "base_dtype": "bfloat16",
     }
+    # mflux image models declare ``method`` instead of mlx-lm's ``mode``; it
+    # must never be replaced by the affine default.
+    mflux = {"quantization": {"method": "mflux", "bits": 4, "group_size": 64}}
+    assert quantization_facts(mflux)["method"] == "mflux"
+    assert quantization_facts(mflux)["kind"] == "weights"
+    # A declared scheme that does not fit the contract pattern is "other".
+    odd = {"quantization": {"mode": "Affine/V2", "bits": 4}}
+    assert quantization_facts(odd)["method"] == "other"
     # Fractional bit widths are carried as x2 integers (3.5 bpw -> 7).
     assert quantization_facts({"quantization": {"bits": 3.5}})["weight_bits_x2"] == 7
     assert quantization_facts({"torch_dtype": "float16"}) == {
@@ -4666,6 +4674,8 @@ def test_quantization_facts_projects_mlx_config_onto_the_contract() -> None:
     for config in (
         uniform,
         mixed,
+        mflux,
+        odd,
         {"quantization": {"bits": 3.5}},
         {},
         {"quantization": 5},
