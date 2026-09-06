@@ -2082,6 +2082,7 @@
   },
   "embeddinggemma-300m-6bit": {
     "hf_path": "mlx-community/embeddinggemma-300m-6bit",
+    "modality": "embedding",
     "tool_call_parser": null,
     "reasoning_parser": null,
     "is_hybrid": false,
@@ -2091,6 +2092,7 @@
   },
   "embeddinggemma-300m-8bit": {
     "hf_path": "mlx-community/embeddinggemma-300m-8bit",
+    "modality": "embedding",
     "tool_call_parser": null,
     "reasoning_parser": null,
     "is_hybrid": false,
