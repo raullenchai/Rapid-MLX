@@ -242,11 +242,65 @@ def benchmark_catalog(*, memory_gib: int | None = None) -> dict[str, Any]:
     }
 
 
-def plan_for_alias(alias_name: str) -> dict[str, Any]:
-    catalog = benchmark_catalog()
+def describe_case(case: dict[str, Any]) -> str:
+    """One human-readable line for a registered workload case.
+
+    Text cases read ``pp512-tg128   512 prompt -> 128 output tokens``; image
+    and video cases describe their geometry. Every line ends with the round
+    plan so a user knows how much work one case is before starting it.
+    """
+
+    case_id = str(case.get("case_id", "?"))
+    if "target_prompt_tokens" in case:
+        detail = (
+            f"{case['target_prompt_tokens']} prompt tokens -> "
+            f"{case['target_output_tokens']} output tokens"
+        )
+    elif "frames" in case:
+        fps = case.get("fps_milli", 0) / 1000
+        detail = (
+            f"{case['width']}x{case['height']}, {case['frames']} frames @ {fps:g} fps, "
+            f"{case['steps']} steps"
+        )
+    elif "width" in case:
+        count = case.get("image_count", 1)
+        detail = (
+            f"{case['width']}x{case['height']}, {case['steps']} steps, "
+            f"{count} image{'s' if count != 1 else ''}"
+        )
+    else:  # pragma: no cover - every registered protocol has a known shape
+        detail = "registered case"
+    warmup = int(case.get("warmup_rounds", 0))
+    measured = int(case.get("measured_rounds", 0))
+    return f"{case_id:<16} {detail}   ({warmup} warmup + {measured} measured)"
+
+
+def model_is_cached(repo_id: str) -> bool:
+    """True when the Hugging Face snapshot is complete in the local cache."""
+
+    from vllm_mlx._download_gate import is_repo_cached
+
+    try:
+        return bool(is_repo_cached(repo_id))
+    except Exception:
+        return False
+
+
+def plan_for_alias(
+    alias_name: str, *, memory_gib: int | None = None, check_cache: bool = False
+) -> dict[str, Any]:
+    """Describe the exact local workload for one alias.
+
+    ``memory_gib`` fills the model's ``memory_fit`` the same way the catalog
+    does. ``check_cache`` adds ``model_cached`` (whether the weights are
+    already in the local Hugging Face cache); it touches only the local
+    filesystem and never downloads anything.
+    """
+
+    catalog = benchmark_catalog(memory_gib=memory_gib)
     for entry in catalog["models"]:
         if entry["alias"] == alias_name:
-            return {
+            plan = {
                 "schema_version": 1,
                 "model": entry,
                 "workload": registered_workload(entry["task_type"]),
@@ -256,6 +310,11 @@ def plan_for_alias(alias_name: str) -> dict[str, Any]:
                     "upload": "explicit_consent_only",
                 },
             }
+            if memory_gib is not None:
+                plan["memory_gib"] = memory_gib
+            if check_cache:
+                plan["model_cached"] = model_is_cached(entry["repo_id"])
+            return plan
     raise ValueError(f"unknown or unsupported benchmark model {alias_name!r}")
 
 

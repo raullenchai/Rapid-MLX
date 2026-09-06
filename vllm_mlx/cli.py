@@ -12352,6 +12352,11 @@ Examples:
         "catalog", help="List models with a registered benchmark protocol"
     )
     community_catalog.add_argument("--memory-gib", type=positive_int, default=None)
+    community_catalog.add_argument(
+        "--all",
+        action="store_true",
+        help="List every model, not only the recommended ones (text mode)",
+    )
     community_catalog.add_argument("--json", action="store_true")
     community_plan = community_subparsers.add_parser(
         "plan", help="Preview the exact local workload for a model"

@@ -32,6 +32,7 @@ import hashlib
 import random
 import statistics
 import time
+from collections.abc import Callable
 from dataclasses import dataclass
 
 from . import PROMPT_SEED, SCHEMA_VERSION
@@ -55,6 +56,12 @@ class RoundResult:
     peak_ram_mb: int | None = None
     prompt_tokens: int | None = None
     output_tokens: int | None = None
+
+
+# Progress observer: ``(case_label, phase, index, total, result)`` where
+# ``phase`` is ``"warmup"`` or ``"measured"`` and ``index`` is 1-based.
+# ``case_label`` matches the registered case ids (``pp512-tg128``).
+RoundObserver = Callable[[str, str, int, int, RoundResult], None]
 
 
 @dataclass(frozen=True)
@@ -351,12 +358,16 @@ async def _run_bucket(
     *,
     reset_peak_after_warmup: bool = False,
     registered_token_ids: bool = False,
+    on_round: RoundObserver | None = None,
 ) -> tuple[BucketResult, list[int]]:
     """Run one bucket: warmup + 5 measured rounds.
 
     Returns the measured rounds plus the actual prompt token IDs used
-    (so callers can hash them for ``prompt_hash``).
+    (so callers can hash them for ``prompt_hash``). ``on_round`` is
+    notified after every completed round, warmup included, so a CLI can
+    show progress; it must not raise.
     """
+    label = f"pp{target_prompt_tokens}-tg{max_tokens}"
     if registered_token_ids:
         prompt_ids = _build_registered_token_ids(
             tokenizer, target_prompt_tokens, PROMPT_SEED
@@ -370,8 +381,8 @@ async def _run_bucket(
 
     # Warmup rounds (discarded — first-pass JIT + kernel cache warm-up
     # dominates these and would skew the median).
-    for _ in range(ROUNDS_WARMUP):
-        await _run_one_round(
+    for index in range(1, ROUNDS_WARMUP + 1):
+        warmup = await _run_one_round(
             engine,
             prompt,
             sampling,
@@ -379,6 +390,8 @@ async def _run_bucket(
             max_tokens,
             require_observed_counts=registered_token_ids,
         )
+        if on_round is not None:
+            on_round(label, "warmup", index, ROUNDS_WARMUP, warmup)
 
     # Reset the Metal peak-memory counter AFTER warmup, immediately
     # before the measured rounds. Resetting upstream of warmup (the
@@ -393,7 +406,7 @@ async def _run_bucket(
         _reset_peak_ram()
 
     measured: list[RoundResult] = []
-    for _ in range(ROUNDS_MEASURED):
+    for index in range(1, ROUNDS_MEASURED + 1):
         measured.append(
             await _run_one_round(
                 engine,
@@ -404,6 +417,8 @@ async def _run_bucket(
                 require_observed_counts=registered_token_ids,
             )
         )
+        if on_round is not None:
+            on_round(label, "measured", index, ROUNDS_MEASURED, measured[-1])
 
     return BucketResult(rounds_raw=measured), prompt_ids
 
@@ -455,6 +470,7 @@ async def run_standardized_bench(
     sampling: str = "greedy",
     *,
     registered_token_ids: bool = False,
+    on_round: RoundObserver | None = None,
 ) -> BenchResult:
     """Run the full short+long standardized bench against a loaded engine.
 
@@ -481,6 +497,7 @@ async def run_standardized_bench(
         SHORT_MAX_TOKENS,
         reset_peak_after_warmup=True,
         registered_token_ids=registered_token_ids,
+        on_round=on_round,
     )
     long_result, long_ids = await _run_bucket(
         engine,
@@ -489,6 +506,7 @@ async def run_standardized_bench(
         LONG_PROMPT_TOKENS,
         LONG_MAX_TOKENS,
         registered_token_ids=registered_token_ids,
+        on_round=on_round,
     )
 
     peak_ram = _read_peak_ram_mb()
