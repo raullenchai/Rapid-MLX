@@ -1,4 +1,5 @@
 import AppKit
+import ApplicationServices
 import CoreGraphics
 import Foundation
 import Testing
@@ -18,6 +19,9 @@ struct DraftPostFlowTests {
     @Test(.enabled(if: ProcessInfo.processInfo.environment["RAPID_LIVE_CUA_DOGFOOD"] == "1"))
     func liveFixture() async throws {
         let (source, destination) = try await Self.liveOptions()
+        try await Self.clearLiveComposer(
+            processIdentifier: destination.selection.processIdentifier
+        )
         var successes = 0
         for _ in 0 ..< 30 {
             let outcome = await DraftPostFlowCoordinator(
@@ -30,6 +34,7 @@ struct DraftPostFlowTests {
             successes += 1
             #expect(metrics.attempts <= 3)
             #expect(metrics.completedSteps == 3)
+            try await Self.clearLiveComposer(processIdentifier: destination.selection.processIdentifier)
         }
         #expect(successes == 30)
     }
@@ -216,6 +221,33 @@ struct DraftPostFlowTests {
         #expect(!viewModel.canRun)
     }
 
+    @MainActor
+    @Test("A late cancellation reports the definitive driver outcome")
+    func lateCancellationIsHonest() async {
+        let driver = CancellationIgnoringDraftPostDriver()
+        let viewModel = DraftPostFlowViewModel(
+            catalog: StaticWindowCatalog(windows: [Self.source, Self.destination]),
+            driver: driver
+        )
+        await viewModel.load()
+        viewModel.sourceID = Self.source.id
+        viewModel.destinationID = Self.destination.id
+        viewModel.run()
+        while !(await driver.didStart) {
+            await Task.yield()
+        }
+        viewModel.stop()
+        #expect(viewModel.phase == .stopping)
+        await driver.complete()
+        for _ in 0 ..< 100 where viewModel.phase == .stopping {
+            await Task.yield()
+        }
+        guard case .readyForReview = viewModel.phase else {
+            Issue.record("A completed mutation was incorrectly reported as cancelled")
+            return
+        }
+    }
+
     @Test("The driver contract exposes no publish action")
     func noPublishSurface() throws {
         let source = try String(
@@ -293,6 +325,72 @@ struct DraftPostFlowTests {
         })
         return (source, destination)
     }
+
+    @MainActor
+    private static func clearLiveComposer(processIdentifier: pid_t) throws {
+        let application = AXUIElementCreateApplication(processIdentifier)
+        var focusedValue: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(
+            application,
+            kAXFocusedWindowAttribute as CFString,
+            &focusedValue
+        ) == .success,
+            let window = focusedValue,
+            CFGetTypeID(window) == AXUIElementGetTypeID()
+        else {
+            throw DraftPostFlowFailure.verificationFailed
+        }
+        var queue = [unsafeDowncast(window, to: AXUIElement.self)]
+        var cursor = 0
+        while cursor < queue.count, cursor < 2_048 {
+            let element = queue[cursor]
+            cursor += 1
+            let labels = [
+                liveStringAttribute(kAXTitleAttribute as CFString, from: element),
+                liveStringAttribute(kAXDescriptionAttribute as CFString, from: element),
+                liveStringAttribute(kAXHelpAttribute as CFString, from: element),
+                liveStringAttribute("AXPlaceholderValue" as CFString, from: element),
+            ].compactMap { $0 }
+            if liveStringAttribute(kAXRoleAttribute as CFString, from: element)
+                == kAXTextAreaRole as String,
+                labels.contains(where: MacOSDraftPostFlowDriver.isExplicitComposerLabel)
+            {
+                guard AXUIElementSetAttributeValue(
+                    element,
+                    kAXValueAttribute as CFString,
+                    "" as CFString
+                ) == .success,
+                    liveStringAttribute(kAXValueAttribute as CFString, from: element) == ""
+                else {
+                    throw DraftPostFlowFailure.verificationFailed
+                }
+                return
+            }
+            var childrenValue: CFTypeRef?
+            if AXUIElementCopyAttributeValue(
+                element,
+                kAXChildrenAttribute as CFString,
+                &childrenValue
+            ) == .success,
+                let children = childrenValue as? [AXUIElement]
+            {
+                queue.append(contentsOf: children)
+            }
+        }
+        throw DraftPostFlowFailure.composerMissing
+    }
+
+    @MainActor
+    private static func liveStringAttribute(
+        _ attribute: CFString,
+        from element: AXUIElement
+    ) -> String? {
+        var value: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(element, attribute, &value) == .success else {
+            return nil
+        }
+        return value as? String
+    }
 }
 
 private actor ScriptedDraftPostDriver: DraftPostFlowDriving {
@@ -349,6 +447,27 @@ private actor UnexpectedDraftPostDriver: DraftPostFlowDriving {
     ) async throws {
         callCount += 1
         throw CocoaError(.fileReadUnknown)
+    }
+}
+
+private actor CancellationIgnoringDraftPostDriver: DraftPostFlowDriving {
+    private(set) var didStart = false
+    private var mayComplete = false
+
+    func transferDraft(
+        from _: ComputerUseWindowOption,
+        to _: ComputerUseWindowOption
+    ) async throws {
+        didStart = true
+        while !mayComplete {
+            await Task.yield()
+        }
+        // Models a cancellation that arrives after the mutation boundary: the
+        // operation has completed and its success must remain observable.
+    }
+
+    func complete() {
+        mayComplete = true
     }
 }
 

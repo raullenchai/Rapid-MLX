@@ -232,6 +232,17 @@ struct MacOSDraftPostFlowDriver: DraftPostFlowDriving {
             throw DraftPostFlowFailure.draftTooLarge
         }
         try await writeAndVerify(draft, to: destination.selection)
+        // The destination may now be mutated. Every remaining observation is
+        // therefore terminal on failure: recovery must never replay the write.
+        do {
+            let finalSource = try await readDraft(from: source.selection)
+            guard Self.utf8Matches(finalSource, draft) else {
+                throw DraftPostFlowFailure.verificationFailed
+            }
+            try await verifyComposer(draft, in: destination.selection)
+        } catch {
+            throw DraftPostFlowFailure.verificationFailed
+        }
     }
 
     private func readDraft(from selection: ComputerUseWindowSelection) async throws -> String {
@@ -350,6 +361,23 @@ struct MacOSDraftPostFlowDriver: DraftPostFlowDriving {
             }
         } catch {
             throw DraftPostFlowFailure.verificationFailed
+        }
+    }
+
+    private func verifyComposer(
+        _ draft: String,
+        in selection: ComputerUseWindowSelection
+    ) async throws {
+        try await focus(selection)
+        try await MainActor.run {
+            let window = try Self.exactFocusedWindow(selection)
+            let composer = try Self.uniqueComposer(in: window)
+            guard Self.stringAttribute(
+                kAXValueAttribute as CFString,
+                from: composer
+            ).map({ Self.utf8Matches($0, draft) }) == true else {
+                throw DraftPostFlowFailure.verificationFailed
+            }
         }
     }
 
@@ -571,6 +599,7 @@ final class DraftPostFlowViewModel {
         case loading
         case ready
         case running
+        case stopping
         case readyForReview(DraftPostFlowMetrics)
         case failed(String, DraftPostFlowMetrics?)
     }
@@ -613,6 +642,10 @@ final class DraftPostFlowViewModel {
             && destinationOptions.contains(where: { $0.id == destinationID })
     }
 
+    var isActive: Bool {
+        phase == .running || phase == .stopping
+    }
+
     func load() async {
         phase = .loading
         do {
@@ -640,9 +673,11 @@ final class DraftPostFlowViewModel {
         let coordinator = DraftPostFlowCoordinator(driver: driver)
         runTask = Task { [weak self] in
             let outcome = await coordinator.run(source: source, destination: destination)
-            // Dismissing the sheet owns cancellation. Do not let the completed
-            // task race with stop() and overwrite the cancellation state.
-            guard !Task.isCancelled, let self else { return }
+            // A cancellation request may race with the final synchronous write.
+            // Report the driver's definitive outcome instead of claiming that
+            // cancellation prevented a mutation when it did not.
+            guard let self else { return }
+            self.runTask = nil
             switch outcome {
             case .readyForReview(let metrics):
                 self.phase = .readyForReview(metrics)
@@ -654,9 +689,8 @@ final class DraftPostFlowViewModel {
 
     func stop() {
         runTask?.cancel()
-        runTask = nil
         if phase == .running {
-            phase = .failed(DraftPostFlowFailure.cancelled.userMessage, nil)
+            phase = .stopping
         }
     }
 }

@@ -145,9 +145,9 @@ private struct DraftPostFlowSheet: View {
                 }
                 Spacer()
                 Button("Close") {
-                    viewModel.stop()
                     dismiss()
                 }
+                    .disabled(viewModel.isActive)
                     .buttonStyle(.rapidSecondaryCompact)
                     .accessibilityIdentifier("ComputerUse.DraftPost.Close")
             }
@@ -175,6 +175,12 @@ private struct DraftPostFlowSheet: View {
                     Button("Stop") { viewModel.stop() }
                         .buttonStyle(.rapidSecondaryCompact)
                         .accessibilityIdentifier("ComputerUse.DraftPost.Stop")
+                }
+
+            case .stopping:
+                HStack(spacing: 10) {
+                    ProgressView()
+                    Text("Stopping at a safe boundary…")
                 }
 
             case .readyForReview(let metrics):
@@ -221,6 +227,7 @@ private struct DraftPostFlowSheet: View {
         .frame(width: 620, height: 450)
         .task { await viewModel.load() }
         .onDisappear { viewModel.stop() }
+        .interactiveDismissDisabled(viewModel.isActive)
         .accessibilityElement(children: .contain)
         .accessibilityLabel("Draft and post setup")
     }
