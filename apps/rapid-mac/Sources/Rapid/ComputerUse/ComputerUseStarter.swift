@@ -76,10 +76,10 @@ struct ComputerUseStarter: Identifiable, Equatable, Sendable {
         ),
         ComputerUseStarter(
             kind: .reserved,
-            title: "One more starter flow",
-            summary: "Reserved for another broadly useful job instead of filling the catalog with a weak default.",
+            title: "More flows are coming",
+            summary: "Another broadly useful starter will appear here in a future preview.",
             systemImage: "plus",
-            applications: "Product decision pending",
+            applications: "Coming later",
             approvalNote: "Not available yet.",
             availability: .reserved
         )

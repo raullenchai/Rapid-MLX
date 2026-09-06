@@ -22,13 +22,16 @@ struct ComputerUseView: View {
                 VStack(alignment: .leading, spacing: RapidTheme.Space.md) {
                     Text("Start with a flow").font(.headline)
                     LazyVGrid(
-                        columns: [GridItem(.adaptive(minimum: 220, maximum: 320), spacing: 12)],
+                        columns: [GridItem(.adaptive(minimum: 260, maximum: 320), spacing: 12)],
                         spacing: 12
                     ) {
                         ForEach(ComputerUseStarter.catalog) { starter in
                             starterCard(starter)
                         }
                     }
+                    // Three cards at their maximum width plus two gaps. The
+                    // adaptive grid can still collapse to two or one column.
+                    .frame(maxWidth: 984, alignment: .leading)
                 }
 
                 VStack(alignment: .leading, spacing: 8) {
@@ -98,7 +101,6 @@ struct ComputerUseView: View {
                     )
                 )
         )
-        .opacity(0.58)
         .accessibilityIdentifier("ComputerUse.Starter.\(starter.kind.rawValue)")
     }
 }
