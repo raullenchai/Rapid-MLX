@@ -218,6 +218,14 @@ def _valid_user_monkeypatch(monkeypatch):
         "home_for_user",
         staticmethod(lambda u: Path("/Users/serveuser") if u == "serveuser" else None),
     )
+    # Existing install transaction tests exercise launchd/plist rollback, not
+    # account-owned config persistence. Keep their fake /Users path hermetic;
+    # dedicated config tests below cover the atomic writer itself.
+    monkeypatch.setattr(
+        ins_mod,
+        "_install_service_config",
+        staticmethod(lambda **_kwargs: None),
+    )
     # validate_service_account requires the service-user binary to exist.
     monkeypatch.setattr(
         ins_mod,
@@ -821,12 +829,16 @@ def test_kickstart_status_subprocess_error(monkeypatch):
 # ---------------------------------------------------------------------------
 
 
-def _fake_launchctl_print(pid=None, last_exit=None):
+def _fake_launchctl_print(pid=None, last_exit=None, state=None, runs=None):
     lines = ["com.rapidmlx.server = {", "    active count = 1"]
     if pid is not None:
         lines.append(f"    pid = {pid}")
     if last_exit is not None:
         lines.append(f"    last exit code = {last_exit}")
+    if state is not None:
+        lines.append(f"    state = {state}")
+    if runs is not None:
+        lines.append(f"    runs = {runs}")
     lines.append("}")
     return "\n".join(lines)
 
@@ -840,6 +852,10 @@ def test_parse_pid_and_last_exit():
     assert st._parse_pid(None) is None
     assert st._parse_pid("no pid here") is None
     assert st._parse_last_exit(None) is None
+    assert st._parse_last_exit(_fake_launchctl_print(last_exit=-9)) == -9
+    details = _fake_launchctl_print(state="running", runs=3)
+    assert st._parse_launchd_field(details, "state") == "running"
+    assert st._parse_launchd_field(details, "runs") == "3"
 
 
 def test_collect_status_full_branch(monkeypatch, plist_kwargs, tmp_path):
