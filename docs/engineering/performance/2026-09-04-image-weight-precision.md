@@ -79,9 +79,9 @@ independent qualification.
 
 ## M1/M2 qualification expansion attempt (2026-09-06)
 
-Commit `9c5ff8bdbfd46dab8f2c7c177ba31b09b1ff5dab` adds a fail-closed,
-real-server qualification harness. It requires both immutable checkpoints to be
-complete before starting, accepts only Apple M1/M2 family names with at least
+This change adds a fail-closed, real-server qualification harness. It requires
+both immutable checkpoints to be complete before starting, accepts only Apple
+M1/M2 family names with at least
 32 GiB, rejects a non-clean swap baseline, alternates independent q4/BF16
 server processes, validates non-uniform PNG dimensions and deterministic
 per-precision hashes, and records process footprint and system swap. It never
