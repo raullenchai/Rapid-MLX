@@ -5050,3 +5050,51 @@ def test_model_identity_stays_unknown_when_the_cache_cannot_answer(
         "components"
     ][0]
     assert component["quantization"] == {"kind": "unknown", "base_dtype": "unknown"}
+
+
+def test_failed_run_after_loading_archives_the_loaded_identity(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The failure path uses the identity the helper deposited after loading."""
+    archive = LocalRunArchive(tmp_path)
+    _mock_local_context(
+        monkeypatch, "text_generation", "mlx-community/example-text-model"
+    )
+    real = local_runner.unresolved_model_identity
+    loaded = real("mlx-community/example-text-model", "text_generation")
+    loaded["components"][0]["source"]["resolved_revision"] = "e" * 40
+
+    async def load_then_fail(model_name: str, *_: object, **__: object):
+        capture = local_runner._LOADED_IDENTITY.get()
+        assert capture is not None
+        capture["identity"] = loaded
+        raise RuntimeError("generation exploded")
+
+    monkeypatch.setattr(local_runner, "_text_measurements", load_then_fail)
+    with pytest.raises(local_runner.LocalBenchmarkError):
+        local_runner.run_local("example-text", archive=archive)
+    failed = archive.list()[0]
+    assert failed["outcome"]["status"] == "failed"
+    assert failed["model"]["components"][0]["source"]["resolved_revision"] == "e" * 40
+    # Disarmed after the run.
+    assert local_runner._LOADED_IDENTITY.get() is None
+
+
+def test_cached_config_and_projection_degrade_on_malformed_input(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    from vllm_mlx.community_bench import run_builder
+
+    snapshot = tmp_path / "snapshots" / ("f" * 40)
+    snapshot.mkdir(parents=True)
+    (snapshot / "config.json").write_text("[1, 2, 3]")
+    assert run_builder._cached_config("org/model", snapshot_path=str(snapshot)) is None
+
+    def explode(config):
+        raise ValueError("publisher config is hostile")
+
+    monkeypatch.setattr(run_builder, "_quantization_facts", explode)
+    assert run_builder.quantization_facts({"quantization": {"bits": 4}}) == {
+        "kind": "unknown",
+        "base_dtype": "unknown",
+    }
