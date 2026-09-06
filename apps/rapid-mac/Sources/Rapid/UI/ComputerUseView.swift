@@ -254,7 +254,7 @@ private struct DraftPostFlowSheet: View {
             )
 
             if viewModel.sourceOptions.isEmpty || viewModel.destinationOptions.isEmpty {
-                Text("Open the draft in TextEdit and an empty English-language post composer in Safari, then refresh.")
+                Text("Open the draft in TextEdit and an empty English-language post composer in Safari, then refresh. Leave both selected windows unchanged until Rapid stops.")
                     .font(.caption)
                     .foregroundStyle(.orange)
             }

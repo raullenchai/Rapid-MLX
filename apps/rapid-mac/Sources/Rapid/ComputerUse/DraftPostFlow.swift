@@ -714,19 +714,15 @@ struct MacOSDraftPostFlowDriver: DraftPostFlowDriving {
 
     private static func isExplicitComposer(
         _ element: AXUIElement,
+        in window: AXUIElement,
         windowFrame: CGRect
     ) -> Bool {
         guard boolAttribute(kAXEnabledAttribute as CFString, from: element) == true,
-              boolAttribute("AXHidden" as CFString, from: element) != true,
               let frame = elementFrame(element), frame.width >= 1, frame.height >= 1,
-              windowFrame.intersects(frame)
+              windowFrame.insetBy(dx: -0.5, dy: -0.5).contains(frame),
+              hasVisibleAncestry(element, through: window)
         else { return false }
-        var settable: DarwinBoolean = false
-        guard AXUIElementIsAttributeSettable(
-            element,
-            kAXValueAttribute as CFString,
-            &settable
-        ) == .success, settable.boolValue else { return false }
+        guard isSettable(kAXValueAttribute as CFString, on: element) else { return false }
         let fields = [
             stringAttribute(kAXTitleAttribute as CFString, from: element),
             stringAttribute(kAXDescriptionAttribute as CFString, from: element),
@@ -734,6 +730,39 @@ struct MacOSDraftPostFlowDriver: DraftPostFlowDriving {
             stringAttribute("AXPlaceholderValue" as CFString, from: element),
         ].compactMap { $0 }
         return fields.contains(where: isExplicitComposerLabel)
+    }
+
+    private static func isSettable(_ attribute: CFString, on element: AXUIElement) -> Bool {
+        var settable: DarwinBoolean = false
+        return AXUIElementIsAttributeSettable(element, attribute, &settable) == .success
+            && settable.boolValue
+    }
+
+    private static func hasVisibleAncestry(
+        _ element: AXUIElement,
+        through window: AXUIElement
+    ) -> Bool {
+        var current = element
+        var visited = Set<AXUIElement>()
+        for _ in 0 ..< 32 {
+            guard visited.insert(current).inserted,
+                  boolAttribute("AXHidden" as CFString, from: current) != true
+            else { return false }
+            if CFEqual(current, window) {
+                return true
+            }
+            var parentValue: CFTypeRef?
+            guard AXUIElementCopyAttributeValue(
+                current,
+                kAXParentAttribute as CFString,
+                &parentValue
+            ) == .success,
+                let parentValue,
+                CFGetTypeID(parentValue) == AXUIElementGetTypeID()
+            else { return false }
+            current = unsafeDowncast(parentValue, to: AXUIElement.self)
+        }
+        return false
     }
 
     private static func boolAttribute(
@@ -752,7 +781,7 @@ struct MacOSDraftPostFlowDriver: DraftPostFlowDriving {
             throw DraftPostFlowFailure.composerMissing
         }
         let matches = try editableElements(in: window).filter {
-            isExplicitComposer($0, windowFrame: windowFrame)
+            isExplicitComposer($0, in: window, windowFrame: windowFrame)
         }
         guard let match = matches.first else {
             throw DraftPostFlowFailure.composerMissing
