@@ -6,6 +6,42 @@ import Testing
 @MainActor
 @Suite("Community Benchmark model-first projection")
 struct CommunityBenchmarkModelTests {
+    @Test("Benchmark replaces the chat-only fallback with the complete atomic catalog")
+    func completeCatalogProjection() {
+        let chat = ModelEntry(
+            alias: "qwen3.5-9b-4bit",
+            hfRepo: "mlx-community/qwen",
+            sizeOnDisk: nil,
+            cached: true,
+            taskTypes: [.textGeneration],
+            operationModes: [.chat]
+        )
+        let image = ModelEntry(
+            alias: "flux2-klein-4b",
+            hfRepo: "mlx-community/flux",
+            sizeOnDisk: nil,
+            cached: false,
+            taskTypes: [.imageGeneration],
+            operationModes: [.textToImage]
+        )
+
+        let fallback = CommunityBenchmarkView.benchmarkCatalog(
+            completeCatalog: nil,
+            fallback: [chat]
+        )
+        let complete = CommunityBenchmarkView.benchmarkCatalog(
+            completeCatalog: [chat, image],
+            fallback: [chat]
+        )
+
+        #expect(fallback.map(\.alias) == [chat.alias])
+        #expect(complete.map(\.alias) == [chat.alias, image.alias])
+        #expect(
+            CommunityBenchmarkModel.models(from: complete).map(\.entry.alias)
+                == [chat.alias, image.alias]
+        )
+    }
+
     @Test("Atomic tasks select a protocol without modality tabs")
     func atomicTaskProjection() throws {
         let image = ModelEntry(

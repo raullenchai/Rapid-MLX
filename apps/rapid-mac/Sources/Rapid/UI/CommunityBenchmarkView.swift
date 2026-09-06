@@ -600,9 +600,26 @@ struct CommunityBenchmarkView: View {
     @State private var receipts: [String: CommunityBenchmarkReceipt] = [:]
     @State private var benchmarkMetadata: [String: CommunityBenchmarkCatalogModel] = [:]
     @State private var benchmarkCLIAvailable = false
+    /// `ContentView` owns a chat-only cache for launch/readiness. Benchmarking
+    /// needs the complete atomic graph so image/video protocols stay reachable.
+    /// Keep the supplied catalog as the compatibility path for older sidecars.
+    @State private var completeCatalog: [ModelEntry]?
+
+    static func benchmarkCatalog(
+        completeCatalog: [ModelEntry]?,
+        fallback: [ModelEntry]
+    ) -> [ModelEntry] {
+        completeCatalog ?? fallback
+    }
 
     private var models: [CommunityBenchmarkModel] {
-        CommunityBenchmarkModel.models(from: catalog, metadata: benchmarkMetadata)
+        CommunityBenchmarkModel.models(
+            from: Self.benchmarkCatalog(
+                completeCatalog: completeCatalog,
+                fallback: catalog
+            ),
+            metadata: benchmarkMetadata
+        )
     }
 
     private var selected: CommunityBenchmarkModel? {
@@ -622,6 +639,7 @@ struct CommunityBenchmarkView: View {
         }
         .background(RapidTheme.surfaceCanvas)
         .task {
+            await refreshCompleteCatalog()
             if selectedAlias.isEmpty { selectedAlias = models.first?.entry.alias ?? "" }
             await refreshBenchmarkCatalog()
             await refreshResults()
@@ -959,6 +977,14 @@ struct CommunityBenchmarkView: View {
         } catch {
             if results.isEmpty { errorMessage = "Couldn’t read local results: \(error.localizedDescription)" }
         }
+    }
+
+    private func refreshCompleteCatalog() async {
+        guard let binary,
+              let loaded = await ModelCatalog.productEntries(binary: binary),
+              !Task.isCancelled
+        else { return }
+        completeCatalog = loaded
     }
 
     private func refreshBenchmarkCatalog() async {
