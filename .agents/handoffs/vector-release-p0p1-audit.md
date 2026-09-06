@@ -7,7 +7,7 @@
 
 ## Verified facts
 
-- P0 credential-directory symlink escalation is fixed in #3179; 194 focused
+- P0 credential-directory symlink escalation is fixed in #3179; 195 focused
   tests, 100% statement coverage for both changed production modules, and local
   lint/diff checks pass. Hosted exact-head checks remain the merge gate.
 - P1 unauthenticated non-loopback persistent bind is fixed in #3178; 195
