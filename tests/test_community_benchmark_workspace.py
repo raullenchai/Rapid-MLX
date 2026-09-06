@@ -2923,7 +2923,7 @@ def test_cli_run_prints_local_only_confirmation(
 
 
 def test_summarize_measurements_matches_the_board_decode_formula() -> None:
-    """``(N - 1) / window`` like rapidmlx.com; ``N < 2`` has no decode rate."""
+    """``(N - 1) / window`` exactly like rapidmlx.com, including ``N == 1``."""
     run = {
         "measurements": [
             {
@@ -2952,13 +2952,12 @@ def test_summarize_measurements_matches_the_board_decode_formula() -> None:
     }
     lines = community_cli.summarize_measurements(run)
     assert lines[0].startswith("  pp512-tg128         45.5 tok/s decode")
-    # Fewer than two output tokens means no inter-token interval: the board
-    # shows no decode rate for such a sample and neither does the CLI. The
-    # one-token case carries no wall time either, so it produces no line;
-    # the zero-token case falls back to wall time.
-    assert all("single" not in line for line in lines)
-    assert lines[1].startswith("  empty               0.60 s per run")
-    assert len(lines) == 2
+    # The board computes (1 - 1) / window = 0 for a one-token sample and
+    # displays it; the CLI prints the same number rather than inventing one.
+    assert lines[1].startswith("  single               0.0 tok/s decode")
+    # No output tokens means no rate at all: falls back to wall time.
+    assert lines[2].startswith("  empty               0.60 s per run")
+    assert len(lines) == 3
 
 
 def test_summarize_measurements_reports_wall_time_for_image_and_video() -> None:
