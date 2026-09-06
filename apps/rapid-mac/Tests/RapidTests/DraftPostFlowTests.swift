@@ -196,8 +196,11 @@ struct DraftPostFlowTests {
         #expect(throws: DraftPostFlowFailure.draftMissing) {
             try MacOSDraftPostFlowDriver.uniqueDraft(in: [])
         }
+        #expect(throws: DraftPostFlowFailure.draftMissing) {
+            try MacOSDraftPostFlowDriver.uniqueDraft(in: [nil])
+        }
         #expect(throws: DraftPostFlowFailure.draftAmbiguous) {
-            try MacOSDraftPostFlowDriver.uniqueDraft(in: ["Draft", "Find text"])
+            try MacOSDraftPostFlowDriver.uniqueDraft(in: ["Draft", ""])
         }
     }
 

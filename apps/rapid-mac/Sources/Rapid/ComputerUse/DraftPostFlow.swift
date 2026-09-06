@@ -256,8 +256,7 @@ struct MacOSDraftPostFlowDriver: DraftPostFlowDriving {
                         from: $0
                     ) == kAXTextAreaRole as String
                 }
-                .compactMap { Self.stringAttribute(kAXValueAttribute as CFString, from: $0) }
-                .filter { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+                .map { Self.stringAttribute(kAXValueAttribute as CFString, from: $0) }
             return try Self.uniqueDraft(in: candidates)
         }
     }
@@ -473,10 +472,12 @@ struct MacOSDraftPostFlowDriver: DraftPostFlowDriving {
     private static func editableElements(in root: AXUIElement) -> [AXUIElement] {
         var queue: [(AXUIElement, Int)] = [(root, 0)]
         var result: [AXUIElement] = []
+        var visited = Set<AXUIElement>()
         var cursor = 0
-        while cursor < queue.count, cursor < 2_048 {
+        while cursor < queue.count, visited.count < 2_048 {
             let (element, depth) = queue[cursor]
             cursor += 1
+            guard visited.insert(element).inserted else { continue }
             let role = stringAttribute(kAXRoleAttribute as CFString, from: element)
             let subrole = stringAttribute(kAXSubroleAttribute as CFString, from: element)
             if (role == kAXTextAreaRole as String || role == kAXTextFieldRole as String),
@@ -536,12 +537,17 @@ struct MacOSDraftPostFlowDriver: DraftPostFlowDriving {
         ].contains(label)
     }
 
-    static func uniqueDraft(in candidates: [String]) throws -> String {
-        guard let draft = candidates.first else {
-            throw DraftPostFlowFailure.draftMissing
-        }
+    static func uniqueDraft(in candidates: [String?]) throws -> String {
         guard candidates.count == 1 else {
+            if candidates.isEmpty {
+                throw DraftPostFlowFailure.draftMissing
+            }
             throw DraftPostFlowFailure.draftAmbiguous
+        }
+        guard let draft = candidates[0],
+              !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        else {
+            throw DraftPostFlowFailure.draftMissing
         }
         return draft
     }
