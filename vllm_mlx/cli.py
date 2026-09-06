@@ -3071,6 +3071,10 @@ def _serve_will_run_on_mllm_lane(args) -> bool:
     )
     if decision.is_mllm:
         return True
+    if _alias_modality(args.model) == "text-diffusion":
+        # DiffusionGemma runs on the mlx-vlm diffusion runtime whatever lane
+        # flags say: --no-mllm / spec-decode cannot route it to mlx-lm.
+        return True
     if decision.reason != "text_checkpoint":
         # Explicit --no-mllm, spec-decode, or a hybrid/unsupported downgrade:
         # the checkpoint was inspected and deliberately routed to the text

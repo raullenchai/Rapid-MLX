@@ -154,6 +154,30 @@ def test_lane_helper_falls_back_to_profile_when_probe_says_text(monkeypatch):
     assert cli._serve_will_run_on_mllm_lane(_args(enable_mtp=True)) is False
 
 
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {},
+        {"no_mllm": True},
+        {"spec_decode": "mtp"},
+        {"enable_mtp": True},
+        {"force_spec_decode": True},
+    ],
+)
+def test_lane_helper_keeps_text_diffusion_on_vision_runtime(monkeypatch, overrides):
+    """codex #3127: the flag short-circuits must not let a text-diffusion
+    alias skip the mlx-vlm guard — its runtime ignores those flags."""
+    from vllm_mlx.api import utils as api_utils
+
+    monkeypatch.setattr(api_utils, "is_mllm_model", lambda name: False)
+    _patch_profile(
+        monkeypatch, _profile(modality="text-diffusion", supports_image_input=False)
+    )
+    _patch_weights(monkeypatch, metadata=None)
+    args = _args(model="diffusion-gemma-26b-4bit", **overrides)
+    assert cli._serve_will_run_on_mllm_lane(args) is True
+
+
 def test_alias_modality(monkeypatch):
     _patch_profile(monkeypatch, _profile(modality="text-diffusion"))
     assert cli._alias_modality("diffusion-gemma-26b-4bit") == "text-diffusion"
