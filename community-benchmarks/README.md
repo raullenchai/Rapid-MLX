@@ -2,106 +2,95 @@
 
 Real numbers from real users' Apple Silicon Macs running Rapid-MLX. Single-vendor benchmarks can only cover the hardware the vendor has — the headline table in the repo `README.md` was measured on an M3 Ultra 256 GB. This directory is how everyone else fills in their own row.
 
-## How submissions work
+There are two flows. Both are consent-gated, both talk HTTPS to rapidmlx.com, and neither needs a git checkout, a GitHub account, or `gh`.
 
+| | `rapid-mlx benchmark …` (0.13.4+) | `rapid-mlx bench <alias> --submit` (legacy) |
+|---|---|---|
+| What it measures | Registered protocols for text, image and video models | Text only |
+| Record shape | Atomic `BenchmarkRun` (`proto/community-benchmark/v1`) | `schema.json` in this directory |
+| Runs locally first | Yes — every run is archived under `~/.rapid-mlx/benchmarks/` and nothing leaves the Mac until you run `share` | No — the run and the submission are one command |
+| Upload endpoint | `POST https://rapidmlx.com/api/benchmarks/atomic` | `POST https://rapidmlx.com/api/benchmarks` |
+| Where it shows up | "Community Benchmark beta" on <https://rapidmlx.com/leaderboard> and your contributor page | The comparable board on the same page |
+
+The board's history (the `submissions/` directory here and `aggregated.json`) predates both HTTP flows: those rows arrived as pull requests. That path is gone; see [History](#history).
+
+## Local-first flow: `rapid-mlx benchmark`
+
+```console
+$ rapid-mlx benchmark catalog                 # models with a registered protocol, with a fit column for this Mac
+$ rapid-mlx benchmark plan qwen3.5-9b-4bit    # the exact workload, before anything runs
+$ rapid-mlx benchmark run qwen3.5-9b-4bit     # measure; the result is saved locally, nothing is uploaded
+Saved local result 174f47b7-dba9-4b68-aee2-e70fed6aa1ed
+  pp512-tg128         45.8 tok/s decode   TTFT    813 ms   (5 rounds)
+  pp2048-tg512        44.6 tok/s decode   TTFT   3199 ms   (5 rounds)
+Nothing was uploaded.
+Share it: rapid-mlx benchmark share 174f47b7-dba9-4b68-aee2-e70fed6aa1ed
+$ rapid-mlx benchmark results                 # every local run
+$ rapid-mlx benchmark inspect <run_id>        # the full record
+$ rapid-mlx benchmark share <run_id>          # preview the exact upload, then y/N
 ```
+
+The Desktop app's Community Benchmark page drives exactly these commands (`--json`) and shows the same consent sheet before a share.
+
+### What a run does
+
+The registered text protocol (`rapid-community-speed` v2) is two fixed workloads, each 1 warmup + 5 measured rounds, greedy decoding, prefix cache off, one request at a time:
+
+| Case | Prompt tokens | Output tokens |
+|---|---|---|
+| `pp512-tg128` | 512 | 128 |
+| `pp2048-tg512` | 2048 | 512 |
+
+Prompts are synthetic token sequences (`rapid-synthetic-token-corpus` v2, seeded per case), so no user content is ever measured or recorded. The image and video protocols are a fixed prompt, seed and size (see `rapid-image-speed-v1.json` / `rapid-video-speed-v1.json` under `vllm_mlx/catalog/schemas/`). The protocol files are immutable; a new version is a new file and a new `protocol_version`.
+
+Per round, a text measurement records `prompt_tokens`, `output_tokens`, `ttft_ms`, `decode_duration_ms`, `total_duration_ms` and `peak_active_memory_mib`. Decode throughput is derived by readers as `(output_tokens − 1) / decode_duration_ms` — the first token lands at `ttft_ms` — which matches llama.cpp `tg` and vLLM TPOT semantics. The CLI summary and the website use the same formula.
+
+### What `share` sends
+
+`rapid-mlx benchmark share <run_id>` prints the exact request body and asks for `y/N` (default no). `--preview` prints it without asking. The body is the archived run plus one field, `install_id`:
+
+- `model` — the Hugging Face repo id, artifact format, and the quantization facts read from the cached `config.json`.
+- `machine` — chip, unified memory, CPU/GPU core counts, macOS version, and the run conditions (AC/battery, Low Power Mode, thermal state, memory pressure, available memory) sampled before and after the measurements.
+- `execution` — Rapid-MLX / MLX / Python versions, source revision when running from a checkout, and the effective inference settings (context length, speculative decoding, KV-cache mode, prefill backend).
+- `workload` — the protocol id, version and digest that produced the numbers.
+- `measurements` — the raw per-round samples above.
+- `install_id` — 12 hex characters generated once per install and stored in `~/.rapid-mlx/bench-install-id` (mode 0600). The server derives your public pseudonym (for example `northern-windy-numbat ·0a9`) from it. Delete the file to get a new identity.
+
+**Never sent:** username, hostname, hardware serial or UUID, IP address (the endpoint observes the source IP for short-lived rate limiting and does not store it in the record), file paths, environment variables, prompts, model output.
+
+On acceptance the server returns a receipt (`submission_id` = your `run_id`, the payload digest, and your contributor identity). The CLI stores it under `~/.rapid-mlx/benchmarks/receipts/<run_id>.json` and prints your contributor URL. Sharing the same run twice is idempotent: the server answers with the same receipt and `already_exists: true`.
+
+### Contract
+
+The wire format is JSON Schema 2020-12 with `additionalProperties: false` everywhere. The source of truth is `proto/` at the repo root (`proto/model-runtime/v1` for model identity, machine observation and execution config; `proto/community-benchmark/v1` for the run, the protocols and the receipt). Packaged copies live in `vllm_mlx/catalog/schemas/`; tests pin them byte-for-byte to `proto/`. Design notes: [`docs/engineering/decisions/2026-08-31-community-benchmark-wire-contract.md`](../docs/engineering/decisions/2026-08-31-community-benchmark-wire-contract.md) and [`…-community-benchmark-local-workspace.md`](../docs/engineering/decisions/2026-08-31-community-benchmark-local-workspace.md).
+
+Public read surfaces: `GET https://rapidmlx.com/api/benchmarks/atomic/public` (privacy-safe projection; never returns `install_id` or digests) and `GET …/atomic/contributions` (paginated history, `?contributor=<slug>`). Raw records are admin-only.
+
+## Legacy flow: `rapid-mlx bench <alias> --submit`
+
+```console
 $ rapid-mlx bench qwen3.5-9b-4bit --submit
 ```
 
-The CLI:
+Runs the same two-bucket workload (512/128 and 2048/512, 1 warmup + 5 rounds, greedy), pretty-prints the submission JSON, asks for `y/N`, saves a local copy, then POSTs it to `https://rapidmlx.com/api/benchmarks`. The payload is the shape in [`schema.json`](schema.json): `hardware`, `software`, `model`, `config`, `buckets.short` / `buckets.long` (median + raw rounds of `decode_tps`, `prefill_tps`, `ttft_ms`), `peak_ram_mb`, optional `--notes`. `--sampled` submits a second row at temp 0.7 / top_p 0.9. The hardware allowlist for this flow lives in `vllm_mlx/community_bench/hardware.py`.
 
-1. Detects your hardware via **non-privileged macOS interfaces only** (`sysctl`, `sw_vers`, `system_profiler`). See [What we collect](#what-we-collect) for the exact field list; the allowlist lives in `vllm_mlx/community_bench/hardware.py` and the schema constrains the recorded values.
-2. Runs a standardized benchmark: 2 buckets (short / long), 5 measured rounds + 1 warmup, greedy decode. Numbers are directly comparable to llama.cpp's `llama-bench -p 512 -n 128 -r 5`.
-3. Pretty-prints the exact JSON it's about to submit and asks for your `y/N` confirmation. **No submission JSON leaves your machine without that y.** Note that the model itself is fetched from HuggingFace before consent (same as any other `rapid-mlx bench` run) — that network call is part of loading the model, not the submission.
-4. On `y`, fetches upstream `main`, creates a branch, and opens a PR against `raullenchai/Rapid-MLX`. If `origin` is already your fork, the CLI pushes there. If you cloned `raullenchai/Rapid-MLX` directly and are authenticated as a contributor, `gh` creates or reuses your fork, adds a dedicated `community-bench-fork` remote, and pushes there instead — contributors are never asked to push upstream. When `gh` is unavailable, the CLI prints the equivalent fork-first web and git steps. Everything uses your existing git/gh credentials; no new token is requested. The commit is authored by whatever git author identity your repo has configured (`git config user.name` / `user.email`); that's how PRs work and is the only contributor identity attached to the row.
-5. A GitHub Action validates the schema + sanity-checks the numbers; on green, a maintainer merges.
+Rows accepted here feed the comparable board (`GET https://rapidmlx.com/api/benchmarks`), grouped by chip × memory × model × Rapid-MLX version with median + IQR per metric.
 
-## Aggregator + page
+## Choosing between them
 
-Raw submissions are reduced to a sortable table by [`scripts/aggregate.py`](scripts/aggregate.py): groups by `(chip, model_alias, rapid_mlx_version)` — the axis the schema description names — and computes median + IQR per metric within each group. Output is the committed [`aggregated.json`](aggregated.json), which is what external consumers (the website's Performance tab; this directory's own [`index.html`](index.html)) fetch.
+Use `rapid-mlx benchmark` unless you specifically want a row on the legacy comparable board. The local-first flow measures image and video models, records the machine conditions the numbers were produced under, keeps every run on disk so you can inspect it before deciding, and gives you a contributor page.
+
+## History
+
+Until mid-2026, `--submit` committed a JSON file into a checkout of this repository and opened a pull request; CI validated it (`.github/workflows/validate-community-submission.yml`) and [`scripts/aggregate.py`](scripts/aggregate.py) reduced `submissions/` into [`aggregated.json`](aggregated.json), which [`index.html`](index.html) renders. That path required a git checkout with a remote pointing at upstream — which nobody who ran `pip install rapid-mlx` or `brew install rapid-mlx` has — so the corpus stalled at 14 rows and the client moved to HTTP (#1403). The files here remain as the immutable record of those first submissions (all CC0), and the aggregator still works on them:
 
 ```bash
-# Regenerate the aggregate after adding a submission
-python community-benchmarks/scripts/aggregate.py
-
-# Verify the on-disk aggregate matches what would be regenerated
-# (the CI freshness check runs exactly this)
-python community-benchmarks/scripts/aggregate.py --check
+python community-benchmarks/scripts/aggregate.py          # regenerate aggregated.json
+python community-benchmarks/scripts/aggregate.py --check  # CI freshness check
 ```
 
-[`index.html`](index.html) is a single-file reference UI — no build step, no framework. Drop it (plus `aggregated.json`) onto any static host: GitHub Pages, S3, the rapidmlx.com Performance tab, anywhere. The page fetches `aggregated.json` from the same directory and renders a sortable filterable table.
+Nothing new is written to `submissions/` by either current flow.
 
-GitHub Action [`aggregate-bench.yml`](../.github/workflows/aggregate-bench.yml) closes the loop: on PR, it verifies the committed `aggregated.json` is fresh against the current `submissions/`; on push-to-main, it regenerates and auto-commits if any submission slipped through without a regenerate.
+## License
 
-## What we collect
-
-The full payload is exactly the fields defined in `schema.json`. The schema's `additionalProperties: false` everywhere means a contributor *cannot* add fields beyond this list and have CI accept the row. The fields below are the complete contents:
-
-| Field | Source | Why |
-|---|---|---|
-| schema_version | const `1` | so the aggregator can skip unknown versions |
-| submission_id | random uuid4 (first 12 hex chars) | de-dup key |
-| submitted_at | `datetime.now(timezone.utc).isoformat()` | when |
-| hardware.chip | `sysctl -n machdep.cpu.brand_string` | "Apple M4 Pro" — the bucketing key |
-| hardware.ram_gb | `sysctl -n hw.memsize` | bucketing + headroom analysis |
-| hardware.cpu_cores | `sysctl -n hw.ncpu` | distinguish M4 / M4 Pro / M4 Max within same chip family |
-| hardware.gpu_cores | `system_profiler SPDisplaysDataType` (extract `Total Number of Cores`) | distinguishes 16-core vs 20-core M4 Pro |
-| software.macos | `sw_vers -productVersion` | OS-level perf regressions |
-| software.rapid_mlx | `vllm_mlx.__version__` | per-version regression tracking |
-| software.mlx | `mlx.__version__` | underlying framework version |
-| software.python | `sys.version_info[:3]` | rare but real perf differences |
-| model.alias | CLI argument | what was benched (whitelisted alias from `aliases.json`) |
-| model.hf_path | resolved from alias | exact HF repo the alias points at |
-| config.rounds / warmup_rounds / sampling / buckets_spec | locked by the standardized runner | comparability axes |
-| config.prompt_hash | SHA256[:16] of the synthetic prompt seed | tampering check |
-| buckets.short / buckets.long | bench output (decode_tps / prefill_tps / ttft_ms summary + 5 raw rounds each) | the actual numbers |
-| peak_ram_mb | `mx.metal.get_peak_memory()` (best-effort; nullable) | headroom analysis |
-| notes | optional `--notes "..."` | "on battery", "fresh boot", etc. |
-
-**Explicitly not collected**: username, hostname, hardware serial, hardware UUID, IP, MAC address, file paths, prompt text, model output, environment variables, any other data from your machine. The bench uses **synthetic random token sequences** (seeded per `schema_version` + bucket length), so no user prompt or content ever enters the submission. The explicitly consented submission calls are: (a) `git fetch` of upstream `main`; (b) GitHub identity/fork setup through `gh` when needed; (c) `git push` to a writable GitHub remote (your fork for contributors); and (d) `gh pr create` against `raullenchai/Rapid-MLX`. HuggingFace model download happens earlier as part of normal model loading, identical to any other bench run.
-
-## What we DO with the data
-
-- Store each submission as a JSON file under `submissions/`. That's the raw store; future tooling reads from it.
-- Per-contributor attribution: the PR author (your GitHub handle) is the only contributor signal; no other identity is tracked.
-- License: all submissions are CC0 (`SPDX-License-Identifier: CC0-1.0`). The data is community-owned.
-- Bucketing keys we plan to expose to future readers: `(hardware.chip, hardware.ram_gb, hardware.cpu_cores, hardware.gpu_cores, model.alias, software.rapid_mlx, config.sampling)`. The schema already carries each of these so we don't lose information now.
-
-## Standardized bench config
-
-Locked by `--submit`. If you want to tune knobs you have to drop `--submit` (the result then can't be uploaded — that's the contract).
-
-| Parameter | Value | Source / rationale |
-|---|---|---|
-| Short bucket prefill | 512 random tokens | matches `llama-bench -p 512` default |
-| Short bucket decode | 128 tokens | matches `llama-bench -n 128` default |
-| Long bucket prefill | 2048 random tokens | covers long-context sensitivity |
-| Long bucket decode | 512 tokens | matches Rapid-MLX's existing `long_decode_tps` |
-| Rounds | 5 measured + 1 warmup discarded | `llama-bench -r 5` |
-| Sampling | greedy (temp=0, top_p=1) | comparable to llama-bench / TGI / MLPerf |
-| `decode_tps` formula | `(output_tokens − 1) / (t_end − t_first_token)` | excludes prefill **and** the first token's decode (it lands at `t_first_token`); matches vLLM TPOT / llama.cpp `tg` semantics. For `N == 1` we fall back to `N / window` to avoid a 0/0. |
-| `prefill_tps` formula | `prompt_tokens / (t_first_token − t_start)` | matches llama.cpp `pp` |
-| `ttft_ms` | `(t_first_token − t_request_in) * 1000` | end-to-end first-token latency |
-| Reported per bucket | `decode_tps`, `prefill_tps`, `ttft_ms` | direct overlap with llama-bench + AA + repo's existing `reports/benchmarks/*.json` |
-| Reported per submission (top-level) | `peak_ram_mb` (nullable) | one value covers the whole bench, taken after warmup |
-
-You can additionally pass `--sampled` to submit a **second** row at temp=0.7, top_p=0.9 (real-world sampling) right after the greedy submission. Stored as a separate submission with `sampling="sampled"` — `sampling` is part of every submission's bucket key so greedy and sampled rows never collapse into one number downstream. `--sampled` does *not* replace greedy; both rows are submitted (each with its own consent prompt).
-
-## Submission storage
-
-Append-only. One file per submission under `submissions/`:
-
-```
-submissions/<YYYYMMDD>-<chip-slug>-<model-slug>-<submission_id>.json
-```
-
-Duplicate re-runs from the same machine are allowed and **encouraged** — more samples → tighter median. Each re-run is a fresh `rapid-mlx bench --submit` invocation that generates its own `submission_id`; copying an existing file under a new name does NOT add a second sample (the validator rejects duplicate `submission_id`s so one machine can't multiply its vote). Outliers are kept in the raw store for full auditability.
-
-Submissions are **append-only**: PRs that delete or rename existing rows are rejected by CI. Apply corrections via a new submission rather than mutating history.
-
-## For maintainers
-
-- Schema: `schema.json` (JSON Schema draft 2020-12, additionalProperties: false everywhere).
-- CI: `.github/workflows/validate-community-submission.yml` validates incoming submissions and runs sanity checks (tps > 0, chip on whitelist, etc.). A maintainer reviews and merges; auto-merge can be added later if the false-positive rate stays low.
-- Bumping `schema_version`: increment in `schema.json` + `vllm_mlx/community_bench/runner.py::SCHEMA_VERSION`. Old submissions are kept; readers should skip entries with an unknown version.
-- Aggregator + website are explicitly deferred to a follow-up PR once the raw store has enough real submissions to design against.
+All submissions, in both flows, are CC0 (`SPDX-License-Identifier: CC0-1.0`). The data is community-owned.
