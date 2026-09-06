@@ -35,6 +35,9 @@ _PERMITTED_BINARIES: frozenset[str] = frozenset(
         "/usr/sbin/sysctl",
         "/usr/bin/sw_vers",
         "/usr/sbin/system_profiler",
+        # ``pmset -g batt`` for the volatile power-source condition (AC vs
+        # battery). Read-only, unprivileged.
+        "/usr/bin/pmset",
     }
 )
 
@@ -43,6 +46,7 @@ _PERMITTED_BINARIES: frozenset[str] = frozenset(
 _SYSCTL_TIMEOUT_S: float = 2.0
 _SWVERS_TIMEOUT_S: float = 2.0
 _SYSTEM_PROFILER_TIMEOUT_S: float = 15.0
+_PMSET_TIMEOUT_S: float = 2.0
 
 
 @dataclass(frozen=True)
@@ -102,7 +106,11 @@ def _run(cmd: list[str], timeout: float) -> str:
             # NIT.)
             shell=False,
         )
-    except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as e:
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired, OSError) as e:
+        # ``OSError`` covers process-creation failures (EAGAIN, EMFILE, a
+        # missing executable). Every caller treats ``RuntimeError`` as
+        # "this probe is unavailable"; letting ``OSError`` escape would turn
+        # an optional post-measurement probe into a lost benchmark result.
         raise RuntimeError(f"probe {cmd!r} failed: {e}") from e
     return result.stdout.strip()
 
@@ -266,3 +274,179 @@ def collect() -> tuple[Hardware, Software]:
         python=_python_version(),
     )
     return hardware, software
+
+
+# ---------------------------------------------------------------------------
+# Volatile run conditions (``machine-observation.schema.json#/$defs/runConditions``)
+# ---------------------------------------------------------------------------
+#
+# The atomic ``MachineObservation`` separates the stable hardware profile from
+# the conditions a run happened under. Until 0.13.4 every producer wrote
+# ``unknown``/``null`` here, which made "was this Mac on battery / throttled /
+# swapping?" unanswerable on the board. Each probe below is best-effort and
+# independent: a failure degrades exactly one field to ``unknown``/``None``
+# and never blocks the benchmark.
+
+#: ``NSProcessInfoThermalState`` raw values → schema enum.
+_THERMAL_STATES: dict[int, str] = {
+    0: "nominal",
+    1: "fair",
+    2: "serious",
+    3: "critical",
+}
+
+#: ``kern.memorystatus_vm_pressure_level`` raw values → schema enum. The
+#: kernel reports 1/2/4 (normal/warning/critical); anything else is unknown.
+_MEMORY_PRESSURE_LEVELS: dict[int, str] = {
+    1: "normal",
+    2: "warning",
+    4: "critical",
+}
+
+_MIB = 1024 * 1024
+
+
+def _power_source() -> str:
+    """``ac`` / ``battery`` from the first line of ``pmset -g batt``."""
+    try:
+        first = _run(["/usr/bin/pmset", "-g", "batt"], _PMSET_TIMEOUT_S).splitlines()[0]
+    except (RuntimeError, IndexError):
+        return "unknown"
+    lowered = first.lower()
+    if "ac power" in lowered:
+        return "ac"
+    if "battery power" in lowered:
+        return "battery"
+    return "unknown"
+
+
+def _process_info(selector: bytes, restype):
+    """Send one no-argument message to ``NSProcessInfo.processInfo``.
+
+    Read in-process through the Objective-C runtime — no subprocess, no
+    entitlement, nothing beyond one scalar leaves the call. Returns ``None``
+    on any failure (non-Darwin, missing runtime, unexpected value) so each
+    caller degrades its own field.
+    """
+    if sys.platform != "darwin":
+        return None
+    try:
+        import ctypes
+
+        # NSProcessInfo lives in Foundation; make sure the framework is
+        # mapped into a clean process before asking the runtime for the class.
+        ctypes.CDLL("/System/Library/Frameworks/Foundation.framework/Foundation")
+        objc = ctypes.CDLL("/usr/lib/libobjc.A.dylib")
+        objc.objc_getClass.restype = ctypes.c_void_p
+        objc.objc_getClass.argtypes = [ctypes.c_char_p]
+        objc.sel_registerName.restype = ctypes.c_void_p
+        objc.sel_registerName.argtypes = [ctypes.c_char_p]
+        send_id = ctypes.cast(
+            objc.objc_msgSend,
+            ctypes.CFUNCTYPE(ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p),
+        )
+        send = ctypes.cast(
+            objc.objc_msgSend,
+            ctypes.CFUNCTYPE(restype, ctypes.c_void_p, ctypes.c_void_p),
+        )
+        process_info = send_id(
+            objc.objc_getClass(b"NSProcessInfo"),
+            objc.sel_registerName(b"processInfo"),
+        )
+        if not process_info:
+            return None
+        # Older macOS releases lack some selectors (``isLowPowerModeEnabled``
+        # arrived in 12.0); an unrecognised selector would raise an
+        # Objective-C exception that ctypes cannot catch, so ask first.
+        responds = ctypes.cast(
+            objc.objc_msgSend,
+            ctypes.CFUNCTYPE(
+                ctypes.c_bool, ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p
+            ),
+        )
+        target = objc.sel_registerName(selector)
+        if not responds(
+            process_info, objc.sel_registerName(b"respondsToSelector:"), target
+        ):
+            return None
+        return send(process_info, target)
+    except (OSError, AttributeError, ValueError):
+        return None
+
+
+def _low_power_mode() -> bool | None:
+    """``NSProcessInfo.isLowPowerModeEnabled`` — the live setting.
+
+    ``pmset -g`` was tried first and rejected: its output differs between
+    hosts (some print the ``lowpowermode`` row, some only the header), so it
+    silently reported ``null`` on machines where Low Power Mode was on.
+    """
+    import ctypes
+
+    value = _process_info(b"isLowPowerModeEnabled", ctypes.c_bool)
+    return None if value is None else bool(value)
+
+
+def _thermal_state() -> str:
+    """``NSProcessInfo.thermalState`` — the signal macOS and the Desktop app use."""
+    import ctypes
+
+    value = _process_info(b"thermalState", ctypes.c_long)
+    if value is None:
+        return "unknown"
+    return _THERMAL_STATES.get(int(value), "unknown")
+
+
+def _memory_pressure() -> str:
+    try:
+        raw = int(
+            _run(
+                ["/usr/sbin/sysctl", "-n", "kern.memorystatus_vm_pressure_level"],
+                _SYSCTL_TIMEOUT_S,
+            )
+        )
+    except (RuntimeError, ValueError):
+        return "unknown"
+    return _MEMORY_PRESSURE_LEVELS.get(raw, "unknown")
+
+
+def _available_memory_mib() -> int | None:
+    """Free + speculative + purgeable pages, in MiB.
+
+    A conservative reading of what a model load could claim without paging
+    anything out; the numbers come from the same ``vm.*`` counters
+    ``vm_stat`` prints, read through the already-allowlisted ``sysctl``.
+    """
+    try:
+        out = _run(
+            [
+                "/usr/sbin/sysctl",
+                "-n",
+                "vm.page_free_count",
+                "vm.page_speculative_count",
+                "vm.page_purgeable_count",
+                "hw.pagesize",
+            ],
+            _SYSCTL_TIMEOUT_S,
+        )
+        free, speculative, purgeable, page_size = (int(v) for v in out.split())
+    except (RuntimeError, ValueError):
+        return None
+    return (free + speculative + purgeable) * page_size // _MIB
+
+
+def run_conditions() -> dict[str, bool | int | str | None]:
+    """Snapshot the volatile conditions a run happens under.
+
+    Returns a schema-valid ``runConditions`` object. Take one snapshot before
+    loading the model and one after the last measurement so readers can see
+    whether the machine was on battery, throttled, or under memory pressure
+    while the numbers were produced.
+    """
+    return {
+        "power_source": _power_source(),
+        "low_power_mode": _low_power_mode(),
+        "thermal_state": _thermal_state(),
+        "memory_pressure": _memory_pressure(),
+        "available_memory_mib": _available_memory_mib(),
+    }
