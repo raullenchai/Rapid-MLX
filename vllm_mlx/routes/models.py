@@ -671,6 +671,17 @@ def _detect_capabilities(
         return ["video.generation"]
 
     if profile_modality == "image-gen":
+        # Qwen Image Edit is deliberately edit-only: advertising the legacy
+        # generation capability makes discovery clients select an endpoint the
+        # server rejects with ``wrong_image_endpoint``. Match both the public
+        # alias and its pinned HF id without changing existing generation and
+        # dual-capability model wire contracts in this scoped addition.
+        folded = model_id.casefold().replace("_", "-")
+        if folded in {
+            "qwen-image-edit",
+            "osaurusai/qwen-image-edit-mflux-q8",
+        }:
+            return ["image.editing"]
         return ["image.generation"]
 
     caps: list[str] = ["text"]
