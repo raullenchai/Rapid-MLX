@@ -1435,6 +1435,7 @@ IMAGE_MODEL_REVISIONS: dict[str, str] = {
     "mflux-community/flux-1-schnell-mflux-q4": "bcdbe817ad51175959b2e691e64eca626db30558",
     "mflux-community/flux2-klein-4b-mflux-bf16": "4d8e1bae8eb47c7766705de2cda7dabd6cc4ba67",
     "mflux-community/qwen-image-mflux-q6": "c628fe4392d963557c3013c2709e6d3b67bca79d",
+    "OsaurusAI/Qwen-Image-Edit-mflux-q8": "a458969f2a612433cf036bfc3d8d818ceba29fab",
     HIDREAM_O1_REPO: HIDREAM_O1_REVISION,
     SDXL_REPO: SDXL_REVISION,
     BONSAI_IMAGE_REPO: BONSAI_IMAGE_REVISION,

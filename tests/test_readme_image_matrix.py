@@ -65,9 +65,13 @@ def test_readme_image_matrix_matches_shipping_catalog() -> None:
     for alias, entry in catalog.items():
         cells = rows[alias]
         assert len(cells) == 6
-        expected_modes = (
-            "Generate + edit" if "image_to_image" in atomic[alias] else "Generate"
-        )
+        operations = set(atomic[alias])
+        if {"text_to_image", "image_to_image"}.issubset(operations):
+            expected_modes = "Generate + edit"
+        elif "image_to_image" in operations:
+            expected_modes = "Edit"
+        else:
+            expected_modes = "Generate"
         assert cells[2] == expected_modes
         assert cells[3] == _gib(entry["size_bytes"])
         assert cells[4] == f"{entry['min_memory_gb']:g} GB"
