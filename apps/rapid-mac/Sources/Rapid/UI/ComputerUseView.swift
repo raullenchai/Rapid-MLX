@@ -264,9 +264,11 @@ struct ComputerUseView: View {
                     : "Moved \(result.movedCount) of \(count) files to Trash."
                 let message = "\(prefix) Cleanup stopped safely: \(failure)"
                 do {
-                    candidates = try await Task.detached {
+                    let refreshed = try await Task.detached {
                         try DownloadCleanup.scan(downloadsURL: downloadsURL)
                     }.value
+                    guard generation == operationGeneration else { return }
+                    candidates = refreshed
                     selected = []
                 } catch {
                     // Preserve the actionable move failure.
