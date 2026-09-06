@@ -2347,6 +2347,7 @@ def _commit_scratch_accepted(
     live_cache: list[Any],
     committed_input: mx.array,
     n_accepted: int,
+    snapshot: list[Any] | None = None,
 ) -> None:
     """Commit only the accepted prefix of a scratch verify onto live cache.
 
@@ -2355,10 +2356,15 @@ def _commit_scratch_accepted(
     FRESH copy of the pre-verify state, which then replaces ``live_cache``.
     The rejected tail is dropped (never replayed), so the persistent
     recurrent/conv/PLE/QSA state holds exactly the greedy-committed prefix.
+
+    ``snapshot`` is an optional pre-verify deepcopy of ``live_cache`` already
+    held by the caller (the decode hot path retains one for terminal replay).
+    When provided it is copied instead of deep-copying the live cache again,
+    so the commit adds only ONE extra context-sized head rather than two.
     """
     import copy
 
-    commit_head = copy.deepcopy(live_cache)
+    commit_head = copy.deepcopy(snapshot if snapshot is not None else live_cache)
     # The committed prefix is [X, d_0..d_{n_accepted-1}] = the first
     # ``n_accepted + 1`` tokens of ``committed_input``. ``live_cache`` is the
     # PRE-verify state and does NOT contain X yet (X is fed during the verify
@@ -3018,6 +3024,15 @@ def _install_suffix_decoding(
     # ``next()`` then drains the queue, producing one synthetic Response
     # per token so the engine surface stays consistent.
     _pending_emits: dict[int, list[tuple[int, mx.array]]] = {}
+    # For the hybrid path only: retain the pre-verify pristine snapshot plus
+    # the verify batch so a terminal (stop/length) finish part-way through the
+    # accepted drafts can rebuild the delivered response cache from ONLY the
+    # surfaced tokens, dropping the un-surfaced accepted tail. The Qwen4
+    # recurrent cache cannot ``trim_all`` a rejected tail (B2.1 sidesteps the
+    # attention-only rollback on purpose), so exact replay from the pristine
+    # snapshot is the only safe way to keep the saved prefix consistent —
+    # mirroring the DSpark ``_pending_replay`` terminal-repair pattern.
+    _pending_hybrid_replay: dict[int, tuple[list[Any], mx.array]] = {}
 
     _stats = {
         "verify_steps": 0,
@@ -3118,18 +3133,17 @@ def _install_suffix_decoding(
         """
         import copy
 
-        # ONE pre-verify snapshot of the live cache, reused by every path
-        # that needs a scratch state: the tentative verify, the bit-exactness
-        # probe, and the commit replay each derive their scratch head from
-        # this single pristine copy. Deep-copying the prompt cache is
-        # context-sized, so the previous code hitting it twice on a successful
-        # verify (once here, once in ``_commit_scratch_accepted``, plus the
-        # guard's own copy) drove transient peak memory to ~2-3x the live
-        # cache in the decode hot path. One snapshot keeps it at 1x.
+        # ONE pre-verify snapshot of the live cache. Two live roles split
+        # from it: the tentative verify and the bit-exactness probe each get
+        # their own scratch copy, and the pristine snapshot itself is retained
+        # until the request finishes so a terminal stop can rebuild the
+        # response cache from only the surfaced tokens (see the terminal
+        # replay slot). At most ONE scratch head exists alongside the pristine
+        # snapshot at a time — the verify scratch is dropped (`del`) before
+        # the probe copy is allocated — so peak memory is ~2x the live cache
+        # in the decode hot path, not 3x (this is the SGLang/DSpark scratch-
+        # verify envelope: one retained pristine state + one working head).
         snapshot = copy.deepcopy(gb.prompt_cache)
-        # Fresh head for the tentative verify. ``_verify_scratch`` writes into
-        # ``committed_head``, so it must not alias the pristine ``snapshot``
-        # that the probe/commit re-derive from.
         committed_head = copy.deepcopy(snapshot)
         result = _verify_scratch(
             gb.model,
@@ -3139,6 +3153,9 @@ def _install_suffix_decoding(
             committed_head,
         )
         n_accepted = result["n_accepted"]
+        # The verify scratch is spent — drop it so the probe below does not
+        # hold two working heads simultaneously (context-sized deepcopies).
+        del committed_head
         if _hybrid_bit_exact:
             # Bit-exactness guard: replay the committed prefix stepwise on a
             # head derived from the SHARED pristine snapshot and compare each
@@ -3169,30 +3186,29 @@ def _install_suffix_decoding(
                     break
             if drift:
                 result["drift"] = True
+                result["replay_snapshot"] = snapshot
                 return result
-        # Commit the FULL committed prefix [X, d_0..d_{n_accepted-1}] — always,
-        # including the reject-first (``n_accepted == 0``) case where only X is
-        # committed. X is emitted as the primary by the caller, so leaving the
-        # live cache before X would corrupt the next decode step.
-        if _hybrid_bit_exact and not result.get("drift"):
-            # The guard already replayed the committed prefix stepwise onto
-            # ``probe_head`` (one token per step, ending at exactly the
-            # committed state ``[X, d_0..d_{n_accepted-1}]``) — that IS the
-            # commit. Install it directly so the commit path reuses the single
-            # pre-verify snapshot instead of deep-copying the prompt cache
-            # again (context-sized) and redundantly re-stepping every accepted
-            # token. ``probe_head`` is defined whenever ``_hybrid_bit_exact``
-            # and we reach here on the no-drift path.
+            # Guard passed: ``probe_head`` has replayed exactly the committed
+            # prefix ``[X, d_0..d_{n_accepted-1}]`` one step at a time, so it
+            # IS the commit state. Install it by shared reference — the probe
+            # already paid for the replay, no redundant deepcopy/re-step.
             gb.prompt_cache[:] = probe_head
-        else:
-            # Guard off (non-lossless/debug mode): no probe ran, so fall back
-            # to the stepwise commit replay (deep-copies once and re-steps).
-            _commit_scratch_accepted(
-                gb.model,
-                gb.prompt_cache,
-                committed_input,
-                n_accepted,
-            )
+            # Retain the pristine snapshot for terminal replay (a stop/length
+            # finish mid-synthetic-emit must drop un-surfaced accepted tails
+            # from the delivered cache — the recurrent cache can't trim).
+            result["replay_snapshot"] = snapshot
+            return result
+        # Guard off (non-lossless/debug mode): no probe ran, so replay the
+        # accepted prefix through the stepwise commit helper, which now takes
+        # the retained snapshot as its base (sparing a fresh deepcopy).
+        _commit_scratch_accepted(
+            gb.model,
+            gb.prompt_cache,
+            committed_input,
+            n_accepted,
+            snapshot=snapshot,
+        )
+        result["replay_snapshot"] = snapshot
         return result
 
     def _reset_state_gauges_if_idle() -> None:
@@ -3219,6 +3235,7 @@ def _install_suffix_decoding(
         _pending_emits.pop(uid, None)
         _drafters.pop(uid, None)
         _uid_state.pop(uid, None)
+        _pending_hybrid_replay.pop(uid, None)
 
     def _state_for(uid: int) -> dict:
         st = _uid_state.get(uid)
@@ -3370,7 +3387,13 @@ def _install_suffix_decoding(
                 else []
             )
             drafter = SuffixDecodingDrafter(
-                max_draft_tokens=max_draft,
+                # On the hybrid path the adaptive width is raised to at least
+                # ``suffix_min_match_len`` by ``_effective_max_draft``; the
+                # drafter's OWN cap must match, or its drafts stay below the
+                # 24-token floor and the opt-in hybrid path is dead (every
+                # draft lands on ``ft_short_match``). Pure-attention is
+                # unaffected — ``_effective_max_draft == max_draft`` there.
+                max_draft_tokens=_effective_max_draft,
                 max_suffix_len=max_suffix_len,
                 min_confidence=min_confidence,
             )
@@ -3491,6 +3514,17 @@ def _install_suffix_decoding(
                     _counter.record_verify(K, 0)
                     _counter.record_fallthrough("hybrid_drift")
                     return _orig_step()
+                # The committed prefix is now on the live cache ([X, d_0..
+                # d_{n_accepted-1}]) and the extra accepted drafts are queued
+                # for emission. Retain the pristine pre-verify snapshot (plus
+                # the verify batch) so a terminal stop part-way through the
+                # synthetic emits can rebuild the delivered response cache
+                # from only the surfaced tokens — the Qwen4 recurrent cache
+                # cannot roll an un-surfaced accepted tail back any other way.
+                _pending_hybrid_replay[uid] = (
+                    result["replay_snapshot"],
+                    verify_input,
+                )
             except Exception as e:  # noqa: BLE001
                 logger.debug(f"[SuffixDecoding] hybrid verify failed: {e!r}")
                 _stats["errors"] += 1
@@ -3810,12 +3844,64 @@ def _install_suffix_decoding(
                     # reuse for the next request that hits this prefix.
                     unused = len(pending) - emit_idx - 1
                     if unused > 0:
-                        from .cache_rollback import trim_all
+                        replay_state = _pending_hybrid_replay.get(uid)
+                        if replay_state is not None:
+                            # Hybrid terminal: the Qwen4 recurrent cache
+                            # cannot ``trim_all`` an un-surfaced accepted tail
+                            # (the B2.1 scratch path sidesteps attention-only
+                            # rollback for exactly this reason). Instead
+                            # rebuild the delivered response cache from the
+                            # retained pristine pre-verify snapshot plus only
+                            # the surfaced prefix, dropping the tail by never
+                            # replaying it — the same terminal-repair pattern
+                            # as the DSpark ``_pending_replay`` slot. Compute
+                            # the surfaced prefix: X (1) + the ``emit_idx + 1``
+                            # drafts already drained by this loop.
+                            snapshot, verify_input_batch = replay_state
+                            # Replay onto the pristine snapshot chunks of
+                            # the surfaced prefix? No — the B2.1 scratch
+                            # machinery is lossless on chunked forward for
+                            # the ACCEPTED prefix (the probe proved it),
+                            # but to be strictly safe across the whole slice
+                            # we step the surfaced prefix one token at a
+                            # time on a scratch copy so recurrent state is
+                            # advanced exactly as an equivalent single-token
+                            # decode would have (chunked != step-update is
+                            # the known recurrent caveat).
+                            import copy
 
-                        if not trim_all(gb.prompt_cache, unused):
-                            raise RuntimeError(
-                                "suffix terminal cache rollback violated its preflight"
-                            )
+                            repaired = copy.deepcopy(snapshot)
+                            surfaced_len = emit_idx + 2  # X + drained drafts
+                            for s in range(surfaced_len):
+                                mx.eval(
+                                    model(
+                                        verify_input_batch[:, s : s + 1],
+                                        cache=repaired,
+                                    )
+                                )
+                            # Suffix decode is a single-request fast path, so
+                            # the rebuilt head IS the per-request cache; no
+                            # per-cell ``extract`` (whose inner KVCache cells
+                            # can lack ``extract``). The shared live cache held
+                            # un-surfaced accepted tails for this finishing
+                            # uid and is filtered out below, so point it at the
+                            # repaired head to keep the batch consistent with
+                            # the delivered output.
+                            prompt_cache = repaired
+                            gb.prompt_cache = repaired
+                        else:
+                            from .cache_rollback import trim_all
+
+                            # Real missing snapshot on a pure-attention finish
+                            # is impossible (slot only set on hybrid), but the
+                            # pure-attention path still trims as before.
+                            if not trim_all(gb.prompt_cache, unused):
+                                raise RuntimeError(
+                                    "suffix terminal cache rollback violated its preflight"
+                                )
+                            prompt_cache = gb.extract_cache(row)
+                    else:
+                        prompt_cache = gb.extract_cache(row)
                     augmented.append(
                         gb.Response(
                             uid=uid,
@@ -3824,7 +3910,7 @@ def _install_suffix_decoding(
                             finish_reason=finish_reason,
                             current_state=current_state,
                             match_sequence=match_sequence,
-                            prompt_cache=gb.extract_cache(row),
+                            prompt_cache=prompt_cache,
                             all_tokens=gb.tokens[row],
                         )
                     )

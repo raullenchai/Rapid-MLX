@@ -140,7 +140,10 @@ class TestScratchVerifyCore:
         x = 4
         d0 = _next_step(x)  # greedy next after [1,2,3,4] -> accepted at pos 0
         g1 = _next_step(d0)  # greedy next after [1,2,3,4,d0]
-        d1 = g1 + 1  # guaranteed rejected at position 1
+        # A guarantee-rejected token: the model's greedy choice plus one,
+        # wrapped within the vocabulary so ``g1 == last_vocab_id`` cannot
+        # produce an out-of-range token that breaks the embedding lookup.
+        d1 = (g1 + 1) % 32  # guaranteed rejected at position 1
 
         live = model.make_cache()
         mx.eval(model(mx.array([[1, 2, 3]]), cache=live))
@@ -165,7 +168,7 @@ class TestScratchVerifyCore:
         vlog = model(mx.array([[4, 5, 6]]), cache=probe)
         mx.eval(vlog)
         preds = mx.argmax(vlog, axis=-1).tolist()[0]
-        d0 = preds[0] + 1  # guaranteed rejected at position 0
+        d0 = (preds[0] + 1) % 32  # guaranteed rejected at position 0
         d1 = preds[1]
 
         before = model.make_cache()
@@ -248,6 +251,49 @@ class TestHybridInstallGate:
         assert bg._suffix_stats["suffix_hybrid"] is True
         assert bg._suffix_stats["suffix_min_match_len"] == 24
 
+    def test_hybrid_drafter_cap_raised_to_floor(self, monkeypatch):
+        """Finding: the hybrid path must construct the drafter with
+        ``_effective_max_draft`` (>= the 24-token floor), or drafts stay capped
+        below the floor and every repeat falls through ``ft_short_match`` —
+        making the opt-in hybrid path dead on a default install."""
+        from types import SimpleNamespace
+        from unittest.mock import MagicMock
+
+        from vllm_mlx import scheduler
+        from vllm_mlx.model_auto_config import ModelConfig
+
+        # A real drafter (not a stub) so we check the actual constructed cap.
+        bg, gb = self._make_fake_bg()
+        profile = ModelConfig(is_hybrid=True, supports_spec_decode=False)
+        assert scheduler._install_suffix_decoding(
+            bg,
+            model=MagicMock(),
+            profile=profile,
+            max_draft=8,
+            max_suffix_len=4,
+            min_confidence=0.3,
+            requests={},
+            uid_to_request_id={},
+            suffix_hybrid=True,
+        )
+        # Force first-_step by feeding a synthetic uid + token via gb.
+        gb._next_tokens = mx.array([1], dtype=mx.int32)
+        gb._num_tokens = [0]
+        gb.max_tokens = [100]
+        gb.uids = [1]
+        gb.tokens = [[]]
+        gb.state_machines = [SimpleNamespace(match=lambda s, _t: (s, None, None))]
+        gb._matcher_states = [None]
+        gb.logits_processors = []
+        gb.model = MagicMock()
+        gb._orig_step = lambda: ([1], [])
+        # uid 1 has no drafter yet -> lazy-init constructs one this step.
+        gb._step()
+        drafter = gb._suffix_drafters[1]
+        # Effective max draft must be at least the 24-token floor (raised from
+        # the configured default 8 on the hybrid path).
+        assert drafter.max_draft_tokens >= 24
+
     def test_installed_reject_first_commits_primary(self, monkeypatch):
         """Installed-path reject-first verify: the live cache must equal
         prompt + X after ``gb._step()``.
@@ -274,8 +320,8 @@ class TestHybridInstallGate:
         mx.eval(model(mx.array([[1, 2, 3]]), cache=probe))
         l0 = model(mx.array([[7]]), cache=probe)
         mx.eval(l0)
-        d0 = int(mx.argmax(l0[:, -1], axis=-1).item()) + 1  # rejected
-        d1 = d0 + 1
+        d0 = (int(mx.argmax(l0[:, -1], axis=-1).item()) + 1) % 32  # rejected
+        d1 = (d0 + 1) % 32
         draft = [d0, d1]
 
         class Drafter:
@@ -540,9 +586,9 @@ class TestTokenIdentityAndStateEquality:
         # A draft whose token 0 is guaranteed rejected (probe on a copy).
         probe = model.make_cache()
         mx.eval(model(mx.array([[1, 2, 3]]), cache=probe))
-        d0 = self._stepwise_next(model, probe, 7) + 1
-        verify_input = mx.array([[7, d0, d0 + 1]])
-        draft = [d0, d0 + 1]
+        d0 = (self._stepwise_next(model, probe, 7) + 1) % 32
+        verify_input = mx.array([[7, d0, (d0 + 1) % 32]])
+        draft = [d0, (d0 + 1) % 32]
         commit_head = copy.deepcopy(cache)
         res = _verify_scratch(model, cache, verify_input, draft, commit_head)
         assert res["n_accepted"] == 0
@@ -564,8 +610,8 @@ class TestTokenIdentityAndStateEquality:
         probe = model.make_cache()
         mx.eval(model(mx.array([[1, 2, 3]]), cache=probe))
         d0 = self._stepwise_next(model, probe, 7)
-        verify_input = mx.array([[7, d0, d0 + 1]])
-        draft = [d0, d0 + 1]
+        verify_input = mx.array([[7, d0, (d0 + 1) % 32]])
+        draft = [d0, (d0 + 1) % 32]
         commit_head = copy.deepcopy(cache)
         res = _verify_scratch(model, cache, verify_input, draft, commit_head)
         na = res["n_accepted"]
@@ -1232,3 +1278,118 @@ class TestSingleSnapshotCommit:
         calls, bg = self._install_and_step(monkeypatch, guard_on=False)
         # Guard off -> no probe -> stepwise commit helper replays once.
         assert calls["commit"] == 1
+
+
+class TestHybridTerminalRepair:
+    """Finding #1: a hybrid finish part-way through the accepted drafts must
+    drop the un-surfaced accepted tail from the delivered response cache.
+
+    On the pure-attention path the terminal branch trims un-surfaced accepted
+    drafts via ``trim_all``. The Qwen4 recurrent cache cannot trim a rejected
+    tail (the whole reason B2.1 uses scratch+replay instead of trim_all), so a
+    hybrid terminal must instead rebuild the response cache from the retained
+    pristine pre-verify snapshot plus ONLY the surfaced tokens — dropping the
+    tail by never replaying it. This mirrors the DSpark ``_pending_replay``
+    terminal-repair pattern and prevents a poisoned (cache-ahead-of-tokens)
+    saved prefix from poisoning prefix-cache reuse for the next request.
+    """
+
+    def test_hybrid_terminal_drops_unsurfaced_accepted_tail(self, monkeypatch):
+        from types import SimpleNamespace
+        from unittest.mock import MagicMock
+
+        from vllm_mlx import scheduler
+        from vllm_mlx.model_auto_config import ModelConfig
+        from vllm_mlx.speculative import suffix_decoding
+
+        model, _ = _model_and_prompt()
+        # Greedy accept-all draft of 2 tokens (step-exact -> no drift).
+        probe = model.make_cache()
+        mx.eval(model(mx.array([[1, 2, 3]]), cache=probe))
+        l0 = model(mx.array([[7]]), cache=probe)
+        mx.eval(l0)
+        d0 = int(mx.argmax(l0[:, -1], axis=-1).item())
+        l1 = model(mx.array([[d0]]), cache=probe)
+        mx.eval(l1)
+        d1 = int(mx.argmax(l1[:, -1], axis=-1).item())
+
+        drafter = [[d0, d1]]
+
+        class MockDrafter:
+            max_draft_tokens = 2
+
+            def __init__(self, **_kw):
+                pass
+
+            def add_prompt_tokens(self, _t):
+                pass
+
+            def add_generated_token(self, _t):
+                pass
+
+            def record_acceptance(self, _c):
+                pass
+
+            def get_draft(self):
+                return list(drafter[0])
+
+        cache = model.make_cache()
+        mx.eval(model(mx.array([[1, 2, 3]]), cache=cache))
+        # max_tokens=1 forces a length-finish after the FIRST synthetic draft
+        # (X), leaving the second accepted draft (d1) un-surfaced.
+        gb = SimpleNamespace(
+            _next_tokens=mx.array([7], dtype=mx.int32),
+            _next_logprobs=[mx.zeros((64,))],
+            uids=[1],
+            tokens=[[]],
+            logits_processors=[],
+            prompt_cache=cache,
+            _num_tokens=[0],
+            max_tokens=[1],
+            state_machines=[SimpleNamespace(match=lambda s, _t: (s, None, None))],
+            _matcher_states=[None],
+            extract_cache=lambda _r: gb.prompt_cache,
+            filter=lambda keep: setattr(gb, "uids", list(keep)),
+            model=model,
+        )
+        gb.Response = SimpleNamespace
+        # Baseline ``_step``/``next`` placeholders (install wraps them).
+        gb._step = lambda: ([7], [])
+        # ``_orig_next`` returns the primary response (X, not yet finished);
+        # the terminal fires later while draining the synthetic emits.
+        gb.next = lambda: [SimpleNamespace(uid=1, finish_reason=None)]
+        bg = MagicMock()
+        bg._generation_batch = gb
+        bg.remove = lambda *a, **k: {}
+        profile = ModelConfig(is_hybrid=True, supports_spec_decode=False)
+        monkeypatch.setattr(suffix_decoding, "SuffixDecodingDrafter", MockDrafter)
+        scheduler._install_suffix_decoding(
+            bg,
+            model=model,
+            profile=profile,
+            max_draft=2,
+            max_suffix_len=4,
+            min_confidence=0.3,
+            requests={},
+            uid_to_request_id={},
+            suffix_hybrid=True,
+            suffix_min_match_len=2,
+            suffix_hybrid_bit_exact=True,
+        )
+
+        gb._step()  # hybrid verify: X + d0 accepted, d1 accepted too
+        # The verify committed prompt+[7,d0,d1]; pending emits = [d0, d1].
+        # A length-terminal fires when emitting d0 (emit_idx 0 -> unused 1).
+        outs = gb.next()
+        # The finishing response's cache must equal prompt + [7, d0] only —
+        # d1 was never surfaced and must be dropped.
+        finish = [o for o in outs if o.finish_reason is not None]
+        assert len(finish) == 1
+        delivered = finish[0].prompt_cache
+        # ``delivered`` is the repaired cache list (per-layer cells) built by
+        # the terminal-repair branch. Build the step-replayed gold cache list.
+        gold = model.make_cache()
+        mx.eval(model(mx.array([[1, 2, 3]]), cache=gold))
+        mx.eval(model(mx.array([[7]]), cache=gold))
+        mx.eval(model(mx.array([[d0]]), cache=gold))
+        _assert_state_equal(delivered, gold)
