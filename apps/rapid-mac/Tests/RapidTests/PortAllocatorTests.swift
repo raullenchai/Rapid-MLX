@@ -13,8 +13,19 @@ import Darwin
 /// host is actually doing, each case picks its own port window in
 /// the ephemeral high range (60000+) so a developer running rapid-mlx
 /// in another terminal can't false-fail us.
-@Suite("PortAllocator — v0.5.6 fallback contract")
-struct PortAllocatorTests {
+@Suite("PortAllocator — v0.5.6 fallback contract", .serialized)
+final class PortAllocatorTests {
+
+    nonisolated(unsafe) private var createdSuiteNames: [String] = []
+    deinit { TestDefaultsScope.cleanup(suiteNames: createdSuiteNames) }
+
+    private func scratchDefaults() -> UserDefaults {
+        let suite = TestDefaultsScope.mintSuiteName(prefix: "rapid-port-allocator-test-")
+        createdSuiteNames.append(suite)
+        let defaults = UserDefaults(suiteName: suite)!
+        defaults.removePersistentDomain(forName: suite)
+        return defaults
+    }
 
     /// Pin a port by holding a real LISTEN socket on it. Returned
     /// closure releases. Tests use this to make a candidate port
@@ -112,10 +123,14 @@ struct PortAllocatorTests {
 
     @Test("Default candidate window is 7659..7668 plus 8000..8009 legacy fallback")
     func defaultWindow() {
-        // Primary window is the RMLX phone-keypad range; 8000…8009 is
-        // probed after it so existing 127.0.0.1:8000 clients keep working.
-        #expect(PortAllocator.candidatePorts == Array(7659...7668) + Array(8000...8009))
-        #expect(PortAllocator.candidatePorts.count == 20)
+        // Primary window is the RMLX phone-keypad range; 8000…8009 remains a
+        // recovery window. Upgrade compatibility is tested separately below.
+        let ports = PortAllocator.resolveCandidatePorts(
+            environment: [:],
+            defaults: scratchDefaults()
+        )
+        #expect(ports == Array(7659...7668) + Array(8000...8009))
+        #expect(ports.count == 20)
     }
 
     // MARK: - #455 RAPID_DESKTOP_PORT override (test-harness isolation)
@@ -123,7 +138,8 @@ struct PortAllocatorTests {
     @Test("RAPID_DESKTOP_PORT pins the candidate window to a single port")
     func envOverridePinsSinglePort() {
         let ports = PortAllocator.resolveCandidatePorts(
-            environment: ["RAPID_DESKTOP_PORT": "8505"]
+            environment: ["RAPID_DESKTOP_PORT": "8505"],
+            defaults: scratchDefaults()
         )
         #expect(ports == [8505])
     }
@@ -132,7 +148,8 @@ struct PortAllocatorTests {
     func envOverrideTrimsWhitespace() {
         #expect(
             PortAllocator.resolveCandidatePorts(
-                environment: ["RAPID_DESKTOP_PORT": "  9123 "]
+                environment: ["RAPID_DESKTOP_PORT": "  9123 "],
+                defaults: scratchDefaults()
             ) == [9123]
         )
     }
@@ -149,10 +166,48 @@ struct PortAllocatorTests {
         ]
         for env in fallbacks {
             #expect(
-                PortAllocator.resolveCandidatePorts(environment: env) == Array(7659...7668) + Array(8000...8009),
+                PortAllocator.resolveCandidatePorts(
+                    environment: env,
+                    defaults: scratchDefaults()
+                ) == Array(7659...7668) + Array(8000...8009),
                 "invalid override \(env) must fall back to the default window"
             )
         }
+    }
+
+    @Test("Existing installs without an override keep the historical port once")
+    func existingInstallMigratesTo8000() {
+        let defaults = scratchDefaults()
+
+        #expect(PortAllocator.migrateLegacyDefaultIfNeeded(hadPreviousLaunch: true, defaults: defaults))
+        #expect(PortAllocator.storedPort(defaults: defaults) == 8_000)
+        #expect(defaults.bool(forKey: PortAllocator.legacyDefaultMigrationKey))
+        #expect(!PortAllocator.migrateLegacyDefaultIfNeeded(hadPreviousLaunch: true, defaults: defaults))
+    }
+
+    @Test("Fresh installs use 7659 and clearing an override does not remigrate")
+    func freshInstallAndClearedOverrideUseNewDefault() {
+        let defaults = scratchDefaults()
+
+        #expect(!PortAllocator.migrateLegacyDefaultIfNeeded(hadPreviousLaunch: false, defaults: defaults))
+        #expect(PortAllocator.storedPort(defaults: defaults) == nil)
+        defaults.set(9_123, forKey: PortAllocator.storedPortKey)
+        defaults.removeObject(forKey: PortAllocator.storedPortKey)
+
+        #expect(!PortAllocator.migrateLegacyDefaultIfNeeded(hadPreviousLaunch: true, defaults: defaults))
+        #expect(
+            PortAllocator.resolveCandidatePorts(environment: [:], defaults: defaults)
+                == Array(7659...7668) + Array(8000...8009)
+        )
+    }
+
+    @Test("An existing explicit port is never overwritten")
+    func explicitPortSurvivesMigration() {
+        let defaults = scratchDefaults()
+        defaults.set(9_001, forKey: PortAllocator.storedPortKey)
+
+        #expect(!PortAllocator.migrateLegacyDefaultIfNeeded(hadPreviousLaunch: true, defaults: defaults))
+        #expect(PortAllocator.storedPort(defaults: defaults) == 9_001)
     }
 
     @Test("Invalid port and host inputs return false instead of trapping")
