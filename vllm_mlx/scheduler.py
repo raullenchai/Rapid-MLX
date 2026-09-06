@@ -2940,6 +2940,18 @@ def _install_dspark(
     return True
 
 
+def _retain_hybrid_replay(replay_dict, uid, snapshot, verify_input) -> None:
+    """Retain the pristine pre-verify snapshot + verify batch for a uid.
+
+    Module-level so the post-commit replay-retain step is patchable in tests
+    (``_pending_hybrid_replay`` is a closure dict and cannot be monkeypatched
+    directly). Raising from here simulates a post-commit exception and lets a
+    test assert ``_suffix_step`` restores the pristine cache before falling
+    through.
+    """
+    replay_dict[uid] = (snapshot, verify_input)
+
+
 def _restore_hybrid_cache_after_exception(gb, result: dict) -> None:
     """Restore the live cache to the pristine pre-verify snapshot after a
     hybrid-verify exception, when the commit head was already swapped in.
@@ -3620,7 +3632,12 @@ def _install_suffix_decoding(
                 # pristine snapshot so a post-commit raise never runs
                 # ``_orig_step`` against the already-advanced cache.
                 if n_accepted > 0:
-                    _pending_hybrid_replay[uid] = (
+                    # Retain the replay snapshot via the module-level helper so
+                    # a post-commit exception here is testable (see
+                    # ``_retain_hybrid_replay``).
+                    _retain_hybrid_replay(
+                        _pending_hybrid_replay,
+                        uid,
                         result["replay_snapshot"],
                         verify_input,
                     )

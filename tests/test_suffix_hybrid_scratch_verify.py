@@ -1326,13 +1326,12 @@ class TestSingleSnapshotCommit:
         restores ``gb.prompt_cache`` to the pristine pre-verify snapshot before
         falling through.
 
-        The restore logic lives in the module-level
-        ``_restore_hybrid_cache_after_exception`` (unit-tested directly below);
-        both invocations of it (pre-commit no-op + post-commit restore) are
-        covered there. The pre-commit exception path through the real
-        ``_suffix_step`` is covered here: when the verify forward raises before
-        commit, ``result`` is the empty init dict and the fall-through must
-        leave the pristine cache untouched."""
+        We inject a POST-commit exception by patching the module-level
+        ``_retain_hybrid_replay`` (the in-try step that runs after
+        ``result[\"committed\"] = True``) to raise. The commit already swapped
+        the probe head onto the live cache, so the except MUST restore the
+        pristine snapshot before ``_orig_step`` — and the wrapped ``_orig_step``
+        observer records that it saw the pristine cache."""
         from types import SimpleNamespace
         from unittest.mock import MagicMock
 
@@ -1341,6 +1340,15 @@ class TestSingleSnapshotCommit:
         from vllm_mlx.speculative import suffix_decoding
 
         model, _ = _model_and_prompt()
+        # Greedy accept-all draft (step-exact model -> no drift, n_accepted>0).
+        probe = model.make_cache()
+        mx.eval(model(mx.array([[1, 2, 3]]), cache=probe))
+        l0 = model(mx.array([[7]]), cache=probe)
+        mx.eval(l0)
+        d0 = int(mx.argmax(l0[:, -1], axis=-1).item())
+        l1 = model(mx.array([[d0]]), cache=probe)
+        mx.eval(l1)
+        d1 = int(mx.argmax(l1[:, -1], axis=-1).item())
 
         class MockDrafter:
             max_draft_tokens = 2
@@ -1358,7 +1366,7 @@ class TestSingleSnapshotCommit:
                 pass
 
             def get_draft(self):
-                return [5, 6]
+                return [d0, d1]
 
         pristine = model.make_cache()
         mx.eval(model(mx.array([[1, 2, 3]]), cache=pristine))
@@ -1383,23 +1391,30 @@ class TestSingleSnapshotCommit:
         bg = MagicMock()
         bg._generation_batch = gb
         bg.remove = lambda *a, **k: {}
-        # Force the guard probe to raise during the stepwise replay: a cache
-        # whose layer can't forward cleanly. We make the probe replay blow up
-        # by swapping in a model that raises on the SECOND decode (the probe
-        # step), i.e. BEFORE commit. This exercises the `result={}` init +
-        # exception path (no restore needed, pristine cache untouched).
-        real_call = {"n": 0}
 
-        def _flaky_model(inp, cache=None, **kw):
-            real_call["n"] += 1
-            raise RuntimeError("flaky decode before commit")
+        # Wrap the vanilla step to record which cache it observes. Install
+        # captures ``gb._step`` as its ``_orig_step``, so we put the observer
+        # IN ``gb._step`` (pre-install). This is the crux of the codex finding:
+        # after a post-commit exception + restore, the fall-through _orig_step
+        # must run against the PRISTINE pre-verify cache, not the advanced
+        # (committed probe) head.
+        observed = {"cache": None}
 
-        gb.model = _flaky_model
+        def _orig_step():
+            observed["cache"] = list(gb.prompt_cache)
+            return ([7], [])
+
+        gb._step = _orig_step
+
+        def _boom_retain(*a, **k):
+            raise MemoryError("simulated post-commit OOM in replay retain")
+
         monkeypatch.setattr(suffix_decoding, "SuffixDecodingDrafter", MockDrafter)
+        monkeypatch.setattr(scheduler, "_retain_hybrid_replay", _boom_retain)
         profile = ModelConfig(is_hybrid=True, supports_spec_decode=False)
         scheduler._install_suffix_decoding(
             bg,
-            model=_flaky_model,
+            model=model,
             profile=profile,
             max_draft=2,
             max_suffix_len=4,
@@ -1410,10 +1425,10 @@ class TestSingleSnapshotCommit:
             suffix_min_match_len=2,
             suffix_hybrid_bit_exact=True,
         )
-        # The pre-commit exception is absorbed by the hybrid except -> clean
-        # fall-through (no raise to caller), and the pristine cache is intact.
+        # The post-commit exception is absorbed by the hybrid except -> clean
+        # fall-through, and the wrapped _orig_step observed the PRISTINE cache.
         gb._step()
-        _assert_state_equal(gb.prompt_cache, pristine)
+        _assert_state_equal(observed["cache"], pristine)
 
     def test_restore_hybrid_cache_helper(self):
         """Direct unit test of ``_restore_hybrid_cache_after_exception``: a
