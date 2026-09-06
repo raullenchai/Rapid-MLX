@@ -126,6 +126,18 @@ def _ram_gb() -> int:
     return round(bytes_ / (1 << 30))
 
 
+def host_memory_gib() -> int | None:
+    """Best-effort unified-memory size of this Mac for planning output.
+
+    Returns ``None`` when the sysctl probe is unavailable (non-macOS, sandbox)
+    so callers can degrade to "unknown" instead of failing a read-only command.
+    """
+    try:
+        return _ram_gb()
+    except (RuntimeError, ValueError, OSError):
+        return None
+
+
 def _cpu_cores() -> int:
     """`sysctl -n hw.ncpu` → integer count."""
     return int(_run(["/usr/sbin/sysctl", "-n", "hw.ncpu"], _SYSCTL_TIMEOUT_S))
