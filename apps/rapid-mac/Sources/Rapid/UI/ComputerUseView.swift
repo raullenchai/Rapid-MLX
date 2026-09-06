@@ -28,7 +28,9 @@ struct ComputerUseView: View {
             titleVisibility: .visible
         ) {
             Button("Move selected files to Trash", role: .destructive) { trashSelection() }
+                .accessibilityIdentifier("ComputerUse.Cleanup.Confirm")
             Button("Cancel", role: .cancel) {}
+                .accessibilityIdentifier("ComputerUse.Cleanup.Cancel")
         } message: {
             Text("Only the selected top-level files in Downloads will move. You can recover them from Trash.")
         }
@@ -73,6 +75,7 @@ struct ComputerUseView: View {
                     Button("Coming next") {}
                         .buttonStyle(.rapidSecondaryCompact)
                         .disabled(true)
+                        .accessibilityIdentifier("ComputerUse.Teach.ComingNext")
                 }
                 .padding(16)
                 .background(RapidTheme.surfaceRaised, in: RoundedRectangle(cornerRadius: 14))
@@ -121,6 +124,7 @@ struct ComputerUseView: View {
         VStack(alignment: .leading, spacing: RapidTheme.Space.lg) {
             Button("Computer Use", systemImage: "chevron.left") { destination = .home }
                 .buttonStyle(.rapidTertiary)
+                .accessibilityIdentifier("ComputerUse.Cleanup.Back")
             SectionHeader(
                 "Free up space",
                 subtitle: "Review top-level files in Downloads that have not changed for 90 days. Nothing is selected automatically.",
@@ -135,7 +139,9 @@ struct ComputerUseView: View {
                 HStack { ProgressView(); Text("Checking Downloads…").foregroundStyle(.secondary) }
             } else if let errorMessage {
                 Text(errorMessage).foregroundStyle(.red)
-                Button("Try again") { scanDownloads() }.buttonStyle(.rapidSecondaryCompact)
+                Button("Try again") { scanDownloads() }
+                    .buttonStyle(.rapidSecondaryCompact)
+                    .accessibilityIdentifier("ComputerUse.Cleanup.Retry")
             } else if candidates.isEmpty {
                 ContentUnavailableView(
                     "No old files found",
@@ -146,7 +152,7 @@ struct ComputerUseView: View {
                 Text("\(candidates.count) files found · Select only files you recognize")
                     .font(.callout).foregroundStyle(.secondary)
                 VStack(spacing: 0) {
-                    ForEach(candidates) { candidate in
+                    ForEach(Array(candidates.enumerated()), id: \.element.id) { index, candidate in
                         Toggle(isOn: selectionBinding(candidate.url)) {
                             HStack {
                                 Image(systemName: "doc").foregroundStyle(.secondary)
@@ -161,6 +167,7 @@ struct ComputerUseView: View {
                             }
                         }
                         .toggleStyle(.checkbox)
+                        .accessibilityIdentifier("ComputerUse.Cleanup.File.\(index)")
                         .padding(12)
                         Divider()
                     }
