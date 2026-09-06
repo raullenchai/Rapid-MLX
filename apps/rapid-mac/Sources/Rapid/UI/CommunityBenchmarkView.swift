@@ -1149,9 +1149,6 @@ struct CommunityBenchmarkView: View {
                                     + CommunityBenchmarkResult.formatCompletedAt(result.completedAt)
                             )
                             .font(.caption).foregroundStyle(.secondary)
-                            .accessibilityLabel(
-                                "\(result.workload.taskType.replacingOccurrences(of: "_", with: " ")), completed \(result.completedAt)"
-                            )
                         }
                         Spacer()
                         VStack(alignment: .trailing, spacing: 5) {
