@@ -3133,50 +3133,43 @@ def _install_suffix_decoding(
         """
         import copy
 
-        # ONE pre-verify snapshot of the live cache. Two live roles split
-        # from it: the tentative verify and the bit-exactness probe each get
-        # their own scratch copy, and the pristine snapshot itself is retained
-        # until the request finishes so a terminal stop can rebuild the
-        # response cache from only the surfaced tokens (see the terminal
-        # replay slot). At most ONE scratch head exists alongside the pristine
-        # snapshot at a time — the verify scratch is dropped (`del`) before
-        # the probe copy is allocated — so peak memory is ~2x the live cache
-        # in the decode hot path, not 3x (this is the SGLang/DSpark scratch-
-        # verify envelope: one retained pristine state + one working head).
-        snapshot = copy.deepcopy(gb.prompt_cache)
-        committed_head = copy.deepcopy(snapshot)
-        result = _verify_scratch(
-            gb.model,
-            gb.prompt_cache,
-            verify_input,
-            draft,
-            committed_head,
-        )
-        n_accepted = result["n_accepted"]
-        # The verify scratch is spent — drop it so the probe below does not
-        # hold two working heads simultaneously (context-sized deepcopies).
-        del committed_head
         if _hybrid_bit_exact:
+            # Bit-exactness guard ON (the default / lossless path): the ORIGINAL
+            # live cache doubles as the retained pristine state — we never copy
+            # it, we SWAP it out at commit time. So at any instant there are at
+            # most TWO full caches: the pristine live cache plus one working
+            # head (the verify scratch, then the probe/commit head, never both —
+            # the scratch is dropped before the probe allocates). That is the
+            # SGLang/DSpark scratch-verify envelope (~2x the live cache), not
+            # the 3x a naive "snapshot + verify head + probe head" would hold.
+            pristine = gb.prompt_cache
+            committed_head = copy.deepcopy(pristine)
+            result = _verify_scratch(
+                gb.model, pristine, verify_input, draft, committed_head
+            )
+            n_accepted = result["n_accepted"]
+            # The verify scratch is spent — drop it so the probe below does not
+            # hold two working heads simultaneously (context-sized deepcopies).
+            del committed_head
             # Bit-exactness guard: replay the committed prefix stepwise on a
-            # head derived from the SHARED pristine snapshot and compare each
-            # step's greedy pred to the chunked verify's pred at that position.
-            # Any mismatch means the chunked-batched forward DRIFTED from
-            # step-update on the recurrent layers (quantized-hybrid signature)
-            # — refuse to commit rather than surface silently-wrong accepted
+            # head derived from the pristine live cache and compare each step's
+            # greedy pred to the chunked verify's pred at that position. Any
+            # mismatch means the chunked-batched forward DRIFTED from step-
+            # update on the recurrent layers (quantized-hybrid signature) —
+            # refuse to commit rather than surface silently-wrong accepted
             # tokens. Nothing has been committed yet, so a refusal is a clean
             # fall-through.
-            probe_head = copy.deepcopy(snapshot)
-            # Probe EVERY committed position (X plus each accepted draft).
-            # A fixed probe window could let drift after the Nth position
-            # commit silently under a "bit-exact" contract, so the replay
-            # must cover the full committed prefix through ``n_accepted``.
+            probe_head = copy.deepcopy(pristine)
+            # Probe EVERY committed position (X plus each accepted draft). A
+            # fixed probe window could let drift after the Nth position commit
+            # silently under a "bit-exact" contract, so the replay must cover
+            # the full committed prefix through ``n_accepted``.
             probe_len = n_accepted + 1
             drift = False
             # The chunked verify predict at ``preds_list[j]`` is the model's
-            # greedy prediction AFTER consuming ``verify_input[:, :j+1]``.
-            # The stepwise probe feeds token ``j`` at iteration ``j`` (so X
-            # at j=0, then d_0, ...) and compares each stepwise pred to the
-            # corresponding chunk row.
+            # greedy prediction AFTER consuming ``verify_input[:, :j+1]``. The
+            # stepwise probe feeds token ``j`` at iteration ``j`` (so X at j=0,
+            # then d_0, ...) and compares each stepwise pred to the chunk row.
             for j in range(probe_len):
                 step_logits = gb.model(verify_input[:, j : j + 1], cache=probe_head)
                 step_pred = mx.argmax(step_logits, axis=-1)
@@ -3186,21 +3179,29 @@ def _install_suffix_decoding(
                     break
             if drift:
                 result["drift"] = True
-                result["replay_snapshot"] = snapshot
                 return result
             # Guard passed: ``probe_head`` has replayed exactly the committed
-            # prefix ``[X, d_0..d_{n_accepted-1}]`` one step at a time, so it
-            # IS the commit state. Install it by shared reference — the probe
-            # already paid for the replay, no redundant deepcopy/re-step.
-            gb.prompt_cache[:] = probe_head
-            # Retain the pristine snapshot for terminal replay (a stop/length
-            # finish mid-synthetic-emit must drop un-surfaced accepted tails
-            # from the delivered cache — the recurrent cache can't trim).
-            result["replay_snapshot"] = snapshot
+            # prefix ``[X, d_0..d_{n_accepted-1}]`` one step at a time, so it IS
+            # the commit state. SWAP it in by rebinding ``gb.prompt_cache`` to
+            # ``probe_head`` — the original live list (still pristine) is
+            # retained as ``pristine`` for terminal replay, and its tensors are
+            # now referenced only there, so we stay at 2x (pristine + committed).
+            gb.prompt_cache = probe_head
+            result["replay_snapshot"] = pristine
             return result
-        # Guard off (non-lossless/debug mode): no probe ran, so replay the
-        # accepted prefix through the stepwise commit helper, which now takes
-        # the retained snapshot as its base (sparing a fresh deepcopy).
+        # Guard OFF (non-lossless/debug mode, ``--no-suffix-hybrid-bit-exact``):
+        # no drift check and the stepwise commit helper deep-copies its base. We
+        # therefore keep a dedicated pre-verify copy as the replay base, and the
+        # commit helper copies that once more — this debug path may hold up to
+        # 3 full caches transiently, which is acceptable off-default (it is an
+        # explicit escape hatch, not the production path).
+        snapshot = copy.deepcopy(gb.prompt_cache)
+        committed_head = copy.deepcopy(snapshot)
+        result = _verify_scratch(
+            gb.model, gb.prompt_cache, verify_input, draft, committed_head
+        )
+        n_accepted = result["n_accepted"]
+        del committed_head
         _commit_scratch_accepted(
             gb.model,
             gb.prompt_cache,
@@ -4027,6 +4028,20 @@ def _install_suffix_decoding(
         max_suffix_len,
         min_confidence,
     )
+    if _hybrid_active and _effective_max_draft > max_draft:
+        # Do not silently exceed the operator's explicit draft cap. The hybrid
+        # path requires a >=24-token match before paying verify cost, so a
+        # below-floor ``--suffix-max-draft`` would otherwise dead-disable the
+        # feature; we raise the effective width to the floor and say so rather
+        # than override the operator's bound invisibly.
+        logger.warning(
+            "[SuffixDecoding] hybrid path raises effective max draft from "
+            "suffix_max_draft=%d to suffix_min_match_len=%d so drafts can clear "
+            "the %d-token match floor (set --suffix-max-draft to silence)",
+            max_draft,
+            _effective_max_draft,
+            suffix_min_match_len,
+        )
     return True
 
 

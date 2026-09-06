@@ -213,6 +213,7 @@ class TestHybridInstallGate:
         from vllm_mlx.scheduler import _install_suffix_decoding
 
         bg, gb = self._make_fake_bg()
+        orig_step = gb._step
         profile = ModelConfig(is_hybrid=True, supports_spec_decode=False)
         assert not _install_suffix_decoding(
             bg,
@@ -224,7 +225,7 @@ class TestHybridInstallGate:
             requests={},
             uid_to_request_id={},
         )
-        assert gb._step is not None  # old step preserved
+        assert gb._step is orig_step  # skipped install leaves the step untouched
 
     def test_hybrid_profile_with_optin_installs(self):
         from unittest.mock import MagicMock
@@ -380,11 +381,14 @@ class TestHybridInstallGate:
         )
         result = gb._step()
         assert result[0] == [7]
-        # Live cache must equal prompt + [7] (X committed despite reject).
+        # Live cache (now ``gb.prompt_cache`` — the guard-on commit path SWAPS
+        # in the probe head by rebinding, leaving the original pristine list as
+        # the retained replay snapshot) must equal prompt + [7] (X committed
+        # despite reject).
         gold = model.make_cache()
         mx.eval(model(mx.array([[1, 2, 3]]), cache=gold))
         mx.eval(model(mx.array([[7]]), cache=gold))
-        _assert_state_equal(cache, gold)
+        _assert_state_equal(gb.prompt_cache, gold)
 
     def test_pure_attention_optin_ignored(self):
         """suffix_hybrid on a pure-attention model is a no-op (not a raised error)."""
