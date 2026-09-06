@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import json
+import math
 import platform
 import re
 import subprocess
@@ -73,31 +74,57 @@ def quantization_facts(config: dict[str, Any]) -> dict[str, Any]:
     """Project an MLX ``config.json`` onto the atomic quantization contract.
 
     MLX converters write ``{"quantization": {"bits": 4, "group_size": 64,
-    "mode": "affine", "<layer>": {"bits": 8, ...}}}``. Uniform bits are a
-    ``weights`` quantization; per-layer overrides with different bits are
-    ``mixed``; no block means the weights are unquantized (``none``).
+    "mode": "affine", "<layer>": {"bits": 8, ...}}}``; mflux writes
+    ``{"quantization": {"method": "mflux", "bits": 4, ...}}``. Uniform bits
+    are a ``weights`` quantization; per-layer overrides with different bits
+    are ``mixed``; no block means the weights are unquantized (``none``).
+
+    The file is publisher-controlled, so every value is type- and
+    range-checked against the contract and anything unexpected degrades to
+    ``unknown`` — provenance must never make a run unsavable.
     """
-    base_dtype = _BASE_DTYPES.get(str(config.get("torch_dtype")), "unknown")
+    try:
+        return _quantization_facts(config)
+    except Exception:  # noqa: BLE001 — see docstring
+        return {"kind": "unknown", "base_dtype": "unknown"}
+
+
+def _bits_x2(value: Any) -> int | None:
+    """``bits`` as the contract's x2 integer (2..64), else ``None``."""
+    if isinstance(value, bool) or not isinstance(value, int | float):
+        return None
+    if not math.isfinite(value) or value <= 0:
+        return None
+    x2 = int(round(float(value) * 2))
+    return x2 if 2 <= x2 <= 64 else None
+
+
+def _quantization_facts(config: dict[str, Any]) -> dict[str, Any]:
+    dtype = config.get("torch_dtype")
+    if dtype is None:
+        dtype = config.get("dtype")
+    base_dtype = _BASE_DTYPES.get(str(dtype), "unknown")
     block = config.get("quantization")
     if block is None:
         block = config.get("quantization_config")
     if not isinstance(block, dict):
         return {"kind": "none", "base_dtype": base_dtype}
-    bits = block.get("bits")
-    group_size = block.get("group_size")
-    override_bits = {
-        value.get("bits")
+    bits_x2 = _bits_x2(block.get("bits"))
+    if bits_x2 is None:
+        return {"kind": "unknown", "base_dtype": base_dtype}
+    override_bits_x2 = {
+        _bits_x2(value.get("bits"))
         for value in block.values()
         if isinstance(value, dict) and value.get("bits") is not None
     }
-    if not isinstance(bits, int | float) or bits <= 0:
-        return {"kind": "unknown", "base_dtype": base_dtype}
     facts: dict[str, Any] = {"base_dtype": base_dtype}
-    if override_bits - {bits}:
+    if override_bits_x2 - {bits_x2}:
+        # Per-layer overrides at other bit widths (or unparsable ones):
+        # the artifact is not uniformly quantized.
         facts["kind"] = "mixed"
     else:
         facts["kind"] = "weights"
-        facts["weight_bits_x2"] = int(round(float(bits) * 2))
+        facts["weight_bits_x2"] = bits_x2
     # mlx-lm writes the scheme as ``mode`` ("affine", "mxfp4", ...); mflux
     # image models write ``method`` ("mflux"). Honour whichever the artifact
     # declares; only a block that names neither is assumed to be mlx-lm's
@@ -110,7 +137,12 @@ def quantization_facts(config: dict[str, Any]) -> dict[str, Any]:
         facts["method"] = method if _METHOD_PATTERN.fullmatch(method) else "other"
     elif facts["kind"] == "weights":
         facts["method"] = "affine"
-    if isinstance(group_size, int) and group_size > 0:
+    group_size = block.get("group_size")
+    if (
+        isinstance(group_size, int)
+        and not isinstance(group_size, bool)
+        and 1 <= group_size <= 4096
+    ):
         facts["group_size"] = group_size
     return facts
 

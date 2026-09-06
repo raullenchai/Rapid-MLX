@@ -4660,6 +4660,23 @@ def test_quantization_facts_projects_mlx_config_onto_the_contract() -> None:
     # A declared scheme that does not fit the contract pattern is "other".
     odd = {"quantization": {"mode": "Affine/V2", "bits": 4}}
     assert quantization_facts(odd)["method"] == "other"
+    # Publisher-controlled values outside the contract degrade to unknown
+    # instead of producing an unsavable record.
+    assert quantization_facts({"quantization": {"bits": 64}})["kind"] == "unknown"
+    assert quantization_facts({"quantization": {"bits": float("nan")}})["kind"] == (
+        "unknown"
+    )
+    assert quantization_facts({"quantization": {"bits": True}})["kind"] == "unknown"
+    unparsable_override = quantization_facts(
+        {"quantization": {"bits": 4, "head": {"bits": []}}}
+    )
+    assert unparsable_override["kind"] == "mixed"
+    assert "weight_bits_x2" not in unparsable_override
+    assert "group_size" not in quantization_facts(
+        {"quantization": {"bits": 4, "group_size": 8192}}
+    )
+    # LiquidAI subfolder configs spell the base dtype as ``dtype``.
+    assert quantization_facts({"dtype": "bfloat16"})["base_dtype"] == "bfloat16"
     # Fractional bit widths are carried as x2 integers (3.5 bpw -> 7).
     assert quantization_facts({"quantization": {"bits": 3.5}})["weight_bits_x2"] == 7
     assert quantization_facts({"torch_dtype": "float16"}) == {
@@ -4767,6 +4784,26 @@ def test_model_identity_reads_the_subfolder_config_for_nested_variants(
     assert component["source"]["resolved_revision"] == revision
     assert component["quantization"]["weight_bits_x2"] == 8
     ContractValidator().validate_model_identity(identity)
+
+
+def test_run_local_measures_text_models_by_alias_not_bare_repo_id(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The loader must see the alias so the measured checkpoint matches the
+    recorded identity (a bare repo id prefers the last pulled variant)."""
+    archive = LocalRunArchive(tmp_path)
+    _mock_local_context(
+        monkeypatch, "text_generation", "mlx-community/example-text-model"
+    )
+    seen: list[str] = []
+
+    async def fake_measurements(model_name: str):
+        seen.append(model_name)
+        return _text_run()["measurements"], 32768
+
+    monkeypatch.setattr(local_runner, "_text_measurements", fake_measurements)
+    local_runner.run_local("example-text", archive=archive)
+    assert seen == ["example-text"]
 
 
 def test_benchmark_catalog_exposes_the_alias_subfolder() -> None:

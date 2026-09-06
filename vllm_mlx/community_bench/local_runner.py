@@ -672,7 +672,15 @@ def _run_video(
         ]
 
 
-async def _text_measurements(repo_id: str) -> tuple[list[dict[str, Any]], int]:
+async def _text_measurements(model_name: str) -> tuple[list[dict[str, Any]], int]:
+    """Measure ``model_name`` — the catalog alias, not the bare repo id.
+
+    The loader resolves an explicit alias to that alias's checkpoint
+    (repo + subfolder). A bare repo id would instead prefer whatever
+    variant was last ``pull``ed, so a run labelled ``lfm2.5-2.6b-4bit``
+    could silently measure the 8-bit checkpoint. Loading by alias keeps the
+    measured artifact and the recorded identity the same thing.
+    """
     from vllm_mlx.engine_core import (
         AsyncEngineCore,
         EngineConfig,
@@ -680,15 +688,20 @@ async def _text_measurements(repo_id: str) -> tuple[list[dict[str, Any]], int]:
     )
     from vllm_mlx.scheduler import SchedulerConfig
     from vllm_mlx.service.helpers import get_model_max_context
+    from vllm_mlx.model_aliases import resolve_model
     from vllm_mlx.utils.tokenizer import load_model_with_fallback
 
     from .runner import _reported_token_count, run_standardized_bench
+
+    repo_id = resolve_model(model_name)
 
     executor = concurrent.futures.ThreadPoolExecutor(
         max_workers=1, thread_name_prefix="mlx-step", initializer=_init_mlx_step_thread
     )
     try:
-        model, tokenizer = executor.submit(load_model_with_fallback, repo_id).result()
+        model, tokenizer = executor.submit(
+            load_model_with_fallback, model_name
+        ).result()
         scheduler = SchedulerConfig(
             max_num_seqs=1,
             max_concurrent_requests=1,
@@ -817,7 +830,7 @@ def run_local(
         try:
             if task_type == "text_generation":
                 measurements, context_length = asyncio.run(
-                    _text_measurements(model["repo_id"])
+                    _text_measurements(alias)
                 )
             elif task_type == "image_generation":
                 measurements = _run_image(
