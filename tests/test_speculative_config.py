@@ -497,6 +497,24 @@ def test_hybrid_normalizer_fills_cap_and_sentinel() -> None:
     assert explicit.suffix_max_draft == 24
     assert explicit._suffix_max_draft_was_explicit is True
 
+    # Codex round-9l NIT: the sentinel records EXPLICIT intent independently of
+    # the current cap value, and the default-fill must only ever apply to a
+    # still-None cap. A programmatic caller that pre-set the sentinel to False
+    # (i.e. a prior normalize recorded the RUN-TIME default as implicit) and
+    # then set a NON-default cap of 16 must keep 16 — the pre-fix code re-set
+    # it to 8 on every normalize because it keyed the fill on the (False)
+    # sentinel rather than on ``suffix_max_draft is None``.
+    prog = _spec_config_args(
+        suffix_decoding=True,
+        suffix_hybrid=True,
+        suffix_min_match_len=24,
+        suffix_max_draft=16,  # programmatic override, set after prior normalize
+    )
+    prog._suffix_max_draft_was_explicit = False  # intent: run-time default
+    _normalize_speculative_config_or_exit(prog)
+    assert prog.suffix_max_draft == 16  # NOT clobbered back to 8
+    assert prog._suffix_max_draft_was_explicit is False  # intent unchanged
+
 
 def test_no_speculative_config_preserves_programmatic_runtime_fields() -> None:
     from vllm_mlx.cli import _normalize_speculative_config_or_exit

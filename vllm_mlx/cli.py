@@ -2351,7 +2351,12 @@ def _normalize_speculative_config_or_exit(args):
             args._suffix_max_draft_was_explicit = (
                 getattr(args, "suffix_max_draft", None) is not None
             )
-        if not args._suffix_max_draft_was_explicit:
+        # Fill the default ONLY when the value is actually unset. The sentinel
+        # is tracked independently (above) so a repeated normalization does not
+        # re-default a value a programmatic caller changed between calls (codex
+        # round-9l NIT): the explicit/implicit intent is recorded once, and the
+        # default fill only ever applies to a genuinely-None cap.
+        if getattr(args, "suffix_max_draft", None) is None:
             args.suffix_max_draft = 8
         if getattr(args, "suffix_max_suffix_len", None) is None:
             args.suffix_max_suffix_len = 4

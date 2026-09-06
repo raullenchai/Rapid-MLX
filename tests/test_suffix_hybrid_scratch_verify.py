@@ -184,6 +184,32 @@ class TestScratchVerifyCore:
         mx.eval(model(mx.array([[1, 2, 3]]), cache=fresh))
         _assert_state_equal(before, fresh)
 
+    def test_restore_pending_emits_preserves_other_uids(self):
+        """Codex round-9l finding #2: the post-commit rollback must restore the
+        pending-emit map PER-UID — dropping entries the failed transaction
+        added and restoring entries it mutated, but never ``clear()``-ing the
+        whole map (which would silently drop ANOTHER request's queued accepted
+        tokens). ``_restore_pending_emits`` is the module-level rollback helper;
+        ``clear()`` was the buggy pre-fix behavior."""
+        from vllm_mlx.scheduler import _restore_pending_emits
+
+        # Two requests already have queued accepted tokens (a different uid and
+        # the failing uid), plus the failing step adds a brand-new uid.
+        snapshot = {1: [(100, mx.array([0.1]))], 2: [(200, mx.array([0.2]))]}
+        current = {
+            1: [(100, mx.array([0.1]))],  # unchanged by failed step
+            2: [(200, mx.array([0.2])), (201, mx.array([0.3]))],  # step appended
+            3: [(300, mx.array([0.4]))],  # added by the failed step
+        }
+        _restore_pending_emits(current, snapshot)
+        # uid 1 untouched; uid 2's extra appended entry rolled back; uid 3
+        # (added by the failed transaction) dropped.
+        assert set(current.keys()) == {1, 2}
+        assert [t for t, _ in current[1]] == [100]
+        assert [t for t, _ in current[2]] == [200]
+        # A naive clear() would have left uid 1/2 empty — this preserves them.
+        assert len(current) == 2
+
 
 class TestHybridInstallGate:
     """suffix_hybrid must open the hybrid install gate, default stays closed."""
@@ -1904,6 +1930,10 @@ class TestSingleSnapshotCommit:
         # Record the observable pre-state of the mutated surfaces.
         pre_tokens_len = len(gb.tokens[0])
         pre_next_tokens = gb._next_tokens
+        stats0 = bg._suffix_stats
+        pre_error_total = stats0["errors"]
+        pre_fallthrough_total = stats0["fallthrough_steps"]
+        pre_ft_error_total = stats0["ft_error"]
 
         # Inject a LATE failure: the publish ``gb.tokens[0].append(last_token)``
         # raises (runs after cooldown + drafter + stat mutations). The handler
@@ -1928,6 +1958,18 @@ class TestSingleSnapshotCommit:
         # Deferred counter publication (round-9k finding #2): a failure in the
         # mutation tail must leave the shared counter completely untouched.
         assert spy.success_publish_calls == 0
+        # Codex round-9l finding #1: the transactional rollback must NOT erase
+        # the error/fallthrough metrics this failure records. Because the
+        # handler rolls the snapshot back FIRST and then bumps the error counts,
+        # ``_suffix_stats`` (the exported ``_stats`` surface) must carry the
+        # failure exactly once — if the rollback ran after the bumps, the
+        # restored snapshot would have zeroed them while the shared counter
+        # still recorded, diverging the two surfaces. Guard-proofed: reverting
+        # the reorder makes this fail.
+        stats = bg._suffix_stats
+        assert stats["errors"] == pre_error_total + 1
+        assert stats["fallthrough_steps"] == pre_fallthrough_total + 1
+        assert stats["ft_error"] == pre_ft_error_total + 1
 
     def test_post_commit_exception_drops_retained_replay_entry(self, monkeypatch):
         """Codex round-9h finding #1: a post-commit exception must pop the

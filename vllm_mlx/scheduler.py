@@ -2952,6 +2952,25 @@ def _retain_hybrid_replay(replay_dict, uid, snapshot, verify_input) -> None:
     replay_dict[uid] = (snapshot, verify_input)
 
 
+def _restore_pending_emits(current: dict, snapshot: dict) -> None:
+    """Roll the pending-emit map back to a pre-transaction snapshot per-uid.
+
+    Codex round-9l finding #2: the post-commit rollback must remove ONLY the
+    entries the failed transaction added/changed and restore the pre-existing
+    ones — never ``clear()`` the whole map, which would silently drop ANOTHER
+    request's queued accepted tokens. ``snapshot`` is the pre-transaction map
+    (deep-copied list values); every current uid present in the snapshot is
+    restored to its snapshot value, any current uid absent from the snapshot
+    (added by the failed step) is popped. Module-level so the rollback is
+    unit-testable (``_pending_emits`` is a closure dict).
+    """
+    for u in list(current):
+        if u in snapshot:
+            current[u] = snapshot[u]
+        else:
+            current.pop(u, None)
+
+
 def _restore_hybrid_cache_after_exception(gb, result: dict) -> None:
     """Restore the live cache to the pristine pre-verify snapshot after a
     hybrid-verify exception, when the commit head was already swapped in.
@@ -3880,8 +3899,12 @@ def _install_suffix_decoding(
                 "next_tokens": gb._next_tokens,
                 "next_logprobs": gb._next_logprobs,
                 "n_tokens_in_tokens": len(gb.tokens[0]) if gb.tokens else 0,
-                "n_pending_emits": len(_pending_emits),
-                "n_pending_replay": len(_pending_hybrid_replay),
+                # Snapshot the pending-emits map itself (list value copied per
+                # uid), NOT just a count: the rollback must remove ONLY entries
+                # created/changed by THIS failed transaction, restoring the
+                # pre-existing ones (codex round-9l finding #2). ``clear()``
+                # would silently drop another request's queued accepted tokens.
+                "pending_emits": {u: list(v) for u, v in _pending_emits.items()},
             }
             # Drafter history += newly-committed tokens. We add ONLY the
             # accepted drafts here; ``bonus`` will be added on the next
@@ -4019,16 +4042,17 @@ def _install_suffix_decoding(
 
         except Exception as e:  # noqa: BLE001
             logger.debug(f"[SuffixDecoding] post-commit phase failed: {e!r}")
-            _stats["errors"] += 1
-            # fallthrough buckets must reconcile with the aggregate (round-9i #3).
-            _stats["fallthrough_steps"] += 1
-            _stats["ft_error"] += 1
-            # Counter consistency: every other error fallthrough records the
-            # attempt + error on the shared counter, so the exported counter
-            # does not diverge from ``_stats`` for exactly this failure class.
-            _counter.record_error()
-            _counter.record_verify(K, 0)
             if _hybrid_active:
+                # Reorder matters (codex round-9l finding #1): the FULL
+                # transactional rollback must run BEFORE recording the
+                # error/fallthrough metrics, because the rollback restores
+                # ``_stats`` from the pre-error snapshot. If the counters were
+                # bumped first, the restore would erase them — yet the shared
+                # counter (recorded below, NOT rolled back) would still carry
+                # the failure, so the exported ``_stats`` and the global counter
+                # would diverge. Roll back, THEN bump both surfaces together so
+                # they stay in agreement.
+                #
                 # HYBRID post-commit exception -> advertise the VANILLA
                 # fallthrough (codex round-9i finding #1): restore the pristine
                 # pre-verify cache so the live cache never stays advanced beyond
@@ -4062,9 +4086,18 @@ def _install_suffix_decoding(
                     gb._next_logprobs = _tx["next_logprobs"]
                     if gb.tokens:
                         del gb.tokens[0][_tx["n_tokens_in_tokens"] :]
-                    # Drop any pending emits/replay added during this (failed)
-                    # step (see below for why the replay drop is unconditional).
-                    _pending_emits.clear()
+                    _restore_pending_emits(_pending_emits, _tx["pending_emits"])
+                # Record the error/fallthrough after the rollback so the
+                # restored ``_stats`` is not erased retroactively (round-9l #1).
+                _stats["errors"] += 1
+                # fallthrough buckets must reconcile with the aggregate (round-9i #3).
+                _stats["fallthrough_steps"] += 1
+                _stats["ft_error"] += 1
+                # Counter consistency: every other error fallthrough records the
+                # attempt + error on the shared counter, so the exported counter
+                # does not diverge from ``_stats`` for exactly this failure class.
+                _counter.record_error()
+                _counter.record_verify(K, 0)
                 # Restore the retained replay head for this uid UNCONDITIONALLY
                 # (findings #1/#2): it was retained BEFORE the compute section
                 # (in the hybrid branch), so even a compute-section exception
@@ -4081,6 +4114,11 @@ def _install_suffix_decoding(
             # silently fall through to a re-generated primary that would leave
             # the untrimmable cache inconsistent. Re-raise (pre-existing
             # behavior, unchanged by this diff).
+            _stats["errors"] += 1
+            _stats["fallthrough_steps"] += 1
+            _stats["ft_error"] += 1
+            _counter.record_error()
+            _counter.record_verify(K, 0)
             raise
 
     def _suffix_next():
