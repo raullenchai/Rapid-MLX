@@ -3056,34 +3056,36 @@ def _serve_will_run_on_mllm_lane(args) -> bool:
     fall back to the curated alias profile
     (:func:`_alias_needs_vision_runtime_without_weights`).
     """
-    from .api.utils import resolve_serving_lane_decision
+    from .api.utils import resolve_serving_lane
 
     requested_spec_decode = getattr(args, "spec_decode", "none") or "none"
     if requested_spec_decode == "none" and getattr(args, "enable_mtp", False):
         requested_spec_decode = "mtp"
     elif requested_spec_decode == "none" and getattr(args, "force_spec_decode", False):
         requested_spec_decode = "auto"
-    decision = resolve_serving_lane_decision(
+    force_text = getattr(args, "no_mllm", False)
+    is_mllm_lane, auto_text_fallback = resolve_serving_lane(
         args.model,
         force_mllm=getattr(args, "mllm", False),
-        force_text=getattr(args, "no_mllm", False),
+        force_text=force_text,
         requested_spec_decode=requested_spec_decode,
     )
-    if decision.is_mllm:
+    if is_mllm_lane:
         return True
     if _alias_modality(args.model) == "text-diffusion":
         # DiffusionGemma runs on the mlx-vlm diffusion runtime whatever lane
         # flags say: --no-mllm / spec-decode cannot route it to mlx-lm.
         return True
-    if decision.reason != "text_checkpoint":
-        # Explicit --no-mllm, spec-decode, or a hybrid/unsupported downgrade:
-        # the checkpoint was inspected and deliberately routed to the text
-        # lane. Only an evidence-free "text_checkpoint" verdict (#3113: no
-        # weights cached yet) may fall back to the curated alias profile.
+    if force_text or auto_text_fallback:
+        # Explicit --no-mllm, or a deliberate downgrade (spec-decode, hybrid
+        # cache/runtime, memory): the checkpoint was inspected and routed to
+        # the text lane on purpose. Only the evidence-free "text_checkpoint"
+        # verdict (#3113: no weights cached yet) may fall back to the
+        # curated alias profile.
         return False
     return _alias_needs_vision_runtime_without_weights(
         args.model,
-        force_text=getattr(args, "no_mllm", False),
+        force_text=force_text,
         requested_spec_decode=requested_spec_decode,
     )
 
