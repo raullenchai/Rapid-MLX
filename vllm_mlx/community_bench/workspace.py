@@ -6,7 +6,9 @@ from __future__ import annotations
 import copy
 import heapq
 import json
+import math
 import os
+import re
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
@@ -54,6 +56,86 @@ def _primary_task(task_types: list[str]) -> str | None:
     return None
 
 
+#: Unified memory the benchmark must leave to macOS, the display server and
+#: the KV cache of the 2048-token case. A 27B 4-bit model whose weights alone
+#: are 18 GB used to be reported as "fits" on an 18 GB Mac; running it swaps
+#: the machine to a halt, which is the one outcome a planning column exists
+#: to prevent.
+_HEADROOM_FLOOR_GIB = 2
+_HEADROOM_FRACTION = 0.10
+
+_PARAM_COUNT = re.compile(r"(?<![\d.])(\d+(?:\.\d+)?)b(?![a-z0-9])")
+_BIT_WIDTH = re.compile(r"(\d+(?:\.\d+)?)(?:bit|bpw)")
+
+
+def _parameter_floor_gib(alias: str) -> int | None:
+    """Lower bound on the working set from the alias's own name.
+
+    ``qwen3.6-35b-mtp-4bit`` names 35 B parameters at 4 bits: at least
+    35 × 0.5 GB of weights, before any activations or cache. Catalog
+    download sizes are sometimes wrong for variant repos (an MTP head listed
+    as 3 GB for a 35 B model); this floor keeps such rows from being called
+    a fit. An alias that names no bit width is assumed 4-bit (the catalog's
+    usual default variant) so the floor stays a lower bound; ``bf16``/``fp16``
+    names count as 16-bit. Where an alias names several sizes
+    (``lfm2.5-8b-a1b``) the largest wins: all experts must be resident for
+    a benchmark.
+    """
+    lowered = alias.lower()
+    counts = [float(m) for m in _PARAM_COUNT.findall(lowered)]
+    if not counts:
+        return None
+    params_b = max(counts)
+    bits_match = _BIT_WIDTH.search(lowered)
+    bits = float(bits_match.group(1)) if bits_match else 4.0
+    if "bf16" in lowered or "fp16" in lowered or "-f16" in lowered:
+        bits = 16.0
+    weights_gib = params_b * bits / 8.0
+    return int(math.ceil(weights_gib * 1.1 + 1))
+
+
+def estimate_memory_gib(
+    alias: str,
+    *,
+    minimum_memory_gb: float | None,
+    download_size_bytes: int | None,
+) -> tuple[int | None, str]:
+    """Planning estimate of the working set, with its provenance.
+
+    Precedence: an explicit profile minimum, then the curated recommendation
+    footprint (the number the model picker already shows), then the artifact
+    size plus activations, never below the parameter-count floor.
+    """
+    if isinstance(minimum_memory_gb, int | float) and minimum_memory_gb > 0:
+        return int(minimum_memory_gb + 0.999999), "profile_minimum"
+    try:
+        from vllm_mlx.recommendations import recommendation_footprint_gb
+
+        footprint = recommendation_footprint_gb(alias)
+    except Exception:  # noqa: BLE001 — planning data must never fail the catalog
+        footprint = None
+    if isinstance(footprint, int | float) and footprint > 0:
+        return int(math.ceil(footprint)), "curated_footprint"
+    floor = _parameter_floor_gib(alias)
+    if isinstance(download_size_bytes, int):
+        # This is deliberately a planning estimate, not benchmark evidence.
+        estimate = max(1, (download_size_bytes + (1 << 30) - 1) // (1 << 30) + 2)
+        if floor is not None and floor > estimate:
+            return floor, "parameter_count_floor"
+        return estimate, "artifact_size_fallback"
+    if floor is not None:
+        return floor, "parameter_count_floor"
+    return None, "unknown"
+
+
+def memory_fit(estimated_memory_gib: int | None, memory_gib: int | None) -> str:
+    """``fits`` only when the estimate leaves the required headroom."""
+    if memory_gib is None or estimated_memory_gib is None:
+        return "unknown"
+    headroom = max(_HEADROOM_FLOOR_GIB, math.ceil(memory_gib * _HEADROOM_FRACTION))
+    return "fits" if estimated_memory_gib + headroom <= memory_gib else "does_not_fit"
+
+
 def benchmark_catalog(*, memory_gib: int | None = None) -> dict[str, Any]:
     """Project the atomic catalog into the model-first benchmark picker."""
 
@@ -80,21 +162,13 @@ def benchmark_catalog(*, memory_gib: int | None = None) -> dict[str, Any]:
             continue
         model = models[alias["target"]["registry_model_id"]]
         workload = registered_workload(task)
-        size = model.get("estimated_download_size_bytes")
-        estimated_memory_gib = None
-        estimate_source = "unknown"
         profile = profiles.get(alias["alias"])
-        minimum_memory = getattr(profile, "min_memory_gb", None)
-        if isinstance(minimum_memory, int | float) and minimum_memory > 0:
-            estimated_memory_gib = int(minimum_memory + 0.999999)
-            estimate_source = "profile_minimum"
-        elif isinstance(size, int):
-            # This is deliberately a planning estimate, not benchmark evidence.
-            estimated_memory_gib = max(1, (size + (1 << 30) - 1) // (1 << 30) + 2)
-            estimate_source = "artifact_size_fallback"
-        fit = "unknown"
-        if memory_gib is not None and estimated_memory_gib is not None:
-            fit = "fits" if estimated_memory_gib <= memory_gib else "does_not_fit"
+        estimated_memory_gib, estimate_source = estimate_memory_gib(
+            alias["alias"],
+            minimum_memory_gb=getattr(profile, "min_memory_gb", None),
+            download_size_bytes=model.get("estimated_download_size_bytes"),
+        )
+        fit = memory_fit(estimated_memory_gib, memory_gib)
         entries.append(
             {
                 "alias": alias["alias"],
