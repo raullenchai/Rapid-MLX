@@ -4,11 +4,13 @@
 from __future__ import annotations
 
 import json
+import statistics
 import sys
 from typing import Any
 from urllib.parse import quote
 
 from .atomic_upload import preview_run, upload_run
+from .hardware import host_memory_gib
 from .local_runner import LocalBenchmarkError, run_local
 from .workspace import LocalRunArchive, benchmark_catalog, plan_for_alias
 
@@ -31,6 +33,84 @@ def _contributor_profile(receipt: dict[str, Any]) -> tuple[str, str] | None:
 
 def _print_json(value: Any) -> None:
     print(json.dumps(value, ensure_ascii=False, indent=2, sort_keys=True))
+
+
+def _run_model_label(run: dict[str, Any]) -> str:
+    """Human label for an archived run: the primary component's repo id.
+
+    Only primary components are considered when any is present, regardless
+    of position; other components are consulted only when no component is
+    marked primary.
+    """
+
+    model = run.get("model")
+    components = model.get("components") if isinstance(model, dict) else None
+    if not isinstance(components, list):
+        return "-"
+    typed = [component for component in components if isinstance(component, dict)]
+    primary = [c for c in typed if c.get("role") == "primary"]
+    # A primary component is authoritative: if one exists but carries no
+    # usable label, never attribute the run to an auxiliary (draft) model.
+    for component in primary or typed:
+        source = component.get("source")
+        if isinstance(source, dict):
+            repo_id = source.get("repo_id")
+            if isinstance(repo_id, str):
+                return repo_id
+        manifest = component.get("artifact")
+        if isinstance(manifest, dict):
+            path = manifest.get("path")
+            if isinstance(path, str):
+                return path
+    return "-"
+
+
+def summarize_measurements(run: dict[str, Any]) -> list[str]:
+    """One line per case with the numbers a user actually wants to see.
+
+    Text cases report median decode throughput and time-to-first-token; image
+    and video cases report the median wall time. Medians over completed rounds
+    only, matching how the board aggregates. Returns ``[]`` when the run has
+    no completed measurements so callers can fall back to the raw record.
+    """
+
+    measurements = run.get("measurements")
+    if not isinstance(measurements, list):
+        return []
+    by_case: dict[str, list[dict[str, Any]]] = {}
+    for sample in measurements:
+        if not isinstance(sample, dict) or not sample.get("completed"):
+            continue
+        case_id = sample.get("case_id")
+        if isinstance(case_id, str):
+            by_case.setdefault(case_id, []).append(sample)
+    lines: list[str] = []
+    for case_id, samples in by_case.items():
+        decode = [
+            s["output_tokens"] / (s["decode_duration_ms"] / 1000.0)
+            for s in samples
+            if isinstance(s.get("output_tokens"), int | float)
+            and isinstance(s.get("decode_duration_ms"), int | float)
+            and s["decode_duration_ms"] > 0
+        ]
+        ttft = [
+            s["ttft_ms"] for s in samples if isinstance(s.get("ttft_ms"), int | float)
+        ]
+        total = [
+            s["total_duration_ms"]
+            for s in samples
+            if isinstance(s.get("total_duration_ms"), int | float)
+        ]
+        if decode:
+            line = f"  {case_id:<16} {statistics.median(decode):7.1f} tok/s decode"
+            if ttft:
+                line += f"   TTFT {statistics.median(ttft):6.0f} ms"
+        elif total:
+            line = f"  {case_id:<16} {statistics.median(total) / 1000.0:7.2f} s per run"
+        else:
+            continue
+        lines.append(f"{line}   ({len(samples)} rounds)")
+    return lines
 
 
 def _print_failure(args, exc: Exception) -> int:
@@ -64,7 +144,17 @@ def benchmark_command(args) -> int:
     archive = LocalRunArchive.default()
     try:
         if action == "catalog":
-            value = benchmark_catalog(memory_gib=args.memory_gib)
+            memory_gib = args.memory_gib
+            memory_source = "override"
+            if memory_gib is None:
+                memory_gib = host_memory_gib()
+                memory_source = "host"
+            value = benchmark_catalog(memory_gib=memory_gib)
+            # ``memory_gib`` is what the fit column was computed against;
+            # ``memory_source`` says whether that is this Mac's probed
+            # unified memory or a planning value the user typed.
+            value["memory_gib"] = memory_gib
+            value["memory_source"] = memory_source
         elif action == "plan":
             value = plan_for_alias(args.benchmark_model)
         elif action == "run":
@@ -126,7 +216,19 @@ def benchmark_command(args) -> int:
     if args.json:
         _print_json(value)
     elif action == "catalog":
-        print("Community Benchmark models (local by default)\n")
+        print("Community Benchmark models (local by default)")
+        memory_gib = value.get("memory_gib")
+        if isinstance(memory_gib, int) and value.get("memory_source") == "override":
+            print(
+                f"Fit column assumes {memory_gib} GB (--memory-gib), "
+                "not this Mac's memory\n"
+            )
+        elif isinstance(memory_gib, int):
+            print(f"This Mac: {memory_gib} GB unified memory (fit column below)\n")
+        else:
+            print(
+                "This Mac: memory unknown; pass --memory-gib to fill the fit column\n"
+            )
         for model in value["models"]:
             marker = "★" if model["focus"] else " "
             fit = model["memory_fit"].replace("_", " ")
@@ -147,7 +249,8 @@ def benchmark_command(args) -> int:
         for run in runs:
             print(
                 f"{run['run_id']}  {run['workload']['task_type']:<18} "
-                f"{run['outcome']['status']:<10} {run['completed_at']}"
+                f"{run['outcome']['status']:<10} {run['completed_at']}  "
+                f"{_run_model_label(run)}"
             )
     elif action == "inspect":
         _print_json(value)
@@ -172,7 +275,10 @@ def benchmark_command(args) -> int:
             print("Upload cancelled. Nothing was sent.")
     else:  # run
         print(f"Saved local result {value['run_id']}")
+        for line in summarize_measurements(value):
+            print(line)
         print("Nothing was uploaded.")
+        print(f"Share it: rapid-mlx benchmark share {value['run_id']}")
     return 0
 
 

@@ -2644,9 +2644,63 @@ def test_cli_catalog_prints_focus_marker_and_run_hint(
     assert community_cli.benchmark_command(args) == 0
     out = capsys.readouterr().out
     assert "Community Benchmark models (local by default)" in out
+    assert "Fit column assumes 8 GB (--memory-gib), not this Mac's memory" in out
+    assert "This Mac:" not in out
     assert "★ focus-model" in out
     assert "does not fit" in out
     assert "Run: rapid-mlx benchmark run <model>" in out
+
+
+def test_cli_catalog_defaults_memory_to_this_mac(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Without --memory-gib the fit column must come from the host probe, not
+    print "unknown" for every model (0.13.5 dogfood F1)."""
+    _cli_archive(monkeypatch, SimpleNamespace())
+    seen: dict[str, object] = {}
+
+    def fake_catalog(**kwargs):
+        seen.update(kwargs)
+        return {"models": []}
+
+    monkeypatch.setattr(community_cli, "benchmark_catalog", fake_catalog)
+    monkeypatch.setattr(community_cli, "host_memory_gib", lambda: 48)
+    args = SimpleNamespace(benchmark_action="catalog", memory_gib=None, json=False)
+
+    assert community_cli.benchmark_command(args) == 0
+    assert seen == {"memory_gib": 48}
+    assert "This Mac: 48 GB unified memory" in capsys.readouterr().out
+
+    monkeypatch.setattr(community_cli, "host_memory_gib", lambda: None)
+    assert community_cli.benchmark_command(args) == 0
+    assert seen == {"memory_gib": None}
+    assert "memory unknown; pass --memory-gib" in capsys.readouterr().out
+
+    args_json = SimpleNamespace(benchmark_action="catalog", memory_gib=None, json=True)
+    monkeypatch.setattr(community_cli, "host_memory_gib", lambda: 48)
+    assert community_cli.benchmark_command(args_json) == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert (payload["memory_gib"], payload["memory_source"]) == (48, "host")
+
+    args_json.memory_gib = 8
+    assert community_cli.benchmark_command(args_json) == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert (payload["memory_gib"], payload["memory_source"]) == (8, "override")
+
+
+def test_host_memory_gib_degrades_to_none_when_probe_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from vllm_mlx.community_bench import hardware
+
+    monkeypatch.setattr(hardware, "_ram_gb", lambda: 256)
+    assert hardware.host_memory_gib() == 256
+
+    def boom() -> int:
+        raise RuntimeError("probe failed")
+
+    monkeypatch.setattr(hardware, "_ram_gb", boom)
+    assert hardware.host_memory_gib() is None
 
 
 def test_cli_plan_prints_protocol_and_local_storage(
@@ -2702,6 +2756,17 @@ def test_cli_results_prints_empty_hint_then_rows(
             "workload": {"task_type": "text_generation"},
             "outcome": {"status": "completed"},
             "completed_at": "2026-09-01T00:00:00Z",
+            "model": {
+                "components": [
+                    {
+                        "role": "primary",
+                        "source": {
+                            "kind": "huggingface",
+                            "repo_id": "mlx-community/Qwen3.5-9B-4bit",
+                        },
+                    }
+                ]
+            },
         }
     )
     assert community_cli.benchmark_command(args) == 0
@@ -2709,6 +2774,75 @@ def test_cli_results_prints_empty_hint_then_rows(
     assert "00000000-0000-4000-8000-000000000001" in out
     assert "text_generation" in out
     assert "completed" in out
+    # A run list without the model is unusable (0.13.5 dogfood F2).
+    assert "mlx-community/Qwen3.5-9B-4bit" in out
+
+    rows.append(
+        {
+            "run_id": "00000000-0000-4000-8000-000000000002",
+            "workload": {"task_type": "image_generation"},
+            "outcome": {"status": "failed"},
+            "completed_at": "2026-09-01T00:00:01Z",
+        }
+    )
+    assert community_cli.benchmark_command(args) == 0
+    out = capsys.readouterr().out
+    assert (
+        "00000000-0000-4000-8000-000000000002  image_generation   failed"
+        "     2026-09-01T00:00:01Z  -\n"
+    ) in out
+
+    # The primary component wins even when an auxiliary component (e.g. a
+    # draft model) is listed first.
+    rows.append(
+        {
+            "run_id": "00000000-0000-4000-8000-000000000003",
+            "workload": {"task_type": "text_generation"},
+            "outcome": {"status": "completed"},
+            "completed_at": "2026-09-01T00:00:02Z",
+            "model": {
+                "components": [
+                    {
+                        "role": "draft",
+                        "source": {"kind": "huggingface", "repo_id": "org/draft"},
+                    },
+                    {
+                        "role": "primary",
+                        "artifact": {"path": "/models/primary"},
+                    },
+                ]
+            },
+        }
+    )
+    assert community_cli.benchmark_command(args) == 0
+    out = capsys.readouterr().out
+    assert "00000000-0000-4000-8000-000000000003" in out
+    assert "  /models/primary" in out
+    assert "org/draft" not in out
+
+    # A primary without a usable label must not fall through to the draft.
+    rows.append(
+        {
+            "run_id": "00000000-0000-4000-8000-000000000004",
+            "workload": {"task_type": "text_generation"},
+            "outcome": {"status": "completed"},
+            "completed_at": "2026-09-01T00:00:03Z",
+            "model": {
+                "components": [
+                    {
+                        "role": "draft",
+                        "source": {"kind": "huggingface", "repo_id": "org/draft"},
+                    },
+                    {"role": "primary", "source": {"kind": "local"}},
+                ]
+            },
+        }
+    )
+    assert community_cli.benchmark_command(args) == 0
+    out = capsys.readouterr().out
+    assert "00000000-0000-4000-8000-000000000004" in out
+    assert "2026-09-01T00:00:03Z  -\n" in out
+    assert "org/draft" not in out
 
 
 def test_cli_inspect_prints_full_json_without_flag(
@@ -2736,9 +2870,33 @@ def test_cli_run_prints_local_only_confirmation(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     _cli_archive(monkeypatch, SimpleNamespace())
-    monkeypatch.setattr(
-        community_cli, "run_local", lambda alias, **kwargs: {"run_id": "abc-123"}
-    )
+    text_run = {
+        "run_id": "abc-123",
+        "measurements": [
+            {
+                "case_id": "pp512-tg128",
+                "completed": True,
+                "round_index": index,
+                "prompt_tokens": 512,
+                "output_tokens": 128,
+                "decode_duration_ms": decode_ms,
+                "ttft_ms": ttft_ms,
+                "total_duration_ms": decode_ms + ttft_ms,
+            }
+            for index, (decode_ms, ttft_ms) in enumerate(
+                [(1000.0, 450.0), (1280.0, 460.0), (1000.0, 470.0)], start=1
+            )
+        ]
+        + [
+            {
+                "case_id": "pp2048-tg512",
+                "completed": False,
+                "round_index": 1,
+                "failure": "timeout",
+            }
+        ],
+    }
+    monkeypatch.setattr(community_cli, "run_local", lambda alias, **kwargs: text_run)
     args = SimpleNamespace(
         benchmark_action="run",
         benchmark_model="example-text",
@@ -2749,7 +2907,44 @@ def test_cli_run_prints_local_only_confirmation(
     assert community_cli.benchmark_command(args) == 0
     out = capsys.readouterr().out
     assert "Saved local result abc-123" in out
+    # The user must see their numbers without opening the JSON (0.13.5 dogfood
+    # F3): median decode throughput and TTFT per case, completed rounds only.
+    assert "pp512-tg128" in out
+    assert "128.0 tok/s decode" in out  # median of 128, 100, 128 tok/s
+    assert "TTFT    460 ms" in out
+    assert "(3 rounds)" in out
+    assert "pp2048-tg512" not in out
     assert "Nothing was uploaded." in out
+    assert "Share it: rapid-mlx benchmark share abc-123" in out
+
+
+def test_summarize_measurements_reports_wall_time_for_image_and_video() -> None:
+    run = {
+        "measurements": [
+            {
+                "case_id": "t2i-1024-square",
+                "completed": True,
+                "round_index": 1,
+                "width": 1024,
+                "height": 1024,
+                "image_count": 1,
+                "total_duration_ms": 83653.1,
+            }
+        ]
+    }
+    assert community_cli.summarize_measurements(run) == [
+        "  t2i-1024-square    83.65 s per run   (1 rounds)"
+    ]
+    assert community_cli.summarize_measurements({"run_id": "x"}) == []
+    assert community_cli.summarize_measurements({"measurements": [{"x": 1}]}) == []
+    # A completed sample that carries neither decode nor wall-time fields has
+    # nothing to summarise and is skipped rather than rendered as a blank row.
+    assert (
+        community_cli.summarize_measurements(
+            {"measurements": [{"case_id": "odd", "completed": True, "round_index": 1}]}
+        )
+        == []
+    )
 
 
 def test_cli_failure_json_includes_saved_run_payload(
