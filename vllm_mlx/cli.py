@@ -2625,6 +2625,24 @@ def _normalize_speculative_config_or_exit(args):
 
     _fill_suffix_defaults()
 
+    # Fail fast instead of silently contradicting the operator. suffix_hybrid
+    # needs a verify width that can reach the 24-token match floor; honoring an
+    # explicitly-set suffix_max_draft below the floor would make the opt-in a
+    # silent no-op, and silently raising the cap would violate the documented
+    # max width (memory) contract. Reject the contradictory combination with an
+    # actionable message naming the flag to raise.
+    if getattr(args, "suffix_hybrid", False) and (
+        getattr(args, "suffix_max_draft", 0) < getattr(args, "suffix_min_match_len", 24)
+    ):
+        print(
+            "error: --suffix-hybrid requires --suffix-max-draft >= "
+            f"suffix_min_match_len ({args.suffix_min_match_len}); "
+            f"got suffix_max_draft={args.suffix_max_draft}. Raise "
+            "--suffix-max-draft to enable the hybrid path.",
+            file=sys.stderr,
+        )
+        sys.exit(2)
+
 
 def _resolve_dflash_drafter_repo(args, profile) -> str | None:
     """Return the effective DFlash drafter repo for normalized CLI args."""

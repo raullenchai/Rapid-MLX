@@ -299,19 +299,27 @@ class TestHybridInstallGate:
             gb._step()  # lazy-init constructs the drafter this step
             return gb._suffix_drafters[1]
 
-        # (a) Hybrid, below-floor configured cap (default 8): width is raised
-        # to the 24-token floor so the feature engages.
-        drafter8 = _install_opts(8, is_hybrid=True)
-        assert drafter8.max_draft_tokens == 24
-        # (b) Hybrid, cap above the floor: width reaches the floor, not higher.
+        # The installer HONORS ``max_draft`` on every path (CLI reject-projects
+        # a below-floor hybrid combo before it reaches here). The hybrid width
+        # is seeded at min(floor, max_draft); the drafter's per-step width
+        # equals that seed.
+        #
+        # (a) Hybrid, configured cap AT the floor: width = the 24-token floor.
+        drafter24 = _install_opts(24, is_hybrid=True)
+        assert drafter24.max_draft_tokens == 24
+        # (b) Hybrid, cap ABOVE the floor: width still seeds at the floor
+        # (adaptively grows toward the cap only on full-acceptance).
         drafter32 = _install_opts(32, is_hybrid=True)
         assert drafter32.max_draft_tokens == 24
-        # (c) PURE-ATTENTION, same flag: the width stays at the normal adaptive
-        # start (2), NOT raised to the 24-token floor — the hybrid raise must
-        # not leak into a no-op-flag pure-attention model.
+        # (c) Hybrid, BELOW-floor cap (programmatic; CLI rejects this): width
+        # degrades to the cap — no silent raise above the documented limit.
+        drafter8 = _install_opts(8, is_hybrid=True)
+        assert drafter8.max_draft_tokens == 8
+        # (d) PURE-ATTENTION, same flag: width stays at the normal adaptive
+        # start (2) — the hybrid floor must NOT leak into a no-op-flag model.
         drafter_pa8 = _install_opts(8, is_hybrid=False)
         assert drafter_pa8.max_draft_tokens == 2
-        # (d) Pure-attention, explicit higher cap: also not raised to the floor.
+        # (e) Pure-attention, explicit higher cap: also not pushed to the floor.
         drafter_pa32 = _install_opts(32, is_hybrid=False)
         assert drafter_pa32.max_draft_tokens == 2
 

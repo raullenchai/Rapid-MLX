@@ -3109,19 +3109,16 @@ def _install_suffix_decoding(
     _hybrid_bit_exact = bool(suffix_hybrid_bit_exact)
 
     # The hybrid path has a 24-token minimum-match floor (a draft shorter
-    # falls through without paying the multi-token verify cost). Opting into
-    # the hybrid path (``suffix_hybrid=True`` + ``profile.is_hybrid``)
-    # establishes a floor-compatible verify width: ``_effective_max_draft`` is
-    # raised to at least the floor so the advertised feature is not a silent
-    # no-op. This is gated on ``_hybrid_active`` — a pure-attention model with
-    # ``--suffix-hybrid`` (a no-op flag there) keeps its configured
-    # ``max_draft`` unchanged. A below-floor ``suffix_max_draft`` is overridden
-    # for the hybrid path and the install WARNING below says so explicitly.
-    # The bit-exactness guard probes EVERY committed position (the full
-    # accepted prefix), so there is no probe-length knob to tune.
-    _effective_max_draft = (
-        max(max_draft, suffix_min_match_len) if _hybrid_active else max_draft
-    )
+    # falls through without paying the multi-token verify cost). ``max_draft``
+    # is the operator's hard cap on verify width and is honored as-is on every
+    # path — the CLI rejects a hybrid config whose cap is below the floor, so a
+    # below-floor cap here (programmatic call only) makes the hybrid path a
+    # no-op rather than silently overriding the documented width limit. A
+    # pure-attention model with ``--suffix-hybrid`` (a no-op flag there) keeps
+    # its configured ``max_draft`` unchanged. The bit-exactness guard probes
+    # EVERY committed position (the full accepted prefix), so there is no
+    # probe-length knob to tune.
+    _effective_max_draft = max_draft
 
     def _hybrid_scratch_verify(
         verify_input: mx.array, committed_input: mx.array, draft: list[int]
@@ -3171,6 +3168,13 @@ def _install_suffix_decoding(
             # the full committed prefix through ``n_accepted``.
             probe_len = n_accepted + 1
             drift = False
+            # Capture the STEPWISE logits for each committed position. The chunked
+            # ``verify_logits`` can drift from true single-token decode on
+            # quantized hybrids even when argmax agrees; deriving the returned
+            # logprobs from those would violate the lossless contract. The guard
+            # replay below produces the numerically step-equivalent logits, so
+            # they are used for logprobs when the guard is ON.
+            probe_logits: list[mx.array] = []
             # The chunked verify predict at ``preds_list[j]`` is the model's
             # greedy prediction AFTER consuming ``verify_input[:, :j+1]``. The
             # stepwise probe feeds token ``j`` at iteration ``j`` (so X at j=0,
@@ -3178,10 +3182,11 @@ def _install_suffix_decoding(
             for j in range(probe_len):
                 step_logits = gb.model(verify_input[:, j : j + 1], cache=probe_head)
                 step_pred = mx.argmax(step_logits, axis=-1)
-                mx.eval(step_pred)
+                mx.eval(step_logits, step_pred)
                 if int(step_pred[0, 0].item()) != result["preds_list"][j]:
                     drift = True
                     break
+                probe_logits.append(step_logits)
             if drift:
                 result["drift"] = True
                 return result
@@ -3193,6 +3198,9 @@ def _install_suffix_decoding(
             # now referenced only there, so we stay at 2x (pristine + committed).
             gb.prompt_cache = probe_head
             result["replay_snapshot"] = pristine
+            # Stepwise logits per committed position (X + accepted drafts),
+            # used for lossless logprobs instead of the chunked verify logits.
+            result["stepwise_logits"] = probe_logits
             return result
         # Guard OFF (non-lossless/debug mode, ``--no-suffix-hybrid-bit-exact``):
         # no drift check and the stepwise commit helper deep-copies its base. We
@@ -3316,9 +3324,11 @@ def _install_suffix_decoding(
     # below then climbs to ``_effective_max_draft`` once acceptance is proven.
     if _hybrid_active:
         # Seed the hybrid width AT the match floor so a floor-length repeat is
-        # issued on the first step and the verify path is reachable (the
-        # effective cap is raised to the floor above, so this never deadlocks).
-        _K_MIN = suffix_min_match_len
+        # issued on the first step and the verify path is reachable — but never
+        # above ``max_draft`` (CLI validation guarantees cap >= floor, so this
+        # equals the floor in a normal install; a programmatic below-floor cap
+        # degrades cleanly instead of deadlocking).
+        _K_MIN = min(suffix_min_match_len, max_draft)
     else:
         _K_MIN = min(max(2, min_draft_len), max_draft)
 
@@ -3352,6 +3362,10 @@ def _install_suffix_decoding(
         logprobs. Additional emitted tokens (accepted drafts + bonus)
         are stashed in ``_pending_emits`` for ``_suffix_next`` to drain.
         """
+        # Set on the hybrid guard-on path (stepwise logprobs); always None on
+        # the pure-attention path so the shared logprobs code falls back cleanly.
+        stepwise_logits: list[mx.array] | None = None
+
         # Single-request guard. _next_tokens has shape (B,).
         if gb._next_tokens is None or gb._next_tokens.shape[0] != 1:
             _stats["fallthrough_steps"] += 1
@@ -3510,6 +3524,13 @@ def _install_suffix_decoding(
                 result = _hybrid_scratch_verify(verify_input, committed_input, draft)
                 n_accepted = result["n_accepted"]
                 verify_logits = result["verify_logits"]
+                # When the bit-exactness guard ran and passed it produced the
+                # stepwise (numerically step-equivalent) logits for the committed
+                # prefix; prefer those for logprobs so the "lossless" contract
+                # extends to the returned distributions, not just argmax (a
+                # chunked verify_logits can drift from true single-token decode
+                # on quantized hybrids even when argmax agrees).
+                stepwise_logits = result.get("stepwise_logits")
                 preds_list = result["preds_list"]
                 n_rejected_to_trim = 0
                 if result.get("drift"):
@@ -3724,6 +3745,14 @@ def _install_suffix_decoding(
         # (see early bug: every-other-token doubling).
         bonus = preds_list[n_accepted]
 
+        if stepwise_logits is not None:
+            # Lossless logprobs from the stepwise guard replay. Each committed
+            # position's logits are the stepwise ``(1,1,V)`` row; stack them
+            # into a ``(1, probe_len, V)`` tensor. Accepted positions and the
+            # bonus (position n_accepted) are all within probe_len, so the same
+            # downstream slicing applies. Row 0 (the primary's own pred is not
+            # surfaced; ``primary_logprobs`` comes from the previous step).
+            verify_logits = mx.concatenate(stepwise_logits, axis=1)
         full_logprobs = verify_logits - mx.logsumexp(
             verify_logits, axis=-1, keepdims=True
         )
@@ -4059,20 +4088,6 @@ def _install_suffix_decoding(
         max_suffix_len,
         min_confidence,
     )
-    if _hybrid_active and _effective_max_draft > max_draft:
-        # The hybrid opt-in established a floor-compatible width that exceeds
-        # the configured (pure-attention-oriented) suffix_max_draft. Do not
-        # let that happen silently — say so and name the knob to raise if the
-        # operator wants to bound it.
-        logger.warning(
-            "[SuffixDecoding] hybrid path raises effective max draft from "
-            "suffix_max_draft=%d to suffix_min_match_len=%d so drafts can clear "
-            "the %d-token match floor (set --suffix-max-draft to at least that "
-            "to make it explicit)",
-            max_draft,
-            _effective_max_draft,
-            suffix_min_match_len,
-        )
     return True
 
 

@@ -395,18 +395,38 @@ def test_no_speculative_config_fills_suffix_runtime_defaults() -> None:
     assert args.suffix_min_draft_len == 2
 
 
-def test_hybrid_cli_keeps_default_cap_for_pure_attention() -> None:
-    """The CLI must NOT raise ``suffix_max_draft`` when ``--suffix-hybrid`` is
-    set: the hybrid width raise is gated on an actual hybrid model in the
-    installer, so a pure-attention model (where the flag is a no-op) keeps the
-    normal 8-token default instead of silently tripling its verify width."""
+def test_hybrid_below_floor_cap_fails_fast(capsys) -> None:
+    """``--suffix-hybrid`` with a below-floor ``--suffix-max-draft`` is a
+    contradictory config: either the hybrid feature is a silent no-op or the
+    max-width limit is silently violated. Fail fast with an actionable error
+    naming the flag to raise (no silent override, no pure-attention leak)."""
+    import pytest
+
     from vllm_mlx.cli import _normalize_speculative_config_or_exit
 
     args = _spec_config_args(
         suffix_decoding=True, suffix_hybrid=True, suffix_min_match_len=24
     )
+    with pytest.raises(SystemExit) as excinfo:
+        _normalize_speculative_config_or_exit(args)
+    assert excinfo.value.code == 2
+    err = capsys.readouterr().err
+    assert "--suffix-hybrid requires --suffix-max-draft" in err
+    assert "suffix_max_draft=8" in err
+
+
+def test_hybrid_at_floor_cap_ok() -> None:
+    """``--suffix-hybrid`` with ``--suffix-max-draft >= floor`` validates."""
+    from vllm_mlx.cli import _normalize_speculative_config_or_exit
+
+    args = _spec_config_args(
+        suffix_decoding=True,
+        suffix_hybrid=True,
+        suffix_min_match_len=24,
+        suffix_max_draft=24,
+    )
     _normalize_speculative_config_or_exit(args)
-    assert args.suffix_max_draft == 8
+    assert args.suffix_max_draft == 24
 
 
 def test_no_speculative_config_preserves_programmatic_runtime_fields() -> None:
