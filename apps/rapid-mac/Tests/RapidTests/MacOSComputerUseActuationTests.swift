@@ -246,7 +246,8 @@ struct MacOSComputerUseActuationTests {
             elementPerformer: { binding in
                 recorder.performed.append(binding)
             },
-            permissionReader: Self.granted
+            permissionReader: Self.granted,
+            targetValidator: Self.validTarget
         )
 
         try await emitter.emit(
@@ -282,7 +283,8 @@ struct MacOSComputerUseActuationTests {
             elementPerformer: { binding in
                 recorder.performed.append(binding)
             },
-            permissionReader: Self.granted
+            permissionReader: Self.granted,
+            targetValidator: Self.validTarget
         )
 
         await #expect(throws: MacOSComputerUseActuationError.staleObservation) {
@@ -312,7 +314,8 @@ struct MacOSComputerUseActuationTests {
             elementPerformer: { binding in
                 recorder.performed.append(binding)
             },
-            permissionReader: Self.granted
+            permissionReader: Self.granted,
+            targetValidator: Self.validTarget
         )
 
         await #expect(throws: MacOSComputerUseActuationError.elementChanged) {
@@ -342,7 +345,8 @@ struct MacOSComputerUseActuationTests {
             elementPerformer: { binding in
                 recorder.performed.append(binding)
             },
-            permissionReader: Self.granted
+            permissionReader: Self.granted,
+            targetValidator: Self.validTarget
         )
 
         await #expect(throws: MacOSComputerUseActuationError.targetNotFrontmost) {
@@ -371,12 +375,43 @@ struct MacOSComputerUseActuationTests {
             },
             permissionReader: {
                 .init(screenRecording: true, accessibility: false)
-            }
+            },
+            targetValidator: Self.validTarget
         )
 
         await #expect(
             throws: MacOSComputerUseActuationError.permissionMissing([.accessibility])
         ) {
+            try await emitter.emit(
+                .click(normalizedX: 0.25, normalizedY: 0.75),
+                verifiedAgainst: fixture.observation
+            )
+        }
+        #expect(recorder.calls.count == 2)
+        #expect(recorder.performed.isEmpty)
+    }
+
+    @Test("A final occlusion check prevents AXPress")
+    @MainActor
+    func finalOcclusionPreventsPress() async {
+        let fixture = Self.captureFixture()
+        let recorder = ElementBoundaryRecorder()
+        let emitter = AXComputerUseInputEmitter(
+            captureSource: ActuationCaptureStub(result: fixture.capture),
+            elementResolver: { payload, target in
+                recorder.calls.append(.init(payload: payload, target: target))
+                return recorder.binding
+            },
+            elementPerformer: { binding in
+                recorder.performed.append(binding)
+            },
+            permissionReader: Self.granted,
+            targetValidator: { _, _ in
+                throw MacOSComputerUseActuationError.targetOccluded
+            }
+        )
+
+        await #expect(throws: MacOSComputerUseActuationError.targetOccluded) {
             try await emitter.emit(
                 .click(normalizedX: 0.25, normalizedY: 0.75),
                 verifiedAgainst: fixture.observation
@@ -480,6 +515,11 @@ struct MacOSComputerUseActuationTests {
     private static func granted() -> MacAutomationPermissionSnapshot {
         .init(screenRecording: true, accessibility: true)
     }
+
+    private static func validTarget(
+        _: WorkflowActionPayload,
+        _: WorkflowInteractionTarget
+    ) {}
 
     private static func captureFixture() -> (
         observation: WorkflowObservation,

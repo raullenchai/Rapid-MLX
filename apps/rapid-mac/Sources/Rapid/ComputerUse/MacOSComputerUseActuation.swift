@@ -261,23 +261,30 @@ struct AXComputerUseInputEmitter: ComputerUseInputEmitting {
     typealias ElementPerformer = @MainActor @Sendable (
         ComputerUseElementBinding
     ) throws -> Void
+    typealias TargetValidator = @MainActor @Sendable (
+        WorkflowActionPayload,
+        WorkflowInteractionTarget
+    ) throws -> Void
 
     private let captureSource: any ComputerUseWindowCapturing
     private let elementResolver: ElementResolver
     private let elementPerformer: ElementPerformer
     private let permissionReader: PermissionReader
+    private let targetValidator: TargetValidator
 
     init(
         captureSource: any ComputerUseWindowCapturing =
             ScreenCaptureKitComputerUseCapture(),
         elementResolver: @escaping ElementResolver = Self.resolve,
         elementPerformer: @escaping ElementPerformer = Self.performPress,
-        permissionReader: @escaping PermissionReader = MacAutomationPermissions.snapshot
+        permissionReader: @escaping PermissionReader = MacAutomationPermissions.snapshot,
+        targetValidator: @escaping TargetValidator = Self.validateTarget
     ) {
         self.captureSource = captureSource
         self.elementResolver = elementResolver
         self.elementPerformer = elementPerformer
         self.permissionReader = permissionReader
+        self.targetValidator = targetValidator
     }
 
     func emit(
@@ -325,7 +332,8 @@ struct AXComputerUseInputEmitter: ComputerUseInputEmitting {
                 requiredBinding: binding,
                 resolver: elementResolver,
                 performer: elementPerformer,
-                permissionReader: permissionReader
+                permissionReader: permissionReader,
+                targetValidator: targetValidator
             )
         }
     }
@@ -340,7 +348,8 @@ struct AXComputerUseInputEmitter: ComputerUseInputEmitting {
         requiredBinding: ComputerUseElementBinding,
         resolver: ElementResolver,
         performer: ElementPerformer,
-        permissionReader: PermissionReader
+        permissionReader: PermissionReader,
+        targetValidator: TargetValidator
     ) throws {
         let currentBinding = try resolver(payload, target)
         guard requiredBinding.representsSameElement(as: currentBinding) else {
@@ -352,7 +361,36 @@ struct AXComputerUseInputEmitter: ComputerUseInputEmitting {
                 permissions.missingForComputerUse
             )
         }
+        // Keep this as the last fallible validation before AXPress. Element
+        // resolution and permission reads can take long enough for another app
+        // to move in front of the selected window.
+        try targetValidator(payload, target)
         try performer(currentBinding)
+    }
+
+    @MainActor
+    private static func validateTarget(
+        _ payload: WorkflowActionPayload,
+        _ expected: WorkflowInteractionTarget
+    ) throws {
+        guard case .click(let normalizedX, let normalizedY) = payload else {
+            throw MacOSComputerUseActuationError.invalidAction
+        }
+        let current = try CGWindowComputerUseTargetProbe
+            .currentTargetSynchronously(for: expected)
+        guard MacOSComputerUseWindowIdentity.targetsMatch(current, expected) else {
+            throw MacOSComputerUseActuationError.targetChanged
+        }
+        let point = try clickPoint(
+            normalizedX: normalizedX,
+            normalizedY: normalizedY,
+            in: current.windowFrame
+        )
+        guard MacOSComputerUseWindowIdentity.topmostWindowIdentifier(at: point)
+                == expected.windowIdentifier
+        else {
+            throw MacOSComputerUseActuationError.targetOccluded
+        }
     }
 
     @MainActor
