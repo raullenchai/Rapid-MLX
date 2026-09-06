@@ -575,6 +575,14 @@ def estimate_model_bytes(model_name: str) -> int:
         # measurements, while the public alias requires a 32 GiB Mac.
         "sd35-large": 20.0,
         "stable-diffusion-3.5": 20.0,
+        # Qwen-Image-Edit 2509 with an 8-bit transformer and full-precision
+        # text encoder. The 34.9 GiB fixed payload needs additional room for
+        # source-image conditioning, denoising activations, VAE decode, and
+        # output encoding. A real default 20-step edit peaked at 65.66 GiB;
+        # charge 68 GiB so admission retains a small runtime margin. The
+        # public alias requires a 96 GiB Mac for macOS/application headroom.
+        "qwen-image-edit": 68.0,
+        "qwen_image_edit": 68.0,
         # 6-bit-transformer Qwen-Image (20B) — measured peak RSS during a
         # real generation at 1024x1024 (mflux-community/qwen-image-mflux-q6,
         # the API/GUI default resolution; `/usr/bin/time -l`): ~55.7 GiB.
@@ -588,14 +596,6 @@ def estimate_model_bytes(model_name: str) -> int:
     }
     for token, gib in known_image_gib.items():
         if token not in folded:
-            continue
-        if token == "qwen-image" and "qwen-image-edit" in folded:
-            # "qwen-image" is a substring of "qwen-image-edit" — this charge
-            # was measured against the txt2img family only (see the comment
-            # above), and the edit variant's extra image-conditioning input
-            # makes its real footprint unverified, not merely "the same
-            # number". Falls through to the generic param-count estimate
-            # below rather than asserting an unmeasured number.
             continue
         return int(gib * _GIB)
 
