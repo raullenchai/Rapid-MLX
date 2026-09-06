@@ -188,6 +188,40 @@ class SuffixDecodingDrafter:
                 for key in stale_keys:
                     del bucket[key]
 
+    def rewind_to(self, n_tokens: int) -> None:
+        """Roll the index back to the first ``n_tokens`` of ``_tokens``.
+
+        Used by the scheduler's post-commit exception path to undo the accepted-
+        draft ``add_generated_token`` calls when the committed step falls through
+        to a vanilla re-generate. Undoes exactly the tokens appended after
+        position ``n_tokens``: truncates ``_tokens`` and removes the k-groups
+        that end in the dropped range (guaranteed absent from any pre-existing
+        bucket because ``_add_one`` appends positions monotonically). Cheap --
+        O(dropped tokens * max_suffix_len). ``_shift`` is untouched because a
+        rewind never crosses the max_history head-trim boundary (it only removes
+        the most-recent additions).
+        """
+        n = len(self._tokens)
+        if n_tokens >= n:
+            return
+        dropped = n - n_tokens
+        for k in range(1, self.max_suffix_len + 1):
+            bucket = self._suffix_index[k]
+            # End-positions we appended for the dropped tokens are the last
+            # ``dropped`` entries that land in this bucket; drop any list tail
+            # whose end >= the end of the first kept token (n_tokens + shift).
+            kept_end = self._shift + n_tokens  # first end-pos kept (exclusive)
+            stale_keys = []
+            for kgram, ends in bucket.items():
+                fresh = [e for e in ends if e < kept_end]
+                if fresh:
+                    bucket[kgram] = fresh
+                else:
+                    stale_keys.append(kgram)
+            for key in stale_keys:
+                del bucket[key]
+        self._tokens = self._tokens[:n_tokens]
+
     # --- Drafting ------------------------------------------------------
 
     def get_draft(self) -> list[int]:

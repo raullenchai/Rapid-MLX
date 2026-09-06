@@ -1764,6 +1764,117 @@ class TestSingleSnapshotCommit:
         assert spy.set_state_calls == 0
         _assert_state_equal(gb.prompt_cache, pre_fail)
 
+    def test_post_commit_late_publish_failure_rolls_back_everything(self, monkeypatch):
+        """Codex round-9j finding #3: previous tests only injected the failure in
+        the (pre-mutation) compute section, so they could not catch corruption
+        from a failure late in the mutation tail. Here we inject a failure at
+        ``gb.tokens[0].append`` — a LATE publish that runs AFTER the cooldown/
+        drafter/stat mutations — and assert the transactional snapshot restores
+        the cache, ``_stats``, drafter history, and next-token state so the
+        step is exactly as before it ran (the advertised vanilla fallthrough)."""
+        import copy as _copy
+        from types import SimpleNamespace
+        from unittest.mock import MagicMock
+
+        from vllm_mlx import scheduler
+        from vllm_mlx.model_auto_config import ModelConfig
+        from vllm_mlx.speculative import suffix_decoding
+
+        model, _ = _model_and_prompt()
+        probe = model.make_cache()
+        mx.eval(model(mx.array([[1, 2, 3]]), cache=probe))
+        l0 = model(mx.array([[7]]), cache=probe)
+        mx.eval(l0)
+        d0 = int(mx.argmax(l0[:, -1], axis=-1).item())
+        l1 = model(mx.array([[d0]]), cache=probe)
+        mx.eval(l1)
+        d1 = int(mx.argmax(l1[:, -1], axis=-1).item())
+
+        class MockDrafter:
+            max_draft_tokens = 2
+
+            def __init__(self, **_kw):
+                self._tokens = []
+                self.rewind_to = lambda _n: None
+
+            def add_prompt_tokens(self, _t):
+                pass
+
+            def add_generated_token(self, _t):
+                self._tokens.append(_t)
+
+            def record_acceptance(self, _c):
+                pass
+
+            def get_draft(self):
+                return [d0, d1]
+
+        pristine = model.make_cache()
+        mx.eval(model(mx.array([[1, 2, 3]]), cache=pristine))
+
+        gb = SimpleNamespace(
+            _next_tokens=mx.array([7], dtype=mx.int32),
+            _next_logprobs=[mx.zeros((64,))],
+            uids=[1],
+            tokens=[[]],
+            logits_processors=[],
+            prompt_cache=pristine,
+            _num_tokens=[0],
+            max_tokens=[10],
+            state_machines=[SimpleNamespace(match=lambda s, _t: (s, None, None))],
+            _matcher_states=[None],
+            extract_cache=lambda _r: [],
+            model=model,
+        )
+        gb.Response = SimpleNamespace
+        gb._step = lambda: ([7], [])
+        gb.next = lambda: []
+        bg = MagicMock()
+        bg._generation_batch = gb
+        bg.remove = lambda *a, **k: {}
+        monkeypatch.setattr(suffix_decoding, "SuffixDecodingDrafter", MockDrafter)
+        profile = ModelConfig(is_hybrid=True, supports_spec_decode=False)
+        scheduler._install_suffix_decoding(
+            bg,
+            model=model,
+            profile=profile,
+            max_draft=2,
+            max_suffix_len=4,
+            min_confidence=0.3,
+            requests={},
+            uid_to_request_id={},
+            suffix_hybrid=True,
+            suffix_min_match_len=2,
+            suffix_hybrid_bit_exact=True,
+        )
+        # Warm-up: seed _uid_state and let the commit path run once.
+        gb._step()
+        pre_fail = _copy.deepcopy(gb.prompt_cache)
+        # Record the observable pre-state of the mutated surfaces.
+        pre_tokens_len = len(gb.tokens[0])
+        pre_next_tokens = gb._next_tokens
+
+        # Inject a LATE failure: the publish ``gb.tokens[0].append(last_token)``
+        # raises (runs after cooldown + drafter + stat mutations). The handler
+        # must roll back everything. Replace the tokens[0] list with a proxy
+        # whose append raises.
+        class BoomList(list):
+            def append(self, x):
+                raise RuntimeError("boom")
+
+        real_tokens0 = gb.tokens[0]
+        gb.tokens[0] = BoomList(real_tokens0)
+        try:
+            gb._step()  # absorbed: falls through to _orig_step, no raise
+        finally:
+            gb.tokens[0] = real_tokens0
+        # Cache restored to pre-fail pristine.
+        _assert_state_equal(gb.prompt_cache, pre_fail)
+        # tokens[0] not extended (failed append rolled back): length unchanged.
+        assert len(gb.tokens[0]) == pre_tokens_len
+        # _next_tokens restored (the commit didn't stash the bonus).
+        assert gb._next_tokens is pre_next_tokens
+
     def test_post_commit_exception_drops_retained_replay_entry(self, monkeypatch):
         """Codex round-9h finding #1: a post-commit exception must pop the
         uid's retained ``_pending_hybrid_replay`` entry. If it leaked, a later

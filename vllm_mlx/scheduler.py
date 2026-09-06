@@ -3293,6 +3293,15 @@ def _install_suffix_decoding(
         )
         n_accepted = result["n_accepted"]
         del committed_head
+        # Build the FULL result (with ``committed`` + ``replay_snapshot``) BEFORE
+        # the in-place commit (codex round-9j finding #1): ``_commit_scratch_accepted``
+        # mutates ``gb.prompt_cache`` in place, so if anything between the commit
+        # and the result-population previously raised, the outer handler saw an
+        # incomplete result and skipped restoration — running ``_orig_step()``
+        # against an already-advanced cache. Stamping the restore info first
+        # guarantees every post-commit exception unconditionally restores it.
+        result["replay_snapshot"] = snapshot
+        result["committed"] = True
         _commit_scratch_accepted(
             gb.model,
             gb.prompt_cache,
@@ -3300,11 +3309,6 @@ def _install_suffix_decoding(
             n_accepted,
             snapshot=snapshot,
         )
-        result["replay_snapshot"] = snapshot
-        # The live cache was committed in place by ``_commit_scratch_accepted``
-        # — same post-commit semantics as the guard-on path, so a later
-        # ``_suffix_step`` exception restores it before falling through.
-        result["committed"] = True
         return result
 
     def _reset_state_gauges_if_idle() -> None:
@@ -3596,6 +3600,11 @@ def _install_suffix_decoding(
         # on the pure-attention path too (reachable via --force-spec-decode),
         # where it is legitimately absent.
         stepwise_logits = None
+        # Transactional snapshot of the mutation tail (set AFTER the fallible
+        # compute section completes, before any bookkeeping write). ``None`` until
+        # the snapshot is taken, so a pre-snapshot (compute) exception must not
+        # attempt a rollback that would reference unbound state.
+        _tx: dict | None = None
 
         n_rejected_to_trim = 0
         if _hybrid_active:
@@ -3843,6 +3852,31 @@ def _install_suffix_decoding(
             # already-scheduled arrays — no fallible op remains past that point.
             bonus_arr = mx.array([bonus], dtype=inputs.dtype)
             mx.async_eval(bonus_arr, bonus_logprobs)
+            # TRANSACTIONAL SNAPSHOT (codex round-9j finding #2): capture the
+            # small mutable state the mutation tail writes, so a post-commit
+            # failure can roll it ALL back before ``_orig_step()`` re-runs the
+            # token. Everything still-mutable downstream (drafter history,
+            # cooldown ``st``, ``_stats``, counter, ``gb._next_*``, ``gb.tokens``,
+            # ``_pending_emits``, ``_pending_hybrid_replay``) is captured here —
+            # the compute section above is pure (no public state written yet).
+            _tx = {
+                "st": dict(st),
+                "stats": dict(_stats),
+                # Drafter rollback is only meaningful/safe on the real drafter
+                # (a test stub need not expose ``_tokens``/``stats``); fall back
+                # to a no-op rewind by capturing ``None`` (rewind_to(0) on the
+                # real drafter would already be handled, but we never call it
+                # when absent).
+                "drafter_len": len(getattr(drafter, "_tokens", [])),
+                "drafter_acc": getattr(
+                    getattr(drafter, "stats", None), "total_draft_tokens_accepted", 0
+                ),
+                "next_tokens": gb._next_tokens,
+                "next_logprobs": gb._next_logprobs,
+                "n_tokens_in_tokens": len(gb.tokens[0]) if gb.tokens else 0,
+                "n_pending_emits": len(_pending_emits),
+                "n_pending_replay": len(_pending_hybrid_replay),
+            }
             # Drafter history += newly-committed tokens. We add ONLY the
             # accepted drafts here; ``bonus`` will be added on the next
             # ``_suffix_step`` call (line ~1235 ``drafter.add_generated_token
@@ -3987,17 +4021,38 @@ def _install_suffix_decoding(
                 # narrow hybrid-verify except path uses) — NOT re-raise, which
                 # would abort generation instead.
                 #
-                # State discarded here:
-                #  * cooldown/width ``st`` + ``_stats`` counters — re-derived on
-                #    the re-run (the fallthrough epoch is a fresh single-token
-                #    step).
-                #  * the retained replay head for this uid (findings #1/#2): it
-                #    referenced a snapshot that will be re-advanced by the
-                #    re-run, so a later terminal must not rebuild from the
-                #    now-stale cache (and the full duplicate snapshot would leak
-                #    until UID cleanup).
+                # FULL TRANSACTIONAL ROLLBACK (codex round-9j finding #2): the
+                # pre-tail snapshot captured every field the mutation tail
+                # touches. Restore them all so the fallthrough ``_orig_step()``
+                # runs from an identical pre-commit state — NOT just the cache
+                # and replay/emit entries. ``_tx`` is None when the exception
+                # fired during the (pre-snapshot) compute section, in which case
+                # no public state was mutated yet.
+                if _tx is not None:
+                    st.clear()
+                    st.update(_tx["st"])
+                    _stats.clear()
+                    _stats.update(_tx["stats"])
+                    if hasattr(drafter, "rewind_to"):
+                        drafter.rewind_to(_tx["drafter_len"])
+                    if hasattr(
+                        getattr(drafter, "stats", None), "total_draft_tokens_accepted"
+                    ):
+                        drafter.stats.total_draft_tokens_accepted = _tx["drafter_acc"]
+                    gb._next_tokens = _tx["next_tokens"]
+                    gb._next_logprobs = _tx["next_logprobs"]
+                    if gb.tokens:
+                        del gb.tokens[0][_tx["n_tokens_in_tokens"] :]
+                    # Drop any pending emits/replay added during this (failed)
+                    # step (see below for why the replay drop is unconditional).
+                    _pending_emits.clear()
+                # Restore the retained replay head for this uid UNCONDITIONALLY
+                # (findings #1/#2): it was retained BEFORE the compute section
+                # (in the hybrid branch), so even a compute-section exception
+                # (where ``_tx`` is None) must drop it — a later terminal must
+                # not rebuild from the now-stale cache, and the full duplicate
+                # snapshot would leak until UID cleanup.
                 _pending_hybrid_replay.pop(uid, None)
-                _pending_emits.pop(uid, None)
                 if _hybrid_pc_snapshot is not None:
                     gb.prompt_cache = _hybrid_pc_snapshot
                 return _orig_step()

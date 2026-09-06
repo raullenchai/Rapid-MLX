@@ -86,6 +86,32 @@ class TestDrafterBasics:
         # ourselves is forbidden, so no draft.
         assert drafter.get_draft() == []
 
+    def test_rewind_to_restores_history_and_drafts(self):
+        # The scheduler's post-commit rollback undoes accepted-draft
+        # add_generated_token calls via rewind_to(len_before). Rewinding must
+        # restore the exact pre-add history so the proposed draft is unchanged.
+        drafter = SuffixDecodingDrafter(max_draft_tokens=4, max_suffix_len=4)
+        drafter.add_prompt_tokens([1, 2, 3, 4, 5, 1, 2, 3, 4, 5, 1, 2])
+        lens_before = len(drafter._tokens)
+        draft_before = drafter.get_draft()
+        drafter.add_generated_token(3)
+        drafter.add_generated_token(4)
+        drafter.add_generated_token(5)
+        assert len(drafter._tokens) == lens_before + 3
+        drafter.rewind_to(lens_before)
+        assert len(drafter._tokens) == lens_before
+        # History identical -> identical draft (the rollback must be lossless).
+        assert drafter.get_draft() == draft_before
+
+    def test_rewind_to_noop_at_boundary(self):
+        drafter = SuffixDecodingDrafter(max_draft_tokens=4, max_suffix_len=2)
+        drafter.add_prompt_tokens([1, 2, 3])
+        n = len(drafter._tokens)
+        drafter.rewind_to(n)  # no-op
+        assert len(drafter._tokens) == n
+        drafter.rewind_to(n + 99)  # clamp to existing length, still no-op
+        assert len(drafter._tokens) == n
+
 
 class TestHistoryTrimming:
     def test_trim_preserves_recent_lookups(self):
