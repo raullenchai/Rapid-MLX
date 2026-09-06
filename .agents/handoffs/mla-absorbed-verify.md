@@ -8,7 +8,7 @@ Host: Mac Studio, Apple M3 Ultra 256 GB
 
 Branch: `vector/mla-absorbed-verify`
 
-PR: pending
+PR: #3110 (Draft)
 
 ## Verified facts
 
