@@ -64,6 +64,9 @@ def _primary_task(task_types: list[str]) -> str | None:
 _HEADROOM_FLOOR_GIB = 2
 _HEADROOM_FRACTION = 0.10
 
+#: Alias fragments that mark a paired sidecar rather than a standalone model.
+_SIDECAR_MARKERS = ("assistant", "draft")
+
 _PARAM_COUNT = re.compile(r"(?<![\d.])(\d+(?:\.\d+)?)b(?![a-z0-9])")
 _BIT_WIDTH = re.compile(r"(\d+(?:\.\d+)?)(?:bit|bpw)")
 
@@ -82,6 +85,11 @@ def _parameter_floor_gib(alias: str) -> int | None:
     a benchmark.
     """
     lowered = alias.lower()
+    # Speculative-decoding drafters are named after the model they pair with
+    # (``gemma-4-31b-assistant`` is a 0.4 B four-layer drafter), so the size
+    # in their name says nothing about their own weights.
+    if any(marker in lowered for marker in _SIDECAR_MARKERS):
+        return None
     counts = [float(m) for m in _PARAM_COUNT.findall(lowered)]
     if not counts:
         return None
@@ -94,26 +102,49 @@ def _parameter_floor_gib(alias: str) -> int | None:
     return int(math.ceil(weights_gib * 1.1 + 1))
 
 
+def curated_footprints() -> dict[str, float]:
+    """``alias -> working-set GB`` from the recommendation tiers, read once.
+
+    The picker's curated footprints are the best planning number we have
+    for the models they cover; reading the tiers once per catalog build
+    avoids re-validating them for every alias.
+    """
+    try:
+        from vllm_mlx.recommendations import load_recommendation_tiers
+
+        tiers = load_recommendation_tiers()
+    except Exception:  # noqa: BLE001 — planning data must never fail the catalog
+        return {}
+    footprints: dict[str, float] = {}
+    for tier in tiers:
+        for pick in tier.picks:
+            footprint = getattr(pick, "footprint_gb", None)
+            if isinstance(footprint, int | float) and footprint > 0:
+                footprints.setdefault(pick.alias.casefold(), float(footprint))
+    return footprints
+
+
 def estimate_memory_gib(
     alias: str,
     *,
     minimum_memory_gb: float | None,
     download_size_bytes: int | None,
+    footprints: dict[str, float] | None = None,
 ) -> tuple[int | None, str]:
-    """Planning estimate of the working set, with its provenance.
+    """Planning estimate with its provenance.
 
-    Precedence: an explicit profile minimum, then the curated recommendation
-    footprint (the number the model picker already shows), then the artifact
-    size plus activations, never below the parameter-count floor.
+    Precedence: an explicit profile minimum (``profile_minimum`` — the
+    smallest *total* machine memory the profile admits, so it is compared
+    against the host directly), then the curated recommendation footprint
+    (the working set the model picker already shows), then the artifact size
+    plus activations, never below the parameter-count floor. The last three
+    are working-set estimates and get OS/KV headroom in ``memory_fit``.
     """
     if isinstance(minimum_memory_gb, int | float) and minimum_memory_gb > 0:
         return int(minimum_memory_gb + 0.999999), "profile_minimum"
-    try:
-        from vllm_mlx.recommendations import recommendation_footprint_gb
-
-        footprint = recommendation_footprint_gb(alias)
-    except Exception:  # noqa: BLE001 — planning data must never fail the catalog
-        footprint = None
+    if footprints is None:
+        footprints = curated_footprints()
+    footprint = footprints.get(alias.casefold())
     if isinstance(footprint, int | float) and footprint > 0:
         return int(math.ceil(footprint)), "curated_footprint"
     floor = _parameter_floor_gib(alias)
@@ -128,10 +159,22 @@ def estimate_memory_gib(
     return None, "unknown"
 
 
-def memory_fit(estimated_memory_gib: int | None, memory_gib: int | None) -> str:
-    """``fits`` only when the estimate leaves the required headroom."""
+def memory_fit(
+    estimated_memory_gib: int | None,
+    memory_gib: int | None,
+    source: str = "artifact_size_fallback",
+) -> str:
+    """``fits`` only when the estimate leaves the required headroom.
+
+    A ``profile_minimum`` is already a whole-machine floor (existing launch
+    logic admits ``total_ram >= min_memory_gb``), so it is compared directly;
+    every working-set estimate must additionally leave room for macOS and
+    the 2048-token KV cache.
+    """
     if memory_gib is None or estimated_memory_gib is None:
         return "unknown"
+    if source == "profile_minimum":
+        return "fits" if estimated_memory_gib <= memory_gib else "does_not_fit"
     headroom = max(_HEADROOM_FLOOR_GIB, math.ceil(memory_gib * _HEADROOM_FRACTION))
     return "fits" if estimated_memory_gib + headroom <= memory_gib else "does_not_fit"
 
@@ -145,6 +188,7 @@ def benchmark_catalog(*, memory_gib: int | None = None) -> dict[str, Any]:
     from vllm_mlx.model_aliases import list_profiles
 
     profiles = list_profiles()
+    footprints = curated_footprints()
     models = {item["registry_model_id"]: item for item in snapshot["models"]}
     entries: list[dict[str, Any]] = []
     for alias in snapshot["aliases"]:
@@ -167,8 +211,9 @@ def benchmark_catalog(*, memory_gib: int | None = None) -> dict[str, Any]:
             alias["alias"],
             minimum_memory_gb=getattr(profile, "min_memory_gb", None),
             download_size_bytes=model.get("estimated_download_size_bytes"),
+            footprints=footprints,
         )
-        fit = memory_fit(estimated_memory_gib, memory_gib)
+        fit = memory_fit(estimated_memory_gib, memory_gib, estimate_source)
         entries.append(
             {
                 "alias": alias["alias"],

@@ -167,6 +167,10 @@ def test_memory_fit_requires_headroom_for_the_os_and_kv_cache() -> None:
     assert memory_fit(57, 64) == "fits"
     assert memory_fit(None, 18) == "unknown"
     assert memory_fit(8, None) == "unknown"
+    # A profile minimum is a whole-machine floor: qwen-image's 64 GB minimum
+    # fits a 64 GB Mac, exactly as the launch logic admits it.
+    assert memory_fit(64, 64, "profile_minimum") == "fits"
+    assert memory_fit(64, 48, "profile_minimum") == "does_not_fit"
 
 
 def test_memory_estimate_precedence_and_parameter_floor() -> None:
@@ -181,7 +185,10 @@ def test_memory_estimate_precedence_and_parameter_floor() -> None:
     ) == (13, "profile_minimum")
     # The curated recommendation footprint is the picker's own number.
     assert estimate_memory_gib(
-        "qwen3.8-27b-4bit", minimum_memory_gb=None, download_size_bytes=1 << 30
+        "qwen3.8-27b-4bit",
+        minimum_memory_gb=None,
+        download_size_bytes=1 << 30,
+        footprints={"qwen3.8-27b-4bit": 20.0},
     ) == (20, "curated_footprint")
     # A catalog download size that is impossible for the named parameter
     # count is raised to the parameter floor (the 3 GB "35B MTP" row).
@@ -202,6 +209,14 @@ def test_memory_estimate_precedence_and_parameter_floor() -> None:
     assert _parameter_floor_gib("tmax-9b-bf16") == 21
     assert _parameter_floor_gib("gemma-4-e4b-4bit") == 4
     assert _parameter_floor_gib("z-image-turbo") is None
+    # Drafters are named after the model they pair with; no floor for them.
+    assert _parameter_floor_gib("gemma-4-31b-assistant") is None
+    assert estimate_memory_gib(
+        "gemma-4-31b-assistant",
+        minimum_memory_gb=None,
+        download_size_bytes=900 << 20,
+        footprints={},
+    ) == (3, "artifact_size_fallback")
 
 
 def test_catalog_never_calls_a_full_memory_model_a_fit() -> None:
@@ -212,6 +227,11 @@ def test_catalog_never_calls_a_full_memory_model_a_fit() -> None:
     assert by_alias["qwen3.6-35b-mtp-4bit"]["estimated_memory_gib"] >= 20
     assert by_alias["qwen3.5-4b-4bit"]["memory_fit"] == "fits"
     assert by_alias["qwen3.5-9b-4bit"]["memory_fit"] == "fits"
+    assert by_alias["gemma-4-31b-assistant"]["memory_fit"] == "fits"
+    assert by_alias["qwen-image"]["memory_fit"] == "does_not_fit"
+    assert benchmark_catalog(memory_gib=64)["models"]
+    big = {m["alias"]: m for m in benchmark_catalog(memory_gib=64)["models"]}
+    assert big["qwen-image"]["memory_fit"] == "fits"
 
 
 def test_unresolved_alias_is_local_evidence_not_formally_comparable() -> None:
