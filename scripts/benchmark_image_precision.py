@@ -26,9 +26,10 @@ import subprocess
 import sys
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 import uuid
-from importlib.metadata import PackageNotFoundError, version
+from importlib.metadata import PackageNotFoundError, distribution, version
 from pathlib import Path
 
 from PIL import Image, ImageOps
@@ -53,6 +54,34 @@ def package_version(name: str) -> str:
         return version(name)
     except PackageNotFoundError:
         return "unknown"
+
+
+def installed_wheel_sha256() -> str:
+    try:
+        raw = distribution("rapid-mlx").read_text("direct_url.json")
+        direct_url = json.loads(raw) if raw else {}
+        parsed = urllib.parse.urlparse(direct_url.get("url", ""))
+        if parsed.scheme != "file":
+            raise ValueError
+        wheel = Path(urllib.request.url2pathname(parsed.path))
+        if wheel.suffix != ".whl" or not wheel.is_file():
+            raise ValueError
+        digest = hashlib.sha256()
+        with wheel.open("rb") as handle:
+            for chunk in iter(lambda: handle.read(1 << 20), b""):
+                digest.update(chunk)
+    except (
+        PackageNotFoundError,
+        json.JSONDecodeError,
+        TypeError,
+        AttributeError,
+        OSError,
+        ValueError,
+    ) as exc:
+        raise RuntimeError(
+            "Rapid-MLX must be installed from an available local wheel artifact"
+        ) from exc
+    return digest.hexdigest()
 
 
 def parse_workload(value: str) -> dict[str, object]:
@@ -327,6 +356,7 @@ def run_session(
             stderr=subprocess.STDOUT,
             text=True,
             env=environment,
+            cwd=log_path.parent.resolve(),
             start_new_session=True,
         )
         try:
@@ -438,6 +468,10 @@ def main() -> int:
     parser.add_argument("--abort-swap-mb", type=float, default=256)
     parser.add_argument("--log-dir", default="/tmp/rapid-image-precision-logs")
     args = parser.parse_args()
+    if not re.fullmatch(r"[0-9a-fA-F]{40}", args.candidate_git_sha):
+        parser.error("--candidate-git-sha must be a full 40-character Git SHA")
+    if not re.fullmatch(r"[0-9a-fA-F]{64}", args.wheel_sha256):
+        parser.error("--wheel-sha256 must be a 64-character SHA-256")
     if platform.system() != "Darwin":
         parser.error("this qualification harness requires macOS")
     if args.repeats < 1:
@@ -466,6 +500,12 @@ def main() -> int:
             f"qualification requires a clean swap baseline; host already uses "
             f"{start_swap_mb:.1f} MiB (limit {args.max_start_swap_mb:.1f} MiB)"
         )
+    installed_sha256 = installed_wheel_sha256()
+    if installed_sha256 != args.wheel_sha256.lower():
+        parser.error(
+            "installed Rapid-MLX wheel SHA-256 does not match --wheel-sha256: "
+            f"{installed_sha256}"
+        )
 
     hf_cache = Path(args.hf_cache).expanduser()
     os.environ["HF_HUB_CACHE"] = str(hf_cache)
@@ -490,8 +530,8 @@ def main() -> int:
             "mflux": package_version("mflux"),
             "mlx": package_version("mlx"),
             "pillow": package_version("Pillow"),
-            "candidate_git_sha": args.candidate_git_sha,
-            "wheel_sha256": args.wheel_sha256,
+            "candidate_git_sha": args.candidate_git_sha.lower(),
+            "wheel_sha256": installed_sha256,
         },
         "method": {
             "sequence": list(args.sequence),

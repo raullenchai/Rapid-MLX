@@ -97,6 +97,34 @@ def test_server_environment_forces_pinned_cache_offline(monkeypatch):
     assert environment["TRANSFORMERS_OFFLINE"] == "1"
 
 
+def test_installed_wheel_sha256_hashes_pip_source_artifact(monkeypatch, tmp_path):
+    wheel = tmp_path / "rapid_mlx-0.13.4-py3-none-any.whl"
+    wheel.write_bytes(b"exact candidate")
+
+    class Dist:
+        @staticmethod
+        def read_text(name):
+            assert name == "direct_url.json"
+            return '{"url": "' + wheel.as_uri() + '"}'
+
+    monkeypatch.setattr(bench, "distribution", lambda name: Dist())
+    assert (
+        bench.installed_wheel_sha256()
+        == bench.hashlib.sha256(b"exact candidate").hexdigest()
+    )
+
+
+def test_installed_wheel_sha256_rejects_editable_install(monkeypatch):
+    class Dist:
+        @staticmethod
+        def read_text(name):
+            return '{"dir_info": {}}'
+
+    monkeypatch.setattr(bench, "distribution", lambda name: Dist())
+    with pytest.raises(RuntimeError, match="available local wheel"):
+        bench.installed_wheel_sha256()
+
+
 def test_validate_png_checks_format_dimensions_and_nonuniformity():
     raw = _png()
     response = {"data": [{"b64_json": base64.b64encode(raw).decode()}]}
