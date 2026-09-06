@@ -970,3 +970,32 @@ def test_local_snapshot_uses_one_complete_immutable_revision_without_main_ref(
 
     resolved = tok._local_snapshot_if_cached("mlx-community/Qwen3.5-2B-MLX-4bit")
     assert resolved == str(snapshot)
+
+
+# --- #3114: serve auto-config must resolve the alias profile, not the
+# subfolder-joined snapshot path -------------------------------------------
+
+
+def test_auto_config_key_keeps_alias_identity_for_subfolder_alias():
+    from vllm_mlx.cli import _auto_config_lookup_key
+    from vllm_mlx.model_auto_config import detect_model_config
+
+    assert _auto_config_lookup_key(ALIAS) == ALIAS
+    assert _auto_config_lookup_key(REPO) == REPO
+    cfg = detect_model_config(_auto_config_lookup_key(ALIAS))
+    assert cfg is not None
+    assert (cfg.tool_call_parser, cfg.reasoning_parser) == ("lfm", "qwen3")
+
+
+def test_auto_config_key_resolves_checkpoint_for_profile_less_repo(monkeypatch):
+    from vllm_mlx import cli as cli_mod
+    from vllm_mlx.utils import tokenizer as tok
+
+    calls: list[str] = []
+    monkeypatch.setattr(
+        tok,
+        "_resolve_subfolder_checkpoint",
+        lambda name: calls.append(name) or "/snap/4bit",
+    )
+    assert cli_mod._auto_config_lookup_key("someone/no-such-alias-repo") == "/snap/4bit"
+    assert calls == ["someone/no-such-alias-repo"]
