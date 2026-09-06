@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Measure stock versus absorbed MLA for a warm multi-token forward.
 
-The two arms share one loaded model and start each timed call from a shallow
-copy of the same immutable MLX cache graph.  Only the supported attention
+The two arms share one loaded model and start each timed call from cloned
+mutable cache containers that share the same immutable MLX arrays. Only the supported attention
 classes' ``__call__`` methods are switched between arms.
 
 Example:
@@ -16,7 +16,6 @@ from __future__ import annotations
 
 import argparse
 import copy
-import json
 import os
 import platform
 import random
@@ -32,6 +31,7 @@ import mlx.core as mx
 from mlx_lm import load
 from mlx_lm.models import cache as mlx_cache
 
+from scripts.bench_metadata import format_bench_json, write_bench_json
 from vllm_mlx.patches import mla_absorbed_verify as patch
 
 LONG_CODE_EDIT_PROMPT = """You are a code refactoring assistant. Re-emit the
@@ -264,9 +264,12 @@ def main() -> None:
         )
         runs = {"stock": [], "rapid": []}
         outputs = {}
-        for arm in ("stock", "rapid"):
-            _set_arm(targets, originals, arm)
-            for _ in range(args.suffix_repeats):
+        order = ("stock", "rapid", "rapid", "stock")
+        while len(runs["stock"]) < args.suffix_repeats:
+            for arm in order:
+                if len(runs[arm]) >= args.suffix_repeats:
+                    continue
+                _set_arm(targets, originals, arm)
                 run = _run_suffix(
                     model,
                     tokenizer,
@@ -314,10 +317,10 @@ def main() -> None:
         "suffix": suffix_result,
         "stats": patch.mla_absorbed_verify_stats(),
     }
-    rendered = json.dumps(result, indent=2)
+    rendered = format_bench_json(result, __file__)
     print(rendered)
     if args.json:
-        args.json.write_text(rendered + "\n")
+        write_bench_json(args.json, result, __file__)
 
 
 if __name__ == "__main__":

@@ -27,6 +27,7 @@ _ENV = "RAPID_MLX_MLA_ABSORBED_VERIFY"
 _TRUE_VALUES = frozenset({"1", "true", "yes", "on"})
 _MIN_CACHE_LENGTH = 1024
 _LOCK = threading.Lock()
+_STATS_LOCK = threading.Lock()
 _INSTALLED = False
 _PROVIDER = "none"
 _ENABLED = False
@@ -40,6 +41,12 @@ _STATS = {
     "single_token": 0,
     "short_cache": 0,
 }
+
+
+def _increment_stat(name: str) -> None:
+    with _STATS_LOCK:
+        _STATS[name] += 1
+
 
 # Exact mlx-lm 0.31.3 method bodies.  A changed body is not safe to replace
 # with a local replica: it may contain a new cache, mask, or numerical rule.
@@ -174,8 +181,8 @@ def _attention_call(
     cache_len = latent_length(kv_latent)
     absorbed = _use_absorbed(self, L, kv_latent)
     if not absorbed and cache_len < _MIN_CACHE_LENGTH:
-        _STATS["short_cache"] += 1
-    _STATS["absorbed" if absorbed else "materialized"] += 1
+        _increment_stat("short_cache")
+    _increment_stat("absorbed" if absorbed else "materialized")
     if absorbed:
         q_nope = self.embed_q(q_nope)
         k = v = kv_latent
@@ -270,12 +277,12 @@ def install_mla_absorbed_verify() -> None:
             def _patched(
                 self, x, mask=None, cache=None, *, _orig=original, _flavor=flavor
             ):
-                _STATS["forwards"] += 1
+                _increment_stat("forwards")
                 if not _ENABLED:
-                    _STATS["disabled"] += 1
+                    _increment_stat("disabled")
                     return _orig(self, x, mask, cache)
                 if int(x.shape[1]) == 1:
-                    _STATS["single_token"] += 1
+                    _increment_stat("single_token")
                     return _orig(self, x, mask, cache)
                 return _attention_call(self, x, mask, cache, flavor=_flavor)
 
@@ -291,8 +298,10 @@ def install_mla_absorbed_verify() -> None:
 
 def mla_absorbed_verify_stats() -> dict[str, Any]:
     """Return mechanism counters and the active implementation provider."""
+    with _STATS_LOCK:
+        counters = dict(_STATS)
     return {
-        **_STATS,
+        **counters,
         "installed": _INSTALLED,
         "enabled": _ENABLED,
         "provider": _PROVIDER,

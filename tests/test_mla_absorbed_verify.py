@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 import subprocess
 import sys
+from importlib.util import find_spec
 from pathlib import Path
 
 import pytest
@@ -217,7 +218,13 @@ print(json.dumps(stats))
     assert all(not target.startswith("deepseek_v32.") for target in stats["targets"])
 
 
-mx = pytest.importorskip("mlx.core")
+_HAS_MLX = find_spec("mlx") is not None and find_spec("mlx.core") is not None
+if _HAS_MLX:
+    import mlx.core as mx
+else:  # pragma: no cover - exercised by the no-MLX CI lane
+    mx = None
+
+requires_mlx = pytest.mark.skipif(not _HAS_MLX, reason="requires MLX")
 
 
 def _isolate_installer_state(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -325,6 +332,8 @@ def _tiny_attention(module_name: str):
     "module_name",
     ["deepseek_v3", "glm4_moe_lite", "kimi_linear", "longcat_flash"],
 )
+@requires_mlx
+@pytest.mark.requires_mlx
 def test_patched_attention_matches_stock_contract(
     monkeypatch: pytest.MonkeyPatch, module_name: str
 ) -> None:
@@ -379,6 +388,8 @@ def test_patched_attention_matches_stock_contract(
     assert after_warm["absorbed"] == after_cold["absorbed"] + 1
 
 
+@requires_mlx
+@pytest.mark.requires_mlx
 def test_disabled_and_single_token_paths_delegate_to_stock(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
