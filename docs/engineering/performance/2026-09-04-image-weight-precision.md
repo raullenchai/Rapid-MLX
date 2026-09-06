@@ -122,6 +122,11 @@ python3 scripts/benchmark_image_precision.py \
   --hf-cache /path/to/huggingface/hub
 ```
 
+Keep the locally installed candidate wheel at the path recorded by pip for the
+duration of the run. The harness hashes that source artifact itself, compares
+it with `--wheel-sha256`, and starts each server from a neutral directory so a
+nearby source checkout cannot shadow the installed candidate.
+
 The default order is q4, BF16, BF16, q4. Each independent process warms and
 then measures 512-square generation, 1024-square generation, and 1024-square
 editing three times. Keep the JSON as private raw evidence and distill only
