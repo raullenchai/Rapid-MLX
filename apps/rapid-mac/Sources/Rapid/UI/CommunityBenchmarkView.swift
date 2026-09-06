@@ -372,14 +372,21 @@ struct CommunityBenchmarkResult: Decodable, Identifiable {
     var caseSummaries: [CaseSummary] {
         Self.summarize(
             measurements: measurements ?? [],
-            declaredOrder: workload.cases?.map(\.caseID) ?? []
+            declaredOrder: workload.cases?.map(\.caseID) ?? [],
+            taskType: workload.taskType
         )
     }
 
+    /// `taskType` decides the headline family: text workloads report decode
+    /// tok/s (+ TTFT) and never fall back to wall time, so a text record
+    /// missing decode fields shows its status instead of an image-style
+    /// "s per run"; image/video workloads report median wall seconds.
     static func summarize(
         measurements: [Measurement],
-        declaredOrder: [String]
+        declaredOrder: [String],
+        taskType: String
     ) -> [CaseSummary] {
+        let isText = taskType == "text_generation"
         var order = declaredOrder
         var byCase: [String: [Measurement]] = [:]
         // Records written before the `completed` flag existed carry only
@@ -393,22 +400,23 @@ struct CommunityBenchmarkResult: Decodable, Identifiable {
         return order.compactMap { caseID in
             guard let samples = byCase[caseID], !samples.isEmpty else { return nil }
             // Decode and TTFT medians come from the same text rounds so the
-            // headline never pairs numbers from different populations.
-            let textRounds = samples.filter { sample in
+            // headline never pairs numbers from different populations: TTFT
+            // is reported only when every decode round carries it.
+            let textRounds = isText ? samples.filter { sample in
                 (sample.outputTokens ?? 0) > 1 && (sample.decodeDurationMS ?? 0) > 0
-            }
+            } : []
             let decode = textRounds.map { sample in
                 Double(sample.outputTokens! - 1) / sample.decodeDurationMS! * 1_000
             }
             let ttft = textRounds.compactMap(\.ttftMS)
-            let total = samples.compactMap(\.totalDurationMS)
             let decodeMedian = median(decode)
+            let wall = isText ? [] : samples.compactMap(\.totalDurationMS)
             return CaseSummary(
                 caseID: caseID,
                 rounds: samples.count,
                 decodeTokensPerSecond: decodeMedian,
-                ttftMS: decodeMedian == nil ? nil : median(ttft),
-                wallSeconds: median(total).map { $0 / 1_000 }
+                ttftMS: ttft.count == textRounds.count ? median(ttft) : nil,
+                wallSeconds: median(wall).map { $0 / 1_000 }
             )
         }
     }

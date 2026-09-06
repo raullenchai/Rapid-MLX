@@ -516,7 +516,8 @@ struct CommunityBenchmarkModelTests {
             ),
         ]
         let summaries = CommunityBenchmarkResult.summarize(
-            measurements: measurements, declaredOrder: ["pp512-tg128"]
+            measurements: measurements, declaredOrder: ["pp512-tg128"],
+            taskType: "text_generation"
         )
         #expect(summaries.count == 2)
         #expect(summaries[0].rounds == 3)
@@ -526,6 +527,37 @@ struct CommunityBenchmarkModelTests {
         #expect(summaries[0].headline == "37.5 tok/s · TTFT 600 ms")
         #expect(summaries[1].caseID == "extra")
         #expect(summaries[1].headline == "10.0 tok/s")
+
+        // A decode round without TTFT drops TTFT from the headline entirely
+        // rather than reporting a TTFT median over fewer rounds.
+        let partialTTFT = CommunityBenchmarkResult.summarize(
+            measurements: [
+                CommunityBenchmarkResult.Measurement(
+                    caseID: "pp512-tg128", completed: true, outputTokens: 101,
+                    ttftMS: 500, decodeDurationMS: 2_000, totalDurationMS: 2_500
+                ),
+                CommunityBenchmarkResult.Measurement(
+                    caseID: "pp512-tg128", completed: true, outputTokens: 101,
+                    ttftMS: nil, decodeDurationMS: 4_000, totalDurationMS: 4_700
+                ),
+            ],
+            declaredOrder: [], taskType: "text_generation"
+        )
+        #expect(partialTTFT.map(\.headline) == ["37.5 tok/s"])
+
+        // A text record with only wall time is not dressed up as an
+        // image-style "s per run" result.
+        let textWithoutDecode = CommunityBenchmarkResult.summarize(
+            measurements: [
+                CommunityBenchmarkResult.Measurement(
+                    caseID: "pp512-tg128", completed: true, outputTokens: nil,
+                    ttftMS: nil, decodeDurationMS: nil, totalDurationMS: 2_500
+                ),
+            ],
+            declaredOrder: [], taskType: "text_generation"
+        )
+        #expect(textWithoutDecode.map(\.headline) == ["1 rounds"])
+        #expect(textWithoutDecode.first?.wallSeconds == nil)
 
         // No completed rounds at all → no headline, so the row falls back to
         // the outcome status.
@@ -559,9 +591,14 @@ struct CommunityBenchmarkModelTests {
             ttftMS: nil, decodeDurationMS: nil, totalDurationMS: 12_345
         )
         let summaries = CommunityBenchmarkResult.summarize(
-            measurements: [render], declaredOrder: []
+            measurements: [render], declaredOrder: [], taskType: "image_generation"
         )
         #expect(summaries.map(\.headline) == ["12.3 s per run"])
+        #expect(
+            CommunityBenchmarkResult.summarize(
+                measurements: [render], declaredOrder: [], taskType: "video_generation"
+            ).map(\.headline) == ["12.3 s per run"]
+        )
         #expect(CommunityBenchmarkResult.CaseSummary.formatMilliseconds(5_811) == "5811 ms")
         #expect(CommunityBenchmarkResult.CaseSummary.formatMilliseconds(12_400) == "12.4 s")
     }
