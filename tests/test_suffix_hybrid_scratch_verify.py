@@ -252,48 +252,56 @@ class TestHybridInstallGate:
         assert bg._suffix_stats["suffix_hybrid"] is True
         assert bg._suffix_stats["suffix_min_match_len"] == 24
 
-    def test_hybrid_drafter_cap_raised_to_floor(self, monkeypatch):
-        """Finding: the hybrid path must construct the drafter with
-        ``_effective_max_draft`` (>= the 24-token floor), or drafts stay capped
-        below the floor and every repeat falls through ``ft_short_match`` —
-        making the opt-in hybrid path dead on a default install."""
+    def test_hybrid_drafter_cap_never_exceeds_config_and_reaches_floor(
+        self, monkeypatch
+    ):
+        """Finding: the hybrid drafter cap must never exceed the operator's
+        explicit ``suffix_max_draft`` (``_effective_max_draft = min(max_draft,
+        floor)``), while reaching the 24-token floor when the cap allows it."""
         from types import SimpleNamespace
         from unittest.mock import MagicMock
 
         from vllm_mlx import scheduler
         from vllm_mlx.model_auto_config import ModelConfig
 
-        # A real drafter (not a stub) so we check the actual constructed cap.
-        bg, gb = self._make_fake_bg()
-        profile = ModelConfig(is_hybrid=True, supports_spec_decode=False)
-        assert scheduler._install_suffix_decoding(
-            bg,
-            model=MagicMock(),
-            profile=profile,
-            max_draft=8,
-            max_suffix_len=4,
-            min_confidence=0.3,
-            requests={},
-            uid_to_request_id={},
-            suffix_hybrid=True,
-        )
-        # Force first-_step by feeding a synthetic uid + token via gb.
-        gb._next_tokens = mx.array([1], dtype=mx.int32)
-        gb._num_tokens = [0]
-        gb.max_tokens = [100]
-        gb.uids = [1]
-        gb.tokens = [[]]
-        gb.state_machines = [SimpleNamespace(match=lambda s, _t: (s, None, None))]
-        gb._matcher_states = [None]
-        gb.logits_processors = []
-        gb.model = MagicMock()
-        gb._orig_step = lambda: ([1], [])
-        # uid 1 has no drafter yet -> lazy-init constructs one this step.
-        gb._step()
-        drafter = gb._suffix_drafters[1]
-        # Effective max draft must be at least the 24-token floor (raised from
-        # the configured default 8 on the hybrid path).
-        assert drafter.max_draft_tokens >= 24
+        def _install_opts(max_draft):
+            bg, gb = self._make_fake_bg()
+            profile = ModelConfig(is_hybrid=True, supports_spec_decode=False)
+            assert scheduler._install_suffix_decoding(
+                bg,
+                model=MagicMock(),
+                profile=profile,
+                max_draft=max_draft,
+                max_suffix_len=4,
+                min_confidence=0.3,
+                requests={},
+                uid_to_request_id={},
+                suffix_hybrid=True,
+                suffix_min_match_len=24,
+            )
+            gb._next_tokens = mx.array([1], dtype=mx.int32)
+            gb._num_tokens = [0]
+            gb.max_tokens = [100]
+            gb.uids = [1]
+            gb.tokens = [[]]
+            gb.state_machines = [SimpleNamespace(match=lambda s, _t: (s, None, None))]
+            gb._matcher_states = [None]
+            gb.logits_processors = []
+            gb.model = MagicMock()
+            gb._orig_step = lambda: ([1], [])
+            gb._step()  # lazy-init constructs the drafter this step
+            return bg, gb, gb._suffix_drafters[1]
+
+        # (a) Below-floor cap (default 8): drafter is clamped AT 8, never above.
+        _bg, _gb, drafter8 = _install_opts(8)
+        assert drafter8.max_draft_tokens == 8
+        assert drafter8.max_draft_tokens < 24
+        # (b) Cap at/above the floor: drafter reaches the 24-token floor.
+        _bg, _gb, drafter32 = _install_opts(32)
+        assert drafter32.max_draft_tokens == 24
+        # (c) Cap above the floor is not lowered below it.
+        _bg, _gb, drafter24 = _install_opts(24)
+        assert drafter24.max_draft_tokens == 24
 
     def test_installed_reject_first_commits_primary(self, monkeypatch):
         """Installed-path reject-first verify: the live cache must equal
@@ -1353,7 +1361,14 @@ class TestHybridTerminalRepair:
             state_machines=[SimpleNamespace(match=lambda s, _t: (s, None, None))],
             _matcher_states=[None],
             extract_cache=lambda _r: gb.prompt_cache,
-            filter=lambda keep: setattr(gb, "uids", list(keep)),
+            # Faithful-ish filter: production ``GenerationBatch.filter`` compacts
+            # the live cache list in place and drops finished rows. We clear
+            # the cache list to simulate the finishing row being compacted away,
+            # then assert the delivered response cache is still intact+decodable.
+            filter=lambda keep: (
+                setattr(gb, "uids", list(keep)),
+                gb.prompt_cache.clear() if not keep else None,
+            ),
             model=model,
         )
         gb.Response = SimpleNamespace
@@ -1391,9 +1406,20 @@ class TestHybridTerminalRepair:
         assert len(finish) == 1
         delivered = finish[0].prompt_cache
         # ``delivered`` is the repaired cache list (per-layer cells) built by
-        # the terminal-repair branch. Build the step-replayed gold cache list.
+        # the terminal-repair branch. Even after the faithful filter CLEARED
+        # the shared live cache list (simulating the finishing row being
+        # compacted away), the delivered response cache must remain intact,
+        # independent, and decodable. Build the step-replayed gold cache list.
         gold = model.make_cache()
         mx.eval(model(mx.array([[1, 2, 3]]), cache=gold))
         mx.eval(model(mx.array([[7]]), cache=gold))
         mx.eval(model(mx.array([[d0]]), cache=gold))
         _assert_state_equal(delivered, gold)
+        # Independent/decodable: continuing from the delivered cache produces
+        # the same next token as continuing from the gold cache.
+        nxt_raw = model(mx.array([[8]]), cache=delivered)
+        nxt_gold = model(mx.array([[8]]), cache=gold)
+        mx.eval(nxt_raw, nxt_gold)
+        assert int(mx.argmax(nxt_raw[:, -1], axis=-1).item()) == int(
+            mx.argmax(nxt_gold[:, -1], axis=-1).item()
+        )

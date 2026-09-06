@@ -3103,19 +3103,16 @@ def _install_suffix_decoding(
     _hybrid_bit_exact = bool(suffix_hybrid_bit_exact)
 
     # The hybrid path has a 24-token minimum-match floor (a draft shorter
-    # falls through without paying the multi-token verify cost), but the
-    # configured ``suffix_max_draft`` cap defaults to 8. With the stock
-    # drafter the verify width can never reach the floor, so the opt-in
-    # hybrid path would be dead on every default install. When hybrid is
-    # active we therefore RAISE the effective draft cap to at least the
-    # match floor so a repeat pattern can actually clear it (a draft can be
-    # at most as long as the suffix-match of the prompt/prefix, so a plain
-    # prompt needs only 24+ generated tokens to build one — reachable).
-    #
-    # The bit-exactness guard below probes EVERY committed position (the
-    # full accepted prefix), so there is no probe-length knob to tune.
+    # falls through without paying the multi-token verify cost). ``max_draft``
+    # is the operator's HARD cap on verify width (memory-bound); we never
+    # exceed it — a below-floor cap (the default 8) simply means the hybrid
+    # feature cannot reach the floor and degrades to a no-op, which the
+    # install WARNING below says explicitly. When ``max_draft`` IS >= the
+    # floor the effective ceiling is the floor. The bit-exactness guard
+    # probes EVERY committed position (the full accepted prefix), so there
+    # is no probe-length knob to tune.
     _effective_max_draft = (
-        max(max_draft, suffix_min_match_len) if _hybrid_active else max_draft
+        min(max_draft, suffix_min_match_len) if _hybrid_active else max_draft
     )
 
     def _hybrid_scratch_verify(
@@ -3310,7 +3307,11 @@ def _install_suffix_decoding(
     # and the verify path is actually reachable; the adaptive ``*2`` growth
     # below then climbs to ``_effective_max_draft`` once acceptance is proven.
     if _hybrid_active:
-        _K_MIN = suffix_min_match_len
+        # Seed the hybrid width AT the match floor so a floor-length repeat is
+        # issued on the first step and the verify path is reachable — but never
+        # above the operator's hard cap (a below-floor cap degrades the hybrid
+        # feature to a no-op rather than deadlocking or exceeding the bound).
+        _K_MIN = min(suffix_min_match_len, max_draft)
     else:
         _K_MIN = min(max(2, min_draft_len), max_draft)
 
@@ -3713,6 +3714,12 @@ def _install_suffix_decoding(
         full_logprobs = verify_logits - mx.logsumexp(
             verify_logits, axis=-1, keepdims=True
         )
+        # Materialize the verify logprobs promptly. ``verify_logits`` is a lazy
+        # MLX graph over the scratch cache; leaving it unevaluated keeps the
+        # scratch tensors referenced into the NEXT step's verify deepcopy,
+        # quietly defeating the 2x-cache envelope. Realizing it here frees the
+        # scratch arrays as soon as the logprobs row slices are taken below.
+        mx.eval(full_logprobs)
         # The primary's logprobs come from the PREVIOUS step (saved in
         # gb._next_logprobs). Passing them through preserves the same
         # contract as _orig_step.
@@ -3883,13 +3890,14 @@ def _install_suffix_decoding(
                             # Suffix decode is a single-request fast path, so
                             # the rebuilt head IS the per-request cache; no
                             # per-cell ``extract`` (whose inner KVCache cells
-                            # can lack ``extract``). The shared live cache held
-                            # un-surfaced accepted tails for this finishing
-                            # uid and is filtered out below, so point it at the
-                            # repaired head to keep the batch consistent with
-                            # the delivered output.
+                            # can lack ``extract``). The finishing uid is about
+                            # to be filtered out of the live batch, so we do
+                            # NOT alias ``gb.prompt_cache`` to ``repaired`` —
+                            # the delivered response cache must stay an
+                            # independent head, and the live cache (which still
+                            # holds the un-surfaced accepted tails) is
+                            # discarded along with the removed uid.
                             prompt_cache = repaired
-                            gb.prompt_cache = repaired
                         else:
                             from .cache_rollback import trim_all
 
@@ -4028,18 +4036,17 @@ def _install_suffix_decoding(
         max_suffix_len,
         min_confidence,
     )
-    if _hybrid_active and _effective_max_draft > max_draft:
-        # Do not silently exceed the operator's explicit draft cap. The hybrid
-        # path requires a >=24-token match before paying verify cost, so a
-        # below-floor ``--suffix-max-draft`` would otherwise dead-disable the
-        # feature; we raise the effective width to the floor and say so rather
-        # than override the operator's bound invisibly.
+    if _hybrid_active and _effective_max_draft < suffix_min_match_len:
+        # Do not silently leave the hybrid feature a no-op. ``max_draft`` is the
+        # operator's HARD cap and we respect it, so a below-floor cap (the
+        # default 8) means drafts can never clear the 24-token match floor and
+        # the hybrid path never engages. Say so and name the flag to raise.
         logger.warning(
-            "[SuffixDecoding] hybrid path raises effective max draft from "
-            "suffix_max_draft=%d to suffix_min_match_len=%d so drafts can clear "
-            "the %d-token match floor (set --suffix-max-draft to silence)",
+            "[SuffixDecoding] hybrid suffix decoding DEGRADED to a no-op: "
+            "suffix_max_draft=%d is below the %d-token match floor, so no draft "
+            "can clear the floor and the hybrid verify path never runs. Raise "
+            "--suffix-max-draft to >= suffix_min_match_len to enable it.",
             max_draft,
-            _effective_max_draft,
             suffix_min_match_len,
         )
     return True
