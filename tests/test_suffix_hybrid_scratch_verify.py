@@ -1766,6 +1766,116 @@ class TestSingleSnapshotCommit:
         assert spy.set_state_calls == 0
         _assert_state_equal(gb.prompt_cache, pre_fail)
 
+    def test_post_commit_exception_drops_retained_replay_entry(self, monkeypatch):
+        """Codex round-9h finding #1: a post-commit exception must pop the
+        uid's retained ``_pending_hybrid_replay`` entry. If it leaked, a later
+        terminal response for that uid would rebuild its delivered cache from a
+        NOW-STALE pristine snapshot (the cache was restored to that snapshot and
+        re-advanced by the fall-through re-run) and the full duplicate snapshot
+        would leak until UID cleanup.
+
+        We prove the entry is dropped by reaching the terminal branch of the
+        wrapped ``_suffix_next`` after a post-commit exception: if the entry
+        were still present, the terminal would be repaired (delivered cache =
+        pristine + X); because the fix pops it, the terminal passes through
+        with the live (restored) cache untouched."""
+        from types import SimpleNamespace
+        from unittest.mock import MagicMock, patch
+
+        import vllm_mlx.scheduler as scheduler
+        from vllm_mlx.model_auto_config import ModelConfig
+        from vllm_mlx.speculative import suffix_decoding
+
+        model, _ = _model_and_prompt()
+        # Accepted draft ([d0] matches greedy), so the hybrid commit retains a
+        # replay entry — the leak codex round-9h finding #1 guards against.
+        probe = model.make_cache()
+        mx.eval(model(mx.array([[1, 2, 3]]), cache=probe))
+        l0 = model(mx.array([[7]]), cache=probe)
+        mx.eval(l0)
+        d0 = int(mx.argmax(l0[:, -1], axis=-1).item())
+        l1 = model(mx.array([[d0]]), cache=probe)
+        mx.eval(l1)
+        d1 = int(mx.argmax(l1[:, -1], axis=-1).item())
+
+        class MockDrafter:
+            max_draft_tokens = 2
+
+            def __init__(self, **_kw):
+                pass
+
+            def add_prompt_tokens(self, _t):
+                pass
+
+            def add_generated_token(self, _t):
+                pass
+
+            def record_acceptance(self, _c):
+                pass
+
+            def get_draft(self):
+                return [d0, d1]
+
+        pristine = model.make_cache()
+        mx.eval(model(mx.array([[1, 2, 3]]), cache=pristine))
+
+        gb = SimpleNamespace(
+            _next_tokens=mx.array([7], dtype=mx.int32),
+            _next_logprobs=[mx.zeros((64,))],
+            uids=[1],
+            tokens=[[]],
+            logits_processors=[],
+            prompt_cache=pristine,
+            _num_tokens=[0],
+            max_tokens=[10],
+            state_machines=[SimpleNamespace(match=lambda s, _t: (s, None, None))],
+            _matcher_states=[None],
+            extract_cache=lambda _r: [],
+            model=model,
+        )
+        gb.Response = SimpleNamespace
+        gb._step = lambda: ([7], [])
+        gb.next = lambda: [SimpleNamespace(uid=1, finish_reason="length")]
+        bg = MagicMock()
+        bg._generation_batch = gb
+        bg.remove = lambda *a, **k: {}
+        monkeypatch.setattr(suffix_decoding, "SuffixDecodingDrafter", MockDrafter)
+        profile = ModelConfig(is_hybrid=True, supports_spec_decode=False)
+        scheduler._install_suffix_decoding(
+            bg,
+            model=model,
+            profile=profile,
+            max_draft=2,
+            max_suffix_len=4,
+            min_confidence=0.3,
+            requests={},
+            uid_to_request_id={},
+            suffix_hybrid=True,
+            suffix_min_match_len=2,
+            suffix_hybrid_bit_exact=True,
+        )
+        # Force a post-commit exception on the hybrid commit. The handler must
+        # (a) restore the pristine cache AND (b) drop the retained replay entry
+        # so the subsequent terminal response is NOT rebuilt from a stale
+        # snapshot.
+        with (
+            patch.object(scheduler.mx, "logsumexp", side_effect=RuntimeError("boom")),
+            pytest.raises(RuntimeError, match="boom"),
+        ):
+            gb._step()
+        _assert_state_equal(gb.prompt_cache, pristine)
+        # A terminal (length) primary now flows through _suffix_next. With the
+        # replay entry correctly dropped, the passed-through response is left
+        # UNTOUCHED by the terminal repair — i.e. no ``prompt_cache`` attr was
+        # set on it (the repair is what would set it). Had the stale entry
+        # leaked, the repair would have assigned pristine + X here, rebuilding
+        # from a now-obsolete snapshot.
+        outs = gb.next()
+        terminals = [o for o in outs if o.finish_reason is not None]
+        assert len(terminals) == 1
+        assert not hasattr(terminals[0], "prompt_cache")
+        _assert_state_equal(gb.prompt_cache, pristine)
+
 
 class TestHybridTerminalRepair:
     """Finding #1: a hybrid finish part-way through the accepted drafts must

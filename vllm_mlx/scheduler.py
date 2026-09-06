@@ -3836,6 +3836,13 @@ def _install_suffix_decoding(
             # logprobs row at position n_accepted is the one that produced
             # the bonus — used for the bonus surfacing in the next step.
             bonus_logprobs = full_logprobs[0, n_accepted, :]
+            # Schedule the bonus for the next step's primary EARLY. ``async_eval``
+            # is a fallible MLX op (device work), so per codex round-9h finding #2
+            # it must complete while still in the compute section, BEFORE any
+            # bookkeeping mutation. The mutation tail only points ``gb`` at these
+            # already-scheduled arrays — no fallible op remains past that point.
+            bonus_arr = mx.array([bonus], dtype=inputs.dtype)
+            mx.async_eval(bonus_arr, bonus_logprobs)
             # Cooldown bookkeeping: track consecutive zero-accept verifies
             # so workloads with weak drafter signal (e.g., free-form chat)
             # automatically stop paying verify overhead.
@@ -3943,12 +3950,11 @@ def _install_suffix_decoding(
             _counter.record_verify(K, n_accepted)
 
             # Update gb state for the next _step call. Bonus becomes the
-            # next step's primary input. async_eval overlaps device work
-            # with engine bookkeeping (matches _orig_step's pattern).
-            bonus_arr = mx.array([bonus], dtype=inputs.dtype)
+            # next step's primary input. ``bonus_arr``/``bonus_logprobs`` were
+            # scheduled (async_eval'd) back in the compute section; the tail
+            # just rebinds gb to those arrays — pure Python, cannot raise here.
             gb._next_tokens = bonus_arr
             gb._next_logprobs = [bonus_logprobs]
-            mx.async_eval(bonus_arr, bonus_logprobs)
 
             # _step normally appends inputs.tolist()[i] to gb.tokens[i].
             # We do the same for last_token (the primary that we return).
@@ -3965,6 +3971,12 @@ def _install_suffix_decoding(
             logger.debug(f"[SuffixDecoding] post-commit phase failed: {e!r}")
             _stats["errors"] += 1
             _stats["ft_error"] += 1
+            # Counter consistency (codex round-9h finding #3): every other
+            # error fallthrough records the attempt + error on the shared
+            # counter; this path must too, so the exported counter does not
+            # diverge from ``_stats`` for exactly this failure class.
+            _counter.record_error()
+            _counter.record_verify(K, 0)
             # Post-commit exception: restore the pristine pre-verify cache so the
             # live cache never stays advanced beyond the surfaced tokens, then
             # re-raise so the caller handles this step as a normal fall-through.
@@ -3976,7 +3988,13 @@ def _install_suffix_decoding(
             # primary from scratch (cooldown/width are re-derived on that run).
             # By reordering we already ran all fallible MLX ops BEFORE mutating
             # any bookkeeping, so there is no half-mutated drafter/counter/gb
-            # state to unwind.
+            # state to unwind. The retained replay head for this uid (codex
+            # round-9h finding #1) is dropped too: it referenced the pristine
+            # pre-verify snapshot, which is now restored and will be re-advanced
+            # by the fall-through re-run, so a later terminal must NOT rebuild
+            # the delivered cache from the now-stale snapshot (and the full
+            # duplicate cache would otherwise leak until UID cleanup).
+            _pending_hybrid_replay.pop(uid, None)
             if _hybrid_pc_snapshot is not None:
                 gb.prompt_cache = _hybrid_pc_snapshot
             raise
