@@ -194,6 +194,37 @@ actor DraftPostFlowCoordinator {
     }
 }
 
+/// The complete mutation authority granted to the draft flow. Publishing is
+/// structurally impossible because this capability can only focus a composer
+/// and set its draft value.
+@MainActor
+protocol DraftPostComposerActuating: Sendable {
+    func focusComposer(_ composer: AXUIElement) throws
+    func setDraft(_ draft: String, on composer: AXUIElement) throws
+}
+
+struct AXDraftPostComposerActuator: DraftPostComposerActuating {
+    func focusComposer(_ composer: AXUIElement) throws {
+        guard AXUIElementSetAttributeValue(
+            composer,
+            kAXFocusedAttribute as CFString,
+            kCFBooleanTrue
+        ) == .success else {
+            throw DraftPostFlowFailure.writeRejected
+        }
+    }
+
+    func setDraft(_ draft: String, on composer: AXUIElement) throws {
+        guard AXUIElementSetAttributeValue(
+            composer,
+            kAXValueAttribute as CFString,
+            draft as CFString
+        ) == .success else {
+            throw DraftPostFlowFailure.writeRejected
+        }
+    }
+}
+
 /// Accessibility-first implementation for the first bounded starter flow.
 /// The user selects both windows. Rapid reads one TextEdit document, writes an
 /// empty browser composer, verifies the exact value, and stops. No coordinate
@@ -209,6 +240,11 @@ struct MacOSDraftPostFlowDriver: DraftPostFlowDriving {
         "company.thebrowser.Browser",
         "org.mozilla.firefox",
     ]
+    private let actuator: any DraftPostComposerActuating
+
+    init(actuator: any DraftPostComposerActuating = AXDraftPostComposerActuator()) {
+        self.actuator = actuator
+    }
 
     func transferDraft(
         from source: ComputerUseWindowOption,
@@ -231,7 +267,7 @@ struct MacOSDraftPostFlowDriver: DraftPostFlowDriving {
         guard draft.utf8.count <= Self.maximumDraftBytes else {
             throw DraftPostFlowFailure.draftTooLarge
         }
-        try await writeAndVerify(draft, to: destination.selection)
+        try await writeAndVerify(draft, to: destination)
         // The destination may now be mutated. Every remaining observation is
         // therefore terminal on failure: recovery must never replay the write.
         do {
@@ -239,7 +275,7 @@ struct MacOSDraftPostFlowDriver: DraftPostFlowDriving {
             guard Self.utf8Matches(finalSource, draft) else {
                 throw DraftPostFlowFailure.verificationFailed
             }
-            try await verifyComposer(draft, in: destination.selection)
+            try await verifyComposer(draft, in: destination)
         } catch {
             throw DraftPostFlowFailure.verificationFailed
         }
@@ -263,12 +299,13 @@ struct MacOSDraftPostFlowDriver: DraftPostFlowDriving {
 
     private func writeAndVerify(
         _ draft: String,
-        to selection: ComputerUseWindowSelection
+        to destination: ComputerUseWindowOption
     ) async throws {
+        let selection = destination.selection
         try await focus(selection)
         try Task.checkCancellation()
         try await MainActor.run {
-            let window = try Self.exactFocusedWindow(selection)
+            let window = try Self.exactFocusedBrowserWindow(destination)
             let composer = try Self.uniqueComposer(in: window)
             guard let existing = Self.stringAttribute(
                 kAXValueAttribute as CFString,
@@ -300,17 +337,11 @@ struct MacOSDraftPostFlowDriver: DraftPostFlowDriving {
             ) == .success, settable.boolValue else {
                 throw DraftPostFlowFailure.writeRejected
             }
-            guard AXUIElementSetAttributeValue(
-                composer,
-                kAXFocusedAttribute as CFString,
-                kCFBooleanTrue
-            ) == .success else {
-                throw DraftPostFlowFailure.writeRejected
-            }
+            try actuator.focusComposer(composer)
             // Re-resolve the exact selected window immediately before the
             // value mutation. Focusing the exact bound editor is allowed, but
             // it must not have moved focus into another window.
-            let currentWindow = try Self.exactFocusedWindow(selection)
+            let currentWindow = try Self.exactFocusedBrowserWindow(destination)
             let currentComposer = try Self.uniqueComposer(in: currentWindow)
             guard CFEqual(composer, currentComposer) else {
                 throw DraftPostFlowFailure.verificationFailed
@@ -327,18 +358,12 @@ struct MacOSDraftPostFlowDriver: DraftPostFlowDriving {
             // This is the final cancellation boundary before the only content
             // mutation. No suspension occurs between this check and the write.
             try Task.checkCancellation()
-            guard AXUIElementSetAttributeValue(
-                currentComposer,
-                kAXValueAttribute as CFString,
-                draft as CFString
-            ) == .success else {
-                throw DraftPostFlowFailure.writeRejected
-            }
+            try actuator.setDraft(draft, on: currentComposer)
             // Once content may have changed, no focus/window error is safe to
             // retry. Collapse every post-mutation observation failure into a
             // terminal verification failure.
             try Self.verifyAfterMutation {
-                let verifiedWindow = try Self.exactFocusedWindow(selection)
+                let verifiedWindow = try Self.exactFocusedBrowserWindow(destination)
                 let verifiedComposer = try Self.uniqueComposer(in: verifiedWindow)
                 return CFEqual(currentComposer, verifiedComposer)
                     && Self.stringAttribute(
@@ -365,11 +390,12 @@ struct MacOSDraftPostFlowDriver: DraftPostFlowDriving {
 
     private func verifyComposer(
         _ draft: String,
-        in selection: ComputerUseWindowSelection
+        in destination: ComputerUseWindowOption
     ) async throws {
+        let selection = destination.selection
         try await focus(selection)
         try await MainActor.run {
-            let window = try Self.exactFocusedWindow(selection)
+            let window = try Self.exactFocusedBrowserWindow(destination)
             let composer = try Self.uniqueComposer(in: window)
             guard Self.stringAttribute(
                 kAXValueAttribute as CFString,
@@ -378,6 +404,31 @@ struct MacOSDraftPostFlowDriver: DraftPostFlowDriving {
                 throw DraftPostFlowFailure.verificationFailed
             }
         }
+    }
+
+    @MainActor
+    private static func exactFocusedBrowserWindow(
+        _ destination: ComputerUseWindowOption
+    ) throws -> AXUIElement {
+        let window = try exactFocusedWindow(destination.selection)
+        guard browserDocumentMatches(
+            currentTitle: stringAttribute(
+            kAXTitleAttribute as CFString,
+            from: window
+            ),
+            selectedTitle: destination.windowTitle
+        ) else {
+            throw DraftPostFlowFailure.focusChanged
+        }
+        return window
+    }
+
+    static func browserDocumentMatches(
+        currentTitle: String?,
+        selectedTitle: String
+    ) -> Bool {
+        guard let currentTitle, !selectedTitle.isEmpty else { return false }
+        return utf8Matches(currentTitle, selectedTitle)
     }
 
     private func focus(_ selection: ComputerUseWindowSelection) async throws {

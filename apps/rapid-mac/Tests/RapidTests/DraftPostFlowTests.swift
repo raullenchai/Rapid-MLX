@@ -19,13 +19,16 @@ struct DraftPostFlowTests {
     @Test(.enabled(if: ProcessInfo.processInfo.environment["RAPID_LIVE_CUA_DOGFOOD"] == "1"))
     func liveFixture() async throws {
         let (source, destination) = try await Self.liveOptions()
+        let actuator = await MainActor.run {
+            RecordingDraftPostComposerActuator(base: AXDraftPostComposerActuator())
+        }
         try await Self.clearLiveComposer(
             processIdentifier: destination.selection.processIdentifier
         )
         var successes = 0
         for _ in 0 ..< 30 {
             let outcome = await DraftPostFlowCoordinator(
-                driver: MacOSDraftPostFlowDriver()
+                driver: MacOSDraftPostFlowDriver(actuator: actuator)
             ).run(source: source, destination: destination)
             guard case .readyForReview(let metrics) = outcome else {
                 Issue.record("Live fixture did not reach review: \(outcome)")
@@ -37,6 +40,15 @@ struct DraftPostFlowTests {
             try await Self.clearLiveComposer(processIdentifier: destination.selection.processIdentifier)
         }
         #expect(successes == 30)
+        let actions = await actuator.actions
+        #expect(actions.count == 60)
+        for index in stride(from: 0, to: actions.count, by: 2) {
+            #expect(actions[index] == .focusComposer)
+            guard case .setDraft = actions[index + 1] else {
+                Issue.record("Unexpected composer action sequence")
+                continue
+            }
+        }
     }
 
     @Test(.enabled(if: ProcessInfo.processInfo.environment["RAPID_LIVE_CUA_DOGFOOD"] == "1"))
@@ -190,6 +202,22 @@ struct DraftPostFlowTests {
         #expect(!MacOSDraftPostFlowDriver.utf8Matches("é", "e\u{301}"))
     }
 
+    @Test("Browser tab identity stays bound to the selected title")
+    func browserTabIdentity() {
+        #expect(MacOSDraftPostFlowDriver.browserDocumentMatches(
+            currentTitle: "Compose — Account A",
+            selectedTitle: "Compose — Account A"
+        ))
+        #expect(!MacOSDraftPostFlowDriver.browserDocumentMatches(
+            currentTitle: "Compose — Account B",
+            selectedTitle: "Compose — Account A"
+        ))
+        #expect(!MacOSDraftPostFlowDriver.browserDocumentMatches(
+            currentTitle: "Compose",
+            selectedTitle: ""
+        ))
+    }
+
     @Test("TextEdit source must expose one document editor")
     func uniqueDraft() throws {
         #expect(try MacOSDraftPostFlowDriver.uniqueDraft(in: ["Draft"]) == "Draft")
@@ -258,14 +286,27 @@ struct DraftPostFlowTests {
             encoding: .utf8
         )
         let protocolSlice = try #require(source.range(
-            of: "protocol DraftPostFlowDriving: Sendable"
+            of: "protocol DraftPostComposerActuating: Sendable"
         )).lowerBound ..< #require(source.range(
-            of: "/// Runs one idempotent local transfer"
+            of: "struct AXDraftPostComposerActuator"
         )).lowerBound
         let contract = String(source[protocolSlice])
-        #expect(contract.contains("transferDraft"))
+        #expect(contract.contains("focusComposer"))
+        #expect(contract.contains("setDraft"))
         #expect(!contract.lowercased().contains("publish"))
-        #expect(!contract.lowercased().contains("post("))
+        #expect(!contract.lowercased().contains("send("))
+    }
+
+    @MainActor
+    @Test("The injected actuator records only focus and draft writes")
+    func actuatorCapabilityIsLimited() throws {
+        let actuator = RecordingDraftPostComposerActuator(
+            base: NoopDraftPostComposerActuator()
+        )
+        let element = AXUIElementCreateSystemWide()
+        try actuator.focusComposer(element)
+        try actuator.setDraft("Fixture", on: element)
+        #expect(actuator.actions == [.focusComposer, .setDraft("Fixture")])
     }
 
     private static let source = option(
@@ -394,6 +435,36 @@ struct DraftPostFlowTests {
         }
         return value as? String
     }
+}
+
+private enum RecordedDraftPostComposerAction: Equatable {
+    case focusComposer
+    case setDraft(String)
+}
+
+@MainActor
+private final class RecordingDraftPostComposerActuator: DraftPostComposerActuating {
+    private let base: any DraftPostComposerActuating
+    private(set) var actions: [RecordedDraftPostComposerAction] = []
+
+    init(base: any DraftPostComposerActuating) {
+        self.base = base
+    }
+
+    func focusComposer(_ composer: AXUIElement) throws {
+        actions.append(.focusComposer)
+        try base.focusComposer(composer)
+    }
+
+    func setDraft(_ draft: String, on composer: AXUIElement) throws {
+        actions.append(.setDraft(draft))
+        try base.setDraft(draft, on: composer)
+    }
+}
+
+private struct NoopDraftPostComposerActuator: DraftPostComposerActuating {
+    func focusComposer(_: AXUIElement) throws {}
+    func setDraft(_: String, on _: AXUIElement) throws {}
 }
 
 private actor ScriptedDraftPostDriver: DraftPostFlowDriving {
