@@ -210,7 +210,7 @@ struct AXDraftPostComposerActuator: DraftPostComposerActuating {
             kAXFocusedAttribute as CFString,
             kCFBooleanTrue
         ) == .success else {
-            throw DraftPostFlowFailure.writeRejected
+            throw DraftPostFlowFailure.focusChanged
         }
     }
 
@@ -272,6 +272,10 @@ struct MacOSDraftPostFlowDriver: DraftPostFlowDriving {
         // The destination may now be mutated. Every remaining observation is
         // therefore terminal on failure: recovery must never replay the write.
         do {
+            // Give WebKit and page frameworks a render turn before accepting
+            // the value. A controlled composer that rejects the AX update is
+            // detected by the final re-read instead of producing false success.
+            try await Task.sleep(for: .milliseconds(300))
             let finalSource = try await readDraft(from: source.selection)
             guard Self.utf8Matches(finalSource, draft) else {
                 throw DraftPostFlowFailure.verificationFailed
