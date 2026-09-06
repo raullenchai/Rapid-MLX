@@ -19,9 +19,9 @@ struct DraftPostFlowTests {
     @Test(.enabled(if: ProcessInfo.processInfo.environment["RAPID_LIVE_CUA_DOGFOOD"] == "1"))
     func liveFixture() async throws {
         let (source, destination) = try await Self.liveOptions()
-        let actuator = await MainActor.run {
-            RecordingDraftPostComposerActuator(base: AXDraftPostComposerActuator())
-        }
+        let actuator = RecordingDraftPostComposerActuator(
+            base: AXDraftPostComposerActuator()
+        )
         try await Self.clearLiveComposer(
             processIdentifier: destination.selection.processIdentifier
         )
@@ -40,7 +40,7 @@ struct DraftPostFlowTests {
             try await Self.clearLiveComposer(processIdentifier: destination.selection.processIdentifier)
         }
         #expect(successes == 30)
-        let actions = await actuator.actions
+        let actions = actuator.actions
         #expect(actions.count == 60)
         for index in stride(from: 0, to: actions.count, by: 2) {
             #expect(actions[index] == .focusComposer)
@@ -476,22 +476,28 @@ private enum RecordedDraftPostComposerAction: Equatable {
     case setDraft(String)
 }
 
-@MainActor
-private final class RecordingDraftPostComposerActuator: DraftPostComposerActuating {
+private final class RecordingDraftPostComposerActuator: DraftPostComposerActuating,
+    @unchecked Sendable
+{
     private let base: any DraftPostComposerActuating
-    private(set) var actions: [RecordedDraftPostComposerAction] = []
+    private let lock = NSLock()
+    private var recordedActions: [RecordedDraftPostComposerAction] = []
+
+    var actions: [RecordedDraftPostComposerAction] {
+        lock.withLock { recordedActions }
+    }
 
     init(base: any DraftPostComposerActuating) {
         self.base = base
     }
 
     func focusComposer(_ composer: AXUIElement) throws {
-        actions.append(.focusComposer)
+        lock.withLock { recordedActions.append(.focusComposer) }
         try base.focusComposer(composer)
     }
 
     func setDraft(_ draft: String, on composer: AXUIElement) throws {
-        actions.append(.setDraft(draft))
+        lock.withLock { recordedActions.append(.setDraft(draft)) }
         try base.setDraft(draft, on: composer)
     }
 }

@@ -199,7 +199,6 @@ actor DraftPostFlowCoordinator {
 /// The complete mutation authority granted to the draft flow. Publishing is
 /// structurally impossible because this capability can only focus a composer
 /// and set its draft value.
-@MainActor
 protocol DraftPostComposerActuating: Sendable {
     func focusComposer(_ composer: AXUIElement) throws
     func setDraft(_ draft: String, on composer: AXUIElement) throws
@@ -294,7 +293,7 @@ struct MacOSDraftPostFlowDriver: DraftPostFlowDriving {
 
     private func readDraft(from selection: ComputerUseWindowSelection) async throws -> String {
         try await focus(selection)
-        return try await MainActor.run {
+        return try await Task.detached {
             let window = try Self.exactFocusedWindow(selection)
             let candidates = try Self.editableElements(in: window)
                 .filter {
@@ -305,7 +304,7 @@ struct MacOSDraftPostFlowDriver: DraftPostFlowDriving {
                 }
                 .map { Self.stringAttribute(kAXValueAttribute as CFString, from: $0) }
             return try Self.uniqueDraft(in: candidates)
-        }
+        }.value
     }
 
     private func writeAndVerify(
@@ -317,7 +316,7 @@ struct MacOSDraftPostFlowDriver: DraftPostFlowDriving {
         let selection = destination.selection
         try await focus(selection)
         try Task.checkCancellation()
-        try await MainActor.run {
+        try await Task.detached {
             let window = try Self.exactFocusedBrowserWindow(
                 destination,
                 documentIdentity: documentIdentity
@@ -408,12 +407,8 @@ struct MacOSDraftPostFlowDriver: DraftPostFlowDriving {
                 )
                 let verifiedComposer = try Self.uniqueComposer(in: verifiedWindow)
                 return CFEqual(authorizedComposer, verifiedComposer)
-                    && Self.stringAttribute(
-                        kAXValueAttribute as CFString,
-                        from: verifiedComposer
-                      ).map { Self.utf8Matches($0, draft) } == true
             }
-        }
+        }.value
     }
 
     static func utf8Matches(_ lhs: String, _ rhs: String) -> Bool {
@@ -437,7 +432,7 @@ struct MacOSDraftPostFlowDriver: DraftPostFlowDriving {
     ) async throws {
         let selection = destination.selection
         try await focus(selection)
-        try await MainActor.run {
+        try await Task.detached {
             let window = try Self.exactFocusedBrowserWindow(
                 destination,
                 documentIdentity: documentIdentity
@@ -449,10 +444,9 @@ struct MacOSDraftPostFlowDriver: DraftPostFlowDriving {
             ).map({ Self.utf8Matches($0, draft) }) == true else {
                 throw DraftPostFlowFailure.verificationFailed
             }
-        }
+        }.value
     }
 
-    @MainActor
     private static func exactFocusedBrowserWindow(
         _ destination: ComputerUseWindowOption,
         documentIdentity: String
@@ -482,7 +476,7 @@ struct MacOSDraftPostFlowDriver: DraftPostFlowDriving {
     private func browserDocumentIdentity(
         in destination: ComputerUseWindowOption
     ) async throws -> String {
-        try await MainActor.run {
+        return try await Task.detached {
             let selection = destination.selection
             guard let running = NSRunningApplication(
                 processIdentifier: selection.processIdentifier
@@ -500,10 +494,9 @@ struct MacOSDraftPostFlowDriver: DraftPostFlowDriving {
                   )
             else { throw DraftPostFlowFailure.focusChanged }
             return try Self.currentBrowserDocumentIdentity(in: window)
-        }
+        }.value
     }
 
-    @MainActor
     private static func currentBrowserDocumentIdentity(
         in window: AXUIElement
     ) throws -> String {
@@ -527,7 +520,6 @@ struct MacOSDraftPostFlowDriver: DraftPostFlowDriving {
         return identity
     }
 
-    @MainActor
     private static func readDraftWithoutFocusing(
         from selection: ComputerUseWindowSelection
     ) throws -> String {
@@ -569,7 +561,6 @@ struct MacOSDraftPostFlowDriver: DraftPostFlowDriving {
         }
     }
 
-    @MainActor
     private static func exactFocusedWindow(
         _ selection: ComputerUseWindowSelection
     ) throws -> AXUIElement {
@@ -598,14 +589,12 @@ struct MacOSDraftPostFlowDriver: DraftPostFlowDriving {
         return selected
     }
 
-    @MainActor
     private static func applicationElement(_ processIdentifier: pid_t) -> AXUIElement {
         let application = AXUIElementCreateApplication(processIdentifier)
         AXUIElementSetMessagingTimeout(application, 0.35)
         return application
     }
 
-    @MainActor
     private static func window(
         matching selection: ComputerUseWindowSelection,
         in application: AXUIElement
@@ -626,7 +615,6 @@ struct MacOSDraftPostFlowDriver: DraftPostFlowDriving {
         return matches.count == 1 ? matches[0] : nil
     }
 
-    @MainActor
     private static func currentFrame(
         for selection: ComputerUseWindowSelection
     ) -> CGRect? {
@@ -644,13 +632,17 @@ struct MacOSDraftPostFlowDriver: DraftPostFlowDriving {
         return CGRect(dictionaryRepresentation: bounds as CFDictionary)
     }
 
-    @MainActor
     private static func allElements(in root: AXUIElement) throws -> [AXUIElement] {
         var queue: [(AXUIElement, Int)] = [(root, 0)]
         var result: [AXUIElement] = []
         var visited = Set<AXUIElement>()
         var cursor = 0
+        let clock = ContinuousClock()
+        let deadline = clock.now.advanced(by: .seconds(2))
         while cursor < queue.count, visited.count < 2_048 {
+            guard clock.now < deadline else {
+                throw DraftPostFlowFailure.dependencyFailure
+            }
             let (element, depth) = queue[cursor]
             cursor += 1
             guard visited.insert(element).inserted else { continue }
@@ -678,7 +670,6 @@ struct MacOSDraftPostFlowDriver: DraftPostFlowDriving {
         return result
     }
 
-    @MainActor
     private static func editableElements(in root: AXUIElement) throws -> [AXUIElement] {
         try allElements(in: root).filter { element in
             let role = stringAttribute(kAXRoleAttribute as CFString, from: element)
@@ -688,7 +679,6 @@ struct MacOSDraftPostFlowDriver: DraftPostFlowDriving {
         }
     }
 
-    @MainActor
     private static func isExplicitComposer(
         _ element: AXUIElement,
         windowFrame: CGRect
@@ -713,7 +703,6 @@ struct MacOSDraftPostFlowDriver: DraftPostFlowDriving {
         return fields.contains(where: isExplicitComposerLabel)
     }
 
-    @MainActor
     private static func boolAttribute(
         _ attribute: CFString,
         from element: AXUIElement
@@ -725,7 +714,6 @@ struct MacOSDraftPostFlowDriver: DraftPostFlowDriving {
         return number.boolValue
     }
 
-    @MainActor
     private static func uniqueComposer(in window: AXUIElement) throws -> AXUIElement {
         guard let windowFrame = elementFrame(window) else {
             throw DraftPostFlowFailure.composerMissing
@@ -772,7 +760,6 @@ struct MacOSDraftPostFlowDriver: DraftPostFlowDriving {
         return draft
     }
 
-    @MainActor
     private static func stringAttribute(
         _ name: CFString,
         from element: AXUIElement
@@ -784,7 +771,6 @@ struct MacOSDraftPostFlowDriver: DraftPostFlowDriving {
         return value as? String
     }
 
-    @MainActor
     private static func elementFrame(_ element: AXUIElement) -> CGRect? {
         var positionValue: CFTypeRef?
         var sizeValue: CFTypeRef?
