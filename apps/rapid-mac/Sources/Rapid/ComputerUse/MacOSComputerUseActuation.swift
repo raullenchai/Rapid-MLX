@@ -9,6 +9,7 @@ enum MacOSComputerUseActuationError: Error, Equatable {
     case targetUnavailable
     case targetNotFrontmost
     case targetChanged
+    case targetOccluded
     case unsupportedKey
     case eventCreationFailed
 }
@@ -193,18 +194,24 @@ struct CGEventComputerUseInputEmitter: ComputerUseInputEmitting {
         WorkflowInteractionTarget
     ) throws -> WorkflowInteractionTarget
     typealias CancellationCheck = @MainActor @Sendable () throws -> Void
+    typealias WindowAtPointReader = @MainActor @Sendable (CGPoint) -> String?
 
     private let targetReader: TargetReader
     private let cancellationCheck: CancellationCheck
+    private let windowAtPointReader: WindowAtPointReader
 
     init(
         targetReader: @escaping TargetReader = {
             try CGWindowComputerUseTargetProbe.currentTargetSynchronously(for: $0)
         },
-        cancellationCheck: @escaping CancellationCheck = { try Task.checkCancellation() }
+        cancellationCheck: @escaping CancellationCheck = { try Task.checkCancellation() },
+        windowAtPointReader: @escaping WindowAtPointReader = {
+            MacOSComputerUseWindowIdentity.topmostWindowIdentifier(at: $0)
+        }
     ) {
         self.targetReader = targetReader
         self.cancellationCheck = cancellationCheck
+        self.windowAtPointReader = windowAtPointReader
     }
 
     private static let keyCodes: [String: CGKeyCode] = [
@@ -268,6 +275,9 @@ struct CGEventComputerUseInputEmitter: ComputerUseInputEmitting {
                     )
                 else {
                     throw MacOSComputerUseActuationError.eventCreationFailed
+                }
+                guard windowAtPointReader(point) == target.windowIdentifier else {
+                    throw MacOSComputerUseActuationError.targetOccluded
                 }
                 try cancellationCheck()
                 down.post(tap: .cgAnnotatedSessionEventTap)

@@ -182,10 +182,28 @@ struct MacOSComputerUseActuationTests {
         let expected = Self.observation().target
         let emitter = CGEventComputerUseInputEmitter(
             targetReader: { $0 },
-            cancellationCheck: { throw CancellationError() }
+            cancellationCheck: { throw CancellationError() },
+            windowAtPointReader: { _ in expected.windowIdentifier }
         )
 
         await #expect(throws: CancellationError.self) {
+            try await emitter.emit(
+                .click(normalizedX: 0.25, normalizedY: 0.75),
+                in: expected
+            )
+        }
+    }
+
+    @Test("An overlay at the click point prevents global input")
+    @MainActor
+    func occludingWindowStopsClick() async {
+        let expected = Self.observation().target
+        let emitter = CGEventComputerUseInputEmitter(
+            targetReader: { $0 },
+            windowAtPointReader: { _ in "999" }
+        )
+
+        await #expect(throws: MacOSComputerUseActuationError.targetOccluded) {
             try await emitter.emit(
                 .click(normalizedX: 0.25, normalizedY: 0.75),
                 in: expected

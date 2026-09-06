@@ -6,6 +6,29 @@ import CoreGraphics
 /// CGWindow number, so Computer Use binds its frame to exactly one CGWindow;
 /// ambiguous same-frame windows fail closed.
 enum MacOSComputerUseWindowIdentity {
+    /// Returns the first visible window in Core Graphics front-to-back order
+    /// whose bounds contain the global point. Conservatively treating any
+    /// visible overlay as an occluder prevents a global click from reaching a
+    /// window other than the one the user selected.
+    static func topmostWindowIdentifier(at point: CGPoint) -> String? {
+        guard let records = CGWindowListCopyWindowInfo(
+            [.optionOnScreenOnly, .excludeDesktopElements],
+            kCGNullWindowID
+        ) as? [[CFString: Any]]
+        else { return nil }
+
+        for record in records {
+            guard let number = record[kCGWindowNumber] as? NSNumber,
+                  let bounds = record[kCGWindowBounds] as? [String: NSNumber],
+                  let frame = CGRect(dictionaryRepresentation: bounds as CFDictionary),
+                  frame.contains(point),
+                  ((record[kCGWindowAlpha] as? NSNumber)?.doubleValue ?? 1) > 0
+            else { continue }
+            return String(number.uint32Value)
+        }
+        return nil
+    }
+
     static func focusedWindowFrame(processIdentifier: pid_t) -> CGRect? {
         let application = AXUIElementCreateApplication(processIdentifier)
         var focusedValue: CFTypeRef?
