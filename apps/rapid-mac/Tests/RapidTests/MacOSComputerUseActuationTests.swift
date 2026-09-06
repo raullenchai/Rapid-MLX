@@ -290,10 +290,14 @@ struct MacOSComputerUseActuationTests {
     @MainActor
     func emitterRechecksCancellationAfterProbe() async {
         let expected = Self.observation().target
+        let recorder = PostedEventRecorder()
         let emitter = CGEventComputerUseInputEmitter(
             targetReader: { $0 },
             cancellationCheck: { throw CancellationError() },
-            windowAtPointReader: { _ in expected.windowIdentifier }
+            windowAtPointReader: { _ in expected.windowIdentifier },
+            eventPoster: { event, processIdentifier in
+                recorder.record(event, processIdentifier: processIdentifier)
+            }
         )
 
         await #expect(throws: CancellationError.self) {
@@ -302,15 +306,21 @@ struct MacOSComputerUseActuationTests {
                 in: expected
             )
         }
+        #expect(recorder.eventTypes.isEmpty)
+        #expect(recorder.processIdentifiers.isEmpty)
     }
 
     @Test("An overlay at the click point prevents global input")
     @MainActor
     func occludingWindowStopsClick() async {
         let expected = Self.observation().target
+        let recorder = PostedEventRecorder()
         let emitter = CGEventComputerUseInputEmitter(
             targetReader: { $0 },
-            windowAtPointReader: { _ in "999" }
+            windowAtPointReader: { _ in "999" },
+            eventPoster: { event, processIdentifier in
+                recorder.record(event, processIdentifier: processIdentifier)
+            }
         )
 
         await #expect(throws: MacOSComputerUseActuationError.targetOccluded) {
@@ -319,6 +329,8 @@ struct MacOSComputerUseActuationTests {
                 in: expected
             )
         }
+        #expect(recorder.eventTypes.isEmpty)
+        #expect(recorder.processIdentifiers.isEmpty)
     }
 
     @Test("Events are delivered only to the selected process")
@@ -329,8 +341,8 @@ struct MacOSComputerUseActuationTests {
         let emitter = CGEventComputerUseInputEmitter(
             targetReader: { $0 },
             windowAtPointReader: { _ in expected.windowIdentifier },
-            eventPoster: { _, processIdentifier in
-                recorder.processIdentifiers.append(processIdentifier)
+            eventPoster: { event, processIdentifier in
+                recorder.record(event, processIdentifier: processIdentifier)
             }
         )
 
@@ -462,7 +474,13 @@ struct MacOSComputerUseActuationTests {
 
 @MainActor
 private final class PostedEventRecorder {
+    var eventTypes: [CGEventType] = []
     var processIdentifiers: [pid_t] = []
+
+    func record(_ event: CGEvent, processIdentifier: pid_t) {
+        eventTypes.append(event.type)
+        processIdentifiers.append(processIdentifier)
+    }
 }
 
 @MainActor
