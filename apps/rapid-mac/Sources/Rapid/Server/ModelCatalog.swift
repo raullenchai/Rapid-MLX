@@ -848,6 +848,7 @@ enum ModelCatalog {
                     tokens: tokens,
                     defaultEnabled: row["mtp_continuous_batching_tier"] as? String
                         == "verified"
+                        && (row["mtp_default_enabled"] as? Bool ?? true)
                 )
             } else if row["supports_spec_decode"] as? Bool == true {
                 speculative[alias] = SpeculativeDecodingPreset(
@@ -923,6 +924,7 @@ enum ModelCatalog {
                     tokens: tokens,
                     defaultEnabled: row["mtp_continuous_batching_tier"] as? String
                         == "verified"
+                        && (row["mtp_default_enabled"] as? Bool ?? true)
                 )
             } else if row["supports_spec_decode"] as? Bool == true {
                 speculative[alias] = SpeculativeDecodingPreset(
