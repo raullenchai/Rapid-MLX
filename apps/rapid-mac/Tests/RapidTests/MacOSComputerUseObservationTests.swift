@@ -248,6 +248,31 @@ struct MacOSComputerUseObservationTests {
         }
     }
 
+    @Test("A recycled PID and window ID from another app launch is rejected")
+    func recycledProcessLaunchFailsClosed() async {
+        let original = Self.captureResult()
+        let recycled = ComputerUseCapturedWindow(
+            target: WorkflowInteractionTarget(
+                bundleIdentifier: original.target.bundleIdentifier,
+                processIdentifier: original.target.processIdentifier,
+                processLaunchDate: Date(timeIntervalSinceReferenceDate: 2_000),
+                windowIdentifier: original.target.windowIdentifier,
+                windowFrame: original.target.windowFrame
+            ),
+            artifact: original.artifact
+        )
+        let observer = MacOSComputerUseObserver(
+            selections: ["draft": selection],
+            vault: ComputerUseObservationVault(),
+            captureSource: CaptureStub(result: recycled),
+            permissionReader: Self.granted
+        )
+
+        await #expect(throws: MacOSComputerUseObservationError.invalidCapture) {
+            _ = try await observer.observe(for: Self.step())
+        }
+    }
+
     @Test("Unknown steps cannot widen observation to another window")
     func unknownStepFailsClosed() async {
         let capture = CaptureStub(result: Self.captureResult())

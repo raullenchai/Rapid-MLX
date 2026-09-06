@@ -125,6 +125,7 @@ actor MacOSComputerUseObserver: LocalWorkflowObserving {
         guard captured.isStructurallyValid,
               captured.target.bundleIdentifier == selection.bundleIdentifier,
               captured.target.processIdentifier == selection.processIdentifier,
+              captured.target.processLaunchDate == selection.processLaunchDate,
               captured.target.windowIdentifier == String(selection.windowID)
         else {
             throw MacOSComputerUseObservationError.invalidCapture
