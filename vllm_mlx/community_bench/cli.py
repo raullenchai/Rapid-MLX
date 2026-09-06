@@ -90,17 +90,16 @@ def summarize_measurements(run: dict[str, Any]) -> list[str]:
         # Same formula as the board (rapidmlx.com) and the standardized
         # ``bench`` runner: the first token lands at ``ttft_ms``, so the
         # decode window covers ``output_tokens - 1`` tokens (llama.cpp
-        # ``tg`` / vLLM TPOT semantics). A single-token completion has no
-        # inter-token window, so ``N == 1`` reports ``N / window`` like the
-        # runner; zero-token samples carry no rate and are skipped.
-        # Printing ``N / window`` here made the CLI read 45.8 tok/s for a
-        # run the site then showed as 45.5.
+        # ``tg`` / vLLM TPOT semantics). A sample with fewer than two output
+        # tokens has no inter-token interval and therefore no decode rate;
+        # it is left out rather than shown as a number the board would not
+        # show. Printing ``N / window`` here made the CLI read 45.8 tok/s
+        # for a run the site then showed as 45.5.
         decode = [
-            (s["output_tokens"] - 1 if s["output_tokens"] > 1 else 1)
-            / (s["decode_duration_ms"] / 1000.0)
+            (s["output_tokens"] - 1) / (s["decode_duration_ms"] / 1000.0)
             for s in samples
             if isinstance(s.get("output_tokens"), int | float)
-            and s["output_tokens"] >= 1
+            and s["output_tokens"] >= 2
             and isinstance(s.get("decode_duration_ms"), int | float)
             and s["decode_duration_ms"] > 0
         ]
