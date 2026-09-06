@@ -10,7 +10,10 @@ enum MacOSComputerUseActuationError: Error, Equatable {
     case targetNotFrontmost
     case targetChanged
     case targetOccluded
-    case eventCreationFailed
+    case elementUnavailable
+    case elementChanged
+    case elementActionUnsupported
+    case elementActionFailed
 }
 
 protocol ComputerUseTargetProbing: Sendable {
@@ -18,15 +21,10 @@ protocol ComputerUseTargetProbing: Sendable {
         -> WorkflowInteractionTarget
 }
 
-protocol ComputerUseContentProbing: Sendable {
-    func currentObservation(for expected: WorkflowInteractionTarget) async throws
-        -> WorkflowObservation
-}
-
 protocol ComputerUseInputEmitting: Sendable {
     func emit(
         _ payload: WorkflowActionPayload,
-        in target: WorkflowInteractionTarget
+        verifiedAgainst observation: WorkflowObservation
     ) async throws
 }
 
@@ -42,18 +40,15 @@ actor MacOSComputerUseActuator: LocalWorkflowActuating {
 
     private let permissionReader: PermissionReader
     private let targetProbe: any ComputerUseTargetProbing
-    private let contentProbe: any ComputerUseContentProbing
     private let inputEmitter: any ComputerUseInputEmitting
 
     init(
         targetProbe: any ComputerUseTargetProbing = CGWindowComputerUseTargetProbe(),
-        contentProbe: any ComputerUseContentProbing =
-            ScreenCaptureKitComputerUseContentProbe(),
-        inputEmitter: any ComputerUseInputEmitting = CGEventComputerUseInputEmitter(),
+        inputEmitter: any ComputerUseInputEmitting =
+            AXComputerUseInputEmitter(),
         permissionReader: @escaping PermissionReader = MacAutomationPermissions.snapshot
     ) {
         self.targetProbe = targetProbe
-        self.contentProbe = contentProbe
         self.inputEmitter = inputEmitter
         self.permissionReader = permissionReader
     }
@@ -98,23 +93,14 @@ actor MacOSComputerUseActuator: LocalWorkflowActuating {
         ) else {
             throw MacOSComputerUseActuationError.targetChanged
         }
-        // Capture once more after the target preflight. A matching frame alone
-        // is insufficient: controls can move while the window identity and
-        // geometry remain unchanged. Do not emit coordinates grounded against
-        // pixels that are no longer current.
-        let finalObservation = try await contentProbe.currentObservation(
-            for: currentObservation.target
+        // The production emitter binds the click to one Accessibility element,
+        // re-captures the exact window, then re-resolves and presses that same
+        // semantic element. The preflight here keeps alternate emitters
+        // testable and rejects drift before entering the input layer.
+        try await inputEmitter.emit(
+            action.payload,
+            verifiedAgainst: currentObservation
         )
-        try Task.checkCancellation()
-        guard currentObservation.representsSameInteractionState(
-            as: finalObservation
-        ) else {
-            throw MacOSComputerUseActuationError.staleObservation
-        }
-        // The production emitter repeats this probe synchronously in the same
-        // MainActor turn as each CGEvent post. The preflight here keeps all
-        // emitters testable and rejects drift before entering the input layer.
-        try await inputEmitter.emit(action.payload, in: currentObservation.target)
     }
 
     private static func isSafeForWindowActuation(
@@ -122,58 +108,15 @@ actor MacOSComputerUseActuator: LocalWorkflowActuating {
     ) -> Bool {
         guard payload.isStructurallyValid else { return false }
         if case .click(let x, let y) = payload {
-            // 0 and 1 are window edges, not interior points. A CGEvent at
-            // maxX/maxY can belong to the adjacent or underlying window.
+            // 0 and 1 are window edges, not interior points. A coordinate at
+            // maxX/maxY can resolve to an adjacent or underlying element.
             return x > 0 && x < 1 && y > 0 && y < 1
         }
-        // Public macOS event APIs can target a process, but not one exact
-        // window inside that process. Until a semantic Accessibility adapter
-        // can bind text/key input to a verified element in this window, these
+        // Public keyboard event APIs can target a process, but not one exact
+        // window inside that process. Until semantic Accessibility input can
+        // bind text/key actions to a verified element in this window, these
         // payloads must fail closed rather than rely on focus timing.
         return false
-    }
-}
-
-/// Performs the final content-revision check without retaining another image.
-struct ScreenCaptureKitComputerUseContentProbe: ComputerUseContentProbing {
-    private let captureSource: any ComputerUseWindowCapturing
-
-    init(
-        captureSource: any ComputerUseWindowCapturing =
-            ScreenCaptureKitComputerUseCapture()
-    ) {
-        self.captureSource = captureSource
-    }
-
-    func currentObservation(
-        for expected: WorkflowInteractionTarget
-    ) async throws -> WorkflowObservation {
-        guard let windowID = CGWindowID(expected.windowIdentifier), windowID != 0 else {
-            throw MacOSComputerUseActuationError.targetUnavailable
-        }
-        let captured = try await captureSource.capture(
-            ComputerUseWindowSelection(
-                bundleIdentifier: expected.bundleIdentifier,
-                processIdentifier: expected.processIdentifier,
-                windowID: windowID
-            )
-        )
-        try Task.checkCancellation()
-        guard captured.isStructurallyValid,
-              MacOSComputerUseWindowIdentity.targetsMatch(
-                captured.target,
-                expected
-              )
-        else {
-            throw MacOSComputerUseActuationError.targetChanged
-        }
-        return WorkflowObservation(
-            target: captured.target,
-            contentRevision: MacOSComputerUseObserver.contentRevision(
-                target: captured.target,
-                pngData: captured.artifact.pngData
-            )
-        )
     }
 }
 
@@ -262,131 +205,152 @@ struct CGWindowComputerUseTargetProbe: ComputerUseTargetProbing {
     }
 }
 
-/// Narrow CGEvent adapter for process-bound clicks in one verified window.
-struct CGEventComputerUseInputEmitter: ComputerUseInputEmitting {
-    typealias TargetReader = @MainActor @Sendable (
-        WorkflowInteractionTarget
-    ) throws -> WorkflowInteractionTarget
-    typealias CancellationCheck = @MainActor @Sendable () throws -> Void
-    typealias WindowAtPointReader = @MainActor @Sendable (CGPoint) -> String?
-    typealias EventPoster = @MainActor @Sendable (CGEvent, pid_t) -> Void
+struct ComputerUseElementFingerprint: Equatable, Sendable {
+    let role: String
+    let subrole: String?
+    let identifier: String?
+    let title: String?
+    let frame: WorkflowWindowFrame
+}
 
-    private let targetReader: TargetReader
-    private let cancellationCheck: CancellationCheck
-    private let windowAtPointReader: WindowAtPointReader
-    private let eventPoster: EventPoster
+/// Element-bound click adapter. A coordinate is used only to resolve the
+/// current Accessibility element; input is delivered with AXPress to that
+/// element rather than through the global pointer event stream.
+struct AXComputerUseInputEmitter: ComputerUseInputEmitting {
+    typealias ElementBoundary = @MainActor @Sendable (
+        WorkflowActionPayload,
+        WorkflowInteractionTarget,
+        ComputerUseElementFingerprint?
+    ) throws -> ComputerUseElementFingerprint
+
+    private let captureSource: any ComputerUseWindowCapturing
+    private let elementBoundary: ElementBoundary
 
     init(
-        targetReader: @escaping TargetReader = {
-            try CGWindowComputerUseTargetProbe.currentTargetSynchronously(for: $0)
-        },
-        cancellationCheck: @escaping CancellationCheck = { try Task.checkCancellation() },
-        windowAtPointReader: @escaping WindowAtPointReader = {
-            MacOSComputerUseWindowIdentity.topmostWindowIdentifier(at: $0)
-        },
-        eventPoster: @escaping EventPoster = { event, processIdentifier in
-            event.postToPid(processIdentifier)
-        }
+        captureSource: any ComputerUseWindowCapturing =
+            ScreenCaptureKitComputerUseCapture(),
+        elementBoundary: @escaping ElementBoundary = Self.resolveAndOptionallyPress
     ) {
-        self.targetReader = targetReader
-        self.cancellationCheck = cancellationCheck
-        self.windowAtPointReader = windowAtPointReader
-        self.eventPoster = eventPoster
+        self.captureSource = captureSource
+        self.elementBoundary = elementBoundary
     }
 
     func emit(
         _ payload: WorkflowActionPayload,
-        in target: WorkflowInteractionTarget
+        verifiedAgainst observation: WorkflowObservation
     ) async throws {
         try Task.checkCancellation()
+        let target = observation.target
+        let fingerprint = try await MainActor.run {
+            try elementBoundary(payload, target, nil)
+        }
+
+        guard let windowID = CGWindowID(target.windowIdentifier), windowID != 0 else {
+            throw MacOSComputerUseActuationError.targetUnavailable
+        }
+        let captured = try await captureSource.capture(
+            ComputerUseWindowSelection(
+                bundleIdentifier: target.bundleIdentifier,
+                processIdentifier: target.processIdentifier,
+                windowID: windowID
+            )
+        )
+        try Task.checkCancellation()
+        guard captured.isStructurallyValid,
+              MacOSComputerUseWindowIdentity.targetsMatch(captured.target, target)
+        else {
+            throw MacOSComputerUseActuationError.targetChanged
+        }
+        let finalRevision = MacOSComputerUseObserver.contentRevision(
+            target: captured.target,
+            pngData: captured.artifact.pngData
+        )
+        guard finalRevision == observation.contentRevision else {
+            throw MacOSComputerUseActuationError.staleObservation
+        }
 
         try await MainActor.run {
-            guard let source = CGEventSource(stateID: .combinedSessionState) else {
-                throw MacOSComputerUseActuationError.eventCreationFailed
-            }
-
-            switch payload {
-            case .click(let normalizedX, let normalizedY):
-                let initial = try Self.requireCurrent(
-                    target,
-                    using: targetReader,
-                    cancellationCheck: cancellationCheck
-                )
-                let point = try Self.clickPoint(
-                    normalizedX: normalizedX,
-                    normalizedY: normalizedY,
-                    in: initial.windowFrame
-                )
-                guard let down = CGEvent(
-                    mouseEventSource: source,
-                    mouseType: .leftMouseDown,
-                    mouseCursorPosition: point,
-                    mouseButton: .left
-                ),
-                    let up = CGEvent(
-                        mouseEventSource: source,
-                        mouseType: .leftMouseUp,
-                        mouseCursorPosition: point,
-                        mouseButton: .left
-                    )
-                else {
-                    throw MacOSComputerUseActuationError.eventCreationFailed
-                }
-                try Self.post(
-                    down,
-                    at: point,
-                    expected: target,
-                    targetReader: targetReader,
-                    cancellationCheck: cancellationCheck,
-                    windowAtPointReader: windowAtPointReader,
-                    eventPoster: eventPoster
-                )
-                do {
-                    try Self.post(
-                        up,
-                        at: point,
-                        expected: target,
-                        targetReader: targetReader,
-                        cancellationCheck: cancellationCheck,
-                        windowAtPointReader: windowAtPointReader,
-                        eventPoster: eventPoster
-                    )
-                } catch {
-                    // Once mouse-down has reached the selected process, always
-                    // balance its button state. Leaving it held can turn later
-                    // user movement into an unintended drag. This cleanup is
-                    // still process-bound; the original validation error is
-                    // preserved so the workflow cannot advance.
-                    eventPoster(up, target.processIdentifier)
-                    throw error
-                }
-
-            case .typeText, .keyPress:
-                throw MacOSComputerUseActuationError.invalidAction
-            }
+            try Task.checkCancellation()
+            _ = try elementBoundary(payload, target, fingerprint)
         }
     }
 
     @MainActor
-    private static func post(
-        _ event: CGEvent,
-        at point: CGPoint,
-        expected: WorkflowInteractionTarget,
-        targetReader: TargetReader,
-        cancellationCheck: CancellationCheck,
-        windowAtPointReader: WindowAtPointReader,
-        eventPoster: EventPoster
-    ) throws {
-        _ = try requireCurrent(
-            expected,
-            using: targetReader,
-            cancellationCheck: cancellationCheck
+    private static func resolveAndOptionallyPress(
+        _ payload: WorkflowActionPayload,
+        _ expected: WorkflowInteractionTarget,
+        _ requiredFingerprint: ComputerUseElementFingerprint?
+    ) throws -> ComputerUseElementFingerprint {
+        guard case .click(let normalizedX, let normalizedY) = payload else {
+            throw MacOSComputerUseActuationError.invalidAction
+        }
+        let current = try CGWindowComputerUseTargetProbe
+            .currentTargetSynchronously(for: expected)
+        guard MacOSComputerUseWindowIdentity.targetsMatch(current, expected) else {
+            throw MacOSComputerUseActuationError.targetChanged
+        }
+        let point = try clickPoint(
+            normalizedX: normalizedX,
+            normalizedY: normalizedY,
+            in: current.windowFrame
         )
-        guard windowAtPointReader(point) == expected.windowIdentifier else {
+        guard MacOSComputerUseWindowIdentity.topmostWindowIdentifier(at: point)
+                == expected.windowIdentifier
+        else {
             throw MacOSComputerUseActuationError.targetOccluded
         }
-        try cancellationCheck()
-        eventPoster(event, expected.processIdentifier)
+        try Task.checkCancellation()
+
+        let application = AXUIElementCreateApplication(expected.processIdentifier)
+        var focusedValue: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(
+            application,
+            kAXFocusedWindowAttribute as CFString,
+            &focusedValue
+        ) == .success,
+            let focusedValue,
+            CFGetTypeID(focusedValue) == AXUIElementGetTypeID()
+        else {
+            throw MacOSComputerUseActuationError.targetNotFrontmost
+        }
+        let focusedWindow = unsafeDowncast(focusedValue, to: AXUIElement.self)
+
+        var element: AXUIElement?
+        guard AXUIElementCopyElementAtPosition(
+            application,
+            Float(point.x),
+            Float(point.y),
+            &element
+        ) == .success,
+            let element,
+            elementBelongsToWindow(element, focusedWindow: focusedWindow)
+        else {
+            throw MacOSComputerUseActuationError.elementUnavailable
+        }
+        guard elementSupportsPress(element) else {
+            throw MacOSComputerUseActuationError.elementActionUnsupported
+        }
+        var elementPID: pid_t = 0
+        guard AXUIElementGetPid(element, &elementPID) == .success,
+              elementPID == expected.processIdentifier
+        else {
+            throw MacOSComputerUseActuationError.elementUnavailable
+        }
+        let fingerprint = try elementFingerprint(element)
+        if let requiredFingerprint {
+            guard fingerprint == requiredFingerprint else {
+                throw MacOSComputerUseActuationError.elementChanged
+            }
+            try Task.checkCancellation()
+            guard AXUIElementPerformAction(
+                element,
+                kAXPressAction as CFString
+            ) == .success
+            else {
+                throw MacOSComputerUseActuationError.elementActionFailed
+            }
+        }
+        return fingerprint
     }
 
     static func clickPoint(
@@ -411,16 +375,106 @@ struct CGEventComputerUseInputEmitter: ComputerUseInputEmitting {
     }
 
     @MainActor
-    private static func requireCurrent(
-        _ expected: WorkflowInteractionTarget,
-        using targetReader: TargetReader,
-        cancellationCheck: CancellationCheck
-    ) throws -> WorkflowInteractionTarget {
-        let current = try targetReader(expected)
-        guard MacOSComputerUseWindowIdentity.targetsMatch(current, expected) else {
-            throw MacOSComputerUseActuationError.targetChanged
+    private static func elementBelongsToWindow(
+        _ element: AXUIElement,
+        focusedWindow: AXUIElement
+    ) -> Bool {
+        var current = element
+        for _ in 0 ..< 64 {
+            if CFEqual(current, focusedWindow) { return true }
+            var parentValue: CFTypeRef?
+            guard AXUIElementCopyAttributeValue(
+                current,
+                kAXParentAttribute as CFString,
+                &parentValue
+            ) == .success,
+                let parentValue,
+                CFGetTypeID(parentValue) == AXUIElementGetTypeID()
+            else { return false }
+            current = unsafeDowncast(parentValue, to: AXUIElement.self)
         }
-        try cancellationCheck()
-        return current
+        return false
+    }
+
+    @MainActor
+    private static func elementSupportsPress(_ element: AXUIElement) -> Bool {
+        var names: CFArray?
+        guard AXUIElementCopyActionNames(element, &names) == .success,
+              let actions = names as? [String]
+        else { return false }
+        return actions.contains(kAXPressAction as String)
+    }
+
+    @MainActor
+    private static func elementFingerprint(
+        _ element: AXUIElement
+    ) throws -> ComputerUseElementFingerprint {
+        guard let role = stringAttribute(kAXRoleAttribute as CFString, from: element),
+              let frame = elementFrame(element)
+        else {
+            throw MacOSComputerUseActuationError.elementUnavailable
+        }
+        return ComputerUseElementFingerprint(
+            role: role,
+            subrole: stringAttribute(kAXSubroleAttribute as CFString, from: element),
+            identifier: stringAttribute(kAXIdentifierAttribute as CFString, from: element),
+            title: stringAttribute(kAXTitleAttribute as CFString, from: element),
+            frame: frame
+        )
+    }
+
+    @MainActor
+    private static func stringAttribute(
+        _ attribute: CFString,
+        from element: AXUIElement
+    ) -> String? {
+        var value: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(element, attribute, &value) == .success else {
+            return nil
+        }
+        return value as? String
+    }
+
+    @MainActor
+    private static func elementFrame(
+        _ element: AXUIElement
+    ) -> WorkflowWindowFrame? {
+        var positionValue: CFTypeRef?
+        var sizeValue: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(
+            element,
+            kAXPositionAttribute as CFString,
+            &positionValue
+        ) == .success,
+            AXUIElementCopyAttributeValue(
+                element,
+                kAXSizeAttribute as CFString,
+                &sizeValue
+            ) == .success,
+            let positionValue,
+            let sizeValue,
+            CFGetTypeID(positionValue) == AXValueGetTypeID(),
+            CFGetTypeID(sizeValue) == AXValueGetTypeID()
+        else { return nil }
+        var origin = CGPoint.zero
+        var size = CGSize.zero
+        guard AXValueGetValue(
+            unsafeDowncast(positionValue, to: AXValue.self),
+            .cgPoint,
+            &origin
+        ),
+            AXValueGetValue(
+                unsafeDowncast(sizeValue, to: AXValue.self),
+                .cgSize,
+                &size
+            )
+        else { return nil }
+        let frame = WorkflowWindowFrame(
+            x: origin.x,
+            y: origin.y,
+            width: size.width,
+            height: size.height
+        )
+        return frame.isStructurallyValid ? frame : nil
     }
 }

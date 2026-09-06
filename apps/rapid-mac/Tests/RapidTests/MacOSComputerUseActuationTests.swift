@@ -17,7 +17,6 @@ struct MacOSComputerUseActuationTests {
         let emitter = InputEmitter()
         let actuator = MacOSComputerUseActuator(
             targetProbe: probe,
-            contentProbe: ContentProbe(result: .success(currentObservation)),
             inputEmitter: emitter,
             permissionReader: { .init(screenRecording: true, accessibility: true) }
         )
@@ -39,7 +38,6 @@ struct MacOSComputerUseActuationTests {
         let emitter = InputEmitter()
         let actuator = MacOSComputerUseActuator(
             targetProbe: probe,
-            contentProbe: ContentProbe(result: .success(groundingObservation)),
             inputEmitter: emitter,
             permissionReader: { .init(screenRecording: true, accessibility: true) }
         )
@@ -73,7 +71,6 @@ struct MacOSComputerUseActuationTests {
         let emitter = InputEmitter()
         let actuator = MacOSComputerUseActuator(
             targetProbe: probe,
-            contentProbe: ContentProbe(result: .success(groundingObservation)),
             inputEmitter: emitter,
             permissionReader: { .init(screenRecording: true, accessibility: true) }
         )
@@ -86,34 +83,6 @@ struct MacOSComputerUseActuationTests {
             )
         }
         #expect(await probe.callCount == 0)
-        #expect(await emitter.emissions.isEmpty)
-    }
-
-    @Test("Content drift during the final capture prevents the click")
-    func finalContentDriftIsRejected() async {
-        let observation = Self.observation()
-        let changed = WorkflowObservation(
-            target: observation.target,
-            contentRevision: "changed-at-final-boundary"
-        )
-        let probe = TargetProbe(result: .success(observation.target))
-        let contentProbe = ContentProbe(result: .success(changed))
-        let emitter = InputEmitter()
-        let actuator = MacOSComputerUseActuator(
-            targetProbe: probe,
-            contentProbe: contentProbe,
-            inputEmitter: emitter,
-            permissionReader: { .init(screenRecording: true, accessibility: true) }
-        )
-
-        await #expect(throws: MacOSComputerUseActuationError.staleObservation) {
-            try await actuator.perform(
-                Self.action(for: observation),
-                groundedAgainst: observation,
-                currentObservation: observation
-            )
-        }
-        #expect(await contentProbe.callCount == 1)
         #expect(await emitter.emissions.isEmpty)
     }
 
@@ -133,7 +102,6 @@ struct MacOSComputerUseActuationTests {
         let emitter = InputEmitter()
         let actuator = MacOSComputerUseActuator(
             targetProbe: probe,
-            contentProbe: ContentProbe(result: .success(groundedObservation)),
             inputEmitter: emitter,
             permissionReader: { .init(screenRecording: true, accessibility: true) }
         )
@@ -155,7 +123,6 @@ struct MacOSComputerUseActuationTests {
         let emitter = InputEmitter()
         let actuator = MacOSComputerUseActuator(
             targetProbe: probe,
-            contentProbe: ContentProbe(result: .success(observation)),
             inputEmitter: emitter,
             permissionReader: { .init(screenRecording: true, accessibility: false) }
         )
@@ -186,7 +153,6 @@ struct MacOSComputerUseActuationTests {
         let emitter = InputEmitter()
         let actuator = MacOSComputerUseActuator(
             targetProbe: probe,
-            contentProbe: ContentProbe(result: .success(observation)),
             inputEmitter: emitter,
             permissionReader: { .init(screenRecording: true, accessibility: true) }
         )
@@ -208,7 +174,6 @@ struct MacOSComputerUseActuationTests {
         let emitter = InputEmitter()
         let actuator = MacOSComputerUseActuator(
             targetProbe: probe,
-            contentProbe: ContentProbe(result: .success(observation)),
             inputEmitter: emitter,
             permissionReader: { .init(screenRecording: true, accessibility: true) }
         )
@@ -243,7 +208,6 @@ struct MacOSComputerUseActuationTests {
         let emitter = InputEmitter()
         let actuator = MacOSComputerUseActuator(
             targetProbe: probe,
-            contentProbe: ContentProbe(result: .success(observation)),
             inputEmitter: emitter,
             permissionReader: { .init(screenRecording: true, accessibility: true) }
         )
@@ -266,118 +230,84 @@ struct MacOSComputerUseActuationTests {
         #expect(await emitter.emissions.isEmpty)
     }
 
-    @Test("The production emitter rechecks target drift at its event boundary")
+    @Test("An unchanged capture presses the same resolved AX element")
     @MainActor
-    func emitterRejectsLastMomentDrift() async {
-        let expected = Self.observation().target
-        let moved = WorkflowInteractionTarget(
-            bundleIdentifier: expected.bundleIdentifier,
-            processIdentifier: expected.processIdentifier,
-            windowIdentifier: expected.windowIdentifier,
-            windowFrame: .init(x: 104, y: 200, width: 800, height: 600)
-        )
-        let emitter = CGEventComputerUseInputEmitter(targetReader: { _ in moved })
-
-        await #expect(throws: MacOSComputerUseActuationError.targetChanged) {
-            try await emitter.emit(
-                .click(normalizedX: 0.25, normalizedY: 0.75),
-                in: expected
-            )
-        }
-    }
-
-    @Test("Cancellation during the final target probe prevents the event")
-    @MainActor
-    func emitterRechecksCancellationAfterProbe() async {
-        let expected = Self.observation().target
-        let recorder = PostedEventRecorder()
-        let emitter = CGEventComputerUseInputEmitter(
-            targetReader: { $0 },
-            cancellationCheck: { throw CancellationError() },
-            windowAtPointReader: { _ in expected.windowIdentifier },
-            eventPoster: { event, processIdentifier in
-                recorder.record(event, processIdentifier: processIdentifier)
-            }
-        )
-
-        await #expect(throws: CancellationError.self) {
-            try await emitter.emit(
-                .click(normalizedX: 0.25, normalizedY: 0.75),
-                in: expected
-            )
-        }
-        #expect(recorder.eventTypes.isEmpty)
-        #expect(recorder.processIdentifiers.isEmpty)
-    }
-
-    @Test("An overlay at the click point prevents global input")
-    @MainActor
-    func occludingWindowStopsClick() async {
-        let expected = Self.observation().target
-        let recorder = PostedEventRecorder()
-        let emitter = CGEventComputerUseInputEmitter(
-            targetReader: { $0 },
-            windowAtPointReader: { _ in "999" },
-            eventPoster: { event, processIdentifier in
-                recorder.record(event, processIdentifier: processIdentifier)
-            }
-        )
-
-        await #expect(throws: MacOSComputerUseActuationError.targetOccluded) {
-            try await emitter.emit(
-                .click(normalizedX: 0.25, normalizedY: 0.75),
-                in: expected
-            )
-        }
-        #expect(recorder.eventTypes.isEmpty)
-        #expect(recorder.processIdentifiers.isEmpty)
-    }
-
-    @Test("Events are delivered only to the selected process")
-    @MainActor
-    func inputDeliveryIsProcessBound() async throws {
-        let expected = Self.observation().target
-        let recorder = PostedEventRecorder()
-        let emitter = CGEventComputerUseInputEmitter(
-            targetReader: { $0 },
-            windowAtPointReader: { _ in expected.windowIdentifier },
-            eventPoster: { event, processIdentifier in
-                recorder.record(event, processIdentifier: processIdentifier)
+    func unchangedCapturePressesBoundElement() async throws {
+        let fixture = Self.captureFixture()
+        let recorder = ElementBoundaryRecorder()
+        let emitter = AXComputerUseInputEmitter(
+            captureSource: ActuationCaptureStub(result: fixture.capture),
+            elementBoundary: { payload, target, required in
+                recorder.calls.append(.init(payload: payload, target: target, required: required))
+                return recorder.fingerprint
             }
         )
 
         try await emitter.emit(
             .click(normalizedX: 0.25, normalizedY: 0.75),
-            in: expected
+            verifiedAgainst: fixture.observation
         )
 
-        #expect(recorder.processIdentifiers == [42, 42])
+        #expect(recorder.calls.count == 2)
+        #expect(recorder.calls[0].required == nil)
+        #expect(recorder.calls[1].required == recorder.fingerprint)
+        #expect(recorder.calls.allSatisfy { $0.target == fixture.observation.target })
     }
 
-    @Test("A target change after mouse-down emits only a balancing mouse-up")
+    @Test("Changed pixels prevent the final AX element boundary")
     @MainActor
-    func mouseUpRevalidatesTarget() async {
-        let expected = Self.observation().target
-        let moved = WorkflowInteractionTarget(
-            bundleIdentifier: expected.bundleIdentifier,
-            processIdentifier: expected.processIdentifier,
-            windowIdentifier: expected.windowIdentifier,
-            windowFrame: .init(x: 101, y: 200, width: 800, height: 600)
+    func changedPixelsPreventPress() async {
+        let fixture = Self.captureFixture()
+        let changedCapture = ComputerUseCapturedWindow(
+            target: fixture.capture.target,
+            artifact: .init(
+                pngData: Data([9, 9, 9]),
+                pixelWidth: fixture.capture.artifact.pixelWidth,
+                pixelHeight: fixture.capture.artifact.pixelHeight
+            )
         )
-        let state = EventBoundaryState(expected: expected, changed: moved)
-        let emitter = CGEventComputerUseInputEmitter(
-            targetReader: { _ in state.postCount == 0 ? state.expected : state.changed },
-            windowAtPointReader: { _ in expected.windowIdentifier },
-            eventPoster: { event, _ in state.postedEventTypes.append(event.type) }
+        let recorder = ElementBoundaryRecorder()
+        let emitter = AXComputerUseInputEmitter(
+            captureSource: ActuationCaptureStub(result: changedCapture),
+            elementBoundary: { payload, target, required in
+                recorder.calls.append(.init(payload: payload, target: target, required: required))
+                return recorder.fingerprint
+            }
         )
 
-        await #expect(throws: MacOSComputerUseActuationError.targetChanged) {
+        await #expect(throws: MacOSComputerUseActuationError.staleObservation) {
             try await emitter.emit(
                 .click(normalizedX: 0.25, normalizedY: 0.75),
-                in: expected
+                verifiedAgainst: fixture.observation
             )
         }
-        #expect(state.postedEventTypes == [.leftMouseDown, .leftMouseUp])
+        #expect(recorder.calls.count == 1)
+        #expect(recorder.calls[0].required == nil)
+    }
+
+    @Test("A changed AX element is rejected at the press boundary")
+    @MainActor
+    func changedElementPreventsPress() async {
+        let fixture = Self.captureFixture()
+        let recorder = ElementBoundaryRecorder()
+        let emitter = AXComputerUseInputEmitter(
+            captureSource: ActuationCaptureStub(result: fixture.capture),
+            elementBoundary: { payload, target, required in
+                recorder.calls.append(.init(payload: payload, target: target, required: required))
+                if required != nil {
+                    throw MacOSComputerUseActuationError.elementChanged
+                }
+                return recorder.fingerprint
+            }
+        )
+
+        await #expect(throws: MacOSComputerUseActuationError.elementChanged) {
+            try await emitter.emit(
+                .click(normalizedX: 0.25, normalizedY: 0.75),
+                verifiedAgainst: fixture.observation
+            )
+        }
+        #expect(recorder.calls.count == 2)
     }
 
     @Test("Window-unbound keyboard payloads fail before desktop access", arguments: [
@@ -394,7 +324,6 @@ struct MacOSComputerUseActuationTests {
         let emitter = InputEmitter()
         let actuator = MacOSComputerUseActuator(
             targetProbe: probe,
-            contentProbe: ContentProbe(result: .success(observation)),
             inputEmitter: emitter,
             permissionReader: { .init(screenRecording: true, accessibility: true) }
         )
@@ -426,7 +355,7 @@ struct MacOSComputerUseActuationTests {
             height: 599.5
         )
 
-        let point = try CGEventComputerUseInputEmitter.clickPoint(
+        let point = try AXComputerUseInputEmitter.clickPoint(
             normalizedX: 0.25,
             normalizedY: 0.75,
             in: liveFrame
@@ -441,7 +370,7 @@ struct MacOSComputerUseActuationTests {
         let frame = WorkflowWindowFrame(x: 100, y: 200, width: 800, height: 600)
 
         #expect(throws: MacOSComputerUseActuationError.invalidAction) {
-            try CGEventComputerUseInputEmitter.clickPoint(
+            try AXComputerUseInputEmitter.clickPoint(
                 normalizedX: Double.leastNonzeroMagnitude,
                 normalizedY: 0.5,
                 in: frame
@@ -470,30 +399,48 @@ struct MacOSComputerUseActuationTests {
             risk: .localChange
         )
     }
-}
 
-@MainActor
-private final class PostedEventRecorder {
-    var eventTypes: [CGEventType] = []
-    var processIdentifiers: [pid_t] = []
-
-    func record(_ event: CGEvent, processIdentifier: pid_t) {
-        eventTypes.append(event.type)
-        processIdentifiers.append(processIdentifier)
+    private static func captureFixture() -> (
+        observation: WorkflowObservation,
+        capture: ComputerUseCapturedWindow
+    ) {
+        let target = observation().target
+        let artifact = ComputerUseObservationArtifact(
+            pngData: Data([1, 2, 3]),
+            pixelWidth: 800,
+            pixelHeight: 600
+        )
+        let capture = ComputerUseCapturedWindow(target: target, artifact: artifact)
+        return (
+            WorkflowObservation(
+                target: target,
+                contentRevision: MacOSComputerUseObserver.contentRevision(
+                    target: target,
+                    pngData: artifact.pngData
+                )
+            ),
+            capture
+        )
     }
 }
 
 @MainActor
-private final class EventBoundaryState {
-    let expected: WorkflowInteractionTarget
-    let changed: WorkflowInteractionTarget
-    var postedEventTypes: [CGEventType] = []
-    var postCount: Int { postedEventTypes.count }
+private struct ElementBoundaryCall {
+    let payload: WorkflowActionPayload
+    let target: WorkflowInteractionTarget
+    let required: ComputerUseElementFingerprint?
+}
 
-    init(expected: WorkflowInteractionTarget, changed: WorkflowInteractionTarget) {
-        self.expected = expected
-        self.changed = changed
-    }
+@MainActor
+private final class ElementBoundaryRecorder {
+    let fingerprint = ComputerUseElementFingerprint(
+        role: "AXButton",
+        subrole: nil,
+        identifier: "submit",
+        title: "Submit",
+        frame: .init(x: 200, y: 300, width: 80, height: 30)
+    )
+    var calls: [ElementBoundaryCall] = []
 }
 
 private actor TargetProbe: ComputerUseTargetProbing {
@@ -512,29 +459,27 @@ private actor TargetProbe: ComputerUseTargetProbing {
     }
 }
 
-private actor ContentProbe: ComputerUseContentProbing {
-    private let result: Result<WorkflowObservation, Error>
-    private(set) var callCount = 0
-
-    init(result: Result<WorkflowObservation, Error>) {
-        self.result = result
-    }
-
-    func currentObservation(
-        for _: WorkflowInteractionTarget
-    ) async throws -> WorkflowObservation {
-        callCount += 1
-        return try result.get()
-    }
-}
-
 private actor InputEmitter: ComputerUseInputEmitting {
     private(set) var emissions: [WorkflowActionPayload] = []
 
     func emit(
         _ payload: WorkflowActionPayload,
-        in _: WorkflowInteractionTarget
+        verifiedAgainst _: WorkflowObservation
     ) async throws {
         emissions.append(payload)
+    }
+}
+
+private actor ActuationCaptureStub: ComputerUseWindowCapturing {
+    private let result: ComputerUseCapturedWindow
+
+    init(result: ComputerUseCapturedWindow) {
+        self.result = result
+    }
+
+    func capture(_: ComputerUseWindowSelection) async throws
+        -> ComputerUseCapturedWindow
+    {
+        result
     }
 }
