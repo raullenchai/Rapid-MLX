@@ -232,3 +232,24 @@ def test_process_info_probes_work_in_a_fresh_interpreter() -> None:
     thermal, low_power = json.loads(out.stdout.strip().splitlines()[-1])
     assert thermal in {"nominal", "fair", "serious", "critical"}
     assert isinstance(low_power, bool)
+
+
+def test_process_info_is_unavailable_off_darwin(monkeypatch) -> None:
+    from vllm_mlx.community_bench import hardware
+
+    monkeypatch.setattr(hardware.sys, "platform", "linux")
+    assert hardware._process_info(b"thermalState", int) is None
+
+
+@pytest.mark.skipif(
+    sys.platform != "darwin", reason="Objective-C runtime is macOS-only"
+)
+def test_process_info_degrades_when_the_class_cannot_be_resolved(monkeypatch) -> None:
+    """A null NSProcessInfo (class not registered) degrades to None, not a crash."""
+    import ctypes
+
+    from vllm_mlx.community_bench import hardware
+
+    monkeypatch.setattr(ctypes, "cast", lambda *args, **kwargs: lambda *call: 0)
+    assert hardware._process_info(b"thermalState", ctypes.c_long) is None
+    assert hardware._thermal_state() == "unknown"
