@@ -29,6 +29,10 @@ _MAX_EDIT_IMAGE_PIXELS = 40_000_000
 # slack), enforced BEFORE FastAPI spools the body to disk.
 _IMAGE_EDIT_REQUEST_BYTES = _MAX_EDIT_IMAGE_BYTES + 1024 * 1024
 _OVERSIZE_DETAIL = "image edit request body exceeds the 25 MB limit"
+# Issue #3058 derives about 38 TFLOP per denoise step for dense FLUX.2 Klein
+# at 1024 square. It is the only model/shape with a reviewed operation-count
+# estimate, so logs must not extrapolate this value to other families or sizes.
+_KLEIN_1024_TFLOP_PER_STEP = 38.0
 
 
 class _ImageBodyTooLargeError(Exception):
@@ -207,14 +211,16 @@ def _image_engine(model_name: str = ""):
     return img_engine
 
 
-def _generate_one(img_engine, request: ImageGenerationRequest, seed: int) -> bytes:
+def _generate_one(
+    img_engine, request: ImageGenerationRequest, seed: int
+) -> tuple[bytes, dict]:
     """Blocking single-image render — runs off the event loop."""
     width, height = request.dimensions()
     # Step count is family-aware: a distilled model (Klein/schnell, 4 steps)
     # would waste wall-clock at 20 and a non-distilled one (Qwen, 20) would be
     # noise at 4. The engine advertises the right default per family.
     default_steps = getattr(img_engine, "default_steps", 4)
-    return img_engine.generate(
+    kwargs = dict(
         prompt=request.prompt,
         width=width,
         height=height,
@@ -227,6 +233,60 @@ def _generate_one(img_engine, request: ImageGenerationRequest, seed: int) -> byt
         guidance=request.guidance,
         negative_prompt=request.negative_prompt,
     )
+    generate_with_performance = getattr(img_engine, "generate_with_performance", None)
+    if callable(generate_with_performance):
+        return generate_with_performance(**kwargs)
+    png_bytes = img_engine.generate(**kwargs)
+    snapshot_fn = getattr(img_engine, "performance_snapshot", None)
+    try:
+        snapshot = snapshot_fn() if callable(snapshot_fn) else {}
+    except Exception:  # noqa: BLE001 — optional telemetry must not fail an image
+        snapshot = {}
+    return png_bytes, snapshot if isinstance(snapshot, dict) else {}
+
+
+def _log_image_performance(
+    img_engine,
+    *,
+    performance: dict,
+    image_index: int,
+    image_count: int,
+    width: int,
+    height: int,
+    steps: int,
+    total_seconds: float,
+) -> None:
+    """Log one completed image without exposing its prompt or response bytes."""
+    model_name = str(getattr(img_engine, "model_name", "unknown"))
+    family = str(getattr(img_engine, "family", "unknown"))
+    denoise_seconds = performance.get("denoise_seconds")
+    denoise_steps = performance.get("denoise_steps")
+    prefix = (
+        f"Image generation: model={model_name} family={family} "
+        f"image={image_index}/{image_count} size={width}x{height} steps={steps} "
+        f"total={total_seconds:.2f}s"
+    )
+    if (
+        not isinstance(denoise_seconds, (int, float))
+        or isinstance(denoise_seconds, bool)
+        or not math.isfinite(denoise_seconds)
+        or denoise_seconds <= 0
+        or denoise_steps != steps
+        or steps <= 0
+    ):
+        logger.info("%s (denoise timing unavailable)", prefix)
+        return
+
+    seconds_per_step = float(denoise_seconds) / steps
+    suffix = f" denoise={float(denoise_seconds):.2f}s ({seconds_per_step:.2f} s/step"
+    if family == "flux2-klein" and width == 1024 and height == 1024:
+        estimated_tflops = (
+            _KLEIN_1024_TFLOP_PER_STEP / seconds_per_step
+            if seconds_per_step > 0
+            else 0.0
+        )
+        suffix += f", ~{estimated_tflops:.1f} estimated TFLOPS"
+    logger.info("%s%s)", prefix, suffix)
 
 
 @router.post("/v1/images/generations")
@@ -285,9 +345,16 @@ async def create_image(request: ImageGenerationRequest = Body(...)):
 
     data = []
     cancelled = False
+    width, height = request.dimensions()
+    steps = (
+        request.steps
+        if request.steps is not None
+        else int(getattr(img_engine, "default_steps", 4))
+    )
     for index in range(request.n):
+        image_started = time.perf_counter()
         try:
-            png_bytes = await run_to_completion(
+            png_bytes, performance = await run_to_completion(
                 _generate_one, img_engine, request, (base_seed + index) & 0x7FFFFFFF
             )
         except ImageGenerationCancelled:
@@ -307,6 +374,19 @@ async def create_image(request: ImageGenerationRequest = Body(...)):
                 },
             ) from exc
         data.append({"b64_json": base64.b64encode(png_bytes).decode("ascii")})
+        try:
+            _log_image_performance(
+                img_engine,
+                performance=performance,
+                image_index=index + 1,
+                image_count=request.n,
+                width=width,
+                height=height,
+                steps=steps,
+                total_seconds=time.perf_counter() - image_started,
+            )
+        except Exception:  # noqa: BLE001 — telemetry must never fail the response
+            logger.warning("image performance telemetry failed", exc_info=True)
 
     return {"created": int(time.time()), "data": data, "cancelled": cancelled}
 

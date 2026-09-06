@@ -60,7 +60,7 @@ _QUANT_TAG_RE = re.compile(
 
 # mflux/Metal graphs are not re-entrant — a single process-wide lock serializes
 # every generation exactly like the video lane's ``_PROCESS_GENERATION_LOCK``.
-_PROCESS_GENERATION_LOCK = threading.Lock()
+_PROCESS_GENERATION_LOCK = threading.RLock()
 
 # Default quantization for the on-load quantize path. 4-bit is the 32GB sweet
 # spot (FLUX.1-schnell ~9GB, Qwen-Image ~12GB resident at q4).
@@ -100,6 +100,14 @@ class _ProgressReporter:
     def __init__(self, engine: ImageGenerationEngine) -> None:
         self._engine = engine
 
+    def call_before_loop(self, **kwargs) -> None:  # noqa: ANN003
+        """Start the denoise-only clock after prompt encoding."""
+        config = kwargs.get("config")
+        total = getattr(config, "num_inference_steps", 0) or self._engine._progress.get(
+            "total", 0
+        )
+        self._engine._start_denoise(int(total))
+
     def call_in_loop(self, t, seed, prompt, latents, config, time_steps) -> None:  # noqa: ANN001
         engine = self._engine
         total = getattr(config, "num_inference_steps", 0) or engine._progress.get(
@@ -113,6 +121,14 @@ class _ProgressReporter:
         engine._progress["total"] = int(total)
         if engine._is_cancelled():
             raise ImageGenerationCancelled("Generation cancelled.")
+
+    def call_after_loop(self, **kwargs) -> None:  # noqa: ANN003
+        """Stop the clock after the final synchronized denoise step."""
+        config = kwargs.get("config")
+        total = getattr(config, "num_inference_steps", 0) or self._engine._progress.get(
+            "total", 0
+        )
+        self._engine._finish_denoise(int(total))
 
 
 def _detect_family(model_name: str) -> str:
@@ -248,6 +264,13 @@ class ImageGenerationEngine:
             "total": 0,
             "started_at": 0.0,
         }
+        # mflux exposes callback boundaries after prompt encoding and after the
+        # final synchronized denoise step. Keep that clock separate from the
+        # user-facing wall clock so completion logs can report real s/step
+        # without adding an mx.eval synchronization to the hot path.
+        self._denoise_started_at: float | None = None
+        self._last_denoise_seconds: float | None = None
+        self._last_denoise_steps = 0
         # Cancellation is scoped by a monotonic run sequence rather than a bare
         # boolean, so a cancel is tied to a specific render and can never be
         # clobbered by the next request arming itself. ``_active_seq`` is the
@@ -265,6 +288,19 @@ class ImageGenerationEngine:
         """True when the in-flight run has an outstanding cancel request."""
         with self._state_lock:
             return self._active_seq > 0 and self._cancel_seq >= self._active_seq
+
+    def _start_denoise(self, total: int) -> None:
+        self._denoise_started_at = time.perf_counter()
+        self._last_denoise_seconds = None
+        self._last_denoise_steps = max(0, int(total))
+
+    def _finish_denoise(self, total: int) -> None:
+        started = self._denoise_started_at
+        if started is None:
+            return
+        self._last_denoise_seconds = max(0.0, time.perf_counter() - started)
+        self._last_denoise_steps = max(0, int(total))
+        self._denoise_started_at = None
 
     def _model_path_for_mflux(self) -> str | None:
         """``model_path`` to hand mflux: a local directory whenever we have one.
@@ -802,6 +838,30 @@ class ImageGenerationEngine:
             "family": self.family,
         }
 
+    def performance_snapshot(self) -> dict[str, float | int | None]:
+        """Return timing for the last fully completed denoise loop.
+
+        This is an internal logging surface, not part of the Images API. Native
+        backends that do not expose both loop boundaries report ``None`` rather
+        than mixing prompt/VAE time into a value labelled denoise throughput.
+        """
+        return {
+            "denoise_seconds": self._last_denoise_seconds,
+            "denoise_steps": self._last_denoise_steps,
+        }
+
+    def generate_with_performance(
+        self, **kwargs
+    ) -> tuple[bytes, dict[str, float | int | None]]:  # noqa: ANN003
+        """Generate and capture its timing before another render can start."""
+        # ``generate`` takes this same process-wide RLock. The outer acquisition
+        # deliberately keeps the last-run snapshot paired with these PNG bytes;
+        # without it, a queued request could reset or replace the timing between
+        # ``generate`` returning and the route reading the snapshot.
+        with self._lock:
+            png_bytes = self.generate(**kwargs)
+            return png_bytes, self.performance_snapshot()
+
     def generate(
         self,
         *,
@@ -949,6 +1009,9 @@ class ImageGenerationEngine:
                 total=int(num_inference_steps),
                 started_at=time.time(),
             )
+            self._denoise_started_at = None
+            self._last_denoise_seconds = None
+            self._last_denoise_steps = 0
             try:
                 if self.family == "hidream-o1-dev":
                     self._validate_hidream_prompt_tokens(prompt)

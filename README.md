@@ -182,6 +182,22 @@ family default shown below.
 | `qwen-image` | Text inside images | Generate | 28.9 GiB | 64 GB | 20 |
 <!-- image-model-matrix:end -->
 
+At 1024×1024 with the four-step Klein default, measured warm generation was
+about **9.2 seconds per image on an M3 Ultra**. On a 32 GB M2 Pro, the q4 path
+measured a 52.7-second median; explicitly selecting
+`flux2-klein-4b-bf16` reduced that median to 41.8 seconds (1.26× throughput).
+The eight-step `z-image-turbo` baseline was about 34 seconds on the M3 Ultra
+and 150 seconds on the M2 Pro.
+The q4 alias remains the predictable default; on the measured 32 GB M2 Pro,
+use the larger 14.9 GiB BF16 alias when latency matters. Exact results depend
+on resolution, power/thermal state, and other workloads. The server completion
+log reports total time and, when the backend exposes exact loop boundaries,
+measured denoise `s/step`. For the qualified 1024-square Klein shape it also
+reports estimated achieved TFLOPS; unavailable or unqualified values are never
+fabricated.
+
+→ [Reproducible precision benchmark and methodology](docs/engineering/performance/2026-09-04-image-weight-precision.md)
+
 Image work is single-flight: one generation runs at a time so two diffusion
 pipelines cannot exhaust unified memory. Model weights retain their own
 licenses and use restrictions; review the upstream model card before commercial

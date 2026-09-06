@@ -4,6 +4,18 @@ Issue [#3058](https://github.com/raullenchai/Rapid-MLX/issues/3058)
 measured FLUX.2 Klein 4B at 1024×1024, four steps, with the same prompt and
 seed on an otherwise-idle 32 GB M2 Pro Mac mini:
 
+The broader issue baseline used Rapid-MLX 0.13.4, mflux 0.19.1, macOS 26.5.2,
+six prompts per model, and observed under 3% variance:
+
+| Model and default | M3 Ultra 256 GB | M2 Pro 32 GB |
+|---|---:|---:|
+| FLUX.2 Klein q4, 1024 square, 4 steps | 9.2 s | 52 s |
+| Z-Image Turbo q4, 1024 square, 8 steps | 34 s | 150 s |
+
+Those cross-machine values are user-expectation baselines, not a controlled
+hardware comparison: the machines have different GPU resources. The precision
+comparison below changes weights on the same M2 Pro workload.
+
 | Weight path | Wall time per image |
 |---|---:|
 | BFL bf16 | 44.0 / 47.4 s |
@@ -59,8 +71,30 @@ loads it through `model_path`, and passes `quantize=None`. The q4 alias and all
 other models are unchanged. A range-read of the pinned snapshot's first
 transformer shard found 69 tensors, all declared `BF16`, and no `.scales` or
 `.biases` quantization auxiliaries. Automatic chip selection is deliberately
-deferred until broader M1/M2 family coverage exists; the one measured M2 Pro
-working set is not enough to define a safe hardware policy.
+not adopted: the one measured M2 Pro working set is not enough to define a safe
+M1/M2-family policy, and silently changing the public alias would also change
+its download size, memory demand, and output bytes. The explicit BF16 alias is
+the stable policy until each additional hardware/model combination has
+independent qualification.
+
+## Completion telemetry
+
+The Images generation route logs one completion line per image. mflux exposes
+callbacks after prompt encoding and after the final synchronized denoise step,
+so this measurement adds no evaluation barrier to the hot path and keeps model
+load, prompt encoding, VAE decode, PNG encoding, and base64 work separate from
+the denoise-only rate:
+
+```text
+Image generation: model=... family=flux2-klein image=1/1 size=1024x1024 steps=4 total=...s denoise=11.20s (2.80 s/step, ~13.6 estimated TFLOPS)
+```
+
+The TFLOPS value is an operation-count estimate, not a hardware counter. It is
+emitted only for FLUX.2 Klein at 1024 square, using the issue's approximately
+38 TFLOP per denoise-step derivation divided by measured seconds per step. Other
+families and sizes still report exact total time; backends without both denoise
+boundaries say `denoise timing unavailable` rather than re-labelling
+end-to-end time or extrapolating an unqualified FLOP count.
 
 ## Reproduction checklist
 

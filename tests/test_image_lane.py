@@ -398,6 +398,60 @@ def test_progress_snapshot_shape():
     assert snap["family"] == "flux2-klein"
 
 
+def test_mflux_reporter_records_denoise_only_timing(monkeypatch):
+    engine = ImageGenerationEngine("Runpod/FLUX.2-klein-4B-mflux-4bit")
+    ticks = iter((10.0, 21.2))
+    monkeypatch.setattr("vllm_mlx.image.engine.time.perf_counter", lambda: next(ticks))
+
+    class _Cfg:
+        num_inference_steps = 4
+
+    engine._reporter.call_before_loop(config=_Cfg())
+    engine._reporter.call_after_loop(config=_Cfg())
+
+    assert engine.performance_snapshot() == {
+        "denoise_seconds": pytest.approx(11.2),
+        "denoise_steps": 4,
+    }
+
+
+def test_finish_denoise_without_start_is_a_noop():
+    engine = ImageGenerationEngine("Runpod/FLUX.2-klein-4B-mflux-4bit")
+
+    engine._finish_denoise(4)
+
+    assert engine.performance_snapshot() == {
+        "denoise_seconds": None,
+        "denoise_steps": 0,
+    }
+
+
+def test_generate_with_performance_pairs_bytes_and_snapshot(monkeypatch):
+    engine = ImageGenerationEngine("Runpod/FLUX.2-klein-4B-mflux-4bit")
+    engine._last_denoise_seconds = 8.0
+    engine._last_denoise_steps = 4
+    monkeypatch.setattr(engine, "generate", lambda **kwargs: b"png")
+
+    png_bytes, performance = engine.generate_with_performance(prompt="a fox")
+
+    assert png_bytes == b"png"
+    assert performance == {"denoise_seconds": 8.0, "denoise_steps": 4}
+
+
+def test_new_generation_clears_stale_denoise_timing():
+    engine = ImageGenerationEngine("Runpod/FLUX.2-klein-4B-mflux-4bit")
+    engine._last_denoise_seconds = 11.2
+    engine._last_denoise_steps = 4
+    engine._model = _FakeModel()  # no callback boundaries in this test double
+
+    engine.generate(prompt="a fox", num_inference_steps=4, seed=1)
+
+    assert engine.performance_snapshot() == {
+        "denoise_seconds": None,
+        "denoise_steps": 0,
+    }
+
+
 def test_generate_resets_progress_and_registers_reporter():
     engine = ImageGenerationEngine("Runpod/FLUX.2-klein-4B-mflux-4bit")
 
@@ -510,15 +564,42 @@ def test_image_adapter_residency_without_mode_preserves_family_default(monkeypat
     assert modes == [None]
 
 
+def test_image_adapter_delegates_atomic_performance_methods(monkeypatch):
+    engine = ImageEngine("Runpod/FLUX.2-klein-4B-mflux-4bit")
+    expected = {"denoise_seconds": 8.0, "denoise_steps": 4}
+    monkeypatch.setattr(engine._engine, "performance_snapshot", lambda: expected)
+    monkeypatch.setattr(
+        engine._engine,
+        "generate_with_performance",
+        lambda **kwargs: (b"png", expected),
+    )
+
+    assert engine.performance_snapshot() == expected
+    assert engine.generate_with_performance(prompt="a fox") == (b"png", expected)
+
+
 # --------------------------------------------------------------------------- #
 # Route: /v1/images/generations
 # --------------------------------------------------------------------------- #
 class _FakeImageEngine:
     is_image_gen = True
 
-    def __init__(self, is_edit=False, default_steps=4):
+    def __init__(
+        self,
+        is_edit=False,
+        default_steps=4,
+        *,
+        family="flux2-klein",
+        performance=None,
+    ):
         self.is_edit = is_edit
         self.default_steps = default_steps
+        self.family = family
+        self.model_name = "repo/fake-image"
+        self.performance = performance or {
+            "denoise_seconds": None,
+            "denoise_steps": 0,
+        }
         self.seeds = []
         self.image_paths_seen = []
         self.dims_seen = []
@@ -533,6 +614,9 @@ class _FakeImageEngine:
             "elapsed_ms": 1200,
             "family": "flux2-klein",
         }
+
+    def performance_snapshot(self):
+        return self.performance
 
     def request_cancel(self):
         self.cancelled = True
@@ -625,6 +709,150 @@ def test_route_happy_path_returns_b64(client, monkeypatch):
     assert raw.startswith(_PNG_MAGIC)
 
 
+def test_route_logs_measured_klein_step_throughput(client, monkeypatch, caplog):
+    engine = _FakeImageEngine(performance={"denoise_seconds": 11.2, "denoise_steps": 4})
+    _patch_engine(monkeypatch, engine)
+
+    with caplog.at_level("INFO", logger="vllm_mlx.routes.images"):
+        resp = client.post(
+            "/v1/images/generations",
+            json={
+                "prompt": "private prompt must not reach logs",
+                "size": "1024x1024",
+                "steps": 4,
+            },
+        )
+
+    assert resp.status_code == 200
+    message = next(
+        record.getMessage()
+        for record in caplog.records
+        if record.getMessage().startswith("Image generation:")
+    )
+    assert "size=1024x1024 steps=4" in message
+    assert "denoise=11.20s (2.80 s/step" in message
+    assert "~13.6 estimated TFLOPS" in message
+    assert "private prompt" not in message
+
+
+def test_route_prefers_atomic_generation_and_performance(client, monkeypatch):
+    engine = _FakeImageEngine(performance={"denoise_seconds": 4.0, "denoise_steps": 4})
+    atomic_calls = []
+
+    def _generate_with_performance(**kwargs):
+        atomic_calls.append(kwargs)
+        return engine.generate(**kwargs), engine.performance
+
+    engine.generate_with_performance = _generate_with_performance
+    _patch_engine(monkeypatch, engine)
+
+    resp = client.post("/v1/images/generations", json={"prompt": "a fox", "seed": 42})
+
+    assert resp.status_code == 200
+    assert atomic_calls[0]["prompt"] == "a fox"
+
+
+def test_route_ignores_legacy_performance_snapshot_failure(client, monkeypatch, caplog):
+    engine = _FakeImageEngine()
+
+    def _broken_snapshot():
+        raise RuntimeError("optional telemetry failed")
+
+    monkeypatch.setattr(engine, "performance_snapshot", _broken_snapshot)
+    _patch_engine(monkeypatch, engine)
+
+    with caplog.at_level("INFO", logger="vllm_mlx.routes.images"):
+        resp = client.post("/v1/images/generations", json={"prompt": "a fox"})
+
+    assert resp.status_code == 200
+    message = next(
+        record.getMessage()
+        for record in caplog.records
+        if record.getMessage().startswith("Image generation:")
+    )
+    assert message.endswith("(denoise timing unavailable)")
+
+
+def test_route_does_not_extrapolate_tflops_to_other_models(client, monkeypatch, caplog):
+    engine = _FakeImageEngine(
+        family="z-image",
+        default_steps=8,
+        performance={"denoise_seconds": 16.0, "denoise_steps": 8},
+    )
+    _patch_engine(monkeypatch, engine)
+
+    with caplog.at_level("INFO", logger="vllm_mlx.routes.images"):
+        resp = client.post(
+            "/v1/images/generations",
+            json={"prompt": "a fox", "size": "1024x1024"},
+        )
+
+    assert resp.status_code == 200
+    message = next(
+        record.getMessage()
+        for record in caplog.records
+        if record.getMessage().startswith("Image generation:")
+    )
+    assert "denoise=16.00s (2.00 s/step)" in message
+    assert "TFLOPS" not in message
+
+
+def test_route_does_not_extrapolate_tflops_to_other_sizes(client, monkeypatch, caplog):
+    engine = _FakeImageEngine(performance={"denoise_seconds": 8.0, "denoise_steps": 4})
+    _patch_engine(monkeypatch, engine)
+
+    with caplog.at_level("INFO", logger="vllm_mlx.routes.images"):
+        resp = client.post(
+            "/v1/images/generations",
+            json={"prompt": "a fox", "size": "768x768", "steps": 4},
+        )
+
+    assert resp.status_code == 200
+    message = next(
+        record.getMessage()
+        for record in caplog.records
+        if record.getMessage().startswith("Image generation:")
+    )
+    assert "denoise=8.00s (2.00 s/step)" in message
+    assert "TFLOPS" not in message
+
+
+def test_route_keeps_successful_image_when_performance_logging_fails(
+    client, monkeypatch
+):
+    engine = _FakeImageEngine(performance={"denoise_seconds": 4.0, "denoise_steps": 4})
+    _patch_engine(monkeypatch, engine)
+    monkeypatch.setattr(
+        "vllm_mlx.routes.images._log_image_performance",
+        lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("telemetry")),
+    )
+
+    resp = client.post("/v1/images/generations", json={"prompt": "a fox", "seed": 42})
+
+    assert resp.status_code == 200
+    assert base64.b64decode(resp.json()["data"][0]["b64_json"]).startswith(_PNG_MAGIC)
+
+
+@pytest.mark.parametrize("bad_seconds", [0.0, float("nan"), float("inf")])
+def test_route_rejects_invalid_denoise_timing(client, monkeypatch, caplog, bad_seconds):
+    engine = _FakeImageEngine(
+        performance={"denoise_seconds": bad_seconds, "denoise_steps": 4}
+    )
+    _patch_engine(monkeypatch, engine)
+
+    with caplog.at_level("INFO", logger="vllm_mlx.routes.images"):
+        resp = client.post("/v1/images/generations", json={"prompt": "a fox"})
+
+    assert resp.status_code == 200
+    message = next(
+        record.getMessage()
+        for record in caplog.records
+        if record.getMessage().startswith("Image generation:")
+    )
+    assert message.endswith("(denoise timing unavailable)")
+    assert "TFLOPS" not in message
+
+
 def test_route_selects_resident_image_engine_by_model(client, monkeypatch):
     from vllm_mlx.runtime.model_registry import ModelEntry, ModelRegistry
 
@@ -660,6 +888,30 @@ def test_route_multi_image_offsets_seed(client, monkeypatch):
     assert resp.status_code == 200
     assert len(resp.json()["data"]) == 3
     assert engine.seeds == [100, 101, 102]  # per-index seed offset
+
+
+def test_route_logs_each_completed_image_in_multi_image_request(
+    client, monkeypatch, caplog
+):
+    engine = _FakeImageEngine(performance={"denoise_seconds": 4.0, "denoise_steps": 4})
+    _patch_engine(monkeypatch, engine)
+
+    with caplog.at_level("INFO", logger="vllm_mlx.routes.images"):
+        resp = client.post(
+            "/v1/images/generations",
+            json={"prompt": "three foxes", "n": 3, "seed": 100},
+        )
+
+    assert resp.status_code == 200
+    messages = [
+        record.getMessage()
+        for record in caplog.records
+        if record.getMessage().startswith("Image generation:")
+    ]
+    assert len(messages) == 3
+    assert all(
+        f"image={index}/3" in message for index, message in enumerate(messages, start=1)
+    )
 
 
 def test_progress_endpoint_returns_snapshot(client, monkeypatch):
