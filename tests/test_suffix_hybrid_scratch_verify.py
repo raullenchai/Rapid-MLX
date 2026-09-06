@@ -1647,6 +1647,125 @@ class TestSingleSnapshotCommit:
             gb._step()
         _assert_state_equal(gb.prompt_cache, pristine)
 
+    def test_post_commit_failure_deferres_mutation_tail(self, monkeypatch):
+        """Codex round-9g finding: the post-commit phase must not leave ANY
+        bookkeeping half-mutated when a fallible MLX op raises. The fix does
+        this by reordering so all fallible compute (logprob construction) runs
+        BEFORE the mutation tail (cooldown/adaptive width set_state, drafter,
+        counter, gb fields, emit stash). We prove the deferral by spying on the
+        counter's ``set_state`` — it is only invoked in the mutation tail, so
+        if a ``logsumexp`` raise happens first, ``set_state`` must never run."""
+        from types import SimpleNamespace
+        from unittest.mock import MagicMock, patch
+
+        import vllm_mlx.scheduler as scheduler
+        from vllm_mlx.model_auto_config import ModelConfig
+        from vllm_mlx.speculative import suffix_counter, suffix_decoding
+
+        class SpyCounter(suffix_counter.SuffixAcceptCounter):
+            def __init__(self):
+                super().__init__()
+                self.set_state_calls = 0
+
+            def set_state(self, current_k, backoff_level):
+                self.set_state_calls += 1
+                return super().set_state(current_k, backoff_level)
+
+        spy = SpyCounter()
+        monkeypatch.setattr(suffix_counter, "get_global_counter", lambda: spy)
+
+        model, _ = _model_and_prompt()
+        probe = model.make_cache()
+        mx.eval(model(mx.array([[1, 2, 3]]), cache=probe))
+        l0 = model(mx.array([[7]]), cache=probe)
+        mx.eval(l0)
+        d0 = int(mx.argmax(l0[:, -1], axis=-1).item())
+        d1 = d0  # accept-all draft so the step commits
+
+        class MockDrafter:
+            max_draft_tokens = 2
+
+            def __init__(self, **_kw):
+                pass
+
+            def add_prompt_tokens(self, _t):
+                pass
+
+            def add_generated_token(self, _t):
+                pass
+
+            def record_acceptance(self, _c):
+                pass
+
+            def get_draft(self):
+                return [d0, d1]
+
+        pristine = model.make_cache()
+        mx.eval(model(mx.array([[1, 2, 3]]), cache=pristine))
+
+        gb = SimpleNamespace(
+            _next_tokens=mx.array([7], dtype=mx.int32),
+            _next_logprobs=[mx.zeros((64,))],
+            uids=[1],
+            tokens=[[]],
+            logits_processors=[],
+            prompt_cache=pristine,
+            _num_tokens=[0],
+            max_tokens=[10],
+            state_machines=[SimpleNamespace(match=lambda s, _t: (s, None, None))],
+            _matcher_states=[None],
+            extract_cache=lambda _r: [],
+            model=model,
+        )
+        gb.Response = SimpleNamespace
+        gb._step = lambda: ([7], [])
+        gb.next = lambda: []
+        bg = MagicMock()
+        bg._generation_batch = gb
+        bg.remove = lambda *a, **k: {}
+        monkeypatch.setattr(suffix_decoding, "SuffixDecodingDrafter", MockDrafter)
+        profile = ModelConfig(is_hybrid=True, supports_spec_decode=False)
+        scheduler._install_suffix_decoding(
+            bg,
+            model=model,
+            profile=profile,
+            max_draft=2,
+            max_suffix_len=4,
+            min_confidence=0.3,
+            requests={},
+            uid_to_request_id={},
+            suffix_hybrid=True,
+            suffix_min_match_len=2,
+            suffix_hybrid_bit_exact=True,
+        )
+        # Seed the per-uid state so a later step does not trigger ``_state_for``
+        # lazy-init (which publishes the at-rest gauge via ``set_state`` — that
+        # is pre-verify and not part of the post-commit tail). Run one full
+        # successful hybrid step to populate ``_uid_state`` for uid 1. It also
+        # ratifies the wiring (verify commits + emits are stashed).
+        gb._step()
+        # After the warm-up step the live cache has advanced past the primary;
+        # capture a FRESH pristine snapshot that the failing step must restore.
+        import copy as _copy
+
+        pre_fail = _copy.deepcopy(gb.prompt_cache)
+        # Now the uid state exists, so ``_state_for`` returns without calling
+        # ``set_state``. Any ``set_state`` from here on can only come from the
+        # post-commit mutation tail.
+        spy.set_state_calls = 0
+        # Fail in the fallible logprob compute (which now runs FIRST, before
+        # the mutation tail). Because the mutation tail never runs, the counter
+        # ``set_state`` is never called: no cooldown/width state was mutated on
+        # the way to the exception, and the pristine cache is restored. The step
+        # falls through and the caller re-derives state on the re-run.
+        with (
+            patch.object(scheduler.mx, "logsumexp", side_effect=RuntimeError("boom")),
+            pytest.raises(RuntimeError, match="boom"),
+        ):
+            gb._step()
+        assert spy.set_state_calls == 0
+        _assert_state_equal(gb.prompt_cache, pre_fail)
+
 
 class TestHybridTerminalRepair:
     """Finding #1: a hybrid finish part-way through the accepted drafts must

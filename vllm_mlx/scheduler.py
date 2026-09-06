@@ -3591,6 +3591,11 @@ def _install_suffix_decoding(
         # post-commit ``except`` restores this before re-raising when a step
         # after the commit head fails.
         _hybrid_pc_snapshot = None
+        # Stepwise (bit-exactness guard) logits; only the hybrid path sets it.
+        # Defaulted here so the shared post-commit compute step can reference it
+        # on the pure-attention path too (reachable via --force-spec-decode),
+        # where it is legitimately absent.
+        stepwise_logits = None
 
         n_rejected_to_trim = 0
         if _hybrid_active:
@@ -3763,16 +3768,74 @@ def _install_suffix_decoding(
                 else:
                     break
 
-        # POST-COMMIT phase (codex round-9e finding #3): from here through the
-        # emit stash, ``gb.prompt_cache`` on the hybrid path holds the commit head
-        # advanced through all ``n_accepted`` drafts. Cooldown bookkeeping, rollback,
-        # logprob construction, state-machine processing, and pending-emission
-        # creation must ALL complete before any of it is trustworthy. If any of them
+        # POST-COMMIT phase (codex round-9e finding #3, reordered per round-9g):
+        # from here through the emit stash, ``gb.prompt_cache`` on the hybrid path
+        # holds the commit head advanced through all ``n_accepted`` drafts. All
+        # FALLIBLE MLX ops run FIRST (logprob compute) with zero prior mutation,
+        # then the pure-Python mutation tail (cooldown/rollback/drafter/counter/
+        # state/emits) which cannot raise. If any fallible op
         # raises after the commit, restore the pristine snapshot (retained as
         # ``_hybrid_pc_snapshot``) so the live cache never stays advanced beyond the
         # surfaced tokens, then re-raise so the caller falls through as a normal
         # step failure.
         try:
+            # Token emission accounting.
+            #
+            # _orig_step emits one token per call: the ``inputs`` it just
+            # fed through the model (= what was previously in
+            # ``_next_tokens``). The newly-sampled token is stashed in
+            # ``_next_tokens`` for the next step.
+            #
+            # For spec-decode the verify forward consumed K+1 tokens
+            # (last_token + K drafts), so we have committed to the cache
+            # ``[..., last_token, d_0..d_{n_accepted-1}]`` after trim.
+            # Tokens that NEED to surface on the response stream:
+            #
+            #   - last_token   ← primary, returned by this _step (1 token)
+            #   - d_0..d_{n-1} ← accepted drafts (n tokens, drained by
+            #                    _suffix_next as synthetic responses)
+            #
+            # The bonus (= preds[n_accepted], the correction at the
+            # rejection point or the post-K bonus) is **NOT** emitted this
+            # step — it gets stashed in _next_tokens and surfaces as the
+            # primary of the NEXT _step call. Otherwise it would duplicate
+            # (see early bug: every-other-token doubling).
+            bonus = preds_list[n_accepted]
+
+            if stepwise_logits is not None:
+                # Lossless logprobs from the stepwise guard replay. Each committed
+                # position's logits are the stepwise ``(1,1,V)`` row; stack them
+                # into a ``(1, probe_len, V)`` tensor. Accepted positions and the
+                # bonus (position n_accepted) are all within probe_len, so the same
+                # downstream slicing applies. Row 0 (the primary's own pred is not
+                # surfaced; ``primary_logprobs`` comes from the previous step).
+                verify_logits = mx.concatenate(stepwise_logits, axis=1)
+            full_logprobs = verify_logits - mx.logsumexp(
+                verify_logits, axis=-1, keepdims=True
+            )
+            # Materialize the verify logprobs promptly. ``verify_logits`` is a lazy
+            # MLX graph over the scratch cache; leaving it unevaluated keeps the
+            # scratch tensors referenced into the NEXT step's verify deepcopy,
+            # quietly defeating the 2x-cache envelope. Realizing it here frees the
+            # scratch arrays as soon as the logprobs row slices are taken below.
+            mx.eval(full_logprobs)
+            # The primary's logprobs come from the PREVIOUS step (saved in
+            # gb._next_logprobs). Passing them through preserves the same
+            # contract as _orig_step.
+            primary_logprobs = (
+                gb._next_logprobs[0]
+                if gb._next_logprobs is not None and len(gb._next_logprobs) > 0
+                else full_logprobs[0, 0, :]
+            )
+            extra_tokens = list(draft[:n_accepted])
+            extra_logprobs: list[mx.array] = []
+            for i in range(n_accepted):
+                # full_logprobs[0, i, :] is the logprobs row that PRODUCED
+                # the token at sequence position N+i+1, i.e. d_i.
+                extra_logprobs.append(full_logprobs[0, i, :])
+            # logprobs row at position n_accepted is the one that produced
+            # the bonus — used for the bonus surfacing in the next step.
+            bonus_logprobs = full_logprobs[0, n_accepted, :]
             # Cooldown bookkeeping: track consecutive zero-accept verifies
             # so workloads with weak drafter signal (e.g., free-form chat)
             # automatically stop paying verify overhead.
@@ -3867,64 +3930,6 @@ def _install_suffix_decoding(
                         "suffix verification cache rollback violated its preflight"
                     )
 
-            # Token emission accounting.
-            #
-            # _orig_step emits one token per call: the ``inputs`` it just
-            # fed through the model (= what was previously in
-            # ``_next_tokens``). The newly-sampled token is stashed in
-            # ``_next_tokens`` for the next step.
-            #
-            # For spec-decode the verify forward consumed K+1 tokens
-            # (last_token + K drafts), so we have committed to the cache
-            # ``[..., last_token, d_0..d_{n_accepted-1}]`` after trim.
-            # Tokens that NEED to surface on the response stream:
-            #
-            #   - last_token   ← primary, returned by this _step (1 token)
-            #   - d_0..d_{n-1} ← accepted drafts (n tokens, drained by
-            #                    _suffix_next as synthetic responses)
-            #
-            # The bonus (= preds[n_accepted], the correction at the
-            # rejection point or the post-K bonus) is **NOT** emitted this
-            # step — it gets stashed in _next_tokens and surfaces as the
-            # primary of the NEXT _step call. Otherwise it would duplicate
-            # (see early bug: every-other-token doubling).
-            bonus = preds_list[n_accepted]
-
-            if stepwise_logits is not None:
-                # Lossless logprobs from the stepwise guard replay. Each committed
-                # position's logits are the stepwise ``(1,1,V)`` row; stack them
-                # into a ``(1, probe_len, V)`` tensor. Accepted positions and the
-                # bonus (position n_accepted) are all within probe_len, so the same
-                # downstream slicing applies. Row 0 (the primary's own pred is not
-                # surfaced; ``primary_logprobs`` comes from the previous step).
-                verify_logits = mx.concatenate(stepwise_logits, axis=1)
-            full_logprobs = verify_logits - mx.logsumexp(
-                verify_logits, axis=-1, keepdims=True
-            )
-            # Materialize the verify logprobs promptly. ``verify_logits`` is a lazy
-            # MLX graph over the scratch cache; leaving it unevaluated keeps the
-            # scratch tensors referenced into the NEXT step's verify deepcopy,
-            # quietly defeating the 2x-cache envelope. Realizing it here frees the
-            # scratch arrays as soon as the logprobs row slices are taken below.
-            mx.eval(full_logprobs)
-            # The primary's logprobs come from the PREVIOUS step (saved in
-            # gb._next_logprobs). Passing them through preserves the same
-            # contract as _orig_step.
-            primary_logprobs = (
-                gb._next_logprobs[0]
-                if gb._next_logprobs is not None and len(gb._next_logprobs) > 0
-                else full_logprobs[0, 0, :]
-            )
-            extra_tokens = list(draft[:n_accepted])
-            extra_logprobs: list[mx.array] = []
-            for i in range(n_accepted):
-                # full_logprobs[0, i, :] is the logprobs row that PRODUCED
-                # the token at sequence position N+i+1, i.e. d_i.
-                extra_logprobs.append(full_logprobs[0, i, :])
-            # logprobs row at position n_accepted is the one that produced
-            # the bonus — used for the bonus surfacing in the next step.
-            bonus_logprobs = full_logprobs[0, n_accepted, :]
-
             # Drafter history += newly-committed tokens. We add ONLY the
             # accepted drafts here; ``bonus`` will be added on the next
             # ``_suffix_step`` call (line ~1235 ``drafter.add_generated_token
@@ -3963,6 +3968,15 @@ def _install_suffix_decoding(
             # Post-commit exception: restore the pristine pre-verify cache so the
             # live cache never stays advanced beyond the surfaced tokens, then
             # re-raise so the caller handles this step as a normal fall-through.
+            #
+            # Any partial mutation tail (cooldown/width set_state, a stashed
+            # ``_pending_emits`` entry) or the retained hybrid replay head is
+            # discarded too — the step is treated as if it never committed, so
+            # ``_orig_step`` re-runs from the pristine cache and re-samples the
+            # primary from scratch (cooldown/width are re-derived on that run).
+            # By reordering we already ran all fallible MLX ops BEFORE mutating
+            # any bookkeeping, so there is no half-mutated drafter/counter/gb
+            # state to unwind.
             if _hybrid_pc_snapshot is not None:
                 gb.prompt_cache = _hybrid_pc_snapshot
             raise
