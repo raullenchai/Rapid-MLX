@@ -25,6 +25,7 @@ column.
 | `hidream-o1-dev` | Native HiDream | Generate | Required manually | [HiDream-O1 Dev dogfood](../performance/2026-09-04-hidream-o1-dev-dogfood.md) |
 | `sd35-large-4bit` | Native SD3.5 | Generate | Required manually | [SD3.5 Large dogfood](../performance/2026-09-05-sd35-large-dogfood.md) |
 | `qwen-image` | mflux / Qwen Image | Generate | Required manually | [Pinned-checkpoint real server qualification](https://github.com/raullenchai/Rapid-MLX/pull/2157) |
+| `qwen-image-edit` | mflux / Qwen Image Edit 2509 q8 | Edit | Required manually | [Qwen Image Edit dogfood](../performance/2026-09-05-qwen-image-edit-dogfood.md) |
 <!-- image-release-matrix:end -->
 
 ## Required evidence per row
@@ -39,18 +40,22 @@ A row passes only when one evidence bundle records all of the following:
    count as part of the checkpoint.
 3. Cold path: start the exact candidate with no other model resident; require
    `/health` to report `ready=true` and `engine_type=image`.
-4. Default request: omit `steps`, call `/v1/images/generations`, require HTTP
-   200, exactly one base64 payload, a decodable non-uniform RGB/RGBA PNG at the
-   requested dimensions, and progress that reaches the catalog default.
+4. Default request: omit `steps` and use the operation declared by the row.
+   Generation aliases call `/v1/images/generations`; edit-only aliases call
+   `/v1/images/edits` with a real source image. Require HTTP 200, exactly one
+   base64 payload, a decodable non-uniform RGB/RGBA PNG, and progress that
+   reaches the catalog default.
 5. Warm path: repeat in the same server, then restart offline from the verified
    cache. Record request time, peak process footprint, swap, and any memory
    warning. Both requests and the restart must succeed.
 6. Recovery: cancel during denoising, require the request to terminate without
-   an orphan process, then generate successfully from the same server.
-7. Capability-specific path: aliases marked **Generate + edit** must also call
-   `/v1/images/edits` with a real input image and verify that the output follows
-   the instruction. Generation-only aliases must remain absent from the edit
-   picker and reject the edit route.
+   an orphan process, then rerun the row's declared operation successfully from
+   the same server.
+7. Capability-specific path: aliases marked **Generate + edit** must exercise
+   both endpoints with a real input image and verify that the edit follows the
+   instruction. Edit-only aliases must remain absent from the generation picker
+   and reject the generation route. Generation-only aliases must remain absent
+   from the edit picker and reject the edit route.
 
 Do not substitute a two-step or reduced-resolution import smoke for the
 default-request result. Short probes are useful for lifecycle debugging, but
