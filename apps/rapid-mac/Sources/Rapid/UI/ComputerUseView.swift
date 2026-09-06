@@ -244,13 +244,15 @@ private struct DraftPostFlowSheet: View {
                 title: "1. TextEdit draft",
                 prompt: "Choose a TextEdit window",
                 options: viewModel.sourceOptions,
-                selection: $viewModel.sourceID
+                selection: $viewModel.sourceID,
+                identifier: "ComputerUse.DraftPost.Source"
             )
             picker(
                 title: "2. Signed-in browser composer",
                 prompt: "Choose a browser window",
                 options: viewModel.destinationOptions,
-                selection: $viewModel.destinationID
+                selection: $viewModel.destinationID,
+                identifier: "ComputerUse.DraftPost.Destination"
             )
 
             if viewModel.sourceOptions.isEmpty || viewModel.destinationOptions.isEmpty {
@@ -278,7 +280,8 @@ private struct DraftPostFlowSheet: View {
         title: String,
         prompt: String,
         options: [ComputerUseWindowOption],
-        selection: Binding<String?>
+        selection: Binding<String?>,
+        identifier: String
     ) -> some View {
         VStack(alignment: .leading, spacing: 6) {
             Text(title).font(.headline)
@@ -290,6 +293,7 @@ private struct DraftPostFlowSheet: View {
             }
             .labelsHidden()
             .frame(maxWidth: .infinity, alignment: .leading)
+            .accessibilityIdentifier(identifier)
         }
     }
 
