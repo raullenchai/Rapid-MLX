@@ -139,6 +139,9 @@ struct DownloadCleanupTests {
                     try FileManager.default.moveItem(at: source, to: approvedBackup)
                     _ = try write("selected.txt", bytes: 4, in: root, modifiedAt: old)
                     try FileManager.default.moveItem(at: source, to: destination)
+                    // The replacement is now atomically claimed at `destination`;
+                    // the original path is vacant, so rejection can restore it.
+                    #expect(!FileManager.default.fileExists(atPath: source.path))
                 },
                 trash: { _ in trashCalled = true }
             )
