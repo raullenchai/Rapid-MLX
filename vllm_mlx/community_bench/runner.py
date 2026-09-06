@@ -502,6 +502,22 @@ async def run_standardized_bench(
     )
 
 
+def _peak_memory_api(mx, name: str):
+    """Return ``mx.<name>`` (mlx >= 0.22) or the legacy ``mx.metal.<name>``.
+
+    The ``mx.metal`` variants still work but print a deprecation line on
+    every call, which landed in the middle of ``benchmark run`` output.
+    """
+    getter = getattr(mx, name, None)
+    if callable(getter):
+        return getter
+    metal = getattr(mx, "metal", None)
+    if metal is None:
+        return None
+    getter = getattr(metal, name, None)
+    return getter if callable(getter) else None
+
+
 def _read_peak_ram_mb() -> int | None:
     """Peak Metal-backed memory in MiB, if mlx exposes it.
 
@@ -512,11 +528,7 @@ def _read_peak_ram_mb() -> int | None:
     try:
         import mlx.core as mx
 
-        # mlx.core.metal.get_peak_memory() returns bytes
-        peak = getattr(mx, "metal", None)
-        if peak is None:
-            return None
-        getter = getattr(peak, "get_peak_memory", None)
+        getter = _peak_memory_api(mx, "get_peak_memory")
         if getter is None:
             return None
         bytes_ = int(getter())
@@ -526,25 +538,17 @@ def _read_peak_ram_mb() -> int | None:
 
 
 def _reset_peak_ram() -> None:
-    """Zero out the Metal peak-memory counter, best-effort.
+    """Zero out the peak-memory counter, best-effort.
 
-    Called between model-load and the first measured round so the
-    reported ``peak_ram_mb`` reflects bench-time allocation only. If
-    the running mlx doesn't expose ``reset_peak_memory`` (older
-    versions don't), we silently no-op — the reported number then
-    represents process-peak, which is still useful and the schema
-    field is annotated accordingly in the README.
+    Silently no-ops if mlx isn't importable or the running mlx exposes
+    neither ``reset_peak_memory`` spelling.
     """
     try:
         import mlx.core as mx
 
-        metal = getattr(mx, "metal", None)
-        if metal is None:
-            return
-        resetter = getattr(metal, "reset_peak_memory", None)
-        if resetter is None:
-            return
-        resetter()
+        resetter = _peak_memory_api(mx, "reset_peak_memory")
+        if resetter is not None:
+            resetter()
     except (ImportError, AttributeError, ValueError, OSError):
         # Same suppression as _read_peak_ram_mb — peak RAM is an
         # optional field, not worth aborting the bench over.
