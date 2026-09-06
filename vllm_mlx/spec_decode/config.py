@@ -26,6 +26,10 @@ class SpeculativeConfig:
 
     method: str
     model: str | None = None
+    # DFlash alone has two independently versioned runtime implementations.
+    # Omitted keeps the mature mlx-vlm path; ``dflash-mlx`` is an explicit
+    # opt-in until its package, correctness, and workload gates converge.
+    runtime: str | None = None
     num_speculative_tokens: int | None = None
     tree_budget: int | None = None
     disable_auto_k: bool | None = None
@@ -48,7 +52,7 @@ _COMMON_KEYS = frozenset(
 
 _METHOD_KEYS = {
     "ddtree": frozenset({"model", "num_speculative_tokens", "tree_budget"}),
-    "dflash": frozenset({"model"}),
+    "dflash": frozenset({"model", "runtime"}),
     "dspark": frozenset({"num_speculative_tokens"}),
     "mtp": frozenset(
         {
@@ -158,6 +162,7 @@ def parse_speculative_config(value: str | None) -> SpeculativeConfig | None:
     config = SpeculativeConfig(
         method=method,
         model=_optional_string(payload.get("model"), "model"),
+        runtime=_optional_string(payload.get("runtime"), "runtime"),
         num_speculative_tokens=_positive_int(
             payload.get("num_speculative_tokens"), "num_speculative_tokens"
         ),
@@ -182,6 +187,16 @@ def parse_speculative_config(value: str | None) -> SpeculativeConfig | None:
         raise SpeculativeConfigError(
             "allow_dynamic_membership requires continuous_batching=true"
         )
+    if config.method == "dflash" and config.runtime not in (
+        None,
+        "mlx-vlm",
+        "dflash-mlx",
+    ):
+        raise SpeculativeConfigError(
+            "runtime for 'dflash' must be 'mlx-vlm' or 'dflash-mlx'"
+        )
+    if config.method != "dflash" and config.runtime is not None:
+        raise SpeculativeConfigError("runtime is only supported for method='dflash'")
     return config
 
 

@@ -771,6 +771,7 @@ def _build_app(
             "status": "ok",
             "engine": "dflash",
             "algorithm": runtime.algorithm,
+            "runtime": runtime.backend,
             "mode": "single-user-serial",
             "drafter": runtime.drafter_repo,
             "target_revision": runtime.target_revision,
@@ -1075,6 +1076,7 @@ def _build_app(
                         gen_kwargs=gen_kwargs,
                         model=model,
                         processor=processor,
+                        runtime=runtime,
                         timeout=effective_timeout,
                         timeout_label=request_timeout_for_diagnostics,
                         deadline=request_deadline,
@@ -1102,6 +1104,7 @@ def _build_app(
                 gen_kwargs=gen_kwargs,
                 model=model,
                 processor=processor,
+                runtime=runtime,
                 timeout=effective_timeout,
                 timeout_label=request_timeout_for_diagnostics,
                 deadline=request_deadline,
@@ -1242,6 +1245,7 @@ async def _stream_completion(
     gen_kwargs: dict[str, Any],
     model: Any,
     processor: Any,
+    runtime: DFlashRuntime | None = None,
     timeout: float | None = None,
     timeout_label: float | None = None,
     deadline: float | None = None,
@@ -1264,7 +1268,7 @@ async def _stream_completion(
     human-facing timeout messages (codex round-5 #6), so a client sees the
     limit it actually asked for rather than the render-reduced remainder. When
     omitted (direct callers/tests) it mirrors ``timeout``."""
-    from mlx_vlm import stream_generate
+    from .generation import stream_generate
 
     if timeout_label is None:
         timeout_label = timeout
@@ -1537,7 +1541,9 @@ async def _stream_completion(
             # the same as the mid-stream error path below.
             def _make_gen():
                 try:
-                    return stream_generate(model, processor, prompt, **gen_kwargs)
+                    return stream_generate(
+                        runtime, model, processor, prompt, **gen_kwargs
+                    )
                 except Exception as e:  # noqa: BLE001 — surface upstream; outer code converts to error SSE
                     return e
 
@@ -1855,6 +1861,7 @@ async def _non_stream_completion(
     gen_kwargs: dict[str, Any],
     model: Any,
     processor: Any,
+    runtime: DFlashRuntime | None = None,
     timeout: float = 1800.0,
     timeout_label: float | None = None,
     deadline: float | None = None,
@@ -1875,7 +1882,7 @@ async def _non_stream_completion(
     request timeout reported in the 504 message (codex round-5 #6). Omitted →
     mirrors ``timeout``.
     """
-    from mlx_vlm import generate
+    from .generation import generate
 
     if timeout_label is None:
         timeout_label = timeout
@@ -1944,7 +1951,7 @@ async def _non_stream_completion(
         # the stream path's error handling.
         def _generate_safely():
             try:
-                return generate(model, processor, prompt, **gen_kwargs)
+                return generate(runtime, model, processor, prompt, **gen_kwargs)
             except Exception as e:  # noqa: BLE001 — surface as HTTPException below
                 return e
 
@@ -2081,16 +2088,15 @@ def run_dflash_server(
     reasoning_parser_name: str | None = "qwen3",
     experimental_opt_in: bool = False,
     expected_algorithm: str | None = None,
+    runtime_backend: str = "mlx-vlm",
 ) -> None:
-    """Load the model + DFlash drafter via mlx-vlm and start uvicorn.
+    """Load the model + DFlash drafter with the selected runtime and start uvicorn.
 
-    The mlx-vlm load path is mandatory: the DFlash hooks
-    (``capture_layer_ids``, ``_dflash_rounds``) live on the mlx-vlm
-    model classes, not mlx-lm's. Loading via ``mlx_lm.load`` would give
-    us a model without the hooks and DFlash would silently fall back to
-    AR — exactly the kind of "silent regression" the eligibility gate
-    is meant to prevent. We surface a clear error if mlx-vlm is missing
-    or too old.
+    The default mlx-vlm route owns its DFlash hooks and keeps all existing
+    model pairs on that implementation.  The optimized backend is a separate,
+    exact-version runtime and is accepted only for the immutable DFlash2 pair
+    qualified by the registry; selecting it never silently changes legacy
+    requests or unverified model combinations.
 
     Eligibility re-check: even though the CLI's ``serve_command`` gates
     on the alias before calling here, a *programmatic* caller (e.g. a
@@ -2102,7 +2108,12 @@ def run_dflash_server(
     arbitrary ``main_model_repo`` programmatically are responsible for
     not pointing it at a MoE model. Documented in CALLERS.md.
     """
-    if not have_runtime():
+    if runtime_backend not in {"mlx-vlm", "dflash-mlx"}:
+        raise RuntimeError(
+            f"Unsupported DFlash runtime backend {runtime_backend!r}; "
+            "expected 'mlx-vlm' or 'dflash-mlx'."
+        )
+    if runtime_backend == "mlx-vlm" and not have_runtime():
         raise RuntimeError(
             "DFlash server requires mlx-vlm 0.5.0+ — install with "
             "pip install 'rapid-mlx[dflash]'. Homebrew installs the "
@@ -2123,6 +2134,11 @@ def run_dflash_server(
         drafter_revision,
         expected_algorithm,
     )
+    if runtime_backend == "dflash-mlx" and not registry_verified_pair:
+        raise DFlashUnavailable(
+            "The optimized DFlash runtime requires the exact immutable "
+            "target/drafter pair qualified by the Rapid-MLX registry."
+        )
 
     if _looks_like_4bit(main_model_repo):
         if not (experimental_opt_in or registry_verified_pair):
@@ -2143,7 +2159,6 @@ def run_dflash_server(
         )
 
     import uvicorn
-    from mlx_vlm import load
 
     # CRITICAL: load model + drafter on the dedicated DFlash executor
     # thread (not the main thread). mlx-lm 0.31.3+ keeps GPU streams in
@@ -2154,6 +2169,38 @@ def run_dflash_server(
     # streams stay reachable for the lifetime of the process.
     def _load_all():
         t0 = time.perf_counter()
+        if runtime_backend == "dflash-mlx":
+            if expected_algorithm != "dflash2":
+                raise RuntimeError(
+                    "The optimized dflash-mlx backend is qualified only for "
+                    "an immutable registry pair with algorithm='dflash2'."
+                )
+            from .upstream_runtime import load_upstream_runtime
+
+            upstream = load_upstream_runtime(
+                main_model_repo=main_model_repo,
+                main_model_revision=main_model_revision,
+                drafter_repo=drafter_repo,
+                drafter_revision=drafter_revision,
+            )
+            rt = DFlashRuntime(
+                drafter=upstream.drafter,
+                kind="dflash",
+                drafter_repo=drafter_repo,
+                target_revision=main_model_revision,
+                drafter_revision=drafter_revision,
+                algorithm="dflash2",
+                backend="dflash-mlx",
+                backend_state=upstream,
+            )
+            logger.info(
+                "DFlash: optimized runtime loaded in %.1fs",
+                time.perf_counter() - t0,
+            )
+            return upstream.model, upstream.processor, rt
+
+        from mlx_vlm import load
+
         load_kwargs = (
             {"revision": main_model_revision} if main_model_revision is not None else {}
         )
@@ -2167,7 +2214,11 @@ def run_dflash_server(
         )
         return m, p, rt
 
-    logger.info("DFlash: loading main model via mlx-vlm: %s", main_model_repo)
+    logger.info(
+        "DFlash: loading main model via %s: %s",
+        runtime_backend,
+        main_model_repo,
+    )
     model, processor, runtime = _dflash_executor.submit(_load_all).result()
 
     app = _build_app(
