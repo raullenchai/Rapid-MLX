@@ -1,0 +1,267 @@
+import AppKit
+import ApplicationServices
+import Foundation
+
+enum MacOSComputerUseActuationError: Error, Equatable {
+    case permissionMissing([MacAutomationPermission])
+    case invalidAction
+    case staleObservation
+    case targetUnavailable
+    case targetNotFrontmost
+    case targetChanged
+    case unsupportedKey
+    case eventCreationFailed
+}
+
+protocol ComputerUseTargetProbing: Sendable {
+    func currentTarget(for expected: WorkflowInteractionTarget) async throws
+        -> WorkflowInteractionTarget
+}
+
+protocol ComputerUseInputEmitting: Sendable {
+    func emit(
+        _ payload: WorkflowActionPayload,
+        in target: WorkflowInteractionTarget
+    ) async throws
+}
+
+/// Production action boundary for local Computer Use.
+///
+/// The executor already re-observes immediately before calling this adapter.
+/// The adapter intentionally repeats the safety checks at the final input
+/// boundary: permission, observation identity, foreground process, exact
+/// window identity, and window geometry must all still match. It never
+/// activates an app or searches for a similar window on the user's behalf.
+actor MacOSComputerUseActuator: LocalWorkflowActuating {
+    typealias PermissionReader = @Sendable () -> MacAutomationPermissionSnapshot
+
+    private let permissionReader: PermissionReader
+    private let targetProbe: any ComputerUseTargetProbing
+    private let inputEmitter: any ComputerUseInputEmitting
+
+    init(
+        targetProbe: any ComputerUseTargetProbing = CGWindowComputerUseTargetProbe(),
+        inputEmitter: any ComputerUseInputEmitting = CGEventComputerUseInputEmitter(),
+        permissionReader: @escaping PermissionReader = MacAutomationPermissions.snapshot
+    ) {
+        self.targetProbe = targetProbe
+        self.inputEmitter = inputEmitter
+        self.permissionReader = permissionReader
+    }
+
+    func perform(
+        _ action: GroundedWorkflowAction,
+        against currentObservation: WorkflowObservation
+    ) async throws {
+        try Task.checkCancellation()
+        guard currentObservation.isStructurallyValid,
+              action.observationID == currentObservation.id
+        else {
+            throw MacOSComputerUseActuationError.staleObservation
+        }
+        guard action.payload.isStructurallyValid else {
+            throw MacOSComputerUseActuationError.invalidAction
+        }
+
+        let permissions = permissionReader()
+        guard permissions.isReadyForComputerUse else {
+            throw MacOSComputerUseActuationError.permissionMissing(
+                permissions.missingForComputerUse
+            )
+        }
+
+        let liveTarget = try await targetProbe.currentTarget(
+            for: currentObservation.target
+        )
+        try Task.checkCancellation()
+        guard Self.matches(liveTarget, currentObservation.target) else {
+            throw MacOSComputerUseActuationError.targetChanged
+        }
+        try await inputEmitter.emit(action.payload, in: liveTarget)
+    }
+
+    private static func matches(
+        _ live: WorkflowInteractionTarget,
+        _ observed: WorkflowInteractionTarget
+    ) -> Bool {
+        guard live.bundleIdentifier == observed.bundleIdentifier,
+              live.processIdentifier == observed.processIdentifier,
+              live.windowIdentifier == observed.windowIdentifier
+        else { return false }
+
+        let lhs = live.windowFrame
+        let rhs = observed.windowFrame
+        let tolerance = 0.5
+        return abs(lhs.x - rhs.x) <= tolerance
+            && abs(lhs.y - rhs.y) <= tolerance
+            && abs(lhs.width - rhs.width) <= tolerance
+            && abs(lhs.height - rhs.height) <= tolerance
+    }
+}
+
+/// Reads one exact CGWindow entry and requires its owner to remain frontmost.
+/// This is a probe only; it has no activation or focus-changing side effects.
+struct CGWindowComputerUseTargetProbe: ComputerUseTargetProbing {
+    func currentTarget(for expected: WorkflowInteractionTarget) async throws
+        -> WorkflowInteractionTarget
+    {
+        try Task.checkCancellation()
+        guard let windowID = CGWindowID(expected.windowIdentifier), windowID != 0 else {
+            throw MacOSComputerUseActuationError.targetUnavailable
+        }
+
+        return try await MainActor.run {
+            guard NSWorkspace.shared.frontmostApplication?.processIdentifier
+                    == expected.processIdentifier
+            else {
+                throw MacOSComputerUseActuationError.targetNotFrontmost
+            }
+            guard let records = CGWindowListCopyWindowInfo(
+                [.optionIncludingWindow, .excludeDesktopElements],
+                windowID
+            ) as? [[CFString: Any]],
+                let record = records.first,
+                let ownerPID = record[kCGWindowOwnerPID] as? NSNumber,
+                ownerPID.int32Value == expected.processIdentifier,
+                let bounds = record[kCGWindowBounds] as? [String: NSNumber],
+                let frame = CGRect(dictionaryRepresentation: bounds as CFDictionary),
+                frame.width > 0,
+                frame.height > 0,
+                let application = NSRunningApplication(
+                    processIdentifier: expected.processIdentifier
+                ),
+                let bundleIdentifier = application.bundleIdentifier
+            else {
+                throw MacOSComputerUseActuationError.targetUnavailable
+            }
+
+            return WorkflowInteractionTarget(
+                bundleIdentifier: bundleIdentifier,
+                processIdentifier: expected.processIdentifier,
+                windowIdentifier: String(windowID),
+                windowFrame: WorkflowWindowFrame(
+                    x: frame.origin.x,
+                    y: frame.origin.y,
+                    width: frame.width,
+                    height: frame.height
+                )
+            )
+        }
+    }
+}
+
+/// Narrow CGEvent adapter. It supports only the three payloads authored by the
+/// workflow kernel and an explicit key/modifier allowlist.
+struct CGEventComputerUseInputEmitter: ComputerUseInputEmitting {
+    private static let keyCodes: [String: CGKeyCode] = [
+        "return": 36,
+        "tab": 48,
+        "space": 49,
+        "delete": 51,
+        "escape": 53,
+        "left": 123,
+        "right": 124,
+        "down": 125,
+        "up": 126,
+    ]
+    private static let modifierFlags: [String: CGEventFlags] = [
+        "command": .maskCommand,
+        "shift": .maskShift,
+        "option": .maskAlternate,
+        "control": .maskControl,
+    ]
+
+    func emit(
+        _ payload: WorkflowActionPayload,
+        in target: WorkflowInteractionTarget
+    ) async throws {
+        try Task.checkCancellation()
+        guard let source = CGEventSource(stateID: .combinedSessionState) else {
+            throw MacOSComputerUseActuationError.eventCreationFailed
+        }
+
+        switch payload {
+        case .click(let normalizedX, let normalizedY):
+            let frame = target.windowFrame
+            let point = CGPoint(
+                x: frame.x + normalizedX * frame.width,
+                y: frame.y + normalizedY * frame.height
+            )
+            guard let down = CGEvent(
+                mouseEventSource: source,
+                mouseType: .leftMouseDown,
+                mouseCursorPosition: point,
+                mouseButton: .left
+            ),
+                let up = CGEvent(
+                    mouseEventSource: source,
+                    mouseType: .leftMouseUp,
+                    mouseCursorPosition: point,
+                    mouseButton: .left
+                )
+            else {
+                throw MacOSComputerUseActuationError.eventCreationFailed
+            }
+            try Task.checkCancellation()
+            down.post(tap: .cgAnnotatedSessionEventTap)
+            up.post(tap: .cgAnnotatedSessionEventTap)
+
+        case .typeText(let text):
+            // CGEvent accepts UTF-16. Chunking bounds each event while keeping
+            // text off the clipboard, so existing clipboard contents remain
+            // untouched and no global pasteboard observer receives the value.
+            let units = Array(text.utf16)
+            for start in stride(from: 0, to: units.count, by: 1_024) {
+                try Task.checkCancellation()
+                let chunk = Array(units[start ..< min(start + 1_024, units.count)])
+                guard let down = CGEvent(
+                    keyboardEventSource: source,
+                    virtualKey: 0,
+                    keyDown: true
+                ),
+                    let up = CGEvent(
+                        keyboardEventSource: source,
+                        virtualKey: 0,
+                        keyDown: false
+                    )
+                else {
+                    throw MacOSComputerUseActuationError.eventCreationFailed
+                }
+                down.keyboardSetUnicodeString(stringLength: chunk.count, unicodeString: chunk)
+                up.keyboardSetUnicodeString(stringLength: chunk.count, unicodeString: chunk)
+                down.post(tap: .cgAnnotatedSessionEventTap)
+                up.post(tap: .cgAnnotatedSessionEventTap)
+            }
+
+        case .keyPress(let key, let modifiers):
+            guard let keyCode = Self.keyCodes[key.lowercased()] else {
+                throw MacOSComputerUseActuationError.unsupportedKey
+            }
+            var flags: CGEventFlags = []
+            for modifier in modifiers {
+                guard let flag = Self.modifierFlags[modifier.lowercased()] else {
+                    throw MacOSComputerUseActuationError.unsupportedKey
+                }
+                flags.insert(flag)
+            }
+            guard let down = CGEvent(
+                keyboardEventSource: source,
+                virtualKey: keyCode,
+                keyDown: true
+            ),
+                let up = CGEvent(
+                    keyboardEventSource: source,
+                    virtualKey: keyCode,
+                    keyDown: false
+                )
+            else {
+                throw MacOSComputerUseActuationError.eventCreationFailed
+            }
+            down.flags = flags
+            up.flags = flags
+            try Task.checkCancellation()
+            down.post(tap: .cgAnnotatedSessionEventTap)
+            up.post(tap: .cgAnnotatedSessionEventTap)
+        }
+    }
+}
