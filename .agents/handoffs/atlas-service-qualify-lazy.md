@@ -3,7 +3,7 @@
 - **Owner:** Atlas
 - **Branch:** `atlas/service-qualify-lazy`
 - **PR:** #3222
-- **Base/dependency:** `atlas/319-lazy-idle`, PR #3214
+- **Base:** `main` at #3214 merge commit `3d50f5eb`
 - **Host:** local Apple silicon Mac
 - **Scope:** require configured-primary activation before service install,
   configuration apply, or runtime upgrade commits
@@ -38,10 +38,9 @@
 
 ## Remaining work / next action
 
-1. Wait for #3214 to merge from the managed mac queue.
-2. Retarget/rebase #3222 onto `main` without changing the service behavior.
-3. Re-run the final CI/Apple Silicon service qualification on the rebased head.
-4. Only after those gates pass, add the repository's merge-ready/mac-queue
+1. #3214 has merged; #3222 was retargeted/rebased onto its `main` merge commit.
+2. Re-run the final CI/Apple Silicon service qualification on the rebased head.
+3. Only after those gates pass, add the repository's merge-ready/mac-queue
    labels to #3222.
 
 ## Risks and rollback
