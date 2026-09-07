@@ -5783,3 +5783,28 @@ def test_completed_run_keeps_the_identity_the_loader_pinned_even_if_refs_moved(
     )
     run = local_runner.run_local("example-text", archive=archive)
     assert run["model"]["components"][0]["source"]["resolved_revision"] == "a" * 40
+
+
+def test_loader_target_refuses_a_same_named_local_directory(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The loader prefers an existing path over the registry, so a directory
+    named like a subfolder alias (or the repo id) must not be measured under
+    the catalog identity (codex on #3147)."""
+    from vllm_mlx import model_aliases
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(
+        model_aliases,
+        "resolve_subfolder",
+        lambda alias: "4bit" if alias == "lfm" else None,
+    )
+    assert local_runner._loader_target("lfm", "org/LFM") == "lfm"
+    assert local_runner._loader_target("plain", "org/Plain") == "org/Plain"
+
+    (tmp_path / "lfm").mkdir()
+    with pytest.raises(RuntimeError, match="also a local path"):
+        local_runner._loader_target("lfm", "org/LFM")
+    (tmp_path / "org" / "Plain").mkdir(parents=True)
+    with pytest.raises(RuntimeError, match="also a local path"):
+        local_runner._loader_target("plain", "org/Plain")

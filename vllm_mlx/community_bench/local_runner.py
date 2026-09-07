@@ -833,7 +833,17 @@ def _loader_target(model_name: str, repo_id: str) -> str:
     """
     from vllm_mlx.model_aliases import resolve_subfolder
 
-    return model_name if resolve_subfolder(model_name) else repo_id
+    target = model_name if resolve_subfolder(model_name) else repo_id
+    # The loader treats an existing path as authoritative before it consults
+    # the registry, so a directory named like the alias (or the repo id) in
+    # the working directory would be measured while the catalog identity is
+    # recorded. Refuse rather than record numbers for unknown weights.
+    if os.path.exists(target):
+        raise RuntimeError(
+            f"{target!r} is also a local path here; the benchmark measures the "
+            "catalog checkpoint only. Run it from a directory without that path."
+        )
+    return target
 
 
 async def _text_measurements(
