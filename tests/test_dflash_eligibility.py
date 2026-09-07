@@ -81,6 +81,9 @@ def test_muse_glimmer_curated_pair_passes_exact_registry_gate() -> None:
     profile = resolve_profile("muse-glimmer-30b-8bit")
     assert profile is not None
     check(profile, alias="muse-glimmer-30b-8bit")
+    assessment = report(profile, alias="muse-glimmer-30b-8bit")
+    assert assessment.reasons == ()
+    assert assessment.recommendation == "verified"
     assert is_registry_verified_pair(
         profile.hf_path,
         profile.dflash_target_revision,
