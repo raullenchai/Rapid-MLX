@@ -57,11 +57,11 @@ extensionless blob layout used by the local Hugging Face cache.
    and deliberately did not copy DFlash revision pins because they bind the
    original target revision.
 
-## Remaining action
+## M2 Pro follow-up
 
-Finish the isolated M2 Pro paired measurement if the shared resident service
-becomes available without stopping another owner's process. Then update the
-performance report and model card, run final tests and PR validation, create
-and queue the PR, and send completion FYIs. If the machine remains occupied,
-publish the PR with the supplied M2 Max result clearly attributed and record
-the M2 Pro run as pending rather than producing a contaminated benchmark.
+The mini had another managed inference model resident and 1,914 MiB swap in
+use, so this task declined to load Qwen or publish a contaminated A/B. Both
+fixed checkpoints are being placed in the policy-mandated default Hugging Face
+cache for later #3156 work; no other cache or model was removed. A future
+paired measurement requires an owner-provided idle, low-swap window. The PR
+uses the supplied M2 Max result with explicit attribution in the meantime.
