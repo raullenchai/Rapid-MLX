@@ -13024,6 +13024,42 @@ Examples:
         action="store_true",
         help="Print the underlying probe detail for each check",
     )
+    doctor_parser.add_argument(
+        "--json",
+        action="store_true",
+        help="Emit the versioned machine-readable report as JSON",
+    )
+    doctor_parser.add_argument(
+        "--summary",
+        action="store_true",
+        help="Print only the one-line result summary",
+    )
+    doctor_section_ids = (
+        "system",
+        "python",
+        "packages.required",
+        "updates",
+        "packages.optional",
+        "cache.huggingface",
+        "network",
+        "shell",
+        "tools.optional",
+        "agents",
+    )
+    doctor_parser.add_argument(
+        "--only",
+        action="append",
+        choices=doctor_section_ids,
+        metavar="SECTION",
+        help="Run only this section ID (repeatable)",
+    )
+    doctor_parser.add_argument(
+        "--skip",
+        action="append",
+        choices=doctor_section_ids,
+        metavar="SECTION",
+        help="Skip this section ID (repeatable)",
+    )
     # Legacy compatibility shims — accepted-but-ignored so the redirect
     # message in ``doctor_command`` can fire (see comment above).
     doctor_parser.add_argument(

@@ -12,8 +12,13 @@ a summary, an exit code (0 unless any ✗). Runtime budget: ≤ 5 s end-to-end.
 
 from __future__ import annotations
 
+import json
+import os
+import re
 import sys
 from typing import Any
+
+from vllm_mlx import __version__
 
 from .env_health import CheckStatus, Report, Section, run_all
 
@@ -30,7 +35,12 @@ _GLYPHS = {
     CheckStatus.OK: "✓",  # ✓
     CheckStatus.WARN: "⚠",  # ⚠
     CheckStatus.FAIL: "✗",  # ✗
+    CheckStatus.SKIPPED: "○",
 }
+
+_SECRET_RE = re.compile(
+    r"(?i)(token|secret|password|authorization|api[_-]?key)(\s*[=:]\s*)([^\s,;]+)"
+)
 
 
 def doctor_command(args: Any) -> None:
@@ -55,9 +65,18 @@ def doctor_command(args: Any) -> None:
         sys.exit(2)
 
     verbose = bool(getattr(args, "verbose", False))
+    json_output = bool(getattr(args, "json", False))
+    summary_only = bool(getattr(args, "summary", False))
+    only = set(getattr(args, "only", None) or ())
+    skip = set(getattr(args, "skip", None) or ())
 
-    report = run_all()
-    render(report, verbose=verbose)
+    report = run_all(only=only or None, skip=skip or None)
+    if json_output:
+        render_json(report)
+    elif summary_only:
+        render_summary(report)
+    else:
+        render(report, verbose=verbose)
     sys.exit(report.exit_code)
 
 
@@ -84,6 +103,66 @@ def render(report: Report, *, verbose: bool = False, stream=None) -> None:
     _render_summary(report, write=write, verbose=verbose)
 
 
+def _redact(value: str) -> str:
+    """Remove common local identifiers and inline credentials from JSON."""
+    home = os.path.expanduser("~")
+    if home and home != "/":
+        value = value.replace(home, "~")
+    return _SECRET_RE.sub(r"\1\2[REDACTED]", value)
+
+
+def report_document(report: Report) -> dict[str, Any]:
+    """Return the versioned, redacted machine-readable Doctor contract."""
+    return {
+        "schemaVersion": 1,
+        "rapidMlxVersion": __version__,
+        "status": report.overall_status,
+        "exitCode": report.exit_code,
+        "durationMs": report.duration_ms,
+        "summary": {
+            "ok": report.n_ok,
+            "warnings": report.n_warn,
+            "failures": report.n_fail,
+            "skipped": report.n_skipped,
+        },
+        "sections": [
+            {
+                "id": section.id,
+                "title": section.title,
+                "durationMs": section.duration_ms,
+                "checks": [
+                    {
+                        "id": check.id,
+                        "status": check.status.value,
+                        "summary": _redact(check.label),
+                        "detail": _redact(check.detail),
+                    }
+                    for check in section.checks
+                ],
+            }
+            for section in report.sections
+        ],
+    }
+
+
+def render_json(report: Report, *, stream=None) -> None:
+    """Write only JSON to stdout so callers can parse it safely."""
+    stream = stream or sys.stdout
+    json.dump(report_document(report), stream, indent=2, sort_keys=True)
+    stream.write("\n")
+
+
+def render_summary(report: Report, *, stream=None) -> None:
+    """Write a single-line status suitable for logs and shell scripts."""
+    stream = stream or sys.stdout
+    stream.write(
+        f"Rapid-MLX Doctor: {report.overall_status} — "
+        f"{report.n_ok} ok, {report.n_warn} warnings, "
+        f"{report.n_fail} issues, {report.n_skipped} skipped "
+        f"({report.duration_ms} ms)\n"
+    )
+
+
 def _render_section(section: Section, *, write, verbose: bool) -> None:
     write(f"◆ {section.title}\n")
     for check in section.checks:
@@ -99,7 +178,8 @@ def _render_summary(report: Report, *, write, verbose: bool) -> None:
         f"Summary: {report.n_ok} ok, "
         f"{report.n_warn} warnings, "
         f"{report.n_fail} issue"
-        f"{'s' if report.n_fail != 1 else ''}\n"
+        f"{'s' if report.n_fail != 1 else ''}, "
+        f"{report.n_skipped} skipped\n"
     )
     if not verbose and (report.n_warn or report.n_fail):
         write("Run with `--verbose` for details on each check.\n")
