@@ -151,11 +151,20 @@ def _release_admission_unless_committed(engine, committed: bool) -> None:
         return
     try:
         release()
+        _touch_primary_lifecycle(engine)
     except Exception:
         logger.warning(
             "release_admission_reservation raised on route finally",
             exc_info=True,
         )
+
+
+def _touch_primary_lifecycle(engine) -> None:
+    """Start the primary idle window after request ownership ends."""
+
+    lifecycle = get_config().primary_model_lifecycle
+    if lifecycle is not None and lifecycle.engine is engine:
+        lifecycle.touch()
 
 
 def _raise_lifecycle_cancel_or_reraise(engine, exc: asyncio.CancelledError) -> None:
@@ -2757,6 +2766,31 @@ def get_engine(model_name: str | None = None) -> BaseEngine:
     return cfg.engine
 
 
+async def ensure_engine_ready(engine: BaseEngine) -> BaseEngine:
+    """Demand-load ``engine`` when it is the configured standby primary."""
+
+    lifecycle = get_config().primary_model_lifecycle
+    if lifecycle is not None and engine is lifecycle.engine:
+        try:
+            await lifecycle.ensure_loaded()
+        except asyncio.CancelledError:
+            raise
+        except BaseException as exc:
+            logger.exception("Configured primary model failed to load on demand")
+            raise HTTPException(
+                status_code=503,
+                headers={"Retry-After": "5"},
+                detail="Configured model failed to load; retry after the delay.",
+            ) from exc
+    return engine
+
+
+async def get_ready_engine(model_name: str | None = None) -> BaseEngine:
+    """Resolve an engine and demand-load the configured primary if needed."""
+
+    return await ensure_engine_ready(get_engine(model_name))
+
+
 def _resolve_reasoning_enabled(model_name: str | None) -> bool:
     """Return whether the selected alias is reasoning-capable.
 
@@ -4322,6 +4356,7 @@ async def _disconnect_guard(
             if release is not None:
                 try:
                     release()
+                    _touch_primary_lifecycle(engine)
                 except Exception:
                     logger.warning(
                         "[disconnect_guard] release_admission_reservation raised",

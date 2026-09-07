@@ -110,6 +110,7 @@ from ..service.helpers import (
     build_extended_sampling_kwargs,
     enforce_context_length,
     enforce_context_length_for_messages,
+    ensure_engine_ready,
     get_engine,
     get_model_max_context,
     maybe_apply_reasoning_effort,
@@ -971,6 +972,7 @@ async def create_response(request: Request):
     if not (responses_request.model or "").startswith(("claude-", "gpt-")):
         _validate_model_name(responses_request.model)
     engine = get_engine(responses_request.model)
+    await ensure_engine_ready(engine)
 
     # Pre-flight admission — same C4 reservation shape the other two
     # routes use. ``_admission_committed`` flips to True when the

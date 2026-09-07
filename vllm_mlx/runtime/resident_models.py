@@ -791,9 +791,25 @@ class ResidentModelManager:
             last_used_at=now,
             pinned=True,
             primary=True,
+            state=(
+                "resident"
+                if bool(getattr(entry.engine, "_loaded", True))
+                else "standby"
+            ),
         )
         self._index_record(record)
         return record
+
+    def set_primary_lifecycle_state(self, state: str) -> None:
+        """Mirror the configured primary's standby lifecycle into accounting."""
+
+        record = next(
+            (candidate for candidate in self._records.values() if candidate.primary),
+            None,
+        )
+        if record is None:
+            return
+        record.state = "resident" if state == "ready" else state
 
     def _read_memory(self) -> int:
         try:

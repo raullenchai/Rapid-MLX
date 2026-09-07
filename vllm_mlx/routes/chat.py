@@ -115,6 +115,7 @@ from ..service.helpers import (
     build_extended_sampling_kwargs,
     enable_thinking_warning_header,
     enforce_context_length_for_messages,
+    ensure_engine_ready,
     get_engine,
     get_model_max_context,
     maybe_apply_reasoning_effort,
@@ -3444,6 +3445,7 @@ async def create_chat_completion(request: ChatCompletionRequest, raw_request: Re
     """
     _validate_model_name(request.model)
     engine = get_engine(request.model)
+    await ensure_engine_ready(engine)
 
     # Admission reservation is acquired LATER — after cheap validation
     # that may raise HTTPException (codex R3: validation errors used to

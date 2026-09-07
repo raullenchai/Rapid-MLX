@@ -39,6 +39,7 @@ from ..service.helpers import (
     _wait_with_disconnect,
     build_extended_sampling_kwargs,
     enforce_context_length_for_prompt,
+    ensure_engine_ready,
     get_engine,
     get_usage,
 )
@@ -304,6 +305,7 @@ async def create_completion(request: CompletionRequest, raw_request: Request):
             },
         )
     engine = get_engine(request.model)
+    await ensure_engine_ready(engine)
 
     # Pre-flight admission gate (C4). Reservation is released by the
     # ``finally`` block below; on the streaming path we flip

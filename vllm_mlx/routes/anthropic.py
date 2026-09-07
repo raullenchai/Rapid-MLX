@@ -69,6 +69,7 @@ from ..service.helpers import (
     build_extended_sampling_kwargs,
     count_prompt_tokens,
     enforce_context_length_for_messages,
+    ensure_engine_ready,
     get_engine,
     maybe_auto_disable_thinking_for_casual_chat,
     maybe_auto_disable_thinking_for_tools,
@@ -624,6 +625,7 @@ async def create_anthropic_message(
     if not (anthropic_request.model or "").startswith(("claude-", "gpt-")):
         _validate_model_name(anthropic_request.model)
     engine = get_engine(anthropic_request.model)
+    await ensure_engine_ready(engine)
 
     # Pre-flight admission gate (C4) — see routes/chat.py for rationale.
     # Reservation released by the route-level ``finally`` below; on the
@@ -1319,6 +1321,7 @@ async def count_anthropic_tokens(request: Request):
             _validate_model_name(requested_model)
 
     engine = get_engine()
+    await ensure_engine_ready(engine)
 
     # F12: count_tokens must apply the SAME chat template + tools
     # rendering that ``/v1/messages`` applies before tokenizing,
