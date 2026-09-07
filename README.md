@@ -430,8 +430,14 @@ qualification (about 20 GB for the complete process tree). The 32K Studio run
 reached a 27.1 GB MLX allocator peak before non-MLX process and macOS memory;
 on a 32 GB Mac, reduce context/cache use or choose a larger-memory machine.
 
+M1 and M2 Macs can explicitly select `qwen3.8-27b-4bit-fp16`. It carries the
+same 4-bit target and native MTP layout, but stores the checkpoint's
+non-quantized tensors as FP16 for chips without accelerated BF16 matrix
+multiplication. The regular `qwen3.8-27b-4bit` alias remains unchanged for M3
+and newer Macs; Rapid does not silently swap checkpoint precision.
+
 → [Full RAM tier map + serve flags per tier](https://rapidmlx.com/docs/hardware-tiers.html)
-→ [Every alias, quant, and family (187 text + 10 image + 10 video + 44 audio aliases, 251 total)](https://rapidmlx.com/docs/aliases.html) · interactive at [models.rapidmlx.com](https://models.rapidmlx.com/)
+→ [Every alias, quant, and family (188 text + 10 image + 10 video + 44 audio aliases, 252 total)](https://rapidmlx.com/docs/aliases.html) · interactive at [models.rapidmlx.com](https://models.rapidmlx.com/)
 
 ---
 

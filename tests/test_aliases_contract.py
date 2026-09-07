@@ -135,10 +135,14 @@ def test_qwen38_flash_next_alias_is_experimental_and_memory_gated() -> None:
 
 
 def test_qwen38_27b_aliases_pin_the_native_named_xml_tool_contract() -> None:
-    """Both shipped 27B quants use the same native XML tool template."""
+    """Every shipped 27B checkpoint uses the same native XML tool template."""
 
     profiles = list_profiles()
-    for alias in ("qwen3.8-27b-4bit", "qwen3.8-27b-mixed-3.5bpw"):
+    for alias in (
+        "qwen3.8-27b-4bit",
+        "qwen3.8-27b-4bit-fp16",
+        "qwen3.8-27b-mixed-3.5bpw",
+    ):
         profile = profiles[alias]
         assert profile.tool_call_parser == "qwen3_coder_xml"
         assert detect_model_config(alias) == profile
@@ -2056,6 +2060,7 @@ def test_image_input_capability_is_strict_and_explicit() -> None:
 
     profiles = list_profiles()
     assert profiles["qwen3.8-27b-4bit"].supports_image_input is True
+    assert profiles["qwen3.8-27b-4bit-fp16"].supports_image_input is True
     assert profiles["qwen3-vl-4b-4bit"].supports_image_input is True
     assert profiles["qwen3.5-122b-mxfp4"].supports_image_input is False
 

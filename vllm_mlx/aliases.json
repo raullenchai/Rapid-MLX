@@ -427,6 +427,17 @@
     "dflash_draft_revision": "50307d4c4cde6860d4eee73e2547cd786fe8e8a4",
     "dflash_algorithm": "dflash2"
   },
+  "qwen3.8-27b-4bit-fp16": {
+    "supports_image_input": true,
+    "hf_path": "rapid-mlx/Qwen3.8-27B-4bit-MTP-fp16-MLX",
+    "tool_call_parser": "qwen3_coder_xml",
+    "reasoning_parser": "qwen3",
+    "is_hybrid": true,
+    "supports_spec_decode": false,
+    "mtp_draft_model": "rapid-mlx/Qwen3.8-27B-4bit-MTP-fp16-MLX",
+    "mtp_speculative_tokens": 3,
+    "mtp_continuous_batching_tier": "verified"
+  },
   "qwen3.8-27b-mixed-3.5bpw": {
     "supports_image_input": true,
     "hf_path": "rapid-mlx/Qwen3.8-27B-mixed-3.5bpw-MLX",

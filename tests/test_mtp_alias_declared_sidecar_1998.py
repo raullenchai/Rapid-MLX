@@ -52,6 +52,7 @@ EXPERIMENTAL_MTP_ALIASES = {
     "qwen3.6-35b-ud": "mlx-community/Qwen3.6-35B-A3B-MTP-4bit",
     "qwen3.6-35b": "mlx-community/Qwen3.6-35B-A3B-MTP-4bit",
     "qwen3.8-27b-4bit": "rapid-mlx/Qwen3.8-27B-4bit-MTP-MLX",
+    "qwen3.8-27b-4bit-fp16": "rapid-mlx/Qwen3.8-27B-4bit-MTP-fp16-MLX",
     "qwen3.8-27b-mixed-3.5bpw": "rapid-mlx/Qwen3.8-27B-mixed-3.5bpw-MLX",
 }
 
