@@ -76,3 +76,7 @@ Hugging Face cache, and never override or redirect its configured cache paths.
   completions logging tests pass. Full smoke then reached an unrelated optional
   image test whose local environment lacks `mflux` (isolated: 22 passed, 1
   environment failure); no image-scope change was made.
+- Round 5 hosted CI found one new mypy diagnostic at the request-id lookup in
+  continuous-cohort attachment. The optional id is now narrowed before
+  `dict.get`; the pinned CI type environment reports the existing 701-error
+  grandfathered budget with no growth, and 162 related tests pass.

@@ -1050,7 +1050,11 @@ def _install_continuous_mtp_router(
                 if uid_to_request_id is None
                 else uid_to_request_id.get(lane.spec.uid)
             )
-            request = None if requests is None else requests.get(request_id)
+            request = (
+                None
+                if requests is None or request_id is None
+                else requests.get(request_id)
+            )
             counter = (
                 _ensure_request_mtp_counter(request) if request is not None else None
             )
