@@ -53,7 +53,7 @@ struct DraftPostInstructionPlannerTests {
         let clarification = try #require(
             properties["clarifying_question"] as? [String: Any]
         )
-        #expect(clarification["pattern"] as? String == #"^[^?？؟\r\n]*[?？؟]$"#)
+        #expect(clarification["pattern"] as? String == #"^(?:[^?？؟\r\n]*[?？؟])?$"#)
     }
 
     @Test("A model clarification response is exposed without a guessed plan")
@@ -120,6 +120,7 @@ struct DraftPostInstructionPlannerTests {
         #expect(system.contains("names a destination inconsistent with the trusted browser hostname"))
         #expect(system.contains("return needs_clarification and ask exactly one concise question"))
         #expect(system.contains("ending with one question mark"))
+        #expect(system.contains("For ready, clarifying_question must be an empty string"))
         #expect(system.contains("purpose_evidence"))
         let user = try #require(messages.last?["content"])
         #expect(user.contains("Trusted destination hostname: x.com"))

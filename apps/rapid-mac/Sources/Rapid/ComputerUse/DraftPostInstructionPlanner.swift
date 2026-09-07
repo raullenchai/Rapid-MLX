@@ -524,6 +524,7 @@ struct LocalDraftPostInstructionPlanner: DraftPostInstructionPlanning {
             useful content, return needs_clarification and ask exactly one concise question \
             ending with one question mark. \
             Otherwise return ready and copy the trusted hostname exactly into destination. \
+            For ready, clarifying_question must be an empty string. \
             For a ready plan, purpose must copy purpose_evidence, audience must copy \
             audience_evidence, and tone must copy tone_evidence exactly; every \
             talking_points item must exactly copy its same-index talking_points_evidence \
@@ -599,7 +600,7 @@ struct LocalDraftPostInstructionPlanner: DraftPostInstructionPlanning {
                 "clarifying_question": [
                     "type": "string",
                     "maxLength": maximumClarificationCharacters,
-                    "pattern": #"^[^?？؟\r\n]*[?？؟]$"#,
+                    "pattern": #"^(?:[^?？؟\r\n]*[?？؟])?$"#,
                 ],
             ],
             "required": [
