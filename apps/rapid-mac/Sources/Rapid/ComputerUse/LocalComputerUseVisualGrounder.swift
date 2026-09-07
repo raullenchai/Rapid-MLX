@@ -33,7 +33,7 @@ protocol LocalComputerUseGroundingTransport: Sendable {
 /// endpoint. The response is consumed incrementally so a broken local peer
 /// cannot hand the Desktop app an unbounded allocation.
 struct URLSessionComputerUseGroundingTransport: LocalComputerUseGroundingTransport {
-    private static let session: URLSession = {
+    static let noRedirectSession: URLSession = {
         let configuration = URLSessionConfiguration.ephemeral
         configuration.timeoutIntervalForRequest = 60
         configuration.timeoutIntervalForResource = 60
@@ -48,7 +48,7 @@ struct URLSessionComputerUseGroundingTransport: LocalComputerUseGroundingTranspo
 
     private let session: URLSession
 
-    init(session: URLSession = Self.session) {
+    init(session: URLSession = Self.noRedirectSession) {
         self.session = session
     }
 
@@ -78,7 +78,7 @@ struct URLSessionComputerUseGroundingTransport: LocalComputerUseGroundingTranspo
     }
 }
 
-private final class LocalComputerUseNoRedirectDelegate: NSObject,
+final class LocalComputerUseNoRedirectDelegate: NSObject,
     URLSessionTaskDelegate, @unchecked Sendable
 {
     func urlSession(
@@ -102,6 +102,7 @@ actor LocalComputerUseVisualGrounder: LocalWorkflowGrounding {
     struct Configuration: Equatable, Sendable {
         static let maximumModelBytes = 256
         static let maximumBearerBytes = 4_096
+        static let maximumInstructionBytes = 16 * 1024
         static let hardMaximumScreenshotBytes = 16 * 1024 * 1024
         static let hardMaximumRequestBytes = 24 * 1024 * 1024
         static let hardMaximumResponseBytes = 4 * 1024 * 1024
@@ -258,6 +259,11 @@ actor LocalComputerUseVisualGrounder: LocalWorkflowGrounding {
         step: LocalWorkflowStep,
         artifact: ComputerUseObservationArtifact
     ) throws -> URLRequest {
+        guard !step.instruction.isEmpty,
+              step.instruction.utf8.count <= Configuration.maximumInstructionBytes
+        else {
+            throw LocalComputerUseVisualGrounderError.requestTooLarge
+        }
         let imageURL = "data:image/png;base64,\(artifact.pngData.base64EncodedString())"
         let tool: [String: Any] = [
             "type": "function",
@@ -375,6 +381,7 @@ actor LocalComputerUseVisualGrounder: LocalWorkflowGrounding {
               let message = choices[0]["message"] as? [String: Any],
               let calls = message["tool_calls"] as? [[String: Any]],
               calls.count == 1,
+              calls[0]["type"] as? String == "function",
               let function = calls[0]["function"] as? [String: Any],
               function["name"] as? String == "computer_use",
               let arguments = function["arguments"] as? String,

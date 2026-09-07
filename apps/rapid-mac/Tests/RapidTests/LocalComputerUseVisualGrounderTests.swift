@@ -2,7 +2,7 @@ import Foundation
 import Testing
 @testable import Rapid
 
-@Suite("Local Computer Use visual grounder")
+@Suite("Local Computer Use visual grounder", .serialized)
 struct LocalComputerUseVisualGrounderTests {
     /// Operator-only model compatibility check. It performs no UI action.
     /// Run against an already-started local server with:
@@ -211,6 +211,22 @@ struct LocalComputerUseVisualGrounderTests {
 
     @Test("Request and response allocations remain bounded")
     func allocationPolicy() async throws {
+        let oversizedInstruction = try await Fixture(
+            responseBody: Self.response(x: 300, y: 300),
+            instruction: String(
+                repeating: "a",
+                count: LocalComputerUseVisualGrounder.Configuration
+                    .maximumInstructionBytes + 1
+            )
+        )
+        await #expect(throws: LocalComputerUseVisualGrounderError.requestTooLarge) {
+            _ = try await oversizedInstruction.grounder.ground(
+                step: oversizedInstruction.step,
+                observation: oversizedInstruction.observation
+            )
+        }
+        #expect(await oversizedInstruction.transport.requestCount == 0)
+
         let request = try await Fixture(
             responseBody: Self.response(x: 300, y: 300),
             maximumScreenshotBytes: 8,
@@ -243,6 +259,8 @@ struct LocalComputerUseVisualGrounderTests {
         Self.response(x: 500, y: 500, action: "type"),
         Self.response(x: 500, y: 500, extraArgument: true),
         Self.response(x: 500, y: 500, duplicateCall: true),
+        Self.response(x: 500, y: 500, callType: nil),
+        Self.response(x: 500, y: 500, callType: "custom"),
         Self.responseWithRawCoordinate("[true,500]"),
         Self.responseWithRawCoordinate("[500.0,500]"),
     ])
@@ -319,12 +337,78 @@ struct LocalComputerUseVisualGrounderTests {
         #expect(await fixture.transport.cancelledSendCount == 1)
     }
 
+    @Test("Production transport streams within its cap and stops on cancellation")
+    func productionTransportBoundaries() async throws {
+        GroundingTransportURLProtocol.reset(mode: .oversized)
+        let transport = URLSessionComputerUseGroundingTransport(
+            session: GroundingTransportURLProtocol.session()
+        )
+        let request = URLRequest(
+            url: try #require(URL(string: "http://127.0.0.1:8377/v1/chat/completions"))
+        )
+        await #expect(throws: LocalComputerUseVisualGrounderError.responseTooLarge) {
+            _ = try await transport.send(request, maximumResponseBytes: 8)
+        }
+
+        GroundingTransportURLProtocol.reset(mode: .suspended)
+        let task = Task {
+            try await transport.send(request, maximumResponseBytes: 8)
+        }
+        for _ in 0 ..< 10_000 where !GroundingTransportURLProtocol.didStart {
+            await Task.yield()
+        }
+        #expect(GroundingTransportURLProtocol.didStart)
+        task.cancel()
+        await #expect(throws: Error.self) {
+            _ = try await task.value
+        }
+        for _ in 0 ..< 10_000 where GroundingTransportURLProtocol.stopCount == 0 {
+            await Task.yield()
+        }
+        #expect(GroundingTransportURLProtocol.stopCount == 1)
+    }
+
+    @Test("Production session is wired to reject redirects")
+    func redirectPolicy() async throws {
+        #expect(
+            URLSessionComputerUseGroundingTransport.noRedirectSession.delegate
+                is LocalComputerUseNoRedirectDelegate
+        )
+        let delegate = LocalComputerUseNoRedirectDelegate()
+        let session = URLSession(configuration: .ephemeral)
+        let request = URLRequest(
+            url: try #require(URL(string: "http://127.0.0.1:8377/v1/chat/completions"))
+        )
+        let task = session.dataTask(with: request)
+        let response = try #require(HTTPURLResponse(
+            url: request.url!,
+            statusCode: 307,
+            httpVersion: "HTTP/1.1",
+            headerFields: ["Location": "http://127.0.0.1:8378/v1"]
+        ))
+        let redirected = URLRequest(
+            url: try #require(URL(string: "http://127.0.0.1:8378/v1"))
+        )
+        let result = await withCheckedContinuation { continuation in
+            delegate.urlSession(
+                session,
+                task: task,
+                willPerformHTTPRedirection: response,
+                newRequest: redirected,
+                completionHandler: { continuation.resume(returning: $0) }
+            )
+        }
+        task.cancel()
+        #expect(result == nil)
+    }
+
     private static func response(
         x: Int,
         y: Int,
         action: String = "left_click",
         extraArgument: Bool = false,
-        duplicateCall: Bool = false
+        duplicateCall: Bool = false,
+        callType: String? = "function"
     ) -> Data {
         var arguments: [String: Any] = [
             "action": action,
@@ -333,14 +417,14 @@ struct LocalComputerUseVisualGrounderTests {
         if extraArgument { arguments["text"] = "unsafe" }
         let argumentData = try! JSONSerialization.data(withJSONObject: arguments)
         let argumentString = String(decoding: argumentData, as: UTF8.self)
-        let call: [String: Any] = [
+        var call: [String: Any] = [
             "id": "call-1",
-            "type": "function",
             "function": [
                 "name": "computer_use",
                 "arguments": argumentString,
             ],
         ]
+        if let callType { call["type"] = callType }
         let calls = duplicateCall ? [call, call] : [call]
         return try! JSONSerialization.data(withJSONObject: [
             "choices": [["message": ["tool_calls": calls]]],
@@ -381,7 +465,8 @@ struct LocalComputerUseVisualGrounderTests {
             maximumScreenshotBytes: Int = 8 * 1024 * 1024,
             maximumRequestBytes: Int = 12 * 1024 * 1024,
             maximumResponseBytes: Int = 512 * 1024,
-            storeArtifact: Bool = true
+            storeArtifact: Bool = true,
+            instruction: String = "Click the button labeled Review."
         ) async throws {
             let vault = ComputerUseObservationVault()
             let observation = WorkflowObservation(
@@ -421,7 +506,7 @@ struct LocalComputerUseVisualGrounderTests {
             self.step = LocalWorkflowStep(
                 id: "review",
                 title: "Review update",
-                instruction: "Click the button labeled Review.",
+                instruction: instruction,
                 successCriteria: "The review screen is visible.",
                 risk: .externalCommunication,
                 isIdempotent: true,
@@ -474,5 +559,70 @@ private actor CapturingGroundingTransport: LocalComputerUseGroundingTransport {
             cancelledSendCount += 1
             throw CancellationError()
         }
+    }
+}
+
+private final class GroundingTransportURLProtocol: URLProtocol, @unchecked Sendable {
+    enum Mode {
+        case oversized
+        case suspended
+    }
+
+    private static let lock = NSLock()
+    nonisolated(unsafe) private static var mode: Mode = .oversized
+    nonisolated(unsafe) private static var started = false
+    nonisolated(unsafe) private static var stops = 0
+
+    static var didStart: Bool {
+        lock.withLock { started }
+    }
+
+    static var stopCount: Int {
+        lock.withLock { stops }
+    }
+
+    static func reset(mode: Mode) {
+        lock.withLock {
+            self.mode = mode
+            started = false
+            stops = 0
+        }
+    }
+
+    static func session() -> URLSession {
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [GroundingTransportURLProtocol.self]
+        return URLSession(configuration: configuration)
+    }
+
+    override class func canInit(with _: URLRequest) -> Bool { true }
+
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest {
+        request
+    }
+
+    override func startLoading() {
+        let mode = Self.lock.withLock { () -> Mode in
+            Self.started = true
+            return Self.mode
+        }
+        let response = HTTPURLResponse(
+            url: request.url!,
+            statusCode: 200,
+            httpVersion: "HTTP/1.1",
+            headerFields: ["Content-Type": "application/json"]
+        )!
+        client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+        switch mode {
+        case .oversized:
+            client?.urlProtocol(self, didLoad: Data(repeating: 0x61, count: 9))
+            client?.urlProtocolDidFinishLoading(self)
+        case .suspended:
+            client?.urlProtocol(self, didLoad: Data([0x61]))
+        }
+    }
+
+    override func stopLoading() {
+        Self.lock.withLock { Self.stops += 1 }
     }
 }
