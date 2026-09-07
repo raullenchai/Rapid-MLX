@@ -2,8 +2,8 @@
 
 - Owner/host: Vector, Studio (Apple M3 Ultra, 256 GiB, macOS 26.5.2)
 - Branch: `vector/release-dogfood-20260906`
-- Latest tested upstream base: `cc7d849821643706da15a9cdc52545ea28a05ace`
-- Exact tested branch head: `f09a761a26de553f0e87f66c30bd733759f6f4b2`
+- Latest tested upstream base: `2eac979c66fedee5cd9767b416b4fabdc9cf8d00`
+- Exact tested branch head: `444eb395400b57516765f81536125d02387eb9c4`
 - Durable report:
   `docs/engineering/operations/2026-09-06-server-gui-release-candidate-dogfood.md`
 
@@ -40,6 +40,17 @@
   recomputed medians matched: 171.0 tok/s + 266 ms TTFT for `pp512-tg128`,
   169.6 tok/s + 947 ms TTFT for `pp2048-tg512`. No P0/P1 was found in that
   newly merged surface.
+- After the final rebase, `candidate-444eb395` passed a complete release app
+  and sidecar build. Its sidecar tarball SHA-256 is
+  `bd4cfe48f4a74a71a4d9565353578b66f549acf14439282b67f02706b0bfbcaf`.
+  Focused latest-base verification passed 321 Python tests and 72 Swift tests
+  covering cache inventory, Community Benchmark, draft-post, and bounded
+  visual recovery.
+- The latest packaged Qwen 3.5 4B benchmark completed all ten rounds at 170.5
+  tok/s + 264 ms TTFT (`pp512-tg128`) and 168.6 tok/s + 944 ms TTFT
+  (`pp2048-tg512`). Its stored identity was read from the actual cached model:
+  affine four-bit weights, group size 64, resolved revision
+  `32f3e8ecf65426fc3306969496342d504bfa13f3`.
 
 ## Risk and next action
 

@@ -14,22 +14,27 @@ deadline, preserves exact sizing for responsive relocated entries, and omits
 only entries whose backing volume does not respond. With three unresponsive
 entries present, the source command went from **more than two minutes without
 returning** to **3.05 seconds**, and the packaged sidecar completed in **4.17
-seconds**. Server and isolated-GUI dogfood passed after the fix.
+seconds** on both the original and latest upstream bases. Server and
+isolated-GUI dogfood passed after the fix.
 
 This is a commit-bound local qualification receipt, not authorization to
 publish a release. The initial qualification base was
 `caafd08df9e8d7242b081a3fc9fb7c9f6807eca0`. The branch was then rebased onto
 `cc7d849821643706da15a9cdc52545ea28a05ace` and the complete release app plus
 the newly merged Community Benchmark surface were requalified at
-`f09a761a26de553f0e87f66c30bd733759f6f4b2`. PR merge gates remain mandatory
-before Atlas uses the fix for release integration.
+`f09a761a26de553f0e87f66c30bd733759f6f4b2`. A final release audit rebased onto
+`2eac979c66fedee5cd9767b416b4fabdc9cf8d00`; its exact candidate
+`444eb395400b57516765f81536125d02387eb9c4` passed a fresh release build,
+packaged inventory, Community Benchmark identity run, and the focused tests
+for the newly merged benchmark and Desktop visual-recovery changes. PR merge
+gates remain mandatory before Atlas uses the fix for release integration.
 
 ## Candidate and host
 
 - Rapid-MLX: 0.13.4, latest tested head
-  `f09a761a26de553f0e87f66c30bd733759f6f4b2`
+  `444eb395400b57516765f81536125d02387eb9c4`
 - Latest tested upstream base:
-  `cc7d849821643706da15a9cdc52545ea28a05ace`
+  `2eac979c66fedee5cd9767b416b4fabdc9cf8d00`
 - Branch: `vector/release-dogfood-20260906`
 - Host: Apple M3 Ultra, 256 GiB unified memory, macOS 26.5.2
 - Source runtime: Python 3.11.16, MLX 0.32.2
@@ -37,7 +42,7 @@ before Atlas uses the fix for release integration.
   mlx-vlm 0.6.17, mlx-audio 0.4.3, mflux 0.19.0
 - Release-mode sidecar: 482 MiB raw, 160 MiB compressed, 173 Mach-O files
 - Exact-head sidecar tarball SHA-256:
-  `108556bdbea7550296863dd72a855dbddb682781401bdefbec19e2ae38cd80ba`
+  `bd4cfe48f4a74a71a4d9565353578b66f549acf14439282b67f02706b0bfbcaf`
 - Desktop signing: deep ad-hoc signing for local dogfood only
 
 The production app at `/Applications/Rapid-MLX Desktop.app` remained running
@@ -163,6 +168,16 @@ zone as `Today 10:29 PM`. The exact-head app then terminated cleanly, released
 its host lock, and was marked finished. No P0 or P1 issue was found in the new
 Community Benchmark surface.
 
+After the subsequent upstream benchmark-identity hardening, the newly rebuilt
+packaged CLI ran the same registered protocol against the real cached
+`qwen3.5-4b-4bit` snapshot. All ten measured rounds completed. The stored model
+record now reflects the artifact actually loaded: affine weights, four bits
+(`weight_bits_x2=8`), group size 64, and resolved Hugging Face revision
+`32f3e8ecf65426fc3306969496342d504bfa13f3`. Its measured medians were 170.5
+tok/s with 264 ms TTFT for `pp512-tg128`, and 168.6 tok/s with 944 ms TTFT for
+`pp2048-tg512`. This validates both the packaged inference path and the new
+quantization/revision provenance rather than trusting catalog metadata.
+
 ## Automated verification
 
 - `uv run pytest -q tests/test_cli_models.py`: 86 passed
@@ -177,12 +192,18 @@ Community Benchmark surface.
 - `apps/rapid-mac/scripts/desktop-test-timeout.sh`: 3,542 tests in 306
   suites passed in 90.61 seconds
 - Exact-head Community Benchmark Swift selection: 29 passed
+- Latest-base Python cache and Community Benchmark selection: 321 passed
+- Latest-base Swift Community Benchmark, draft-post, and visual-grounder
+  selection: 72 tests in 3 suites passed; live-only fixtures skipped
 - Exact-head cache/first-run/offline Python selection: 27 passed
 - Changed production lines under targeted coverage: 100% (40/40)
 - Initial release build (`candidate-caafd08e`): passed
 - Exact-head release build (`candidate-f09a761a`): passed
+- Latest-base release build (`candidate-444eb395`): passed
 - Packaged `rapid-mlx models --cached --json` under a ten-second outer guard:
-  passed in 4.17 seconds initially and 4.19 seconds at exact head
+  passed in 4.17 seconds initially, 4.19 seconds at the first exact head, and
+  4.17 seconds at the latest base; every run returned 43 healthy rows and
+  skipped the same three unresponsive entries
 
 An initial direct `swift test` invocation produced timing failures because it
 allowed Swift Testing to parallelize suites. The repository and hosted CI
