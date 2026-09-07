@@ -94,7 +94,7 @@ struct LocalComputerUseVisualGrounderTests {
         #expect(action.observationID == fixture.observation.id)
         #expect(action.source == .visualGrounding)
         #expect(action.risk == .externalCommunication)
-        #expect(action.safeSummary == "Click the target for Review update")
+        #expect(action.safeSummary == "Click the requested target")
         guard case .click(let x, let y) = action.payload else {
             Issue.record("Expected one click")
             return
@@ -439,6 +439,7 @@ struct LocalComputerUseVisualGrounderTests {
             "choices": [[
                 "message": [
                     "tool_calls": [[
+                        "type": "function",
                         "function": [
                             "name": "computer_use",
                             "arguments": arguments,

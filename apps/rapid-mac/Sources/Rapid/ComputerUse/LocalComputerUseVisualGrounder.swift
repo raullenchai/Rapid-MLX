@@ -250,7 +250,7 @@ actor LocalComputerUseVisualGrounder: LocalWorkflowGrounding {
                 normalizedY: Double(coordinate.y) / 999
             ),
             source: .visualGrounding,
-            safeSummary: "Click the target for \(step.title)",
+            safeSummary: "Click the requested target",
             risk: step.risk
         )
     }
