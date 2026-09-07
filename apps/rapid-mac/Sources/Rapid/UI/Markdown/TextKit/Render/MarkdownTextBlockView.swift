@@ -561,8 +561,8 @@ final class MarkdownTextBlockView: NSView {
     /// animator has written. Rendering attributes live on the layout manager
     /// rather than the text storage, so a test cannot read them off the
     /// attributed string.
-    func testing_renderingForegroundColor(_ receive: (NSColor) -> Void) {
-        var found = false
+    func testing_renderingForegroundColor() -> NSColor? {
+        var found: NSColor?
         renderer.textLayoutManager.enumerateRenderingAttributes(
             from: renderer.textLayoutManager.documentRange.location,
             reverse: false
@@ -570,11 +570,10 @@ final class MarkdownTextBlockView: NSView {
             guard let colour = attributes[.foregroundColor] as? NSColor else {
                 return true
             }
-            found = true
-            receive(colour)
+            found = colour
             return false
         }
-        _ = found
+        return found
     }
 
 }

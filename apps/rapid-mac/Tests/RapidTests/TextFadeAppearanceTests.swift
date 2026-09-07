@@ -33,7 +33,7 @@ struct TextFadeAppearanceTests {
 
     /// The colour the animator writes for a half-faded word, for a view whose
     /// window is pinned to `appearance`.
-    private func fadedColor(under appearance: NSAppearance.Name) -> NSColor {
+    private func fadedColor(under appearance: NSAppearance.Name) -> NSColor? {
         var options = MarkdownOptions.assistantTranscript()
         options.textColor = .textColor
 
@@ -60,14 +60,13 @@ struct TextFadeAppearanceTests {
         let rep = view.bitmapImageRepForCachingDisplay(in: view.bounds)!
         view.cacheDisplay(in: view.bounds, to: rep)
 
-        var found: NSColor?
-        view.testing_renderingForegroundColor { found = $0 }
-        return found ?? options.textColor
+        return view.testing_renderingForegroundColor()
     }
 
     @Test("Dark mode fades toward a light colour")
-    func darkModeFadeIsVisible() {
-        let lum = luminance(fadedColor(under: .darkAqua), under: .darkAqua)
+    func darkModeFadeIsVisible() throws {
+        let color = try #require(fadedColor(under: .darkAqua))
+        let lum = luminance(color, under: .darkAqua)
         #expect(
             lum > 0.5,
             """
@@ -79,8 +78,9 @@ struct TextFadeAppearanceTests {
     }
 
     @Test("Light mode still fades toward a dark colour")
-    func lightModeFadeStaysDark() {
-        let lum = luminance(fadedColor(under: .aqua), under: .aqua)
+    func lightModeFadeStaysDark() throws {
+        let color = try #require(fadedColor(under: .aqua))
+        let lum = luminance(color, under: .aqua)
         #expect(lum < 0.5, "light mode must keep dark text; got luminance \(lum)")
     }
 }
