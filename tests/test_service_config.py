@@ -56,6 +56,10 @@ def test_service_config_round_trip_and_digest(tmp_path):
         ({"schema_version": 999}, "unsupported"),
         ({"port": 0}, "port"),
         ({"executable": "rapid-mlx"}, "absolute"),
+        ({"host": "0.0.0.0"}, "loopback"),
+        ({"host": "::"}, "loopback"),
+        ({"host": "192.168.1.20"}, "loopback"),
+        ({"host": "inference.example.com"}, "loopback"),
         ({"serve_args": ("--api-key=leak",)}, "API key"),
         ({"log_retention_days": 0}, "at least 1"),
     ],
@@ -63,6 +67,13 @@ def test_service_config_round_trip_and_digest(tmp_path):
 def test_service_config_rejects_unsafe_values(updates, message):
     with pytest.raises(ServiceConfigError, match=message):
         _config(**updates)
+
+
+@pytest.mark.parametrize(
+    "host", ["127.0.0.1", "127.42.0.9", "::1", "localhost", "LOCALHOST"]
+)
+def test_service_config_accepts_only_explicit_loopback_hosts(host):
+    assert _config(host=host).host == host
 
 
 def test_service_config_rejects_unknown_fields():
@@ -1065,12 +1076,12 @@ def test_restart_reads_config_backed_bind(monkeypatch, tmp_path):
     from vllm_mlx.headless_service import restart
 
     path = tmp_path / "service.json"
-    atomic_write(path, config_bytes(_config(host="0.0.0.0", port=9000)))
+    atomic_write(path, config_bytes(_config(host="127.0.0.2", port=9000)))
     monkeypatch.setattr(
         "vllm_mlx.headless_service.definition.installed_identity",
         lambda _label: ("runner", tmp_path, path),
     )
-    assert restart._declared_bind("com.rapidmlx.server") == ("0.0.0.0", 9000)
+    assert restart._declared_bind("com.rapidmlx.server") == ("127.0.0.2", 9000)
 
 
 def test_configure_remaining_error_paths(monkeypatch, tmp_path):

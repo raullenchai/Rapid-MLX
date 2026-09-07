@@ -49,7 +49,7 @@ class ServiceConfig:
     log_backup_count: int = DEFAULT_LOG_BACKUP_COUNT
 
     def validated(self) -> ServiceConfig:
-        from .common import validate_label
+        from .common import is_loopback_host, validate_label
         from .install import refuse_secret_flags
 
         if self.schema_version != SCHEMA_VERSION:
@@ -68,6 +68,11 @@ class ServiceConfig:
         if not self.host or "\0" in self.host or any(ch.isspace() for ch in self.host):
             raise ServiceConfigError(
                 "host must be a non-empty address without whitespace"
+            )
+        if not is_loopback_host(self.host):
+            raise ServiceConfigError(
+                "host must be a loopback address; expose persistent services "
+                "through the documented TLS-terminating, authenticating reverse proxy"
             )
         if not 1 <= self.port <= 65535:
             raise ServiceConfigError("port must be in [1, 65535]")
