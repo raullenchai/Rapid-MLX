@@ -751,6 +751,9 @@ struct MacOSDraftPostFlowDriver: DraftPostFlowDriving, PreparedDraftPostFlowDriv
         {
             components.port = nil
         }
+        // Preserve the fragment deliberately. Single-page applications often
+        // use it as document or account state, so a hash-route change after
+        // review invalidates the authorization just like a path change.
         return components.string
     }
 

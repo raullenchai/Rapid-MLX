@@ -441,6 +441,14 @@ struct DraftPostInstructionPlannerTests {
             currentAddress: "https://x.com/another-account/compose",
             expected: expected
         ))
+        let hashRouted = ComputerUseBrowserDestinationIdentity(
+            host: "example.com",
+            documentIdentity: "https://example.com/app#account-a/compose"
+        )
+        #expect(!MacOSDraftPostFlowDriver.browserDestinationMatches(
+            currentAddress: "https://example.com/app#account-b/compose",
+            expected: hashRouted
+        ))
         #expect(MacOSDraftPostFlowDriver.normalizedDestinationHost(from: "   ") == nil)
     }
 
