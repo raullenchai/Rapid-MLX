@@ -24,8 +24,8 @@ The ``is_enabled`` decision precedence (highest first):
 2. Environment kill switches → forced OFF: ``RAPID_MLX_TELEMETRY=0``
    (any falsy value), the cross-tool ``DO_NOT_TRACK=1`` convention, or a
    CI marker (``CI``, ``GITHUB_ACTIONS``, ``GITLAB_CI``, ``CIRCLECI``,
-   ``TRAVIS``, ``BUILDKITE``, ``JENKINS_URL``, ``TEAMCITY_VERSION``) being
-   present at all — build machines are never users.
+   ``TRAVIS``, ``BUILDKITE``, ``JENKINS_URL``, ``TEAMCITY_VERSION``) set to
+   a non-empty value — build machines are never users.
 3. Stored consent file → whatever the user answered.
 4. Default → OFF. (Anonymous data collection without explicit opt-in is
    a non-starter.)
