@@ -108,7 +108,13 @@ struct DraftPostLanguageRuntime: Equatable, Sendable {
     ) {
         guard let profile,
               let bearerToken,
-              let expectedSessionID = server.activeServerSessionID
+              let expectedSessionID = server.activeServerSessionID,
+              // Planning sends the user's private brief. Require the default
+              // per-launch credential so a replacement child cannot reuse the
+              // authenticated connection identity inside the pre/post session
+              // checks below. Long-lived integration keys remain available to
+              // other clients, but are intentionally ineligible here.
+              server.embeddedBearerLifetime == .perLaunch
         else { return nil }
         let expectedModel = profile.id
         self.init(
@@ -468,15 +474,27 @@ struct LocalDraftPostInstructionPlanner: DraftPostInstructionPlanning {
         let concise = ["concise", "brief", "short", "简洁", "精炼"].contains {
             foldedTone.contains($0)
         }
-        let usesCJK = ([purpose, audience] + talkingPoints).joined().unicodeScalars
+        let cleanPurpose = strippingTerminalPunctuation(purpose)
+        let cleanPoints = talkingPoints.map(strippingTerminalPunctuation)
+        let usesCJK = ([cleanPurpose, audience] + cleanPoints).joined().unicodeScalars
             .contains { (0x3400 ... 0x9FFF).contains(Int($0.value)) }
         let points: String
         if usesCJK {
-            points = talkingPoints.joined(separator: concise ? "；" : "。")
-            return "面向\(audience)：\(purpose)\(concise ? "——" : "。")\(points)\(energetic ? "！" : "。")"
+            points = cleanPoints.joined(separator: concise ? "；" : "。")
+            return "面向\(audience)：\(cleanPurpose)\(concise ? "——" : "。")\(points)\(energetic ? "！" : "。")"
         }
-        points = talkingPoints.joined(separator: concise ? "; " : ". ")
-        return "For \(audience): \(purpose)\(concise ? " — " : ". ")\(points)\(energetic ? "!" : ".")"
+        points = cleanPoints.joined(separator: concise ? "; " : ". ")
+        return "For \(audience): \(cleanPurpose)\(concise ? " — " : ". ")\(points)\(energetic ? "!" : ".")"
+    }
+
+    private static func strippingTerminalPunctuation(_ value: String) -> String {
+        var result = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        let punctuation: Set<Character> = [".", "!", "?", "。", "！", "？"]
+        while let last = result.last, punctuation.contains(last) {
+            result.removeLast()
+            result = result.trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+        return result
     }
 
     private static func instructionContainsDestinationEvidence(

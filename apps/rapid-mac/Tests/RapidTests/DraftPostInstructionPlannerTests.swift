@@ -346,6 +346,36 @@ struct DraftPostInstructionPlannerTests {
         #expect(enthusiasticPlan.draft != professionalPlan.draft)
     }
 
+    @Test("Grounded rendering normalizes existing terminal punctuation")
+    func groundedDraftPunctuation() async throws {
+        let transport = PlannerTransport(response: try Self.response(content: [
+            "status": "ready",
+            "purpose": "announce Rapid.",
+            "audience": "Mac developers",
+            "talking_points": ["Released today!"],
+            "tone": "professional",
+            "destination": "x.com",
+            "purpose_evidence": "announce Rapid.",
+            "audience_evidence": "Mac developers",
+            "talking_points_evidence": ["Released today!"],
+            "tone_evidence": "professional",
+            "destination_evidence": "X",
+            "clarifying_question": "",
+        ]))
+        let result = try await Self.planner(transport: transport).analyze(
+            instruction: "For Mac developers, announce Rapid. Use a professional tone on X: Released today!",
+            browserApplication: "Safari",
+            destinationHost: "x.com"
+        )
+        guard case .ready(let plan) = result else {
+            Issue.record("The punctuated evidence-backed plan did not reach review")
+            return
+        }
+        #expect(plan.draft == "For Mac developers: announce Rapid. Released today.")
+        #expect(!plan.draft.contains(".."))
+        #expect(!plan.draft.contains("!."))
+    }
+
     @Test("Unknown fields and incomplete ready plans fail closed")
     func strictOutputBoundary() async throws {
         var extra: [String: Any] = [
@@ -613,6 +643,28 @@ struct DraftPostInstructionPlannerTests {
             )
         }
         #expect(await transport.requests.isEmpty)
+    }
+
+    @MainActor
+    @Test("A long-lived embedded credential cannot authorize a private brief")
+    func persistentCredentialIsIneligible() throws {
+        let alias = "qwen3.5-9b-4bit"
+        let profile = ServerModelProfile(id: alias, modality: "text")
+        let server = ServerManager(
+            testingState: .ready(alias: alias),
+            activePort: 7659,
+            activeBearer: "persisted-secret"
+        )
+        server.applyActiveModelProfile(profile, forAlias: alias)
+        server.setEmbeddedBearerLifetime(.daily)
+        #expect(DraftPostLanguageRuntime(
+            profile: profile,
+            selectedAlias: alias,
+            host: server.host,
+            port: server.activePort,
+            bearerToken: server.activeBearer,
+            liveServer: server
+        ) == nil)
     }
 
     @MainActor

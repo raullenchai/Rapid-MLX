@@ -387,7 +387,7 @@ private struct DraftPostFlowSheet: View {
             }
 
             if !viewModel.hasPlanner {
-                Text("Start a local chat model before asking Rapid to analyze the request.")
+                Text("Use a running local chat model with per-start authentication before asking Rapid to analyze the request.")
                     .font(.caption)
                     .foregroundStyle(.orange)
             }
