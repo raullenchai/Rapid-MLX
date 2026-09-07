@@ -125,14 +125,17 @@ class _VirtualClock:
     """``perf_counter`` stand-in that only moves when the synthetic parser
     says it did work."""
 
+    # Integer nanoseconds: summing floats per call would drift a few ulps
+    # over 50 calls, which is enough to move a median ε off an exact value.
+
     def __init__(self) -> None:
-        self.now = 0.0
+        self.now_ns = 0
 
     def perf_counter(self) -> float:
-        return self.now
+        return self.now_ns / 1_000_000_000
 
     def advance_us(self, us: float) -> None:
-        self.now += us / 1_000_000
+        self.now_ns += round(us * 1_000)
 
 
 def _prop_parser(mb, monkeypatch):
@@ -201,6 +204,22 @@ def test_relative_budget_math_when_workloads_scale_together(mb, monkeypatch):
     # Over the limit (ε=1.2×LIMIT): fails on 1x and 5x runners alike.
     assert not _bench_with_cal(mb, make, 1.2, 1.0, monkeypatch).passed
     assert not _bench_with_cal(mb, make, 1.2, 5.0, monkeypatch).passed
+
+
+def test_verdict_boundary_is_inclusive(mb):
+    """``eps == REGRESSION_LIMIT`` passes and one part in a thousand over it
+    fails — asserted through ``_median_verdict`` with exact pairs, where no
+    clock arithmetic is involved."""
+    base = mb.BASE_US["hermes"]
+    at_limit = [
+        (base * mb.REGRESSION_LIMIT * factor, factor) for factor in (1.0, 5.0, 2.0)
+    ]
+    eps, _, _ = mb._median_verdict(at_limit, base)
+    assert eps == pytest.approx(mb.REGRESSION_LIMIT)
+    assert eps <= mb.REGRESSION_LIMIT * (1 + 1e-9)
+    over = [(us * 1.001, factor) for us, factor in at_limit]
+    eps_over, _, _ = mb._median_verdict(over, base)
+    assert eps_over > mb.REGRESSION_LIMIT
 
 
 def test_independent_control_cost_can_change_verdict(mb):
