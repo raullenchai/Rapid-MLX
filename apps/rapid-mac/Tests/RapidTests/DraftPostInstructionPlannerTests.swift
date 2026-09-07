@@ -443,8 +443,13 @@ struct DraftPostInstructionPlannerTests {
     private static func waitUntil(
         _ predicate: @escaping @MainActor () -> Bool
     ) async {
-        for _ in 0 ..< 100 where !predicate() {
-            await Task.yield()
+        let deadline = ContinuousClock.now + .seconds(2)
+        while !predicate() {
+            guard ContinuousClock.now < deadline else {
+                Issue.record("Timed out waiting for the expected flow state")
+                return
+            }
+            try? await Task.sleep(for: .milliseconds(10))
         }
     }
 
