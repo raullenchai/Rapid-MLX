@@ -72,6 +72,19 @@ final class TelemetryTests {
         }
     }
 
+    @Test("The production isEnabled(defaults:) reads the kill switch through TelemetryConfig.environment")
+    func productionPathReadsTheScopedEnvironment() async {
+        let defaults = freshDefaults()
+        defaults.set(true, forKey: TelemetryConfig.enabledKey)
+        // The suite trait pins an empty environment: consent decides.
+        #expect(TelemetryConfig.isEnabled(defaults: defaults) == true)
+        // A narrower scope with the switch set must win on the same call.
+        await TelemetryConfig.$environmentOverride.withValue(["RAPID_MLX_TELEMETRY": "0"]) {
+            #expect(TelemetryConfig.isEnabled(defaults: defaults) == false)
+        }
+        #expect(TelemetryConfig.isEnabled(defaults: defaults) == true)
+    }
+
     @Test("A truthy RAPID_MLX_TELEMETRY never forces telemetry on; consent still decides")
     func truthyValueIsIgnored() {
         let defaults = freshDefaults()
