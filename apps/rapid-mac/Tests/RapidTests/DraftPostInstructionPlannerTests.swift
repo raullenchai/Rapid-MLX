@@ -280,6 +280,51 @@ struct DraftPostInstructionPlannerTests {
     }
 
     @MainActor
+    @Test("A retained runtime rejects a restarted server that reuses its connection values")
+    func restartedServerSession() async throws {
+        let alias = "qwen3.5-9b-4bit"
+        let bearer = "persisted-secret"
+        let profile = ServerModelProfile(id: alias, modality: "text")
+        let server = ServerManager(
+            testingState: .ready(alias: alias),
+            activePort: 7659,
+            activeBearer: bearer
+        )
+        server.applyActiveModelProfile(profile, forAlias: alias)
+        let runtime = try #require(DraftPostLanguageRuntime(
+            profile: profile,
+            selectedAlias: alias,
+            host: server.host,
+            port: server.activePort,
+            bearerToken: bearer,
+            liveServer: server
+        ))
+        let transport = PlannerTransport(response: try Self.response(content: [
+            "status": "needs_clarification",
+            "purpose": "",
+            "audience": "",
+            "talking_points": [],
+            "tone": "",
+            "destination": "",
+            "draft": "",
+            "clarifying_question": "Which site should I prepare this for?",
+        ]))
+
+        // Simulate a new launch reusing alias, port, and a persisted bearer.
+        server._testReplaceActiveServerSession(bearer: bearer)
+        server.applyActiveModelProfile(profile, forAlias: alias)
+
+        await #expect(throws: DraftPostPlanningError.modelUnavailable) {
+            _ = try await runtime.makePlanner(transport: transport).analyze(
+                instruction: "Draft a launch update for X.",
+                browserApplication: "Safari",
+                destinationHost: "x.com"
+            )
+        }
+        #expect(await transport.requests.isEmpty)
+    }
+
+    @MainActor
     @Test("The UI reviews generated text before invoking browser execution")
     func reviewBeforeExecution() async throws {
         let plan = DraftPostPlan(

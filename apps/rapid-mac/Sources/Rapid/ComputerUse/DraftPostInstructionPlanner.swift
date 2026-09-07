@@ -97,7 +97,10 @@ struct DraftPostLanguageRuntime: Equatable, Sendable {
         bearerToken: String?,
         liveServer server: ServerManager
     ) {
-        guard let profile, let bearerToken else { return nil }
+        guard let profile,
+              let bearerToken,
+              let expectedSessionID = server.activeServerSessionID
+        else { return nil }
         let expectedModel = profile.id
         self.init(
             profile: profile,
@@ -110,6 +113,7 @@ struct DraftPostLanguageRuntime: Equatable, Sendable {
                       server.host == host,
                       server.activePort == port,
                       server.activeBearer == bearerToken,
+                      server.activeServerSessionID == expectedSessionID,
                       let currentProfile = server.activeModelProfile
                 else { return false }
                 return currentProfile.id.caseInsensitiveCompare(expectedModel)
