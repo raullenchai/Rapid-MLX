@@ -290,6 +290,17 @@ struct DraftPostInstructionPlannerTests {
         #expect(deceptiveSubdomain == .needsClarification(
             "What should this update accomplish, which points should it include, and where should it be posted?"
         ))
+
+        let privateSuffix = try await Self.planner(transport: PlannerTransport(
+            response: try Self.response(content: output(destination: "attacker.github.io"))
+        )).analyze(
+            instruction: brief,
+            browserApplication: "Safari",
+            destinationHost: "attacker.github.io"
+        )
+        #expect(privateSuffix == .needsClarification(
+            "What should this update accomplish, which points should it include, and where should it be posted?"
+        ))
     }
 
     @Test("Verified audience and tone materially shape the grounded draft")

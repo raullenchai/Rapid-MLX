@@ -416,27 +416,29 @@ struct LocalDraftPostInstructionPlanner: DraftPostInstructionPlanning {
         })?.value.contains(evidence) == true {
             return true
         }
-        return normalizedServiceName(evidence) == registrableServiceLabel(
+        return normalizedServiceName(evidence) == apexServiceLabel(
             from: normalizedHost
         )
     }
 
     /// Matches an explicit service name such as "GitHub" to github.com while
-    /// refusing a deceptive subdomain such as github.evil.com. This is not a
-    /// navigation trust decision—the exact live URL is independently pinned—
-    /// it only decides whether the user's brief named that verified site.
-    private static func registrableServiceLabel(from host: String) -> String? {
+    /// refusing unlisted subdomains and private-suffix traps such as
+    /// attacker.github.io. Recognized service subdomains are handled only by
+    /// the explicit alias map above. This is not a navigation trust decision—
+    /// the exact live URL is independently pinned—it only decides whether the
+    /// user's brief named that verified site.
+    private static func apexServiceLabel(from host: String) -> String? {
         let labels = host.split(separator: ".").map(String.init)
-        guard labels.count >= 2 else { return nil }
+        if labels.count == 2 {
+            return normalizedServiceName(labels[0])
+        }
         let secondLevelPublicSuffixes: Set<String> = ["co", "com", "net", "org"]
-        let suffixLabels = labels.last?.count == 2
-            && labels.count >= 3
-            && secondLevelPublicSuffixes.contains(labels[labels.count - 2])
-            ? 2
-            : 1
-        let serviceIndex = labels.count - suffixLabels - 1
-        guard serviceIndex >= 0 else { return nil }
-        return normalizedServiceName(labels[serviceIndex])
+        if labels.count == 3,
+           labels.last?.count == 2,
+           secondLevelPublicSuffixes.contains(labels[1]) {
+            return normalizedServiceName(labels[0])
+        }
+        return nil
     }
 
     private static func normalizedServiceName(_ value: String) -> String {
