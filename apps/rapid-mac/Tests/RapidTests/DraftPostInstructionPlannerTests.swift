@@ -13,14 +13,15 @@ struct DraftPostInstructionPlannerTests {
             "talking_points": ["faster local inference", "no cloud upload"],
             "tone": "Concise and enthusiastic",
             "destination": "x.com",
-            "draft": "Rapid 0.13.4 is here — faster and fully local.",
             "purpose_evidence": "launch post",
+            "audience_evidence": "Mac developers",
             "talking_points_evidence": ["faster local inference", "no cloud upload"],
+            "tone_evidence": "Concise and enthusiastic",
             "destination_evidence": "X",
             "clarifying_question": "",
         ]))
         let result = try await Self.planner(transport: transport).analyze(
-            instruction: "Write a launch post for X for Mac developers about faster local inference and no cloud upload.",
+            instruction: "Write a Concise and enthusiastic launch post for X for Mac developers about faster local inference and no cloud upload.",
             browserApplication: "Google Chrome",
             destinationHost: "x.com"
         )
@@ -30,7 +31,7 @@ struct DraftPostInstructionPlannerTests {
             talkingPoints: ["faster local inference", "no cloud upload"],
             tone: "Concise and enthusiastic",
             destination: "x.com",
-            draft: "Rapid 0.13.4 is here — faster and fully local."
+            draft: "launch post\n\nfaster local inference\n\nno cloud upload"
         )))
 
         let request = try #require(await transport.requests.first)
@@ -58,9 +59,10 @@ struct DraftPostInstructionPlannerTests {
             "talking_points": [],
             "tone": "",
             "destination": "",
-            "draft": "",
             "purpose_evidence": "",
+            "audience_evidence": "",
             "talking_points_evidence": [],
+            "tone_evidence": "",
             "destination_evidence": "",
             "clarifying_question": "Which site should I prepare this for?",
         ]))
@@ -81,9 +83,10 @@ struct DraftPostInstructionPlannerTests {
             "talking_points": [],
             "tone": "",
             "destination": "",
-            "draft": "Unreviewed draft",
             "purpose_evidence": "",
+            "audience_evidence": "",
             "talking_points_evidence": [],
+            "tone_evidence": "",
             "destination_evidence": "",
             "clarifying_question": "Which site should I prepare this for?",
         ]))
@@ -122,9 +125,10 @@ struct DraftPostInstructionPlannerTests {
             "talking_points": ["Breakthrough performance"],
             "tone": "Excited",
             "destination": "x.com",
-            "draft": "A fabricated launch announcement.",
             "purpose_evidence": "Write something",
+            "audience_evidence": "Developers",
             "talking_points_evidence": ["breakthrough performance"],
+            "tone_evidence": "Excited",
             "destination_evidence": "X",
             "clarifying_question": "",
         ]))
@@ -146,9 +150,10 @@ struct DraftPostInstructionPlannerTests {
             "talking_points": ["launch post"],
             "tone": "Concise",
             "destination": "x.com",
-            "draft": "A launch post.",
             "purpose_evidence": "launch post",
+            "audience_evidence": "Developers",
             "talking_points_evidence": ["launch post"],
+            "tone_evidence": "Concise",
             "destination_evidence": "X",
             "clarifying_question": "",
         ]))
@@ -168,9 +173,10 @@ struct DraftPostInstructionPlannerTests {
             "talking_points": ["about the release"],
             "tone": "Concise",
             "destination": "x.com",
-            "draft": "A release update.",
             "purpose_evidence": "Write text",
+            "audience_evidence": "Developers",
             "talking_points_evidence": ["about the release"],
+            "tone_evidence": "Concise",
             "destination_evidence": "X",
             "clarifying_question": "",
         ]))
@@ -186,6 +192,63 @@ struct DraftPostInstructionPlannerTests {
         ))
     }
 
+    @Test("Audience and tone must also come from the user's brief")
+    func audienceAndToneEvidence() async throws {
+        let transport = PlannerTransport(response: try Self.response(content: [
+            "status": "ready",
+            "purpose": "launch post",
+            "audience": "Enterprise buyers",
+            "talking_points": ["local inference"],
+            "tone": "Urgent",
+            "destination": "x.com",
+            "purpose_evidence": "launch post",
+            "audience_evidence": "Enterprise buyers",
+            "talking_points_evidence": ["local inference"],
+            "tone_evidence": "Urgent",
+            "destination_evidence": "X",
+            "clarifying_question": "",
+        ]))
+        let result = try await Self.planner(transport: transport).analyze(
+            instruction: "Write a launch post for X about local inference.",
+            browserApplication: "Safari",
+            destinationHost: "x.com"
+        )
+        #expect(result == .needsClarification(
+            "What should this update accomplish, which points should it include, and where should it be posted?"
+        ))
+    }
+
+    @Test("A service named in the brief matches its recognized browser subdomain")
+    func destinationServiceSubdomain() async throws {
+        let transport = PlannerTransport(response: try Self.response(content: [
+            "status": "ready",
+            "purpose": "launch post",
+            "audience": "developers",
+            "talking_points": ["local inference"],
+            "tone": "concise",
+            "destination": "mobile.twitter.com",
+            "purpose_evidence": "launch post",
+            "audience_evidence": "developers",
+            "talking_points_evidence": ["local inference"],
+            "tone_evidence": "concise",
+            "destination_evidence": "Twitter",
+            "clarifying_question": "",
+        ]))
+        let result = try await Self.planner(transport: transport).analyze(
+            instruction: "Write a concise launch post for developers on Twitter about local inference.",
+            browserApplication: "Google Chrome",
+            destinationHost: "mobile.twitter.com"
+        )
+        #expect(result == .ready(DraftPostPlan(
+            purpose: "launch post",
+            audience: "developers",
+            talkingPoints: ["local inference"],
+            tone: "concise",
+            destination: "mobile.twitter.com",
+            draft: "launch post\n\nlocal inference"
+        )))
+    }
+
     @Test("Unknown fields and incomplete ready plans fail closed")
     func strictOutputBoundary() async throws {
         var extra: [String: Any] = [
@@ -195,9 +258,10 @@ struct DraftPostInstructionPlannerTests {
             "talking_points": ["Local"],
             "tone": "Concise",
             "destination": "x.com",
-            "draft": "A draft",
             "purpose_evidence": "launch post",
+            "audience_evidence": "Developers",
             "talking_points_evidence": ["Local"],
+            "tone_evidence": "Concise",
             "destination_evidence": "X",
             "clarifying_question": "",
         ]
@@ -211,21 +275,21 @@ struct DraftPostInstructionPlannerTests {
             )
         }
 
-        let emptyDraft = PlannerTransport(response: try Self.response(content: [
+        let missingEvidence = PlannerTransport(response: try Self.response(content: [
             "status": "ready",
             "purpose": "Launch",
             "audience": "Developers",
             "talking_points": ["Local"],
             "tone": "Concise",
             "destination": "x.com",
-            "draft": "",
             "purpose_evidence": "launch post",
+            "audience_evidence": "Developers",
             "talking_points_evidence": ["Local"],
             "destination_evidence": "X",
             "clarifying_question": "",
         ]))
         await #expect(throws: DraftPostPlanningError.invalidResponse) {
-            _ = try await Self.planner(transport: emptyDraft).analyze(
+            _ = try await Self.planner(transport: missingEvidence).analyze(
                 instruction: "Draft a launch post for X.",
                 browserApplication: "Safari",
                 destinationHost: "x.com"
@@ -239,9 +303,10 @@ struct DraftPostInstructionPlannerTests {
             "talking_points": ["Local"],
             "tone": "Concise",
             "destination": "example.com",
-            "draft": "A draft",
             "purpose_evidence": "launch post",
+            "audience_evidence": "Developers",
             "talking_points_evidence": ["Local"],
+            "tone_evidence": "Concise",
             "destination_evidence": "X",
             "clarifying_question": "",
         ]))
@@ -260,9 +325,10 @@ struct DraftPostInstructionPlannerTests {
             "talking_points": [],
             "tone": "",
             "destination": "",
-            "draft": "",
             "purpose_evidence": "",
+            "audience_evidence": "",
             "talking_points_evidence": [],
+            "tone_evidence": "",
             "destination_evidence": "",
             "clarifying_question": "Who is this for? Which tone should I use?",
         ]))
@@ -281,9 +347,10 @@ struct DraftPostInstructionPlannerTests {
             "talking_points": [],
             "tone": "",
             "destination": "",
-            "draft": "",
             "purpose_evidence": "",
+            "audience_evidence": "",
             "talking_points_evidence": [],
+            "tone_evidence": "",
             "destination_evidence": "",
             "clarifying_question": "?",
         ]))
@@ -373,9 +440,10 @@ struct DraftPostInstructionPlannerTests {
             "talking_points": [],
             "tone": "",
             "destination": "",
-            "draft": "",
             "purpose_evidence": "",
+            "audience_evidence": "",
             "talking_points_evidence": [],
+            "tone_evidence": "",
             "destination_evidence": "",
             "clarifying_question": "Which site should I prepare this for?",
         ]))
@@ -427,9 +495,10 @@ struct DraftPostInstructionPlannerTests {
             "talking_points": [],
             "tone": "",
             "destination": "",
-            "draft": "",
             "purpose_evidence": "",
+            "audience_evidence": "",
             "talking_points_evidence": [],
+            "tone_evidence": "",
             "destination_evidence": "",
             "clarifying_question": "Which site should I prepare this for?",
         ]))
