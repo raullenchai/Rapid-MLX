@@ -22,6 +22,11 @@ import Testing
 /// shape that caused the bug, and that it has not come back.
 @Suite("Telemetry consent toggle re-renders")
 struct TelemetryToggleRerenderTests {
+    init() {
+        // CI exports RAPID_MLX_TELEMETRY=0 for every job; these assertions
+        // are about consent, not the machine's environment.
+        TelemetryConfig.environment = [:]
+    }
 
     private static var sourceRoot: URL {
         URL(fileURLWithPath: #filePath)

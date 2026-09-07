@@ -83,8 +83,21 @@ enum TelemetryConfig {
     /// (issue #530 — flaky ``clientIDPersists`` under the parallel
     /// test pool).
     static func isEnabled(defaults: UserDefaults) -> Bool {
-        isEnabled(defaults: defaults, environment: ProcessInfo.processInfo.environment)
+        isEnabled(defaults: defaults, environment: environment)
     }
+
+    /// The environment the kill switch reads. Product code never assigns it
+    /// (it is the process environment); the Desktop test target pins it to
+    /// an empty environment so the suite's opt-in assertions do not depend
+    /// on whatever the machine running them exported — CI exports
+    /// ``RAPID_MLX_TELEMETRY=0`` for every job.
+    static var environment: [String: String] {
+        get { environmentLock.withLock { environmentOverride } ?? ProcessInfo.processInfo.environment }
+        set { environmentLock.withLock { environmentOverride = newValue } }
+    }
+
+    nonisolated(unsafe) private static var environmentOverride: [String: String]?
+    private static let environmentLock = NSLock()
 
     /// Full decision: the process-level kill switch wins over any stored
     /// consent; otherwise the user's recorded decision (default off).

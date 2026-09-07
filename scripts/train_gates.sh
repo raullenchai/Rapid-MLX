@@ -686,9 +686,7 @@ gate5_swift() {
     passed_na 5 "apps/ unchanged vs $base_sha; the build's swift test step has nothing to run"
     return 0
   fi
-  # Same reason as apps/rapid-mac/scripts/desktop-test-timeout.sh: the unit
-  # tests assert opt-in paths; CI's RAPID_MLX_TELEMETRY=0 must not reach them.
-  ( cd "$desktop_dir" && RAPID_MLX_TELEMETRY=1 swift test --no-parallel ) || {
+  ( cd "$desktop_dir" && swift test --no-parallel ) || {
     fail 5 "swift test --no-parallel failed (see output above)"
     return 1
   }

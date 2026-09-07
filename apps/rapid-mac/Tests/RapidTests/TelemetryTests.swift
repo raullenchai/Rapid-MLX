@@ -21,6 +21,12 @@ final class TelemetryTests {
     nonisolated(unsafe) private var createdSuiteNames: [String] = []
     deinit { TestDefaultsScope.cleanup(suiteNames: createdSuiteNames) }
 
+    init() {
+        // CI exports RAPID_MLX_TELEMETRY=0 for every job; these assertions
+        // are about consent, not the machine's environment.
+        TelemetryConfig.environment = [:]
+    }
+
     private func freshDefaults() -> UserDefaults {
         let name = TestDefaultsScope.mintSuiteName(prefix: "rapid-telemetry-test-")
         createdSuiteNames.append(name)
@@ -732,6 +738,12 @@ final class TelemetryAuditURLProtocol: URLProtocol, @unchecked Sendable {
 @MainActor
 @Suite("Telemetry audit batch 8 contracts", .serialized)
 struct TelemetryAuditBatch8Contracts {
+    init() {
+        // CI exports RAPID_MLX_TELEMETRY=0 for every job; these assertions
+        // are about consent, not the machine's environment.
+        TelemetryConfig.environment = [:]
+    }
+
     private func platform() -> TelemetryEvent.Platform {
         TelemetryEvent.Platform(
             app: "rapid-desktop",

@@ -48,8 +48,8 @@ concurrency:
 # production telemetry store. The engine and the Desktop app both honour this
 # kill switch; the golden-flow harness lifts it only for the flows that turn
 # telemetry on against a loopback sink (fresh-install, fresh-install-share,
-# no-dead-controls), and the Desktop unit-test wrappers lift it because their
-# opt-in assertions run against stubbed transports.
+# no-dead-controls). The Desktop unit tests pin their own environment, so the
+# switch stays on while they run.
 env:
   RAPID_MLX_TELEMETRY: "0"
 
