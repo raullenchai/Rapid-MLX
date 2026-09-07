@@ -12,6 +12,13 @@ struct TranscriptScrollPositionProbe: NSViewRepresentable {
     /// releases once the new answer grows beyond one viewport, so the reader
     /// can start at its beginning without fighting continuous auto-scroll.
     var isStreaming: Bool = false
+    /// Identity and accumulated size distinguish a genuinely growing answer
+    /// from layout work still landing for the preceding turn.
+    var streamingMessageID: UUID? = nil
+    var streamingContentLength: Int = 0
+    /// Height of the current assistant row, measured by SwiftUI after layout.
+    /// This is authoritative when a message identity is available.
+    var streamingAnswerHeight: CGFloat = 0
     /// Bumped by anything outside that wants the transcript moved to the
     /// bottom right now, ``JumpToBottomButton`` being the only caller today.
     ///
@@ -45,7 +52,12 @@ struct TranscriptScrollPositionProbe: NSViewRepresentable {
             isPinnedToBottom: $isPinnedToBottom,
             bottomResumeSlack: bottomResumeSlack
         )
-        context.coordinator.setStreaming(isStreaming)
+        context.coordinator.setStreaming(
+            isStreaming,
+            messageID: streamingMessageID,
+            contentLength: streamingContentLength,
+            answerHeight: streamingAnswerHeight
+        )
         context.coordinator.attach(to: probe)
         // After ``attach``: a first render arrives with the token already at
         // its initial value, and attaching is what anchors that one.
@@ -102,7 +114,16 @@ struct TranscriptScrollPositionProbe: NSViewRepresentable {
                 attachmentChanged = true
             }
             attachmentChanged = observeDocumentViewIfNeeded() || attachmentChanged
-            if isStreaming, documentHeightAtStreamStart == nil {
+            // Only a newly attached document has a trustworthy synchronous
+            // stream baseline. On an already-mounted SwiftUI transcript,
+            // `setStreaming(true)` can run before the just-appended user row
+            // (and deferred markdown from the previous turn) has laid out.
+            // Capturing that stale height here makes old layout work look like
+            // one viewport of new answer and spuriously releases following.
+            // Let the first document-frame notification establish the settled
+            // baseline in that case.
+            if attachmentChanged, isStreaming, hasSeenStreamingContent,
+               documentHeightAtStreamStart == nil {
                 documentHeightAtStreamStart = documentView?.bounds.height
             }
             // updateNSView runs for every streamed mutation. Document-frame
@@ -156,6 +177,26 @@ struct TranscriptScrollPositionProbe: NSViewRepresentable {
         @objc private func boundsDidChange(_ notification: Notification) {
             // Our frame-driven movement emits this too; it is not user intent.
             guard !isProgrammaticScroll else { return }
+            // SwiftUI/AppKit can also adjust the clip bounds while an older
+            // Markdown row finishes layout. Those notifications have no
+            // input event and must not silently disable following. Legacy
+            // mouse wheels are the reason this path cannot rely only on the
+            // live-scroll bracket, so keep the actual input event types as a
+            // second source of user intent.
+            let currentEvent = NSApplication.shared.currentEvent
+            let eventType = currentEvent?.type
+            let hasUnbracketedUserIntent = eventType == .scrollWheel
+                || eventType == .leftMouseDragged
+                || (eventType == .keyDown
+                    && Self.isTranscriptScrollKey(currentEvent?.keyCode))
+            // Outside a stream, no document growth is competing with the
+            // gesture. Treat an off-bottom bounds change as navigation even
+            // when AppKit exposes no originating event (VoiceOver and AX
+            // scroll actions take this path).
+            guard !isStreaming || isLiveScrolling || hasUnbracketedUserIntent else {
+                if isAtBottom { setPinned(true) }
+                return
+            }
             if !isAtBottom {
                 // Any move away from the bottom releases the pin — whether or
                 // not AppKit bracketed it. A legacy mouse wheel can post bounds
@@ -199,29 +240,81 @@ struct TranscriptScrollPositionProbe: NSViewRepresentable {
 
         private var didReleaseForCurrentStream = false
         private var isStreaming = false
+        private var streamingMessageID: UUID?
+        private var hasSeenStreamingContent = false
+        private var streamingAnswerHeight: CGFloat = 0
         private var documentHeightAtStreamStart: CGFloat?
 
-        func setStreaming(_ streaming: Bool) {
-            guard streaming != isStreaming else { return }
+        /// AppKit key codes for Home, Page Up, End, Page Down, Down, and Up.
+        /// Ordinary typing/navigation in the composer must not look like a
+        /// transcript scroll merely because layout happened in the same event.
+        static func isTranscriptScrollKey(_ keyCode: UInt16?) -> Bool {
+            guard let keyCode else { return false }
+            return [115, 116, 119, 121, 125, 126].contains(keyCode)
+        }
+
+        func setStreaming(
+            _ streaming: Bool,
+            messageID: UUID? = nil,
+            contentLength: Int = 0,
+            answerHeight: CGFloat = 0
+        ) {
+            let startedNewMessage = streaming && messageID != streamingMessageID
+            let changedStreamingState = streaming != isStreaming
             isStreaming = streaming
-            if streaming {
+
+            if streaming && (changedStreamingState || startedNewMessage) {
                 didReleaseForCurrentStream = false
-                documentHeightAtStreamStart = documentView?.bounds.height
-            } else {
+                // The representable update that reports `streaming` can
+                // precede SwiftUI's layout for the newly appended user row.
+                // A newly attached document is captured in `attach`; an
+                // existing one takes its baseline from its next frame change.
+                documentHeightAtStreamStart = nil
+                hasSeenStreamingContent = false
+            } else if !streaming {
+                documentHeightAtStreamStart = nil
+                hasSeenStreamingContent = false
+            }
+            streamingMessageID = streaming ? messageID : nil
+            streamingAnswerHeight = streaming ? answerHeight : 0
+
+            // Begin measuring only once this answer has real content. Before
+            // that, frame changes can only belong to the new user bubble,
+            // placeholder row, or deferred layout from the previous turn.
+            if streaming, contentLength > 0, !hasSeenStreamingContent {
+                hasSeenStreamingContent = true
                 documentHeightAtStreamStart = nil
             }
+            _ = releaseIfAnswerOutgrewViewport()
         }
 
         private func releaseIfAnswerOutgrewViewport() -> Bool {
-            guard isStreaming, !didReleaseForCurrentStream else { return false }
-            guard let scrollView, let documentView,
-                  let startingHeight = documentHeightAtStreamStart else { return false }
+            guard isStreaming, hasSeenStreamingContent,
+                  !didReleaseForCurrentStream else { return false }
+            guard let scrollView, let documentView else { return false }
+            if streamingMessageID != nil {
+                guard streamingAnswerHeight > scrollView.contentView.bounds.height else {
+                    return false
+                }
+                return releaseFollowing()
+            }
+            guard let startingHeight = documentHeightAtStreamStart else {
+                // The first frame after a new turn also absorbs layout that
+                // was queued before streaming began. It is the first reliable
+                // point from which to measure this answer's own growth.
+                documentHeightAtStreamStart = documentView.bounds.height
+                return false
+            }
             let viewportHeight = scrollView.contentView.bounds.height
             guard Self.answerOutgrewViewport(
                 documentHeight: documentView.bounds.height,
                 documentHeightAtStreamStart: startingHeight,
                 viewportHeight: viewportHeight
             ) else { return false }
+            return releaseFollowing()
+        }
+
+        private func releaseFollowing() -> Bool {
             didReleaseForCurrentStream = true
             cancelScrollTarget()
             if isPinnedToBottom.wrappedValue {

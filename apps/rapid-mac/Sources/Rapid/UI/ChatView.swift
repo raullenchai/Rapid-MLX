@@ -288,6 +288,10 @@ struct ChatView: View {
     /// preference arrives after the scroll event, which leaves a window
     /// where the next streamed token can still yank the reader downward.
     @State private var isPinnedToBottom = true
+    /// Measured from the live assistant row itself. Whole-document growth is
+    /// not a safe proxy in a multi-turn transcript because older Markdown can
+    /// finish layout after the next request starts.
+    @State private var streamingAnswerHeight: CGFloat = 0
     /// Incremented to ask the probe for an explicit scroll — see
     /// ``TranscriptScrollPositionProbe/scrollToBottomRequest``.
     @State private var scrollToBottomRequest = 0
@@ -442,6 +446,9 @@ struct ChatView: View {
                             isPinnedToBottom: $isPinnedToBottom,
                             bottomResumeSlack: bottomResumeSlack,
                             isStreaming: viewModel.isStreaming,
+                            streamingMessageID: viewModel.streamingBody?.id,
+                            streamingContentLength: viewModel.streamingBody?.text.utf8.count ?? 0,
+                            streamingAnswerHeight: streamingAnswerHeight,
                             scrollToBottomRequest: scrollToBottomRequest
                         )
                     )
@@ -457,7 +464,16 @@ struct ChatView: View {
             // A new message is deliberate navigation to the conversation
             // tip; streamed frame changes then keep following from there.
             .onAppear { isPinnedToBottom = true }
-            .onChange(of: messages.count) { _, _ in isPinnedToBottom = true }
+            .onChange(of: messages.count) { _, _ in
+                isPinnedToBottom = true
+                // Re-pinning is only policy. If the previous long answer
+                // deliberately released following, the already-attached
+                // AppKit scroll view is still physically above the tip and
+                // has no new-attachment event to move it. A new message is an
+                // explicit navigation to the tip, so send the same concrete
+                // request used by the Jump to latest button.
+                scrollToBottomRequest += 1
+            }
             // Switching conversations is navigation to a DIFFERENT tip, but it
             // need not change `messages.count` — two conversations can have the
             // same number of turns, and then the count-keyed reset above never
@@ -597,6 +613,17 @@ struct ChatView: View {
                     )
                     .frame(maxWidth: contentMaxWidth, alignment: .leading)
                     .frame(maxWidth: .infinity, alignment: .center)
+                    .background {
+                        if message.role == .assistant,
+                           message.status == .streaming {
+                            GeometryReader { proxy in
+                                Color.clear.preference(
+                                    key: StreamingAnswerHeightKey.self,
+                                    value: proxy.size.height
+                                )
+                            }
+                        }
+                    }
                     .id(message.id)
                 }
             }
@@ -620,6 +647,9 @@ struct ChatView: View {
         }
         .padding(.horizontal, RapidTheme.Space.xl)
         .padding(.vertical, RapidTheme.Space.xl)
+        .onPreferenceChange(StreamingAnswerHeightKey.self) { height in
+            streamingAnswerHeight = height
+        }
     }
 
     /// Index every ``role: .tool`` row by the ``toolCallID`` it answers, so an
@@ -3104,6 +3134,16 @@ extension MarkdownUI.Theme {
                 )
         }
 }
+/// Carries the live assistant row's post-layout height to the AppKit scroll
+/// coordinator, which uses it for the one-viewport follow threshold.
+private struct StreamingAnswerHeightKey: PreferenceKey {
+    static let defaultValue: CGFloat = 0
+
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        value = max(value, nextValue())
+    }
+}
+
 /// Carries the code block's scrollable content span up to
 /// ``CodeBlockWithCopy``. Measured inside the scroll view, so the
 /// value tracks the scroll offset as well as the content width.
