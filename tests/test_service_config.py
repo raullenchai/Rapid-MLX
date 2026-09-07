@@ -273,12 +273,18 @@ def test_apply_promotes_healthy_candidate(monkeypatch, tmp_path):
         "_bootstrap",
         lambda _label: types.SimpleNamespace(returncode=0, stdout="", stderr=""),
     )
-    monkeypatch.setattr(configure, "_wait_ready", lambda _host, _port: True)
+    qualified = []
+    monkeypatch.setattr(
+        configure,
+        "_wait_qualified",
+        lambda config: qualified.append(config) or True,
+    )
     assert (
         configure.apply_command(types.SimpleNamespace(label=None, dry_run=False)) == 0
     )
     assert load_config(current_path) == candidate
     assert not pending.exists()
+    assert qualified == [candidate]
 
 
 def test_apply_restores_previous_config_when_candidate_is_unhealthy(
@@ -303,6 +309,7 @@ def test_apply_restores_previous_config_when_candidate_is_unhealthy(
         "_wait_ready",
         lambda _host, port: port == current.port,
     )
+    monkeypatch.setattr(configure, "_wait_qualified", lambda _config: False)
     assert (
         configure.apply_command(types.SimpleNamespace(label=None, dry_run=False)) == 2
     )
@@ -371,7 +378,10 @@ def test_upgrade_success_snapshots_before_mutation(monkeypatch, tmp_path):
         "_bootstrap",
         lambda _label: types.SimpleNamespace(returncode=0, stdout="", stderr=""),
     )
-    monkeypatch.setattr(upgrade, "_wait_ready", lambda _host, _port: True)
+    qualified = []
+    monkeypatch.setattr(
+        upgrade, "_wait_qualified", lambda config: qualified.append(config) or True
+    )
     args = types.SimpleNamespace(
         label=None,
         dry_run=False,
@@ -383,6 +393,7 @@ def test_upgrade_success_snapshots_before_mutation(monkeypatch, tmp_path):
     assert events[0][-2:] == ("pip", "freeze")
     assert events[1] == ("bootout",)
     assert any("rapid-mlx[vision]==0.13.5" in event for event in events)
+    assert len(qualified) == 1
     snapshot = (
         tmp_path / "system-config" / "com.rapidmlx.server.previous-requirements.txt"
     )
@@ -412,7 +423,7 @@ def test_upgrade_rolls_back_after_readiness_failure(monkeypatch, tmp_path, capsy
         "_bootstrap",
         lambda _label: types.SimpleNamespace(returncode=0, stdout="", stderr=""),
     )
-    monkeypatch.setattr(upgrade, "_wait_ready", lambda _host, _port: False)
+    monkeypatch.setattr(upgrade, "_wait_qualified", lambda _config: False)
     monkeypatch.setattr(upgrade, "_restore", lambda **_kwargs: True)
     args = types.SimpleNamespace(
         label=None,
@@ -1148,7 +1159,7 @@ def test_apply_restore_and_pending_unlink_oserrors(monkeypatch, tmp_path):
         "_bootstrap",
         lambda _label: types.SimpleNamespace(returncode=0, stdout="", stderr=""),
     )
-    monkeypatch.setattr(configure, "_wait_ready", lambda *_a: True)
+    monkeypatch.setattr(configure, "_wait_qualified", lambda _config: True)
     real_unlink = Path.unlink
     monkeypatch.setattr(
         Path, "unlink", lambda *_a, **_k: (_ for _ in ()).throw(OSError("busy"))
@@ -1406,7 +1417,7 @@ def test_upgrade_snapshot_write_and_doctor_warning(monkeypatch, tmp_path, capsys
     monkeypatch.setattr(
         upgrade, "_bootstrap", lambda _label: types.SimpleNamespace(returncode=0)
     )
-    monkeypatch.setattr(upgrade, "_wait_ready", lambda *_a: True)
+    monkeypatch.setattr(upgrade, "_wait_qualified", lambda _config: True)
     assert upgrade.upgrade_command(args) == 0
     assert "doctor" in capsys.readouterr().err
 

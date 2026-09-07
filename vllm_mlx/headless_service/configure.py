@@ -24,7 +24,7 @@ from .config import (
     remove_credential,
 )
 from .definition import installed_identity
-from .install import _plist_path, _port_busy, _wait_ready, is_root
+from .install import _plist_path, _port_busy, _wait_qualified, _wait_ready, is_root
 
 
 def _identity_or_error(label: str) -> tuple[str, Path, Path]:
@@ -150,6 +150,7 @@ def apply_command(args) -> int:
             f"[DRY-RUN] bootout {DEFAULT_DOMAIN}/{label}\n"
             f"[DRY-RUN] promote candidate {config_digest(candidate)[:12]}\n"
             f"[DRY-RUN] bootstrap {_plist_path(label)} and require /readyz\n"
+            "[DRY-RUN] activate and qualify the configured primary model\n"
             "[DRY-RUN] restore previous config and service on any failure"
         )
         return 0
@@ -177,9 +178,10 @@ def apply_command(args) -> int:
             raise ServiceConfigError(
                 f"launchctl bootstrap failed: {boot.stderr.strip() or boot.stdout.strip()}"
             )
-        if not _wait_ready(candidate.host, candidate.port):
+        if not _wait_qualified(candidate):
             raise ServiceConfigError(
-                f"candidate did not become ready on {candidate.host}:{candidate.port} within 120s"
+                "candidate endpoint or configured model did not qualify on "
+                f"{candidate.host}:{candidate.port}"
             )
     except (OSError, ServiceConfigError) as exc:
         _bootout(label)

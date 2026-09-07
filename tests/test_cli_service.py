@@ -390,6 +390,7 @@ class _HttpResponder:
         self.port = self.sock.getsockname()[1]
         self.status_line = status_line
         self.body = body
+        self.request = b""
         self.thread = threading.Thread(target=self._serve, daemon=True)
         self.thread.start()
 
@@ -397,7 +398,7 @@ class _HttpResponder:
         conn, _ = self.sock.accept()
         conn.settimeout(2)
         try:
-            conn.recv(4096)
+            self.request = conn.recv(4096)
             conn.sendall(
                 self.status_line
                 + b"\r\nContent-Length: "
@@ -432,6 +433,159 @@ def test_readyz_ready_semantics(monkeypatch, status, body, expected):
         assert _readyz_ready("127.0.0.1", srv.port) is expected
     finally:
         srv.sock.close()
+
+
+def test_activate_model_sends_credential_only_in_header(tmp_path):
+    credential = tmp_path / "credential"
+    credential.write_text("top-secret\n")
+    credential.chmod(0o600)
+    srv = _HttpResponder(
+        b"HTTP/1.1 200 OK",
+        b'{"status":"ready","state":"ready","model_loaded":true}',
+    )
+    try:
+        assert ins_mod._activate_model(
+            "127.0.0.1",
+            srv.port,
+            credential_file=str(credential),
+            credential_uid=credential.stat().st_uid,
+            timeout_s=2,
+        )
+        assert b"POST /v1/models/activate HTTP/1.1" in srv.request
+        assert b"Authorization: Bearer top-secret" in srv.request
+    finally:
+        srv.sock.close()
+
+
+def test_activate_model_rejects_endpoint_only_readiness():
+    srv = _HttpResponder(
+        b"HTTP/1.1 200 OK",
+        b'{"status":"ready","state":"standby","model_loaded":false}',
+    )
+    try:
+        assert not ins_mod._activate_model(
+            "127.0.0.1",
+            srv.port,
+            credential_file=None,
+            credential_uid=0,
+            timeout_s=2,
+        )
+    finally:
+        srv.sock.close()
+
+
+def test_read_service_credential_rejects_symlink_and_foreign_owner(tmp_path):
+    credential = tmp_path / "credential"
+    credential.write_text("secret\n")
+    credential.chmod(0o600)
+    link = tmp_path / "link"
+    link.symlink_to(credential)
+    with pytest.raises(ValueError, match="cannot open credential"):
+        ins_mod._read_service_credential(link, expected_uid=credential.stat().st_uid)
+    with pytest.raises(ValueError, match="owned by uid"):
+        ins_mod._read_service_credential(
+            credential, expected_uid=credential.stat().st_uid + 1
+        )
+
+
+def test_read_service_credential_missing_is_unconfigured(tmp_path):
+    assert (
+        ins_mod._read_service_credential(
+            tmp_path / "missing", expected_uid=tmp_path.stat().st_uid
+        )
+        is None
+    )
+
+
+@pytest.mark.parametrize(
+    ("kind", "message"),
+    [
+        ("directory", "regular file"),
+        ("public", "group or others"),
+        ("large", "unexpectedly large"),
+        ("empty", "one non-empty line"),
+        ("multiline", "one non-empty line"),
+    ],
+)
+def test_read_service_credential_rejects_unsafe_contents(tmp_path, kind, message):
+    credential = tmp_path / "credential"
+    if kind == "directory":
+        credential.mkdir()
+    else:
+        contents = {
+            "public": "secret\n",
+            "large": "x" * 65_537,
+            "empty": "\n",
+            "multiline": "one\ntwo\n",
+        }[kind]
+        credential.write_text(contents)
+        credential.chmod(0o644 if kind == "public" else 0o600)
+    with pytest.raises(ValueError, match=message):
+        ins_mod._read_service_credential(
+            credential, expected_uid=credential.stat().st_uid
+        )
+
+
+def test_activate_model_rejects_malformed_response():
+    srv = _HttpResponder(b"HTTP/1.1 200 OK", b"not-json")
+    try:
+        assert not ins_mod._activate_model(
+            "127.0.0.1",
+            srv.port,
+            credential_file=None,
+            credential_uid=0,
+            timeout_s=2,
+        )
+    finally:
+        srv.sock.close()
+
+
+def test_wait_qualified_requires_endpoint_then_model_activation(monkeypatch):
+    config = types.SimpleNamespace(
+        host="127.0.0.1",
+        port=8000,
+        credential_file="/private/key",
+        service_user="serveuser",
+    )
+    calls = []
+    monkeypatch.setattr(
+        ins_mod,
+        "_wait_ready",
+        lambda host, port, **kwargs: calls.append(("ready", host, port)) or True,
+    )
+    monkeypatch.setattr(
+        ins_mod,
+        "_activate_model",
+        lambda host, port, **kwargs: (
+            calls.append(("activate", host, port, kwargs["credential_file"])) or True
+        ),
+    )
+    monkeypatch.setattr(ins_mod, "user_uid", lambda _user: 501)
+    assert ins_mod._wait_qualified(config)
+    assert calls == [
+        ("ready", "127.0.0.1", 8000),
+        ("activate", "127.0.0.1", 8000, "/private/key"),
+    ]
+
+
+def test_wait_qualified_short_circuits_unready_or_missing_account(monkeypatch):
+    config = types.SimpleNamespace(
+        host="127.0.0.1",
+        port=8000,
+        credential_file=None,
+        service_user="gone",
+    )
+    monkeypatch.setattr(ins_mod, "_wait_ready", lambda *_a, **_k: False)
+    monkeypatch.setattr(
+        ins_mod,
+        "_activate_model",
+        lambda *_a, **_k: pytest.fail("activation must not run"),
+    )
+    assert not ins_mod._wait_qualified(config)
+
+    monkeypatch.setattr(ins_mod, "_wait_ready", lambda *_a, **_k: True)
+    monkeypatch.setattr(ins_mod, "user_uid", lambda _user: None)
+    assert not ins_mod._wait_qualified(config)
 
 
 # ---------------------------------------------------------------------------
@@ -1675,7 +1829,7 @@ def test_install_success_cleans_secure_staging_file(monkeypatch, tmp_path, capsy
     monkeypatch.setattr(ins, "_port_busy", lambda _h, _p: False)
     monkeypatch.setattr(ins, "is_root", lambda: True)
     monkeypatch.setattr(ins, "LAUNCH_DAEMONS_DIR", tmp_path)
-    monkeypatch.setattr(ins, "_wait_ready", lambda _h, _p, **_k: True)
+    monkeypatch.setattr(ins, "_wait_qualified", lambda _config: True)
     monkeypatch.setattr(ins.tempfile, "tempdir", str(tmp_path))
 
     def _fake_run(argv, check=True):
@@ -1699,7 +1853,7 @@ def test_install_success_tolerates_staging_cleanup_failure(monkeypatch, tmp_path
     monkeypatch.setattr(ins, "_port_busy", lambda _h, _p: False)
     monkeypatch.setattr(ins, "is_root", lambda: True)
     monkeypatch.setattr(ins, "LAUNCH_DAEMONS_DIR", tmp_path)
-    monkeypatch.setattr(ins, "_wait_ready", lambda _h, _p, **_k: True)
+    monkeypatch.setattr(ins, "_wait_qualified", lambda _config: True)
     monkeypatch.setattr(ins, "_run", lambda *_a, **_k: _FakeResult())
     staged = tmp_path / "private-stage.plist"
     staged.write_bytes(b"plist")

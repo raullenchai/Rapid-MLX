@@ -132,6 +132,7 @@ are marked; multimodal and MCP surfaces link to their own guides.
 | `/v1/mcp/execute` | POST | Execute an MCP tool by name |
 | `/v1/mcp/reload` | POST | Re-read the MCP config file without a server restart |
 | `/v1/status` | GET | Real-time server statistics (detailed below) |
+| `/v1/models/activate` | POST | Authenticated pre-warm/qualification of the configured primary model |
 | `/v1/cache/stats` | GET | Cache statistics |
 | `/v1/cache/clear` | POST | Clear reusable prompt KV state without unloading model weights |
 | `/v1/cache/export` | POST | Export the prefix cache to a disk snapshot |
@@ -139,7 +140,7 @@ are marked; multimodal and MCP surfaces link to their own guides.
 | `/v1/cache/info` | GET | Read the manifest of an exported cache snapshot |
 | `/v1/requests/{id}/cancel` | POST | Cancel an active or queued request by its `chatcmpl-...` id (`DELETE /v1/requests/{id}` is an alias) |
 | `/health` | GET | Full health view (queries engine stats on every hit) |
-| `/health/ready` | GET | Readiness — 503 until model load and warmup complete |
+| `/health/ready` | GET | Endpoint readiness; lazy `standby` is ready, lifecycle `error` is 503 |
 | `/healthz` | GET | Constant-cost liveness probe (k8s convention; 503 while draining) |
 | `/readyz` | GET | Alias for `/health/ready` |
 | `/livez` | GET | Process liveness only (does not check model readiness) |

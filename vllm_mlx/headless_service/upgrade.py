@@ -12,7 +12,7 @@ from pathlib import Path
 from .common import DEFAULT_LABEL
 from .config import ServiceConfigError, atomic_write, load_config
 from .configure import _account, _bootout, _bootstrap, _identity_or_error
-from .install import _wait_ready, is_root
+from .install import _wait_qualified, _wait_ready, is_root
 
 
 def _target(version: str | None, extras: str | None) -> str:
@@ -97,6 +97,7 @@ def upgrade_command(args) -> int:
         f"install {target} as {user}",
         "run rapid-mlx doctor (diagnostic)",
         f"bootstrap and require {config.host}:{config.port}/readyz",
+        "activate and qualify the configured primary model",
         "restore frozen environment and old service on any failure",
     ]
     if dry_run:
@@ -144,7 +145,7 @@ def upgrade_command(args) -> int:
                 file=sys.stderr,
             )
         boot = _bootstrap(label)
-        healthy = boot.returncode == 0 and _wait_ready(config.host, config.port)
+        healthy = boot.returncode == 0 and _wait_qualified(config)
     else:
         healthy = False
 

@@ -275,6 +275,131 @@ class TestHealthRoutes:
         finally:
             self._restore_config(orig)
 
+    def test_activate_primary_model_loads_lazy_engine(self, mock_engine):
+        class _Lifecycle:
+            def __init__(self):
+                self.loaded = False
+                self.acquired = 0
+
+            def acquire_request(self):
+                self.acquired += 1
+
+            async def ensure_loaded(self):
+                self.loaded = True
+
+            def release_request(self):
+                self.acquired -= 1
+
+            def snapshot(self):
+                return {"state": "ready", "model_loaded": self.loaded}
+
+        lifecycle = _Lifecycle()
+        orig = self._patch_config(
+            api_key="test-secret",
+            engine=mock_engine,
+            model_name="test-model",
+            ready=True,
+            draining=False,
+            primary_model_lifecycle=lifecycle,
+        )
+        try:
+            client = TestClient(self._make_app())
+            unauthorized = client.post("/v1/models/activate")
+            assert unauthorized.status_code == 401
+            response = client.post(
+                "/v1/models/activate",
+                headers={"Authorization": "Bearer test-secret"},
+            )
+            assert response.status_code == 200
+            assert response.json() == {
+                "status": "ready",
+                "model": "test-model",
+                "state": "ready",
+                "model_loaded": True,
+            }
+            assert lifecycle.acquired == 0
+        finally:
+            self._restore_config(orig)
+
+    def test_activate_primary_model_sanitizes_load_failure(self, mock_engine):
+        class _FailingLifecycle:
+            def acquire_request(self):
+                pass
+
+            async def ensure_loaded(self):
+                raise RuntimeError("/private/model/path must not leak")
+
+            def release_request(self):
+                pass
+
+        orig = self._patch_config(
+            api_key=None,
+            engine=mock_engine,
+            model_name="test-model",
+            ready=True,
+            draining=False,
+            primary_model_lifecycle=_FailingLifecycle(),
+        )
+        try:
+            response = TestClient(self._make_app()).post("/v1/models/activate")
+            assert response.status_code == 503
+            assert "/private/model/path" not in response.text
+        finally:
+            self._restore_config(orig)
+
+    @pytest.mark.parametrize(
+        ("ready", "draining", "engine", "expected_detail"),
+        [
+            (False, False, object(), "Service is not accepting work"),
+            (True, True, object(), "Service is not accepting work"),
+            (True, False, None, "Primary model unavailable"),
+        ],
+    )
+    def test_activate_primary_model_rejects_unavailable_service(
+        self, ready, draining, engine, expected_detail
+    ):
+        orig = self._patch_config(
+            api_key=None,
+            engine=engine,
+            ready=ready,
+            draining=draining,
+            primary_model_lifecycle=None,
+        )
+        try:
+            response = TestClient(self._make_app()).post("/v1/models/activate")
+            assert response.status_code == 503
+            assert response.json()["detail"] == expected_detail
+        finally:
+            self._restore_config(orig)
+
+    def test_activate_primary_model_requires_loaded_ready_snapshot(self, mock_engine):
+        class _Lifecycle:
+            def acquire_request(self):
+                pass
+
+            async def ensure_loaded(self):
+                pass
+
+            def snapshot(self):
+                return {"state": "standby", "model_loaded": False}
+
+            def release_request(self):
+                pass
+
+        orig = self._patch_config(
+            api_key=None,
+            engine=mock_engine,
+            ready=True,
+            draining=False,
+            primary_model_lifecycle=_Lifecycle(),
+        )
+        try:
+            response = TestClient(self._make_app()).post("/v1/models/activate")
+            assert response.status_code == 503
+            assert "ready state" in response.json()["detail"]
+        finally:
+            self._restore_config(orig)
+
     def test_health_with_mcp(self, mock_engine):
         """Health endpoint includes MCP info."""
         mcp = MagicMock()
@@ -341,6 +466,7 @@ class TestHealthRoutes:
     @pytest.mark.parametrize(
         ("method", "path"),
         [
+            ("post", "/v1/models/activate"),
             ("post", "/v1/cache/clear"),
             ("get", "/v1/status"),
             ("get", "/v1/cache/stats"),
@@ -435,6 +561,7 @@ class TestHealthRoutes:
         [
             ("get", "/health", 200),
             ("get", "/health/ready", 200),
+            ("post", "/v1/models/activate", 200),
             ("post", "/v1/cache/clear", 200),
             ("get", "/v1/status", 200),
             ("get", "/v1/cache/stats", 200),
