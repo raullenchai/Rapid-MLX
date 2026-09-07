@@ -1,0 +1,395 @@
+import Foundation
+import Testing
+@testable import Rapid
+
+@Suite("Computer Use natural-language draft planning")
+struct DraftPostInstructionPlannerTests {
+    @Test("A ready response becomes a bounded review plan")
+    func readyPlan() async throws {
+        let transport = PlannerTransport(response: try Self.response(content: [
+            "status": "ready",
+            "purpose": "Launch Rapid 0.13.4",
+            "audience": "Mac developers",
+            "talking_points": ["Faster local inference", "No cloud upload"],
+            "tone": "Concise and enthusiastic",
+            "destination": "X",
+            "draft": "Rapid 0.13.4 is here — faster and fully local.",
+            "clarifying_question": "",
+        ]))
+        let result = try await Self.planner(transport: transport).analyze(
+            instruction: "Write a launch post for X for Mac developers.",
+            browserApplication: "Google Chrome"
+        )
+        #expect(result == .ready(DraftPostPlan(
+            purpose: "Launch Rapid 0.13.4",
+            audience: "Mac developers",
+            talkingPoints: ["Faster local inference", "No cloud upload"],
+            tone: "Concise and enthusiastic",
+            destination: "X",
+            draft: "Rapid 0.13.4 is here — faster and fully local."
+        )))
+
+        let request = try #require(await transport.requests.first)
+        #expect(request.value(forHTTPHeaderField: "Authorization") == "Bearer secret")
+        let body = try #require(request.httpBody)
+        let json = try #require(
+            JSONSerialization.jsonObject(with: body) as? [String: Any]
+        )
+        #expect(json["stream"] as? Bool == false)
+        #expect(json["tools"] == nil)
+        let responseFormat = try #require(json["response_format"] as? [String: Any])
+        #expect(responseFormat["type"] as? String == "json_schema")
+        let schemaEnvelope = try #require(
+            responseFormat["json_schema"] as? [String: Any]
+        )
+        #expect(schemaEnvelope["strict"] as? Bool == true)
+    }
+
+    @Test("Missing intent returns one clarification instead of a guessed plan")
+    func clarification() async throws {
+        let transport = PlannerTransport(response: try Self.response(content: [
+            "status": "needs_clarification",
+            "purpose": "",
+            "audience": "",
+            "talking_points": [],
+            "tone": "",
+            "destination": "",
+            "draft": "",
+            "clarifying_question": "Which site should I prepare this for?",
+        ]))
+        let result = try await Self.planner(transport: transport).analyze(
+            instruction: "Write something about the release.",
+            browserApplication: "Safari"
+        )
+        #expect(result == .needsClarification("Which site should I prepare this for?"))
+    }
+
+    @Test("Unknown fields and incomplete ready plans fail closed")
+    func strictOutputBoundary() async throws {
+        var extra: [String: Any] = [
+            "status": "ready",
+            "purpose": "Launch",
+            "audience": "Developers",
+            "talking_points": ["Local"],
+            "tone": "Concise",
+            "destination": "X",
+            "draft": "A draft",
+            "clarifying_question": "",
+        ]
+        extra["publish_now"] = true
+        let extraTransport = PlannerTransport(response: try Self.response(content: extra))
+        await #expect(throws: DraftPostPlanningError.invalidResponse) {
+            _ = try await Self.planner(transport: extraTransport).analyze(
+                instruction: "Draft a launch post for X.",
+                browserApplication: "Safari"
+            )
+        }
+
+        let emptyDraft = PlannerTransport(response: try Self.response(content: [
+            "status": "ready",
+            "purpose": "Launch",
+            "audience": "Developers",
+            "talking_points": ["Local"],
+            "tone": "Concise",
+            "destination": "X",
+            "draft": "",
+            "clarifying_question": "",
+        ]))
+        await #expect(throws: DraftPostPlanningError.invalidResponse) {
+            _ = try await Self.planner(transport: emptyDraft).analyze(
+                instruction: "Draft a launch post for X.",
+                browserApplication: "Safari"
+            )
+        }
+    }
+
+    @Test("Empty and oversized instructions never reach the model")
+    func instructionBounds() async {
+        let transport = PlannerTransport(response: LocalComputerUseGroundingHTTPResponse(
+            statusCode: 200,
+            contentType: "application/json",
+            body: Data()
+        ))
+        await #expect(throws: DraftPostPlanningError.instructionMissing) {
+            _ = try await Self.planner(transport: transport).analyze(
+                instruction: "   ",
+                browserApplication: "Safari"
+            )
+        }
+        await #expect(throws: DraftPostPlanningError.instructionTooLarge) {
+            _ = try await Self.planner(transport: transport).analyze(
+                instruction: String(
+                    repeating: "x",
+                    count: LocalDraftPostInstructionPlanner.maximumInstructionBytes + 1
+                ),
+                browserApplication: "Safari"
+            )
+        }
+        #expect(await transport.requests.isEmpty)
+    }
+
+    @Test("Only a resident text-capable exact model can plan")
+    func runtimeEligibility() throws {
+        let validator: DraftPostLanguageRuntime.SessionValidator = { true }
+        let profile = ServerModelProfile(id: "qwen3.5-9b-4bit", modality: "text")
+        let runtime = try #require(DraftPostLanguageRuntime(
+            profile: profile,
+            selectedAlias: "QWEN3.5-9B-4BIT",
+            host: "127.0.0.1",
+            port: 7659,
+            bearerToken: "secret",
+            sessionValidator: validator
+        ))
+        #expect(runtime.model == profile.id)
+        #expect(DraftPostLanguageRuntime(
+            profile: ServerModelProfile(id: "flux", modality: "image-gen"),
+            selectedAlias: "flux",
+            host: "127.0.0.1",
+            port: 7659,
+            bearerToken: "secret",
+            sessionValidator: validator
+        ) == nil)
+        #expect(DraftPostLanguageRuntime(
+            profile: profile,
+            selectedAlias: "another-model",
+            host: "127.0.0.1",
+            port: 7659,
+            bearerToken: "secret",
+            sessionValidator: validator
+        ) == nil)
+    }
+
+    @MainActor
+    @Test("A rotated server session is rejected before the planning request")
+    func staleRuntimeSession() async throws {
+        let transport = PlannerTransport(response: try Self.response(content: [
+            "status": "needs_clarification",
+            "purpose": "",
+            "audience": "",
+            "talking_points": [],
+            "tone": "",
+            "destination": "",
+            "draft": "",
+            "clarifying_question": "Which site should I prepare this for?",
+        ]))
+        let validator: DraftPostLanguageRuntime.SessionValidator = { false }
+        let optionalRuntime = DraftPostLanguageRuntime(
+            host: "127.0.0.1",
+            port: 7659,
+            model: "qwen3.5-9b-4bit",
+            bearerToken: "secret",
+            sessionValidator: validator
+        )
+        let runtime = try #require(optionalRuntime)
+        let planner = runtime.makePlanner(transport: transport)
+        await #expect(throws: DraftPostPlanningError.modelUnavailable) {
+            _ = try await planner.analyze(
+                instruction: "Draft a launch update for X.",
+                browserApplication: "Safari"
+            )
+        }
+        #expect(await transport.requests.isEmpty)
+    }
+
+    @MainActor
+    @Test("The UI reviews generated text before invoking browser execution")
+    func reviewBeforeExecution() async throws {
+        let plan = DraftPostPlan(
+            purpose: "Launch",
+            audience: "Developers",
+            talkingPoints: ["Local"],
+            tone: "Concise",
+            destination: "X",
+            draft: "Original draft"
+        )
+        let planner = ScriptedInstructionPlanner(result: .ready(plan))
+        let driver = RecordingPreparedDraftDriver()
+        let viewModel = DraftPostInstructionFlowViewModel(
+            catalog: InstructionWindowCatalog(options: [Self.destination]),
+            planner: planner,
+            driver: driver
+        )
+        await viewModel.load()
+        viewModel.destinationID = Self.destination.id
+        viewModel.instruction = "Launch Rapid for developers on X."
+        viewModel.analyze()
+        await Self.waitUntil { viewModel.phase == .reviewing }
+        #expect(await driver.drafts.isEmpty)
+        viewModel.editableDraft = "User-edited draft"
+        viewModel.execute()
+        await Self.waitUntil {
+            if case .readyForReview = viewModel.phase { return true }
+            return false
+        }
+        #expect(await driver.drafts == ["User-edited draft"])
+    }
+
+    @MainActor
+    @Test("A clarification returns to the editable request without execution")
+    func clarificationState() async throws {
+        let planner = ScriptedInstructionPlanner(
+            result: .needsClarification("Who is the audience?")
+        )
+        let driver = RecordingPreparedDraftDriver()
+        let viewModel = DraftPostInstructionFlowViewModel(
+            catalog: InstructionWindowCatalog(options: [Self.destination]),
+            planner: planner,
+            driver: driver
+        )
+        await viewModel.load()
+        viewModel.destinationID = Self.destination.id
+        viewModel.instruction = "Write a launch post for X."
+        viewModel.analyze()
+        await Self.waitUntil { viewModel.clarificationQuestion != nil }
+        #expect(viewModel.phase == .ready)
+        #expect(viewModel.clarificationQuestion == "Who is the audience?")
+        #expect(await driver.drafts.isEmpty)
+    }
+
+    @Test("Prepared execution retries only recoverable pre-write failures")
+    func boundedPreparedRecovery() async {
+        let driver = ScriptedPreparedDraftDriver(
+            outcomes: [.failure(.targetUnavailable), .success(())]
+        )
+        let outcome = await PreparedDraftPostFlowCoordinator(driver: driver).run(
+            draft: "Reviewed draft",
+            destination: Self.destination
+        )
+        #expect(outcome == .readyForReview(DraftPostFlowMetrics(
+            attempts: 2,
+            automaticRecoveries: 1,
+            completedSteps: 3
+        )))
+        #expect(await driver.attempts == 2)
+
+        let terminalDriver = ScriptedPreparedDraftDriver(
+            outcomes: [.failure(.verificationFailed), .success(())]
+        )
+        let terminalOutcome = await PreparedDraftPostFlowCoordinator(
+            driver: terminalDriver
+        ).run(draft: "Reviewed draft", destination: Self.destination)
+        #expect(terminalOutcome == .failed(
+            .verificationFailed,
+            DraftPostFlowMetrics(attempts: 1)
+        ))
+        #expect(await terminalDriver.attempts == 1)
+    }
+
+    private static func planner(
+        transport: PlannerTransport
+    ) -> LocalDraftPostInstructionPlanner {
+        LocalDraftPostInstructionPlanner(
+            baseURL: URL(string: "http://127.0.0.1:7659/v1")!,
+            model: "qwen3.5-9b-4bit",
+            bearerToken: "secret",
+            transport: transport
+        )
+    }
+
+    private static func response(
+        content: [String: Any]
+    ) throws -> LocalComputerUseGroundingHTTPResponse {
+        let contentData = try JSONSerialization.data(withJSONObject: content)
+        let contentString = try #require(String(data: contentData, encoding: .utf8))
+        let envelopeData = try JSONSerialization.data(withJSONObject: [
+            "choices": [["message": ["content": contentString]]],
+        ])
+        return LocalComputerUseGroundingHTTPResponse(
+            statusCode: 200,
+            contentType: "application/json; charset=utf-8",
+            body: envelopeData
+        )
+    }
+
+    @MainActor
+    private static func waitUntil(
+        _ predicate: @escaping @MainActor () -> Bool
+    ) async {
+        for _ in 0 ..< 100 where !predicate() {
+            await Task.yield()
+        }
+    }
+
+    private static let destination = ComputerUseWindowOption(
+        id: "chrome:42",
+        applicationName: "Google Chrome",
+        windowTitle: "X / Home",
+        selection: ComputerUseWindowSelection(
+            bundleIdentifier: "com.google.Chrome",
+            processIdentifier: 123,
+            processLaunchDate: Date(timeIntervalSince1970: 1_700_000_000),
+            windowID: 42
+        )
+    )
+}
+
+private actor PlannerTransport: LocalComputerUseGroundingTransport {
+    let response: LocalComputerUseGroundingHTTPResponse
+    private(set) var requests: [URLRequest] = []
+
+    init(response: LocalComputerUseGroundingHTTPResponse) {
+        self.response = response
+    }
+
+    func send(
+        _ request: URLRequest,
+        maximumResponseBytes _: Int
+    ) async throws -> LocalComputerUseGroundingHTTPResponse {
+        requests.append(request)
+        return response
+    }
+}
+
+private struct InstructionWindowCatalog: ComputerUseWindowListing {
+    let options: [ComputerUseWindowOption]
+
+    func windows() async throws -> [ComputerUseWindowOption] {
+        options
+    }
+}
+
+private actor ScriptedInstructionPlanner: DraftPostInstructionPlanning {
+    let result: DraftPostPlanningResult
+
+    init(result: DraftPostPlanningResult) {
+        self.result = result
+    }
+
+    func analyze(
+        instruction _: String,
+        browserApplication _: String
+    ) async throws -> DraftPostPlanningResult {
+        result
+    }
+}
+
+private actor RecordingPreparedDraftDriver: PreparedDraftPostFlowDriving {
+    private(set) var drafts: [String] = []
+
+    func transferPreparedDraft(
+        _ draft: String,
+        to _: ComputerUseWindowOption
+    ) async throws {
+        drafts.append(draft)
+    }
+}
+
+private actor ScriptedPreparedDraftDriver: PreparedDraftPostFlowDriving {
+    private var outcomes: [Result<Void, DraftPostFlowFailure>]
+    private(set) var attempts = 0
+
+    init(outcomes: [Result<Void, DraftPostFlowFailure>]) {
+        self.outcomes = outcomes
+    }
+
+    func transferPreparedDraft(
+        _ draft: String,
+        to _: ComputerUseWindowOption
+    ) async throws {
+        attempts += 1
+        guard !draft.isEmpty, !outcomes.isEmpty else {
+            throw DraftPostFlowFailure.dependencyFailure
+        }
+        try outcomes.removeFirst().get()
+    }
+}

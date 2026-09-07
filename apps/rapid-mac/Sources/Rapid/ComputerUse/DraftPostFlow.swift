@@ -125,7 +125,7 @@ enum DraftPostFlowFailure: Error, Equatable, Sendable {
         case .composerAmbiguous: "More than one possible composer was found. Close other editors and try again."
         case .composerNotEmpty: "The browser composer already contains text. Clear it before running this flow."
         case .writeRejected: "The browser rejected the local text update."
-        case .verificationFailed: "The browser content did not match the TextEdit draft."
+        case .verificationFailed: "The browser content did not match the reviewed draft."
         case .permissionMissing: "Screen Recording and Accessibility access are required."
         case .cancelled: "The flow was stopped."
         case .dependencyFailure: "The flow stopped because a local system operation failed."
@@ -152,6 +152,49 @@ protocol DraftPostFlowDriving: Sendable {
     ) async throws
 }
 
+/// The narrower execution capability used after Rapid has generated and the
+/// user has reviewed a draft. The draft is already immutable input here: this
+/// boundary can place and verify it, but cannot revise it or publish it.
+protocol PreparedDraftPostFlowDriving: Sendable {
+    func transferPreparedDraft(
+        _ draft: String,
+        to destination: ComputerUseWindowOption
+    ) async throws
+}
+
+private enum DraftPostTransferRetry {
+    static func run(
+        maximumAttempts: Int,
+        operation: @escaping @Sendable () async throws -> Void
+    ) async -> DraftPostFlowOutcome {
+        var metrics = DraftPostFlowMetrics()
+        for attempt in 1 ... maximumAttempts {
+            if Task.isCancelled {
+                return .failed(.cancelled, metrics)
+            }
+            metrics.attempts = attempt
+            do {
+                try await operation()
+                metrics.completedSteps = 3
+                return .readyForReview(metrics)
+            } catch let failure as DraftPostFlowFailure {
+                guard failure.isRecoverable, attempt < maximumAttempts else {
+                    return .failed(failure, metrics)
+                }
+                metrics.automaticRecoveries += 1
+            } catch is CancellationError {
+                return .failed(.cancelled, metrics)
+            } catch {
+                // Only typed, known pre-mutation focus/window failures may
+                // retry. Unknown adapter failures fail closed because they
+                // could have happened after a local mutation.
+                return .failed(.dependencyFailure, metrics)
+            }
+        }
+        return .failed(.targetUnavailable, metrics)
+    }
+}
+
 /// Runs one idempotent local transfer with a strict retry budget. The driver
 /// can only populate the composer; publishing is intentionally absent from
 /// this protocol and therefore cannot be reached by recovery logic.
@@ -168,31 +211,30 @@ actor DraftPostFlowCoordinator {
         source: ComputerUseWindowOption,
         destination: ComputerUseWindowOption
     ) async -> DraftPostFlowOutcome {
-        var metrics = DraftPostFlowMetrics()
-        for attempt in 1 ... maximumAttempts {
-            if Task.isCancelled {
-                return .failed(.cancelled, metrics)
-            }
-            metrics.attempts = attempt
-            do {
-                try await driver.transferDraft(from: source, to: destination)
-                metrics.completedSteps = 3
-                return .readyForReview(metrics)
-            } catch let failure as DraftPostFlowFailure {
-                guard failure.isRecoverable, attempt < maximumAttempts else {
-                    return .failed(failure, metrics)
-                }
-                metrics.automaticRecoveries += 1
-            } catch is CancellationError {
-                return .failed(.cancelled, metrics)
-            } catch {
-                // Only typed, known pre-mutation focus/window failures may
-                // retry. An unknown adapter failure could have happened after
-                // a local mutation, so it must fail closed.
-                return .failed(.dependencyFailure, metrics)
-            }
+        await DraftPostTransferRetry.run(maximumAttempts: maximumAttempts) {
+            try await self.driver.transferDraft(from: source, to: destination)
         }
-        return .failed(.targetUnavailable, metrics)
+    }
+}
+
+/// Runs a generated draft through the same bounded, idempotent browser
+/// transfer policy as the original TextEdit-backed preview.
+actor PreparedDraftPostFlowCoordinator {
+    private let driver: any PreparedDraftPostFlowDriving
+    private let maximumAttempts: Int
+
+    init(driver: any PreparedDraftPostFlowDriving, maximumAttempts: Int = 3) {
+        self.driver = driver
+        self.maximumAttempts = min(max(1, maximumAttempts), 3)
+    }
+
+    func run(
+        draft: String,
+        destination: ComputerUseWindowOption
+    ) async -> DraftPostFlowOutcome {
+        await DraftPostTransferRetry.run(maximumAttempts: maximumAttempts) {
+            try await self.driver.transferPreparedDraft(draft, to: destination)
+        }
     }
 }
 
@@ -241,7 +283,7 @@ struct AXDraftPostComposerActuator: DraftPostComposerActuating {
 /// The user selects both windows. Rapid reads one TextEdit document, writes an
 /// empty browser composer, verifies the exact value, and stops. No coordinate
 /// action and no publish/send action exists in this adapter.
-struct MacOSDraftPostFlowDriver: DraftPostFlowDriving {
+struct MacOSDraftPostFlowDriver: DraftPostFlowDriving, PreparedDraftPostFlowDriving {
     static let maximumDraftBytes = 65_536
     private static let textEditBundle = "com.apple.TextEdit"
     static let browserBundles: Set<String> = [
@@ -266,13 +308,38 @@ struct MacOSDraftPostFlowDriver: DraftPostFlowDriving {
         guard source.selection.bundleIdentifier == Self.textEditBundle else {
             throw DraftPostFlowFailure.sourceIsNotTextEdit
         }
+        let draft = try await readDraft(from: source)
+        try await transfer(
+            draft,
+            to: destination,
+            source: source
+        )
+    }
+
+    func transferPreparedDraft(
+        _ draft: String,
+        to destination: ComputerUseWindowOption
+    ) async throws {
+        try await transfer(draft, to: destination, source: nil)
+    }
+
+    private func transfer(
+        _ draft: String,
+        to destination: ComputerUseWindowOption,
+        source: ComputerUseWindowOption?
+    ) async throws {
         guard Self.browserBundles.contains(destination.selection.bundleIdentifier) else {
             throw DraftPostFlowFailure.destinationIsNotBrowser
         }
         guard MacAutomationPermissions.snapshot().isReadyForComputerUse else {
             throw DraftPostFlowFailure.permissionMissing
         }
-
+        guard !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            throw DraftPostFlowFailure.draftMissing
+        }
+        guard draft.utf8.count <= Self.maximumDraftBytes else {
+            throw DraftPostFlowFailure.draftTooLarge
+        }
         let browserAccessibilityRestoreValue = try await prepareBrowserAccessibility(
             for: destination
         )
@@ -285,18 +352,11 @@ struct MacOSDraftPostFlowDriver: DraftPostFlowDriving {
             }
         }
         let documentIdentity = try await browserDocumentIdentity(in: destination)
-        let draft = try await readDraft(from: source)
-        guard !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-            throw DraftPostFlowFailure.draftMissing
-        }
-        guard draft.utf8.count <= Self.maximumDraftBytes else {
-            throw DraftPostFlowFailure.draftTooLarge
-        }
         var usedVisualRecovery = false
         do {
             try await writeAndVerify(
                 draft,
-                from: source,
+                source: source,
                 to: destination,
                 documentIdentity: documentIdentity,
                 allowFocusedUnlabelledComposer: false,
@@ -314,7 +374,7 @@ struct MacOSDraftPostFlowDriver: DraftPostFlowDriving {
             try await Self.verifyAfterVisualRecovery {
                 try await writeAndVerify(
                     draft,
-                    from: source,
+                    source: source,
                     to: destination,
                     documentIdentity: documentIdentity,
                     allowFocusedUnlabelledComposer: true,
@@ -463,7 +523,7 @@ struct MacOSDraftPostFlowDriver: DraftPostFlowDriving {
 
     private func writeAndVerify(
         _ draft: String,
-        from source: ComputerUseWindowOption,
+        source: ComputerUseWindowOption?,
         to destination: ComputerUseWindowOption,
         documentIdentity: String,
         allowFocusedUnlabelledComposer: Bool,
@@ -545,9 +605,11 @@ struct MacOSDraftPostFlowDriver: DraftPostFlowDriving {
             guard currentValue.isEmpty || Self.utf8Matches(currentValue, draft) else {
                 throw DraftPostFlowFailure.composerNotEmpty
             }
-            let currentSource = try Self.readDraftWithoutFocusing(from: source)
-            guard Self.utf8Matches(currentSource, draft) else {
-                throw DraftPostFlowFailure.verificationFailed
+            if let source {
+                let currentSource = try Self.readDraftWithoutFocusing(from: source)
+                guard Self.utf8Matches(currentSource, draft) else {
+                    throw DraftPostFlowFailure.verificationFailed
+                }
             }
             let authorizedWindow = try Self.exactFocusedBrowserWindow(
                 destination,
@@ -605,7 +667,7 @@ struct MacOSDraftPostFlowDriver: DraftPostFlowDriving {
 
     private static func verifyDefinitivePostMutationState(
         draft: String,
-        source: ComputerUseWindowOption,
+        source: ComputerUseWindowOption?,
         destination: ComputerUseWindowOption,
         documentIdentity: String,
         allowFocusedUnlabelledComposer: Bool
@@ -615,9 +677,11 @@ struct MacOSDraftPostFlowDriver: DraftPostFlowDriving {
         // verification rather than misreporting an unknown mutation state.
         try await Task.detached {
             try await Task.sleep(for: .milliseconds(300))
-            let finalSource = try readDraftWithoutFocusing(from: source)
-            guard utf8Matches(finalSource, draft) else {
-                throw DraftPostFlowFailure.verificationFailed
+            if let source {
+                let finalSource = try readDraftWithoutFocusing(from: source)
+                guard utf8Matches(finalSource, draft) else {
+                    throw DraftPostFlowFailure.verificationFailed
+                }
             }
             let selection = destination.selection
             guard let running = NSRunningApplication(
