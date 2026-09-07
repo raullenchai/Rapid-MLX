@@ -478,7 +478,35 @@ def _negctrl_offline_skip_types() -> tuple[type[BaseException], ...]:
         types.append(_ReqConnErr)
     except Exception:  # pragma: no cover - requests not present
         pass
-    return tuple(types) or (OSError,)
+    return tuple(types)
+
+
+def _is_negctrl_offline_cache_miss(exc: BaseException) -> bool:
+    """Recognize a genuine HF offline miss through transformers wrappers.
+
+    Transformers 5.15 wraps ``LocalEntryNotFoundError`` in a generic
+    ``OSError``. Match the typed cause anywhere in the exception chain rather
+    than treating every disk-related ``OSError`` as skippable; corrupt local
+    tokenizer artifacts must remain real failures.
+    """
+    offline_types = _negctrl_offline_skip_types()
+    seen: set[int] = set()
+    current: BaseException | None = exc
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        if isinstance(current, offline_types):
+            return True
+        current = current.__cause__ or current.__context__
+    return False
+
+
+def test_negctrl_offline_cache_miss_detection_is_narrow():
+    """Wrapped HF misses skip, but unrelated OSErrors still fail closed."""
+    assert not _is_negctrl_offline_cache_miss(OSError("corrupt tokenizer.json"))
+    hub_errors = pytest.importorskip("huggingface_hub.errors")
+    wrapped = OSError("transformers could not resolve the tokenizer")
+    wrapped.__cause__ = hub_errors.LocalEntryNotFoundError("not cached")
+    assert _is_negctrl_offline_cache_miss(wrapped)
 
 
 def _load_negctrl_tokenizers():
@@ -497,7 +525,9 @@ def _load_negctrl_tokenizers():
         tok = transformers.AutoTokenizer.from_pretrained(
             _NEGCTRL_TOKENIZER, revision=_NEGCTRL_REVISION
         )
-    except _negctrl_offline_skip_types():  # pragma: no cover - offline & uncached
+    except Exception as exc:  # noqa: BLE001 - re-raised unless typed offline miss
+        if not _is_negctrl_offline_cache_miss(exc):
+            raise
         pytest.skip(
             f"tokenizer {_NEGCTRL_TOKENIZER}@{_NEGCTRL_REVISION[:8]} not cached "
             "and no network — negative control requires it"
