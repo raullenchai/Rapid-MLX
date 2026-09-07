@@ -631,7 +631,11 @@ async def _warmup_primary_engine(engine: object) -> None:
     try:
         is_hybrid = _detect_hybrid_for_warmup(engine)
         if not is_hybrid:
-            engine.generate_warmup()
+            # `generate_warmup()` synchronously waits for the model-owning MLX
+            # executor. During eager boot there is no traffic yet, but on a
+            # demand load that wait must leave the event loop free for health
+            # probes and other coalesced requests.
+            await asyncio.to_thread(engine.generate_warmup)
         else:
             logger.info(
                 "Hybrid model: running full request warmup "

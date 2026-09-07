@@ -1,5 +1,5 @@
 import asyncio
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, Mock
 
 import pytest
 
@@ -216,6 +216,19 @@ async def test_shutdown_drains_cancellation_isolated_load():
     assert engine._loaded is True
     with pytest.raises(RuntimeError, match="closed"):
         await lifecycle.ensure_loaded()
+
+
+@pytest.mark.asyncio
+async def test_demand_warmup_runs_off_the_event_loop(monkeypatch):
+    from vllm_mlx import server
+
+    engine = FakeEngine(loaded=True)
+    engine.generate_warmup = Mock()
+    to_thread = AsyncMock()
+    monkeypatch.setattr(server.asyncio, "to_thread", to_thread)
+
+    await server._warmup_primary_engine(engine)
+    to_thread.assert_awaited_once_with(engine.generate_warmup)
 
 
 @pytest.mark.asyncio

@@ -80,9 +80,11 @@ sudo rapid-mlx service apply
 
 `/readyz` remains successful in `standby` because the endpoint can accept and
 coalesce a demand load; `/health` and `/health/ready` expose the lifecycle state
-and whether weights are currently loaded. A request can only wake the model
-configured by the service definition—it cannot select an arbitrary repository
-or trigger a new download.
+and whether weights are currently loaded. Chat Completions, legacy Completions,
+Responses, and Anthropic Messages/counting wake the configured primary. The
+independent `--embedding-model` lane is unaffected. A request can only wake the
+primary configured by the service definition—it cannot select an arbitrary
+repository or trigger a new download.
 
 For API authentication, send the key over stdin to a private credential file.
 It never appears in argv, the plist, shell history, `service config`, or status:
