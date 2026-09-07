@@ -210,12 +210,8 @@ struct FreeUpSpaceFlowTests {
         try fixture.file("inside.txt", bytes: 20, modifiedAt: old)
         let outsideURL = try outside.file("outside.txt", bytes: 20, modifiedAt: old)
         let service = try #require(MacOSDownloadsCleanupService(root: fixture.root))
-        let reviewed = try #require(try await service.scan(now: now).first)
-        let crafted = FreeUpSpaceCandidate(
-            url: outsideURL,
-            identity: reviewed.identity,
-            modifiedAt: reviewed.modifiedAt
-        )
+        let outsideService = try #require(MacOSDownloadsCleanupService(root: outside.root))
+        let crafted = try #require(try await outsideService.scan(now: now).first)
 
         let outcome = await service.moveToTrash([crafted])
 
