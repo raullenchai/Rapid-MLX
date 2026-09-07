@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """Scope-locked tests for contention-aware prompt-slot admission."""
 
+import sys
 from collections import deque
 from types import SimpleNamespace
 from unittest.mock import MagicMock
@@ -10,6 +11,7 @@ import pytest
 pytest.importorskip("mlx")
 pytestmark = pytest.mark.requires_mlx
 
+from vllm_mlx import server
 from vllm_mlx.cli import build_parser
 from vllm_mlx.request import Request, RequestStatus, SamplingParams
 from vllm_mlx.scheduler import Scheduler, SchedulerConfig
@@ -131,6 +133,37 @@ def test_cost_probe_rejects_stale_tail_and_accepts_current_prompt_suffix():
     assert scheduler._validated_prompt_tail_cost(request) == 100
 
 
+def test_cost_probe_observes_nested_cache_offsets_without_mutation():
+    cache = SimpleNamespace(
+        caches=[SimpleNamespace(offset=2), [SimpleNamespace(offset=2)]]
+    )
+
+    assert Scheduler._observable_prompt_cache_offsets(cache) == ((2, 2), True)
+
+
+def test_exact_cache_match_uses_trim_probe_and_safely_falls_back(monkeypatch):
+    request = _request("exact-cache", 0)
+    request.prompt_token_ids = [0, 1, 2]
+    request.cached_tokens = 3
+    request.prompt_cache = SimpleNamespace(offset=3)
+    scheduler = _selector(request)
+    scheduler._validate_cache = lambda _cache: True
+
+    import mlx_lm.models.cache as cache_module
+
+    monkeypatch.setattr(cache_module, "can_trim_prompt_cache", lambda _cache: True)
+    assert scheduler._validated_prompt_tail_cost(request) == 1
+
+    monkeypatch.setattr(cache_module, "can_trim_prompt_cache", lambda _cache: False)
+    assert scheduler._validated_prompt_tail_cost(request) == 3
+
+    def fail_trim(_cache):
+        raise RuntimeError("unsupported cache")
+
+    monkeypatch.setattr(cache_module, "can_trim_prompt_cache", fail_trim)
+    assert scheduler._validated_prompt_tail_cost(request) == 3
+
+
 def test_selection_is_read_only_until_admission_commit():
     old = _request("old", 100)
     old._admission_deferrals = 3
@@ -142,6 +175,34 @@ def test_selection_is_read_only_until_admission_commit():
     assert selected is short and not forced
     assert list(scheduler.waiting) == [old, short]
     assert old._admission_deferrals == 3
+
+
+def test_selection_returns_none_when_live_generator_is_incompatible():
+    request = _request("incompatible", 1, stop_ids=(9,))
+    scheduler = _selector(request)
+    scheduler.batch_generator = object()
+    scheduler.running = {"live": object()}
+    scheduler._current_sampler_params = (frozenset({7}), False)
+
+    assert scheduler._select_waiting_request() is None
+    assert scheduler._schedule_waiting() == []
+    assert list(scheduler.waiting) == [request]
+
+
+@pytest.mark.parametrize("generator_ready", [False, True])
+@pytest.mark.parametrize("policy", ["shortest_validated_tail", "fcfs"])
+def test_admission_failure_preserves_queue_and_deferrals(generator_ready, policy):
+    request = _request("retry", 1)
+    request._admission_deferrals = 2
+    scheduler = _selector(request)
+    scheduler.config.scheduling_policy = policy
+    scheduler._ensure_batch_generator = lambda _params: generator_ready
+    if generator_ready:
+        scheduler.batch_generator = None
+
+    assert scheduler._schedule_waiting() == []
+    assert list(scheduler.waiting) == [request]
+    assert request._admission_deferrals == 2
 
 
 def test_policy_grants_only_real_prompt_and_completion_headroom():
@@ -251,6 +312,66 @@ def test_legacy_flat_response_runtime_falls_back_to_fcfs_without_sticking_slots(
     assert stats["scheduling_policy"] == "fcfs"
 
 
+def test_tuple_response_records_prompt_promotion_and_runtime_support():
+    scheduler = Scheduler(
+        MagicMock(),
+        SimpleNamespace(
+            encode=lambda value: value,
+            decode=lambda value: str(value),
+            eos_token_id=0,
+            eos_token_ids={0},
+        ),
+        SchedulerConfig(
+            enable_prefix_cache=False,
+            scheduling_policy="shortest_validated_tail",
+        ),
+    )
+    request = _request("live", 1)
+    request.status = RequestStatus.RUNNING
+    scheduler.requests = {request.request_id: request}
+    scheduler.running = {request.request_id: request}
+    scheduler.batch_generator = SimpleNamespace(
+        next=lambda: ([SimpleNamespace(uid=11, end_of_prompt=True)], []),
+        _generation_batch=None,
+        _prompt_batch=None,
+        _currently_processing=(),
+        _unprocessed_sequences=(),
+    )
+    scheduler._admission_prefill_uids = {11}
+
+    scheduler.step()
+
+    assert scheduler._shortest_tail_runtime_supported is True
+    assert not scheduler._admission_prefill_uids
+
+
+def test_admission_mirror_is_cleared_on_generator_close_and_uid_forget():
+    scheduler = Scheduler(
+        MagicMock(),
+        SimpleNamespace(eos_token_id=0, eos_token_ids={0}),
+        SchedulerConfig(enable_prefix_cache=False),
+    )
+    scheduler._admission_prefill_uids = {7, 8}
+    scheduler._close_batch_generator()
+    assert not scheduler._admission_prefill_uids
+
+    scheduler._admission_prefill_uids = {7}
+    scheduler._forget_uid_grammar(7)
+    assert not scheduler._admission_prefill_uids
+
+
+def test_runtime_fallback_is_idempotent_and_ignored_for_fcfs():
+    scheduler = _selector()
+    scheduler._shortest_tail_runtime_supported = False
+    scheduler._fallback_from_unobservable_prompt_runtime()
+    assert scheduler._shortest_tail_runtime_supported is False
+
+    scheduler.config.scheduling_policy = "fcfs"
+    scheduler._shortest_tail_runtime_supported = None
+    scheduler._fallback_from_unobservable_prompt_runtime()
+    assert scheduler._shortest_tail_runtime_supported is None
+
+
 def test_serve_cli_exposes_policy_and_starvation_bound():
     args = build_parser().parse_args(
         [
@@ -264,3 +385,17 @@ def test_serve_cli_exposes_policy_and_starvation_bound():
     )
     assert args.scheduling_policy == "shortest_validated_tail"
     assert args.scheduling_max_deferrals == 3
+
+
+def test_standalone_server_parser_registers_admission_flags(monkeypatch, capsys):
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["vllm_mlx.server", "--scheduling-policy", "invalid"],
+    )
+
+    with pytest.raises(SystemExit) as exc:
+        server.main()
+
+    assert exc.value.code == 2
+    assert "invalid choice" in capsys.readouterr().err
