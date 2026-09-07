@@ -52,8 +52,10 @@ permissions:
 # Every job in this workflow runs product code (engine, CLI, Desktop app) on
 # shared or self-hosted machines. None of that is a user: keep it out of the
 # production telemetry store. The engine and the Desktop app both honour this
-# kill switch; the golden-flow harness lifts it only for the two flows that
-# prove the consent boundary against a loopback sink.
+# kill switch; the golden-flow harness lifts it only for the flows that turn
+# telemetry on against a loopback sink (fresh-install, fresh-install-share,
+# no-dead-controls), and the Desktop unit-test wrappers lift it because their
+# opt-in assertions run against stubbed transports.
 env:
   RAPID_MLX_TELEMETRY: "0"
 

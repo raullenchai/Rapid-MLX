@@ -3366,6 +3366,7 @@ flow_no_dead_controls() {
     fi
     log "  reversible Settings controls all changed state and restored"
     cleanup_persona
+    cleanup_telemetry_sink
 }
 
 flow_browse_all_destination() {
