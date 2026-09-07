@@ -732,6 +732,46 @@ struct DraftPostInstructionPlannerTests {
     }
 
     @MainActor
+    @Test("A model-session change preserves the reviewed flow")
+    func modelSessionChangePreservesReviewedFlow() async throws {
+        let originalPlan = DraftPostPlan(
+            purpose: "Launch",
+            audience: "Developers",
+            talkingPoints: ["Local"],
+            tone: "Concise",
+            destination: "x.com",
+            draft: "Reviewed draft"
+        )
+        let replacementPlan = DraftPostPlan(
+            purpose: "Replacement",
+            audience: "Operators",
+            talkingPoints: ["Later"],
+            tone: "Direct",
+            destination: "x.com",
+            draft: "Replacement draft"
+        )
+        let viewModel = DraftPostInstructionFlowViewModel(
+            catalog: InstructionWindowCatalog(options: [Self.destination]),
+            planner: ScriptedInstructionPlanner(result: .ready(originalPlan)),
+            destinationInspector: InstructionDestinationInspector(),
+            driver: RecordingPreparedDraftDriver()
+        )
+        await viewModel.load()
+        viewModel.destinationID = Self.destination.id
+        viewModel.instruction = "Launch Rapid for developers on X."
+        viewModel.analyze()
+        await Self.waitUntil { viewModel.phase == .reviewing }
+
+        viewModel.updatePlanner(
+            ScriptedInstructionPlanner(result: .ready(replacementPlan))
+        )
+
+        #expect(viewModel.phase == .reviewing)
+        #expect(viewModel.plan == originalPlan)
+        #expect(viewModel.editableDraft == "Reviewed draft")
+    }
+
+    @MainActor
     @Test("Navigation during local planning invalidates the plan before review")
     func navigationDuringPlanning() async throws {
         let plan = DraftPostPlan(

@@ -50,7 +50,7 @@ final class DraftPostInstructionFlowViewModel {
     var editableDraft = ""
 
     private let catalog: any ComputerUseWindowListing
-    private let planner: (any DraftPostInstructionPlanning)?
+    private var planner: (any DraftPostInstructionPlanning)?
     private let destinationInspector: any ComputerUseBrowserDestinationInspecting
     private let driver: any PreparedDraftPostFlowDriving
     private var task: Task<Void, Never>?
@@ -112,6 +112,13 @@ final class DraftPostInstructionFlowViewModel {
 
     var isActive: Bool {
         phase == .analyzing || phase == .running || phase == .stopping
+    }
+
+    /// Installs the app's current local-model session for future analyses.
+    /// Existing analysis tasks capture their planner before launch, and plan
+    /// review/browser execution never consult this reference.
+    func updatePlanner(_ planner: (any DraftPostInstructionPlanning)?) {
+        self.planner = planner
     }
 
     func load() async {

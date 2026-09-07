@@ -81,11 +81,6 @@ struct ComputerUseView: View {
                 languageRuntime: languageRuntime,
                 visualRuntime: visualRuntime
             )
-            // Recreate the sheet's @State view model whenever the app-owned
-            // sidecar changes. A user can start or restart a model while this
-            // sheet is open; retaining the old planner would leave Analyze
-            // disabled or permanently bound to an invalidated session.
-            .id(languageRuntime?.viewIdentity)
         }
     }
 
@@ -150,12 +145,14 @@ struct ComputerUseView: View {
 private struct DraftPostFlowSheet: View {
     @Environment(\.dismiss) private var dismiss
     @State private var viewModel: DraftPostInstructionFlowViewModel
+    private let languageRuntime: DraftPostLanguageRuntime?
     private let visualRecoveryAvailable: Bool
 
     init(
         languageRuntime: DraftPostLanguageRuntime?,
         visualRuntime: DraftPostVisualRuntime?
     ) {
+        self.languageRuntime = languageRuntime
         self.visualRecoveryAvailable = visualRuntime != nil
         _viewModel = State(initialValue: DraftPostInstructionFlowViewModel(
             planner: languageRuntime?.makePlanner(),
@@ -318,6 +315,12 @@ private struct DraftPostFlowSheet: View {
         .padding(24)
         .frame(width: 700, height: 650)
         .task { await viewModel.load() }
+        .onChange(of: languageRuntime?.viewIdentity) { _, _ in
+            // Keep the in-flight/reviewed flow intact. An analysis captures
+            // its planner before it starts; replacing this reference affects
+            // only the next analysis request and never browser execution.
+            viewModel.updatePlanner(languageRuntime?.makePlanner())
+        }
         .onDisappear { viewModel.cancelTask() }
         .interactiveDismissDisabled(viewModel.isActive)
         .accessibilityElement(children: .contain)
