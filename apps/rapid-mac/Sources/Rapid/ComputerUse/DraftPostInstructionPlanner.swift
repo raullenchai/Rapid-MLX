@@ -127,7 +127,7 @@ struct DraftPostLanguageRuntime: Equatable, Sendable {
     }
 
     private static func canGenerateText(_ profile: ServerModelProfile) -> Bool {
-        guard let modality = profile.modality?.lowercased() else { return true }
+        guard let modality = profile.modality?.lowercased() else { return false }
         return modality == "text" || modality == "text-diffusion"
     }
 
@@ -289,6 +289,9 @@ struct LocalDraftPostInstructionPlanner: DraftPostInstructionPlanning {
         let terminators: Set<Character> = ["?", "？", "؟"]
         return value.last.map(terminators.contains) == true
             && value.filter(terminators.contains).count == 1
+            && value.unicodeScalars.contains {
+                CharacterSet.alphanumerics.contains($0)
+            }
     }
 
     static func requestBody(

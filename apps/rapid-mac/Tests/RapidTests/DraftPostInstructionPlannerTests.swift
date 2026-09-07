@@ -160,6 +160,24 @@ struct DraftPostInstructionPlannerTests {
                 destinationHost: "x.com"
             )
         }
+
+        let punctuationOnly = PlannerTransport(response: try Self.response(content: [
+            "status": "needs_clarification",
+            "purpose": "",
+            "audience": "",
+            "talking_points": [],
+            "tone": "",
+            "destination": "",
+            "draft": "",
+            "clarifying_question": "?",
+        ]))
+        await #expect(throws: DraftPostPlanningError.invalidResponse) {
+            _ = try await Self.planner(transport: punctuationOnly).analyze(
+                instruction: "Draft a launch post for X.",
+                browserApplication: "Safari",
+                destinationHost: "x.com"
+            )
+        }
     }
 
     @Test("Empty and oversized instructions never reach the model")
@@ -213,6 +231,14 @@ struct DraftPostInstructionPlannerTests {
         #expect(DraftPostLanguageRuntime(
             profile: profile,
             selectedAlias: "another-model",
+            host: "127.0.0.1",
+            port: 7659,
+            bearerToken: "secret",
+            sessionValidator: validator
+        ) == nil)
+        #expect(DraftPostLanguageRuntime(
+            profile: ServerModelProfile(id: profile.id),
+            selectedAlias: profile.id,
             host: "127.0.0.1",
             port: 7659,
             bearerToken: "secret",
