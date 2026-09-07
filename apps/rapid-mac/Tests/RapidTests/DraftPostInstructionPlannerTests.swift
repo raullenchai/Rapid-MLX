@@ -8,14 +8,14 @@ struct DraftPostInstructionPlannerTests {
     func readyPlan() async throws {
         let transport = PlannerTransport(response: try Self.response(content: [
             "status": "ready",
-            "purpose": "Launch Rapid 0.13.4",
+            "purpose": "launch post",
             "audience": "Mac developers",
-            "talking_points": ["Faster local inference", "No cloud upload"],
+            "talking_points": ["faster local inference", "no cloud upload"],
             "tone": "Concise and enthusiastic",
             "destination": "x.com",
             "draft": "Rapid 0.13.4 is here — faster and fully local.",
             "purpose_evidence": "launch post",
-            "talking_points_evidence": "faster local inference and no cloud upload",
+            "talking_points_evidence": ["faster local inference", "no cloud upload"],
             "destination_evidence": "X",
             "clarifying_question": "",
         ]))
@@ -25,9 +25,9 @@ struct DraftPostInstructionPlannerTests {
             destinationHost: "x.com"
         )
         #expect(result == .ready(DraftPostPlan(
-            purpose: "Launch Rapid 0.13.4",
+            purpose: "launch post",
             audience: "Mac developers",
-            talkingPoints: ["Faster local inference", "No cloud upload"],
+            talkingPoints: ["faster local inference", "no cloud upload"],
             tone: "Concise and enthusiastic",
             destination: "x.com",
             draft: "Rapid 0.13.4 is here — faster and fully local."
@@ -60,7 +60,7 @@ struct DraftPostInstructionPlannerTests {
             "destination": "",
             "draft": "",
             "purpose_evidence": "",
-            "talking_points_evidence": "",
+            "talking_points_evidence": [],
             "destination_evidence": "",
             "clarifying_question": "Which site should I prepare this for?",
         ]))
@@ -83,7 +83,7 @@ struct DraftPostInstructionPlannerTests {
             "destination": "",
             "draft": "Unreviewed draft",
             "purpose_evidence": "",
-            "talking_points_evidence": "",
+            "talking_points_evidence": [],
             "destination_evidence": "",
             "clarifying_question": "Which site should I prepare this for?",
         ]))
@@ -124,7 +124,7 @@ struct DraftPostInstructionPlannerTests {
             "destination": "x.com",
             "draft": "A fabricated launch announcement.",
             "purpose_evidence": "Write something",
-            "talking_points_evidence": "breakthrough performance",
+            "talking_points_evidence": ["breakthrough performance"],
             "destination_evidence": "X",
             "clarifying_question": "",
         ]))
@@ -136,6 +136,52 @@ struct DraftPostInstructionPlannerTests {
             destinationHost: "x.com"
         )
         #expect(fabricatedResult == .needsClarification(
+            "What should this update accomplish, which points should it include, and where should it be posted?"
+        ))
+
+        let reusedEvidence = PlannerTransport(response: try Self.response(content: [
+            "status": "ready",
+            "purpose": "launch post",
+            "audience": "Developers",
+            "talking_points": ["launch post"],
+            "tone": "Concise",
+            "destination": "x.com",
+            "draft": "A launch post.",
+            "purpose_evidence": "launch post",
+            "talking_points_evidence": ["launch post"],
+            "destination_evidence": "X",
+            "clarifying_question": "",
+        ]))
+        let reusedResult = try await Self.planner(transport: reusedEvidence).analyze(
+            instruction: "Write a launch post for X.",
+            browserApplication: "Safari",
+            destinationHost: "x.com"
+        )
+        #expect(reusedResult == .needsClarification(
+            "What should this update accomplish, which points should it include, and where should it be posted?"
+        ))
+
+        let substringDestination = PlannerTransport(response: try Self.response(content: [
+            "status": "ready",
+            "purpose": "Write text",
+            "audience": "Developers",
+            "talking_points": ["about the release"],
+            "tone": "Concise",
+            "destination": "x.com",
+            "draft": "A release update.",
+            "purpose_evidence": "Write text",
+            "talking_points_evidence": ["about the release"],
+            "destination_evidence": "X",
+            "clarifying_question": "",
+        ]))
+        let substringResult = try await Self.planner(
+            transport: substringDestination
+        ).analyze(
+            instruction: "Write text about the release.",
+            browserApplication: "Safari",
+            destinationHost: "x.com"
+        )
+        #expect(substringResult == .needsClarification(
             "What should this update accomplish, which points should it include, and where should it be posted?"
         ))
     }
@@ -151,7 +197,7 @@ struct DraftPostInstructionPlannerTests {
             "destination": "x.com",
             "draft": "A draft",
             "purpose_evidence": "launch post",
-            "talking_points_evidence": "Local",
+            "talking_points_evidence": ["Local"],
             "destination_evidence": "X",
             "clarifying_question": "",
         ]
@@ -174,7 +220,7 @@ struct DraftPostInstructionPlannerTests {
             "destination": "x.com",
             "draft": "",
             "purpose_evidence": "launch post",
-            "talking_points_evidence": "Local",
+            "talking_points_evidence": ["Local"],
             "destination_evidence": "X",
             "clarifying_question": "",
         ]))
@@ -195,7 +241,7 @@ struct DraftPostInstructionPlannerTests {
             "destination": "example.com",
             "draft": "A draft",
             "purpose_evidence": "launch post",
-            "talking_points_evidence": "Local",
+            "talking_points_evidence": ["Local"],
             "destination_evidence": "X",
             "clarifying_question": "",
         ]))
@@ -216,7 +262,7 @@ struct DraftPostInstructionPlannerTests {
             "destination": "",
             "draft": "",
             "purpose_evidence": "",
-            "talking_points_evidence": "",
+            "talking_points_evidence": [],
             "destination_evidence": "",
             "clarifying_question": "Who is this for? Which tone should I use?",
         ]))
@@ -237,7 +283,7 @@ struct DraftPostInstructionPlannerTests {
             "destination": "",
             "draft": "",
             "purpose_evidence": "",
-            "talking_points_evidence": "",
+            "talking_points_evidence": [],
             "destination_evidence": "",
             "clarifying_question": "?",
         ]))
@@ -329,7 +375,7 @@ struct DraftPostInstructionPlannerTests {
             "destination": "",
             "draft": "",
             "purpose_evidence": "",
-            "talking_points_evidence": "",
+            "talking_points_evidence": [],
             "destination_evidence": "",
             "clarifying_question": "Which site should I prepare this for?",
         ]))
@@ -383,7 +429,7 @@ struct DraftPostInstructionPlannerTests {
             "destination": "",
             "draft": "",
             "purpose_evidence": "",
-            "talking_points_evidence": "",
+            "talking_points_evidence": [],
             "destination_evidence": "",
             "clarifying_question": "Which site should I prepare this for?",
         ]))
