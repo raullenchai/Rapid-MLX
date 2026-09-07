@@ -23,6 +23,17 @@ can actually understand.
 ### Changed
 - `qwen3.5-4b-4bit` no longer turns MTP speculative decoding on by default. Measured single-stream decode was 25–37% slower with the MTP drafter on M2 Pro and M3 Ultra, with no gain under concurrency. The preset stays available: `rapid-mlx serve qwen3.5-4b-4bit --speculative-config '{"method":"mtp"}'`, or the Speculative decoding toggle in Desktop Performance settings. New catalog field `mtp_default_enabled` carries the product default separately from the qualification tier. (#3115)
 
+### Fixed
+
+- Community Benchmark result rows now show median decode tok/s and TTFT for
+  the short case (median wall seconds for image and video), with the long case
+  underneath, instead of an average duration across cases. Decode tok/s uses
+  the leaderboard's `(output_tokens - 1) / decode_duration` formula so a shared
+  run reads the same on rapidmlx.com; timestamps render as `Today 21:33` / `Sep 5, 21:33` instead of the raw
+  UTC stamp. The model menu groups recommended-for-this-Mac models first, then
+  downloaded ones. While a run is measuring, the tab names the model, scope,
+  expected duration, and an elapsed clock.
+
 ## [0.13.4] — 2026-09-02
 
 Rapid-MLX 0.13.4 makes qualified local models faster under concurrent work,
