@@ -1234,7 +1234,8 @@ class TestGenerationOutputFieldOrder:
     def test_field_order_appends_new_fields_at_end(self):
         """Make the rule machine-checkable: new fields added after
         v0.6.65 (``raw_text``, ``reasoning_text``, ``tool_calls``,
-        ``cached_tokens``) must be APPENDED in chronological order at
+        ``cached_tokens``, ``matched_stop``, ``spec_decode_metrics``)
+        must be APPENDED in chronological order at
         the end of the dataclass. If a refactor ever reorders them
         back into the middle, this test fails loud instead of producing
         silent positional-bind regressions for downstream callers that
@@ -1259,10 +1260,15 @@ class TestGenerationOutputFieldOrder:
             # order — anything inserted MID-LIST silently rebinds
             # positional construction for pre-v0.6.65 callers.
             "matched_stop",
+            # Request-scoped speculative telemetry was appended after
+            # ``matched_stop``. Keep it at the tail for the same positional
+            # compatibility guarantee.
+            "spec_decode_metrics",
         ], (
             f"new GenerationOutput fields must be APPENDED in order "
             f"(raw_text → reasoning_text → tool_calls → cached_tokens "
-            f"→ matched_stop) to preserve positional-arg compatibility "
+            f"→ matched_stop → spec_decode_metrics) to preserve "
+            f"positional-arg compatibility "
             f"for the pre-v0.6.65 surface. Current trailing fields "
             f"after ``channel``: {appended}"
         )
