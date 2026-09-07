@@ -77,6 +77,16 @@ permissions:
   contents: write   # attach the .dmg to the GitHub Release
   actions: read     # turnstyle queues updater publication across tag runs
 
+# Every job in this workflow runs product code (engine, CLI, Desktop app) on
+# shared or self-hosted machines. None of that is a user: keep it out of the
+# production telemetry store. The engine and the Desktop app both honour this
+# kill switch; the golden-flow harness lifts it only for the flows that turn
+# telemetry on against a loopback sink (fresh-install, fresh-install-share,
+# no-dead-controls). The Desktop unit tests pin their own environment, so the
+# switch stays on while they run.
+env:
+  RAPID_MLX_TELEMETRY: "0"
+
 jobs:
   build:
     # Standalone tag pushes and input-free manual dry runs retain the complete

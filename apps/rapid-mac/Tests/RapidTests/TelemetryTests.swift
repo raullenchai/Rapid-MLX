@@ -7,7 +7,7 @@ import Testing
 /// ``telemetry.rapidmlx.com`` Worker expects, the opt-in default,
 /// or the per-install identity persistence.
 @MainActor
-@Suite("Telemetry pipeline — schema, identity, opt-out")
+@Suite("Telemetry pipeline — schema, identity, opt-out", .pinnedTelemetryEnvironment)
 final class TelemetryTests {
 
     // Every defaults-touching test mints its OWN private
@@ -56,6 +56,47 @@ final class TelemetryTests {
         let defaults = freshDefaults()
         defaults.set(false, forKey: TelemetryConfig.enabledKey)
         #expect(TelemetryConfig.isEnabled(defaults: defaults) == false)
+    }
+
+    @Test("RAPID_MLX_TELEMETRY=0 disables telemetry even after the user opted in")
+    func killSwitchWinsOverConsent() {
+        let defaults = freshDefaults()
+        defaults.set(true, forKey: TelemetryConfig.enabledKey)
+        for value in ["0", "false", "NO", " off ", ""] {
+            #expect(
+                TelemetryConfig.isEnabled(
+                    defaults: defaults, environment: ["RAPID_MLX_TELEMETRY": value]
+                ) == false,
+                "value \(value.debugDescription) must disable telemetry"
+            )
+        }
+    }
+
+    @Test("The production isEnabled(defaults:) reads the kill switch through TelemetryConfig.environment")
+    func productionPathReadsTheScopedEnvironment() async {
+        let defaults = freshDefaults()
+        defaults.set(true, forKey: TelemetryConfig.enabledKey)
+        // The suite trait pins an empty environment: consent decides.
+        #expect(TelemetryConfig.isEnabled(defaults: defaults) == true)
+        // A narrower scope with the switch set must win on the same call.
+        await TelemetryConfig.$environmentOverride.withValue(["RAPID_MLX_TELEMETRY": "0"]) {
+            #expect(TelemetryConfig.isEnabled(defaults: defaults) == false)
+        }
+        #expect(TelemetryConfig.isEnabled(defaults: defaults) == true)
+    }
+
+    @Test("A truthy RAPID_MLX_TELEMETRY never forces telemetry on; consent still decides")
+    func truthyValueIsIgnored() {
+        let defaults = freshDefaults()
+        for value in ["1", "true", "yes"] {
+            #expect(TelemetryConfig.isEnabled(
+                defaults: defaults, environment: ["RAPID_MLX_TELEMETRY": value]) == false)
+            defaults.set(true, forKey: TelemetryConfig.enabledKey)
+            #expect(TelemetryConfig.isEnabled(
+                defaults: defaults, environment: ["RAPID_MLX_TELEMETRY": value]) == true)
+            defaults.removeObject(forKey: TelemetryConfig.enabledKey)
+        }
+        #expect(TelemetryConfig.killSwitchActive(environment: [:]) == false)
     }
 
     @Test("TelemetryConfig.isEnabled honours an explicit true override")
@@ -525,13 +566,13 @@ final class TelemetryTests {
     func sendBatchTransportErrorReturnsFalse() async {
         let defaults = freshDefaults()
         defaults.set(true, forKey: TelemetryConfig.enabledKey)
-        // Point the client at a session that always fails (zero
-        // timeout). We can't override TelemetryConfig.endpoint without
-        // a hook, but we CAN swap in a URLSession whose request
-        // resolution will always fail fast.
+        // Point the client at a session whose loader fails every request
+        // in-process. A real session with a tiny timeout was used before;
+        // that still opened a connection to the production endpoint from
+        // an opted-in client, which is exactly what the test target's
+        // environment pin must never allow.
         let cfg = URLSessionConfiguration.ephemeral
-        cfg.timeoutIntervalForRequest = 0.001
-        cfg.timeoutIntervalForResource = 0.001
+        cfg.protocolClasses = [AlwaysFailingURLProtocol.self]
         let failing = URLSession(configuration: cfg)
         var client = TelemetryClient()
         client.session = failing
@@ -702,7 +743,7 @@ final class TelemetryAuditURLProtocol: URLProtocol, @unchecked Sendable {
 }
 
 @MainActor
-@Suite("Telemetry audit batch 8 contracts", .serialized)
+@Suite("Telemetry audit batch 8 contracts", .serialized, .pinnedTelemetryEnvironment)
 struct TelemetryAuditBatch8Contracts {
     private func platform() -> TelemetryEvent.Platform {
         TelemetryEvent.Platform(
@@ -1036,4 +1077,17 @@ struct TelemetryAuditBatch8Contracts {
             "Oversized batch was dispatched to the network — should have short-circuited"
         )
     }
+}
+
+
+/// Stateless loader that fails every request before it leaves the process.
+/// Unlike ``TelemetryAuditURLProtocol`` it holds no shared state, so a
+/// parallel suite can use it without serialisation.
+private final class AlwaysFailingURLProtocol: URLProtocol {
+    override class func canInit(with request: URLRequest) -> Bool { true }
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+    override func startLoading() {
+        client?.urlProtocol(self, didFailWithError: URLError(.cannotConnectToHost))
+    }
+    override func stopLoading() {}
 }

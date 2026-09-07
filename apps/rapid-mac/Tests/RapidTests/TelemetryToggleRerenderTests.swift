@@ -20,7 +20,7 @@ import Testing
 /// source-grep guard over the comment- and whitespace-stripped view file.
 /// A behavioural test is not possible here; what *is* checkable is the exact
 /// shape that caused the bug, and that it has not come back.
-@Suite("Telemetry consent toggle re-renders")
+@Suite("Telemetry consent toggle re-renders", .pinnedTelemetryEnvironment)
 struct TelemetryToggleRerenderTests {
 
     private static var sourceRoot: URL {
