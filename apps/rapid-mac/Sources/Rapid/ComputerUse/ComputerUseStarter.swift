@@ -14,6 +14,7 @@ struct ComputerUseStarter: Identifiable, Equatable, Sendable {
     }
 
     enum Availability: Equatable, Sendable {
+        case available
         case comingSoon
         case reserved
     }
@@ -54,7 +55,7 @@ struct ComputerUseStarter: Identifiable, Equatable, Sendable {
             systemImage: "square.and.pencil",
             applications: "TextEdit + browser",
             approvalNote: "Rapid will stop before publishing.",
-            availability: .comingSoon
+            availability: .available
         ),
         ComputerUseStarter(
             kind: .prospectCustomers,
