@@ -99,6 +99,54 @@ final class TelemetryTests {
         #expect(TelemetryConfig.killSwitchActive(environment: [:]) == false)
     }
 
+    @Test("DO_NOT_TRACK=1/true disables telemetry like Orca; other values are ignored")
+    func doNotTrackHonoured() {
+        let defaults = freshDefaults()
+        defaults.set(true, forKey: TelemetryConfig.enabledKey)
+        for value in ["1", "true", " TRUE "] {
+            #expect(TelemetryConfig.isEnabled(
+                defaults: defaults, environment: ["DO_NOT_TRACK": value]) == false)
+            #expect(TelemetryConfig.killSwitchReason(environment: ["DO_NOT_TRACK": value])
+                == "DO_NOT_TRACK=\(value)")
+        }
+        for value in ["0", "false", "", "yes"] {
+            #expect(TelemetryConfig.isEnabled(
+                defaults: defaults, environment: ["DO_NOT_TRACK": value]) == true,
+                "value \(value.debugDescription) is not an opt-out")
+        }
+    }
+
+    @Test("Any CI marker set to a non-empty value disables telemetry; empty counts as unset")
+    func ciMarkersDisable() {
+        let defaults = freshDefaults()
+        defaults.set(true, forKey: TelemetryConfig.enabledKey)
+        for key in TelemetryConfig.ciEnvironmentKeys {
+            #expect(TelemetryConfig.isEnabled(defaults: defaults, environment: [key: "true"]) == false)
+            #expect(TelemetryConfig.killSwitchReason(environment: [key: "1"]) == "ci (\(key) is set)")
+            #expect(TelemetryConfig.isEnabled(defaults: defaults, environment: [key: ""]) == true)
+        }
+        // Order matches the engine: the explicit switch names itself first.
+        #expect(TelemetryConfig.killSwitchReason(
+            environment: ["RAPID_MLX_TELEMETRY": "0", "DO_NOT_TRACK": "1", "CI": "true"])
+            == "RAPID_MLX_TELEMETRY=0")
+        #expect(TelemetryConfig.killSwitchReason(
+            environment: ["RAPID_MLX_TELEMETRY": "1", "DO_NOT_TRACK": "1", "CI": "true"])
+            == "DO_NOT_TRACK=1")
+    }
+
+    @Test("No consent invitation is owed under a kill switch (the engine skips its prompt the same way)")
+    func killSwitchSettlesConsent() {
+        let defaults = freshDefaults()
+        #expect(TelemetryConsent.needsDecision(defaults: defaults, environment: [:]))
+        for env in [["RAPID_MLX_TELEMETRY": "0"], ["DO_NOT_TRACK": "1"], ["GITHUB_ACTIONS": "true"]] {
+            #expect(!TelemetryConsent.needsDecision(defaults: defaults, environment: env))
+        }
+        // A truthy explicit switch leaves consent in charge — that is how the
+        // golden flows prove the consent boundary against a loopback sink.
+        #expect(TelemetryConsent.needsDecision(
+            defaults: defaults, environment: ["RAPID_MLX_TELEMETRY": "1"]))
+    }
+
     @Test("TelemetryConfig.isEnabled honours an explicit true override")
     func explicitOptIn() {
         let defaults = freshDefaults()

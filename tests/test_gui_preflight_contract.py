@@ -890,6 +890,81 @@ def test_dogfood_launcher_isolates_port_and_disables_heuristic_sweep():
     assert ".port >= 49152 and .port <= 65535" in flow
 
 
+def test_launcher_withholds_named_env_from_the_app_but_keeps_the_ci_precheck_bypass(
+    tmp_path,
+):
+    """The telemetry-sink personas need CI markers hidden from the app (so its
+    kill switch does not fire) while the launcher still sees CI=true to skip
+    the host precheck. The launcher captures CI before unsetting names."""
+    source = DOGFOOD.read_text()
+    launcher = source.split('cat > "$LAUNCHER" <<LAUNCHEOF', 1)[1].split(
+        "LAUNCHEOF", 1
+    )[0]
+    # Lift just the CI-capture / env-unset block and de-escape the heredoc
+    # (\$ and \${ are a literal $ in the generated launcher).
+    start = launcher.index("launcher_ci=")
+    block = launcher[start : launcher.index("fi", start) + 2].replace("\\$", "$")
+    probe = tmp_path / "probe.sh"
+    env = {
+        "PATH": os.environ["PATH"],
+        "CI": "true",
+        "GITHUB_ACTIONS": "true",
+        "DO_NOT_TRACK": "0",
+        "RAPID_MLX_TELEMETRY": "1",
+        "RAPID_LAUNCH_APP_ENV_UNSET": "CI GITHUB_ACTIONS GITLAB_CI CIRCLECI TRAVIS BUILDKITE JENKINS_URL TEAMCITY_VERSION",
+        # The exec replaces the shell; stub it out so env prints instead.
+    }
+    # Stand a marker in for the app exec so the CI-bypass branch must
+    # actually run for the app-env dump to appear (a `:` no-op would let an
+    # inverted condition pass silently). The marker dumps the env the app
+    # would inherit, then the script ends inside the branch.
+    marker = (
+        'echo "APP-EXEC"; '
+        '/usr/bin/env | grep -E "^(CI|GITHUB_ACTIONS|DO_NOT_TRACK|RAPID_MLX_TELEMETRY)=" '
+        "| sort || true; exit 0"
+    )
+    block_marked = block.replace(
+        'exec "$TARGET_APP/Contents/MacOS/$EXECUTABLE" "$@"', marker
+    )
+    assert marker in block_marked, "launcher exec line changed shape"
+    probe.write_text(
+        "#!/usr/bin/env bash\nset -euo pipefail\n"
+        + block_marked
+        + '\necho "PRECHECK-PATH launcher_ci=$launcher_ci"\n'
+    )
+    out = subprocess.run(
+        ["/bin/bash", str(probe)], env=env, capture_output=True, text=True, check=True
+    ).stdout
+    # The CI-bypass branch ran (not the precheck path) because CI was captured.
+    assert "APP-EXEC" in out
+    assert "PRECHECK-PATH" not in out
+    # The app sees the explicit switch and DO_NOT_TRACK=0, but no CI marker.
+    assert "RAPID_MLX_TELEMETRY=1" in out
+    assert "DO_NOT_TRACK=0" in out
+    assert "\nCI=" not in "\n" + out and "GITHUB_ACTIONS=" not in out
+
+
+def test_telemetry_sink_env_withholds_ci_markers_from_the_app():
+    harness = HARNESS.read_text()
+    block = harness.split("TELEMETRY_SINK_ENV=(", 1)[1].split(")", 1)[0]
+    assert "RAPID_MLX_TELEMETRY=1" in block
+    assert "DO_NOT_TRACK=0" in block
+    # Every CI marker the app honours is named for the launcher to unset.
+    # Tokenise so "CI" is matched as a whole word, not inside GITLAB_CI.
+    unset_value = block.split("RAPID_LAUNCH_APP_ENV_UNSET=", 1)[1]
+    unset_value = unset_value.split("\n", 1)[0].strip().strip('"')
+    assert set(unset_value.split()) == {
+        "CI",
+        "GITHUB_ACTIONS",
+        "GITLAB_CI",
+        "CIRCLECI",
+        "TRAVIS",
+        "BUILDKITE",
+        "JENKINS_URL",
+        "TEAMCITY_VERSION",
+    }
+
+
 def test_harness_reaps_its_own_fake_before_relaunch_without_global_sweep():
     source = HARNESS.read_text()
     relaunch = source.split("relaunch_persona() {", 1)[1].split("\n}", 1)[0]

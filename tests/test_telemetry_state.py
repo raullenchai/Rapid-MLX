@@ -300,3 +300,49 @@ def test_schema_version_mismatch_treated_as_unprompted(fake_home):
         )
     )
     assert get_consent_state() is None
+
+
+def test_do_not_track_disables_like_orca(fake_home, monkeypatch):
+    """``DO_NOT_TRACK=1`` / ``true`` win over stored consent; other values
+    are ignored rather than guessed."""
+    import vllm_mlx.telemetry.state as state
+
+    state.record_consent(True, rapid_mlx_version="0.0.0")
+    assert state.is_enabled()
+    for value in ("1", "true", " TRUE "):
+        monkeypatch.setenv("DO_NOT_TRACK", value)
+        assert not state.is_enabled(), value
+        assert "DO_NOT_TRACK" in state.consent_source()
+    for value in ("0", "false", "", "yes"):
+        monkeypatch.setenv("DO_NOT_TRACK", value)
+        assert state.is_enabled(), value
+
+
+def test_ci_markers_disable_telemetry(fake_home, monkeypatch):
+    """A build machine is never a user: any CI marker present forces OFF."""
+    import vllm_mlx.telemetry.state as state
+
+    state.record_consent(True, rapid_mlx_version="0.0.0")
+    assert state.is_enabled()
+    for name in state.CI_ENV_VARS:
+        monkeypatch.setenv(name, "true")
+        assert not state.is_enabled(), name
+        assert state.consent_source() == f"ci ({name} is set)"
+        monkeypatch.delenv(name)
+    # Present but empty is "unset" (CircleCI-style ``CI=`` clears).
+    monkeypatch.setenv("CI", "")
+    assert state.is_enabled()
+
+
+def test_kill_switch_reason_precedence(fake_home, monkeypatch):
+    import vllm_mlx.telemetry.state as state
+
+    state.record_consent(True, rapid_mlx_version="0.0.0")
+    monkeypatch.setenv("GITHUB_ACTIONS", "true")
+    monkeypatch.setenv("DO_NOT_TRACK", "1")
+    monkeypatch.setenv("RAPID_MLX_TELEMETRY", "0")
+    assert state.consent_source().startswith("env-var (RAPID_MLX_TELEMETRY")
+    monkeypatch.delenv("RAPID_MLX_TELEMETRY")
+    assert state.consent_source().startswith("env-var (DO_NOT_TRACK")
+    monkeypatch.delenv("DO_NOT_TRACK")
+    assert state.consent_source() == "ci (GITHUB_ACTIONS is set)"

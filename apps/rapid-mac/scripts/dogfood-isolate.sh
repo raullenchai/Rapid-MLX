@@ -407,7 +407,17 @@ export RAPID_DESKTOP_NO_PORT_SWEEP=1
 # DOGFOOD_COLD_MODEL_CACHE=1, where the whole point is that there isn't one.
 unset HF_HUB_CACHE
 rm -f "$TARGET_ABS/.dogfood-finished"
-if [[ "\${CI:-}" == "true" ]]; then
+# CI=true admits the launcher without the host precheck. Decide that first:
+# a caller may ask for names to be withheld from the app process only
+# (space-separated in RAPID_LAUNCH_APP_ENV_UNSET), e.g. the golden flows
+# that prove the telemetry consent boundary against a loopback sink strip
+# the CI markers that would otherwise switch the app's telemetry off.
+launcher_ci="\${CI:-}"
+for name in \${RAPID_LAUNCH_APP_ENV_UNSET:-}; do
+    unset "\$name"
+done
+unset RAPID_LAUNCH_APP_ENV_UNSET
+if [[ "\$launcher_ci" == "true" ]]; then
     exec "$TARGET_APP/Contents/MacOS/$EXECUTABLE" "\$@"
 fi
 working_set_gb="\${DOGFOOD_WORKING_SET_GB:-21}"

@@ -148,10 +148,17 @@ def maybe_prompt_for_consent(
     try:
         if cli_no_telemetry:
             return False
-        # Env var already decides — no need to prompt.
+        # The environment already decides — no need to prompt. A truthy
+        # ``RAPID_MLX_TELEMETRY`` also skips the prompt (it is ignored by
+        # ``is_enabled``, but the operator has clearly made a choice), and
+        # every kill switch (falsy value, ``DO_NOT_TRACK``, a CI marker)
+        # must never let a build machine or an opted-out user persist a
+        # consent answer that would then be silently overridden.
         import os
 
-        if os.environ.get(ENV_VAR) is not None:
+        from vllm_mlx.telemetry.state import _env_kill_switch_active
+
+        if os.environ.get(ENV_VAR) is not None or _env_kill_switch_active():
             return False
         if subcommand in _NON_INTERACTIVE_SUBCOMMANDS:
             return False

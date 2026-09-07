@@ -611,3 +611,22 @@ def clean_doctor_runtime_state(monkeypatch):
     env_health._RUNTIME_PROBE_CACHE.clear()
     env_health._RUNTIME_IMPORT_CACHE.clear()
     env_health._RUNTIME_IMPORT_TIMEOUTS.clear()
+
+
+@pytest.fixture(autouse=True)
+def _telemetry_tests_run_off_the_build_machine(request, monkeypatch):
+    """Telemetry tests assert the consent logic, not the machine they run on.
+
+    The engine treats ``DO_NOT_TRACK`` and any CI marker (``CI``,
+    ``GITHUB_ACTIONS``, ...) as a kill switch, so on a CI runner every
+    "enabled after consent" assertion would be a false negative. Clear those
+    variables for the telemetry test modules only — other tests may
+    legitimately branch on ``CI``. Mirrors the Desktop test target's
+    ``.pinnedTelemetryEnvironment`` trait.
+    """
+    if "test_telemetry" not in request.node.fspath.basename:
+        return
+    from vllm_mlx.telemetry.state import CI_ENV_VARS, DO_NOT_TRACK_ENV
+
+    for name in (DO_NOT_TRACK_ENV, *CI_ENV_VARS):
+        monkeypatch.delenv(name, raising=False)

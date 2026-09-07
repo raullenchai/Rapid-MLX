@@ -111,15 +111,49 @@ enum TelemetryConfig {
     /// (``vllm_mlx/telemetry/state.py`` reads the same variable).
     static let killSwitchEnvironmentKey = "RAPID_MLX_TELEMETRY"
 
-    /// ``RAPID_MLX_TELEMETRY=0`` (or ``false`` / ``no`` / ``off`` / empty)
-    /// disables telemetry for this process regardless of consent — the same
-    /// falsy set the engine honours. CI exports it so a Desktop launch on a
-    /// build machine can never reach the production store. A truthy value is
+    /// The cross-tool opt-out convention (https://consoledonottrack.com),
+    /// honoured the way Orca and other desktop tools do: `1` / `true` means
+    /// off, anything else is ignored rather than guessed.
+    static let doNotTrackEnvironmentKey = "DO_NOT_TRACK"
+
+    /// CI markers. Any of these set to a non-empty value means the process
+    /// is a build machine, not a person: telemetry is off without asking.
+    /// Same list as the engine and Orca; an empty value counts as unset.
+    static let ciEnvironmentKeys = [
+        "CI", "GITHUB_ACTIONS", "GITLAB_CI", "CIRCLECI", "TRAVIS",
+        "BUILDKITE", "JENKINS_URL", "TEAMCITY_VERSION",
+    ]
+
+    /// ``RAPID_MLX_TELEMETRY=0`` (or ``false`` / ``no`` / ``off`` / empty),
+    /// ``DO_NOT_TRACK=1``, or any CI marker disables telemetry for this
+    /// process regardless of consent — the same switches the engine honours.
+    /// CI exports the first so a Desktop launch on a build machine can never
+    /// reach the production store. A truthy ``RAPID_MLX_TELEMETRY`` is
     /// deliberately ignored: nothing can force telemetry ON past the user's
     /// decision, it only leaves the consent logic in charge.
     static func killSwitchActive(environment: [String: String]) -> Bool {
-        guard let raw = environment[killSwitchEnvironmentKey] else { return false }
-        let value = raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        return ["0", "false", "no", "off", ""].contains(value)
+        killSwitchReason(environment: environment) != nil
+    }
+
+    /// Why the environment forces telemetry off, or nil when it does not.
+    /// Checked in the engine's order: the explicit switch, then
+    /// ``DO_NOT_TRACK``, then the CI markers.
+    static func killSwitchReason(environment: [String: String]) -> String? {
+        if let raw = environment[killSwitchEnvironmentKey] {
+            let value = raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+            if ["0", "false", "no", "off", ""].contains(value) {
+                return "\(killSwitchEnvironmentKey)=\(raw)"
+            }
+        }
+        if let raw = environment[doNotTrackEnvironmentKey] {
+            let value = raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+            if ["1", "true"].contains(value) {
+                return "\(doNotTrackEnvironmentKey)=\(raw)"
+            }
+        }
+        for key in ciEnvironmentKeys where !(environment[key] ?? "").isEmpty {
+            return "ci (\(key) is set)"
+        }
+        return nil
     }
 }

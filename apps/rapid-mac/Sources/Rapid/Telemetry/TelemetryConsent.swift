@@ -5,8 +5,16 @@ import Foundation
 /// JSON is valid YAML, and using `JSONSerialization` avoids maintaining
 /// a second ad-hoc YAML encoder in the desktop app.
 enum TelemetryConsent {
-    static func needsDecision(defaults: UserDefaults = .standard) -> Bool {
-        defaults.object(forKey: TelemetryConfig.enabledKey) == nil
+    /// A decision is owed only when none is stored AND the environment has
+    /// not already settled the question: under a kill switch (explicit,
+    /// `DO_NOT_TRACK`, or a CI marker) nothing can be sent, so the invitation
+    /// is never shown — the engine skips its first-run prompt the same way.
+    static func needsDecision(
+        defaults: UserDefaults = .standard,
+        environment: [String: String] = TelemetryConfig.environment
+    ) -> Bool {
+        !TelemetryConfig.killSwitchActive(environment: environment)
+            && defaults.object(forKey: TelemetryConfig.enabledKey) == nil
     }
 
     /// One-time migration for users who explicitly changed the old

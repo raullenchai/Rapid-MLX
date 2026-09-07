@@ -21,7 +21,11 @@ them would force the user into all-or-nothing.
 The ``is_enabled`` decision precedence (highest first):
 
 1. ``--no-telemetry`` CLI flag → forced OFF for this run.
-2. ``RAPID_MLX_TELEMETRY=0`` env → forced OFF.
+2. Environment kill switches → forced OFF: ``RAPID_MLX_TELEMETRY=0``
+   (any falsy value), the cross-tool ``DO_NOT_TRACK=1`` convention, or a
+   CI marker (``CI``, ``GITHUB_ACTIONS``, ``GITLAB_CI``, ``CIRCLECI``,
+   ``TRAVIS``, ``BUILDKITE``, ``JENKINS_URL``, ``TEAMCITY_VERSION``) set to
+   a non-empty value — build machines are never users.
 3. Stored consent file → whatever the user answered.
 4. Default → OFF. (Anonymous data collection without explicit opt-in is
    a non-starter.)
@@ -43,6 +47,21 @@ from pathlib import Path
 import yaml
 
 ENV_VAR = "RAPID_MLX_TELEMETRY"
+#: Cross-tool opt-out convention (https://consoledonottrack.com): ``1`` or
+#: ``true`` disables telemetry; any other value is ignored, like Orca does.
+DO_NOT_TRACK_ENV = "DO_NOT_TRACK"
+#: Presence (non-empty) of any of these means "this process runs on a build
+#: machine". CI providers set them for every job; nothing here is a user.
+CI_ENV_VARS = (
+    "CI",
+    "GITHUB_ACTIONS",
+    "GITLAB_CI",
+    "CIRCLECI",
+    "TRAVIS",
+    "BUILDKITE",
+    "JENKINS_URL",
+    "TEAMCITY_VERSION",
+)
 
 # Bump when the on-disk consent file format OR the disclosure copy changes in
 # a way that materially alters what we collect. A stored record whose
@@ -313,16 +332,33 @@ def reset_state() -> None:
         raise OSError("telemetry reset could not remove: " + "; ".join(failures))
 
 
-def _env_kill_switch_active() -> bool:
-    """``RAPID_MLX_TELEMETRY=0`` (or any falsy value) wins.
+def _env_kill_switch_reason() -> str | None:
+    """Why the environment forces telemetry OFF, or ``None`` if it doesn't.
 
-    Truthy values are intentionally ignored — see module docstring for
-    why there's no env-var force-on.
+    Three switches, checked in this order:
+
+    * ``RAPID_MLX_TELEMETRY`` falsy (``0`` / ``false`` / ``no`` / ``off`` /
+      empty). Truthy values are intentionally ignored — see the module
+      docstring for why there is no env-var force-on.
+    * ``DO_NOT_TRACK`` truthy (``1`` / ``true``, case-insensitive) — the
+      cross-tool convention. Other values are ignored rather than guessed.
+    * Any CI marker in ``CI_ENV_VARS`` set to a non-empty value.
     """
     raw = os.environ.get(ENV_VAR)
-    if raw is None:
-        return False
-    return raw.strip().lower() in ("0", "false", "no", "off", "")
+    if raw is not None and raw.strip().lower() in ("0", "false", "no", "off", ""):
+        return f"env-var ({ENV_VAR}={raw!r})"
+    dnt = os.environ.get(DO_NOT_TRACK_ENV)
+    if dnt is not None and dnt.strip().lower() in ("1", "true"):
+        return f"env-var ({DO_NOT_TRACK_ENV}={dnt!r})"
+    for name in CI_ENV_VARS:
+        if os.environ.get(name, "") != "":
+            return f"ci ({name} is set)"
+    return None
+
+
+def _env_kill_switch_active() -> bool:
+    """True when any environment kill switch is engaged."""
+    return _env_kill_switch_reason() is not None
 
 
 # Process-level kill switch set by ``cli.py`` when ``--no-telemetry`` is
@@ -369,8 +405,9 @@ def consent_source(*, cli_no_telemetry: bool = False) -> str:
     """
     if cli_no_telemetry or _cli_kill_switch_active:
         return "cli-flag (--no-telemetry)"
-    if _env_kill_switch_active():
-        return f"env-var ({ENV_VAR}={os.environ.get(ENV_VAR, '')!r})"
+    reason = _env_kill_switch_reason()
+    if reason is not None:
+        return reason
     state = get_consent_state()
     if state is None:
         return "default (no consent recorded)"

@@ -483,6 +483,18 @@ cleanup_telemetry_sink() {
     TELEMETRY_SINK_LOG=""
 }
 
+# Environment for the three personas that lift the telemetry kill switch and
+# talk to the loopback sink. Besides the explicit switch, the app (like the
+# engine) turns telemetry off on DO_NOT_TRACK=1 and on any CI marker, and CI
+# exports several of those. The markers are withheld from the app process
+# only — the persona launcher still needs CI=true to skip the host precheck
+# (see dogfood-isolate.sh, RAPID_LAUNCH_APP_ENV_UNSET).
+TELEMETRY_SINK_ENV=(
+    RAPID_MLX_TELEMETRY=1
+    DO_NOT_TRACK=0
+    "RAPID_LAUNCH_APP_ENV_UNSET=CI GITHUB_ACTIONS GITLAB_CI CIRCLECI TRAVIS BUILDKITE JENKINS_URL TEAMCITY_VERSION"
+)
+
 start_telemetry_sink() {
     local artifact_dir="$1"
     local ready_file="$artifact_dir/telemetry-sink.port"
@@ -1971,7 +1983,7 @@ flow_fresh_install() {
     start_persona fresh-install FAKE_INCLUDE_STARTER=1 \
         RAPID_GUI_HARDWARE_FIXTURE=1 RAPID_HARDWARE_RAM_GB=$GOLDEN_RAM_GB \
         RAPID_HARDWARE_BRAND="$GOLDEN_BRAND" \
-        RAPID_MLX_TELEMETRY=1 \
+        "${TELEMETRY_SINK_ENV[@]}" \
         RAPID_MLX_TELEMETRY_ENDPOINT="http://127.0.0.1:$TELEMETRY_SINK_PORT/v1/events"
     wait_identifier Quickstart.GetStarted "$OUT/welcome.json"
     assert_no_telemetry_requests before-onboarding
@@ -2108,7 +2120,7 @@ flow_fresh_install() {
     start_persona fresh-install-share FAKE_INCLUDE_STARTER=1 \
         RAPID_GUI_HARDWARE_FIXTURE=1 RAPID_HARDWARE_RAM_GB=$GOLDEN_RAM_GB \
         RAPID_HARDWARE_BRAND="$GOLDEN_BRAND" \
-        RAPID_MLX_TELEMETRY=1 \
+        "${TELEMETRY_SINK_ENV[@]}" \
         RAPID_MLX_TELEMETRY_ENDPOINT="http://127.0.0.1:$TELEMETRY_SINK_PORT/v1/events"
     dismiss_first_run
     assert_no_telemetry_requests share-before-first-value
@@ -3086,7 +3098,7 @@ flow_no_dead_controls() {
     # switch for this persona and point it at the loopback sink instead.
     start_telemetry_sink "$OUT_ROOT/no-dead-controls"
     start_persona no-dead-controls \
-        RAPID_MLX_TELEMETRY=1 \
+        "${TELEMETRY_SINK_ENV[@]}" \
         RAPID_MLX_TELEMETRY_ENDPOINT="http://127.0.0.1:$TELEMETRY_SINK_PORT/v1/events"
     dismiss_first_run
     open_settings

@@ -55,6 +55,28 @@ def test_skips_when_env_var_set(fake_home, monkeypatch, capsys):
     assert capsys.readouterr().out == ""
 
 
+@pytest.mark.parametrize(
+    "name, value",
+    [
+        ("DO_NOT_TRACK", "1"),
+        ("DO_NOT_TRACK", "true"),
+        ("CI", "true"),
+        ("GITHUB_ACTIONS", "true"),
+    ],
+)
+def test_skips_when_a_kill_switch_is_set(fake_home, monkeypatch, capsys, name, value):
+    """A build machine or an opted-out user must never be asked, nor have a
+    consent answer persisted that the kill switch would then override."""
+    from vllm_mlx.telemetry.consent import maybe_prompt_for_consent
+    from vllm_mlx.telemetry.state import get_consent_state
+
+    monkeypatch.setenv(name, value)
+    _stub_tty(monkeypatch)
+    assert maybe_prompt_for_consent("serve") is False
+    assert capsys.readouterr().out == ""
+    assert get_consent_state() is None
+
+
 def test_skips_when_cli_no_telemetry(fake_home, monkeypatch, capsys):
     from vllm_mlx.telemetry.consent import maybe_prompt_for_consent
 
