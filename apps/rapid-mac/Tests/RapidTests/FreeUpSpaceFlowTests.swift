@@ -251,6 +251,19 @@ struct FreeUpSpaceFlowTests {
         #expect(model.phase == .finished(expected))
     }
 
+    @MainActor
+    @Test("stopping a scan reports cancellation instead of an empty result")
+    func stoppingScanIsNotReportedAsEmpty() async throws {
+        let model = FreeUpSpaceFlowViewModel(service: CancellableScanService())
+
+        model.scan()
+        await Task.yield()
+        model.stop()
+
+        try await waitUntil { model.phase == .failed(.cancelled) }
+        #expect(model.candidates.isEmpty)
+    }
+
     private func sampleCandidate() -> FreeUpSpaceCandidate {
         FreeUpSpaceCandidate(
             url: URL(fileURLWithPath: "/tmp/old.zip"),
@@ -287,6 +300,19 @@ private struct ImmediateFreeUpSpaceService: FreeUpSpaceServicing {
     func moveToTrash(
         _ candidates: [FreeUpSpaceCandidate]
     ) async -> FreeUpSpaceMoveOutcome { outcome }
+}
+
+private struct CancellableScanService: FreeUpSpaceServicing {
+    func scan(now: Date) async throws -> [FreeUpSpaceCandidate] {
+        try await Task.sleep(for: .seconds(10))
+        return []
+    }
+
+    func moveToTrash(
+        _ candidates: [FreeUpSpaceCandidate]
+    ) async -> FreeUpSpaceMoveOutcome {
+        FreeUpSpaceMoveOutcome()
+    }
 }
 
 private struct Fixture {

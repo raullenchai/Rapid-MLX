@@ -61,11 +61,11 @@ final class FreeUpSpaceFlowViewModel {
             } catch let error as FreeUpSpaceScanError {
                 guard requestedGeneration == generation else { return }
                 task = nil
-                phase = error == .cancelled ? .reviewing : .failed(error)
+                phase = .failed(error)
             } catch is CancellationError {
                 guard requestedGeneration == generation else { return }
                 task = nil
-                phase = .reviewing
+                phase = .failed(.cancelled)
             } catch {
                 guard requestedGeneration == generation else { return }
                 task = nil
