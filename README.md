@@ -431,7 +431,7 @@ reached a 27.1 GB MLX allocator peak before non-MLX process and macOS memory;
 on a 32 GB Mac, reduce context/cache use or choose a larger-memory machine.
 
 → [Full RAM tier map + serve flags per tier](https://rapidmlx.com/docs/hardware-tiers.html)
-→ [Every alias, quant, and family (186 text + 10 image + 10 video + 44 audio aliases, 250 total)](https://rapidmlx.com/docs/aliases.html) · interactive at [models.rapidmlx.com](https://models.rapidmlx.com/)
+→ [Every alias, quant, and family (187 text + 10 image + 10 video + 44 audio aliases, 251 total)](https://rapidmlx.com/docs/aliases.html) · interactive at [models.rapidmlx.com](https://models.rapidmlx.com/)
 
 ---
 

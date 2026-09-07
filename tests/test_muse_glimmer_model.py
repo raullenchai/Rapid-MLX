@@ -14,7 +14,8 @@ Pins the contract that:
    vision stack (text-only serving).
 5. ``resolve_serving_lane`` auto-downgrades a muse_glimmer checkpoint to
    the text lane while the installed mlx-vlm lacks the arch.
-6. The curated aliases pin text-only serving and the muse parsers.
+6. The curated aliases pin text-only serving and the muse parsers; the 8-bit
+   alias also pins its qualified DFlash target/assistant pair.
 
 Numeric fidelity against the transformers reference implementation was
 verified out-of-band on identical random weights (8 layers, seq 24 >
@@ -331,7 +332,11 @@ def test_aliases_pin_text_only_and_muse_parsers():
     aliases = json.loads(
         (Path(__file__).parent.parent / "vllm_mlx" / "aliases.json").read_text()
     )
-    for name in ("muse-glimmer-30b-4bit", "muse-glimmer-30b-bf16"):
+    for name in (
+        "muse-glimmer-30b-4bit",
+        "muse-glimmer-30b-8bit",
+        "muse-glimmer-30b-bf16",
+    ):
         entry = aliases[name]
         assert entry["hf_path"].startswith("mlx-community/Muse-Glimmer-30B")
         # The #393 state-pin: vision weights exist but text-only serving
@@ -341,3 +346,25 @@ def test_aliases_pin_text_only_and_muse_parsers():
         assert entry["reasoning_parser"] == "muse"
         assert entry["is_hybrid"] is False
         assert entry["is_hybrid_explicit"] is True
+
+
+def test_muse_glimmer_8bit_pins_qualified_dflash_pair():
+    aliases = json.loads(
+        (Path(__file__).parent.parent / "vllm_mlx" / "aliases.json").read_text()
+    )
+    entry = aliases["muse-glimmer-30b-8bit"]
+    assert entry["hf_path"] == "mlx-community/Muse-Glimmer-30B-8bit"
+    assert entry["supports_dflash"] is True
+    assert entry["dflash_draft_model"] == "meta-models/Muse-Glimmer-30B-assistant"
+    assert entry["dflash_target_revision"] == (
+        "679c45e1b331a6514a6e38076a353cc5fed21bf6"
+    )
+    assert entry["dflash_draft_revision"] == (
+        "e8192f3a8f617f74be2ce220360c89ef4789f39f"
+    )
+    assert entry["dflash_algorithm"] == "dflash"
+    assert entry["min_memory_gb"] == 48
+
+    # Legacy DFlash is not safe on the 4-bit target; adding the 8-bit pair
+    # must not silently broaden eligibility to the smaller alias.
+    assert aliases["muse-glimmer-30b-4bit"].get("supports_dflash", False) is False
