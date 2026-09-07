@@ -397,7 +397,31 @@ final class TextFadeAnimator {
 
     private func apply(alpha: Double, to range: NSRange, now: CFTimeInterval) {
         guard let textRange = textRange(from: range) else { return }
-        let colour = resolvedColor(alpha: alpha, now: now)
+        // Resolve the colour under the host view's appearance.
+        //
+        // `withAlphaComponent` and `blended(withFraction:of:)` both FLATTEN a
+        // dynamic `NSColor`: they read components, which resolves the colour
+        // against the drawing appearance current on the calling thread. A
+        // display-link callback has none, so `NSColor.textColor` resolved to
+        // its light-mode value in BOTH appearances — measured (0, 0, 0) under
+        // `.aqua` and under `.darkAqua`.
+        //
+        // Light mode wanted near-black anyway, so the fade looked correct
+        // there. Dark mode painted black text on the dark transcript
+        // background: a streaming reply stayed invisible for the whole fade,
+        // then appeared all at once when `clearRenderingAttributes` dropped
+        // the override at the end. Resolving inside the view's appearance is
+        // what keeps the two modes equivalent.
+        let colour: NSColor
+        if let appearance = hostView?.effectiveAppearance {
+            var resolved = textColor
+            appearance.performAsCurrentDrawingAppearance {
+                resolved = resolvedColor(alpha: alpha, now: now)
+            }
+            colour = resolved
+        } else {
+            colour = resolvedColor(alpha: alpha, now: now)
+        }
         textLayoutManager.setRenderingAttributes(
             [.foregroundColor: colour], for: textRange
         )
