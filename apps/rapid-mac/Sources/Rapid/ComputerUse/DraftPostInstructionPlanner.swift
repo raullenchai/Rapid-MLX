@@ -44,6 +44,10 @@ struct DraftPostLanguageRuntime: Equatable, Sendable {
     let baseURL: URL
     let model: String
     let bearerToken: String
+    /// Changes for every app-owned sidecar launch. The sheet uses it as its
+    /// SwiftUI identity so starting or replacing a model refreshes the
+    /// planner instead of retaining a permanently stale client.
+    let sessionID: UUID?
     private let sessionValidator: SessionValidator
 
     init?(
@@ -51,6 +55,7 @@ struct DraftPostLanguageRuntime: Equatable, Sendable {
         port: Int,
         model: String?,
         bearerToken: String?,
+        sessionID: UUID? = nil,
         sessionValidator: @escaping SessionValidator
     ) {
         guard host == "127.0.0.1",
@@ -64,6 +69,7 @@ struct DraftPostLanguageRuntime: Equatable, Sendable {
         self.baseURL = baseURL
         self.model = model
         self.bearerToken = bearerToken
+        self.sessionID = sessionID
         self.sessionValidator = sessionValidator
     }
 
@@ -73,6 +79,7 @@ struct DraftPostLanguageRuntime: Equatable, Sendable {
         host: String,
         port: Int,
         bearerToken: String?,
+        sessionID: UUID? = nil,
         sessionValidator: @escaping SessionValidator
     ) {
         guard let profile,
@@ -84,6 +91,7 @@ struct DraftPostLanguageRuntime: Equatable, Sendable {
             port: port,
             model: profile.id,
             bearerToken: bearerToken,
+            sessionID: sessionID,
             sessionValidator: sessionValidator
         )
     }
@@ -108,6 +116,7 @@ struct DraftPostLanguageRuntime: Equatable, Sendable {
             host: host,
             port: port,
             bearerToken: bearerToken,
+            sessionID: expectedSessionID,
             sessionValidator: { [weak server] in
                 guard let server,
                       server.host == host,
@@ -128,6 +137,7 @@ struct DraftPostLanguageRuntime: Equatable, Sendable {
         lhs.baseURL == rhs.baseURL
             && lhs.model == rhs.model
             && lhs.bearerToken == rhs.bearerToken
+            && lhs.sessionID == rhs.sessionID
     }
 
     private static func canGenerateText(_ profile: ServerModelProfile) -> Bool {

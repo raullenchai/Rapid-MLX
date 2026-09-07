@@ -220,6 +220,7 @@ struct DraftPostInstructionPlannerTests {
             sessionValidator: validator
         ))
         #expect(runtime.model == profile.id)
+        #expect(runtime.sessionID == nil)
         #expect(DraftPostLanguageRuntime(
             profile: ServerModelProfile(id: "flux", modality: "image-gen"),
             selectedAlias: "flux",
@@ -299,6 +300,7 @@ struct DraftPostInstructionPlannerTests {
             bearerToken: bearer,
             liveServer: server
         ))
+        let originalSessionID = try #require(runtime.sessionID)
         let transport = PlannerTransport(response: try Self.response(content: [
             "status": "needs_clarification",
             "purpose": "",
@@ -312,6 +314,7 @@ struct DraftPostInstructionPlannerTests {
 
         // Simulate a new launch reusing alias, port, and a persisted bearer.
         server._testReplaceActiveServerSession(bearer: bearer)
+        #expect(server.activeServerSessionID != originalSessionID)
         server.applyActiveModelProfile(profile, forAlias: alias)
 
         await #expect(throws: DraftPostPlanningError.modelUnavailable) {

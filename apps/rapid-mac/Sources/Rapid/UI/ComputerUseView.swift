@@ -81,6 +81,11 @@ struct ComputerUseView: View {
                 languageRuntime: languageRuntime,
                 visualRuntime: visualRuntime
             )
+            // Recreate the sheet's @State view model whenever the app-owned
+            // sidecar changes. A user can start or restart a model while this
+            // sheet is open; retaining the old planner would leave Analyze
+            // disabled or permanently bound to an invalidated session.
+            .id(languageRuntime?.sessionID)
         }
     }
 
