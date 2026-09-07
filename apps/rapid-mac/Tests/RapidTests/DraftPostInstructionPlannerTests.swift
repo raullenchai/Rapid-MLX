@@ -419,6 +419,23 @@ struct DraftPostInstructionPlannerTests {
     }
 
     @MainActor
+    @Test("Permission loss during destination inspection stays actionable")
+    func planningPermissionLoss() async throws {
+        let viewModel = DraftPostInstructionFlowViewModel(
+            catalog: InstructionWindowCatalog(options: [Self.destination]),
+            planner: ScriptedInstructionPlanner(result: .needsClarification("Who?")),
+            destinationInspector: FailingDestinationInspector(failure: .permissionMissing),
+            driver: RecordingPreparedDraftDriver()
+        )
+        await viewModel.load()
+        viewModel.destinationID = Self.destination.id
+        viewModel.instruction = "Draft a launch update for X."
+        viewModel.analyze()
+        await Self.waitUntil { viewModel.phase == .planningFailed(.permissionMissing) }
+        #expect(DraftPostPlanningError.permissionMissing.userMessage.contains("Accessibility"))
+    }
+
+    @MainActor
     @Test("A clarification returns to the editable request without execution")
     func clarificationState() async throws {
         let planner = ScriptedInstructionPlanner(
@@ -703,6 +720,16 @@ private actor ScriptedDestinationInspector: ComputerUseBrowserDestinationInspect
         let index = min(inspectionCount, identities.count - 1)
         inspectionCount += 1
         return identities[index]
+    }
+}
+
+private struct FailingDestinationInspector: ComputerUseBrowserDestinationInspecting {
+    let failure: DraftPostFlowFailure
+
+    func destinationIdentity(
+        for _: ComputerUseWindowOption
+    ) async throws -> ComputerUseBrowserDestinationIdentity {
+        throw failure
     }
 }
 

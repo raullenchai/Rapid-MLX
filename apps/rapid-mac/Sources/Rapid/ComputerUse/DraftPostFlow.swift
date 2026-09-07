@@ -378,6 +378,17 @@ struct MacOSDraftPostFlowDriver: DraftPostFlowDriving, PreparedDraftPostFlowDriv
         guard MacAutomationPermissions.snapshot().isReadyForComputerUse else {
             throw DraftPostFlowFailure.permissionMissing
         }
+        let browserAccessibilityRestoreValue = try await prepareBrowserAccessibility(
+            for: destination
+        )
+        defer {
+            if let browserAccessibilityRestoreValue {
+                Self.restoreBrowserAccessibility(
+                    for: destination,
+                    enabled: browserAccessibilityRestoreValue
+                )
+            }
+        }
         let identity = try await browserDocumentIdentity(in: destination)
         guard let host = Self.normalizedDestinationHost(from: identity),
               let normalizedIdentity = Self.normalizedDocumentIdentity(from: identity)

@@ -16,6 +16,8 @@ extension DraftPostPlanningError {
             "The local model returned more planning data than this preview accepts."
         case .destinationUnavailable:
             "Rapid could not verify the selected browser's destination. Open the destination page and refresh."
+        case .permissionMissing:
+            "Allow Screen Recording and Accessibility, then refresh the browser windows."
         case .httpStatus(let status):
             "The local model rejected the planning request (HTTP \(status))."
         case .cancelled:
@@ -176,7 +178,14 @@ final class DraftPostInstructionFlowViewModel {
             } catch let error as DraftPostPlanningError {
                 result = .failure(error)
             } catch let error as DraftPostFlowFailure {
-                result = .failure(error == .cancelled ? .cancelled : .destinationUnavailable)
+                switch error {
+                case .cancelled:
+                    result = .failure(.cancelled)
+                case .permissionMissing:
+                    result = .failure(.permissionMissing)
+                default:
+                    result = .failure(.destinationUnavailable)
+                }
             } catch is CancellationError {
                 result = .failure(.cancelled)
             } catch {

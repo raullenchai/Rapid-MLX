@@ -7,6 +7,7 @@ enum DraftPostPlanningError: Error, Equatable, Sendable {
     case invalidResponse
     case responseTooLarge
     case destinationUnavailable
+    case permissionMissing
     case httpStatus(Int)
     case cancelled
 }

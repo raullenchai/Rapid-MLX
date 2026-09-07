@@ -251,6 +251,26 @@ private struct DraftPostFlowSheet: View {
                 Button("Edit request") { viewModel.editRequest() }
                     .buttonStyle(.rapidSecondaryCompact)
                     .accessibilityIdentifier("ComputerUse.DraftPost.EditAfterPlanningFailure")
+                if error == .permissionMissing {
+                    HStack {
+                        Button("Allow Screen Recording") {
+                            _ = MacAutomationPermissions.request(.screenRecording)
+                            Task { await viewModel.load() }
+                        }
+                        .buttonStyle(.rapidSecondaryCompact)
+                        .accessibilityIdentifier(
+                            "ComputerUse.DraftPost.AllowScreenRecordingForPlanning"
+                        )
+                        Button("Allow Accessibility") {
+                            _ = MacAutomationPermissions.request(.accessibility)
+                            Task { await viewModel.load() }
+                        }
+                        .buttonStyle(.rapidSecondaryCompact)
+                        .accessibilityIdentifier(
+                            "ComputerUse.DraftPost.AllowAccessibilityForPlanning"
+                        )
+                    }
+                }
 
             case .executionFailed(let failure, let metrics):
                 result(
