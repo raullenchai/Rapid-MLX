@@ -333,28 +333,56 @@ struct DraftPostFlowTests {
         let validator: DraftPostVisualRuntime.SessionValidator = {
             session.current
         }
+        let base = RotatingDraftPostGroundingTransport(session: session)
+        let transport = SessionValidatedComputerUseGroundingTransport(
+            base: base,
+            sessionValidator: validator
+        )
         await #expect(throws: DraftPostFlowFailure.dependencyFailure) {
-            try await MacOSDraftPostVisualRecovery.withValidatedSession(
-                validator
-            ) {
-                session.current = false
-                return "unused"
-            }
+            _ = try await transport.send(
+                URLRequest(url: URL(string: "http://127.0.0.1:7659/v1")!),
+                maximumResponseBytes: 128
+            )
         }
+        #expect(await base.callCount == 1)
+
+        let blockedBase = RotatingDraftPostGroundingTransport(session: session)
+        let blockedTransport = SessionValidatedComputerUseGroundingTransport(
+            base: blockedBase,
+            sessionValidator: validator
+        )
+        await #expect(throws: DraftPostFlowFailure.dependencyFailure) {
+            _ = try await blockedTransport.send(
+                URLRequest(url: URL(string: "http://127.0.0.1:7659/v1")!),
+                maximumResponseBytes: 128
+            )
+        }
+        #expect(await blockedBase.callCount == 0)
     }
 
     @Test("Chrome accessibility activation balances cancellation")
     func browserAccessibilityActivationBalancesCancellation() async {
         let probe = BrowserAccessibilityLeaseProbe()
         await #expect(throws: CancellationError.self) {
-            try await MacOSDraftPostFlowDriver.establishBrowserAccessibilityLease(
+            _ = try await MacOSDraftPostFlowDriver.establishBrowserAccessibilityLease(
+                previousValue: true,
                 activate: { probe.activate() },
                 settle: { throw CancellationError() },
-                release: { probe.release() }
+                restore: { probe.restore(to: $0) }
             )
         }
         #expect(probe.activations == 1)
         #expect(probe.releases == 1)
+        #expect(probe.restoredValue == true)
+    }
+
+    @Test("Post-visual focus drift cannot start another visual budget")
+    func postVisualDriftIsTerminal() async {
+        await #expect(throws: DraftPostFlowFailure.verificationFailed) {
+            try await MacOSDraftPostFlowDriver.verifyAfterVisualRecovery {
+                throw DraftPostFlowFailure.focusChanged
+            }
+        }
     }
 
     @Test("Visual coordinates can authorize only the expected editable value")
@@ -826,12 +854,43 @@ private final class BrowserAccessibilityLeaseProbe: @unchecked Sendable {
     private let lock = NSLock()
     private var activationCount = 0
     private var releaseCount = 0
+    private var restored: Bool?
 
     var activations: Int { lock.withLock { activationCount } }
     var releases: Int { lock.withLock { releaseCount } }
+    var restoredValue: Bool? { lock.withLock { restored } }
 
     func activate() { lock.withLock { activationCount += 1 } }
-    func release() { lock.withLock { releaseCount += 1 } }
+    func restore(to value: Bool) {
+        lock.withLock {
+            releaseCount += 1
+            restored = value
+        }
+    }
+}
+
+private actor RotatingDraftPostGroundingTransport:
+    LocalComputerUseGroundingTransport
+{
+    private let session: VisualSessionProbe
+    private(set) var callCount = 0
+
+    init(session: VisualSessionProbe) {
+        self.session = session
+    }
+
+    func send(
+        _: URLRequest,
+        maximumResponseBytes _: Int
+    ) async throws -> LocalComputerUseGroundingHTTPResponse {
+        callCount += 1
+        session.current = false
+        return LocalComputerUseGroundingHTTPResponse(
+            statusCode: 200,
+            contentType: "application/json",
+            body: Data()
+        )
+    }
 }
 
 private enum RecordedDraftPostComposerAction: Equatable {

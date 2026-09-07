@@ -273,12 +273,15 @@ struct MacOSDraftPostFlowDriver: DraftPostFlowDriving {
             throw DraftPostFlowFailure.permissionMissing
         }
 
-        let ownsBrowserAccessibilityRequest = try await prepareBrowserAccessibility(
+        let browserAccessibilityRestoreValue = try await prepareBrowserAccessibility(
             for: destination
         )
         defer {
-            if ownsBrowserAccessibilityRequest {
-                Self.releaseBrowserAccessibility(for: destination)
+            if let browserAccessibilityRestoreValue {
+                Self.restoreBrowserAccessibility(
+                    for: destination,
+                    enabled: browserAccessibilityRestoreValue
+                )
             }
         }
         let documentIdentity = try await browserDocumentIdentity(in: destination)
@@ -308,14 +311,16 @@ struct MacOSDraftPostFlowDriver: DraftPostFlowDriving {
                 in: destination,
                 documentIdentity: documentIdentity
             )
-            try await writeAndVerify(
-                draft,
-                from: source,
-                to: destination,
-                documentIdentity: documentIdentity,
-                allowFocusedUnlabelledComposer: true,
-                focusDestination: false
-            )
+            try await Self.verifyAfterVisualRecovery {
+                try await writeAndVerify(
+                    draft,
+                    from: source,
+                    to: destination,
+                    documentIdentity: documentIdentity,
+                    allowFocusedUnlabelledComposer: true,
+                    focusDestination: false
+                )
+            }
         }
         // The destination may now be mutated. Every remaining observation is
         // therefore terminal on failure: recovery must never replay the write.
@@ -354,9 +359,9 @@ struct MacOSDraftPostFlowDriver: DraftPostFlowDriving {
     /// already exposing an AXWebArea.
     private func prepareBrowserAccessibility(
         for destination: ComputerUseWindowOption
-    ) async throws -> Bool {
+    ) async throws -> Bool? {
         guard destination.selection.bundleIdentifier == "com.google.Chrome" else {
-            return false
+            return nil
         }
         let alreadyAvailable = try await Self.runAXWork {
             let application = Self.applicationElement(
@@ -370,11 +375,16 @@ struct MacOSDraftPostFlowDriver: DraftPostFlowDriving {
                     == "AXWebArea"
             }
         }
-        guard !alreadyAvailable else { return false }
+        guard !alreadyAvailable else { return nil }
         let application = Self.applicationElement(
             destination.selection.processIdentifier
         )
-        try await Self.establishBrowserAccessibilityLease(
+        let previousValue = Self.boolAttribute(
+            "AXEnhancedUserInterface" as CFString,
+            from: application
+        ) ?? false
+        return try await Self.establishBrowserAccessibilityLease(
+            previousValue: previousValue,
             activate: {
                 guard AXUIElementSetAttributeValue(
                     application,
@@ -388,31 +398,36 @@ struct MacOSDraftPostFlowDriver: DraftPostFlowDriving {
                 try await Task.sleep(for: .seconds(3))
                 try Task.checkCancellation()
             },
-            release: {
-                Self.releaseBrowserAccessibility(for: destination)
+            restore: { value in
+                Self.restoreBrowserAccessibility(
+                    for: destination,
+                    enabled: value
+                )
             }
         )
-        return true
     }
 
     /// Transfers cleanup ownership to the caller only after activation has
     /// fully settled. Any error or cancellation before then is balanced here.
     static func establishBrowserAccessibilityLease(
+        previousValue: Bool,
         activate: () throws -> Void,
         settle: () async throws -> Void,
-        release: () -> Void
-    ) async throws {
+        restore: (Bool) -> Void
+    ) async throws -> Bool {
         try activate()
         do {
             try await settle()
         } catch {
-            release()
+            restore(previousValue)
             throw error
         }
+        return previousValue
     }
 
-    private static func releaseBrowserAccessibility(
-        for destination: ComputerUseWindowOption
+    private static func restoreBrowserAccessibility(
+        for destination: ComputerUseWindowOption,
+        enabled: Bool
     ) {
         guard destination.selection.bundleIdentifier == "com.google.Chrome",
               let running = NSRunningApplication(
@@ -424,8 +439,24 @@ struct MacOSDraftPostFlowDriver: DraftPostFlowDriving {
         _ = AXUIElementSetAttributeValue(
             applicationElement(destination.selection.processIdentifier),
             "AXEnhancedUserInterface" as CFString,
-            kCFBooleanFalse
+            enabled ? kCFBooleanTrue : kCFBooleanFalse
         )
+    }
+
+    /// Once visual recovery has consumed its one bounded three-attempt budget,
+    /// any focus/verification drift is terminal. Converting it to a
+    /// non-recoverable failure prevents the outer coordinator from starting a
+    /// second visual budget (three-by-three attempts).
+    static func verifyAfterVisualRecovery(
+        _ operation: () async throws -> Void
+    ) async throws {
+        do {
+            try await operation()
+        } catch is CancellationError {
+            throw CancellationError()
+        } catch {
+            throw DraftPostFlowFailure.verificationFailed
+        }
     }
 
     private func writeAndVerify(

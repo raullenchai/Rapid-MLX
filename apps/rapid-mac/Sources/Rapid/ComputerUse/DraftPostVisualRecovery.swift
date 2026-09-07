@@ -147,18 +147,17 @@ actor MacOSDraftPostVisualRecovery: DraftPostVisualRecovering {
                 let grounder = LocalComputerUseVisualGrounder(
                     configuration: configuration,
                     vault: vault,
-                    transport: transport
+                    transport: SessionValidatedComputerUseGroundingTransport(
+                        base: transport,
+                        sessionValidator: sessionValidator
+                    )
                 )
                 let step = Self.composerStep
                 let groundingObservation = try await observer.observe(for: step)
-                let action = try await Self.withValidatedSession(
-                    sessionValidator
-                ) {
-                    try await grounder.ground(
-                        step: step,
-                        observation: groundingObservation
-                    )
-                }
+                let action = try await grounder.ground(
+                    step: step,
+                    observation: groundingObservation
+                )
                 let currentObservation = try await observer.observe(for: step)
                 try Task.checkCancellation()
                 try MacOSDraftPostFlowDriver.focusGroundedEmptyComposer(
@@ -179,23 +178,6 @@ actor MacOSDraftPostVisualRecovery: DraftPostVisualRecovering {
 
     init(attempt: @escaping Attempt) {
         self.attempt = attempt
-    }
-
-    /// The local server may restart onto another port or rotate its bearer
-    /// while the sheet remains open. Validate immediately around inference so
-    /// a screenshot is never sent to, or accepted from, a superseded session.
-    static func withValidatedSession<Result: Sendable>(
-        _ validator: DraftPostVisualRuntime.SessionValidator,
-        operation: @Sendable () async throws -> Result
-    ) async throws -> Result {
-        guard await validator() else {
-            throw DraftPostFlowFailure.dependencyFailure
-        }
-        let result = try await operation()
-        guard await validator() else {
-            throw DraftPostFlowFailure.dependencyFailure
-        }
-        return result
     }
 
     func focusComposer(
@@ -231,5 +213,32 @@ actor MacOSDraftPostVisualRecovery: DraftPostVisualRecovering {
             isIdempotent: true,
             maxGroundingAttempts: Self.maximumAttempts
         )
+    }
+}
+
+/// Pins the actual HTTP send—not merely request preparation—to the app-owned
+/// server session that authorized visual recovery. The second check prevents
+/// accepting a response from a session replaced while inference was running.
+struct SessionValidatedComputerUseGroundingTransport:
+    LocalComputerUseGroundingTransport
+{
+    let base: any LocalComputerUseGroundingTransport
+    let sessionValidator: DraftPostVisualRuntime.SessionValidator
+
+    func send(
+        _ request: URLRequest,
+        maximumResponseBytes: Int
+    ) async throws -> LocalComputerUseGroundingHTTPResponse {
+        guard await sessionValidator() else {
+            throw DraftPostFlowFailure.dependencyFailure
+        }
+        let response = try await base.send(
+            request,
+            maximumResponseBytes: maximumResponseBytes
+        )
+        guard await sessionValidator() else {
+            throw DraftPostFlowFailure.dependencyFailure
+        }
+        return response
     }
 }
