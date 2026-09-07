@@ -621,7 +621,7 @@ def _detect_hybrid_for_warmup(engine) -> bool:
     return False
 
 
-async def _warmup_primary_engine(engine: object) -> None:
+async def _warmup_primary_engine(engine: BaseEngine) -> None:
     """Compile the configured engine on its model-owning worker."""
 
     import time as _time

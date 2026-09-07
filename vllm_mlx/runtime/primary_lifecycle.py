@@ -211,11 +211,11 @@ class PrimaryModelLifecycle:
         _request_token_context.set((id(self), token))
         task = asyncio.current_task()
         if task is not None:
-            task.add_done_callback(
-                lambda _task, request_token=token: self._release_abandoned_request(
-                    request_token
-                )
-            )
+
+            def release_when_done(_task: asyncio.Task) -> None:
+                self._release_abandoned_request(token)
+
+            task.add_done_callback(release_when_done)
         self.touch()
 
     def release_request(self) -> None:
