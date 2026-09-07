@@ -555,4 +555,25 @@ final class MarkdownTextBlockView: NSView {
         }
     }
 
+    // MARK: - Test hooks
+
+    /// Hand back the first `.foregroundColor` rendering attribute the fade
+    /// animator has written. Rendering attributes live on the layout manager
+    /// rather than the text storage, so a test cannot read them off the
+    /// attributed string.
+    func testing_renderingForegroundColor() -> NSColor? {
+        var found: NSColor?
+        renderer.textLayoutManager.enumerateRenderingAttributes(
+            from: renderer.textLayoutManager.documentRange.location,
+            reverse: false
+        ) { _, attributes, _ in
+            guard let colour = attributes[.foregroundColor] as? NSColor else {
+                return true
+            }
+            found = colour
+            return false
+        }
+        return found
+    }
+
 }
