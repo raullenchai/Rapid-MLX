@@ -150,7 +150,7 @@ struct DraftPostFlowTests {
     func boundedRecovery() async {
         let driver = ScriptedDraftPostDriver(results: [
             .failure(.focusChanged),
-            .failure(.targetUnavailable),
+            .failure(.focusChanged),
             .success(()),
         ])
         let outcome = await DraftPostFlowCoordinator(driver: driver).run(

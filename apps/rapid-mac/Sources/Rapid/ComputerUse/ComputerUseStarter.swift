@@ -51,9 +51,9 @@ struct ComputerUseStarter: Identifiable, Equatable, Sendable {
         ComputerUseStarter(
             kind: .draftAndPost,
             title: "Draft and post an update",
-            summary: "Turn a local TextEdit draft into a post in your signed-in browser.",
+            summary: "Describe what to say, review Rapid's local draft, and fill your signed-in browser.",
             systemImage: "square.and.pencil",
-            applications: "TextEdit + browser",
+            applications: "Safari or Google Chrome",
             approvalNote: "Rapid will stop before publishing.",
             availability: .available
         ),

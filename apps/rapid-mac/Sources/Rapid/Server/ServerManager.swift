@@ -790,6 +790,14 @@ final class ServerManager {
     /// without auth", which surfaces as ``.crashed`` to the user.
     private(set) var activeBearer: String?
 
+    /// Process-local identity for the exact embedded-server launch that owns
+    /// ``activeBearer``. A bearer may intentionally persist across launches,
+    /// and a restarted child can reuse the same alias and port, so those
+    /// values cannot distinguish the process that inspected sensitive input.
+    /// Consumers that retain an authenticated runtime capture this identifier
+    /// and reject work after any stop, crash, or replacement.
+    private(set) var activeServerSessionID: UUID?
+
     /// Issue #2599: how the next ``start()`` materializes the embedded
     /// bearer. The default deliberately remains per-launch rotation.
     private(set) var embeddedBearerLifetime: EmbeddedBearerLifetime = .perLaunch
@@ -850,6 +858,7 @@ final class ServerManager {
     /// survive a process replacement on the same alias and port.
     private func setActiveServerSession(bearer: String?) {
         activeBearer = bearer
+        activeServerSessionID = bearer == nil ? nil : UUID()
         activeModelProfile = nil
     }
 
@@ -1219,6 +1228,7 @@ final class ServerManager {
         self.state = testingState
         self.activePort = activePort
         self.activeBearer = activeBearer
+        self.activeServerSessionID = activeBearer == nil ? nil : UUID()
         self.binaryPath = binaryPath
         self.residency = residency
         self.sessionDefaults = sessionDefaults
@@ -1324,6 +1334,13 @@ final class ServerManager {
     internal func _testClearChild() {
         self.child = nil
         self.launchedImageInputLane = nil
+    }
+
+    /// Test seam for proving that retained clients cannot cross a sidecar
+    /// replacement even when every externally visible connection value is
+    /// reused. Production rotates this identity only through spawn/teardown.
+    internal func _testReplaceActiveServerSession(bearer: String?) {
+        setActiveServerSession(bearer: bearer)
     }
 
     /// codex r1 BLOCKING #3 test seam — drive the ``state`` field
