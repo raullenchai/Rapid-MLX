@@ -3776,6 +3776,11 @@ class Scheduler:
         # driven mirror to avoid filling mlx-lm's private FIFO ahead of its
         # actual prefill slots. Default FCFS never reads this set.
         self._admission_prefill_uids: set[int] = set()
+        # None until the first BatchGenerator response establishes whether the
+        # public prompt-promotion stream is available. Older mlx-lm versions
+        # return a flat generation list; the opt-in policy then fails safe to
+        # historical FCFS because it cannot observe prompt-slot release.
+        self._shortest_tail_runtime_supported: bool | None = None
 
         # #558 PR-3: authoritative per-uid logits-processor state. mlx-lm's
         # ``GenerationBatch`` keys ``logits_processors`` positionally by uid
@@ -5294,6 +5299,22 @@ class Scheduler:
         for response in prompt_responses or ():
             if getattr(response, "end_of_prompt", False):
                 self._admission_prefill_uids.discard(response.uid)
+
+    def _fallback_from_unobservable_prompt_runtime(self) -> None:
+        """Disable opt-in ranking when an old runtime hides promotions."""
+        if (
+            getattr(self.config, "scheduling_policy", "fcfs")
+            != "shortest_validated_tail"
+            or getattr(self, "_shortest_tail_runtime_supported", None) is False
+        ):
+            return
+        self._shortest_tail_runtime_supported = False
+        self._admission_prefill_uids.clear()
+        logger.warning(
+            "shortest_validated_tail requires prompt-promotion responses; "
+            "this mlx-lm runtime returns the legacy flat response shape, "
+            "falling back to FCFS"
+        )
 
     def _validate_cache(self, cache: Any) -> bool:
         """
@@ -8032,6 +8053,7 @@ class Scheduler:
         shortest_tail = (
             getattr(self.config, "scheduling_policy", "fcfs")
             == "shortest_validated_tail"
+            and getattr(self, "_shortest_tail_runtime_supported", None) is not False
         )
         while self.waiting and len(self.running) < self._max_running_sequences():
             if shortest_tail:
@@ -9344,6 +9366,7 @@ class Scheduler:
                             getattr(self.config, "scheduling_policy", "fcfs")
                             == "shortest_validated_tail"
                         ):
+                            self._shortest_tail_runtime_supported = True
                             self._record_prompt_promotions(prompt_responses)
                         self._snapshot_promoted_prompts(prompt_responses)
                         # issue #427: per-message boundary snapshot for
@@ -9351,6 +9374,7 @@ class Scheduler:
                         # but prompt still has tail to process).
                         self._snapshot_boundary_segments(prompt_responses)
                     else:
+                        self._fallback_from_unobservable_prompt_runtime()
                         responses = raw_next
 
                     if responses:

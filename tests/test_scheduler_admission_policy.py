@@ -163,6 +163,17 @@ def test_opt_in_keeps_excess_prompts_out_of_generator_but_fcfs_is_unchanged():
     assert not fcfs.waiting
 
 
+def test_legacy_flat_response_runtime_falls_back_to_fcfs_without_sticking_slots():
+    scheduler = _selector(_request("long", 100), _request("short", 2))
+    scheduler._shortest_tail_runtime_supported = None
+    scheduler._admission_prefill_uids = {11}
+
+    scheduler._fallback_from_unobservable_prompt_runtime()
+
+    assert scheduler._shortest_tail_runtime_supported is False
+    assert not scheduler._admission_prefill_uids
+
+
 def test_serve_cli_exposes_policy_and_starvation_bound():
     args = build_parser().parse_args(
         [

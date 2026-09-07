@@ -64,3 +64,11 @@
   runner is operationally blocked because the repository targets Python 3.10
   while the installed NumPy stub uses Python 3.12 `type` syntax; this produced
   no project diagnostic and will be rechecked by the PR validation environment.
+- PR #3216 validation round 1 found one legitimate blocker: older mlx-lm flat
+  response shapes do not expose prompt-promotion events, so the mirror could
+  stay occupied. Fixed with a one-time, warning-backed fallback to historical
+  FCFS when that legacy shape is observed; the configured policy remains
+  visible but unsafe ranking is disabled. Focused post-fix regression run:
+  94 passed, 2 deselected. The obsolete-head full-unit portion of validation
+  was stopped after recording the blocker because the broader suite had already
+  completed locally and exact-head validation must be rerun after this fix.
