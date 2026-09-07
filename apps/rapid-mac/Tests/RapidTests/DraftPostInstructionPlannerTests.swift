@@ -309,6 +309,8 @@ struct DraftPostInstructionPlannerTests {
         #expect(viewModel.phase == .ready)
         #expect(viewModel.clarificationQuestion == "Who is the audience?")
         #expect(await driver.drafts.isEmpty)
+        await viewModel.load()
+        #expect(viewModel.clarificationQuestion == nil)
     }
 
     @Test("Prepared execution retries only recoverable pre-write failures")
@@ -343,6 +345,46 @@ struct DraftPostInstructionPlannerTests {
             DraftPostFlowMetrics(attempts: 1)
         ))
         #expect(await terminalDriver.attempts == 1)
+    }
+
+    @MainActor
+    @Test("Stopping after a possible browser write reports the definitive result")
+    func latePreparedCancellationIsHonest() async {
+        let plan = DraftPostPlan(
+            purpose: "Launch",
+            audience: "Developers",
+            talkingPoints: ["Local"],
+            tone: "Concise",
+            destination: "x.com",
+            draft: "Reviewed draft"
+        )
+        let driver = CancellationIgnoringPreparedDraftDriver()
+        let viewModel = DraftPostInstructionFlowViewModel(
+            catalog: InstructionWindowCatalog(options: [Self.destination]),
+            planner: ScriptedInstructionPlanner(result: .ready(plan)),
+            destinationInspector: InstructionDestinationInspector(),
+            driver: driver
+        )
+        await viewModel.load()
+        viewModel.destinationID = Self.destination.id
+        viewModel.instruction = "Draft a launch update for X."
+        viewModel.analyze()
+        await Self.waitUntil { viewModel.phase == .reviewing }
+        viewModel.execute()
+        while !(await driver.didStart) {
+            await Task.yield()
+        }
+        viewModel.stop()
+        #expect(viewModel.phase == .stopping)
+        await driver.complete()
+        await Self.waitUntil {
+            if case .readyForReview = viewModel.phase { return true }
+            return false
+        }
+        guard case .readyForReview = viewModel.phase else {
+            Issue.record("A possibly completed browser mutation was reported as cancelled")
+            return
+        }
     }
 
     @Test("Browser addresses normalize to a stable hostname")
@@ -508,5 +550,24 @@ private actor ScriptedPreparedDraftDriver: PreparedDraftPostFlowDriving {
             throw DraftPostFlowFailure.dependencyFailure
         }
         try outcomes.removeFirst().get()
+    }
+}
+
+private actor CancellationIgnoringPreparedDraftDriver: PreparedDraftPostFlowDriving {
+    private(set) var didStart = false
+    private var continuation: CheckedContinuation<Void, Never>?
+
+    func transferPreparedDraft(
+        _: String,
+        to _: ComputerUseWindowOption,
+        expectedDestination _: ComputerUseBrowserDestinationIdentity
+    ) async throws {
+        didStart = true
+        await withCheckedContinuation { continuation = $0 }
+    }
+
+    func complete() {
+        continuation?.resume()
+        continuation = nil
     }
 }

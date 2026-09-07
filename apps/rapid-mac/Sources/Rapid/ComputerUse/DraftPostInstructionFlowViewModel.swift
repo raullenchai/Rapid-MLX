@@ -250,6 +250,7 @@ final class DraftPostInstructionFlowViewModel {
     }
 
     private func clearPlan() {
+        clarificationQuestion = nil
         plan = nil
         editableDraft = ""
         plannedDestinationID = nil
