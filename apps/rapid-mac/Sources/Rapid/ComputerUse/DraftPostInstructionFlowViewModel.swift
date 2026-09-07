@@ -54,7 +54,7 @@ final class DraftPostInstructionFlowViewModel {
     private var task: Task<Void, Never>?
     private var generation = 0
     private var plannedDestinationID: String?
-    private var plannedDestinationHost: String?
+    private var plannedDestination: ComputerUseBrowserDestinationIdentity?
 
     init(
         catalog: any ComputerUseWindowListing = MacOSComputerUseWindowCatalog(),
@@ -101,7 +101,7 @@ final class DraftPostInstructionFlowViewModel {
               plan != nil,
               let plannedDestinationID,
               plannedDestinationID == destinationID,
-              plannedDestinationHost != nil,
+              plannedDestination != nil,
               !editableDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
               editableDraft.utf8.count <= MacOSDraftPostFlowDriver.maximumDraftBytes
         else { return false }
@@ -154,16 +154,16 @@ final class DraftPostInstructionFlowViewModel {
         task = Task { [weak self] in
             guard let self else { return }
             let result: Result<DraftPostPlanningResult, DraftPostPlanningError>
-            var inspectedHost: String?
+            var inspectedDestination: ComputerUseBrowserDestinationIdentity?
             do {
-                let destinationHost = try await self.destinationInspector.destinationHost(
+                let destinationIdentity = try await self.destinationInspector.destinationIdentity(
                     for: destination
                 )
-                inspectedHost = destinationHost
+                inspectedDestination = destinationIdentity
                 result = .success(try await planner.analyze(
                     instruction: requestedInstruction,
                     browserApplication: destination.applicationName,
-                    destinationHost: destinationHost
+                    destinationHost: destinationIdentity.host
                 ))
             } catch let error as DraftPostPlanningError {
                 result = .failure(error)
@@ -184,7 +184,7 @@ final class DraftPostInstructionFlowViewModel {
                 self.plan = plan
                 self.editableDraft = plan.draft
                 self.plannedDestinationID = destination.id
-                self.plannedDestinationHost = inspectedHost
+                self.plannedDestination = inspectedDestination
                 self.phase = .reviewing
             case .failure(let error):
                 self.phase = .planningFailed(error)
@@ -197,7 +197,7 @@ final class DraftPostInstructionFlowViewModel {
               task == nil,
               let destination = destinationOptions.first(
                 where: { $0.id == plannedDestinationID }
-              ), let plannedDestinationHost
+              ), let plannedDestination
         else { return }
         generation += 1
         let requestedGeneration = generation
@@ -208,7 +208,7 @@ final class DraftPostInstructionFlowViewModel {
             let outcome = await coordinator.run(
                 draft: draft,
                 destination: destination,
-                expectedDestinationHost: plannedDestinationHost
+                expectedDestination: plannedDestination
             )
             guard let self, requestedGeneration == self.generation else { return }
             self.task = nil
@@ -253,6 +253,6 @@ final class DraftPostInstructionFlowViewModel {
         plan = nil
         editableDraft = ""
         plannedDestinationID = nil
-        plannedDestinationHost = nil
+        plannedDestination = nil
     }
 }

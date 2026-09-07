@@ -250,7 +250,7 @@ struct DraftPostInstructionPlannerTests {
         let viewModel = DraftPostInstructionFlowViewModel(
             catalog: InstructionWindowCatalog(options: [Self.destination]),
             planner: planner,
-            destinationInspector: InstructionDestinationInspector(host: "x.com"),
+            destinationInspector: InstructionDestinationInspector(),
             driver: driver
         )
         await viewModel.load()
@@ -266,7 +266,7 @@ struct DraftPostInstructionPlannerTests {
             return false
         }
         #expect(await driver.drafts == ["User-edited draft"])
-        #expect(await driver.destinationHosts == ["x.com"])
+        #expect(await driver.destinations == [Self.destinationIdentity])
     }
 
     @MainActor
@@ -279,7 +279,7 @@ struct DraftPostInstructionPlannerTests {
         let viewModel = DraftPostInstructionFlowViewModel(
             catalog: InstructionWindowCatalog(options: [Self.destination]),
             planner: planner,
-            destinationInspector: InstructionDestinationInspector(host: "x.com"),
+            destinationInspector: InstructionDestinationInspector(),
             driver: driver
         )
         await viewModel.load()
@@ -300,7 +300,7 @@ struct DraftPostInstructionPlannerTests {
         let outcome = await PreparedDraftPostFlowCoordinator(driver: driver).run(
             draft: "Reviewed draft",
             destination: Self.destination,
-            expectedDestinationHost: "x.com"
+            expectedDestination: Self.destinationIdentity
         )
         #expect(outcome == .readyForReview(DraftPostFlowMetrics(
             attempts: 2,
@@ -317,7 +317,7 @@ struct DraftPostInstructionPlannerTests {
         ).run(
             draft: "Reviewed draft",
             destination: Self.destination,
-            expectedDestinationHost: "x.com"
+            expectedDestination: Self.destinationIdentity
         )
         #expect(terminalOutcome == .failed(
             .verificationFailed,
@@ -334,6 +334,21 @@ struct DraftPostInstructionPlannerTests {
         #expect(MacOSDraftPostFlowDriver.normalizedDestinationHost(
             from: "mail.example.com/inbox"
         ) == "mail.example.com")
+        #expect(MacOSDraftPostFlowDriver.normalizedDocumentIdentity(
+            from: "HTTPS://X.COM:443/compose/post?draft=1"
+        ) == "https://x.com/compose/post?draft=1")
+        let expected = ComputerUseBrowserDestinationIdentity(
+            host: "x.com",
+            documentIdentity: "https://x.com/compose/post"
+        )
+        #expect(MacOSDraftPostFlowDriver.browserDestinationMatches(
+            currentAddress: "HTTPS://X.COM:443/compose/post",
+            expected: expected
+        ))
+        #expect(!MacOSDraftPostFlowDriver.browserDestinationMatches(
+            currentAddress: "https://x.com/another-account/compose",
+            expected: expected
+        ))
         #expect(MacOSDraftPostFlowDriver.normalizedDestinationHost(from: "   ") == nil)
     }
 
@@ -383,6 +398,11 @@ struct DraftPostInstructionPlannerTests {
             windowID: 42
         )
     )
+
+    private static let destinationIdentity = ComputerUseBrowserDestinationIdentity(
+        host: "x.com",
+        documentIdentity: "https://x.com/compose/post"
+    )
 }
 
 private actor PlannerTransport: LocalComputerUseGroundingTransport {
@@ -411,10 +431,13 @@ private struct InstructionWindowCatalog: ComputerUseWindowListing {
 }
 
 private struct InstructionDestinationInspector: ComputerUseBrowserDestinationInspecting {
-    let host: String
-
-    func destinationHost(for _: ComputerUseWindowOption) async throws -> String {
-        host
+    func destinationIdentity(
+        for _: ComputerUseWindowOption
+    ) async throws -> ComputerUseBrowserDestinationIdentity {
+        ComputerUseBrowserDestinationIdentity(
+            host: "x.com",
+            documentIdentity: "https://x.com/compose/post"
+        )
     }
 }
 
@@ -436,15 +459,15 @@ private actor ScriptedInstructionPlanner: DraftPostInstructionPlanning {
 
 private actor RecordingPreparedDraftDriver: PreparedDraftPostFlowDriving {
     private(set) var drafts: [String] = []
-    private(set) var destinationHosts: [String] = []
+    private(set) var destinations: [ComputerUseBrowserDestinationIdentity] = []
 
     func transferPreparedDraft(
         _ draft: String,
         to _: ComputerUseWindowOption,
-        expectedDestinationHost: String
+        expectedDestination: ComputerUseBrowserDestinationIdentity
     ) async throws {
         drafts.append(draft)
-        destinationHosts.append(expectedDestinationHost)
+        destinations.append(expectedDestination)
     }
 }
 
@@ -459,7 +482,7 @@ private actor ScriptedPreparedDraftDriver: PreparedDraftPostFlowDriving {
     func transferPreparedDraft(
         _ draft: String,
         to _: ComputerUseWindowOption,
-        expectedDestinationHost _: String
+        expectedDestination _: ComputerUseBrowserDestinationIdentity
     ) async throws {
         attempts += 1
         guard !draft.isEmpty, !outcomes.isEmpty else {

@@ -161,12 +161,19 @@ protocol PreparedDraftPostFlowDriving: Sendable {
     func transferPreparedDraft(
         _ draft: String,
         to destination: ComputerUseWindowOption,
-        expectedDestinationHost: String
+        expectedDestination: ComputerUseBrowserDestinationIdentity
     ) async throws
 }
 
+struct ComputerUseBrowserDestinationIdentity: Equatable, Sendable {
+    let host: String
+    let documentIdentity: String
+}
+
 protocol ComputerUseBrowserDestinationInspecting: Sendable {
-    func destinationHost(for destination: ComputerUseWindowOption) async throws -> String
+    func destinationIdentity(
+        for destination: ComputerUseWindowOption
+    ) async throws -> ComputerUseBrowserDestinationIdentity
 }
 
 private enum DraftPostTransferRetry {
@@ -238,13 +245,13 @@ actor PreparedDraftPostFlowCoordinator {
     func run(
         draft: String,
         destination: ComputerUseWindowOption,
-        expectedDestinationHost: String
+        expectedDestination: ComputerUseBrowserDestinationIdentity
     ) async -> DraftPostFlowOutcome {
         await DraftPostTransferRetry.run(maximumAttempts: maximumAttempts) {
             try await self.driver.transferPreparedDraft(
                 draft,
                 to: destination,
-                expectedDestinationHost: expectedDestinationHost
+                expectedDestination: expectedDestination
             )
         }
     }
@@ -327,24 +334,26 @@ struct MacOSDraftPostFlowDriver: DraftPostFlowDriving, PreparedDraftPostFlowDriv
             draft,
             to: destination,
             source: source,
-            expectedDestinationHost: nil
+            expectedDestination: nil
         )
     }
 
     func transferPreparedDraft(
         _ draft: String,
         to destination: ComputerUseWindowOption,
-        expectedDestinationHost: String
+        expectedDestination: ComputerUseBrowserDestinationIdentity
     ) async throws {
         try await transfer(
             draft,
             to: destination,
             source: nil,
-            expectedDestinationHost: expectedDestinationHost
+            expectedDestination: expectedDestination
         )
     }
 
-    func destinationHost(for destination: ComputerUseWindowOption) async throws -> String {
+    func destinationIdentity(
+        for destination: ComputerUseWindowOption
+    ) async throws -> ComputerUseBrowserDestinationIdentity {
         guard Self.browserBundles.contains(destination.selection.bundleIdentifier) else {
             throw DraftPostFlowFailure.destinationIsNotBrowser
         }
@@ -352,17 +361,22 @@ struct MacOSDraftPostFlowDriver: DraftPostFlowDriving, PreparedDraftPostFlowDriv
             throw DraftPostFlowFailure.permissionMissing
         }
         let identity = try await browserDocumentIdentity(in: destination)
-        guard let host = Self.normalizedDestinationHost(from: identity) else {
+        guard let host = Self.normalizedDestinationHost(from: identity),
+              let normalizedIdentity = Self.normalizedDocumentIdentity(from: identity)
+        else {
             throw DraftPostFlowFailure.destinationMismatch
         }
-        return host
+        return ComputerUseBrowserDestinationIdentity(
+            host: host,
+            documentIdentity: normalizedIdentity
+        )
     }
 
     private func transfer(
         _ draft: String,
         to destination: ComputerUseWindowOption,
         source: ComputerUseWindowOption?,
-        expectedDestinationHost: String?
+        expectedDestination: ComputerUseBrowserDestinationIdentity?
     ) async throws {
         guard Self.browserBundles.contains(destination.selection.bundleIdentifier) else {
             throw DraftPostFlowFailure.destinationIsNotBrowser
@@ -388,10 +402,11 @@ struct MacOSDraftPostFlowDriver: DraftPostFlowDriving, PreparedDraftPostFlowDriv
             }
         }
         let documentIdentity = try await browserDocumentIdentity(in: destination)
-        if let expectedDestinationHost {
-            guard Self.normalizedDestinationHost(from: documentIdentity)?
-                .caseInsensitiveCompare(expectedDestinationHost) == .orderedSame
-            else { throw DraftPostFlowFailure.destinationMismatch }
+        if let expectedDestination {
+            guard Self.browserDestinationMatches(
+                currentAddress: documentIdentity,
+                expected: expectedDestination
+            ) else { throw DraftPostFlowFailure.destinationMismatch }
         }
         var usedVisualRecovery = false
         do {
@@ -697,14 +712,40 @@ struct MacOSDraftPostFlowDriver: DraftPostFlowDriving, PreparedDraftPostFlowDriv
     }
 
     static func normalizedDestinationHost(from address: String) -> String? {
+        guard let identity = normalizedDocumentIdentity(from: address),
+              let host = URLComponents(string: identity)?.host
+        else { return nil }
+        return host
+    }
+
+    static func normalizedDocumentIdentity(from address: String) -> String? {
         let trimmed = address.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return nil }
         let candidate = trimmed.contains("://") ? trimmed : "https://\(trimmed)"
-        guard let host = URLComponents(string: candidate)?.host?
+        guard var components = URLComponents(string: candidate),
+              let host = components.host?
             .trimmingCharacters(in: CharacterSet(charactersIn: "."))
             .lowercased(), !host.isEmpty
         else { return nil }
-        return host
+        components.scheme = components.scheme?.lowercased()
+        components.host = host
+        if (components.scheme == "https" && components.port == 443)
+            || (components.scheme == "http" && components.port == 80)
+        {
+            components.port = nil
+        }
+        return components.string
+    }
+
+    static func browserDestinationMatches(
+        currentAddress: String,
+        expected: ComputerUseBrowserDestinationIdentity
+    ) -> Bool {
+        guard let normalizedIdentity = normalizedDocumentIdentity(from: currentAddress),
+              utf8Matches(normalizedIdentity, expected.documentIdentity),
+              let currentHost = normalizedDestinationHost(from: currentAddress)
+        else { return false }
+        return currentHost.caseInsensitiveCompare(expected.host) == .orderedSame
     }
 
     static func verifyAfterMutation(_ verifier: () throws -> Bool) throws {
