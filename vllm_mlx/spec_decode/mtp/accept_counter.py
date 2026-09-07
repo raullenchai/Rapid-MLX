@@ -107,6 +107,25 @@ class MTPAcceptSnapshot:
             return 0.0
         return self.accepts / self.attempts
 
+    def response_metrics(self) -> dict[str, int | list[int]] | None:
+        """Return the request response payload, or ``None`` if MTP never ran."""
+        if self.verify_calls == 0:
+            return None
+        drafted = dict(self.drafted_by_depth)
+        accepted = dict(self.accepted_by_depth)
+        max_depth = max(drafted, default=0)
+        return {
+            "verify_calls": self.verify_calls,
+            "correction_tokens": self.correction_tokens,
+            "bonus_tokens": self.bonus_tokens,
+            "drafted_by_depth": [
+                drafted.get(depth, 0) for depth in range(1, max_depth + 1)
+            ],
+            "accepted_by_depth": [
+                accepted.get(depth, 0) for depth in range(1, max_depth + 1)
+            ],
+        }
+
 
 class MTPAcceptCounter:
     """Thread-safe accept-rate counter for MTP speculative decoding.
@@ -291,6 +310,42 @@ class MTPAcceptCounter:
             self._bonus_tokens = 0
             self._drafted_by_depth = {}
             self._accepted_by_depth = {}
+
+
+class MTPAcceptCounterGroup:
+    """Fan one verifier outcome out to independent counter lifetimes.
+
+    The MTP generator historically accepted one counter: the process-global
+    Prometheus accumulator.  Response telemetry additionally needs a counter
+    owned by the request.  Keeping the fan-out behind the same recorder
+    protocol makes each generator outcome update both without deriving unsafe
+    before/after deltas from process-global state under concurrent serving.
+    """
+
+    def __init__(self, *counters: MTPAcceptCounter) -> None:
+        if not counters:
+            raise ValueError("MTPAcceptCounterGroup requires at least one counter")
+        self._counters = counters
+
+    def record_attempt(self) -> None:
+        for counter in self._counters:
+            counter.record_attempt()
+
+    def record_accept(self, tokens_saved: int = 1) -> None:
+        for counter in self._counters:
+            counter.record_accept(tokens_saved=tokens_saved)
+
+    def record_verify(self, depth: int, accepted: int) -> None:
+        for counter in self._counters:
+            counter.record_verify(depth, accepted)
+
+    def record_round(self, depth: int, accepted: int) -> None:
+        for counter in self._counters:
+            counter.record_round(depth, accepted)
+
+    def record_reject(self) -> None:
+        for counter in self._counters:
+            counter.record_reject()
 
 
 # ---------------------------------------------------------------------------

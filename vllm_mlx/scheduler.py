@@ -18,7 +18,7 @@ import os
 import threading
 import time
 from collections import OrderedDict, deque
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any
 
 import mlx.core as mx
@@ -787,6 +787,17 @@ def _mtp_controller_key(model_name: str | None, sidecar: str | None) -> str | No
     return f"{len(model_name)}:{model_name}+mtp:{sidecar}"
 
 
+def _ensure_request_mtp_counter(request: Any):
+    """Return the counter owned by one request, creating it lazily."""
+    from .spec_decode.mtp.accept_counter import MTPAcceptCounter
+
+    counter = getattr(request, "_mtp_accept_counter", None)
+    if counter is None:
+        counter = MTPAcceptCounter()
+        request._mtp_accept_counter = counter
+    return counter
+
+
 def _install_continuous_mtp_router(
     batch_gen: "BatchGenerator",
     model: Any,
@@ -1032,7 +1043,22 @@ def _install_continuous_mtp_router(
         routed = router.plan(metadata, free_bytes=_free_bytes())
         if routed.route is not ContinuousMTPIntegrationRoute.CONTINUOUS_PLANNED:
             return
-        specs = [lane.spec for lane in routed.cohort]
+        specs = []
+        for lane in routed.cohort:
+            request_id = (
+                None
+                if uid_to_request_id is None
+                else uid_to_request_id.get(lane.spec.uid)
+            )
+            request = (
+                None
+                if requests is None or request_id is None
+                else requests.get(request_id)
+            )
+            counter = (
+                _ensure_request_mtp_counter(request) if request is not None else None
+            )
+            specs.append(replace(lane.spec, accept_counter=counter))
         selected = {spec.uid for spec in specs}
         try:
             candidate_driver = ContinuousMTPDriver.create(
@@ -1096,6 +1122,11 @@ def _install_continuous_mtp_router(
                 max_tokens=metadata.max_tokens,
                 num_draft=2,
                 sampling=SelfMTPSampling(temperature=metadata.temperature),
+                accept_counter=(
+                    _ensure_request_mtp_counter(requests[metadata.lane_id])
+                    if requests is not None and metadata.lane_id in requests
+                    else None
+                ),
             )
             joining_specs.append(spec)
             joining_stops[spec.uid] = metadata.stop_tokens
@@ -1948,6 +1979,19 @@ def _install_mtp_vendored(
             # exactly as it would be under baseline. Mark the uid as
             # permanently disabled so we don't retry construction on
             # every subsequent step.
+            request_counter = None
+            if uid_to_request_id is not None and requests is not None:
+                request_id = uid_to_request_id.get(uid)
+                request = requests.get(request_id) if request_id is not None else None
+                if request is not None:
+                    from .spec_decode.mtp.accept_counter import (
+                        MTPAcceptCounterGroup,
+                        get_global_counter,
+                    )
+
+                    request_counter = MTPAcceptCounterGroup(
+                        get_global_counter(), _ensure_request_mtp_counter(request)
+                    )
             try:
                 prompt_lookup_policy = _effective_prompt_lookup_policy(mtp_model)
                 prompt_lookup_enabled = sampling_options[
@@ -2001,6 +2045,7 @@ def _install_mtp_vendored(
                     # thread; never re-derive from the public seed.
                     lane_rng=sampling_options["lane_rng"],
                     timing_stats=_stats,
+                    accept_counter=request_counter,
                     # Prompt lookup is request-scoped. Capture both the
                     # route decision and immutable prompt history before the
                     # generator mutates GenerationBatch bookkeeping.
@@ -8528,6 +8573,11 @@ class Scheduler:
 
                 output.finished = True
                 output.finish_reason = response.finish_reason
+                request_mtp_counter = getattr(request, "_mtp_accept_counter", None)
+                if request_mtp_counter is not None:
+                    output.spec_decode_metrics = (
+                        request_mtp_counter.snapshot().response_metrics()
+                    )
                 if repetition_error is not None:
                     output.error = repetition_error
                     # Mark this abort as the graceful repetition-guard stop so

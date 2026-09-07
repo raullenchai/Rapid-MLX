@@ -58,13 +58,14 @@ tree-cache implementation once upstream ships
 
 from __future__ import annotations
 
-from .accept_counter import MTPAcceptCounter, get_global_counter
+from .accept_counter import MTPAcceptCounter, MTPAcceptCounterGroup, get_global_counter
 from .cache_patch import patch_arrays_cache_rollback_state
 from .detect import MTPEligibility, detect_mtp_eligibility
 from .dispatch import dispatch_mtp_inject, dispatch_mtp_validate
 
 __all__ = [
     "MTPAcceptCounter",
+    "MTPAcceptCounterGroup",
     "MTPEligibility",
     "detect_mtp_eligibility",
     "dispatch_mtp_inject",

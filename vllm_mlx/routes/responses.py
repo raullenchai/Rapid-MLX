@@ -87,6 +87,7 @@ from ..reasoning import finalize_streaming_compat
 from ..service.helpers import (
     SSE_RESPONSE_HEADERS,
     _apply_reasoning_cutoff_notice,
+    _build_response_metrics,
     _build_usage,
     _check_admission_or_503,
     _client_signalled_reasoning_intent,
@@ -2298,6 +2299,7 @@ async def _non_stream(
             )
         ],
         usage=_build_usage(output, reasoning_text),
+        metrics=_build_response_metrics(output),
     )
 
     responses_response = openai_to_responses(
@@ -2894,6 +2896,7 @@ async def _stream_responses(
         # cover legitimate immediate-stop / zero-budget /
         # stop-sequence turns whose ``finish_reason`` is ``"stop"``).
         last_finish_reason: str | None = None
+        last_response_metrics = None
         tool_filter = StreamingToolCallFilter()
 
         # Yuki F6 codex r1 BLOCKING #2 (PR #817): when the request
@@ -3509,6 +3512,8 @@ async def _stream_responses(
             if _frx is not None:
                 last_finish_reason = _frx
             chunk_is_terminal = bool(getattr(output, "finished", False) or _frx)
+            if chunk_is_terminal:
+                last_response_metrics = _build_response_metrics(output)
 
             terminal_reasoning_text = getattr(output, "reasoning_text", "")
             if terminal_reasoning_text:
@@ -4177,6 +4182,8 @@ async def _stream_responses(
                 payload["error"] = error
             if incomplete_details is not None:
                 payload["incomplete_details"] = incomplete_details
+            if last_response_metrics is not None:
+                payload["metrics"] = last_response_metrics.model_dump(exclude_none=True)
             return payload
 
         def _build_reasoning_done_payload() -> dict:

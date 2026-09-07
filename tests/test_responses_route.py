@@ -46,6 +46,7 @@ class _GenerationOutput:
     logprobs: Any = None
     channel: str | None = None
     tool_calls: list | None = None
+    spec_decode_metrics: dict | None = None
 
 
 class _Engine:
@@ -57,6 +58,7 @@ class _Engine:
         self.stream_calls: list[SimpleNamespace] = []
         self.build_prompt_calls: list[SimpleNamespace] = []
         self.tokenizer = _Tokenizer()
+        self.emit_mtp_metrics = False
 
     async def chat(self, messages, **kwargs):
         self.calls.append(SimpleNamespace(messages=messages, kwargs=kwargs))
@@ -78,6 +80,17 @@ class _Engine:
                 prompt_tokens=3 if i == 0 else 0,
                 completion_tokens=i + 1,
                 finish_reason=None if i < len(chunks) - 1 else "stop",
+                spec_decode_metrics=(
+                    {
+                        "verify_calls": 2,
+                        "correction_tokens": 1,
+                        "bonus_tokens": 1,
+                        "accepted_by_depth": [2, 1],
+                        "drafted_by_depth": [2, 2],
+                    }
+                    if self.emit_mtp_metrics and i == len(chunks) - 1
+                    else None
+                ),
             )
 
     def build_prompt(self, messages, tools=None, enable_thinking=None):
@@ -1296,6 +1309,30 @@ class TestResponsesStream:
         assert usage["input_tokens"] == 3
         assert usage["output_tokens"] == 3
         assert usage["total_tokens"] == 6
+
+    def test_stream_completed_event_carries_request_mtp_metrics(self, responses_client):
+        responses_client.engine.emit_mtp_metrics = True
+
+        with responses_client.client.stream(
+            "POST",
+            "/v1/responses",
+            json=_payload(stream=True),
+            headers={"Authorization": "Bearer test-secret"},
+        ) as resp:
+            body = "".join(resp.iter_text())
+
+        events = _parse_sse(body)
+        completed = [d for name, d in events if name == "response.completed"]
+        assert len(completed) == 1
+        assert completed[0]["response"]["metrics"] == {
+            "speculative_decoding": {
+                "verify_calls": 2,
+                "correction_tokens": 1,
+                "bonus_tokens": 1,
+                "accepted_by_depth": [2, 1],
+                "drafted_by_depth": [2, 2],
+            }
+        }
 
 
 # ---------------------------------------------------------------------------

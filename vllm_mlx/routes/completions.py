@@ -26,9 +26,11 @@ from ..config import get_config
 from ..middleware.auth import check_rate_limit, verify_api_key
 from ..service.helpers import (
     SSE_RESPONSE_HEADERS,
+    _build_response_metrics,
     _check_admission_or_503,
     _disconnect_guard,
     _extract_streaming_token_logprobs,
+    _merge_response_metrics,
     _raise_lifecycle_cancel_or_reraise,
     _release_admission_unless_committed,
     _release_route_ownership,
@@ -412,6 +414,7 @@ async def create_completion(request: CompletionRequest, raw_request: Request):
         total_completion_tokens = 0
         total_prompt_tokens = 0
         total_cached_tokens = 0
+        completed_outputs = []
 
         extended_kwargs = build_extended_sampling_kwargs(request)
 
@@ -633,6 +636,7 @@ async def create_completion(request: CompletionRequest, raw_request: Request):
                     logprobs=choice_logprobs,
                 )
             )
+            completed_outputs.append(output)
             total_completion_tokens += output.completion_tokens
             total_prompt_tokens += (
                 output.prompt_tokens if hasattr(output, "prompt_tokens") else 0
@@ -694,6 +698,7 @@ async def create_completion(request: CompletionRequest, raw_request: Request):
                     else None
                 ),
             ),
+            metrics=_merge_response_metrics(completed_outputs),
         )
         return Response(
             content=comp_response.model_dump_json(exclude_none=True),
@@ -799,6 +804,7 @@ async def stream_completion(
     # usage to the finish chunk unconditionally — see comment further
     # down at the chunk-build site.
     _final_usage = None
+    _final_metrics = None
 
     # R10-H4 (R9-H2 carry) — chat-lane parity for json-mode streaming.
     # Pre-fix the streaming path emitted raw tokens that decoded as
@@ -844,6 +850,7 @@ async def stream_completion(
             _buffered_text += output.new_text or ""
             if output.finished:
                 _final_usage = get_usage(output)
+                _final_metrics = _build_response_metrics(output)
                 _buffered_finish_reason = output.finish_reason
             continue
         if output.finished and is_cancellation_finish_reason(output.finish_reason):
@@ -909,6 +916,9 @@ async def stream_completion(
         # aggregating clients (LangChain / AI-SDK / vercel-ai-stream).
         if output.finished:
             _final_usage = get_usage(output)
+            _final_metrics = _build_response_metrics(output)
+            if _final_metrics is not None:
+                data["metrics"] = _final_metrics.model_dump(exclude_none=True)
         # Task C: latch the timestamp of the first non-empty content chunk
         # for a true TTFT on the streaming emit below. This fires only in the
         # non-JSON, non-echo path (the loop ``continue``s above for
@@ -950,6 +960,8 @@ async def stream_completion(
             "model": model_name,
             "choices": [final_choice],
         }
+        if _final_metrics is not None:
+            final_data["metrics"] = _final_metrics.model_dump(exclude_none=True)
         yield f"data: {json.dumps(final_data)}\n\n"
 
     # Dedicated trailing usage chunk (OpenAI spec — empty ``choices``,

@@ -97,6 +97,10 @@ class GenerationOutput:
     # note above to preserve positional constructor arg indices for
     # pre-existing fields.
     matched_stop: str | None = None
+    # Experimental per-request speculative-decoding counters. Populated only
+    # on the terminal output when MTP actually verified at least one draft.
+    # Appended last to preserve positional compatibility.
+    spec_decode_metrics: dict[str, int | list[int]] | None = None
 
 
 def _callable_accepts_kwarg(func: Any, name: str, inspect_mod: Any) -> bool:

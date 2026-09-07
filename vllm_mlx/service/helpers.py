@@ -42,7 +42,9 @@ from ..api.models import (
     OPENAI_REASONING_EFFORT_TO_MAX_TOKENS,
     CompletionTokensDetails,
     FunctionCall,
+    PerRequestMetrics,
     PromptTokensDetails,
+    SpeculativeDecodingMetrics,
     TokenLogProb,
     ToolCall,
     TopLogProb,
@@ -2619,6 +2621,43 @@ def build_extended_sampling_kwargs(request) -> dict:
 
 
 # ── Usage / logprobs ───────────────────────────────────────────────
+
+
+def _build_response_metrics(output: Any) -> PerRequestMetrics | None:
+    """Build terminal response metrics when this request actually ran MTP."""
+    metrics = getattr(output, "spec_decode_metrics", None)
+    if not isinstance(metrics, (dict, SpeculativeDecodingMetrics)):
+        return None
+    return PerRequestMetrics(
+        speculative_decoding=SpeculativeDecodingMetrics.model_validate(metrics)
+    )
+
+
+def _merge_response_metrics(outputs: list[Any]) -> PerRequestMetrics | None:
+    """Combine per-generation counters for one multi-prompt HTTP request."""
+    merged: SpeculativeDecodingMetrics | None = None
+    for output in outputs:
+        envelope = _build_response_metrics(output)
+        current = None if envelope is None else envelope.speculative_decoding
+        if current is None:
+            continue
+        if merged is None:
+            merged = current.model_copy(deep=True)
+            continue
+        merged.verify_calls += current.verify_calls
+        merged.correction_tokens += current.correction_tokens
+        merged.bonus_tokens += current.bonus_tokens
+        max_depth = max(len(merged.drafted_by_depth), len(current.drafted_by_depth))
+        merged.drafted_by_depth.extend([0] * (max_depth - len(merged.drafted_by_depth)))
+        merged.accepted_by_depth.extend(
+            [0] * (max_depth - len(merged.accepted_by_depth))
+        )
+        for depth in range(max_depth):
+            if depth < len(current.drafted_by_depth):
+                merged.drafted_by_depth[depth] += current.drafted_by_depth[depth]
+            if depth < len(current.accepted_by_depth):
+                merged.accepted_by_depth[depth] += current.accepted_by_depth[depth]
+    return None if merged is None else PerRequestMetrics(speculative_decoding=merged)
 
 
 def _build_usage(output: GenerationOutput, reasoning_text: str | None) -> Usage:

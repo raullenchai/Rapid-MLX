@@ -2198,6 +2198,22 @@ class PromptTokensDetails(BaseModel):
     cached_tokens: int = 0
 
 
+class SpeculativeDecodingMetrics(BaseModel):
+    """Experimental counters for one request's MTP verifier work."""
+
+    verify_calls: int = 0
+    correction_tokens: int = 0
+    bonus_tokens: int = 0
+    accepted_by_depth: list[int] = Field(default_factory=list)
+    drafted_by_depth: list[int] = Field(default_factory=list)
+
+
+class PerRequestMetrics(BaseModel):
+    """Optional engine metrics carried only on a terminal response."""
+
+    speculative_decoding: SpeculativeDecodingMetrics | None = None
+
+
 class Usage(BaseModel):
     """Token usage statistics."""
 
@@ -2217,6 +2233,7 @@ class ChatCompletionResponse(BaseModel):
     model: str
     choices: list[ChatCompletionChoice]
     usage: Usage = Field(default_factory=Usage)
+    metrics: PerRequestMetrics | None = None
 
 
 # =============================================================================
@@ -2469,6 +2486,7 @@ class CompletionResponse(BaseModel):
     model: str
     choices: list[CompletionChoice]
     usage: Usage = Field(default_factory=Usage)
+    metrics: PerRequestMetrics | None = None
 
 
 # =============================================================================
@@ -3317,6 +3335,7 @@ class ChatCompletionChunk(BaseModel):
     model: str
     choices: list[ChatCompletionChunkChoice]
     usage: Usage | None = None  # Included when stream_options.include_usage=true
+    metrics: PerRequestMetrics | None = None
 
 
 # Supported output dimensions: a bounded range keeps a single request from

@@ -1005,6 +1005,7 @@ def openai_to_responses(
         status=status,
         output=output,
         usage=usage,
+        metrics=response.metrics,
         parallel_tool_calls=bool(request.parallel_tool_calls),
         tool_choice=request.tool_choice or "auto",
         tools=request.tools or [],

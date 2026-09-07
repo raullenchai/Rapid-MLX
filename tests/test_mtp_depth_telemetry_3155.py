@@ -12,9 +12,44 @@ import pytest
 
 from vllm_mlx.spec_decode.mtp.accept_counter import (
     MTPAcceptCounter,
+    MTPAcceptCounterGroup,
     get_global_counter,
     reset_global_counter_for_tests,
 )
+
+
+def test_response_metrics_are_dense_and_absent_before_a_verify():
+    counter = MTPAcceptCounter()
+    assert counter.snapshot().response_metrics() is None
+
+    counter.record_round(3, 1)
+    counter.record_round(2, 0)
+
+    assert counter.snapshot().response_metrics() == {
+        "verify_calls": 2,
+        "correction_tokens": 2,
+        "bonus_tokens": 0,
+        "drafted_by_depth": [2, 2, 1],
+        "accepted_by_depth": [1, 0, 0],
+    }
+
+
+def test_counter_group_keeps_process_and_request_lifetimes_in_sync():
+    process = MTPAcceptCounter()
+    request = MTPAcceptCounter()
+    group = MTPAcceptCounterGroup(process, request)
+
+    group.record_attempt()
+    group.record_accept(tokens_saved=1)
+    group.record_verify(1, 1)
+    group.record_reject()
+
+    assert process.snapshot() == request.snapshot()
+
+
+def test_counter_group_rejects_an_empty_fanout():
+    with pytest.raises(ValueError, match="requires at least one counter"):
+        MTPAcceptCounterGroup()
 
 
 def test_record_verify_builds_prefix_histogram():

@@ -85,6 +85,7 @@ from ..service.helpers import (
     _append_tool_use_suffix,
     _apply_reasoning_cutoff_notice,
     _build_prompt_with_thinking_compat,
+    _build_response_metrics,
     _build_usage,
     _check_admission_or_503,
     _consume_guided_lifecycle_cancel,
@@ -4923,6 +4924,11 @@ async def _create_chat_completion_impl(
                         update={
                             "id": f"chatcmpl-{uuid.uuid4().hex[:8]}",
                             "created": int(time.time()),
+                            # The cached body came from an earlier engine
+                            # execution. Request-scoped MTP counters describe
+                            # work performed by THIS request, so a cache hit
+                            # must not replay the original verify histogram.
+                            "metrics": None,
                         }
                     )
                     _hit_headers = enable_thinking_warning_header(
@@ -6419,6 +6425,7 @@ async def _create_chat_completion_impl(
             )
         ],
         usage=_build_usage(output, reasoning_text),
+        metrics=_build_response_metrics(output),
     )
     # ── Response cache — STORE ───────────────────────────────────────
     #
@@ -7029,6 +7036,11 @@ async def stream_chat_completion(
                         # AI-SDK / vercel-ai-stream parsers double-count
                         # token totals when usage shows up unexpectedly.
                         usage=None,
+                        metrics=(
+                            _build_response_metrics(output)
+                            if event.finish_reason is not None
+                            else None
+                        ),
                     )
                     _tc_sse = f"data: {chunk.model_dump_json(exclude_none=True)}\n\n"
                     # Dogfood F-R2-05 + codex r5 NIT #3: previously
@@ -7698,6 +7710,7 @@ async def stream_chat_completion(
                 # the field is omitted from this terminal chunk; the
                 # dedicated trailing usage chunk is suppressed too.
                 usage=None,
+                metrics=_build_response_metrics(finish_output),
             )
             yield f"data: {final_chunk.model_dump_json(exclude_none=True)}\n\n"
         elif fallback_tool_calls or finalize_content:
@@ -8317,6 +8330,7 @@ async def stream_chat_completion_guided(
                 )
             ],
             usage=finish_usage,
+            metrics=_build_response_metrics(output),
         )
         yield f"data: {finish_chunk.model_dump_json(exclude_none=True)}\n\n"
 

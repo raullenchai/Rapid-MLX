@@ -276,6 +276,31 @@ you turn it on.
 > diagnostic above already assumes one model and `disable_auto_k`; keep it
 > that way — a fresh process per checkpoint — when you read the ratio.
 
+For request-level diagnosis, successful MTP requests also include an
+experimental `metrics.speculative_decoding` object in the terminal response:
+
+```json
+{
+  "metrics": {
+    "speculative_decoding": {
+      "verify_calls": 12,
+      "correction_tokens": 3,
+      "bonus_tokens": 5,
+      "accepted_by_depth": [11, 8, 4],
+      "drafted_by_depth": [12, 11, 8]
+    }
+  }
+}
+```
+
+The counters belong only to that HTTP request, so concurrent traffic cannot
+mix their values. Multi-prompt Completions sum the counters across their
+choices. They appear on non-streaming Chat Completions, Completions, and
+Responses payloads, or on the single terminal event for their streaming forms.
+The `metrics` field is omitted when MTP did not perform a verification round,
+including ordinary decoding and response-cache hits. The process-wide
+`/metrics` series remain the right surface for service dashboards.
+
 #### MTP sidecar heads are not standalone models
 
 The `*-mtp-4bit` aliases — `qwen3.6-27b-mtp-4bit`

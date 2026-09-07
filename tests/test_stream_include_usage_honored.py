@@ -56,8 +56,11 @@ class _PlainChatEngine:
     supports_guided_generation = False
     tokenizer = None
 
-    def __init__(self, deltas: list[str] | None = None) -> None:
+    def __init__(
+        self, deltas: list[str] | None = None, *, with_mtp_metrics: bool = False
+    ) -> None:
         self._deltas = deltas or ["Hello", " world", "."]
+        self._with_mtp_metrics = with_mtp_metrics
 
     def build_prompt(self, messages, tools=None, enable_thinking=None):
         return "PROMPT"
@@ -75,6 +78,17 @@ class _PlainChatEngine:
                 finished=is_last,
                 finish_reason="stop" if is_last else None,
                 channel=None,
+                spec_decode_metrics=(
+                    {
+                        "verify_calls": 2,
+                        "correction_tokens": 1,
+                        "bonus_tokens": 1,
+                        "accepted_by_depth": [2, 1],
+                        "drafted_by_depth": [2, 2],
+                    }
+                    if is_last and self._with_mtp_metrics
+                    else None
+                ),
             )
 
 
@@ -89,8 +103,11 @@ class _PlainCompletionsEngine:
     supports_guided_generation = False
     tokenizer = None
 
-    def __init__(self, deltas: list[str] | None = None) -> None:
+    def __init__(
+        self, deltas: list[str] | None = None, *, with_mtp_metrics: bool = False
+    ) -> None:
         self._deltas = deltas or ["foo", "bar", "baz"]
+        self._with_mtp_metrics = with_mtp_metrics
 
     async def stream_generate(self, prompt, **kwargs):
         accumulated = ""
@@ -105,6 +122,17 @@ class _PlainCompletionsEngine:
                 finished=is_last,
                 finish_reason="stop" if is_last else None,
                 channel=None,
+                spec_decode_metrics=(
+                    {
+                        "verify_calls": 2,
+                        "correction_tokens": 1,
+                        "bonus_tokens": 1,
+                        "accepted_by_depth": [2, 1],
+                        "drafted_by_depth": [2, 2],
+                    }
+                    if is_last and self._with_mtp_metrics
+                    else None
+                ),
             )
 
 
@@ -374,6 +402,66 @@ def test_completions_stream_emits_dedicated_usage_chunk_when_include_usage_true(
         f"per-token chunks MUST NOT carry usage; got {len(per_token)} "
         f"that did: {per_token!r}"
     )
+
+
+@pytest.mark.parametrize("endpoint", ["chat", "completions"])
+def test_terminal_stream_chunk_carries_request_scoped_mtp_metrics(endpoint):
+    if endpoint == "chat":
+        client = _make_chat_client(_PlainChatEngine(with_mtp_metrics=True))
+        path = "/v1/chat/completions"
+        body = {
+            "model": "test-model",
+            "messages": [{"role": "user", "content": "hi"}],
+            "stream": True,
+            "max_tokens": 16,
+        }
+    else:
+        client = _make_completions_client(
+            _PlainCompletionsEngine(with_mtp_metrics=True)
+        )
+        path = "/v1/completions"
+        body = {
+            "model": "test-model",
+            "prompt": "hi",
+            "stream": True,
+            "max_tokens": 16,
+        }
+
+    response = client.post(path, json=body)
+    assert response.status_code == 200, response.text
+    events = _parse_sse(response.text)
+    measured = [event for event in events if "metrics" in event]
+    assert len(measured) == 1
+    assert measured[0]["metrics"]["speculative_decoding"] == {
+        "verify_calls": 2,
+        "correction_tokens": 1,
+        "bonus_tokens": 1,
+        "accepted_by_depth": [2, 1],
+        "drafted_by_depth": [2, 2],
+    }
+
+
+def test_json_buffered_completion_terminal_carries_request_scoped_mtp_metrics():
+    client = _make_completions_client(
+        _PlainCompletionsEngine(deltas=['{"ok"', ":true}"], with_mtp_metrics=True)
+    )
+    response = client.post(
+        "/v1/completions",
+        json={
+            "model": "test-model",
+            "prompt": "hi",
+            "stream": True,
+            "max_tokens": 16,
+            "response_format": {"type": "json_object"},
+        },
+    )
+
+    assert response.status_code == 200, response.text
+    events = _parse_sse(response.text)
+    measured = [event for event in events if "metrics" in event]
+    assert len(measured) == 1
+    assert measured[0]["choices"][0]["finish_reason"] == "stop"
+    assert measured[0]["metrics"]["speculative_decoding"]["verify_calls"] == 2
 
 
 # ---------------------------------------------------------------------------

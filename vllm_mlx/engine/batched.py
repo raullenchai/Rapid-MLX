@@ -2589,6 +2589,7 @@ class BatchedEngine(BaseEngine):
             # on the OpenAI surface (it already lumps stop+EOS under
             # ``finish_reason="stop"``).
             matched_stop=getattr(output, "matched_stop", None),
+            spec_decode_metrics=getattr(output, "spec_decode_metrics", None),
         )
 
     async def stream_generate(
@@ -2735,6 +2736,7 @@ class BatchedEngine(BaseEngine):
                     # H-03: MLLM stream parity — propagate the matched
                     # stop string for the Anthropic adapter.
                     matched_stop=getattr(output, "matched_stop", None),
+                    spec_decode_metrics=getattr(output, "spec_decode_metrics", None),
                 )
             return
 
@@ -2836,6 +2838,7 @@ class BatchedEngine(BaseEngine):
                     # H-03: text stream parity — propagate the matched
                     # stop string for the Anthropic adapter.
                     matched_stop=getattr(output, "matched_stop", None),
+                    spec_decode_metrics=getattr(output, "spec_decode_metrics", None),
                 )
         finally:
             # Best-effort defensive abort. Codex r2 P1 #2 concern: this
@@ -3500,6 +3503,7 @@ class BatchedEngine(BaseEngine):
             # streaming chunks so the terminal chunk still carries it
             # for /v1/messages stop_sequence surfacing.
             matched_stop=source.matched_stop,
+            spec_decode_metrics=source.spec_decode_metrics,
         )
 
     def _routed_finish_sentinel(self, source: GenerationOutput) -> GenerationOutput:
@@ -3518,6 +3522,7 @@ class BatchedEngine(BaseEngine):
             # /v1/messages stop_sequence surfacing works on router-led
             # streams (harmony / gemma4).
             matched_stop=source.matched_stop,
+            spec_decode_metrics=source.spec_decode_metrics,
         )
 
     def _finalize_output_router(
