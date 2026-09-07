@@ -55,14 +55,18 @@ from ..patches.deepseek_v32_indexer_gate import (
 # norm-shift correction on the canonical production model-load path.
 # Idempotent + a no-op on checkpoints whose norm gains are already
 # zero-centered.
+from ..patches.mla_absorbed_verify import (
+    install_mla_absorbed_verify as _install_mla_absorbed_verify,
+)
 from ..patches.qwen3_5_norm_shift import (
     install_qwen3_5_norm_shift_fix as _install_qwen3_5_norm_shift_fix,
 )
 
-# Both installers run below the import block so no module-level import
+# The installers run below the import block so no module-level import
 # follows an executable statement (E402).
 _install_dsv32_indexer_gate()
 _install_qwen3_5_norm_shift_fix()
+_install_mla_absorbed_verify()
 
 # Models that require tokenizer fallback
 FALLBACK_MODELS = [

@@ -34,6 +34,7 @@ FULL_SUITE_PREFIXES = (
     "apps/rapid-mac/scripts/build",
     "apps/rapid-mac/scripts/fake-rapid-mlx.sh",
     "apps/rapid-mac/scripts/gui-golden-flows.sh",
+    "apps/rapid-mac/scripts/mac-ci-ax-preflight.sh",
     "apps/rapid-mac/scripts/rapid-ax.swift",
     "scripts/select_gui_flows.py",
     "tests/test_gui_flow_routing.py",

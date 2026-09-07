@@ -497,6 +497,42 @@ struct AtomicModelCatalogTests {
         #expect(combined?.contains { $0.alias == "embed" } == false)
     }
 
+    @Test("verified MTP artifact can ship default-off via mtp_default_enabled")
+    func atomicShadowHonorsMTPDefaultOff() throws {
+        // #3115: the tier stays a correctness claim; the product default is
+        // a separate catalog fact. A missing key keeps the historical
+        // verified-means-on behaviour so older engines are unaffected.
+        let offPayload = Self.mutated { root in
+            root["text"] = [[
+                "alias": "chat",
+                "mtp_draft_model": "org/chat-mtp",
+                "mtp_speculative_tokens": 2,
+                "mtp_continuous_batching_tier": "verified",
+                "mtp_default_enabled": false,
+            ]]
+        }
+        let off = try #require(
+            ModelCatalog.parseAvailableJSON(offPayload)?.speculative["chat"]
+        )
+        #expect(off.method == .mtp)
+        #expect(off.tokens == 2)
+        #expect(!off.isDefaultEnabled)
+
+        let unqualifiedPayload = Self.mutated { root in
+            root["text"] = [[
+                "alias": "chat",
+                "mtp_draft_model": "org/chat-mtp",
+                "mtp_speculative_tokens": 2,
+                "mtp_continuous_batching_tier": "unknown",
+                "mtp_default_enabled": true,
+            ]]
+        }
+        let unqualified = try #require(
+            ModelCatalog.parseAvailableJSON(unqualifiedPayload)?.speculative["chat"]
+        )
+        #expect(!unqualified.isDefaultEnabled)
+    }
+
     @Test("unknown atomic tasks fail closed into the legacy downgrade path")
     func unknownTaskRejectsAtomicEnvelope() {
         let future = Self.signed(Self.payload.replacingOccurrences(

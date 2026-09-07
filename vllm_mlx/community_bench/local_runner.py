@@ -53,7 +53,10 @@ from .run_builder import (
     unresolved_model_identity,
     utc_now,
 )
-from .workspace import LocalRunArchive, plan_for_alias
+from .workspace import LocalRunArchive, describe_case, model_is_cached, plan_for_alias
+
+# Human-readable progress sink (one line per call, no trailing newline).
+Progress = Callable[[str], None]
 
 #: Where the text helper deposits the identity of the checkpoint the loader
 #: pinned, so a run that fails after loading still archives the facts of
@@ -532,8 +535,51 @@ def _validated_video_artifact(
         )
 
 
+def _format_duration(seconds: float) -> str:
+    """``~45 s`` / ``~3 min 10 s`` for estimates and elapsed stage times."""
+
+    whole = int(round(max(0.0, seconds)))
+    if whole < 60:
+        return f"{whole} s"
+    minutes, rest = divmod(whole, 60)
+    return f"{minutes} min {rest} s" if rest else f"{minutes} min"
+
+
+def _report(progress: Progress | None, line: str) -> None:
+    """Hand one line to the progress sink; a failing sink is never fatal.
+
+    Progress is presentation. A closed pipe, an encoding error, or a buggy
+    sink must not abort a benchmark that is otherwise measuring correctly,
+    let alone archive it as failed, so every sink call goes through here.
+    """
+
+    if progress is None:
+        return
+    try:
+        progress(line)
+    except Exception:
+        pass
+
+
+def _stage_started(progress: Progress | None) -> float | None:
+    """Clock a display-only stage; reads no clock when nobody is watching."""
+
+    return time.monotonic() if progress is not None else None
+
+
+def _stage_finished(
+    progress: Progress | None, started: float | None, what: str
+) -> None:
+    if progress is None or started is None:
+        return
+    _report(progress, f"{what} in {_format_duration(time.monotonic() - started)}")
+
+
 def _run_image(
-    alias: str, *, isolate_process_group: bool = True
+    alias: str,
+    *,
+    isolate_process_group: bool = True,
+    progress: Progress | None = None,
 ) -> list[dict[str, Any]]:
     from vllm_mlx.bench._server import serve
 
@@ -550,11 +596,14 @@ def _run_image(
         "seed": case["seed"],
     }
     measurements: list[dict[str, Any]] = []
+    _report(progress, f"Starting local image server for {alias} (loads the model)...")
+    boot_started = _stage_started(progress)
     with serve(
         alias,
         boot_timeout_s=600,
         isolate_process_group=isolate_process_group,
     ) as server:
+        _stage_finished(progress, boot_started, "Server ready")
         endpoint = f"{server['base_url']}/images/generations"
         total = case["warmup_rounds"] + case["measured_rounds"]
         for index in range(total):
@@ -565,6 +614,19 @@ def _run_image(
             duration_ms = (time.perf_counter() - started) * 1000
             if result.get("cancelled", False):
                 raise BenchmarkCancelledError("image benchmark was cancelled")
+            if index < case["warmup_rounds"]:
+                _report(
+                    progress,
+                    f"{case['case_id']:<16} warmup   "
+                    f"{_format_duration(duration_ms / 1000)}",
+                )
+            else:
+                _report(
+                    progress,
+                    f"{case['case_id']:<16} round "
+                    f"{index - case['warmup_rounds'] + 1}/{case['measured_rounds']}  "
+                    f"{_format_duration(duration_ms / 1000)}",
+                )
             if index >= case["warmup_rounds"]:
                 image_count = _validated_image_count(
                     result, width=case["width"], height=case["height"]
@@ -590,7 +652,10 @@ def _run_image(
 
 
 def _run_video(
-    alias: str, *, isolate_process_group: bool = True
+    alias: str,
+    *,
+    isolate_process_group: bool = True,
+    progress: Progress | None = None,
 ) -> list[dict[str, Any]]:
     from vllm_mlx.bench._server import serve
 
@@ -605,6 +670,8 @@ def _run_video(
         "seed": str(case["seed"]),
         "guidance_scale": str(case["guidance_millionths"] / 1_000_000),
     }
+    _report(progress, f"Starting local video server for {alias} (loads the model)...")
+    boot_started = _stage_started(progress)
     with serve(
         alias,
         boot_timeout_s=900,
@@ -613,6 +680,8 @@ def _run_video(
         extra_env={"RAPID_MLX_WAN_STEPS": str(case["steps"])},
         isolate_process_group=isolate_process_group,
     ) as server:
+        _stage_finished(progress, boot_started, "Server ready")
+        _report(progress, f"{case['case_id']:<16} round 1/1  generating...")
         started = time.perf_counter()
         response = requests.post(
             f"{server['base_url']}/videos", data=payload, timeout=30
@@ -649,6 +718,10 @@ def _run_video(
                 )
             )
         duration_ms = (time.perf_counter() - started) * 1000
+        _report(
+            progress,
+            f"{case['case_id']:<16} round 1/1  {_format_duration(duration_ms / 1000)}",
+        )
         expected_size = f"{case['width']}x{case['height']}"
         if (
             job.get("size") != expected_size
@@ -685,6 +758,69 @@ def _run_video(
         ]
 
 
+def _estimate_remaining_s(
+    cases: list[dict[str, Any]],
+    sample: Any,
+    *,
+    done_label: str,
+) -> float | None:
+    """Project total remaining wall time from the first completed round.
+
+    Uses the observed prefill and decode rates of ``sample`` (a
+    ``RoundResult``) to price every remaining round of every case, so the
+    long case is weighted by its own token counts rather than assumed to
+    cost the same as the short one. Returns ``None`` when rates are missing.
+    """
+
+    prefill_tps = getattr(sample, "prefill_tps", None)
+    decode_tps = getattr(sample, "decode_tps", None)
+    if not (
+        isinstance(prefill_tps, int | float)
+        and isinstance(decode_tps, int | float)
+        and prefill_tps > 0
+        and decode_tps > 0
+    ):
+        return None
+    remaining = 0.0
+    for case in cases:
+        rounds = int(case.get("warmup_rounds", 0)) + int(case.get("measured_rounds", 0))
+        if case.get("case_id") == done_label:
+            rounds -= 1
+        per_round = (
+            case.get("target_prompt_tokens", 0) / prefill_tps
+            + case.get("target_output_tokens", 0) / decode_tps
+        )
+        remaining += max(0, rounds) * per_round
+    return remaining
+
+
+def _text_round_observer(progress: Progress, cases: list[dict[str, Any]]):
+    """Build the per-round progress callback for the text protocol."""
+
+    estimated = False
+
+    def on_round(label: str, phase: str, index: int, total: int, result: Any) -> None:
+        nonlocal estimated
+        if phase == "warmup":
+            suffix = f" {index}/{total}" if total > 1 else ""
+            _report(progress, f"{label:<16} warmup{suffix}")
+            if not estimated:
+                estimated = True
+                remaining = _estimate_remaining_s(cases, result, done_label=label)
+                if remaining is not None:
+                    _report(
+                        progress,
+                        "Estimated time remaining: "
+                        f"~{_format_duration(remaining)} (from the warmup rate)",
+                    )
+            return
+        tps = getattr(result, "decode_tps", None)
+        rate = f"  {tps:6.1f} tok/s" if isinstance(tps, int | float) else ""
+        _report(progress, f"{label:<16} round {index}/{total}{rate}")
+
+    return on_round
+
+
 def _loader_target(model_name: str, repo_id: str) -> str:
     """What to hand ``load_model_with_fallback`` for ``model_name``.
 
@@ -703,6 +839,8 @@ def _loader_target(model_name: str, repo_id: str) -> str:
 async def _text_measurements(
     model_name: str,
     catalog_repo_id: str | None = None,
+    *,
+    progress: Progress | None = None,
 ) -> tuple[list[dict[str, Any]], int, dict[str, Any] | None]:
     """Measure ``model_name`` — the catalog alias, not the bare repo id.
 
@@ -730,10 +868,21 @@ async def _text_measurements(
     repo_id = catalog_repo_id or resolve_model(model_name)
     target = _loader_target(model_name, repo_id)
 
+    workload = registered_workload("text_generation")
     executor = concurrent.futures.ThreadPoolExecutor(
         max_workers=1, thread_name_prefix="mlx-step", initializer=_init_mlx_step_thread
     )
     try:
+        if progress is not None:
+            cached = model_is_cached(repo_id)
+            if cached is True:
+                source = "from the local Hugging Face cache"
+            elif cached is False:
+                source = "not cached yet; downloading from Hugging Face first"
+            else:
+                source = "cache state unknown; downloads anything missing"
+            _report(progress, f"Loading {repo_id} ({source})...")
+        load_started = _stage_started(progress)
         loaded = executor.submit(
             load_model_with_fallback, target, return_source=True
         ).result()
@@ -741,6 +890,7 @@ async def _text_measurements(
         # double may still answer with the plain pair.
         model, tokenizer = loaded[0], loaded[1]
         loaded_source = loaded[2] if len(loaded) > 2 else ""
+        _stage_finished(progress, load_started, "Model loaded")
         # Identity of the checkpoint the loader just pinned, read now — before
         # minutes of measurement give another process time to move refs/main.
         loaded_identity = unresolved_model_identity(
@@ -774,6 +924,11 @@ async def _text_measurements(
                 tokenizer,
                 sampling="greedy",
                 registered_token_ids=True,
+                on_round=(
+                    _text_round_observer(progress, workload["cases"])
+                    if progress is not None
+                    else None
+                ),
             )
             _record_conditions_after()
     finally:
@@ -786,7 +941,6 @@ async def _text_measurements(
         # boundary for native MLX calls that cannot be interrupted in-process.
         executor.shutdown(wait=True, cancel_futures=True)
 
-    workload = registered_workload("text_generation")
     buckets = (result.short, result.long)
     measurements: list[dict[str, Any]] = []
     peak = result.peak_ram_mb
@@ -838,13 +992,38 @@ def _is_dedicated_process_group_leader() -> bool:
         return False
 
 
+def _announce_plan(progress: Progress | None, plan: dict[str, Any]) -> None:
+    """Print what is about to run so a multi-minute run is never silent."""
+
+    if progress is None:
+        return
+    model = plan["model"]
+    cases = plan.get("workload", {}).get("cases", [])
+    warmup = sum(int(case.get("warmup_rounds", 0)) for case in cases)
+    measured = sum(int(case.get("measured_rounds", 0)) for case in cases)
+    _report(
+        progress,
+        f"Benchmarking {model['alias']} ({model['task_type']}): "
+        f"{len(cases)} case{'s' if len(cases) != 1 else ''}, "
+        f"{warmup} warmup + {measured} measured rounds in total",
+    )
+    for case in cases:
+        _report(progress, f"  {describe_case(case)}")
+
+
 def run_local(
     alias: str,
     *,
     archive: LocalRunArchive | None = None,
     inherit_process_group: bool = False,
+    progress: Progress | None = None,
 ) -> dict[str, Any]:
-    """Run a registered protocol, validate it, and save it locally only."""
+    """Run a registered protocol, validate it, and save it locally only.
+
+    ``progress`` receives short human-readable status lines (model load,
+    per-round throughput, time estimate). It is never given the result and
+    nothing is written to stdout here, so ``--json`` callers stay clean.
+    """
 
     if inherit_process_group and not _is_dedicated_process_group_leader():
         raise LocalBenchmarkError(
@@ -866,6 +1045,7 @@ def run_local(
     if task_type not in {"text_generation", "image_generation", "video_generation"}:
         raise ValueError(f"unsupported task type {task_type!r}")
     destination = archive or LocalRunArchive.default()
+    _announce_plan(progress, plan)
     # The text helper deposits the identity of the checkpoint the loader
     # pinned; arm the capture for this run only and disarm on every path.
     loaded: dict[str, Any] = {}
@@ -880,6 +1060,7 @@ def run_local(
             destination,
             inherit_process_group,
             loaded,
+            progress=progress,
         )
     finally:
         _LOADED_IDENTITY.reset(loaded_token)
@@ -894,6 +1075,8 @@ def _run_local_measured(
     destination: LocalRunArchive,
     inherit_process_group: bool,
     loaded: dict[str, Any],
+    *,
+    progress: Progress | None = None,
 ) -> dict[str, Any]:
     context_length = None
     hardware = None
@@ -918,7 +1101,9 @@ def _run_local_measured(
         capture_token = _CONDITIONS_AFTER.set(capture)
         try:
             if task_type == "text_generation":
-                measured = asyncio.run(_text_measurements(alias, model["repo_id"]))
+                measured = asyncio.run(
+                    _text_measurements(alias, model["repo_id"], progress=progress)
+                )
                 measurements, context_length = measured[0], measured[1]
                 # The identity read right after the loader pinned its snapshot
                 # (3-tuple from the real helper; test doubles may return two).
@@ -926,11 +1111,15 @@ def _run_local_measured(
                     model_identity = measured[2]
             elif task_type == "image_generation":
                 measurements = _run_image(
-                    alias, isolate_process_group=not inherit_process_group
+                    alias,
+                    isolate_process_group=not inherit_process_group,
+                    progress=progress,
                 )
             elif task_type == "video_generation":
                 measurements = _run_video(
-                    alias, isolate_process_group=not inherit_process_group
+                    alias,
+                    isolate_process_group=not inherit_process_group,
+                    progress=progress,
                 )
         finally:
             # Disarm on every path (success, failure, cancellation) so a
@@ -1040,4 +1229,4 @@ def _run_local_measured(
     return run
 
 
-__all__ = ["LocalBenchmarkError", "run_local"]
+__all__ = ["LocalBenchmarkError", "Progress", "run_local"]

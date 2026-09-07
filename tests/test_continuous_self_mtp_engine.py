@@ -201,9 +201,24 @@ def test_fixed_membership_prepare_attach_propose_commit_detach_lifecycle():
     assert [lane.uid for lane in batch.lanes] == [1, 2]
     assert batch.membership_epoch == 1
 
+    from vllm_mlx.spec_decode.mtp.accept_counter import (
+        get_global_counter,
+        reset_global_counter_for_tests,
+    )
+
+    reset_global_counter_for_tests()
     proposal = engine.propose_batched_self_mtp(batch)
     assert proposal.lane_uids == (1, 2)
     assert proposal.accepted_lengths == (1, 0)
+    # #3155: the continuous path feeds the process counter (it used to
+    # bypass it, so /metrics read 0 under the default tier-verified route).
+    snap = get_global_counter().snapshot()
+    reset_global_counter_for_tests()
+    assert snap.verify_calls == sum(1 for d in proposal.draft_depths if d > 0)
+    assert snap.attempts == sum(proposal.draft_depths)
+    assert snap.accepts == sum(proposal.accepted_lengths) == 1
+    assert dict(snap.drafted_by_depth)[1] == snap.verify_calls
+    assert dict(snap.accepted_by_depth) == {1: 1}
     assert not [call for call in caches.calls if call[0] == "rollback"]
     with pytest.raises(engine.ContinuousSelfMTPError, match="proposal is open"):
         engine.detach_self_mtp_lanes(batch, [0, 1])

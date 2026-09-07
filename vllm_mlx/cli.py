@@ -2212,6 +2212,26 @@ def _alias_continuous_mtp_tier(model_name) -> str:
     return tier if tier in {"unknown", "verified", "blocked"} else "unknown"
 
 
+def _alias_mtp_default_enabled(model_name) -> bool:
+    """Whether the alias ships its declared MTP preset on by default.
+
+    Distinct from the qualification tier: ``verified`` says the continuous
+    route is correct, this says the product turns it on unasked.  A registry
+    failure fails closed to *off* — the plain decode path is always safe.
+    """
+    if not model_name:
+        return False
+    try:
+        from .model_aliases import resolve_profile as _resolve_alias
+
+        profile = _resolve_alias(model_name)
+    except Exception:  # noqa: BLE001 - registry failure must fail closed
+        return False
+    if profile is None:
+        return False
+    return bool(getattr(profile, "mtp_default_enabled", True))
+
+
 def _normalize_speculative_config_or_exit(args):
     """Parse ``--speculative-config`` and map methods to runtime fields."""
     import json
@@ -2477,11 +2497,14 @@ def _normalize_speculative_config_or_exit(args):
         elif (
             not getattr(args, "no_spec_decode", False)
             and _alias_continuous_mtp_tier(getattr(args, "model", None)) == "verified"
+            and _alias_mtp_default_enabled(getattr(args, "model", None))
         ):
             # Exact artifacts that passed the mixed-workload qualification
-            # select their declared MTP preset by default.  The alias registry
-            # remains the single source of truth, and --no-spec-decode stays
-            # the explicit user escape hatch on every surface.
+            # select their declared MTP preset by default, unless the catalog
+            # ships them default-off (#3115: qwen3.5-4b-4bit measured -25%..-37%
+            # single-stream on M2 Pro / M3 Ultra).  The alias registry remains
+            # the single source of truth, and --no-spec-decode stays the
+            # explicit user escape hatch on every surface.
             raw_config = '{"method":"mtp"}'
             args.speculative_config = raw_config
 
@@ -6935,6 +6958,7 @@ def _available_models_json_payload() -> dict:
             "mtp_continuous_batching_tier": getattr(
                 p, "mtp_continuous_batching_tier", "unknown"
             ),
+            "mtp_default_enabled": bool(getattr(p, "mtp_default_enabled", True)),
             "modality": modality,
             "video_modes": list(p.video_modes or ()),
             "min_memory_gb": p.min_memory_gb,
@@ -12351,18 +12375,44 @@ Examples:
     community_catalog = community_subparsers.add_parser(
         "catalog", help="List models with a registered benchmark protocol"
     )
-    community_catalog.add_argument("--memory-gib", type=positive_int, default=None)
-    community_catalog.add_argument("--json", action="store_true")
+    community_catalog.add_argument(
+        "--memory-gib",
+        type=positive_int,
+        default=None,
+        help="Compute the fit column for a Mac with this much unified memory instead of this one",
+    )
+    community_catalog.add_argument(
+        "--all",
+        action="store_true",
+        help="List every model with a protocol, not only the recommended ones",
+    )
+    community_catalog.add_argument(
+        "--json",
+        action="store_true",
+        help="Print machine-readable JSON instead of the text summary",
+    )
     community_plan = community_subparsers.add_parser(
         "plan", help="Preview the exact local workload for a model"
     )
-    community_plan.add_argument("benchmark_model")
-    community_plan.add_argument("--json", action="store_true")
+    community_plan.add_argument(
+        "benchmark_model", help="Model alias from `rapid-mlx benchmark catalog`"
+    )
+    community_plan.add_argument(
+        "--json",
+        action="store_true",
+        help="Print machine-readable JSON instead of the text summary",
+    )
     community_run = community_subparsers.add_parser(
         "run", help="Run the registered protocol and save the result locally"
     )
-    community_run.add_argument("benchmark_model")
-    community_run.add_argument("--json", action="store_true")
+    community_run.add_argument(
+        "benchmark_model", help="Model alias from `rapid-mlx benchmark catalog`"
+    )
+    community_run.add_argument(
+        "--json",
+        action="store_true",
+        help="Print machine-readable JSON instead of the text summary",
+    )
     community_run.add_argument(
         "--inherit-process-group",
         action="store_true",
@@ -12374,16 +12424,30 @@ Examples:
     community_results.add_argument(
         "--limit", type=positive_int, default=None, help="Return only the latest N runs"
     )
-    community_results.add_argument("--json", action="store_true")
+    community_results.add_argument(
+        "--json",
+        action="store_true",
+        help="Print machine-readable JSON instead of the text summary",
+    )
     community_inspect = community_subparsers.add_parser(
         "inspect", help="Print one locally saved benchmark result"
     )
-    community_inspect.add_argument("run_id")
-    community_inspect.add_argument("--json", action="store_true")
+    community_inspect.add_argument(
+        "run_id",
+        help="Run id printed by `benchmark run` or listed by `benchmark results`",
+    )
+    community_inspect.add_argument(
+        "--json",
+        action="store_true",
+        help="Print machine-readable JSON instead of the text summary",
+    )
     community_share = community_subparsers.add_parser(
         "share", help="Explicitly upload one locally saved benchmark result"
     )
-    community_share.add_argument("run_id")
+    community_share.add_argument(
+        "run_id",
+        help="Run id printed by `benchmark run` or listed by `benchmark results`",
+    )
     community_share.add_argument(
         "--yes",
         action="store_true",
@@ -12410,7 +12474,11 @@ Examples:
         "--target",
         help=argparse.SUPPRESS,
     )
-    community_share.add_argument("--json", action="store_true")
+    community_share.add_argument(
+        "--json",
+        action="store_true",
+        help="Print machine-readable JSON instead of the text summary",
+    )
 
     # Models command. ``ls`` is registered as a top-level alias that
     # defaults to ``models --cached`` (the locally-cached view) — two

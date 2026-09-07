@@ -198,6 +198,57 @@ def test_bf16_residency_charge_does_not_fall_through_to_q4():
     assert estimate_model_bytes(FLUX2_KLEIN_Q4_ALIAS) < 18 * gib
 
 
+def test_real_bf16_single_file_layout_is_complete(monkeypatch, tmp_path):
+    """The pinned package uses Diffusers single files, not fake shard indexes."""
+
+    import json
+
+    import huggingface_hub.constants
+
+    from vllm_mlx import _download_gate as download_gate
+
+    revision = IMAGE_MODEL_REVISIONS[FLUX2_KLEIN_BF16_REPO]
+    snapshot = (
+        tmp_path
+        / f"models--{FLUX2_KLEIN_BF16_REPO.replace('/', '--')}"
+        / "snapshots"
+        / revision
+    )
+    tokenizer = snapshot / "tokenizer"
+    tokenizer.mkdir(parents=True)
+    (tokenizer / "tokenizer.json").write_text("{}")
+
+    text_encoder = snapshot / "text_encoder"
+    text_encoder.mkdir()
+    text_shard = "model-00001-of-00001.safetensors"
+    (text_encoder / text_shard).write_bytes(b"text weights")
+    (text_encoder / "model.safetensors.index.json").write_text(
+        json.dumps({"weight_map": {"tensor": text_shard}})
+    )
+    for component in ("transformer", "vae"):
+        directory = snapshot / component
+        directory.mkdir()
+        (directory / "diffusion_pytorch_model.safetensors").write_bytes(b"weights")
+
+    monkeypatch.setattr(huggingface_hub.constants, "HF_HUB_CACHE", str(tmp_path))
+
+    assert download_gate.mflux_missing_weights(FLUX2_KLEIN_BF16_REPO) == []
+    assert download_gate.mflux_local_snapshot(FLUX2_KLEIN_BF16_REPO) == str(snapshot)
+    (snapshot / "transformer" / "diffusion_pytorch_model.safetensors").unlink()
+    assert download_gate.mflux_missing_weights(FLUX2_KLEIN_BF16_REPO) == [
+        "transformer/diffusion_pytorch_model.safetensors"
+    ]
+    assert download_gate.mflux_local_snapshot(FLUX2_KLEIN_BF16_REPO) is None
+    outside = tmp_path / "outside-transformer.safetensors"
+    outside.write_bytes(b"borrowed weights")
+    (snapshot / "transformer" / "diffusion_pytorch_model.safetensors").symlink_to(
+        outside
+    )
+    assert download_gate.mflux_missing_weights(FLUX2_KLEIN_BF16_REPO) == [
+        "transformer/diffusion_pytorch_model.safetensors"
+    ]
+
+
 def test_cold_prefetch_keeps_pinned_bf16_revision_through_every_layer(monkeypatch):
     """Do not download moving main and then the pinned 16 GB snapshot again."""
 

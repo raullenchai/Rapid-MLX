@@ -12,16 +12,16 @@ from pathlib import Path
 from .common import DEFAULT_DOMAIN, DEFAULT_LABEL
 from .config import (
     ServiceConfigError,
-    atomic_write,
+    atomic_write_credential,
     atomic_write_definition,
     backup_config_path,
     config_bytes,
     config_digest,
     credential_path,
-    ensure_credential_dir,
     load_config,
     pending_config_path,
     private_file_present,
+    remove_credential,
 )
 from .definition import installed_identity
 from .install import _plist_path, _port_busy, _wait_ready, is_root
@@ -242,10 +242,20 @@ def credential_command(args) -> int:
             file=sys.stderr,
         )
         return 1
+    try:
+        account = _account(user)
+    except ServiceConfigError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
     if action == "unset":
         try:
-            path.unlink(missing_ok=True)
-        except OSError as exc:
+            remove_credential(
+                home,
+                label,
+                uid=account.pw_uid,
+                gid=account.pw_gid,
+            )
+        except (OSError, ServiceConfigError) as exc:
             print(f"error: could not remove credential: {exc}", file=sys.stderr)
             return 2
         print("service API credential removed; restart the service to disable auth.")
@@ -266,10 +276,9 @@ def credential_command(args) -> int:
         print("error: credential must be exactly one non-empty line", file=sys.stderr)
         return 1
     try:
-        account = _account(user)
-        ensure_credential_dir(home, uid=account.pw_uid, gid=account.pw_gid)
-        atomic_write(
-            path,
+        atomic_write_credential(
+            home,
+            label,
             (secret + "\n").encode(),
             uid=account.pw_uid,
             gid=account.pw_gid,

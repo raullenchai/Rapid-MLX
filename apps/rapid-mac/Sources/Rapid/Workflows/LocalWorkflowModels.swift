@@ -77,8 +77,25 @@ struct WorkflowWindowFrame: Codable, Equatable, Sendable {
 struct WorkflowInteractionTarget: Codable, Equatable, Sendable {
     let bundleIdentifier: String
     let processIdentifier: Int32
+    /// Computer Use binds this to the selected app launch. Other workflow
+    /// adapters may leave it nil when process-restart identity is irrelevant.
+    let processLaunchDate: Date?
     let windowIdentifier: String
     let windowFrame: WorkflowWindowFrame
+
+    init(
+        bundleIdentifier: String,
+        processIdentifier: Int32,
+        processLaunchDate: Date? = nil,
+        windowIdentifier: String,
+        windowFrame: WorkflowWindowFrame
+    ) {
+        self.bundleIdentifier = bundleIdentifier
+        self.processIdentifier = processIdentifier
+        self.processLaunchDate = processLaunchDate
+        self.windowIdentifier = windowIdentifier
+        self.windowFrame = windowFrame
+    }
 }
 
 /// Metadata for one screen observation. Pixel data and accessibility contents

@@ -918,6 +918,88 @@ def _render_spec_decode_mtp_counters(cfg: Any) -> list[str]:
         )
     )
 
+    # #3155 per-verify-call breakdown, the split MTPLX reports so an
+    # operator can tell WHY a workload loses: drafts wrong (accepted_by_depth
+    # falls off early), verify too expensive (verify_calls high with a
+    # healthy accept curve), or rollback churn (correction-heavy).
+    out.extend(
+        _fmt_metric(
+            "rapid_mlx_spec_decode_verify_calls_total",
+            "counter",
+            (
+                "MTP verify forwards (one per chain-of-K round that carried "
+                "at least one draft). tokens_saved / verify_calls is the "
+                "mean committed draft tokens per verify call."
+            ),
+            int(snapshot.verify_calls),
+            labels=common_labels,
+        )
+    )
+    out.extend(
+        _fmt_metric(
+            "rapid_mlx_spec_decode_correction_tokens_total",
+            "counter",
+            (
+                "Verify calls where at least one draft was rejected, so the "
+                "target's token from that forward corrected the chain."
+            ),
+            int(snapshot.correction_tokens),
+            labels=common_labels,
+        )
+    )
+    out.extend(
+        _fmt_metric(
+            "rapid_mlx_spec_decode_bonus_tokens_total",
+            "counter",
+            (
+                "Verify calls where every draft was accepted, so the "
+                "target's token from that forward was a free bonus token."
+            ),
+            int(snapshot.bonus_tokens),
+            labels=common_labels,
+        )
+    )
+    # Depth families are emitted only once they have samples: the
+    # prometheus_client parser (and tests/test_metrics_route.py) reject a
+    # HELP/TYPE header with no sample line.
+    if snapshot.drafted_by_depth:
+        accepted_by_depth = dict(snapshot.accepted_by_depth)
+        out.extend(
+            _fmt_metric_family(
+                "rapid_mlx_spec_decode_drafted_by_depth_total",
+                "counter",
+                (
+                    "Verify calls that carried a draft at this depth "
+                    "(depth=1 is the first draft after the committed token)."
+                ),
+                [
+                    (int(count), {**common_labels, "depth": str(depth)})
+                    for depth, count in snapshot.drafted_by_depth
+                ],
+            )
+        )
+        out.extend(
+            _fmt_metric_family(
+                "rapid_mlx_spec_decode_accepted_by_depth_total",
+                "counter",
+                (
+                    "Verify calls where the draft at this depth was accepted. "
+                    "accepted / drafted per depth is the per-depth acceptance "
+                    "rate; chain acceptance is a prefix so it is non-increasing "
+                    "in depth."
+                ),
+                # One sample per drafted depth (zero when nothing at that
+                # depth was accepted yet) so the family is never header-only
+                # and accepted/drafted joins line up depth for depth.
+                [
+                    (
+                        int(accepted_by_depth.get(depth, 0)),
+                        {**common_labels, "depth": str(depth)},
+                    )
+                    for depth, _count in snapshot.drafted_by_depth
+                ],
+            )
+        )
     # 0.9.13 PR-B controller-side counters. Read directly from the
     # DepthController registry so a K=0 park round is observable even
     # when it does NOT touch the drafter (drafter-side counters would

@@ -6,13 +6,19 @@ from __future__ import annotations
 import json
 import statistics
 import sys
+from datetime import datetime
 from typing import Any
 from urllib.parse import quote
 
 from .atomic_upload import preview_run, upload_run
 from .hardware import host_memory_gib
 from .local_runner import LocalBenchmarkError, run_local
-from .workspace import LocalRunArchive, benchmark_catalog, plan_for_alias
+from .workspace import (
+    LocalRunArchive,
+    benchmark_catalog,
+    describe_case,
+    plan_for_alias,
+)
 
 _LEADERBOARD_URL = "https://rapidmlx.com/leaderboard"
 _CONTRIBUTOR_BASE_URL = f"{_LEADERBOARD_URL}/contributors"
@@ -33,6 +39,144 @@ def _contributor_profile(receipt: dict[str, Any]) -> tuple[str, str] | None:
 
 def _print_json(value: Any) -> None:
     print(json.dumps(value, ensure_ascii=False, indent=2, sort_keys=True))
+
+
+def _progress_to_stderr(line: str) -> None:
+    """Human progress goes to stderr so stdout stays a clean result stream.
+
+    Presentation must never abort a benchmark: a closed or broken stderr
+    (``2> >(head -n 3)``) is swallowed rather than raised into the runner.
+    """
+
+    try:
+        print(line, file=sys.stderr, flush=True)
+    except (OSError, ValueError):
+        pass
+
+
+def _local_time(timestamp: Any) -> str:
+    """Render an archived UTC timestamp in the user's local clock.
+
+    Falls back to the raw value when it is not an ISO-8601 instant so a
+    hand-edited archive still lists.
+    """
+
+    if not isinstance(timestamp, str):
+        return "-"
+    try:
+        parsed = datetime.fromisoformat(timestamp.replace("Z", "+00:00"))
+    except ValueError:
+        return timestamp
+    if parsed.tzinfo is None:
+        return timestamp
+    return parsed.astimezone().strftime("%Y-%m-%d %H:%M local")
+
+
+def _memory_line(model: dict[str, Any], memory_gib: Any) -> str:
+    estimate = model.get("estimated_memory_gib")
+    fit = model.get("memory_fit")
+    if not isinstance(estimate, int):
+        return "unknown (no estimate for this model)"
+    line = f"~{estimate} GB estimated"
+    if model.get("memory_estimate_source") == "artifact_size_fallback":
+        line += " (from download size)"
+    if isinstance(memory_gib, int) and fit == "fits":
+        line += f"; fits this Mac ({memory_gib} GB)"
+    elif isinstance(memory_gib, int) and fit == "does_not_fit":
+        line += f"; does NOT fit this Mac ({memory_gib} GB)"
+    return line
+
+
+def _print_catalog(value: dict[str, Any], *, show_all: bool) -> None:
+    print("Community Benchmark models (local by default)")
+    memory_gib = value.get("memory_gib")
+    if isinstance(memory_gib, int) and value.get("memory_source") == "override":
+        print(
+            f"Fit column assumes {memory_gib} GB (--memory-gib), "
+            "not this Mac's memory\n"
+        )
+    elif isinstance(memory_gib, int):
+        print(f"This Mac: {memory_gib} GB unified memory (fit column below)\n")
+    else:
+        print("This Mac: memory unknown; pass --memory-gib to fill the fit column\n")
+
+    def row(model: dict[str, Any]) -> str:
+        marker = "★" if model.get("focus") else " "
+        fit = str(model.get("memory_fit", "unknown")).replace("_", " ")
+        estimate = model.get("estimated_memory_gib")
+        memory = f"~{estimate} GB" if isinstance(estimate, int) else "?"
+        return (
+            f" {marker} {model['alias']:<32} {model['task_type']:<18} "
+            f"{memory:>7}  {fit}"
+        )
+
+    # Recommended = focus models verified to fit this Mac. With no memory
+    # figure every fit is unknown; focus models are still listed first, but
+    # the heading says the fit was not checked rather than promising one.
+    memory_known = isinstance(memory_gib, int)
+    recommended: list[dict[str, Any]] = []
+    rest: list[dict[str, Any]] = []
+    for model in value["models"]:
+        fit = model.get("memory_fit")
+        if model.get("focus") and (
+            fit == "fits" if memory_known else fit != "does_not_fit"
+        ):
+            recommended.append(model)
+        else:
+            rest.append(model)
+    if memory_known:
+        print("Recommended (★ focus models that fit this Mac)")
+    else:
+        print("Recommended (★ focus models; memory fit unknown, see --memory-gib)")
+    if recommended:
+        for model in recommended:
+            print(row(model))
+    elif memory_known:
+        print("   (none of the focus models fit this Mac's memory)")
+    else:
+        print("   (no focus models in this catalog)")
+    if show_all:
+        print("\nAll other models")
+        for model in rest:
+            print(row(model))
+    else:
+        fitting = sum(1 for m in rest if m.get("memory_fit") == "fits")
+        verdict = f"{fitting} fit this Mac" if memory_known else "fit unknown"
+        print(
+            f"\n{len(rest)} more models have a registered protocol "
+            f"({verdict}); list them with rapid-mlx benchmark catalog --all"
+        )
+    print("\nRun: rapid-mlx benchmark run <model>")
+
+
+def _print_plan(value: dict[str, Any]) -> None:
+    model = value["model"]
+    workload = value.get("workload", {})
+    repo = model.get("repo_id")
+    print(f"Model:    {model['alias']}" + (f"  ({repo})" if repo else ""))
+    print(f"Task:     {model['task_type']}")
+    print(f"Protocol: {model['protocol_id']} v{workload.get('protocol_version', '?')}")
+    cases = workload.get("cases", [])
+    if cases:
+        print(f"Cases:    {len(cases)} (run in this order)")
+        for case in cases:
+            print(f"  {describe_case(case)}")
+    print(f"Memory:   {_memory_line(model, value.get('memory_gib'))}")
+    cached = value.get("model_cached")
+    if cached is True:
+        print("Download: already in the local Hugging Face cache; nothing to fetch")
+    elif cached is False:
+        print(
+            "Download: not cached yet; `benchmark run` downloads it from "
+            "Hugging Face first"
+        )
+    elif "model_cached" in value:
+        print(
+            "Download: could not verify the local cache; `benchmark run` "
+            "downloads anything that is missing"
+        )
+    print("Storage:  local; upload requires a separate share command and consent")
+    print("Nothing is uploaded by this command or by `benchmark run`.")
 
 
 def _run_model_label(run: dict[str, Any]) -> str:
@@ -165,12 +309,20 @@ def benchmark_command(args) -> int:
             value["memory_gib"] = memory_gib
             value["memory_source"] = memory_source
         elif action == "plan":
-            value = plan_for_alias(args.benchmark_model)
+            value = plan_for_alias(
+                args.benchmark_model,
+                memory_gib=host_memory_gib(),
+                check_cache=True,
+            )
         elif action == "run":
             value = run_local(
                 args.benchmark_model,
                 archive=archive,
                 inherit_process_group=getattr(args, "inherit_process_group", False),
+                # Progress is for a human watching a terminal. Under --json
+                # stderr stays reserved for the failure document the Desktop
+                # app surfaces verbatim on a non-zero exit.
+                progress=None if args.json else _progress_to_stderr,
             )
         elif action == "results":
             runs = archive.list(limit=getattr(args, "limit", None))
@@ -225,32 +377,9 @@ def benchmark_command(args) -> int:
     if args.json:
         _print_json(value)
     elif action == "catalog":
-        print("Community Benchmark models (local by default)")
-        memory_gib = value.get("memory_gib")
-        if isinstance(memory_gib, int) and value.get("memory_source") == "override":
-            print(
-                f"Fit column assumes {memory_gib} GB (--memory-gib), "
-                "not this Mac's memory\n"
-            )
-        elif isinstance(memory_gib, int):
-            print(f"This Mac: {memory_gib} GB unified memory (fit column below)\n")
-        else:
-            print(
-                "This Mac: memory unknown; pass --memory-gib to fill the fit column\n"
-            )
-        for model in value["models"]:
-            marker = "★" if model["focus"] else " "
-            fit = model["memory_fit"].replace("_", " ")
-            print(f" {marker} {model['alias']:<32} {model['task_type']:<18} {fit}")
-        print("\nRun: rapid-mlx benchmark run <model>")
+        _print_catalog(value, show_all=getattr(args, "all", False))
     elif action == "plan":
-        model = value["model"]
-        print(f"Model:    {model['alias']}")
-        print(f"Task:     {model['task_type']}")
-        print(
-            f"Protocol: {model['protocol_id']} v{value['workload']['protocol_version']}"
-        )
-        print("Storage:  local; upload requires a separate share command and consent")
+        _print_plan(value)
     elif action == "results":
         runs = value["runs"]
         if not runs:
@@ -258,7 +387,8 @@ def benchmark_command(args) -> int:
         for run in runs:
             print(
                 f"{run['run_id']}  {run['workload']['task_type']:<18} "
-                f"{run['outcome']['status']:<10} {run['completed_at']}  "
+                f"{run['outcome']['status']:<10} "
+                f"{_local_time(run.get('completed_at'))}  "
                 f"{_run_model_label(run)}"
             )
     elif action == "inspect":

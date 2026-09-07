@@ -34,8 +34,9 @@ enum PortAllocator {
     /// 10-port window. 7659-7668 is R M L X on a phone keypad — a
     /// port almost nothing else wants, unlike 8000 which every
     /// gateway and FastAPI dev server claims. 8000…8009 is kept as
-    /// a legacy fallback after the 7659 window so existing
-    /// `http://127.0.0.1:8000` clients keep working without a rebind.
+    /// a legacy recovery window after the 7659 window. Existing installs are
+    /// pinned to 8000 by ``migrateLegacyDefaultIfNeeded`` so their clients do
+    /// not silently disconnect on upgrade.
     static let defaultCandidatePorts: [Int] = Array(7659...7668)
     static let legacyFallbackPorts: [Int] = Array(8000...8009)
 
@@ -60,15 +61,40 @@ enum PortAllocator {
     /// UserDefaults key for the GUI-persisted port. Nil means
     /// "use the default window" (fresh install, or user cleared it).
     static let storedPortKey = "rapid.desktop.port"
+    /// One-shot marker for the 8000 -> 7659 default-port migration. Existing
+    /// installs keep their historical endpoint; new installs take the new
+    /// default. Once recorded, clearing the port field means "use 7659".
+    static let legacyDefaultMigrationKey = "rapid.desktop.port.defaultMigration.v1"
 
-    static func storedPort() -> Int? {
+    static func storedPort(defaults: UserDefaults = .standard) -> Int? {
         // GUI stores as string via AppStorage; legacy/env may have stored int.
-        if let s = UserDefaults.standard.string(forKey: storedPortKey),
+        if let s = defaults.string(forKey: storedPortKey),
            let p = Int(s.trimmingCharacters(in: .whitespaces)),
            (1...65_535).contains(p) { return p }
-        let v = UserDefaults.standard.integer(forKey: storedPortKey)
+        let v = defaults.integer(forKey: storedPortKey)
         guard v != 0, (1...65_535).contains(v) else { return nil }
         return v
+    }
+
+    /// Preserve the pre-7659 endpoint for upgrades without pinning fresh
+    /// installs to 8000. This must run before ``InstallTracker`` records the
+    /// current launch, while an absent last-seen version still means a genuine
+    /// first launch.
+    @discardableResult
+    static func migrateLegacyDefaultIfNeeded(
+        hadPreviousLaunch: Bool,
+        defaults: UserDefaults = .standard
+    ) -> Bool {
+        guard defaults.object(forKey: legacyDefaultMigrationKey) == nil else { return false }
+        let shouldPreserveLegacyDefault = defaults.object(forKey: storedPortKey) == nil
+            && hadPreviousLaunch
+        if shouldPreserveLegacyDefault {
+            // Write the compatibility value first. A crash between these two
+            // writes merely retries the idempotent migration next launch.
+            defaults.set(8_000, forKey: storedPortKey)
+        }
+        defaults.set(true, forKey: legacyDefaultMigrationKey)
+        return shouldPreserveLegacyDefault
     }
 
     /// Test seam — resolve the candidate window from an injected
@@ -77,13 +103,16 @@ enum PortAllocator {
     /// environment. Priority: env var > GUI-stored port > default
     /// window (7659…7668 plus 8000…8009 legacy fallback). A bad value
     /// is ignored rather than crashing the spawn.
-    static func resolveCandidatePorts(environment: [String: String]) -> [Int] {
+    static func resolveCandidatePorts(
+        environment: [String: String],
+        defaults: UserDefaults = .standard
+    ) -> [Int] {
         if let raw = environment["RAPID_DESKTOP_PORT"],
            let port = Int(raw.trimmingCharacters(in: .whitespaces)),
            (1...65_535).contains(port) {
              return [port]
         }
-        if let s = storedPort() {
+        if let s = storedPort(defaults: defaults) {
             return [s]
         }
         return defaultCandidatePorts + legacyFallbackPorts

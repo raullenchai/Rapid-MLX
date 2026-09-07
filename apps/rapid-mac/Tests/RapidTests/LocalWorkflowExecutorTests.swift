@@ -815,7 +815,8 @@ private actor RecordingWorkflowActuator: LocalWorkflowActuating {
 
     func perform(
         _ action: GroundedWorkflowAction,
-        against _: WorkflowObservation
+        groundedAgainst _: WorkflowObservation,
+        currentObservation _: WorkflowObservation
     ) async throws {
         actions.append(action)
     }
@@ -827,7 +828,8 @@ private actor BlockingWorkflowActuator: LocalWorkflowActuating {
 
     func perform(
         _: GroundedWorkflowAction,
-        against _: WorkflowObservation
+        groundedAgainst _: WorkflowObservation,
+        currentObservation _: WorkflowObservation
     ) async throws {
         await blocked.open()
         await released.wait()
