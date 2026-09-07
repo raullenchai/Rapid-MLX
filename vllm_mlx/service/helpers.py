@@ -149,26 +149,42 @@ def _release_admission_unless_committed(engine, committed: bool) -> None:
         # terminal finally both releases the reservation and touches the
         # lifecycle after the final chunk/disconnect. Touching here would
         # incorrectly start the idle clock while the SSE response is active.
+        _transfer_primary_request_to_stream(engine)
         return
     release = getattr(engine, "release_admission_reservation", None)
-    if release is None:
-        return
     try:
-        release()
-        _touch_primary_lifecycle(engine)
+        if release is not None:
+            release()
     except Exception:
         logger.warning(
             "release_admission_reservation raised on route finally",
             exc_info=True,
         )
+    finally:
+        _release_primary_request(engine)
 
 
-def _touch_primary_lifecycle(engine) -> None:
-    """Start the primary idle window after request ownership ends."""
+def _release_primary_request(engine) -> None:
+    """Release route ownership and start the primary's idle window."""
 
     lifecycle = get_config().primary_model_lifecycle
     if lifecycle is not None and lifecycle.engine is engine:
-        lifecycle.touch()
+        lifecycle.release_request()
+
+
+def _release_primary_request_unless_committed(engine, committed: bool) -> None:
+    """Keep streaming ownership until `_disconnect_guard` reaches terminal."""
+
+    if committed:
+        _transfer_primary_request_to_stream(engine)
+    else:
+        _release_primary_request(engine)
+
+
+def _transfer_primary_request_to_stream(engine) -> None:
+    lifecycle = get_config().primary_model_lifecycle
+    if lifecycle is not None and lifecycle.engine is engine:
+        lifecycle.transfer_request_to_stream()
 
 
 def _raise_lifecycle_cancel_or_reraise(engine, exc: asyncio.CancelledError) -> None:
@@ -2775,11 +2791,14 @@ async def ensure_engine_ready(engine: BaseEngine) -> BaseEngine:
 
     lifecycle = get_config().primary_model_lifecycle
     if lifecycle is not None and engine is lifecycle.engine:
+        lifecycle.acquire_request()
         try:
             await lifecycle.ensure_loaded()
         except asyncio.CancelledError:
+            lifecycle.release_request()
             raise
         except BaseException as exc:
+            lifecycle.release_request()
             logger.exception("Configured primary model failed to load on demand")
             raise HTTPException(
                 status_code=503,
@@ -4357,15 +4376,16 @@ async def _disconnect_guard(
             _force_abort_request(engine, request_id_holder)
         if engine is not None:
             release = getattr(engine, "release_admission_reservation", None)
-            if release is not None:
-                try:
+            try:
+                if release is not None:
                     release()
-                    _touch_primary_lifecycle(engine)
-                except Exception:
-                    logger.warning(
-                        "[disconnect_guard] release_admission_reservation raised",
-                        exc_info=True,
-                    )
+            except Exception:
+                logger.warning(
+                    "[disconnect_guard] release_admission_reservation raised",
+                    exc_info=True,
+                )
+            finally:
+                _release_primary_request(engine)
         logger.info(
             f"[disconnect_guard] CLEANUP done, {chunk_count} chunks total, elapsed={_elapsed()}"
         )

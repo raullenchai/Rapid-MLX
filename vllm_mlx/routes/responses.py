@@ -99,6 +99,7 @@ from ..service.helpers import (
     _parse_tool_calls_with_parser,
     _raise_lifecycle_cancel_or_reraise,
     _release_admission_unless_committed,
+    _release_primary_request_unless_committed,
     _resolve_enable_thinking,
     _resolve_max_tokens,
     _resolve_temperature,
@@ -977,9 +978,11 @@ async def create_response(request: Request):
     # Pre-flight admission — same C4 reservation shape the other two
     # routes use. ``_admission_committed`` flips to True when the
     # streaming path takes over so ``_disconnect_guard`` owns release.
-    _check_admission_or_503(engine)
     _admission_committed = False
+    _admission_acquired = False
     try:
+        _check_admission_or_503(engine)
+        _admission_acquired = True
         _log_request(responses_request)
 
         cfg_for_log = get_config()
@@ -1448,7 +1451,10 @@ async def create_response(request: Request):
     except asyncio.CancelledError as exc:
         _raise_lifecycle_cancel_or_reraise(engine, exc)
     finally:
-        _release_admission_unless_committed(engine, _admission_committed)
+        if _admission_acquired:
+            _release_admission_unless_committed(engine, _admission_committed)
+        else:
+            _release_primary_request_unless_committed(engine, _admission_committed)
 
 
 # ---------------------------------------------------------------------------

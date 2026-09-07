@@ -55,6 +55,7 @@ from ..service.helpers import (
     _parse_tool_calls_with_parser,
     _raise_lifecycle_cancel_or_reraise,
     _release_admission_unless_committed,
+    _release_primary_request_unless_committed,
     _rescue_silent_drop_from_reasoning,
     _resolve_enable_thinking,
     _resolve_max_tokens,
@@ -633,9 +634,11 @@ async def create_anthropic_message(
     # ``_disconnect_guard`` owns the release once the SSE generator
     # closes. Closes the codex R3 leak (validation errors between the
     # reservation and the helper used to pin the slot until restart).
-    _check_admission_or_503(engine)
     _admission_committed = False
+    _admission_acquired = False
     try:
+        _check_admission_or_503(engine)
+        _admission_acquired = True
         # --- Detailed request logging ---
         n_msgs = len(anthropic_request.messages)
         total_chars = 0
@@ -1203,7 +1206,10 @@ async def create_anthropic_message(
     except asyncio.CancelledError as exc:
         _raise_lifecycle_cancel_or_reraise(engine, exc)
     finally:
-        _release_admission_unless_committed(engine, _admission_committed)
+        if _admission_acquired:
+            _release_admission_unless_committed(engine, _admission_committed)
+        else:
+            _release_primary_request_unless_committed(engine, _admission_committed)
 
 
 @router.post(

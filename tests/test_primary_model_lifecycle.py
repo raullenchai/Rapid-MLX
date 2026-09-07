@@ -178,6 +178,47 @@ async def test_detach_refuses_in_flight_load_then_suppresses_callbacks():
 
 
 @pytest.mark.asyncio
+async def test_request_owner_closes_post_load_pre_admission_race():
+    now = [10.0]
+    engine = FakeEngine()
+    lifecycle = PrimaryModelLifecycle(
+        engine, lazy_load=True, idle_unload_seconds=1, clock=lambda: now[0]
+    )
+
+    lifecycle.acquire_request()
+    await lifecycle.ensure_loaded()
+    now[0] += 10
+    assert await lifecycle.evict_if_idle() is False
+
+    lifecycle.release_request()
+    now[0] += 0.5
+    assert await lifecycle.evict_if_idle() is False
+    now[0] += 0.6
+    assert await lifecycle.evict_if_idle() is True
+
+
+@pytest.mark.asyncio
+async def test_shutdown_drains_cancellation_isolated_load():
+    engine = FakeEngine()
+    engine.start_gate = asyncio.Event()
+    lifecycle = PrimaryModelLifecycle(engine, lazy_load=True)
+    waiter = asyncio.create_task(lifecycle.ensure_loaded())
+    await asyncio.sleep(0)
+    waiter.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await waiter
+
+    shutdown = asyncio.create_task(lifecycle.shutdown())
+    await asyncio.sleep(0)
+    assert shutdown.done() is False
+    engine.start_gate.set()
+    await shutdown
+    assert engine._loaded is True
+    with pytest.raises(RuntimeError, match="closed"):
+        await lifecycle.ensure_loaded()
+
+
+@pytest.mark.asyncio
 async def test_active_request_restarts_idle_window():
     now = [10.0]
     engine = FakeEngine(loaded=True)
@@ -211,6 +252,7 @@ async def test_route_release_starts_full_idle_window():
     cfg.primary_model_lifecycle = lifecycle
 
     now[0] += 20
+    lifecycle.acquire_request()
     _release_admission_unless_committed(engine, False)
     assert engine.release_calls == 1
     now[0] += 4
@@ -275,6 +317,7 @@ async def test_streaming_release_starts_idle_window_after_final_chunk():
     cfg = reset_config()
     cfg.primary_model_lifecycle = lifecycle
     now[0] += 20
+    lifecycle.acquire_request()
 
     chunks = [
         chunk

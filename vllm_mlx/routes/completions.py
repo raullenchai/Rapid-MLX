@@ -31,6 +31,7 @@ from ..service.helpers import (
     _extract_streaming_token_logprobs,
     _raise_lifecycle_cancel_or_reraise,
     _release_admission_unless_committed,
+    _release_primary_request_unless_committed,
     _resolve_max_tokens,
     _resolve_model_name,
     _resolve_temperature,
@@ -313,9 +314,11 @@ async def create_completion(request: CompletionRequest, raw_request: Request):
     # the release once the SSE generator closes. Closes the codex R3
     # leak where any HTTPException between this call and the
     # streaming/non-streaming helper pinned the slot until restart.
-    _check_admission_or_503(engine)
     _admission_committed = False
+    _admission_acquired = False
     try:
+        _check_admission_or_503(engine)
+        _admission_acquired = True
         # Handle single prompt or list of prompts
         prompts = (
             request.prompt if isinstance(request.prompt, list) else [request.prompt]
@@ -699,7 +702,10 @@ async def create_completion(request: CompletionRequest, raw_request: Request):
     except asyncio.CancelledError as exc:
         _raise_lifecycle_cancel_or_reraise(engine, exc)
     finally:
-        _release_admission_unless_committed(engine, _admission_committed)
+        if _admission_acquired:
+            _release_admission_unless_committed(engine, _admission_committed)
+        else:
+            _release_primary_request_unless_committed(engine, _admission_committed)
 
 
 async def stream_completion(

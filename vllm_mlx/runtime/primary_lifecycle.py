@@ -17,11 +17,15 @@ import inspect
 import logging
 import time
 from collections.abc import Awaitable, Callable
+from contextvars import ContextVar
 
 logger = logging.getLogger(__name__)
 
 LifecycleHook = Callable[[], object | Awaitable[object]]
 StateHook = Callable[[str], object]
+_request_token_context: ContextVar[tuple[int, object] | None] = ContextVar(
+    "primary_model_request_token", default=None
+)
 
 
 async def _run_hook(hook: LifecycleHook | None) -> None:
@@ -61,7 +65,9 @@ class PrimaryModelLifecycle:
         self._last_activity = self._clock()
         self._last_error: str | None = None
         self._detached = False
+        self._closed = False
         self._resume_required = False
+        self._request_tokens: dict[object, bool] = {}
         self.state = "ready" if self._is_loaded() else "standby"
 
     def _set_state(self, state: str) -> None:
@@ -86,6 +92,7 @@ class PrimaryModelLifecycle:
         task = self._load_task
         return (
             self._transition_lock.locked()
+            or bool(self._request_tokens)
             or self.state in {"loading", "unloading"}
             or (task is not None and not task.done())
         )
@@ -104,6 +111,7 @@ class PrimaryModelLifecycle:
             "idle_seconds": max(0.0, self._clock() - self._last_activity),
             "idle_unload_seconds": self.idle_unload_seconds,
             "lazy_load": self.lazy_load,
+            "active_request_owners": len(self._request_tokens),
             "error": self._last_error,
         }
 
@@ -119,15 +127,37 @@ class PrimaryModelLifecycle:
         )
 
     async def shutdown(self) -> None:
+        self._closed = True
         task = self._monitor_task
         self._monitor_task = None
-        if task is None:
-            return
-        task.cancel()
-        try:
-            await task
-        except asyncio.CancelledError:
-            pass
+        if task is not None:
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+
+        # A request waiter is cancellation-isolated from the shared model
+        # load. Drain that task before lifespan teardown stops/frees the same
+        # engine; cancelling an executor-backed MLX load cannot stop its worker
+        # safely and would create a start/stop race.
+        load_task = self._load_task
+        if load_task is not None and not load_task.done():
+            while not load_task.done():
+                try:
+                    await asyncio.shield(load_task)
+                except asyncio.CancelledError:
+                    # Teardown owns the engine and must not race its executor-
+                    # backed load. Re-arm the shield until the worker reaches
+                    # a terminal state, matching resident-model retirement.
+                    continue
+                except Exception:
+                    break
+            if load_task.done() and not load_task.cancelled():
+                try:
+                    load_task.result()
+                except Exception:
+                    logger.exception("Primary model load failed during shutdown drain")
 
     def detach(self) -> None:
         """Synchronously retire this coordinator during a primary handoff."""
@@ -135,6 +165,7 @@ class PrimaryModelLifecycle:
         if self.transitioning:
             raise RuntimeError("primary model lifecycle transition is in progress")
         self._detached = True
+        self._closed = True
         task = self._monitor_task
         self._monitor_task = None
         if task is not None:
@@ -144,8 +175,8 @@ class PrimaryModelLifecycle:
     async def ensure_loaded(self) -> None:
         """Load once and let concurrent/cancelled callers share the attempt."""
 
-        if self._detached:
-            raise RuntimeError("primary model lifecycle is detached")
+        if self._closed:
+            raise RuntimeError("primary model lifecycle is closed")
         self.touch()
         if self._is_loaded() and self.state == "ready":
             self._set_state("ready")
@@ -172,6 +203,50 @@ class PrimaryModelLifecycle:
         # One disconnected client must not cancel a load shared by another
         # request.  The task remains the single transition authority.
         await asyncio.shield(task)
+
+    def acquire_request(self) -> None:
+        """Protect one accepted route from idle unload through completion."""
+
+        if self._closed:
+            raise RuntimeError("primary model lifecycle is closed")
+        current = _request_token_context.get()
+        if current is not None and current[0] == id(self):
+            return
+        token = object()
+        self._request_tokens[token] = False
+        _request_token_context.set((id(self), token))
+        task = asyncio.current_task()
+        if task is not None:
+            task.add_done_callback(
+                lambda _task, request_token=token: self._release_abandoned_request(
+                    request_token
+                )
+            )
+        self.touch()
+
+    def release_request(self) -> None:
+        current = _request_token_context.get()
+        if current is None or current[0] != id(self):
+            return
+        self._release_request_token(current[1])
+        _request_token_context.set(None)
+
+    def transfer_request_to_stream(self) -> None:
+        """Keep the route token alive after its handler returns an SSE body."""
+
+        current = _request_token_context.get()
+        if current is not None and current[0] == id(self):
+            token = current[1]
+            if token in self._request_tokens:
+                self._request_tokens[token] = True
+
+    def _release_abandoned_request(self, token: object) -> None:
+        if self._request_tokens.get(token) is False:
+            self._release_request_token(token)
+
+    def _release_request_token(self, token: object) -> None:
+        if self._request_tokens.pop(token, None) is not None:
+            self.touch()
 
     async def _reset_partial_load(self) -> None:
         stop = getattr(self.engine, "stop", None)
@@ -228,13 +303,22 @@ class PrimaryModelLifecycle:
     async def evict_if_idle(self) -> bool:
         """Move an idle loaded primary to standby without removing its route."""
 
-        if self._detached or self.idle_unload_seconds <= 0 or self.state != "ready":
+        if (
+            self._closed
+            or bool(self._request_tokens)
+            or self.idle_unload_seconds <= 0
+            or self.state != "ready"
+        ):
             return False
         if self._clock() - self._last_activity < self.idle_unload_seconds:
             return False
 
         async with self._transition_lock:
-            if not self._is_loaded() or self.state != "ready":
+            if (
+                bool(self._request_tokens)
+                or not self._is_loaded()
+                or self.state != "ready"
+            ):
                 return False
             if self._clock() - self._last_activity < self.idle_unload_seconds:
                 return False

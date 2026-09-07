@@ -98,6 +98,7 @@ from ..service.helpers import (
     _parse_tool_calls_with_parser,
     _raise_lifecycle_cancel_or_reraise,
     _release_admission_unless_committed,
+    _release_primary_request_unless_committed,
     _rescue_silent_drop_from_reasoning,
     _resolve_enable_thinking,
     _resolve_max_tokens,
@@ -3465,6 +3466,8 @@ async def create_chat_completion(request: ChatCompletionRequest, raw_request: Re
     finally:
         if _admission_acquired[0]:
             _release_admission_unless_committed(engine, _commit_state[0])
+        else:
+            _release_primary_request_unless_committed(engine, _commit_state[0])
 
 
 def _effective_posthoc_reasoning_cap(sampling_kwargs: dict, request) -> int | None:
