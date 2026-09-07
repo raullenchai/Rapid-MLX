@@ -6227,6 +6227,81 @@ def _dir_size_bytes(path: str) -> int:
     return total
 
 
+_RELOCATED_CACHE_SCAN_TIMEOUT_SECONDS = 2.0
+
+
+def _scan_relocated_hf_cache_entries(
+    entries: list[tuple[int, str, str]],
+) -> dict[int, tuple[str, int, float]]:
+    """Inspect relocated HF cache entries without letting a bad mount hang ``ls``.
+
+    A cache root symlink is a supported way to keep large models on an external
+    volume, so healthy links must still report their real size.  ``stat`` and
+    ``scandir`` have no useful Python-level timeout, though: an unavailable USB,
+    network, or FUSE mount can otherwise block ``rapid-mlx models --cached`` and
+    the desktop app's model inventory forever.
+
+    Run all relocated roots concurrently under one shared deadline.  Workers are
+    daemon threads because a kernel-blocked filesystem call cannot be cancelled;
+    this matches the bounded-call strategy used by ``_download_gate``.  Entries
+    that miss the deadline are omitted from this inventory pass, rather than
+    retained with a fake zero-byte size (or probed again by the runnability
+    check).  Plain local cache directories stay on the exact synchronous path.
+    """
+    import logging
+    import threading
+    import time
+
+    jobs: list[tuple[int, str, threading.Event, list[tuple[str, int, float]]]] = []
+
+    def inspect(
+        repo: str,
+        full: str,
+        done: threading.Event,
+        result: list[tuple[str, int, float]],
+    ) -> None:
+        try:
+            try:
+                mtime = os.path.getmtime(full)
+            except OSError:
+                mtime = 0.0
+            result.append((repo, _dir_size_bytes(full), mtime))
+        finally:
+            done.set()
+
+    for index, repo, full in entries:
+        done = threading.Event()
+        result: list[tuple[str, int, float]] = []
+        jobs.append((index, repo, done, result))
+        threading.Thread(
+            target=inspect,
+            args=(repo, full, done, result),
+            name=f"rapid-mlx-cache-scan-{index}",
+            daemon=True,
+        ).start()
+
+    deadline = time.monotonic() + _RELOCATED_CACHE_SCAN_TIMEOUT_SECONDS
+    for _index, _repo, done, _result in jobs:
+        done.wait(max(0.0, deadline - time.monotonic()))
+
+    completed: dict[int, tuple[str, int, float]] = {}
+    skipped: list[str] = []
+    for index, repo, done, result in jobs:
+        if done.is_set() and result:
+            completed[index] = result[0]
+        else:
+            skipped.append(repo)
+    if skipped:
+        logging.getLogger(__name__).warning(
+            "Skipped %d relocated cache entr%s that did not respond within %.1fs: %s",
+            len(skipped),
+            "y" if len(skipped) == 1 else "ies",
+            _RELOCATED_CACHE_SCAN_TIMEOUT_SECONDS,
+            ", ".join(skipped),
+        )
+    return completed
+
+
 def _scan_hf_cache_models() -> list[tuple[str, int, float]]:
     """Return ``[(hf_repo, size_bytes, last_modified_epoch), ...]`` for every
     ``models--<org>--<name>`` directory in the HF cache.
@@ -6241,7 +6316,8 @@ def _scan_hf_cache_models() -> list[tuple[str, int, float]]:
         HF_HUB_CACHE = os.path.expanduser("~/.cache/huggingface/hub")
     if not os.path.isdir(HF_HUB_CACHE):
         return []
-    out: list[tuple[str, int, float]] = []
+    rows_by_index: dict[int, tuple[str, int, float]] = {}
+    relocated: list[tuple[int, str, str]] = []
     for name in os.listdir(HF_HUB_CACHE):
         if not name.startswith("models--"):
             continue
@@ -6251,13 +6327,18 @@ def _scan_hf_cache_models() -> list[tuple[str, int, float]]:
         parts = name[len("models--") :].split("--", 1)
         repo = "/".join(parts) if len(parts) == 2 else parts[0]
         full = os.path.join(HF_HUB_CACHE, name)
+        index = len(rows_by_index) + len(relocated)
+        if os.path.islink(full):
+            relocated.append((index, repo, full))
+            continue
         try:
             mtime = os.path.getmtime(full)
         except OSError:
             mtime = 0.0
         size = _dir_size_bytes(full)
-        out.append((repo, size, mtime))
-    return out
+        rows_by_index[index] = (repo, size, mtime)
+    rows_by_index.update(_scan_relocated_hf_cache_entries(relocated))
+    return [rows_by_index[index] for index in sorted(rows_by_index)]
 
 
 def _external_model_roots() -> list[str]:
