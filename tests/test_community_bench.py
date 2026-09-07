@@ -260,6 +260,29 @@ def test_registered_bucket_feeds_token_ids_directly(monkeypatch) -> None:
     assert observed == [prompt_ids] * 6  # one warmup + five measured rounds
     assert len(result.rounds_raw) == 5
 
+    # The optional observer sees every round, warmup included, labelled with
+    # the registered case id shape so a CLI can print progress.
+    seen: list[tuple[str, str, int, int]] = []
+    result, _ = asyncio.run(
+        runner._run_bucket(
+            object(),
+            _Tokenizer(),
+            lambda max_tokens: object(),
+            8,
+            4,
+            registered_token_ids=True,
+            on_round=lambda label, phase, index, total, round_result: (
+                seen.append((label, phase, index, total))
+                if isinstance(round_result, runner.RoundResult)
+                else None
+            ),
+        )
+    )
+    assert seen == [("pp8-tg4", "warmup", 1, 1)] + [
+        ("pp8-tg4", "measured", index, 5) for index in range(1, 6)
+    ]
+    assert len(result.rounds_raw) == 5
+
 
 def test_prompt_hash_stable() -> None:
     from vllm_mlx.community_bench.runner import _prompt_hash

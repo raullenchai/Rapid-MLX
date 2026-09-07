@@ -32,6 +32,7 @@ _TASK_OPERATIONS = {
     "video_generation": {"text_to_video", "image_to_video", "video_to_video"},
     "speech_synthesis": {"preset_voice", "voice_cloning", "voice_design"},
     "speech_recognition": {"transcription", "translation", "forced_alignment"},
+    "embedding": {"embed"},
 }
 
 

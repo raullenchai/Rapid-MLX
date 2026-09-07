@@ -286,7 +286,8 @@ def test_legacy_enable_mtp_uses_the_same_verified_default() -> None:
 @pytest.mark.parametrize(
     "alias",
     [
-        "qwen3.5-4b-4bit",
+        # qwen3.5-4b-4bit is verified but ships default-off (#3115); see
+        # tests/test_mtp_default_off_3115.py.
         "qwen3.5-9b-4bit",
         "qwen3.6-27b-4bit",
         "qwen3.8-27b-4bit",

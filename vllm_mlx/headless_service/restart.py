@@ -22,6 +22,17 @@ from .install import _wait_ready
 
 def _declared_bind(label: str) -> tuple[str, int] | None:
     """The ``(host, port)`` the installed plist declares, if readable."""
+    from .config import load_config
+    from .definition import installed_identity
+
+    identity = installed_identity(label)
+    if identity is not None:
+        try:
+            effective_config = load_config(identity[2])
+            return effective_config.host, effective_config.port
+        except Exception:
+            pass
+
     from .install import _plist_path
     from .plist import parse_plist
 
@@ -29,10 +40,10 @@ def _declared_bind(label: str) -> tuple[str, int] | None:
     if not plist_path.is_file():
         return None
     try:
-        config = parse_plist(plist_path.read_bytes())
+        plist_config = parse_plist(plist_path.read_bytes())
     except Exception:
         return None
-    argv = config.get("ProgramArguments") or []
+    argv = plist_config.get("ProgramArguments") or []
     host, port = None, None
     for i, tok in enumerate(argv[:-1]):
         if tok == "--host" and i + 1 < len(argv):

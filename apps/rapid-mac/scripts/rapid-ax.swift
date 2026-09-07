@@ -61,18 +61,23 @@ if CommandLine.arguments.count >= 2, CommandLine.arguments[1] == "trust" {
         guard let target = pid_t(CommandLine.arguments[2]) else {
             fail("trust: target must be a pid")
         }
+        let targetElement = AXUIElementCreateApplication(target)
+        // Keep the CI preflight's retry budget genuinely bounded when AX's
+        // inter-process messaging service is unhealthy. This timeout applies
+        // only to this target element in this short-lived trust process.
+        let timeoutResult = AXUIElementSetMessagingTimeout(targetElement, 2.0)
         var value: CFTypeRef?
-        let result = AXUIElementCopyAttributeValue(
-            AXUIElementCreateApplication(target),
-            kAXChildrenAttribute as CFString,
-            &value
-        )
+        let result = timeoutResult == .success
+            ? AXUIElementCopyAttributeValue(
+                targetElement, kAXChildrenAttribute as CFString, &value)
+            : timeoutResult
         // `.noValue` / `.attributeUnsupported` mean the read itself WORKED and
         // the target simply publishes no children. Only an outright failure is
         // evidence that we were refused.
         readSucceeded =
             result == .success || result == .noValue || result == .attributeUnsupported
         payload["target_pid"] = Int(target)
+        payload["target_timeout_error"] = Int(timeoutResult.rawValue)
         payload["target_read"] = readSucceeded
         payload["target_read_error"] = Int(result.rawValue)
     }

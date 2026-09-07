@@ -51,7 +51,7 @@ struct LaunchMediaResidencyTests {
 
     @Test("Server transitions outside Chat never replace its selection")
     func nonChatSectionsNeverSync() {
-        for section in [SidebarSection.audio, .images, .video, .launch] {
+        for section in [SidebarSection.audio, .images, .video, .computerUse, .launch, .benchmark] {
             #expect(!ContentView.shouldSyncChatAlias(
                 serving: "org/unknown-media-model",
                 catalogEntries: entries,

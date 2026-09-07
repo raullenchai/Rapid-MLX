@@ -11,6 +11,7 @@ diagnostic surface from drifting.
 
 from __future__ import annotations
 
+import ipaddress
 import re
 from pathlib import Path
 
@@ -46,6 +47,23 @@ MIN_USER_UID = 501
 # LaunchDaemons dir requires root to write; also used to gate dry-run vs
 # real mutation (a non-root caller cannot actually install).
 LAUNCH_DAEMONS_DIR_REQUIRES_ROOT = True
+
+
+def is_loopback_host(host: str) -> bool:
+    """Whether a persistent service bind stays on the local machine.
+
+    The service runbook requires a separately managed authenticating reverse
+    proxy for LAN/internet access. Keep that boundary enforceable in persisted
+    configuration rather than relying on help text while accepting wildcard
+    or remote-interface binds.
+    """
+
+    if host.lower() == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        return False
 
 
 def home_for_user(user: str) -> Path | None:

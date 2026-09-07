@@ -2227,15 +2227,27 @@ struct QuickstartView: View {
         case chooseFirst
         /// State 05 — a bigger model is picked, so the cost is compared.
         case biggerAndCost
-        /// State 06 — the pick is already in the shared cache.
-        case alreadyHere
+        /// State 06 — the pick is already in the shared cache. Carries how
+        /// many cached rows the chooser shows, so the heading can count
+        /// honestly: "One is already here." over six rows was a lie (#3116).
+        case alreadyHere(cachedCount: Int)
 
         var title: String {
             switch self {
             case .chooseFirst:   return "Choose your\nfirst model"
             case .biggerAndCost: return "Bigger, and\nwhat it costs"
+            case .alreadyHere(let count) where count > 1:
+                return "\(Self.spelledCount(count)) are already\nhere."
             case .alreadyHere:   return "One is already\nhere."
             }
+        }
+
+        /// Small counts read as words in a display title; beyond ten the
+        /// numeral is clearer than "Fourteen".
+        static func spelledCount(_ count: Int) -> String {
+            let words = ["Zero", "One", "Two", "Three", "Four", "Five",
+                         "Six", "Seven", "Eight", "Nine", "Ten"]
+            return count < words.count ? words[count] : String(count)
         }
     }
 
@@ -2250,10 +2262,11 @@ struct QuickstartView: View {
     static func selectionNarrative(
         alias: String,
         cachedModels: [ModelEntry],
-        comparableTradeUps: [QuickstartModelChoice]
+        comparableTradeUps: [QuickstartModelChoice],
+        cachedRowCount: Int = 1
     ) -> SelectionNarrative {
         if canStartWithoutDownload(alias: alias, cachedModels: cachedModels) {
-            return .alreadyHere
+            return .alreadyHere(cachedCount: max(1, cachedRowCount))
         }
         let isTradeUp = comparableTradeUps.contains { $0.alias == alias }
         if isTradeUp, comparableTradeUps.count >= 2 {
@@ -2273,6 +2286,9 @@ struct QuickstartView: View {
         case .biggerAndCost:
             return "The difference is download size and how much memory the model "
                 + "holds while it runs, against this Mac's \(wholeGB(hardware.physicalRAMGB))."
+        case .alreadyHere(let count) where count > 1:
+            return "Another MLX app already downloaded these models into the shared "
+                + "Hugging Face cache. Picking one of them skips the download entirely."
         case .alreadyHere:
             return "Another MLX app already downloaded this model into the shared "
                 + "Hugging Face cache. Picking it skips the download entirely."
@@ -2338,7 +2354,8 @@ struct QuickstartView: View {
         let narrative = Self.selectionNarrative(
             alias: coordinator.selection.alias,
             cachedModels: cachedModels,
-            comparableTradeUps: list.tradeUps
+            comparableTradeUps: list.tradeUps,
+            cachedRowCount: list.cached.count
         )
         step2Scaffold {
             step2Columns(

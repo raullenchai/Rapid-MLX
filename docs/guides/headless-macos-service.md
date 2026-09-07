@@ -40,12 +40,48 @@ rapid-mlx service install --service-user serveuser \
 
 Pass advanced non-secret server options after a `--` separator, for example
 `-- --max-num-seqs 4`. Use the service command's own `--host` and `--port`
-options for binding; secret-bearing flags are intentionally rejected.
+options for binding; secret-bearing flags are intentionally rejected. The
+installed plist contains only a stable `service run --config ...` invocation.
+The versioned, root-owned JSON definition under
+`/Library/Application Support/Rapid-MLX/Services/` is the effective source of
+truth. It is readable for diagnostics but not writable without root and is
+strictly validated to exclude secrets. Keeping it outside the Python runtime
+also lets a venv rebuild leave service configuration untouched.
 
-Changing an installed definition is explicit: run `service uninstall`, then
-`service install` with the new settings. Uninstalling preserves models, cache,
-and logs. The installer refuses to overwrite an existing plist because launchd
-would otherwise keep the old in-memory configuration until reboot.
+Change an installed definition as a two-step transaction. `configure` validates
+and stages a candidate but does not disturb the running server. `apply` swaps
+the candidate into place, restarts, and requires `/readyz`; if bootstrap or
+readiness fails it restores the previous config and service.
+
+An installation created by the original argv-in-plist service release has no
+versioned config yet. Migrate it once with `service uninstall` followed by
+`service install`; this preserves its models, caches, credentials, and logs.
+
+```bash
+sudo rapid-mlx service configure \
+  --model qwen3.5-9b-4bit --port 9000 -- --max-num-seqs 8
+sudo rapid-mlx service apply --dry-run
+sudo rapid-mlx service apply
+rapid-mlx service config
+```
+
+To clear advanced serve flags, use `service configure --clear-serve-args`.
+Changing the service account or executable still requires uninstall/install,
+because those are security boundaries rather than runtime preferences.
+
+For API authentication, send the key over stdin to a private credential file.
+It never appears in argv, the plist, shell history, `service config`, or status:
+
+```bash
+security find-generic-password -w -s rapid-mlx-api-key | \
+  sudo rapid-mlx service credential set
+sudo rapid-mlx service restart
+rapid-mlx service credential status
+```
+
+Use `sudo rapid-mlx service credential unset` followed by restart to disable
+authentication. The service refuses to start if the credential is a symlink,
+owned by another uid, or accessible by group/others.
 
 Day-to-day operations:
 
@@ -56,6 +92,25 @@ rapid-mlx service logs                   # tail daemon logs
 rapid-mlx service logs --follow          # stream, across KeepAlive restarts
 sudo rapid-mlx service restart           # kickstart + wait until healthy
 ```
+
+The stable runtime captures server stdout and stderr through bounded rotating
+logs. Defaults are 100 MiB per active stream, five backups, and seven-day
+retention. Stage different limits with `service configure --log-max-mb`,
+`--log-backup-count`, and `--log-retention-days`, then apply them normally.
+
+Upgrade the service with the same health gate and rollback behavior. The
+command freezes the working environment before stopping the server, runs the
+package upgrade as the service account, diagnoses it with `doctor`, and only
+accepts it after launchd `/readyz` succeeds. On failure it restores the frozen
+environment and starts the previous service.
+
+```bash
+sudo rapid-mlx service upgrade --dry-run
+sudo rapid-mlx service upgrade --version 0.13.5 --extras vision,embeddings
+```
+
+Declaring extras reasserts the appliance's intended optional features. The
+rollback requirements snapshot is mode 0600 under the service config directory.
 
 Remove the service (models, cache, and logs are left in place):
 
@@ -328,10 +383,10 @@ environment, or logs.
 ## Known limits
 
 - `rapid-mlx service` requires a pre-existing non-administrator service
-  account and an administrator to run `install`/`uninstall`; it does not
-  create system users or rotate logs automatically.
-- Rapid-MLX does not rotate the two log files. Configure your existing log
-  collector or rotation policy and monitor free disk space.
+  account and an administrator to run mutating commands; it does not create
+  system users.
+- Runtime stdout/stderr are bounded automatically, but an external collector is
+  still recommended for durable centralized history and alerting.
 - A full application update causes downtime while the daemon is booted out.
 - FileVault-protected cold boots require an unlock before the system can reach
   the state in which this daemon runs.

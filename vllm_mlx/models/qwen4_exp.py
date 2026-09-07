@@ -58,6 +58,13 @@ _FUSED_GDN_MODES = ("stock", "fused")
 _FUSED_GDN_DEFAULT = os.environ.get(
     "RAPID_MLX_QWEN4_FUSED_GDN_DECODE", "0"
 ).strip().lower() in {"1", "true", "yes", "on"}
+_FAST_RMSNORM_MODES = ("stock", "fast_fp32")
+_FAST_RMSNORM_DEFAULT = (
+    "fast_fp32"
+    if os.environ.get("RAPID_MLX_QWEN4_FAST_RMSNORM", "0").strip().lower()
+    in {"1", "true", "yes", "on"}
+    else "stock"
+)
 
 
 @dataclass
@@ -232,8 +239,31 @@ class ZeroCenteredRMSNorm(nn.Module):
         self.weight = mx.zeros((dim,))
         self.group_size = group_size
         self.eps = eps
+        self.fast_rmsnorm_mode = _FAST_RMSNORM_DEFAULT
+        self.fast_rmsnorm_calls = 0
+        self.fast_rmsnorm_declines = 0
+        self.fast_rmsnorm_decline_reasons: dict[str, int] = {}
 
-    def __call__(self, x: mx.array) -> mx.array:
+    def set_fast_rmsnorm_mode(self, mode: str) -> None:
+        if mode not in _FAST_RMSNORM_MODES:
+            raise ValueError(
+                f"unknown fast RMSNorm mode {mode!r}; "
+                f"expected one of {_FAST_RMSNORM_MODES}"
+            )
+        self.fast_rmsnorm_mode = mode
+
+    def _record_fast_rmsnorm_decline(self, reason: str) -> None:
+        self.fast_rmsnorm_declines += 1
+        self.fast_rmsnorm_decline_reasons[reason] = (
+            self.fast_rmsnorm_decline_reasons.get(reason, 0) + 1
+        )
+
+    def __call__(
+        self,
+        x: mx.array,
+        *,
+        sequence_length: int | None = None,
+    ) -> mx.array:
         original_shape = x.shape
         if self.group_size is not None:
             x = x.reshape(*x.shape[:-1], -1, self.group_size)
@@ -242,9 +272,24 @@ class ZeroCenteredRMSNorm(nn.Module):
             weight = self.weight
         dtype = x.dtype
         normalized = x.astype(mx.float32)
-        normalized = normalized * mx.rsqrt(
-            mx.mean(mx.square(normalized), axis=-1, keepdims=True) + self.eps
-        )
+        if self.fast_rmsnorm_mode == "fast_fp32":
+            if sequence_length is None:
+                sequence_length = int(x.shape[1] if x.ndim >= 3 else x.shape[0])
+            if sequence_length <= 8:
+                # The input must stay fp32. Passing bf16 directly introduces
+                # an additional rounding boundary before the zero-centered
+                # weight multiply and is observably less accurate than stock.
+                normalized = mx.fast.rms_norm(normalized, None, self.eps)
+                self.fast_rmsnorm_calls += 1
+            else:
+                self._record_fast_rmsnorm_decline("sequence_too_wide")
+                normalized = normalized * mx.rsqrt(
+                    mx.mean(mx.square(normalized), axis=-1, keepdims=True) + self.eps
+                )
+        else:
+            normalized = normalized * mx.rsqrt(
+                mx.mean(mx.square(normalized), axis=-1, keepdims=True) + self.eps
+            )
         normalized = normalized * (1.0 + weight.astype(mx.float32))
         return normalized.astype(dtype).reshape(original_shape)
 
@@ -683,6 +728,50 @@ def qwen4_fused_gdn_stats(model: nn.Module) -> dict[str, Any]:
     return stats
 
 
+def set_qwen4_fast_rmsnorm_mode(model: nn.Module, mode: str) -> int:
+    """Switch every zero-centered Qwen4 RMSNorm between stock and fast fp32."""
+    if mode not in _FAST_RMSNORM_MODES:
+        raise ValueError(
+            f"unknown fast RMSNorm mode {mode!r}; expected one of {_FAST_RMSNORM_MODES}"
+        )
+    norms = [
+        module
+        for _, module in model.named_modules()
+        if isinstance(module, ZeroCenteredRMSNorm)
+    ]
+    for norm in norms:
+        norm.set_fast_rmsnorm_mode(mode)
+    return len(norms)
+
+
+def qwen4_fast_rmsnorm_mode_counts(model: nn.Module) -> dict[str, int]:
+    """Return current fast RMSNorm modes without evaluating model arrays."""
+    counts = {mode: 0 for mode in _FAST_RMSNORM_MODES}
+    for _, module in model.named_modules():
+        if isinstance(module, ZeroCenteredRMSNorm):
+            counts[module.fast_rmsnorm_mode] += 1
+    return counts
+
+
+def qwen4_fast_rmsnorm_stats(model: nn.Module) -> dict[str, Any]:
+    """Aggregate fast RMSNorm route and fail-closed counters."""
+    stats: dict[str, Any] = {
+        "fast_calls": 0,
+        "declines": 0,
+        "decline_reasons": {},
+    }
+    for _, module in model.named_modules():
+        if not isinstance(module, ZeroCenteredRMSNorm):
+            continue
+        stats["fast_calls"] += module.fast_rmsnorm_calls
+        stats["declines"] += module.fast_rmsnorm_declines
+        for reason, count in module.fast_rmsnorm_decline_reasons.items():
+            stats["decline_reasons"][reason] = (
+                stats["decline_reasons"].get(reason, 0) + count
+            )
+    return stats
+
+
 def apply_rotary_positions(
     x: mx.array,
     positions: mx.array,
@@ -934,7 +1023,12 @@ class QSAIndexer(nn.Module):
         ).transpose(0, 2, 1, 3)
 
         def transform_group(group: mx.array, start: int) -> mx.array:
-            normalized = self.k_layernorm(group[:, None, :])[:, 0, :]
+            # The singleton axis is synthetic: preserve the parent forward's
+            # real width so prefill cannot accidentally enter the decode-only
+            # fast RMSNorm route.
+            normalized = self.k_layernorm(group[:, None, :], sequence_length=length)[
+                :, 0, :
+            ]
             return apply_qwen4_exp_rope(
                 normalized[:, None, None, :],
                 mx.array([[start]], dtype=mx.int64),

@@ -2212,6 +2212,26 @@ def _alias_continuous_mtp_tier(model_name) -> str:
     return tier if tier in {"unknown", "verified", "blocked"} else "unknown"
 
 
+def _alias_mtp_default_enabled(model_name) -> bool:
+    """Whether the alias ships its declared MTP preset on by default.
+
+    Distinct from the qualification tier: ``verified`` says the continuous
+    route is correct, this says the product turns it on unasked.  A registry
+    failure fails closed to *off* — the plain decode path is always safe.
+    """
+    if not model_name:
+        return False
+    try:
+        from .model_aliases import resolve_profile as _resolve_alias
+
+        profile = _resolve_alias(model_name)
+    except Exception:  # noqa: BLE001 - registry failure must fail closed
+        return False
+    if profile is None:
+        return False
+    return bool(getattr(profile, "mtp_default_enabled", True))
+
+
 def _normalize_speculative_config_or_exit(args):
     """Parse ``--speculative-config`` and map methods to runtime fields."""
     import json
@@ -2477,11 +2497,14 @@ def _normalize_speculative_config_or_exit(args):
         elif (
             not getattr(args, "no_spec_decode", False)
             and _alias_continuous_mtp_tier(getattr(args, "model", None)) == "verified"
+            and _alias_mtp_default_enabled(getattr(args, "model", None))
         ):
             # Exact artifacts that passed the mixed-workload qualification
-            # select their declared MTP preset by default.  The alias registry
-            # remains the single source of truth, and --no-spec-decode stays
-            # the explicit user escape hatch on every surface.
+            # select their declared MTP preset by default, unless the catalog
+            # ships them default-off (#3115: qwen3.5-4b-4bit measured -25%..-37%
+            # single-stream on M2 Pro / M3 Ultra).  The alias registry remains
+            # the single source of truth, and --no-spec-decode stays the
+            # explicit user escape hatch on every surface.
             raw_config = '{"method":"mtp"}'
             args.speculative_config = raw_config
 
@@ -3091,6 +3114,25 @@ def _needs_bounded_trim_free_reuse(
     return is_deepseek_v4_0731(model_name)
 
 
+def _reject_embedding_alias_serve(profile, model_name: str) -> None:
+    """Exit 2 when ``serve`` is pointed at a sentence-embedding alias.
+
+    embeddinggemma has no chat surface; loading it on the text lane boots a
+    server whose every chat request fails. Point the operator at
+    ``--embedding-model``, which is how the engine actually serves it (#3116).
+    """
+    if profile is None or getattr(profile, "modality", "text") != "embedding":
+        return
+    print(
+        f"error: '{model_name}' is a sentence-embedding alias and has no chat "
+        "surface, so it cannot be served as the main model.\n"
+        "Serve a chat model and attach it as the embeddings backend instead:\n"
+        f"    rapid-mlx serve <chat-alias> --embedding-model {model_name}",
+        file=sys.stderr,
+    )
+    sys.exit(2)
+
+
 def _serve_will_run_on_mllm_lane(args) -> bool:
     """Whether ``serve`` will actually run this model on the MLLM/VLM
     continuous-batching lane — the ONLY lane that needs the optional
@@ -3106,10 +3148,12 @@ def _serve_will_run_on_mllm_lane(args) -> bool:
     ``resolve_serving_lane``'s explicit-flag short-circuits.
 
     The probe reads the cached checkpoint config offline (no network, no
-    weight load). On a first-time uncached start the config isn't
-    materialized yet, so the hybrid probe answers "not hybrid" and the model
-    keeps the SAFE ``[vision]``-required default — the guard's error message
-    then points at ``--no-mllm`` for a text-capable backbone.
+    weight load). ``is_mllm_model`` promotes a checkpoint only on positive
+    weight evidence, so on a first-time uncached start every VLM alias probes
+    "text_checkpoint" and the guard used to stay silent until the full
+    download failed at load (#3113). For that evidence-free verdict only,
+    fall back to the curated alias profile
+    (:func:`_alias_needs_vision_runtime_without_weights`).
     """
     from .api.utils import resolve_serving_lane
 
@@ -3118,13 +3162,139 @@ def _serve_will_run_on_mllm_lane(args) -> bool:
         requested_spec_decode = "mtp"
     elif requested_spec_decode == "none" and getattr(args, "force_spec_decode", False):
         requested_spec_decode = "auto"
-    is_mllm_lane, _auto_text_fallback = resolve_serving_lane(
+    force_text = getattr(args, "no_mllm", False)
+    is_mllm_lane, auto_text_fallback = resolve_serving_lane(
         args.model,
         force_mllm=getattr(args, "mllm", False),
-        force_text=getattr(args, "no_mllm", False),
+        force_text=force_text,
         requested_spec_decode=requested_spec_decode,
     )
-    return is_mllm_lane
+    if is_mllm_lane:
+        return True
+    if _alias_modality(args.model) == "text-diffusion":
+        # DiffusionGemma runs on the mlx-vlm diffusion runtime whatever lane
+        # flags say: --no-mllm / spec-decode cannot route it to mlx-lm.
+        return True
+    if force_text or auto_text_fallback:
+        # Explicit --no-mllm, or a deliberate downgrade (spec-decode, hybrid
+        # cache/runtime, memory): the checkpoint was inspected and routed to
+        # the text lane on purpose. Only the evidence-free "text_checkpoint"
+        # verdict (#3113: no weights cached yet) may fall back to the
+        # curated alias profile.
+        return False
+    return _alias_needs_vision_runtime_without_weights(
+        args.model,
+        force_text=force_text,
+        requested_spec_decode=requested_spec_decode,
+    )
+
+
+def _alias_modality(model_name: str) -> str | None:
+    """Curated modality of ``model_name`` (alias or hf_path), else ``None``."""
+    from .model_aliases import resolve_profile
+
+    profile = resolve_profile(model_name)
+    return None if profile is None else profile.modality
+
+
+def _prefetch_config_for_lane_guard(hf_path: str) -> None:
+    """Pull only ``config.json`` (a few KB) so the pre-download guard can read
+    the backbone layout before ``snapshot_download`` commits to the weights.
+
+    Honours the Hub offline switches and swallows every failure: a network
+    error here means the full pull would fail moments later with its own,
+    better error, so the guard simply has nothing to say.
+    """
+    from .model_metadata import hub_offline_mode_active
+
+    if hub_offline_mode_active():
+        return
+    try:
+        from huggingface_hub import hf_hub_download
+
+        hf_hub_download(hf_path, "config.json")
+    except Exception:  # noqa: BLE001 - best-effort probe, never fatal
+        return
+
+
+def _alias_needs_vision_runtime_without_weights(
+    model_name: str, *, force_text: bool, requested_spec_decode: str
+) -> bool:
+    """Pre-download ``[vision]`` verdict from the alias profile plus config.
+
+    ``is_mllm_model`` promotes a checkpoint to the MLLM lane only on
+    positive WEIGHT evidence (a cached safetensors index naming a vision
+    tower) and deliberately never on an inconclusive probe. That is the
+    right engine-side contract — it runs after the pull — but the boot guard
+    runs BEFORE the pull, so on a fresh install every genuine VLM alias
+    probed "text checkpoint", the guard stayed silent, and a base-wheel user
+    downloaded 15 GB of Gemma 4 before learning it needs ``mlx-vlm`` (#3113).
+
+    When the cache holds no weight evidence for the alias (nothing cached, or
+    config/tokenizer only), decide from what the catalog declares plus the
+    checkpoint config (fetched on its own when nothing is cached yet):
+
+    * ``modality == "text-diffusion"`` runs on the mlx-vlm DiffusionGemma
+      runtime regardless of ``--no-mllm`` or speculative decoding — the
+      modality dispatch in ``server.py`` does not consult either.
+    * a ``supports_image_input`` alias whose config declares a vision tower
+      will land on the MLLM lane once its weights arrive, unless
+      ``--no-mllm`` or a requested speculative decoder already routes it to
+      the text lane exactly as ``resolve_serving_lane_decision`` would.
+    * a hybrid/recurrent backbone (Qwen3.5 GatedDeltaNet, Mamba, …) or an
+      architecture whose text backbone we vendor auto-downgrades to the text
+      lane on the base wheel — the same fallbacks
+      ``resolve_serving_lane_decision`` applies after the pull — so those
+      stay exempt and keep booting without ``mlx-vlm``.
+    * no config at all (offline, or the Hub is unreachable) is not evidence:
+      the guard stays silent and the pull reports its own error.
+
+    Once weight evidence exists the engine-side verdict is authoritative and
+    this helper returns ``False`` so the two never disagree.
+
+    Resolution is by repository path, exactly like ``is_mllm_model`` and
+    ``read_model_metadata`` on the engine side: ``serve`` has no revision or
+    subfolder selector, so the snapshot this helper inspects is the snapshot
+    the engine classifies after the pull.
+    """
+    from .model_aliases import resolve_profile
+
+    profile = resolve_profile(model_name)
+    if profile is None or profile.is_text_only:
+        return False
+    if profile.modality == "text-diffusion":
+        return True
+    if force_text or requested_spec_decode not in (None, "none"):
+        return False
+    if not profile.supports_image_input or profile.is_hybrid:
+        return False
+    from .api.utils import (
+        mllm_arch_unsupported_but_text_vendored,
+        mllm_backbone_cache_mode,
+    )
+    from .model_metadata import (
+        checkpoint_has_multimodal_weights,
+        config_indicates_multimodal,
+        read_model_metadata,
+    )
+
+    hf_path = profile.hf_path or model_name
+    metadata = read_model_metadata(hf_path)
+    if metadata is None or metadata.config is None:
+        _prefetch_config_for_lane_guard(hf_path)
+        metadata = read_model_metadata(hf_path)
+    if metadata is None or not isinstance(metadata.config, dict):
+        return False
+    verdict = checkpoint_has_multimodal_weights(metadata.snapshot_dir, metadata.config)
+    if verdict is not None:
+        return False
+    if not config_indicates_multimodal(metadata.config):
+        return False
+    if mllm_backbone_cache_mode(hf_path) in ("arrays", "other"):
+        return False
+    if mllm_arch_unsupported_but_text_vendored(hf_path):
+        return False
+    return True
 
 
 def kv_cache_flag_conflict(args) -> str | None:
@@ -3322,6 +3492,9 @@ def serve_command(args):
         getattr(args, "_original_alias", None) or getattr(args, "model", "")
     )
     _is_wan_video = False
+    _reject_embedding_alias_serve(
+        _serve_profile, getattr(args, "_original_alias", None) or args.model
+    )
     from ._download_gate import IMAGE_MODEL_DATA_FILES
 
     _owns_pinned_image_download = bool(
@@ -3383,7 +3556,10 @@ def serve_command(args):
     if _serve_will_run_on_mllm_lane(args):
         from .models.mllm import require_mlx_vlm_or_exit
 
-        require_mlx_vlm_or_exit(args.model)
+        require_mlx_vlm_or_exit(
+            args.model,
+            text_diffusion=_alias_modality(args.model) == "text-diffusion",
+        )
 
     # R6-H4 (Eva 0.8.7 dogfood): same boot-guard shape for audio aliases.
     # ``mlx-audio`` lives behind the ``[audio]`` extra; pre-fix
@@ -6782,6 +6958,7 @@ def _available_models_json_payload() -> dict:
             "mtp_continuous_batching_tier": getattr(
                 p, "mtp_continuous_batching_tier", "unknown"
             ),
+            "mtp_default_enabled": bool(getattr(p, "mtp_default_enabled", True)),
             "modality": modality,
             "video_modes": list(p.video_modes or ()),
             "min_memory_gb": p.min_memory_gb,
@@ -12198,18 +12375,44 @@ Examples:
     community_catalog = community_subparsers.add_parser(
         "catalog", help="List models with a registered benchmark protocol"
     )
-    community_catalog.add_argument("--memory-gib", type=positive_int, default=None)
-    community_catalog.add_argument("--json", action="store_true")
+    community_catalog.add_argument(
+        "--memory-gib",
+        type=positive_int,
+        default=None,
+        help="Compute the fit column for a Mac with this much unified memory instead of this one",
+    )
+    community_catalog.add_argument(
+        "--all",
+        action="store_true",
+        help="List every model with a protocol, not only the recommended ones",
+    )
+    community_catalog.add_argument(
+        "--json",
+        action="store_true",
+        help="Print machine-readable JSON instead of the text summary",
+    )
     community_plan = community_subparsers.add_parser(
         "plan", help="Preview the exact local workload for a model"
     )
-    community_plan.add_argument("benchmark_model")
-    community_plan.add_argument("--json", action="store_true")
+    community_plan.add_argument(
+        "benchmark_model", help="Model alias from `rapid-mlx benchmark catalog`"
+    )
+    community_plan.add_argument(
+        "--json",
+        action="store_true",
+        help="Print machine-readable JSON instead of the text summary",
+    )
     community_run = community_subparsers.add_parser(
         "run", help="Run the registered protocol and save the result locally"
     )
-    community_run.add_argument("benchmark_model")
-    community_run.add_argument("--json", action="store_true")
+    community_run.add_argument(
+        "benchmark_model", help="Model alias from `rapid-mlx benchmark catalog`"
+    )
+    community_run.add_argument(
+        "--json",
+        action="store_true",
+        help="Print machine-readable JSON instead of the text summary",
+    )
     community_run.add_argument(
         "--inherit-process-group",
         action="store_true",
@@ -12221,16 +12424,30 @@ Examples:
     community_results.add_argument(
         "--limit", type=positive_int, default=None, help="Return only the latest N runs"
     )
-    community_results.add_argument("--json", action="store_true")
+    community_results.add_argument(
+        "--json",
+        action="store_true",
+        help="Print machine-readable JSON instead of the text summary",
+    )
     community_inspect = community_subparsers.add_parser(
         "inspect", help="Print one locally saved benchmark result"
     )
-    community_inspect.add_argument("run_id")
-    community_inspect.add_argument("--json", action="store_true")
+    community_inspect.add_argument(
+        "run_id",
+        help="Run id printed by `benchmark run` or listed by `benchmark results`",
+    )
+    community_inspect.add_argument(
+        "--json",
+        action="store_true",
+        help="Print machine-readable JSON instead of the text summary",
+    )
     community_share = community_subparsers.add_parser(
         "share", help="Explicitly upload one locally saved benchmark result"
     )
-    community_share.add_argument("run_id")
+    community_share.add_argument(
+        "run_id",
+        help="Run id printed by `benchmark run` or listed by `benchmark results`",
+    )
     community_share.add_argument(
         "--yes",
         action="store_true",
@@ -12257,7 +12474,11 @@ Examples:
         "--target",
         help=argparse.SUPPRESS,
     )
-    community_share.add_argument("--json", action="store_true")
+    community_share.add_argument(
+        "--json",
+        action="store_true",
+        help="Print machine-readable JSON instead of the text summary",
+    )
 
     # Models command. ``ls`` is registered as a top-level alias that
     # defaults to ``models --cached`` (the locally-cached view) — two

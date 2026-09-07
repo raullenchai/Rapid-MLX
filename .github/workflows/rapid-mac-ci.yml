@@ -400,21 +400,16 @@ jobs:
       # nothing, `dump` yields a tree containing only the application root,
       # and the flows would die on "main window did not appear" — blaming the
       # app for a permission problem. This step makes that failure say what it
-      # actually is, in 30 s, instead of after a five-minute build.
+      # actually is, in under a minute, instead of after a five-minute build.
       #
-      # It is deliberately fail-closed: no Dock means no GUI session, which
-      # means the app could not have opened a window either.
+      # It is deliberately fail-closed. The wrapper retries only a Dock that is
+      # still starting and AX's cannotComplete messaging error; missing grants,
+      # locked screens, malformed output, and every other error fail at once.
       - name: Accessibility + GUI session preflight
         run: |
           set -euo pipefail
           swiftc scripts/rapid-ax.swift -o "$RUNNER_TEMP/rapid-ax"
-          dock_pid="$(pgrep -x Dock | head -1 || true)"
-          if [[ -z "$dock_pid" ]]; then
-            echo "::error::No Dock process: this runner has no logged-in GUI (Aqua) session, so the app cannot open a window."
-            exit 1
-          fi
-          echo "Dock pid: $dock_pid"
-          "$RUNNER_TEMP/rapid-ax" trust "$dock_pid"
+          scripts/mac-ci-ax-preflight.sh "$RUNNER_TEMP/rapid-ax"
 
       - name: Download commit-bound GUI app
         uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0  # v5

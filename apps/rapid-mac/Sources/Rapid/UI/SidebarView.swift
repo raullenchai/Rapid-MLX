@@ -8,6 +8,7 @@ enum SidebarSection: Hashable {
     case images
     case audio
     case video
+    case computerUse
     case launch
     case benchmark
 }
@@ -36,6 +37,9 @@ struct SidebarView: View {
     /// Video is intentionally opt-in because its models require substantially
     /// more unified memory than the app's everyday chat and media workflows.
     var videoGenerationEnabled: Bool = false
+    /// Computer Use is a deliberately opt-in preview. Enabling discoverability
+    /// does not start observation, request permissions, or load a model.
+    var computerUseEnabled: Bool = false
     /// The chat model — source of the conversation history list + the
     /// active conversation id (for highlighting).
     @Bindable var chat: ChatViewModel
@@ -187,6 +191,15 @@ struct SidebarView: View {
                     action: { selection = .video }
                 )
                 .accessibilityIdentifier("Sidebar.Video")
+            }
+            if computerUseEnabled {
+                row(
+                    title: "Computer Use",
+                    systemImage: "macwindow.on.rectangle",
+                    isSelected: selection == .computerUse,
+                    action: { selection = .computerUse }
+                )
+                .accessibilityIdentifier("Sidebar.ComputerUse")
             }
             row(
                 title: "Launch",

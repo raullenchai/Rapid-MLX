@@ -85,6 +85,7 @@ def build_plist_dict(
     host: str = "127.0.0.1",
     port: int = 8000,
     serve_args: tuple[str, ...] | None = None,
+    config_path: Path | None = None,
 ) -> dict:
     """Build the plist dict for a system LaunchDaemon.
 
@@ -102,8 +103,12 @@ def build_plist_dict(
     return {
         "Label": label,
         "UserName": user,
-        "ProgramArguments": serve_argv(
-            executable, model, host=host, port=port, serve_args=serve_args
+        "ProgramArguments": (
+            [executable, "service", "run", "--config", str(config_path)]
+            if config_path is not None
+            else serve_argv(
+                executable, model, host=host, port=port, serve_args=serve_args
+            )
         ),
         "WorkingDirectory": str(home),
         "EnvironmentVariables": environment,

@@ -71,6 +71,26 @@ class MTPAcceptSnapshot:
     attempts: int
     accepts: int
     tokens_saved: int
+    # #3155 per-verify-call breakdown (all zero-defaulted so older
+    # constructor call sites keep working).  ``drafted_by_depth[d]`` counts
+    # verify calls that carried a draft at depth ``d`` (1-indexed);
+    # ``accepted_by_depth[d]`` those where depth ``d`` was accepted.  Both are
+    # sorted ``(depth, count)`` tuples so the snapshot stays hashable.
+    verify_calls: int = 0
+    correction_tokens: int = 0
+    bonus_tokens: int = 0
+    drafted_by_depth: tuple[tuple[int, int], ...] = ()
+    accepted_by_depth: tuple[tuple[int, int], ...] = ()
+
+    @property
+    def mean_accepted_per_verify(self) -> float:
+        """Committed draft tokens per verify call (MTPLX's headline number).
+
+        ``sum(accepted_by_depth) / verify_calls``; 0.0 with no verify calls.
+        """
+        if self.verify_calls == 0:
+            return 0.0
+        return sum(count for _, count in self.accepted_by_depth) / self.verify_calls
 
     @property
     def accept_ratio(self) -> float:
@@ -128,6 +148,11 @@ class MTPAcceptCounter:
         self._attempts = 0
         self._accepts = 0
         self._tokens_saved = 0
+        self._verify_calls = 0
+        self._correction_tokens = 0
+        self._bonus_tokens = 0
+        self._drafted_by_depth: dict[int, int] = {}
+        self._accepted_by_depth: dict[int, int] = {}
 
     # ---- recording side --------------------------------------------------
 
@@ -158,6 +183,61 @@ class MTPAcceptCounter:
             self._accepts += 1
             self._tokens_saved += tokens_saved
 
+    def record_verify(self, depth: int, accepted: int) -> None:
+        """Record one verify call of a chain-of-K draft (#3155).
+
+        ``depth`` drafts were proposed, the first ``accepted`` of them were
+        accepted (chain semantics: acceptance is a prefix).  The target's
+        own token from the same forward is a *bonus* token when every
+        draft was accepted and a *correction* token otherwise — the
+        split MTPLX reports as ``bonus_tokens`` / ``correction_tokens``.
+        Verify-only bookkeeping; callers on the single-request path keep
+        their existing ``record_attempt`` / ``record_accept`` calls.
+        ``depth == 0`` (no draft proposed, nothing verified) records
+        nothing, matching :meth:`record_round`.
+        """
+        self._check_outcome(depth, accepted)
+        if depth == 0:
+            return
+        with self._lock:
+            self._record_verify_locked(depth, accepted)
+
+    @staticmethod
+    def _check_outcome(depth: int, accepted: int) -> None:
+        if depth < 0 or accepted < 0 or accepted > depth:
+            raise ValueError(
+                f"invalid verify outcome depth={depth} accepted={accepted}"
+            )
+
+    def _record_verify_locked(self, depth: int, accepted: int) -> None:
+        """Body of :meth:`record_verify`; caller holds ``_lock``."""
+        self._verify_calls += 1
+        for d in range(1, depth + 1):
+            self._drafted_by_depth[d] = self._drafted_by_depth.get(d, 0) + 1
+        for d in range(1, accepted + 1):
+            self._accepted_by_depth[d] = self._accepted_by_depth.get(d, 0) + 1
+        if accepted < depth:
+            self._correction_tokens += 1
+        else:
+            self._bonus_tokens += 1
+
+    def record_round(self, depth: int, accepted: int) -> None:
+        """Record a whole verify round at once (continuous-batching path).
+
+        Equivalent to ``depth`` × :meth:`record_attempt`, ``accepted`` ×
+        :meth:`record_accept` and one :meth:`record_verify`, under one
+        lock acquisition.  ``depth == 0`` (a target-only cycle) records
+        nothing: no draft was proposed, so there is nothing to verify.
+        """
+        self._check_outcome(depth, accepted)
+        if depth == 0:
+            return
+        with self._lock:
+            self._attempts += depth
+            self._accepts += accepted
+            self._tokens_saved += accepted
+            self._record_verify_locked(depth, accepted)
+
     def record_reject(self) -> None:
         """No-op kept for symmetry. Rejections don't bump any counter —
         ``attempts - accepts`` is the rejection count, derivable at the
@@ -185,6 +265,11 @@ class MTPAcceptCounter:
                 attempts=self._attempts,
                 accepts=self._accepts,
                 tokens_saved=self._tokens_saved,
+                verify_calls=self._verify_calls,
+                correction_tokens=self._correction_tokens,
+                bonus_tokens=self._bonus_tokens,
+                drafted_by_depth=tuple(sorted(self._drafted_by_depth.items())),
+                accepted_by_depth=tuple(sorted(self._accepted_by_depth.items())),
             )
 
     # ---- test-only -------------------------------------------------------
@@ -201,6 +286,11 @@ class MTPAcceptCounter:
             self._attempts = 0
             self._accepts = 0
             self._tokens_saved = 0
+            self._verify_calls = 0
+            self._correction_tokens = 0
+            self._bonus_tokens = 0
+            self._drafted_by_depth = {}
+            self._accepted_by_depth = {}
 
 
 # ---------------------------------------------------------------------------

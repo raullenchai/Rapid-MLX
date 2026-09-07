@@ -458,8 +458,34 @@ struct OnboardingDirectionDTests {
             cachedModels: [Self.cachedEntry(bigCached.alias)],
             comparableTradeUps: Self.tradeUps
         )
-        #expect(narrative == .alreadyHere)
+        #expect(narrative == .alreadyHere(cachedCount: 1))
         #expect(narrative.title == "One is already\nhere.")
+    }
+
+    @Test("Several cached rows are counted in the heading, not called one")
+    func severalCachedRowsAreCounted() {
+        // 0.13.5 dogfood (#3116): six rows under "ALREADY ON THIS MAC" sat
+        // beneath "One is already here." The heading must count what the
+        // list beside it shows, and the subtitle must speak in the plural.
+        let cached = Self.tradeUps.last!
+        let narrative = QuickstartView.selectionNarrative(
+            alias: cached.alias,
+            cachedModels: [Self.cachedEntry(cached.alias)],
+            comparableTradeUps: Self.tradeUps,
+            cachedRowCount: 6
+        )
+        #expect(narrative == .alreadyHere(cachedCount: 6))
+        #expect(narrative.title == "Six are already\nhere.")
+        #expect(QuickstartView.selectionSubtitle(narrative, hardware: Self.hardware32)
+            .contains("these models"))
+        #expect(QuickstartView.SelectionNarrative.alreadyHere(cachedCount: 14).title
+            == "14 are already\nhere.")
+        // A single row keeps the original singular copy verbatim.
+        #expect(QuickstartView.SelectionNarrative.alreadyHere(cachedCount: 1).title
+            == "One is already\nhere.")
+        #expect(QuickstartView.selectionSubtitle(
+            .alreadyHere(cachedCount: 1), hardware: Self.hardware32
+        ).contains("this model"))
     }
 
     @Test("Every narrative carries its own subtitle")
@@ -468,10 +494,10 @@ struct OnboardingDirectionDTests {
         let subtitles = Set([
             QuickstartView.SelectionNarrative.chooseFirst,
             .biggerAndCost,
-            .alreadyHere,
+            .alreadyHere(cachedCount: 1),
         ].map { QuickstartView.selectionSubtitle($0, hardware: hardware) })
         #expect(subtitles.count == 3, "each narrative must explain its own case")
-        #expect(QuickstartView.selectionSubtitle(.alreadyHere, hardware: hardware)
+        #expect(QuickstartView.selectionSubtitle(.alreadyHere(cachedCount: 1), hardware: hardware)
             .contains("skips the download"))
         #expect(QuickstartView.selectionSubtitle(.biggerAndCost, hardware: hardware)
             .contains("32 GB"), "the comparison names this Mac's memory")

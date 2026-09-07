@@ -391,6 +391,8 @@ def test_runtime_accepts_only_complete_local_assets_and_forwards_generation(
 def test_runtime_accepts_hf_blob_symlinks_but_rejects_external_ones(
     tmp_path: Path,
 ) -> None:
+    import mlx.core as mx
+
     from vllm_mlx.image.sd35_runtime import runtime
     from vllm_mlx.image.sd35_runtime._vendor import model_io
 
@@ -398,12 +400,16 @@ def test_runtime_accepts_hf_blob_symlinks_but_rejects_external_ones(
     snapshot = repo_root / "snapshots" / "revision"
     blob = repo_root / "blobs" / "abc"
     blob.parent.mkdir(parents=True)
-    blob.write_bytes(b"x")
+    staged_blob = blob.with_suffix(".safetensors")
+    mx.save_safetensors(str(staged_blob), {"weight": mx.array([1.0])})
+    staged_blob.replace(blob)
     snapshot.mkdir(parents=True)
     (snapshot / "weight.safetensors").symlink_to(blob)
     runtime._require_files(snapshot, ("weight.safetensors",))
     model_io.configure_asset_roots({"repo/model": snapshot}, t5_tokenizer_root=snapshot)
-    assert model_io._asset_path("repo/model", "weight.safetensors") == str(blob)
+    asset_path = model_io._asset_path("repo/model", "weight.safetensors")
+    assert asset_path == str(blob)
+    assert set(model_io._load_safetensors(asset_path)) == {"weight"}
 
     outside = tmp_path / "outside"
     outside.write_bytes(b"x")

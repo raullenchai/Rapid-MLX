@@ -74,6 +74,9 @@ ALLOWED_PROFILE_KEYS: frozenset[str] = frozenset(
         "mtp_draft_model",
         "mtp_speculative_tokens",
         "mtp_continuous_batching_tier",
+        # Product default for the declared MTP preset, independent of the
+        # qualification tier (#3115: qwen3.5-4b-4bit ships default-off).
+        "mtp_default_enabled",
         "default_max_tokens",
         "recommended_prefill_step_size",
         "suffix_decoding_tier",

@@ -154,6 +154,14 @@ struct RapidApp: App {
         TelemetryConsent.synchronizeExistingDecision()
         let consentCoordinator = DeferredTelemetryConsentCoordinator()
         let starPromptCoordinator = GitHubStarPromptCoordinator()
+        // #2878 changed the Desktop default from 8000 to 7659. Preserve the
+        // old endpoint for upgrades before InstallTracker records this launch;
+        // otherwise existing OpenAI-compatible clients silently disconnect.
+        PortAllocator.migrateLegacyDefaultIfNeeded(
+            hadPreviousLaunch: UserDefaults.standard.string(
+                forKey: InstallTracker.lastSeenVersionKey
+            ) != nil
+        )
         // Sweep orphan rapid-mlx processes from previous sessions BEFORE
         // anything else looks at our serve port.
         //

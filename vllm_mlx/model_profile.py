@@ -55,7 +55,12 @@ from typing import Literal, get_args
 # Adding a new value requires editing this Literal AND the dispatch table
 # in cli.py / routes/models.py so the surface-level UX (info, ls, chat)
 # doesn't silently expose LLM-only columns on a non-LLM alias.
-Modality = Literal["text", "text-diffusion", "vision", "image-gen", "video-gen"]
+# ``"embedding"`` marks a sentence-embedding checkpoint (embeddinggemma):
+# it is served through ``--embedding-model`` and never has a chat surface,
+# so catalogs must not advertise it as a text-generation model (#3116).
+Modality = Literal[
+    "text", "text-diffusion", "vision", "image-gen", "video-gen", "embedding"
+]
 VideoGenerationMode = Literal["text-to-video", "image-to-video"]
 VIDEO_GENERATION_MODES: tuple[VideoGenerationMode, ...] = get_args(VideoGenerationMode)
 
@@ -182,6 +187,13 @@ class ModelProfile:
     # ``unknown`` remains available only through the existing operator force
     # override.  Ordinary single-request MTP is unaffected by this tier.
     mtp_continuous_batching_tier: str = "unknown"
+    # Whether ``serve <alias>`` (and Desktop) turn the declared MTP preset on
+    # without the user asking.  Independent of the qualification tier above:
+    # the tier is a correctness claim, this is the product default.  A
+    # verified artifact whose measured speedup is negative for the typical
+    # single-stream user keeps its tier (explicit ``--speculative-config mtp``
+    # still runs the qualified continuous route) but ships default-off (#3115).
+    mtp_default_enabled: bool = True
     default_max_tokens: int | None = None  # Per-model default when user omits
     # Bench-verified service prefill chunk.  This is deliberately an explicit
     # per-profile recommendation rather than an architecture inference:

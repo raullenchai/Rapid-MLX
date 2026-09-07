@@ -13,7 +13,7 @@ metadata on the selected model, not separate navigation tabs.
 The initial commands are:
 
 ```text
-rapid-mlx benchmark catalog [--memory-gib N] [--json]
+rapid-mlx benchmark catalog [--memory-gib N] [--all] [--json]
 rapid-mlx benchmark plan MODEL [--json]
 rapid-mlx benchmark run MODEL [--json]
 rapid-mlx benchmark results [--limit N] [--json]

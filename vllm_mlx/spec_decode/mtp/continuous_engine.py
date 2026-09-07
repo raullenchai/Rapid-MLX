@@ -21,6 +21,8 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from typing import Any, Protocol
 
+from vllm_mlx.spec_decode.mtp.accept_counter import get_global_counter
+
 
 class ContinuousSelfMTPError(RuntimeError):
     """Base error for a fail-closed engine invariant."""
@@ -578,6 +580,13 @@ def propose_batched_self_mtp(batch: BatchedSelfMTPState) -> SelfMTPCycleResult:
         _abort_backend_transaction(batch, computation, error)
         raise
     assert computation is not None
+    # #3155: the continuous path bypasses ``mtp_generate_step``, so until
+    # now it never fed the process counter and ``/metrics`` read 0 under
+    # the default (tier-verified) route.  Every validated row is one verify
+    # call with a prefix-accepted chain of ``accepted`` drafts.
+    counter = get_global_counter()
+    for depth, accepted in zip(computation.draft_depths, computation.accepted_lengths):
+        counter.record_round(depth, accepted)
     proposal = SelfMTPCycleResult(
         membership_epoch=batch.membership_epoch,
         lane_uids=computation.lane_uids,

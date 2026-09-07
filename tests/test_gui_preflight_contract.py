@@ -19,6 +19,7 @@ machine — it would only quietly restore the misdiagnosis on an unhealthy one.
 from __future__ import annotations
 
 import json
+import os
 import signal
 import subprocess
 import sys
@@ -26,11 +27,147 @@ import textwrap
 import time
 from pathlib import Path
 
+import pytest
+
 ROOT = Path(__file__).resolve().parent.parent
 DRIVER = ROOT / "apps/rapid-mac/scripts/rapid-ax.swift"
+PREFLIGHT = ROOT / "apps/rapid-mac/scripts/mac-ci-ax-preflight.sh"
 HARNESS = ROOT / "apps/rapid-mac/scripts/gui-golden-flows.sh"
 DOGFOOD = ROOT / "apps/rapid-mac/scripts/dogfood-isolate.sh"
 FAKE_SIDECAR = ROOT / "apps/rapid-mac/scripts/fake-rapid-mlx.sh"
+
+
+def _write_executable(path: Path, source: str) -> None:
+    path.write_text(textwrap.dedent(source))
+    path.chmod(0o755)
+
+
+def _run_ax_preflight(tmp_path: Path, mode: str, *, dock: str = "present"):
+    commands = tmp_path / "bin"
+    commands.mkdir()
+    _write_executable(commands / "stat", "#!/bin/bash\necho admin\n")
+    _write_executable(commands / "id", "#!/bin/bash\necho 501\n")
+    _write_executable(commands / "sleep", "#!/bin/bash\nexit 0\n")
+    _write_executable(
+        commands / "pgrep",
+        """
+        #!/bin/bash
+        count=0
+        [[ -f "$FAKE_DOCK_COUNTER" ]] && count="$(cat "$FAKE_DOCK_COUNTER")"
+        count=$((count + 1))
+        echo "$count" >"$FAKE_DOCK_COUNTER"
+        [[ "$FAKE_DOCK_MODE" == "present" ]] && echo 4242
+        """,
+    )
+    driver = tmp_path / "rapid-ax"
+    _write_executable(
+        driver,
+        """
+        #!/bin/bash
+        count=0
+        [[ -f "$FAKE_AX_COUNTER" ]] && count="$(cat "$FAKE_AX_COUNTER")"
+        count=$((count + 1))
+        echo "$count" >"$FAKE_AX_COUNTER"
+        case "$FAKE_AX_MODE" in
+          transient)
+            if [[ "$count" -lt 3 ]]; then
+              echo '{"success":false,"target_pid":4242,"trusted":true,"screen_locked":false,"target_read":false,"target_read_error":-25204}'
+              echo 'rapid-ax: transient cannotComplete' >&2
+              exit 1
+            fi
+            ;;
+          persistent)
+            echo '{"success":false,"target_pid":4242,"trusted":true,"screen_locked":false,"target_read":false,"target_read_error":-25204}'
+            echo 'rapid-ax: persistent cannotComplete' >&2
+            exit 1
+            ;;
+          untrusted)
+            echo '{"success":false,"target_pid":4242,"trusted":false,"screen_locked":false,"target_read":false,"target_read_error":-25211}'
+            echo 'rapid-ax: not trusted' >&2
+            exit 1
+            ;;
+          locked)
+            echo '{"success":false,"target_pid":4242,"trusted":true,"screen_locked":true,"target_read":true,"target_read_error":0}'
+            echo 'rapid-ax: screen locked' >&2
+            exit 1
+            ;;
+          malformed-success)
+            echo 'not-json'
+            exit 0
+            ;;
+          wrong-target)
+            echo '{"success":true,"target_pid":9999,"target_timeout_error":0,"trusted":true,"screen_locked":false,"target_read":true,"target_read_error":0}'
+            exit 0
+            ;;
+        esac
+        echo '{"success":true,"target_pid":4242,"target_timeout_error":0,"trusted":true,"screen_locked":false,"target_read":true,"target_read_error":0}'
+        """,
+    )
+    environment = {
+        **os.environ,
+        "PATH": f"{commands}:{os.environ['PATH']}",
+        "RUNNER_TEMP": str(tmp_path),
+        "FAKE_AX_MODE": mode,
+        "FAKE_AX_COUNTER": str(tmp_path / "ax-count"),
+        "FAKE_DOCK_MODE": dock,
+        "FAKE_DOCK_COUNTER": str(tmp_path / "dock-count"),
+    }
+    return subprocess.run(
+        [str(PREFLIGHT), str(driver)],
+        env=environment,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+
+def test_ax_preflight_recovers_only_transient_cannot_complete(tmp_path):
+    result = _run_ax_preflight(tmp_path, "transient")
+    assert result.returncode == 0, result.stderr
+    assert (tmp_path / "ax-count").read_text().strip() == "3"
+    assert "recovered on attempt 3/5" in result.stdout
+    assert result.stdout.count("retrying") == 2
+
+
+def test_ax_preflight_bounds_persistent_cannot_complete(tmp_path):
+    result = _run_ax_preflight(tmp_path, "persistent")
+    assert result.returncode == 1
+    assert (tmp_path / "ax-count").read_text().strip() == "5"
+    assert "failed after 5/5 attempts" in result.stdout
+    assert "persistent cannotComplete" in result.stderr
+
+
+@pytest.mark.parametrize("mode", ["malformed-success", "wrong-target"])
+def test_ax_preflight_rejects_unattested_success_payload(tmp_path, mode):
+    result = _run_ax_preflight(tmp_path, mode)
+    assert result.returncode == 1
+    assert (tmp_path / "ax-count").read_text().strip() == "1"
+    assert "without a valid success payload" in result.stdout
+
+
+@pytest.mark.parametrize("mode", ["untrusted", "locked"])
+def test_ax_preflight_does_not_retry_nonretryable_session_faults(tmp_path, mode):
+    result = _run_ax_preflight(tmp_path, mode)
+    assert result.returncode == 1
+    assert (tmp_path / "ax-count").read_text().strip() == "1"
+    assert "non-retryable permission or session result" in result.stdout
+
+
+def test_ax_preflight_bounds_missing_console_dock(tmp_path):
+    result = _run_ax_preflight(tmp_path, "success", dock="missing")
+    assert result.returncode == 1
+    assert not (tmp_path / "ax-count").exists()
+    assert (tmp_path / "dock-count").read_text().strip() == "5"
+    assert "no Dock for console user admin" in result.stdout
+
+
+def test_gui_workflow_runs_the_bounded_preflight_wrapper():
+    workflow = (ROOT / ".github/workflows/rapid-mac-ci.yml").read_text()
+    step = workflow.split("- name: Accessibility + GUI session preflight", 1)[1]
+    step = step.split("- name: Download commit-bound GUI app", 1)[0]
+    assert 'swiftc scripts/rapid-ax.swift -o "$RUNNER_TEMP/rapid-ax"' in step
+    assert 'scripts/mac-ci-ax-preflight.sh "$RUNNER_TEMP/rapid-ax"' in step
+    assert '"$RUNNER_TEMP/rapid-ax" trust' not in step
 
 
 def test_trust_command_checks_permission_reach_and_lock():
@@ -45,6 +182,7 @@ def test_trust_command_checks_permission_reach_and_lock():
     # ...and the one signal neither of those can carry.
     assert "CGSessionCopyCurrentDictionary()" in trust
     assert "CGSSessionScreenIsLocked" in trust
+    assert "AXUIElementSetMessagingTimeout(targetElement, 2.0)" in trust
 
 
 def test_trust_success_requires_all_three_signals():
