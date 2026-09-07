@@ -106,7 +106,11 @@ enum DraftPostFlowFailure: Error, Equatable, Sendable {
 
     var isRecoverable: Bool {
         switch self {
-        case .targetUnavailable, .focusChanged:
+        // A transient focus loss is safe before the write and can be retried.
+        // A missing target is terminal because the same error can also surface
+        // after a possible mutation; the shared coordinator cannot prove its
+        // phase and must never replay the write.
+        case .focusChanged:
             true
         default:
             false

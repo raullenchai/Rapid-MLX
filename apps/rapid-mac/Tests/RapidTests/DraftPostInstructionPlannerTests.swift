@@ -463,7 +463,7 @@ struct DraftPostInstructionPlannerTests {
     @Test("Prepared execution retries only recoverable pre-write failures")
     func boundedPreparedRecovery() async {
         let driver = ScriptedPreparedDraftDriver(
-            outcomes: [.failure(.targetUnavailable), .success(())]
+            outcomes: [.failure(.focusChanged), .success(())]
         )
         let outcome = await PreparedDraftPostFlowCoordinator(driver: driver).run(
             draft: "Reviewed draft",
@@ -476,6 +476,22 @@ struct DraftPostInstructionPlannerTests {
             completedSteps: 3
         )))
         #expect(await driver.attempts == 2)
+
+        let missingTargetDriver = ScriptedPreparedDraftDriver(
+            outcomes: [.failure(.targetUnavailable), .success(())]
+        )
+        let missingTargetOutcome = await PreparedDraftPostFlowCoordinator(
+            driver: missingTargetDriver
+        ).run(
+            draft: "Reviewed draft",
+            destination: Self.destination,
+            expectedDestination: Self.destinationIdentity
+        )
+        #expect(missingTargetOutcome == .failed(
+            .targetUnavailable,
+            DraftPostFlowMetrics(attempts: 1)
+        ))
+        #expect(await missingTargetDriver.attempts == 1)
 
         let terminalDriver = ScriptedPreparedDraftDriver(
             outcomes: [.failure(.verificationFailed), .success(())]
