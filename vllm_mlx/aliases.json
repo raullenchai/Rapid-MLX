@@ -1430,6 +1430,22 @@
     "supports_spec_decode": false,
     "min_memory_gb": 24
   },
+  "muse-glimmer-30b-8bit": {
+    "hf_path": "mlx-community/Muse-Glimmer-30B-8bit",
+    "is_text_only": true,
+    "tool_call_parser": "muse",
+    "reasoning_parser": "muse",
+    "is_hybrid": false,
+    "is_hybrid_explicit": true,
+    "is_moe": false,
+    "supports_spec_decode": false,
+    "supports_dflash": true,
+    "dflash_draft_model": "meta-models/Muse-Glimmer-30B-assistant",
+    "dflash_target_revision": "679c45e1b331a6514a6e38076a353cc5fed21bf6",
+    "dflash_draft_revision": "e8192f3a8f617f74be2ce220360c89ef4789f39f",
+    "dflash_algorithm": "dflash",
+    "min_memory_gb": 48
+  },
   "muse-glimmer-30b-bf16": {
     "hf_path": "mlx-community/Muse-Glimmer-30B-bf16",
     "is_text_only": true,

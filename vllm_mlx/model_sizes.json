@@ -68,6 +68,7 @@
     "mlx-community/Mistral-Small-4-119B-2603-4bit": 67790336757,
     "mlx-community/Mistral-Small-4-119B-2603-8bit": 127279723730,
     "mlx-community/Muse-Glimmer-30B-4bit": 19443239525,
+    "mlx-community/Muse-Glimmer-30B-8bit": 33404526711,
     "mlx-community/Muse-Glimmer-30B-bf16": 59581776079,
     "mlx-community/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-4bit": 17792571825,
     "mlx-community/Nanbeige4.1-3B-4bit": 2231499570,

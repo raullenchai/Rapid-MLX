@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import pytest
 
-from vllm_mlx.model_aliases import AliasProfile
+from vllm_mlx.model_aliases import AliasProfile, resolve_profile
 from vllm_mlx.speculative.dflash.eligibility import (
     DFlashUnavailable,
     _looks_like_4bit,
@@ -75,6 +75,22 @@ def test_check_passes_for_good_profile() -> None:
     check(p, alias="qwen3.5-27b-8bit")
     r = report(p, alias="qwen3.5-27b-8bit")
     assert r.reasons == ()
+
+
+def test_muse_glimmer_curated_pair_passes_exact_registry_gate() -> None:
+    profile = resolve_profile("muse-glimmer-30b-8bit")
+    assert profile is not None
+    check(profile, alias="muse-glimmer-30b-8bit")
+    assessment = report(profile, alias="muse-glimmer-30b-8bit")
+    assert assessment.reasons == ()
+    assert assessment.recommendation == "verified"
+    assert is_registry_verified_pair(
+        profile.hf_path,
+        profile.dflash_target_revision,
+        profile.dflash_draft_model or "",
+        profile.dflash_draft_revision,
+        profile.dflash_algorithm,
+    )
 
 
 def test_check_rejects_alias_without_supports_dflash() -> None:

@@ -637,13 +637,12 @@ def test_dflash_4bit_precision_requires_dflash2_qualification(alias: str) -> Non
 
 
 def test_dflash_eligible_aliases_have_qualified_drafter_family() -> None:
-    """DFlash drafters today are published by ``z-lab/`` for Qwen3,
-    Qwen3.5, Qwen3.6, Gemma-4 and LLaMA-3.1 families. Any eligible
-    alias must point at one of these prefixes and bear the ``DFlash``
-    marker (the ``-b16`` / ``-UltraChat`` / etc. suffix is permitted —
-    z-lab uses it for training-data and precision tags). Catches an
-    accidental copy-paste that swaps the drafter to an incompatible
-    model."""
+    """Every eligible alias must use a known-compatible drafter identity.
+
+    Most published drafters follow the family-plus-``DFlash`` naming
+    convention. Muse-Glimmer publishes its assistant under an exact repo name,
+    so admit that single identity without broadly trusting its organization.
+    """
     valid_drafter_prefixes = (
         "z-lab/Qwen3-",
         "z-lab/Qwen3.5-",
@@ -652,10 +651,18 @@ def test_dflash_eligible_aliases_have_qualified_drafter_family() -> None:
         "z-lab/gemma-4-",
         "z-lab/LLaMA3.1-",
     )
+    valid_exact_pairs = {
+        (
+            "mlx-community/Muse-Glimmer-30B-8bit",
+            "meta-models/Muse-Glimmer-30B-assistant",
+        )
+    }
     for alias, profile in list_profiles().items():
         if not profile.supports_dflash:
             continue
         d = profile.dflash_draft_model or ""
+        if (profile.hf_path, d) in valid_exact_pairs:
+            continue
         ok = any(d.startswith(p) for p in valid_drafter_prefixes)
         # ``DFlash`` may appear at end of repo name OR before a tag
         # suffix (``-b16``, ``-UltraChat``, etc.). Anchored on ``-`` /
@@ -665,8 +672,8 @@ def test_dflash_eligible_aliases_have_qualified_drafter_family() -> None:
         has_marker = bool(re.search(r"(?:^|-)DFlash(?:2)?(?:$|-)", d))
         assert has_marker and ok, (
             f"{alias}: dflash_draft_model={d!r} doesn't match the "
-            f"expected ``z-lab/{{Qwen3,Qwen3.5,Qwen3.6,gemma-4,LLaMA3.1}}-*"
-            f"DFlash*`` shape. If you've validated a new drafter family, "
+            f"expected known DFlash drafter identity. If you've validated a "
+            f"new drafter family, "
             f"update this allow-list."
         )
 
