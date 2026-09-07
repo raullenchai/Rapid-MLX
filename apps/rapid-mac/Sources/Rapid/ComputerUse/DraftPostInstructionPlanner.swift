@@ -521,7 +521,8 @@ struct LocalDraftPostInstructionPlanner: DraftPostInstructionPlanning {
             but it does not identify the destination website. If the user did not name the \
             destination service or site, names a destination inconsistent with the trusted \
             browser hostname, or did not provide enough purpose and talking points to write \
-            useful content, return needs_clarification and ask exactly one concise question. \
+            useful content, return needs_clarification and ask exactly one concise question \
+            ending with one question mark. \
             Otherwise return ready and copy the trusted hostname exactly into destination. \
             For a ready plan, purpose must copy purpose_evidence, audience must copy \
             audience_evidence, and tone must copy tone_evidence exactly; every \
@@ -598,6 +599,7 @@ struct LocalDraftPostInstructionPlanner: DraftPostInstructionPlanning {
                 "clarifying_question": [
                     "type": "string",
                     "maxLength": maximumClarificationCharacters,
+                    "pattern": #"^[^?？؟\r\n]*[?？؟]$"#,
                 ],
             ],
             "required": [

@@ -48,6 +48,12 @@ struct DraftPostInstructionPlannerTests {
             responseFormat["json_schema"] as? [String: Any]
         )
         #expect(schemaEnvelope["strict"] as? Bool == true)
+        let schema = try #require(schemaEnvelope["schema"] as? [String: Any])
+        let properties = try #require(schema["properties"] as? [String: Any])
+        let clarification = try #require(
+            properties["clarifying_question"] as? [String: Any]
+        )
+        #expect(clarification["pattern"] as? String == #"^[^?？؟\r\n]*[?？؟]$"#)
     }
 
     @Test("A model clarification response is exposed without a guessed plan")
@@ -113,6 +119,7 @@ struct DraftPostInstructionPlannerTests {
         #expect(system.contains("did not name the destination service or site"))
         #expect(system.contains("names a destination inconsistent with the trusted browser hostname"))
         #expect(system.contains("return needs_clarification and ask exactly one concise question"))
+        #expect(system.contains("ending with one question mark"))
         #expect(system.contains("purpose_evidence"))
         let user = try #require(messages.last?["content"])
         #expect(user.contains("Trusted destination hostname: x.com"))
