@@ -80,3 +80,6 @@ Hugging Face cache, and never override or redirect its configured cache paths.
   continuous-cohort attachment. The optional id is now narrowed before
   `dict.get`; the pinned CI type environment reports the existing 701-error
   grandfathered budget with no growth, and 162 related tests pass.
+- Round 6 changed-lines coverage reached 98% and identified exactly two missing
+  branches: empty counter-group construction and JSON-buffered Completions
+  terminal metrics. Added direct regression tests; the focused suite is 26/26.

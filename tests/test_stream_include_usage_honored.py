@@ -441,6 +441,29 @@ def test_terminal_stream_chunk_carries_request_scoped_mtp_metrics(endpoint):
     }
 
 
+def test_json_buffered_completion_terminal_carries_request_scoped_mtp_metrics():
+    client = _make_completions_client(
+        _PlainCompletionsEngine(deltas=['{"ok"', ":true}"], with_mtp_metrics=True)
+    )
+    response = client.post(
+        "/v1/completions",
+        json={
+            "model": "test-model",
+            "prompt": "hi",
+            "stream": True,
+            "max_tokens": 16,
+            "response_format": {"type": "json_object"},
+        },
+    )
+
+    assert response.status_code == 200, response.text
+    events = _parse_sse(response.text)
+    measured = [event for event in events if "metrics" in event]
+    assert len(measured) == 1
+    assert measured[0]["choices"][0]["finish_reason"] == "stop"
+    assert measured[0]["metrics"]["speculative_decoding"]["verify_calls"] == 2
+
+
 # ---------------------------------------------------------------------------
 # Spec edge cases
 # ---------------------------------------------------------------------------

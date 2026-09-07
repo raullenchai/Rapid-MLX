@@ -47,6 +47,11 @@ def test_counter_group_keeps_process_and_request_lifetimes_in_sync():
     assert process.snapshot() == request.snapshot()
 
 
+def test_counter_group_rejects_an_empty_fanout():
+    with pytest.raises(ValueError, match="requires at least one counter"):
+        MTPAcceptCounterGroup()
+
+
 def test_record_verify_builds_prefix_histogram():
     c = MTPAcceptCounter()
     c.record_verify(3, 3)  # all accepted -> bonus
