@@ -46,7 +46,7 @@ struct DraftPostInstructionPlannerTests {
         #expect(schemaEnvelope["strict"] as? Bool == true)
     }
 
-    @Test("Missing intent returns one clarification instead of a guessed plan")
+    @Test("A model clarification response is exposed without a guessed plan")
     func clarification() async throws {
         let transport = PlannerTransport(response: try Self.response(content: [
             "status": "needs_clarification",
@@ -64,6 +64,25 @@ struct DraftPostInstructionPlannerTests {
             destinationHost: "x.com"
         )
         #expect(result == .needsClarification("Which site should I prepare this for?"))
+    }
+
+    @Test("The planning request requires clarification for incomplete or mismatched intent")
+    func clarificationPromptContract() throws {
+        let data = try LocalDraftPostInstructionPlanner.requestBody(
+            instruction: "Write something about the release.",
+            browserApplication: "Safari",
+            destinationHost: "x.com",
+            model: "qwen3.5-9b-4bit"
+        )
+        let body = try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
+        let messages = try #require(body["messages"] as? [[String: String]])
+        let system = try #require(messages.first?["content"])
+        #expect(system.contains("did not name the destination service or site"))
+        #expect(system.contains("names a destination inconsistent with the trusted browser hostname"))
+        #expect(system.contains("return needs_clarification and ask exactly one concise question"))
+        let user = try #require(messages.last?["content"])
+        #expect(user.contains("Trusted destination hostname: x.com"))
+        #expect(user.contains("Write something about the release."))
     }
 
     @Test("Unknown fields and incomplete ready plans fail closed")
