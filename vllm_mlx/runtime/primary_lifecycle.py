@@ -61,6 +61,7 @@ class PrimaryModelLifecycle:
         self._last_activity = self._clock()
         self._last_error: str | None = None
         self._detached = False
+        self._resume_required = False
         self.state = "ready" if self._is_loaded() else "standby"
 
     def _set_state(self, state: str) -> None:
@@ -157,10 +158,10 @@ class PrimaryModelLifecycle:
                 self._last_error = None
                 return
             if self._is_loaded() and self.state == "error":
-                raise RuntimeError(
-                    "configured engine is still resident after a failed "
-                    "lifecycle transition"
-                )
+                # start() can fail after publishing part of the engine. Retry
+                # the cleanup on every later request so a transient stop
+                # failure cannot wedge the endpoint forever.
+                await self._reset_partial_load()
             task = self._load_task
             if task is None or task.done():
                 task = asyncio.create_task(
@@ -171,6 +172,26 @@ class PrimaryModelLifecycle:
         # One disconnected client must not cancel a load shared by another
         # request.  The task remains the single transition authority.
         await asyncio.shield(task)
+
+    async def _reset_partial_load(self) -> None:
+        stop = getattr(self.engine, "stop", None)
+        if not callable(stop):
+            raise RuntimeError("partially loaded engine cannot be reset")
+        result = stop()
+        if inspect.isawaitable(result):
+            await result
+        await _run_hook(self._release_allocator_cache)
+        if self._is_loaded():
+            raise RuntimeError("partially loaded engine did not stop cleanly")
+
+    async def _resume_admission(self) -> None:
+        resume = getattr(self.engine, "resume_generation", None)
+        if not callable(resume):
+            raise RuntimeError("configured engine does not support resume_generation()")
+        result = resume()
+        if inspect.isawaitable(result):
+            await result
+        self._resume_required = False
 
     async def _load(self) -> None:
         async with self._transition_lock:
@@ -187,10 +208,19 @@ class PrimaryModelLifecycle:
                 result = start()
                 if inspect.isawaitable(result):
                     await result
+                if self._resume_required:
+                    await self._resume_admission()
                 await _run_hook(self._on_loaded)
             except BaseException as exc:
                 self._set_state("error")
                 self._last_error = type(exc).__name__
+                if self._is_loaded():
+                    try:
+                        await self._reset_partial_load()
+                    except BaseException:
+                        logger.exception(
+                            "Failed to reset partially loaded primary engine"
+                        )
                 raise
             self._set_state("ready")
             self.touch()
@@ -226,13 +256,11 @@ class PrimaryModelLifecycle:
                     if inspect.isawaitable(result):
                         await result
                     paused = True
+                    self._resume_required = True
                 except TimeoutError:
                     self.touch()
-                    resume = getattr(self.engine, "resume_generation", None)
-                    if callable(resume):
-                        result = resume()
-                        if inspect.isawaitable(result):
-                            await result
+                    self._resume_required = True
+                    await self._resume_admission()
                     return False
                 except BaseException:
                     # Cancellation can arrive after the engine closed
@@ -240,11 +268,8 @@ class PrimaryModelLifecycle:
                     # defensively even though our local `paused` flag was not
                     # assigned yet.
                     self.touch()
-                    resume = getattr(self.engine, "resume_generation", None)
-                    if callable(resume):
-                        result = resume()
-                        if inspect.isawaitable(result):
-                            await result
+                    self._resume_required = True
+                    await self._resume_admission()
                     raise
 
             self._set_state("unloading")
@@ -294,16 +319,15 @@ class PrimaryModelLifecycle:
                     logger.exception("Primary allocator cache release failed")
             finally:
                 if paused:
-                    resume = getattr(self.engine, "resume_generation", None)
-                    if callable(resume):
-                        try:
-                            result = resume()
-                            if inspect.isawaitable(result):
-                                await result
-                        except BaseException:
-                            logger.exception(
-                                "Failed to reopen primary admission after idle unload"
-                            )
+                    try:
+                        await self._resume_admission()
+                    except BaseException:
+                        self._set_state("error")
+                        self._last_error = "AdmissionResumeError"
+                        logger.exception(
+                            "Failed to reopen primary admission after idle unload"
+                        )
+                        raise
 
             self._set_state("standby")
             self._last_error = None

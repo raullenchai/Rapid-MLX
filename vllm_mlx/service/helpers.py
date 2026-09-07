@@ -145,6 +145,10 @@ def _release_admission_unless_committed(engine, committed: bool) -> None:
     the route handler also releases) cannot corrupt the accounting.
     """
     if committed:
+        # Streaming ownership was transferred to `_disconnect_guard`; its
+        # terminal finally both releases the reservation and touches the
+        # lifecycle after the final chunk/disconnect. Touching here would
+        # incorrectly start the idle clock while the SSE response is active.
         return
     release = getattr(engine, "release_admission_reservation", None)
     if release is None:
@@ -3934,9 +3938,9 @@ async def _disconnect_guard(
     the ``finally`` clause so the slot acquired by
     ``_check_admission_or_503`` is returned to the pool once the
     streaming response finishes (or the client disconnects, or the
-    generator raises). The release is the safety net for the
-    streaming path; non-streaming routes mirror it via
-    ``_wait_with_disconnect``.
+    generator raises). The same terminal block resets the primary lifecycle's
+    idle clock. Non-streaming routes mirror both actions in their route-level
+    finalizers.
 
     SSE keepalive (F-070): when ``keepalive_seconds > 0`` (default
     falls through to ``ServerConfig.sse_keepalive_seconds``), emit a

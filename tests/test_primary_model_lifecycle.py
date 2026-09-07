@@ -15,6 +15,8 @@ class FakeEngine:
         self.active_requests = 0
         self.start_gate: asyncio.Event | None = None
         self.fail_start = False
+        self.fail_resume = False
+        self.partial_start_failure = False
         self.paused = False
 
     async def start(self) -> None:
@@ -22,6 +24,8 @@ class FakeEngine:
         if self.start_gate is not None:
             await self.start_gate.wait()
         if self.fail_start:
+            if self.partial_start_failure:
+                self._loaded = True
             raise RuntimeError("load failed")
         self._loaded = True
 
@@ -44,6 +48,8 @@ class FakeEngine:
         return self.lifecycle_status()
 
     async def resume_generation(self):
+        if self.fail_resume:
+            raise RuntimeError("resume failed")
         self.paused = False
         return self.lifecycle_status()
 
@@ -130,6 +136,27 @@ async def test_pre_unload_failure_keeps_loaded_engine_ready():
 
 
 @pytest.mark.asyncio
+async def test_resume_failure_never_publishes_false_standby():
+    now = [100.0]
+    engine = FakeEngine(loaded=True)
+    engine.fail_resume = True
+    lifecycle = PrimaryModelLifecycle(
+        engine, idle_unload_seconds=5, clock=lambda: now[0]
+    )
+    now[0] += 6
+
+    with pytest.raises(RuntimeError, match="resume failed"):
+        await lifecycle.evict_if_idle()
+    assert lifecycle.snapshot()["state"] == "error"
+    assert lifecycle.snapshot()["error"] == "AdmissionResumeError"
+
+    engine.fail_resume = False
+    await lifecycle.ensure_loaded()
+    assert lifecycle.snapshot()["state"] == "ready"
+    assert engine.paused is False
+
+
+@pytest.mark.asyncio
 async def test_detach_refuses_in_flight_load_then_suppresses_callbacks():
     engine = FakeEngine()
     engine.start_gate = asyncio.Event()
@@ -208,6 +235,64 @@ async def test_failed_load_is_retryable_and_reports_only_error_type():
     await lifecycle.ensure_loaded()
     assert engine.start_calls == 2
     assert lifecycle.snapshot()["state"] == "ready"
+
+
+@pytest.mark.asyncio
+async def test_partial_failed_load_is_cleaned_and_retryable():
+    engine = FakeEngine()
+    engine.fail_start = True
+    engine.partial_start_failure = True
+    lifecycle = PrimaryModelLifecycle(engine, lazy_load=True)
+
+    with pytest.raises(RuntimeError, match="load failed"):
+        await lifecycle.ensure_loaded()
+    assert engine._loaded is False
+    assert engine.stop_calls == 1
+
+    engine.fail_start = False
+    await lifecycle.ensure_loaded()
+    assert engine.start_calls == 2
+    assert lifecycle.snapshot()["state"] == "ready"
+
+
+@pytest.mark.asyncio
+async def test_streaming_release_starts_idle_window_after_final_chunk():
+    from vllm_mlx.config import reset_config
+    from vllm_mlx.service.helpers import _disconnect_guard
+
+    class ConnectedRequest:
+        async def is_disconnected(self) -> bool:
+            return False
+
+    async def stream():
+        yield "data: done\n\n"
+
+    now = [10.0]
+    engine = FakeEngine(loaded=True)
+    lifecycle = PrimaryModelLifecycle(
+        engine, idle_unload_seconds=5, clock=lambda: now[0]
+    )
+    cfg = reset_config()
+    cfg.primary_model_lifecycle = lifecycle
+    now[0] += 20
+
+    chunks = [
+        chunk
+        async for chunk in _disconnect_guard(
+            stream(),
+            ConnectedRequest(),
+            poll_interval=0.01,
+            engine=engine,
+            keepalive_seconds=0,
+        )
+    ]
+    assert chunks == ["data: done\n\n"]
+    assert engine.release_calls == 1
+    now[0] += 4
+    assert await lifecycle.evict_if_idle() is False
+    now[0] += 2
+    assert await lifecycle.evict_if_idle() is True
+    reset_config()
 
 
 @pytest.mark.asyncio
