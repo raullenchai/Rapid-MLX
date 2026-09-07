@@ -5217,19 +5217,61 @@ class Scheduler:
             return True
         return self._current_sampler_params == self._request_generator_key(request)
 
+    @staticmethod
+    def _observable_prompt_cache_offsets(cache: Any) -> tuple[int, ...]:
+        """Read logical cache offsets without modifying cache objects."""
+        values: list[int] = []
+
+        def visit(value: Any) -> None:
+            children = getattr(value, "caches", None)
+            if isinstance(children, (list, tuple)):
+                for child in children:
+                    visit(child)
+                return
+            if isinstance(value, (list, tuple)):
+                for child in value:
+                    visit(child)
+                return
+            offset = getattr(value, "offset", None)
+            if offset is None:
+                return
+            try:
+                parsed = int(offset)
+            except (TypeError, ValueError):
+                return
+            if parsed >= 0:
+                values.append(parsed)
+
+        visit(cache)
+        return tuple(values)
+
     def _validated_prompt_tail_cost(self, request: Request) -> int:
         """Estimate committed prompt work without mutating cache/request state."""
         prompt_tokens = request.prompt_token_ids or []
         cache = request.prompt_cache
-        if cache is not None and not self._validate_cache(cache):
+        if cache is None:
+            return len(prompt_tokens)
+        if not self._validate_cache(cache):
             return len(prompt_tokens)
         remaining = request.remaining_tokens
-        if remaining is None:
+        cached_tokens = request.cached_tokens
+        if (
+            remaining is None
+            or isinstance(cached_tokens, bool)
+            or not isinstance(cached_tokens, int)
+            or cached_tokens < 0
+            or cached_tokens > len(prompt_tokens)
+            or len(remaining) != len(prompt_tokens) - cached_tokens
+            or remaining != prompt_tokens[cached_tokens:]
+        ):
+            return len(prompt_tokens)
+        observed_offsets = self._observable_prompt_cache_offsets(cache)
+        if observed_offsets and any(
+            offset != cached_tokens for offset in observed_offsets
+        ):
             return len(prompt_tokens)
         if remaining:
             return len(remaining)
-        if cache is None:
-            return max(1, len(prompt_tokens))
         try:
             from mlx_lm.models.cache import can_trim_prompt_cache
 
@@ -5239,8 +5281,8 @@ class Scheduler:
             pass
         return len(prompt_tokens)
 
-    def _select_waiting_request(self) -> Request | None:
-        """Remove and return the next opt-in admission candidate.
+    def _select_waiting_request(self) -> tuple[Request, bool] | None:
+        """Choose, but do not remove, the next opt-in admission candidate.
 
         Incompatible requests remain in place and do not accrue deferrals:
         they cannot legally join the live generator. Compatible candidates
@@ -5261,14 +5303,26 @@ class Scheduler:
             if int(getattr(pair[1], "_admission_deferrals", 0)) >= max_deferrals
         ]
         if forced:
-            selected_index, selected = forced[0]
-            self.num_admission_forced_grants += 1
+            _selected_index, selected = forced[0]
+            forced_selection = True
         else:
-            selected_index, selected = min(
+            _selected_index, selected = min(
                 candidates,
                 key=lambda pair: (self._validated_prompt_tail_cost(pair[1]), pair[0]),
             )
-        for _index, request in candidates:
+            forced_selection = False
+        return selected, forced_selection
+
+    def _commit_waiting_selection(self, selected: Request, forced: bool) -> None:
+        """Commit queue/fairness state only after generator insertion succeeds."""
+        candidates = [
+            request
+            for request in self.waiting
+            if self._request_is_generator_compatible(request)
+        ]
+        if forced:
+            self.num_admission_forced_grants += 1
+        for request in candidates:
             if request is selected:
                 continue
             request._admission_deferrals = (
@@ -5276,8 +5330,7 @@ class Scheduler:
             )
             self.num_admission_deferrals += 1
         selected._admission_deferrals = 0
-        del self.waiting[selected_index]
-        return selected
+        self.waiting.remove(selected)
 
     def _shortest_tail_admission_capacity(self) -> int:
         """Return grants available without creating an internal prompt FIFO."""
@@ -8059,11 +8112,13 @@ class Scheduler:
             if shortest_tail:
                 if self._shortest_tail_admission_capacity() <= 0:
                     break
-                request = self._select_waiting_request()
-                if request is None:
+                selection = self._select_waiting_request()
+                if selection is None:
                     break
+                request, selection_forced = selection
             else:
                 request = self.waiting.popleft()
+                selection_forced = False
 
             # Ensure we have a batch generator. The False return means
             # the live generator has incompatible stop_tokens / sampler
@@ -8072,12 +8127,14 @@ class Scheduler:
             # PR #612). Requeue and break so the next ``step`` retries
             # once the running batch completes.
             if not self._ensure_batch_generator(request.sampling_params):
-                self.waiting.appendleft(request)
+                if not shortest_tail:
+                    self.waiting.appendleft(request)
                 break
 
             if self.batch_generator is None:
                 # Put back and try again later
-                self.waiting.appendleft(request)
+                if not shortest_tail:
+                    self.waiting.appendleft(request)
                 break
 
             # Determine tokens to process and cache to use
@@ -8368,6 +8425,8 @@ class Scheduler:
 
             if uids:
                 uid = uids[0]
+                if shortest_tail:
+                    self._commit_waiting_selection(request, selection_forced)
                 self.request_id_to_uid[request.request_id] = uid
                 self.uid_to_request_id[uid] = request.request_id
                 if shortest_tail:

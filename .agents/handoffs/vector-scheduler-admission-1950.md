@@ -72,3 +72,12 @@
   94 passed, 2 deselected. The obsolete-head full-unit portion of validation
   was stopped after recording the blocker because the broader suite had already
   completed locally and exact-head validation must be rerun after this fix.
+- PR validation round 2 found two in-scope correctness gaps and one test nit.
+  The cost probe now validates cache shape, cached-token bounds, the exact
+  current prompt suffix, and every observable cache-layer offset before using
+  a warm-tail cost. Selection is now read-only; queue removal, deferral updates,
+  and forced-grant accounting commit only after `BatchGenerator.insert*`
+  returns a UID, so every failure preserves position and starvation history.
+  The legacy-runtime regression now feeds a flat response through real
+  `Scheduler.step()`. Post-fix cache/scheduler regression run: 226 passed,
+  2 deselected.

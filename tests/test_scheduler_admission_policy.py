@@ -3,6 +3,7 @@
 
 from collections import deque
 from types import SimpleNamespace
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -10,7 +11,7 @@ pytest.importorskip("mlx")
 pytestmark = pytest.mark.requires_mlx
 
 from vllm_mlx.cli import build_parser
-from vllm_mlx.request import Request, SamplingParams
+from vllm_mlx.request import Request, RequestStatus, SamplingParams
 from vllm_mlx.scheduler import Scheduler, SchedulerConfig
 
 
@@ -57,7 +58,11 @@ def test_shortest_validated_tail_wins_and_ties_remain_fifo():
     short_second = _request("short-second", 8)
     scheduler = _selector(long, short_first, short_second)
 
-    assert scheduler._select_waiting_request() is short_first
+    selected, forced = scheduler._select_waiting_request()
+    assert selected is short_first
+    assert not forced
+    assert list(scheduler.waiting) == [long, short_first, short_second]
+    scheduler._commit_waiting_selection(selected, forced)
     assert list(scheduler.waiting) == [long, short_second]
     assert long._admission_deferrals == 1
     assert short_second._admission_deferrals == 1
@@ -71,7 +76,9 @@ def test_incompatible_head_does_not_block_or_accrue_deferrals():
     scheduler.running = {"live": object()}
     scheduler._current_sampler_params = (frozenset({7}), False)
 
-    assert scheduler._select_waiting_request() is compatible
+    selected, forced = scheduler._select_waiting_request()
+    assert selected is compatible
+    scheduler._commit_waiting_selection(selected, forced)
     assert list(scheduler.waiting) == [incompatible]
     assert not hasattr(incompatible, "_admission_deferrals")
 
@@ -82,7 +89,10 @@ def test_max_deferrals_forces_oldest_compatible_request():
     new_short = _request("new-short", 1)
     scheduler = _selector(old_long, new_short, max_deferrals=2)
 
-    assert scheduler._select_waiting_request() is old_long
+    selected, forced = scheduler._select_waiting_request()
+    assert selected is old_long
+    assert forced
+    scheduler._commit_waiting_selection(selected, forced)
     assert scheduler.num_admission_forced_grants == 1
     assert list(scheduler.waiting) == [new_short]
 
@@ -96,6 +106,34 @@ def test_cost_probe_does_not_mutate_invalid_cache_fallback():
     assert scheduler._validated_prompt_tail_cost(request) == 12
     assert request.prompt_cache == []
     assert request.remaining_tokens == []
+
+
+def test_cost_probe_rejects_stale_tail_and_accepts_current_prompt_suffix():
+    request = _request("cache-hit", 100)
+    request.prompt_cache = object()
+    request.cached_tokens = 98
+    request.remaining_tokens = [98, 99]
+    scheduler = _selector(request)
+
+    assert scheduler._validated_prompt_tail_cost(request) == 2
+    request.remaining_tokens = [7, 8]
+    assert scheduler._validated_prompt_tail_cost(request) == 100
+    request.remaining_tokens = [98, 99]
+    request.prompt_cache = SimpleNamespace(offset=97)
+    assert scheduler._validated_prompt_tail_cost(request) == 100
+
+
+def test_selection_is_read_only_until_admission_commit():
+    old = _request("old", 100)
+    old._admission_deferrals = 3
+    short = _request("short", 1)
+    scheduler = _selector(old, short)
+
+    selected, forced = scheduler._select_waiting_request()
+
+    assert selected is short and not forced
+    assert list(scheduler.waiting) == [old, short]
+    assert old._admission_deferrals == 3
 
 
 def test_policy_grants_only_real_prompt_and_completion_headroom():
@@ -164,11 +202,33 @@ def test_opt_in_keeps_excess_prompts_out_of_generator_but_fcfs_is_unchanged():
 
 
 def test_legacy_flat_response_runtime_falls_back_to_fcfs_without_sticking_slots():
-    scheduler = _selector(_request("long", 100), _request("short", 2))
-    scheduler._shortest_tail_runtime_supported = None
+    scheduler = Scheduler(
+        MagicMock(),
+        SimpleNamespace(
+            encode=lambda value: value,
+            decode=lambda value: str(value),
+            eos_token_id=0,
+            eos_token_ids={0},
+        ),
+        SchedulerConfig(
+            enable_prefix_cache=False,
+            scheduling_policy="shortest_validated_tail",
+        ),
+    )
+    request = _request("live", 1)
+    request.status = RequestStatus.RUNNING
+    scheduler.requests = {request.request_id: request}
+    scheduler.running = {request.request_id: request}
+    scheduler.batch_generator = SimpleNamespace(
+        next=lambda: [],
+        _generation_batch=None,
+        _prompt_batch=None,
+        _currently_processing=(),
+        _unprocessed_sequences=(),
+    )
     scheduler._admission_prefill_uids = {11}
 
-    scheduler._fallback_from_unobservable_prompt_runtime()
+    scheduler.step()
 
     assert scheduler._shortest_tail_runtime_supported is False
     assert not scheduler._admission_prefill_uids
