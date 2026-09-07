@@ -950,7 +950,10 @@ def test_telemetry_sink_env_withholds_ci_markers_from_the_app():
     assert "RAPID_MLX_TELEMETRY=1" in block
     assert "DO_NOT_TRACK=0" in block
     # Every CI marker the app honours is named for the launcher to unset.
-    for marker in (
+    # Tokenise so "CI" is matched as a whole word, not inside GITLAB_CI.
+    unset_value = block.split("RAPID_LAUNCH_APP_ENV_UNSET=", 1)[1]
+    unset_value = unset_value.split("\n", 1)[0].strip().strip('"')
+    assert set(unset_value.split()) == {
         "CI",
         "GITHUB_ACTIONS",
         "GITLAB_CI",
@@ -959,8 +962,7 @@ def test_telemetry_sink_env_withholds_ci_markers_from_the_app():
         "BUILDKITE",
         "JENKINS_URL",
         "TEAMCITY_VERSION",
-    ):
-        assert marker in block.split("RAPID_LAUNCH_APP_ENV_UNSET=", 1)[1]
+    }
 
 
 def test_harness_reaps_its_own_fake_before_relaunch_without_global_sweep():
