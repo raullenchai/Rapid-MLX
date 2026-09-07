@@ -11,7 +11,7 @@ struct DraftPostFlowTests {
     /// fixtures and never runs in ordinary CI:
     ///
     /// - TextEdit window title contains `rapid-cua-draft.txt`.
-    /// - Browser window title contains `Rapid Computer Use Fixture` and has
+    /// - Browser window title contains `Local Post Composer` and has
     ///   one empty text area labelled `Post text`.
     ///
     /// Run with `RAPID_LIVE_CUA_DOGFOOD=1 swift test --no-parallel --filter
@@ -67,6 +67,58 @@ struct DraftPostFlowTests {
         }
         #expect(metrics.attempts == 2)
         #expect(metrics.automaticRecoveries == 1)
+        try actuator.clearLastDraftIfUnchanged()
+    }
+
+    /// Operator-only end-to-end visual recovery. The browser fixture exposes
+    /// an empty but deliberately unlabelled composer, so deterministic AX
+    /// lookup must fail before one local model grounding focuses it.
+    @Test(.enabled(if: ProcessInfo.processInfo.environment["RAPID_LIVE_CUA_VISUAL"] == "1"))
+    func liveVisualFallbackFixture() async throws {
+        let environment = ProcessInfo.processInfo.environment
+        let (source, destination) = try await Self.liveOptions()
+        let baseURL = try #require(URL(string: environment["RAPID_LIVE_CUA_BASE_URL"]
+            ?? "http://127.0.0.1:8377/v1"))
+        let model = environment["RAPID_LIVE_CUA_MODEL"] ?? "EvoCUA_8B_4bit"
+        let configuration = try LocalComputerUseVisualGrounder.Configuration(
+            baseURL: baseURL,
+            model: model,
+            bearerToken: environment["RAPID_LIVE_CUA_BEARER"],
+            wireContract: environment["RAPID_LIVE_CUA_WIRE_CONTRACT"] == "ui_tars"
+                ? .uiTars
+                : .genericFunction
+        )
+        let actuator = RecordingDraftPostComposerActuator(
+            base: AXDraftPostComposerActuator()
+        )
+        let transport = RecordingDraftPostGroundingTransport()
+        let recovery = MacOSDraftPostVisualRecovery(
+            configuration: configuration,
+            sessionValidator: { true },
+            transport: transport,
+            actuator: actuator
+        )
+        let outcome = await DraftPostFlowCoordinator(
+            driver: MacOSDraftPostFlowDriver(
+                actuator: actuator,
+                visualRecovery: recovery
+            )
+        ).run(source: source, destination: destination)
+        guard case .readyForReview(let metrics) = outcome else {
+            let responses = await transport.responseBodies
+            Issue.record("Visual fallback did not reach review: \(outcome); responses=\(responses)")
+            return
+        }
+        #expect(metrics.completedSteps == 3)
+        let actions = actuator.actions
+        #expect(actions.count == 3)
+        #expect(actions[0] == .focusComposer)
+        #expect(actions[1] == .focusComposer)
+        guard case .setDraft(let writtenDraft) = actions[2] else {
+            Issue.record("Visual fallback escaped the focus-and-write capability boundary")
+            return
+        }
+        #expect(writtenDraft == "Local AI can turn repetitive Mac work into a private, reviewable workflow.\n")
         try actuator.clearLastDraftIfUnchanged()
     }
 
@@ -189,6 +241,287 @@ struct DraftPostFlowTests {
         #expect(!MacOSDraftPostFlowDriver.isExplicitComposerLabel("Post"))
     }
 
+    @Test("Safari and Chrome address fields use explicit browser contracts")
+    func browserAddressFields() {
+        #expect(MacOSDraftPostFlowDriver.matchesBrowserAddressField(
+            browserBundleIdentifier: "com.apple.Safari",
+            role: kAXTextFieldRole as String,
+            identifier: "WEB_BROWSER_ADDRESS_AND_SEARCH_FIELD",
+            description: "smart search field"
+        ))
+        #expect(MacOSDraftPostFlowDriver.matchesBrowserAddressField(
+            browserBundleIdentifier: "com.google.Chrome",
+            role: kAXTextFieldRole as String,
+            identifier: nil,
+            description: "Address and search bar"
+        ))
+        #expect(!MacOSDraftPostFlowDriver.matchesBrowserAddressField(
+            browserBundleIdentifier: "com.google.Chrome",
+            role: kAXTextFieldRole as String,
+            identifier: nil,
+            description: "Search posts"
+        ))
+        #expect(!MacOSDraftPostFlowDriver.matchesBrowserAddressField(
+            browserBundleIdentifier: "com.google.Chrome",
+            role: kAXButtonRole as String,
+            identifier: nil,
+            description: "Address and search bar"
+        ))
+        #expect(!MacOSDraftPostFlowDriver.matchesBrowserAddressField(
+            browserBundleIdentifier: "com.example.browser",
+            role: kAXTextFieldRole as String,
+            identifier: "WEB_BROWSER_ADDRESS_AND_SEARCH_FIELD",
+            description: "Address and search bar"
+        ))
+    }
+
+    @Test("Visual recovery binds only to the exact selected UI-TARS profile")
+    func visualRuntimeEligibility() throws {
+        let profile = ServerModelProfile(
+            id: "ui-tars-1.5-7b-4bit",
+            toolCallParser: "ui_tars"
+        )
+        let currentSession: DraftPostVisualRuntime.SessionValidator = { true }
+        let runtime = try #require(DraftPostVisualRuntime(
+            profile: profile,
+            selectedAlias: "UI-TARS-1.5-7B-4BIT",
+            host: "127.0.0.1",
+            port: 7659,
+            bearerToken: "secret",
+            sessionValidator: currentSession
+        ))
+        #expect(runtime.model == profile.id)
+        #expect(runtime.baseURL.absoluteString == "http://127.0.0.1:7659/v1")
+
+        #expect(DraftPostVisualRuntime(
+            profile: profile,
+            selectedAlias: "another-model",
+            host: "127.0.0.1",
+            port: 7659,
+            bearerToken: "secret",
+            sessionValidator: currentSession
+        ) == nil)
+        #expect(DraftPostVisualRuntime(
+            profile: ServerModelProfile(id: profile.id, toolCallParser: "hermes"),
+            selectedAlias: profile.id,
+            host: "127.0.0.1",
+            port: 7659,
+            bearerToken: "secret",
+            sessionValidator: currentSession
+        ) == nil)
+        #expect(DraftPostVisualRuntime(
+            profile: profile,
+            selectedAlias: profile.id,
+            host: "localhost",
+            port: 7659,
+            bearerToken: "secret",
+            sessionValidator: currentSession
+        ) == nil)
+        #expect(DraftPostVisualRuntime(
+            profile: profile,
+            selectedAlias: profile.id,
+            host: "127.0.0.1",
+            port: 7659,
+            bearerToken: nil,
+            sessionValidator: currentSession
+        ) == nil)
+    }
+
+    @Test("Visual inference rejects a server-session change before acceptance")
+    func visualInferenceRequiresOneSession() async {
+        let session = VisualSessionProbe(isCurrent: true)
+        let validator: DraftPostVisualRuntime.SessionValidator = {
+            session.current
+        }
+        let base = RotatingDraftPostGroundingTransport(session: session)
+        let transport = SessionValidatedComputerUseGroundingTransport(
+            base: base,
+            sessionValidator: validator
+        )
+        await #expect(throws: DraftPostFlowFailure.dependencyFailure) {
+            _ = try await transport.send(
+                URLRequest(url: URL(string: "http://127.0.0.1:7659/v1")!),
+                maximumResponseBytes: 128
+            )
+        }
+        #expect(await base.callCount == 1)
+
+        let blockedBase = RotatingDraftPostGroundingTransport(session: session)
+        let blockedTransport = SessionValidatedComputerUseGroundingTransport(
+            base: blockedBase,
+            sessionValidator: validator
+        )
+        await #expect(throws: DraftPostFlowFailure.dependencyFailure) {
+            _ = try await blockedTransport.send(
+                URLRequest(url: URL(string: "http://127.0.0.1:7659/v1")!),
+                maximumResponseBytes: 128
+            )
+        }
+        #expect(await blockedBase.callCount == 0)
+    }
+
+    @Test("Chrome accessibility activation balances cancellation")
+    func browserAccessibilityActivationBalancesCancellation() async {
+        let probe = BrowserAccessibilityLeaseProbe()
+        await #expect(throws: CancellationError.self) {
+            _ = try await MacOSDraftPostFlowDriver.establishBrowserAccessibilityLease(
+                previousValue: true,
+                activate: { probe.activate() },
+                settle: { throw CancellationError() },
+                restore: { probe.restore(to: $0) }
+            )
+        }
+        #expect(probe.activations == 1)
+        #expect(probe.releases == 1)
+        #expect(probe.restoredValue == true)
+    }
+
+    @Test("Post-visual focus drift cannot start another visual budget")
+    func postVisualDriftIsTerminal() async {
+        await #expect(throws: DraftPostFlowFailure.verificationFailed) {
+            try await MacOSDraftPostFlowDriver.verifyAfterVisualRecovery {
+                throw DraftPostFlowFailure.focusChanged
+            }
+        }
+    }
+
+    @Test("Visual coordinates can authorize only the expected editable value")
+    func safeVisualComposerContract() {
+        let accepted = MacOSDraftPostFlowDriver.matchesSafeVisualComposer(
+            role: kAXTextAreaRole as String,
+            subrole: nil,
+            isBrowserAddressField: false,
+            isEnabled: true,
+            value: "",
+            requiredValue: "",
+            isValueSettable: true
+        )
+        #expect(accepted)
+
+        for rejected in [
+            MacOSDraftPostFlowDriver.matchesSafeVisualComposer(
+                role: kAXButtonRole as String,
+                subrole: nil,
+                isBrowserAddressField: false,
+                isEnabled: true,
+                value: "",
+                requiredValue: "",
+                isValueSettable: true
+            ),
+            MacOSDraftPostFlowDriver.matchesSafeVisualComposer(
+                role: kAXTextFieldRole as String,
+                subrole: nil,
+                isBrowserAddressField: true,
+                isEnabled: true,
+                value: "",
+                requiredValue: "",
+                isValueSettable: true
+            ),
+            MacOSDraftPostFlowDriver.matchesSafeVisualComposer(
+                role: kAXTextAreaRole as String,
+                subrole: kAXSecureTextFieldSubrole as String,
+                isBrowserAddressField: false,
+                isEnabled: true,
+                value: "",
+                requiredValue: "",
+                isValueSettable: true
+            ),
+            MacOSDraftPostFlowDriver.matchesSafeVisualComposer(
+                role: kAXTextAreaRole as String,
+                subrole: nil,
+                isBrowserAddressField: false,
+                isEnabled: true,
+                value: "already present",
+                requiredValue: "",
+                isValueSettable: true
+            ),
+        ] {
+            #expect(!rejected)
+        }
+    }
+
+    @Test("Visual grounding tolerance is local and window bounded")
+    func visualGroundingTolerance() {
+        let window = CGRect(x: 100, y: 100, width: 1_000, height: 800)
+        let composer = CGRect(x: 300, y: 350, width: 600, height: 260)
+        #expect(MacOSDraftPostFlowDriver.isWithinGroundingTolerance(
+            point: CGPoint(x: 600, y: 320),
+            elementFrame: composer,
+            windowFrame: window
+        ))
+        #expect(!MacOSDraftPostFlowDriver.isWithinGroundingTolerance(
+            point: CGPoint(x: 600, y: 280),
+            elementFrame: composer,
+            windowFrame: window
+        ))
+        #expect(!MacOSDraftPostFlowDriver.isWithinGroundingTolerance(
+            point: CGPoint(x: 99, y: 400),
+            elementFrame: composer,
+            windowFrame: window
+        ))
+        #expect(MacOSDraftPostFlowDriver.authorizesUniqueVisualEditor(
+            candidateCount: 1
+        ))
+        #expect(!MacOSDraftPostFlowDriver.authorizesUniqueVisualEditor(
+            candidateCount: 0
+        ))
+        #expect(!MacOSDraftPostFlowDriver.authorizesUniqueVisualEditor(
+            candidateCount: 2
+        ))
+    }
+
+    @Test("Visual recovery retries only the bounded pre-mutation attempt")
+    func visualRecoveryIsBounded() async throws {
+        let script = ScriptedVisualRecoveryAttempt(failuresBeforeSuccess: 2)
+        let recovery = MacOSDraftPostVisualRecovery { destination, identity in
+            #expect(destination.id == Self.destination.id)
+            #expect(identity == "bound-document")
+            try await script.run()
+        }
+
+        try await recovery.focusComposer(
+            in: Self.destination,
+            documentIdentity: "bound-document"
+        )
+
+        #expect(await script.callCount == 3)
+    }
+
+    @Test("Visual recovery exhaustion fails closed after three attempts")
+    func visualRecoveryExhaustion() async {
+        let script = ScriptedVisualRecoveryAttempt(failuresBeforeSuccess: 4)
+        let recovery = MacOSDraftPostVisualRecovery { _, _ in
+            try await script.run()
+        }
+
+        await #expect(throws: DraftPostFlowFailure.composerMissing) {
+            try await recovery.focusComposer(
+                in: Self.destination,
+                documentIdentity: "bound-document"
+            )
+        }
+        #expect(await script.callCount == 3)
+    }
+
+    @Test("Cancellation is never converted into a visual retry")
+    func visualRecoveryCancellation() async {
+        let script = ScriptedVisualRecoveryAttempt(
+            failuresBeforeSuccess: 0,
+            cancels: true
+        )
+        let recovery = MacOSDraftPostVisualRecovery { _, _ in
+            try await script.run()
+        }
+
+        await #expect(throws: CancellationError.self) {
+            try await recovery.focusComposer(
+                in: Self.destination,
+                documentIdentity: "bound-document"
+            )
+        }
+        #expect(await script.callCount == 1)
+    }
+
     @Test("Post-mutation drift is always terminal")
     func postMutationDriftStops() throws {
         try MacOSDraftPostFlowDriver.verifyAfterMutation { true }
@@ -218,6 +551,21 @@ struct DraftPostFlowTests {
         #expect(!MacOSDraftPostFlowDriver.browserDocumentMatches(
             currentTitle: "Compose",
             selectedTitle: ""
+        ))
+        #expect(MacOSDraftPostFlowDriver.browserWindowTitleMatches(
+            browserBundleIdentifier: "com.google.Chrome",
+            currentTitle: "Compose — Account A - Google Chrome",
+            selectedTitle: "Compose — Account A"
+        ))
+        #expect(!MacOSDraftPostFlowDriver.browserWindowTitleMatches(
+            browserBundleIdentifier: "com.apple.Safari",
+            currentTitle: "Compose — Account A - Google Chrome",
+            selectedTitle: "Compose — Account A"
+        ))
+        #expect(!MacOSDraftPostFlowDriver.browserWindowTitleMatches(
+            browserBundleIdentifier: "com.google.Chrome",
+            currentTitle: "Other - Google Chrome",
+            selectedTitle: "Compose — Account A"
         ))
     }
 
@@ -441,13 +789,117 @@ struct DraftPostFlowTests {
                 && $0.windowTitle.contains("rapid-cua-draft.txt")
         })
         let destination = try #require(windows.first {
-            MacOSDraftPostFlowDriver.browserBundles.contains(
-                $0.selection.bundleIdentifier
-            ) && $0.windowTitle.contains("Rapid Computer Use Fixture")
+            $0.selection.bundleIdentifier == liveBrowserBundle
+                && $0.windowTitle.contains(liveWindowTitle)
         })
         return (source, destination)
     }
 
+    private static var liveBrowserBundle: String {
+        ProcessInfo.processInfo.environment["RAPID_LIVE_CUA_BROWSER_BUNDLE"]
+            ?? "com.apple.Safari"
+    }
+
+    private static var liveWindowTitle: String {
+        ProcessInfo.processInfo.environment["RAPID_LIVE_CUA_WINDOW_TITLE"]
+            ?? "Local Post Composer"
+    }
+
+}
+
+private actor RecordingDraftPostGroundingTransport:
+    LocalComputerUseGroundingTransport
+{
+    private let base = URLSessionComputerUseGroundingTransport()
+    private(set) var responseBodies: [String] = []
+
+    func send(
+        _ request: URLRequest,
+        maximumResponseBytes: Int
+    ) async throws -> LocalComputerUseGroundingHTTPResponse {
+        let response = try await base.send(
+            request,
+            maximumResponseBytes: maximumResponseBytes
+        )
+        responseBodies.append(String(decoding: response.body, as: UTF8.self))
+        return response
+    }
+}
+
+private actor ScriptedVisualRecoveryAttempt {
+    private let failuresBeforeSuccess: Int
+    private let cancels: Bool
+    private(set) var callCount = 0
+
+    init(failuresBeforeSuccess: Int, cancels: Bool = false) {
+        self.failuresBeforeSuccess = failuresBeforeSuccess
+        self.cancels = cancels
+    }
+
+    func run() throws {
+        callCount += 1
+        if cancels { throw CancellationError() }
+        if callCount <= failuresBeforeSuccess {
+            throw DraftPostFlowFailure.targetUnavailable
+        }
+    }
+}
+
+private final class VisualSessionProbe: @unchecked Sendable {
+    private let lock = NSLock()
+    private var value: Bool
+
+    init(isCurrent: Bool) {
+        self.value = isCurrent
+    }
+
+    var current: Bool {
+        get { lock.withLock { value } }
+        set { lock.withLock { value = newValue } }
+    }
+}
+
+private final class BrowserAccessibilityLeaseProbe: @unchecked Sendable {
+    private let lock = NSLock()
+    private var activationCount = 0
+    private var releaseCount = 0
+    private var restored: Bool?
+
+    var activations: Int { lock.withLock { activationCount } }
+    var releases: Int { lock.withLock { releaseCount } }
+    var restoredValue: Bool? { lock.withLock { restored } }
+
+    func activate() { lock.withLock { activationCount += 1 } }
+    func restore(to value: Bool) {
+        lock.withLock {
+            releaseCount += 1
+            restored = value
+        }
+    }
+}
+
+private actor RotatingDraftPostGroundingTransport:
+    LocalComputerUseGroundingTransport
+{
+    private let session: VisualSessionProbe
+    private(set) var callCount = 0
+
+    init(session: VisualSessionProbe) {
+        self.session = session
+    }
+
+    func send(
+        _: URLRequest,
+        maximumResponseBytes _: Int
+    ) async throws -> LocalComputerUseGroundingHTTPResponse {
+        callCount += 1
+        session.current = false
+        return LocalComputerUseGroundingHTTPResponse(
+            statusCode: 200,
+            contentType: "application/json",
+            body: Data()
+        )
+    }
 }
 
 private enum RecordedDraftPostComposerAction: Equatable {
@@ -506,14 +958,10 @@ private final class RecordingDraftPostComposerActuator: DraftPostComposerActuati
         else {
             throw DraftPostFlowFailure.verificationFailed
         }
-        var clearedValue: CFTypeRef?
-        guard AXUIElementCopyAttributeValue(
-            write.element,
-            kAXValueAttribute as CFString,
-            &clearedValue
-        ) == .success, clearedValue as? String == "" else {
-            throw DraftPostFlowFailure.verificationFailed
-        }
+        // Chrome may retire and replace a renderer AX node immediately after
+        // clearing it. The next full flow iteration re-resolves the selected
+        // window and proves that its composer is empty; retaining the stale
+        // node here would turn successful cleanup into a false failure.
         lock.withLock { lastWrite = nil }
     }
 }

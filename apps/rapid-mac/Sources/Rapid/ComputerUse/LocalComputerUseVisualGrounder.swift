@@ -100,6 +100,11 @@ final class LocalComputerUseNoRedirectDelegate: NSObject,
 /// ``LocalWorkflowExecutor`` and its verifier/actuator boundaries.
 actor LocalComputerUseVisualGrounder: LocalWorkflowGrounding {
     struct Configuration: Equatable, Sendable {
+        enum WireContract: Equatable, Sendable {
+            case genericFunction
+            case uiTars
+        }
+
         static let maximumModelBytes = 256
         static let maximumBearerBytes = 4_096
         static let maximumInstructionBytes = 16 * 1024
@@ -115,6 +120,7 @@ actor LocalComputerUseVisualGrounder: LocalWorkflowGrounding {
         let maximumScreenshotBytes: Int
         let maximumRequestBytes: Int
         let maximumResponseBytes: Int
+        let wireContract: WireContract
 
         init(
             baseURL: URL,
@@ -123,7 +129,8 @@ actor LocalComputerUseVisualGrounder: LocalWorkflowGrounding {
             deadline: Duration = .seconds(30),
             maximumScreenshotBytes: Int = 8 * 1024 * 1024,
             maximumRequestBytes: Int = 12 * 1024 * 1024,
-            maximumResponseBytes: Int = 512 * 1024
+            maximumResponseBytes: Int = 512 * 1024,
+            wireContract: WireContract = .genericFunction
         ) throws {
             guard Self.isAllowedLoopbackBaseURL(baseURL),
                   !model.isEmpty,
@@ -157,6 +164,7 @@ actor LocalComputerUseVisualGrounder: LocalWorkflowGrounding {
             self.maximumScreenshotBytes = maximumScreenshotBytes
             self.maximumRequestBytes = maximumRequestBytes
             self.maximumResponseBytes = maximumResponseBytes
+            self.wireContract = wireContract
         }
 
         var completionURL: URL {
@@ -242,7 +250,10 @@ actor LocalComputerUseVisualGrounder: LocalWorkflowGrounding {
         guard response.contentType?.lowercased().hasPrefix("application/json") == true else {
             throw LocalComputerUseVisualGrounderError.invalidHTTPResponse
         }
-        let coordinate = try Self.decodeSingleClick(response.body)
+        let coordinate = try Self.decodeSingleClick(
+            response.body,
+            wireContract: configuration.wireContract
+        )
         return GroundedWorkflowAction(
             observationID: observation.id,
             payload: .click(
@@ -265,10 +276,16 @@ actor LocalComputerUseVisualGrounder: LocalWorkflowGrounding {
             throw LocalComputerUseVisualGrounderError.requestTooLarge
         }
         let imageURL = "data:image/png;base64,\(artifact.pngData.base64EncodedString())"
+        let toolName = configuration.wireContract == .uiTars
+            ? "computer"
+            : "computer_use"
+        let actionName = configuration.wireContract == .uiTars
+            ? "click"
+            : "left_click"
         let tool: [String: Any] = [
             "type": "function",
             "function": [
-                "name": "computer_use",
+                "name": toolName,
                 "description": """
                 Locate exactly one requested target in the supplied window screenshot. \
                 Coordinates are normalized from 1 to 998 relative to that screenshot.
@@ -277,7 +294,7 @@ actor LocalComputerUseVisualGrounder: LocalWorkflowGrounding {
                     "type": "object",
                     "additionalProperties": false,
                     "properties": [
-                        "action": ["type": "string", "enum": ["left_click"]],
+                        "action": ["type": "string", "enum": [actionName]],
                         "coordinate": [
                             "type": "array",
                             "items": ["type": "integer", "minimum": 1, "maximum": 998],
@@ -295,7 +312,7 @@ actor LocalComputerUseVisualGrounder: LocalWorkflowGrounding {
                 [
                     "role": "system",
                     "content": """
-                    Locate one target only. Return one computer_use left_click tool call. \
+                    Locate one target only. Return one \(toolName) \(actionName) tool call. \
                     Do not type, press keys, finish a workflow, or propose another action.
                     """,
                 ],
@@ -310,7 +327,7 @@ actor LocalComputerUseVisualGrounder: LocalWorkflowGrounding {
             "tools": [tool],
             "tool_choice": [
                 "type": "function",
-                "function": ["name": "computer_use"],
+                "function": ["name": toolName],
             ],
             "temperature": 0,
             "max_tokens": 384,
@@ -373,7 +390,12 @@ actor LocalComputerUseVisualGrounder: LocalWorkflowGrounding {
         }
     }
 
-    private static func decodeSingleClick(_ data: Data) throws -> (x: Int, y: Int) {
+    private static func decodeSingleClick(
+        _ data: Data,
+        wireContract: Configuration.WireContract
+    ) throws -> (x: Int, y: Int) {
+        let expectedToolName = wireContract == .uiTars ? "computer" : "computer_use"
+        let expectedAction = wireContract == .uiTars ? "click" : "left_click"
         guard data.count > 0,
               let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               let choices = root["choices"] as? [[String: Any]],
@@ -383,7 +405,7 @@ actor LocalComputerUseVisualGrounder: LocalWorkflowGrounding {
               calls.count == 1,
               calls[0]["type"] as? String == "function",
               let function = calls[0]["function"] as? [String: Any],
-              function["name"] as? String == "computer_use",
+              function["name"] as? String == expectedToolName,
               let arguments = function["arguments"] as? String,
               arguments.utf8.count <= 4_096,
               let argumentData = arguments.data(using: .utf8),
@@ -397,7 +419,7 @@ actor LocalComputerUseVisualGrounder: LocalWorkflowGrounding {
             throw LocalComputerUseVisualGrounderError.invalidResponse
         }
         guard Set(object.keys).isSubset(of: ["action", "coordinate"]),
-              decoded.action == "left_click"
+              decoded.action == expectedAction
         else {
             throw LocalComputerUseVisualGrounderError.unsupportedAction
         }

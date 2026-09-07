@@ -1143,7 +1143,16 @@ struct ContentView: View {
             }
         case .computerUse:
             if computerUseEnabled {
-                ComputerUseView()
+                ComputerUseView(
+                    visualRuntime: DraftPostVisualRuntime(
+                        profile: server.activeModelProfile,
+                        selectedAlias: alias,
+                        host: server.host,
+                        port: server.activePort,
+                        bearerToken: server.activeBearer,
+                        liveServer: server
+                    )
+                )
             } else {
                 mainArea
             }

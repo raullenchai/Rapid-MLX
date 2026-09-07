@@ -1,7 +1,12 @@
 import SwiftUI
 
 struct ComputerUseView: View {
+    let visualRuntime: DraftPostVisualRuntime?
     @State private var showingDraftPost = false
+
+    init(visualRuntime: DraftPostVisualRuntime? = nil) {
+        self.visualRuntime = visualRuntime
+    }
 
     var body: some View {
         ScrollView {
@@ -67,7 +72,7 @@ struct ComputerUseView: View {
         .background(RapidTheme.surfaceCanvas)
         .accessibilityIdentifier("ComputerUse.Panel")
         .sheet(isPresented: $showingDraftPost) {
-            DraftPostFlowSheet()
+            DraftPostFlowSheet(visualRuntime: visualRuntime)
         }
     }
 
@@ -131,7 +136,17 @@ struct ComputerUseView: View {
 
 private struct DraftPostFlowSheet: View {
     @Environment(\.dismiss) private var dismiss
-    @State private var viewModel = DraftPostFlowViewModel()
+    @State private var viewModel: DraftPostFlowViewModel
+    private let visualRecoveryAvailable: Bool
+
+    init(visualRuntime: DraftPostVisualRuntime?) {
+        self.visualRecoveryAvailable = visualRuntime != nil
+        _viewModel = State(initialValue: DraftPostFlowViewModel(
+            driver: MacOSDraftPostFlowDriver(
+                visualRecovery: visualRuntime?.makeRecovery()
+            )
+        ))
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
@@ -240,6 +255,15 @@ private struct DraftPostFlowSheet: View {
                 .font(.callout)
                 .foregroundStyle(.secondary)
 
+            Label(
+                visualRecoveryAvailable
+                    ? "Visual recovery is ready with the current local model."
+                    : "Accessibility mode is ready. A compatible local Computer Use model adds visual recovery for unlabeled composers.",
+                systemImage: visualRecoveryAvailable ? "eye.circle.fill" : "eye.slash"
+            )
+            .font(.caption)
+            .foregroundStyle(.secondary)
+
             picker(
                 title: "1. TextEdit draft",
                 prompt: "Choose a TextEdit window",
@@ -256,7 +280,7 @@ private struct DraftPostFlowSheet: View {
             )
 
             if viewModel.sourceOptions.isEmpty || viewModel.destinationOptions.isEmpty {
-                Text("Open the draft in TextEdit and an empty English-language post composer in Safari, then refresh. Leave both selected windows unchanged until Rapid stops.")
+                Text("Open the draft in TextEdit and an empty English-language post composer in Safari or Google Chrome, then refresh. Leave both selected windows unchanged until Rapid stops.")
                     .font(.caption)
                     .foregroundStyle(.orange)
             }
