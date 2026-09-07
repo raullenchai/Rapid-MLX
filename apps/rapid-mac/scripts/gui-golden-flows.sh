@@ -486,12 +486,13 @@ cleanup_telemetry_sink() {
 # Environment for the three personas that lift the telemetry kill switch and
 # talk to the loopback sink. Besides the explicit switch, the app (like the
 # engine) turns telemetry off on DO_NOT_TRACK=1 and on any CI marker, and CI
-# exports several of those; an empty value counts as unset for both.
+# exports several of those. The markers are withheld from the app process
+# only — the persona launcher still needs CI=true to skip the host precheck
+# (see dogfood-isolate.sh, RAPID_LAUNCH_APP_ENV_UNSET).
 TELEMETRY_SINK_ENV=(
     RAPID_MLX_TELEMETRY=1
     DO_NOT_TRACK=0
-    CI= GITHUB_ACTIONS= GITLAB_CI= CIRCLECI= TRAVIS= BUILDKITE=
-    JENKINS_URL= TEAMCITY_VERSION=
+    "RAPID_LAUNCH_APP_ENV_UNSET=CI GITHUB_ACTIONS GITLAB_CI CIRCLECI TRAVIS BUILDKITE JENKINS_URL TEAMCITY_VERSION"
 )
 
 start_telemetry_sink() {
