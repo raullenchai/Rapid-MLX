@@ -256,16 +256,20 @@ private struct DraftPostFlowSheet: View {
                     metrics: metrics
                 )
                 HStack {
-                    if viewModel.plan != nil {
+                    if viewModel.plan != nil, failure.permitsReviewedRetry {
                         Button("Back to plan") { viewModel.returnToPlan() }
                             .buttonStyle(.rapidSecondaryCompact)
                             .accessibilityIdentifier("ComputerUse.DraftPost.BackToPlan")
                     } else {
-                        Button("Refresh windows") {
+                        Button(viewModel.plan == nil ? "Refresh windows" : "Start over") {
                             Task { await viewModel.load() }
                         }
                         .buttonStyle(.rapidSecondaryCompact)
-                        .accessibilityIdentifier("ComputerUse.DraftPost.RefreshAfterFailure")
+                        .accessibilityIdentifier(
+                            viewModel.plan == nil
+                                ? "ComputerUse.DraftPost.RefreshAfterFailure"
+                                : "ComputerUse.DraftPost.StartOverAfterFailure"
+                        )
                     }
                     if failure == .permissionMissing {
                         Button("Allow Screen Recording") {

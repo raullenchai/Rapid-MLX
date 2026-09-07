@@ -113,6 +113,23 @@ enum DraftPostFlowFailure: Error, Equatable, Sendable {
         }
     }
 
+    /// Whether the driver proves that no browser content mutation occurred.
+    /// Only these failures may return to the already-reviewed plan. Unknown,
+    /// rejected-write, and verification failures must start over so the
+    /// destination and empty composer are inspected afresh.
+    var permitsReviewedRetry: Bool {
+        switch self {
+        case .sourceIsNotTextEdit, .destinationIsNotBrowser,
+             .destinationMismatch, .targetUnavailable, .focusChanged,
+             .draftMissing, .draftAmbiguous, .draftTooLarge,
+             .composerMissing, .composerAmbiguous, .composerNotEmpty,
+             .permissionMissing, .cancelled, .accessibilityTreeTooLarge:
+            true
+        case .writeRejected, .verificationFailed, .dependencyFailure:
+            false
+        }
+    }
+
     var userMessage: String {
         switch self {
         case .sourceIsNotTextEdit: "Choose a TextEdit window as the draft source."

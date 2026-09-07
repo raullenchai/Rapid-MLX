@@ -371,6 +371,11 @@ struct DraftPostInstructionPlannerTests {
             DraftPostFlowMetrics(attempts: 1)
         ))
         #expect(await terminalDriver.attempts == 1)
+        #expect(DraftPostFlowFailure.composerNotEmpty.permitsReviewedRetry)
+        #expect(DraftPostFlowFailure.destinationMismatch.permitsReviewedRetry)
+        #expect(!DraftPostFlowFailure.writeRejected.permitsReviewedRetry)
+        #expect(!DraftPostFlowFailure.verificationFailed.permitsReviewedRetry)
+        #expect(!DraftPostFlowFailure.dependencyFailure.permitsReviewedRetry)
     }
 
     @MainActor
