@@ -50,7 +50,6 @@ class PrimaryModelLifecycle:
         release_allocator_cache: LifecycleHook | None = None,
         on_state_change: StateHook | None = None,
         clock: Callable[[], float] = time.monotonic,
-        shutdown_load_timeout_seconds: float = 25.0,
     ) -> None:
         self.engine = engine
         self.lazy_load = bool(lazy_load)
@@ -60,9 +59,6 @@ class PrimaryModelLifecycle:
         self._release_allocator_cache = release_allocator_cache
         self._on_state_change = on_state_change
         self._clock = clock
-        self._shutdown_load_timeout_seconds = max(
-            0.01, float(shutdown_load_timeout_seconds)
-        )
         self._transition_lock = asyncio.Lock()
         self._load_task: asyncio.Task | None = None
         self._monitor_task: asyncio.Task | None = None
@@ -148,16 +144,7 @@ class PrimaryModelLifecycle:
         load_task = self._load_task
         if load_task is not None and not load_task.done():
             try:
-                await asyncio.wait_for(
-                    asyncio.shield(load_task),
-                    timeout=self._shutdown_load_timeout_seconds,
-                )
-            except TimeoutError:
-                self._set_state("error")
-                self._last_error = "ShutdownLoadDrainTimeout"
-                raise TimeoutError(
-                    "timed out waiting for primary model load during shutdown"
-                ) from None
+                await asyncio.shield(load_task)
             except asyncio.CancelledError:
                 # Propagate process-teardown cancellation. The caller must not
                 # proceed to stop the engine concurrently with the shielded
@@ -399,16 +386,12 @@ class PrimaryModelLifecycle:
                     self.touch()
                     raise
                 except Exception as exc:
-                    # Cache persistence is best-effort. A failure before stop
-                    # leaves a perfectly usable resident engine and must not
-                    # turn the stable endpoint into a permanent 503.
-                    self._last_error = type(exc).__name__
-                    self._set_state("ready")
-                    self.touch()
+                    # Cache persistence is best-effort: losing this cache is
+                    # preferable to silently defeating the operator's memory
+                    # policy and retaining the full model indefinitely.
                     logger.exception(
-                        "Primary model pre-unload hook failed; keeping it resident"
+                        "Primary model pre-unload hook failed; continuing unload"
                     )
-                    return False
 
                 stop = getattr(self.engine, "stop", None)
                 if not callable(stop):

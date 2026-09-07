@@ -114,7 +114,7 @@ async def test_idle_unload_keeps_engine_reloadable_and_runs_cache_hooks():
 
 
 @pytest.mark.asyncio
-async def test_pre_unload_failure_keeps_loaded_engine_ready():
+async def test_pre_unload_failure_still_honors_memory_policy():
     now = [100.0]
     engine = FakeEngine(loaded=True)
 
@@ -129,13 +129,13 @@ async def test_pre_unload_failure_keeps_loaded_engine_ready():
     )
     now[0] += 6
 
-    assert await lifecycle.evict_if_idle() is False
-    assert engine._loaded is True
-    assert engine.stop_calls == 0
+    assert await lifecycle.evict_if_idle() is True
+    assert engine._loaded is False
+    assert engine.stop_calls == 1
     assert engine.paused is False
-    assert lifecycle.snapshot()["state"] == "ready"
+    assert lifecycle.snapshot()["state"] == "standby"
     await lifecycle.ensure_loaded()
-    assert engine.start_calls == 0
+    assert engine.start_calls == 1
 
 
 @pytest.mark.asyncio
@@ -250,25 +250,25 @@ async def test_shutdown_drains_cancellation_isolated_load():
 
 
 @pytest.mark.asyncio
-async def test_shutdown_load_drain_has_a_deadline():
+async def test_shutdown_load_drain_propagates_external_cancellation():
     engine = FakeEngine()
     engine.start_gate = asyncio.Event()
-    lifecycle = PrimaryModelLifecycle(
-        engine, lazy_load=True, shutdown_load_timeout_seconds=0.01
-    )
+    lifecycle = PrimaryModelLifecycle(engine, lazy_load=True)
     waiter = asyncio.create_task(lifecycle.ensure_loaded())
     await asyncio.sleep(0)
     waiter.cancel()
     with pytest.raises(asyncio.CancelledError):
         await waiter
 
-    with pytest.raises(TimeoutError, match="timed out waiting"):
-        await lifecycle.shutdown()
-    assert lifecycle.snapshot()["state"] == "error"
-    assert lifecycle.snapshot()["error"] == "ShutdownLoadDrainTimeout"
+    shutdown = asyncio.create_task(lifecycle.shutdown())
+    await asyncio.sleep(0)
+    shutdown.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await shutdown
+    assert lifecycle._load_task is not None
+    assert lifecycle._load_task.done() is False
 
     engine.start_gate.set()
-    assert lifecycle._load_task is not None
     await lifecycle._load_task
 
 
