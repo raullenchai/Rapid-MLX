@@ -23,7 +23,7 @@
 - The isolated release-mode GUI passed onboarding, model inventory, GUI model
   start, exact `GUI_RELEASE_OK` chat, shutdown, relaunch, and conversation
   persistence. The production app and its state were untouched.
-- Focused Python tests (123), Ruff, diff check, the supported serialized
+- Focused Python tests (124), Ruff, diff check, the supported serialized
   Desktop gate (3,542 tests), full release-mode app/sidecar build, and packaged
   inventory regression passed. The 23,225-test Python collection had only two
   environment-path failures: optional mflux absence (passed after installing

@@ -1040,6 +1040,31 @@ def test_scan_hf_cache_models_keeps_healthy_relocated_entry(tmp_path, monkeypatc
     assert [(repo, size) for repo, size, _mtime in rows] == [("acme/Widget-4bit", 4096)]
 
 
+def test_scan_hf_cache_models_keeps_relocated_entry_when_mtime_is_unreadable(
+    tmp_path, monkeypatch
+):
+    """A metadata error must not discard an otherwise readable relocation."""
+    cache_root = tmp_path / "hub"
+    real = tmp_path / "external" / "Widget-4bit"
+    _make_hf_cache_repo(real, {"sha_weights": 4096})
+    cache_root.mkdir()
+    relocated = cache_root / "models--acme--Widget-4bit"
+    relocated.symlink_to(real, target_is_directory=True)
+    real_getmtime = cli.os.path.getmtime
+
+    def getmtime(path):
+        if os.fspath(path) == os.fspath(relocated):
+            raise OSError("metadata temporarily unavailable")
+        return real_getmtime(path)
+
+    monkeypatch.setattr(
+        "huggingface_hub.constants.HF_HUB_CACHE", str(cache_root), raising=False
+    )
+    monkeypatch.setattr(cli.os.path, "getmtime", getmtime)
+
+    assert cli._scan_hf_cache_models() == [("acme/Widget-4bit", 4096, 0.0)]
+
+
 # ---------------------------------------------------------------------------
 # External model discovery (#1718)
 #

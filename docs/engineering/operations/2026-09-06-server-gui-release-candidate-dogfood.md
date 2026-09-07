@@ -165,9 +165,9 @@ Community Benchmark surface.
 
 ## Automated verification
 
-- `uv run pytest -q tests/test_cli_models.py`: 85 passed
+- `uv run pytest -q tests/test_cli_models.py`: 86 passed
 - `uv run pytest -q tests/test_cli_models.py tests/test_cli_models_json.py tests/test_first_run_guide.py`:
-  123 passed
+  124 passed
 - Expanded post-fix selection including cache inventory, first-run, the
   Transformers 5.15 offline-wrapper regression, and packaged BF16 image
   construction: 125 passed, 1 sanctioned offline skip
@@ -178,6 +178,7 @@ Community Benchmark surface.
   suites passed in 90.61 seconds
 - Exact-head Community Benchmark Swift selection: 29 passed
 - Exact-head cache/first-run/offline Python selection: 27 passed
+- Changed production lines under targeted coverage: 100% (40/40)
 - Initial release build (`candidate-caafd08e`): passed
 - Exact-head release build (`candidate-f09a761a`): passed
 - Packaged `rapid-mlx models --cached --json` under a ten-second outer guard:
