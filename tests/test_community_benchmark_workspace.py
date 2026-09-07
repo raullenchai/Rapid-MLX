@@ -1405,14 +1405,14 @@ def test_capture_is_disarmed_when_the_helper_raises(
             "available_memory_mib": 9000,
         }
 
-    async def broken(alias: str, repo_id: str):
+    async def broken(alias: str, repo_id: str, *, progress=None):
         assert alias == "example-text"
         assert repo_id == "mlx-community/example-text-model"
         raise RuntimeError("boom")
 
     monkeypatch.setattr(local_runner, "run_conditions", counting_conditions)
     monkeypatch.setattr(local_runner, "_text_measurements", broken)
-    with pytest.raises(local_runner.LocalBenchmarkError):
+    with pytest.raises(local_runner.LocalBenchmarkError, match="boom"):
         local_runner.run_local("example-text", archive=archive)
     assert probes == ["probe"]
     # A late call after the failed run must not probe into a stale capture.
@@ -1506,13 +1506,13 @@ def test_failed_run_keeps_the_before_snapshot_and_marks_after_unknown(
     }
     monkeypatch.setattr(local_runner, "run_conditions", lambda: dict(before))
 
-    async def broken(alias: str, repo_id: str):
+    async def broken(alias: str, repo_id: str, *, progress=None):
         assert alias == "example-text"
         assert repo_id == "mlx-community/example-text-model"
         raise RuntimeError("boom")
 
     monkeypatch.setattr(local_runner, "_text_measurements", broken)
-    with pytest.raises(local_runner.LocalBenchmarkError):
+    with pytest.raises(local_runner.LocalBenchmarkError, match="boom"):
         local_runner.run_local("example-text", archive=archive)
     failed = archive.list()[0]
     assert failed["machine"]["conditions_before"] == before
