@@ -56,6 +56,11 @@ extensionless blob layout used by the local Hugging Face cache.
 5. Alias review kept the BF16 alias unchanged, declined silent chip routing,
    and deliberately did not copy DFlash revision pins because they bind the
    original target revision.
+6. Full-unit review caught the new repository missing from the checked-in size
+   manifest. Added the exact Hub `used_storage` value (16,313,463,520 bytes)
+   and passed the size-manifest and adjacent image-precision suites. The other
+   initial full-unit failure was a local validation environment missing the
+   declared image extra; installing that extra made the unchanged test pass.
 
 ## M2 Pro follow-up
 
