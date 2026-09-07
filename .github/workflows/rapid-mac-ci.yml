@@ -275,6 +275,13 @@ jobs:
       # whole run (per-run deadline + /usr/bin/sample + ps + vm_stat artifact)
       # fails fast with a readable reason instead of burning the job timeout.
       - name: swift test
+        # The unit tests exercise the opt-in paths against stubbed transports;
+        # the workflow-level kill switch would turn every "enabled" assertion
+        # into a false negative. A truthy value only lifts the switch and
+        # leaves consent in charge — it cannot force telemetry on — and this
+        # step never launches the app.
+        env:
+          RAPID_MLX_TELEMETRY: "1"
         run: ./scripts/desktop-test-timeout.sh
 
       # #2488: upload the hang-sample artifact (stack + system state) so the
