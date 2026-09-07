@@ -14,6 +14,7 @@ class FakeEngine:
         self.release_calls = 0
         self.active_requests = 0
         self.start_gate: asyncio.Event | None = None
+        self.pause_gate: asyncio.Event | None = None
         self.fail_start = False
         self.fail_resume = False
         self.partial_start_failure = False
@@ -45,6 +46,8 @@ class FakeEngine:
         if self.active_requests:
             raise TimeoutError
         self.paused = True
+        if self.pause_gate is not None:
+            await self.pause_gate.wait()
         return self.lifecycle_status()
 
     async def resume_generation(self):
@@ -195,6 +198,34 @@ async def test_request_owner_closes_post_load_pre_admission_race():
     assert await lifecycle.evict_if_idle() is False
     now[0] += 0.6
     assert await lifecycle.evict_if_idle() is True
+
+
+@pytest.mark.asyncio
+async def test_request_arriving_during_pause_aborts_idle_unload():
+    now = [10.0]
+    engine = FakeEngine(loaded=True)
+    engine.pause_gate = asyncio.Event()
+    lifecycle = PrimaryModelLifecycle(
+        engine, idle_unload_seconds=1, clock=lambda: now[0]
+    )
+    now[0] += 2
+
+    eviction = asyncio.create_task(lifecycle.evict_if_idle())
+    await asyncio.sleep(0)
+    assert lifecycle.snapshot()["state"] == "unloading"
+
+    lifecycle.acquire_request()
+    ready = asyncio.create_task(lifecycle.ensure_loaded())
+    await asyncio.sleep(0)
+    assert ready.done() is False
+
+    engine.pause_gate.set()
+    assert await eviction is False
+    await ready
+    assert engine.stop_calls == 0
+    assert engine.paused is False
+    assert lifecycle.snapshot()["state"] == "ready"
+    lifecycle.release_request()
 
 
 @pytest.mark.asyncio

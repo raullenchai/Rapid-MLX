@@ -334,6 +334,10 @@ class PrimaryModelLifecycle:
 
             pause = getattr(self.engine, "pause_generation", None)
             paused = False
+            # Close ensure_loaded()'s ready fast path before the first await.
+            # A request arriving while pause_generation is in flight will take
+            # a lifecycle lease and wait on this transition lock.
+            self._set_state("unloading")
             if callable(pause):
                 try:
                     result = pause("wait", timeout=0)
@@ -344,7 +348,13 @@ class PrimaryModelLifecycle:
                 except TimeoutError:
                     self.touch()
                     self._resume_required = True
-                    await self._resume_admission()
+                    try:
+                        await self._resume_admission()
+                    except BaseException:
+                        self._set_state("error")
+                        self._last_error = "AdmissionResumeError"
+                        raise
+                    self._set_state("ready")
                     return False
                 except BaseException:
                     # Cancellation can arrive after the engine closed
@@ -353,10 +363,27 @@ class PrimaryModelLifecycle:
                     # assigned yet.
                     self.touch()
                     self._resume_required = True
-                    await self._resume_admission()
+                    try:
+                        await self._resume_admission()
+                    except BaseException:
+                        self._set_state("error")
+                        self._last_error = "AdmissionResumeError"
+                        raise
+                    self._set_state("ready")
                     raise
 
-            self._set_state("unloading")
+            if self._request_tokens:
+                try:
+                    await self._resume_admission()
+                except BaseException:
+                    self._set_state("error")
+                    self._last_error = "AdmissionResumeError"
+                    raise
+                paused = False
+                self._set_state("ready")
+                self.touch()
+                return False
+
             try:
                 try:
                     await _run_hook(self._before_unload)
