@@ -47,7 +47,12 @@ fi
 mkdir -p "$ARTIFACT_DIR"
 
 # --- Launch `swift test` in the background, remember its PID ---------------
-swift test --no-parallel &
+# CI exports RAPID_MLX_TELEMETRY=0 so no product launch on a build machine can
+# reach production telemetry. The unit tests assert the opt-in paths against
+# stubbed transports and never launch the app, so lift the switch here for
+# every caller (a truthy value cannot force telemetry on; consent still
+# decides).
+RAPID_MLX_TELEMETRY=1 swift test --no-parallel &
 TEST_PID=$!
 
 # --- Watchdog: fail fast if the run outlives the deadline while still alive --
