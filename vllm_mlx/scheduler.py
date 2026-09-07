@@ -5303,9 +5303,7 @@ class Scheduler:
             return None
         max_deferrals = self.config.scheduling_max_deferrals
         forced = [
-            pair
-            for pair in candidates
-            if int(getattr(pair[1], "_admission_deferrals", 0)) >= max_deferrals
+            pair for pair in candidates if pair[1]._admission_deferrals >= max_deferrals
         ]
         if forced:
             _selected_index, selected = forced[0]
@@ -5330,9 +5328,7 @@ class Scheduler:
         for request in candidates:
             if request is selected:
                 continue
-            request._admission_deferrals = (
-                int(getattr(request, "_admission_deferrals", 0)) + 1
-            )
+            request._admission_deferrals += 1
             self.num_admission_deferrals += 1
         selected._admission_deferrals = 0
         self.waiting.remove(selected)

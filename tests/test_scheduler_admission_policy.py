@@ -80,7 +80,7 @@ def test_incompatible_head_does_not_block_or_accrue_deferrals():
     assert selected is compatible
     scheduler._commit_waiting_selection(selected, forced)
     assert list(scheduler.waiting) == [incompatible]
-    assert not hasattr(incompatible, "_admission_deferrals")
+    assert incompatible._admission_deferrals == 0
 
 
 def test_max_deferrals_forces_oldest_compatible_request():

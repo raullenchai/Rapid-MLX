@@ -95,3 +95,7 @@
   admission contract must honor the operator-configured completion limit.
   Effective capacity now caps directly at `completion_batch_size`, with a
   regression where prefill B=4 and completion B=2.
+- GitHub type-check exposed two new dynamic-attribute diagnostics for admission
+  deferrals (the local Python 3.12 environment could not run the repository
+  Python 3.10-targeted mypy surface). Deferral state is now an explicit typed
+  `Request` field with `init=False`, preserving constructor compatibility.
