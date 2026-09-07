@@ -5218,11 +5218,13 @@ class Scheduler:
         return self._current_sampler_params == self._request_generator_key(request)
 
     @staticmethod
-    def _observable_prompt_cache_offsets(cache: Any) -> tuple[int, ...]:
+    def _observable_prompt_cache_offsets(cache: Any) -> tuple[tuple[int, ...], bool]:
         """Read logical cache offsets without modifying cache objects."""
         values: list[int] = []
+        valid = True
 
         def visit(value: Any) -> None:
+            nonlocal valid
             children = getattr(value, "caches", None)
             if isinstance(children, (list, tuple)):
                 for child in children:
@@ -5238,12 +5240,15 @@ class Scheduler:
             try:
                 parsed = int(offset)
             except (TypeError, ValueError):
+                valid = False
                 return
-            if parsed >= 0:
-                values.append(parsed)
+            if parsed < 0:
+                valid = False
+                return
+            values.append(parsed)
 
         visit(cache)
-        return tuple(values)
+        return tuple(values), valid
 
     def _validated_prompt_tail_cost(self, request: Request) -> int:
         """Estimate committed prompt work without mutating cache/request state."""
@@ -5265,9 +5270,11 @@ class Scheduler:
             or remaining != prompt_tokens[cached_tokens:]
         ):
             return len(prompt_tokens)
-        observed_offsets = self._observable_prompt_cache_offsets(cache)
-        if observed_offsets and any(
-            offset != cached_tokens for offset in observed_offsets
+        observed_offsets, offsets_valid = self._observable_prompt_cache_offsets(cache)
+        if (
+            not offsets_valid
+            or observed_offsets
+            and any(offset != cached_tokens for offset in observed_offsets)
         ):
             return len(prompt_tokens)
         if remaining:
@@ -10006,7 +10013,14 @@ class Scheduler:
             "num_repetition_loop_breaks": self.num_repetition_loop_breaks,
             "total_prompt_tokens": self.total_prompt_tokens,
             "total_completion_tokens": self.total_completion_tokens,
-            "scheduling_policy": getattr(self.config, "scheduling_policy", "fcfs"),
+            "configured_scheduling_policy": getattr(
+                self.config, "scheduling_policy", "fcfs"
+            ),
+            "scheduling_policy": (
+                "fcfs"
+                if getattr(self, "_shortest_tail_runtime_supported", None) is False
+                else getattr(self.config, "scheduling_policy", "fcfs")
+            ),
             "num_admission_deferrals": getattr(self, "num_admission_deferrals", 0),
             "num_admission_forced_grants": getattr(
                 self, "num_admission_forced_grants", 0

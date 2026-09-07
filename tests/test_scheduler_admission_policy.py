@@ -121,6 +121,10 @@ def test_cost_probe_rejects_stale_tail_and_accepts_current_prompt_suffix():
     request.remaining_tokens = [98, 99]
     request.prompt_cache = SimpleNamespace(offset=97)
     assert scheduler._validated_prompt_tail_cost(request) == 100
+    request.prompt_cache = SimpleNamespace(offset=-1)
+    assert scheduler._validated_prompt_tail_cost(request) == 100
+    request.prompt_cache = SimpleNamespace(offset="corrupt")
+    assert scheduler._validated_prompt_tail_cost(request) == 100
 
 
 def test_selection_is_read_only_until_admission_commit():
@@ -232,6 +236,9 @@ def test_legacy_flat_response_runtime_falls_back_to_fcfs_without_sticking_slots(
 
     assert scheduler._shortest_tail_runtime_supported is False
     assert not scheduler._admission_prefill_uids
+    stats = scheduler.get_stats()
+    assert stats["configured_scheduling_policy"] == "shortest_validated_tail"
+    assert stats["scheduling_policy"] == "fcfs"
 
 
 def test_serve_cli_exposes_policy_and_starvation_bound():

@@ -81,3 +81,8 @@
   The legacy-runtime regression now feeds a flat response through real
   `Scheduler.step()`. Post-fix cache/scheduler regression run: 226 passed,
   2 deselected.
+- PR validation round 3 was MERGE-SAFE with two nits. Both were resolved:
+  unusable/negative observable cache offsets now force cold-cost ranking, and
+  scheduler stats expose both configured and effective policy so a legacy
+  runtime fallback reports effective `fcfs`. Post-fix focused run: 178 passed,
+  2 deselected.
