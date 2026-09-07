@@ -98,6 +98,7 @@ from ..service.helpers import (
     _is_structured_output_requested,
     _parse_tool_calls_with_parser,
     _raise_lifecycle_cancel_or_reraise,
+    _release_admission_unless_committed,
     _release_route_ownership,
     _resolve_enable_thinking,
     _resolve_max_tokens,
@@ -1454,6 +1455,7 @@ async def create_response(request: Request):
             engine,
             admission_acquired=_admission_acquired,
             committed=_admission_committed,
+            release_admission=_release_admission_unless_committed,
         )
 
 

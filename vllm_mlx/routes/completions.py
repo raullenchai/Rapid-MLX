@@ -30,6 +30,7 @@ from ..service.helpers import (
     _disconnect_guard,
     _extract_streaming_token_logprobs,
     _raise_lifecycle_cancel_or_reraise,
+    _release_admission_unless_committed,
     _release_route_ownership,
     _resolve_max_tokens,
     _resolve_model_name,
@@ -705,6 +706,7 @@ async def create_completion(request: CompletionRequest, raw_request: Request):
             engine,
             admission_acquired=_admission_acquired,
             committed=_admission_committed,
+            release_admission=_release_admission_unless_committed,
         )
 
 

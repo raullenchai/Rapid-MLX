@@ -182,12 +182,16 @@ def _release_primary_request_unless_committed(engine, committed: bool) -> None:
 
 
 def _release_route_ownership(
-    engine, *, admission_acquired: bool, committed: bool
+    engine,
+    *,
+    admission_acquired: bool,
+    committed: bool,
+    release_admission=None,
 ) -> None:
     """Release whichever lease a generation route successfully acquired."""
 
     if admission_acquired:
-        _release_admission_unless_committed(engine, committed)
+        (release_admission or _release_admission_unless_committed)(engine, committed)
     else:
         _release_primary_request_unless_committed(engine, committed)
 
