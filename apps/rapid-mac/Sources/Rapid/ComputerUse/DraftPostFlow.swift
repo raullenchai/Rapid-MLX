@@ -88,6 +88,7 @@ struct MacOSComputerUseWindowCatalog: ComputerUseWindowListing {
 enum DraftPostFlowFailure: Error, Equatable, Sendable {
     case sourceIsNotTextEdit
     case destinationIsNotBrowser
+    case destinationMismatch
     case targetUnavailable
     case focusChanged
     case draftMissing
@@ -116,6 +117,7 @@ enum DraftPostFlowFailure: Error, Equatable, Sendable {
         switch self {
         case .sourceIsNotTextEdit: "Choose a TextEdit window as the draft source."
         case .destinationIsNotBrowser: "Choose a supported browser window as the destination."
+        case .destinationMismatch: "The selected browser is no longer on the destination you reviewed."
         case .targetUnavailable: "A selected window is no longer available."
         case .focusChanged: "Rapid could not safely focus the selected window."
         case .draftMissing: "The selected TextEdit document has no readable draft."
@@ -158,8 +160,13 @@ protocol DraftPostFlowDriving: Sendable {
 protocol PreparedDraftPostFlowDriving: Sendable {
     func transferPreparedDraft(
         _ draft: String,
-        to destination: ComputerUseWindowOption
+        to destination: ComputerUseWindowOption,
+        expectedDestinationHost: String
     ) async throws
+}
+
+protocol ComputerUseBrowserDestinationInspecting: Sendable {
+    func destinationHost(for destination: ComputerUseWindowOption) async throws -> String
 }
 
 private enum DraftPostTransferRetry {
@@ -230,10 +237,15 @@ actor PreparedDraftPostFlowCoordinator {
 
     func run(
         draft: String,
-        destination: ComputerUseWindowOption
+        destination: ComputerUseWindowOption,
+        expectedDestinationHost: String
     ) async -> DraftPostFlowOutcome {
         await DraftPostTransferRetry.run(maximumAttempts: maximumAttempts) {
-            try await self.driver.transferPreparedDraft(draft, to: destination)
+            try await self.driver.transferPreparedDraft(
+                draft,
+                to: destination,
+                expectedDestinationHost: expectedDestinationHost
+            )
         }
     }
 }
@@ -283,7 +295,9 @@ struct AXDraftPostComposerActuator: DraftPostComposerActuating {
 /// The user selects both windows. Rapid reads one TextEdit document, writes an
 /// empty browser composer, verifies the exact value, and stops. No coordinate
 /// action and no publish/send action exists in this adapter.
-struct MacOSDraftPostFlowDriver: DraftPostFlowDriving, PreparedDraftPostFlowDriving {
+struct MacOSDraftPostFlowDriver: DraftPostFlowDriving, PreparedDraftPostFlowDriving,
+    ComputerUseBrowserDestinationInspecting
+{
     static let maximumDraftBytes = 65_536
     private static let textEditBundle = "com.apple.TextEdit"
     static let browserBundles: Set<String> = [
@@ -312,21 +326,43 @@ struct MacOSDraftPostFlowDriver: DraftPostFlowDriving, PreparedDraftPostFlowDriv
         try await transfer(
             draft,
             to: destination,
-            source: source
+            source: source,
+            expectedDestinationHost: nil
         )
     }
 
     func transferPreparedDraft(
         _ draft: String,
-        to destination: ComputerUseWindowOption
+        to destination: ComputerUseWindowOption,
+        expectedDestinationHost: String
     ) async throws {
-        try await transfer(draft, to: destination, source: nil)
+        try await transfer(
+            draft,
+            to: destination,
+            source: nil,
+            expectedDestinationHost: expectedDestinationHost
+        )
+    }
+
+    func destinationHost(for destination: ComputerUseWindowOption) async throws -> String {
+        guard Self.browserBundles.contains(destination.selection.bundleIdentifier) else {
+            throw DraftPostFlowFailure.destinationIsNotBrowser
+        }
+        guard MacAutomationPermissions.snapshot().isReadyForComputerUse else {
+            throw DraftPostFlowFailure.permissionMissing
+        }
+        let identity = try await browserDocumentIdentity(in: destination)
+        guard let host = Self.normalizedDestinationHost(from: identity) else {
+            throw DraftPostFlowFailure.destinationMismatch
+        }
+        return host
     }
 
     private func transfer(
         _ draft: String,
         to destination: ComputerUseWindowOption,
-        source: ComputerUseWindowOption?
+        source: ComputerUseWindowOption?,
+        expectedDestinationHost: String?
     ) async throws {
         guard Self.browserBundles.contains(destination.selection.bundleIdentifier) else {
             throw DraftPostFlowFailure.destinationIsNotBrowser
@@ -352,6 +388,11 @@ struct MacOSDraftPostFlowDriver: DraftPostFlowDriving, PreparedDraftPostFlowDriv
             }
         }
         let documentIdentity = try await browserDocumentIdentity(in: destination)
+        if let expectedDestinationHost {
+            guard Self.normalizedDestinationHost(from: documentIdentity)?
+                .caseInsensitiveCompare(expectedDestinationHost) == .orderedSame
+            else { throw DraftPostFlowFailure.destinationMismatch }
+        }
         var usedVisualRecovery = false
         do {
             try await writeAndVerify(
@@ -653,6 +694,17 @@ struct MacOSDraftPostFlowDriver: DraftPostFlowDriving, PreparedDraftPostFlowDriv
 
     static func utf8Matches(_ lhs: String, _ rhs: String) -> Bool {
         lhs.utf8.elementsEqual(rhs.utf8)
+    }
+
+    static func normalizedDestinationHost(from address: String) -> String? {
+        let trimmed = address.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+        let candidate = trimmed.contains("://") ? trimmed : "https://\(trimmed)"
+        guard let host = URLComponents(string: candidate)?.host?
+            .trimmingCharacters(in: CharacterSet(charactersIn: "."))
+            .lowercased(), !host.isEmpty
+        else { return nil }
+        return host
     }
 
     static func verifyAfterMutation(_ verifier: () throws -> Bool) throws {

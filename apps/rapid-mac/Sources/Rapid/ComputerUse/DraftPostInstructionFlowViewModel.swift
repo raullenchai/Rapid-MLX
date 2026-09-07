@@ -14,6 +14,8 @@ extension DraftPostPlanningError {
             "The local model could not produce a safe plan. Clarify the request and try again."
         case .responseTooLarge:
             "The local model returned more planning data than this preview accepts."
+        case .destinationUnavailable:
+            "Rapid could not verify the selected browser's destination. Open the destination page and refresh."
         case .httpStatus(let status):
             "The local model rejected the planning request (HTTP \(status))."
         case .cancelled:
@@ -47,18 +49,23 @@ final class DraftPostInstructionFlowViewModel {
 
     private let catalog: any ComputerUseWindowListing
     private let planner: (any DraftPostInstructionPlanning)?
+    private let destinationInspector: any ComputerUseBrowserDestinationInspecting
     private let driver: any PreparedDraftPostFlowDriving
     private var task: Task<Void, Never>?
     private var generation = 0
     private var plannedDestinationID: String?
+    private var plannedDestinationHost: String?
 
     init(
         catalog: any ComputerUseWindowListing = MacOSComputerUseWindowCatalog(),
         planner: (any DraftPostInstructionPlanning)?,
+        destinationInspector: any ComputerUseBrowserDestinationInspecting =
+            MacOSDraftPostFlowDriver(),
         driver: any PreparedDraftPostFlowDriving = MacOSDraftPostFlowDriver()
     ) {
         self.catalog = catalog
         self.planner = planner
+        self.destinationInspector = destinationInspector
         self.driver = driver
     }
 
@@ -94,6 +101,7 @@ final class DraftPostInstructionFlowViewModel {
               plan != nil,
               let plannedDestinationID,
               plannedDestinationID == destinationID,
+              plannedDestinationHost != nil,
               !editableDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
               editableDraft.utf8.count <= MacOSDraftPostFlowDriver.maximumDraftBytes
         else { return false }
@@ -144,20 +152,29 @@ final class DraftPostInstructionFlowViewModel {
         phase = .analyzing
         clarificationQuestion = nil
         task = Task { [weak self] in
+            guard let self else { return }
             let result: Result<DraftPostPlanningResult, DraftPostPlanningError>
+            var inspectedHost: String?
             do {
+                let destinationHost = try await self.destinationInspector.destinationHost(
+                    for: destination
+                )
+                inspectedHost = destinationHost
                 result = .success(try await planner.analyze(
                     instruction: requestedInstruction,
-                    browserApplication: destination.applicationName
+                    browserApplication: destination.applicationName,
+                    destinationHost: destinationHost
                 ))
             } catch let error as DraftPostPlanningError {
                 result = .failure(error)
+            } catch let error as DraftPostFlowFailure {
+                result = .failure(error == .cancelled ? .cancelled : .destinationUnavailable)
             } catch is CancellationError {
                 result = .failure(.cancelled)
             } catch {
-                result = .failure(.modelUnavailable)
+                result = .failure(.destinationUnavailable)
             }
-            guard let self, requestedGeneration == self.generation else { return }
+            guard requestedGeneration == self.generation else { return }
             self.task = nil
             switch result {
             case .success(.needsClarification(let question)):
@@ -167,6 +184,7 @@ final class DraftPostInstructionFlowViewModel {
                 self.plan = plan
                 self.editableDraft = plan.draft
                 self.plannedDestinationID = destination.id
+                self.plannedDestinationHost = inspectedHost
                 self.phase = .reviewing
             case .failure(let error):
                 self.phase = .planningFailed(error)
@@ -179,7 +197,7 @@ final class DraftPostInstructionFlowViewModel {
               task == nil,
               let destination = destinationOptions.first(
                 where: { $0.id == plannedDestinationID }
-              )
+              ), let plannedDestinationHost
         else { return }
         generation += 1
         let requestedGeneration = generation
@@ -187,7 +205,11 @@ final class DraftPostInstructionFlowViewModel {
         phase = .running
         let coordinator = PreparedDraftPostFlowCoordinator(driver: driver)
         task = Task { [weak self] in
-            let outcome = await coordinator.run(draft: draft, destination: destination)
+            let outcome = await coordinator.run(
+                draft: draft,
+                destination: destination,
+                expectedDestinationHost: plannedDestinationHost
+            )
             guard let self, requestedGeneration == self.generation else { return }
             self.task = nil
             switch outcome {
@@ -231,5 +253,6 @@ final class DraftPostInstructionFlowViewModel {
         plan = nil
         editableDraft = ""
         plannedDestinationID = nil
+        plannedDestinationHost = nil
     }
 }

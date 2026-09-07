@@ -12,20 +12,21 @@ struct DraftPostInstructionPlannerTests {
             "audience": "Mac developers",
             "talking_points": ["Faster local inference", "No cloud upload"],
             "tone": "Concise and enthusiastic",
-            "destination": "X",
+            "destination": "x.com",
             "draft": "Rapid 0.13.4 is here — faster and fully local.",
             "clarifying_question": "",
         ]))
         let result = try await Self.planner(transport: transport).analyze(
             instruction: "Write a launch post for X for Mac developers.",
-            browserApplication: "Google Chrome"
+            browserApplication: "Google Chrome",
+            destinationHost: "x.com"
         )
         #expect(result == .ready(DraftPostPlan(
             purpose: "Launch Rapid 0.13.4",
             audience: "Mac developers",
             talkingPoints: ["Faster local inference", "No cloud upload"],
             tone: "Concise and enthusiastic",
-            destination: "X",
+            destination: "x.com",
             draft: "Rapid 0.13.4 is here — faster and fully local."
         )))
 
@@ -59,7 +60,8 @@ struct DraftPostInstructionPlannerTests {
         ]))
         let result = try await Self.planner(transport: transport).analyze(
             instruction: "Write something about the release.",
-            browserApplication: "Safari"
+            browserApplication: "Safari",
+            destinationHost: "x.com"
         )
         #expect(result == .needsClarification("Which site should I prepare this for?"))
     }
@@ -72,7 +74,7 @@ struct DraftPostInstructionPlannerTests {
             "audience": "Developers",
             "talking_points": ["Local"],
             "tone": "Concise",
-            "destination": "X",
+            "destination": "x.com",
             "draft": "A draft",
             "clarifying_question": "",
         ]
@@ -81,7 +83,8 @@ struct DraftPostInstructionPlannerTests {
         await #expect(throws: DraftPostPlanningError.invalidResponse) {
             _ = try await Self.planner(transport: extraTransport).analyze(
                 instruction: "Draft a launch post for X.",
-                browserApplication: "Safari"
+                browserApplication: "Safari",
+                destinationHost: "x.com"
             )
         }
 
@@ -91,14 +94,51 @@ struct DraftPostInstructionPlannerTests {
             "audience": "Developers",
             "talking_points": ["Local"],
             "tone": "Concise",
-            "destination": "X",
+            "destination": "x.com",
             "draft": "",
             "clarifying_question": "",
         ]))
         await #expect(throws: DraftPostPlanningError.invalidResponse) {
             _ = try await Self.planner(transport: emptyDraft).analyze(
                 instruction: "Draft a launch post for X.",
-                browserApplication: "Safari"
+                browserApplication: "Safari",
+                destinationHost: "x.com"
+            )
+        }
+
+        let wrongDestination = PlannerTransport(response: try Self.response(content: [
+            "status": "ready",
+            "purpose": "Launch",
+            "audience": "Developers",
+            "talking_points": ["Local"],
+            "tone": "Concise",
+            "destination": "example.com",
+            "draft": "A draft",
+            "clarifying_question": "",
+        ]))
+        await #expect(throws: DraftPostPlanningError.invalidResponse) {
+            _ = try await Self.planner(transport: wrongDestination).analyze(
+                instruction: "Draft a launch post for X.",
+                browserApplication: "Safari",
+                destinationHost: "x.com"
+            )
+        }
+
+        let multipleQuestions = PlannerTransport(response: try Self.response(content: [
+            "status": "needs_clarification",
+            "purpose": "",
+            "audience": "",
+            "talking_points": [],
+            "tone": "",
+            "destination": "",
+            "draft": "",
+            "clarifying_question": "Who is this for? Which tone should I use?",
+        ]))
+        await #expect(throws: DraftPostPlanningError.invalidResponse) {
+            _ = try await Self.planner(transport: multipleQuestions).analyze(
+                instruction: "Draft a launch post for X.",
+                browserApplication: "Safari",
+                destinationHost: "x.com"
             )
         }
     }
@@ -113,7 +153,8 @@ struct DraftPostInstructionPlannerTests {
         await #expect(throws: DraftPostPlanningError.instructionMissing) {
             _ = try await Self.planner(transport: transport).analyze(
                 instruction: "   ",
-                browserApplication: "Safari"
+                browserApplication: "Safari",
+                destinationHost: "x.com"
             )
         }
         await #expect(throws: DraftPostPlanningError.instructionTooLarge) {
@@ -122,7 +163,8 @@ struct DraftPostInstructionPlannerTests {
                     repeating: "x",
                     count: LocalDraftPostInstructionPlanner.maximumInstructionBytes + 1
                 ),
-                browserApplication: "Safari"
+                browserApplication: "Safari",
+                destinationHost: "x.com"
             )
         }
         #expect(await transport.requests.isEmpty)
@@ -185,7 +227,8 @@ struct DraftPostInstructionPlannerTests {
         await #expect(throws: DraftPostPlanningError.modelUnavailable) {
             _ = try await planner.analyze(
                 instruction: "Draft a launch update for X.",
-                browserApplication: "Safari"
+                browserApplication: "Safari",
+                destinationHost: "x.com"
             )
         }
         #expect(await transport.requests.isEmpty)
@@ -199,7 +242,7 @@ struct DraftPostInstructionPlannerTests {
             audience: "Developers",
             talkingPoints: ["Local"],
             tone: "Concise",
-            destination: "X",
+            destination: "x.com",
             draft: "Original draft"
         )
         let planner = ScriptedInstructionPlanner(result: .ready(plan))
@@ -207,6 +250,7 @@ struct DraftPostInstructionPlannerTests {
         let viewModel = DraftPostInstructionFlowViewModel(
             catalog: InstructionWindowCatalog(options: [Self.destination]),
             planner: planner,
+            destinationInspector: InstructionDestinationInspector(host: "x.com"),
             driver: driver
         )
         await viewModel.load()
@@ -222,6 +266,7 @@ struct DraftPostInstructionPlannerTests {
             return false
         }
         #expect(await driver.drafts == ["User-edited draft"])
+        #expect(await driver.destinationHosts == ["x.com"])
     }
 
     @MainActor
@@ -234,6 +279,7 @@ struct DraftPostInstructionPlannerTests {
         let viewModel = DraftPostInstructionFlowViewModel(
             catalog: InstructionWindowCatalog(options: [Self.destination]),
             planner: planner,
+            destinationInspector: InstructionDestinationInspector(host: "x.com"),
             driver: driver
         )
         await viewModel.load()
@@ -253,7 +299,8 @@ struct DraftPostInstructionPlannerTests {
         )
         let outcome = await PreparedDraftPostFlowCoordinator(driver: driver).run(
             draft: "Reviewed draft",
-            destination: Self.destination
+            destination: Self.destination,
+            expectedDestinationHost: "x.com"
         )
         #expect(outcome == .readyForReview(DraftPostFlowMetrics(
             attempts: 2,
@@ -267,12 +314,27 @@ struct DraftPostInstructionPlannerTests {
         )
         let terminalOutcome = await PreparedDraftPostFlowCoordinator(
             driver: terminalDriver
-        ).run(draft: "Reviewed draft", destination: Self.destination)
+        ).run(
+            draft: "Reviewed draft",
+            destination: Self.destination,
+            expectedDestinationHost: "x.com"
+        )
         #expect(terminalOutcome == .failed(
             .verificationFailed,
             DraftPostFlowMetrics(attempts: 1)
         ))
         #expect(await terminalDriver.attempts == 1)
+    }
+
+    @Test("Browser addresses normalize to a stable hostname")
+    func destinationHostNormalization() {
+        #expect(MacOSDraftPostFlowDriver.normalizedDestinationHost(
+            from: "https://X.com/compose/post?draft=1"
+        ) == "x.com")
+        #expect(MacOSDraftPostFlowDriver.normalizedDestinationHost(
+            from: "mail.example.com/inbox"
+        ) == "mail.example.com")
+        #expect(MacOSDraftPostFlowDriver.normalizedDestinationHost(from: "   ") == nil)
     }
 
     private static func planner(
@@ -348,6 +410,14 @@ private struct InstructionWindowCatalog: ComputerUseWindowListing {
     }
 }
 
+private struct InstructionDestinationInspector: ComputerUseBrowserDestinationInspecting {
+    let host: String
+
+    func destinationHost(for _: ComputerUseWindowOption) async throws -> String {
+        host
+    }
+}
+
 private actor ScriptedInstructionPlanner: DraftPostInstructionPlanning {
     let result: DraftPostPlanningResult
 
@@ -357,7 +427,8 @@ private actor ScriptedInstructionPlanner: DraftPostInstructionPlanning {
 
     func analyze(
         instruction _: String,
-        browserApplication _: String
+        browserApplication _: String,
+        destinationHost _: String
     ) async throws -> DraftPostPlanningResult {
         result
     }
@@ -365,12 +436,15 @@ private actor ScriptedInstructionPlanner: DraftPostInstructionPlanning {
 
 private actor RecordingPreparedDraftDriver: PreparedDraftPostFlowDriving {
     private(set) var drafts: [String] = []
+    private(set) var destinationHosts: [String] = []
 
     func transferPreparedDraft(
         _ draft: String,
-        to _: ComputerUseWindowOption
+        to _: ComputerUseWindowOption,
+        expectedDestinationHost: String
     ) async throws {
         drafts.append(draft)
+        destinationHosts.append(expectedDestinationHost)
     }
 }
 
@@ -384,7 +458,8 @@ private actor ScriptedPreparedDraftDriver: PreparedDraftPostFlowDriving {
 
     func transferPreparedDraft(
         _ draft: String,
-        to _: ComputerUseWindowOption
+        to _: ComputerUseWindowOption,
+        expectedDestinationHost _: String
     ) async throws {
         attempts += 1
         guard !draft.isEmpty, !outcomes.isEmpty else {
