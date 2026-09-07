@@ -108,54 +108,52 @@ def test_regression_limit_sane(mb):
     assert mb.REGRESSION_LIMIT > 1.0
 
 
-# The two runner-speed tests use a CPU-bound synthetic parser whose work
-# scales linearly with its iteration count. Because the work is CPU-bound on
-# the same hardware, a parser asked to do N ops takes ~2× the wall-time of
-# N/2 ops — and, critically, the SAME N on a 5×-slower runner takes ~5× the
-# wall-time. We pick N so the parser costs ``BASE_US * eps * runner_factor`` μs,
-# so its measured μs/call grows with ``runner_factor`` exactly like the
-# calibration baseline does. These tests cover the ratio math only; a separate
-# contract below records that unrelated workloads may scale independently and
-# is why hosted CI runs this benchmark in advisory mode (#2344).
-_CAL_TEXT = (
-    "<tool_call>get_weather city San Francisco "
-    "<arg_key>city</arg_key><arg_value>San Francisco</arg_value></tool_call>"
-)
+# The runner-speed tests cover the RATIO MATH only (issue #2344), so they must
+# not depend on wall-clock timing at all. Earlier versions sized a CPU-bound
+# synthetic parser from a one-off calibration and asserted a 20% margin on
+# its real duration; on hosted runners (and ~1 in 30 runs on an idle M3 Pro)
+# frequency scaling and scheduler noise pushed the "20% over the limit" case
+# under the limit and failed the merge queue for unrelated PRs. Now the
+# synthetic parser advances a virtual ``perf_counter`` by exactly its nominal
+# cost, so ``bench_one`` measures precisely ``BASE_US * eps * runner_factor``
+# μs per call and the verdict depends only on ``eps`` vs ``REGRESSION_LIMIT``.
+# A separate contract below records that unrelated workloads may scale
+# independently and is why hosted CI runs this benchmark in advisory mode.
 
 
-def _cpu_iter_cost_us() -> float:
-    """Measure the per-iteration μs of the FULL generated parser body on THIS
-    machine — the ``count()`` op PLUS the ``for``-loop and ``c +=`` overhead
-    that every real iteration also pays (Codex #2409). Calibrating only
-    ``_CAL_TEXT.count("x")`` and ignoring that overhead made the synthetic
-    parser slightly SLOWER than its nominal target, so a borderline
-    sub-limit case could tip over and flake the test. The body timed here is
-    textually identical to the one ``_prop_parser`` generates, so the derived
-    ``n`` lands the parser precisely on its requested μs/call.
+class _VirtualClock:
+    """``perf_counter`` stand-in that only moves when the synthetic parser
+    says it did work."""
+
+    # Integer nanoseconds: summing floats per call would drift a few ulps
+    # over 50 calls, which is enough to move a median ε off an exact value.
+
+    def __init__(self) -> None:
+        self.now_ns = 0
+
+    def perf_counter(self) -> float:
+        return self.now_ns / 1_000_000_000
+
+    def advance_us(self, us: float) -> None:
+        self.now_ns += round(us * 1_000)
+
+
+def _prop_parser(mb, monkeypatch):
+    """A synthetic parser whose per-call cost is exactly its requested μs.
+
+    Installs the virtual clock into the microbench module (it reads
+    ``time.perf_counter`` through its own ``time`` import), so every
+    ``bench_one`` timing window in the test sees only the parser's nominal
+    cost — no calibration, no CPU noise.
     """
-    import time
+    from types import SimpleNamespace
 
-    n = 30_000
-    t0 = time.perf_counter()
-    c = 0
-    for _ in range(n):
-        c += _CAL_TEXT.count("x")
-    dt = time.perf_counter() - t0
-    return (dt / n) * 1_000_000
-
-
-def _prop_parser():
-    """A synthetic parser whose per-call wall-time ∝ its iteration count."""
+    clock = _VirtualClock()
+    monkeypatch.setattr(mb, "time", SimpleNamespace(perf_counter=clock.perf_counter))
 
     def _make(us_per_call: float):
-        k = _cpu_iter_cost_us()
-        n = max(1, int(us_per_call / k))
-
         def fn(_t):
-            c = 0
-            for _ in range(n):
-                c += _CAL_TEXT.count("x")
-            return c
+            clock.advance_us(us_per_call)
 
         return fn
 
@@ -166,12 +164,12 @@ def _bench_with_cal(mb, make, eps_mult, runner_factor, monkeypatch):
     """Exercise ``bench_one`` through the REAL calibration path by mocking the
     runner-speed measurement (we cannot make the shared test machine 5× slower).
 
-    The parser workload is CPU-bound and sized to cost ``BASE_US*ε*runner_factor`` μs
-    (each μs of work is one calibration-op's worth), so it reproduces what a
-    parser experiences when both workloads scale together, and the mocked
-    calibration returns exactly that factor. The verdict must then depend only
-    on ``ε`` vs ``REGRESSION_LIMIT``. This does not claim that unlike operations
-    scale together across hosted architectures; that limitation is tested below.
+    The parser is sized to cost ``BASE_US*ε*runner_factor`` μs on the virtual
+    clock — what a parser experiences when both workloads scale together —
+    and the mocked calibration returns exactly that factor. The verdict must
+    then depend only on ``ε`` vs ``REGRESSION_LIMIT``. This does not claim that
+    unlike operations scale together across hosted architectures; that
+    limitation is tested below.
     """
     base_us = mb.BASE_US["hermes"]
     limit = mb.REGRESSION_LIMIT
@@ -188,9 +186,8 @@ _CAL_MIN_ITERS_FOR_TEST = 50
 def test_slow_runner_scales_threshold_up(mb, monkeypatch):
     """A slower runner produces a proportionally higher effective threshold,
     and a parser scaled by the same factor keeps the same verdict."""
-    make = _prop_parser()
-    # A healthy parser, well under REGRESSION_LIMIT (eps=0.3×LIMIT), so
-    # timing noise can't tip it over the boundary.
+    make = _prop_parser(mb, monkeypatch)
+    # A healthy parser, well under REGRESSION_LIMIT (eps=0.3×LIMIT).
     on_m3 = _bench_with_cal(mb, make, 0.3, 1.0, monkeypatch)
     on_slow = _bench_with_cal(mb, make, 0.3, 5.0, monkeypatch)
     assert on_slow.threshold_us > on_m3.threshold_us
@@ -200,13 +197,33 @@ def test_slow_runner_scales_threshold_up(mb, monkeypatch):
 def test_relative_budget_math_when_workloads_scale_together(mb, monkeypatch):
     """When subject and control costs scale together, the ratio preserves the
     pass/fail verdict across runner factors."""
-    make = _prop_parser()
+    make = _prop_parser(mb, monkeypatch)
     # Under the limit (ε=0.8×LIMIT): passes on 1x and 5x runners.
     assert _bench_with_cal(mb, make, 0.8, 1.0, monkeypatch).passed
     assert _bench_with_cal(mb, make, 0.8, 5.0, monkeypatch).passed
     # Over the limit (ε=1.2×LIMIT): fails on 1x and 5x runners alike.
     assert not _bench_with_cal(mb, make, 1.2, 1.0, monkeypatch).passed
     assert not _bench_with_cal(mb, make, 1.2, 5.0, monkeypatch).passed
+
+
+def test_verdict_boundary_is_inclusive(mb, monkeypatch):
+    """``eps == REGRESSION_LIMIT`` passes (the gate is ``<=``); one part in
+    ten thousand either side flips ``BenchResult.passed`` through the real
+    ``bench_one`` path on the virtual clock (the clock has 1 ns granularity,
+    so a 1e-6 margin on a ~330 μs call would round away). The exact-equality
+    case is asserted through ``_median_verdict`` with exact pairs, where no
+    clock arithmetic can perturb the ratio."""
+    base = mb.BASE_US["hermes"]
+    at_limit = [
+        (base * mb.REGRESSION_LIMIT * factor, factor) for factor in (1.0, 5.0, 2.0)
+    ]
+    eps, _, _ = mb._median_verdict(at_limit, base)
+    assert eps == pytest.approx(mb.REGRESSION_LIMIT)
+    make = _prop_parser(mb, monkeypatch)
+    assert _bench_with_cal(mb, make, 1 - 1e-4, 1.0, monkeypatch).passed
+    assert _bench_with_cal(mb, make, 1 - 1e-4, 5.0, monkeypatch).passed
+    assert not _bench_with_cal(mb, make, 1 + 1e-4, 1.0, monkeypatch).passed
+    assert not _bench_with_cal(mb, make, 1 + 1e-4, 5.0, monkeypatch).passed
 
 
 def test_independent_control_cost_can_change_verdict(mb):
@@ -252,7 +269,7 @@ def test_median_verdict_ignores_a_single_spiked_round(mb):
 def test_runner_factor_override_passthrough(mb, monkeypatch):
     """The explicit ``runner_factor`` override path still works for tests that
     hand a scalar (backward-compat with pre-interleave unit semantics)."""
-    make = _prop_parser()
+    make = _prop_parser(mb, monkeypatch)
     base_us = mb.BASE_US["hermes"]
     r = mb.bench_one("hermes", make(base_us * 5.0), "x", iters=20, runner_factor=1.0)
     assert r.passed
