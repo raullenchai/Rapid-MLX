@@ -1037,9 +1037,7 @@ def test_scan_hf_cache_models_keeps_healthy_relocated_entry(tmp_path, monkeypatc
 
     rows = cli._scan_hf_cache_models()
 
-    assert [(repo, size) for repo, size, _mtime in rows] == [
-        ("acme/Widget-4bit", 4096)
-    ]
+    assert [(repo, size) for repo, size, _mtime in rows] == [("acme/Widget-4bit", 4096)]
 
 
 # ---------------------------------------------------------------------------
