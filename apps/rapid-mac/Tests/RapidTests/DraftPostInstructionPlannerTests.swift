@@ -66,6 +66,27 @@ struct DraftPostInstructionPlannerTests {
         #expect(result == .needsClarification("Which site should I prepare this for?"))
     }
 
+    @Test("A clarification response cannot smuggle an unreviewed partial plan")
+    func clarificationRejectsPartialPlan() async throws {
+        let transport = PlannerTransport(response: try Self.response(content: [
+            "status": "needs_clarification",
+            "purpose": "Launch Rapid",
+            "audience": "",
+            "talking_points": [],
+            "tone": "",
+            "destination": "",
+            "draft": "Unreviewed draft",
+            "clarifying_question": "Which site should I prepare this for?",
+        ]))
+        await #expect(throws: DraftPostPlanningError.invalidResponse) {
+            _ = try await Self.planner(transport: transport).analyze(
+                instruction: "Write something about the release.",
+                browserApplication: "Safari",
+                destinationHost: "x.com"
+            )
+        }
+    }
+
     @Test("The planning request requires clarification for incomplete or mismatched intent")
     func clarificationPromptContract() throws {
         let data = try LocalDraftPostInstructionPlanner.requestBody(
@@ -363,6 +384,41 @@ struct DraftPostInstructionPlannerTests {
     }
 
     @MainActor
+    @Test("Navigation during local planning invalidates the plan before review")
+    func navigationDuringPlanning() async throws {
+        let plan = DraftPostPlan(
+            purpose: "Launch",
+            audience: "Developers",
+            talkingPoints: ["Local"],
+            tone: "Concise",
+            destination: "x.com",
+            draft: "Reviewed draft"
+        )
+        let inspector = ScriptedDestinationInspector(identities: [
+            Self.destinationIdentity,
+            ComputerUseBrowserDestinationIdentity(
+                host: "x.com",
+                documentIdentity: "https://x.com/another-account"
+            ),
+        ])
+        let viewModel = DraftPostInstructionFlowViewModel(
+            catalog: InstructionWindowCatalog(options: [Self.destination]),
+            planner: ScriptedInstructionPlanner(result: .ready(plan)),
+            destinationInspector: inspector,
+            driver: RecordingPreparedDraftDriver()
+        )
+        await viewModel.load()
+        viewModel.destinationID = Self.destination.id
+        viewModel.instruction = "Launch Rapid for developers on X."
+        viewModel.analyze()
+        await Self.waitUntil {
+            viewModel.phase == .planningFailed(.destinationUnavailable)
+        }
+        #expect(viewModel.plan == nil)
+        #expect(await inspector.inspectionCount == 2)
+    }
+
+    @MainActor
     @Test("A clarification returns to the editable request without execution")
     func clarificationState() async throws {
         let planner = ScriptedInstructionPlanner(
@@ -421,6 +477,7 @@ struct DraftPostInstructionPlannerTests {
         #expect(await terminalDriver.attempts == 1)
         #expect(DraftPostFlowFailure.composerNotEmpty.permitsReviewedRetry)
         #expect(DraftPostFlowFailure.destinationMismatch.permitsReviewedRetry)
+        #expect(!DraftPostFlowFailure.targetUnavailable.permitsReviewedRetry)
         #expect(!DraftPostFlowFailure.writeRejected.permitsReviewedRetry)
         #expect(!DraftPostFlowFailure.verificationFailed.permitsReviewedRetry)
         #expect(!DraftPostFlowFailure.dependencyFailure.permitsReviewedRetry)
@@ -591,6 +648,23 @@ private struct InstructionDestinationInspector: ComputerUseBrowserDestinationIns
             host: "x.com",
             documentIdentity: "https://x.com/compose/post"
         )
+    }
+}
+
+private actor ScriptedDestinationInspector: ComputerUseBrowserDestinationInspecting {
+    let identities: [ComputerUseBrowserDestinationIdentity]
+    private(set) var inspectionCount = 0
+
+    init(identities: [ComputerUseBrowserDestinationIdentity]) {
+        self.identities = identities
+    }
+
+    func destinationIdentity(
+        for _: ComputerUseWindowOption
+    ) async throws -> ComputerUseBrowserDestinationIdentity {
+        let index = min(inspectionCount, identities.count - 1)
+        inspectionCount += 1
+        return identities[index]
     }
 }
 

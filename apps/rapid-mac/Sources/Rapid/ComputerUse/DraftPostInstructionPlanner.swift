@@ -255,7 +255,13 @@ struct LocalDraftPostInstructionPlanner: DraftPostInstructionPlanning {
             let question = output.clarifyingQuestion.trimmingCharacters(
                 in: .whitespacesAndNewlines
             )
-            guard question.count <= maximumClarificationCharacters,
+            guard output.purpose.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+                  output.audience.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+                  output.talkingPoints.isEmpty,
+                  output.tone.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+                  output.destination.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+                  output.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+                  question.count <= maximumClarificationCharacters,
                   isOneQuestion(question)
             else {
                 throw DraftPostPlanningError.invalidResponse

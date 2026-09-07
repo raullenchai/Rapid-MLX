@@ -120,12 +120,13 @@ enum DraftPostFlowFailure: Error, Equatable, Sendable {
     var permitsReviewedRetry: Bool {
         switch self {
         case .sourceIsNotTextEdit, .destinationIsNotBrowser,
-             .destinationMismatch, .targetUnavailable, .focusChanged,
+             .destinationMismatch, .focusChanged,
              .draftMissing, .draftAmbiguous, .draftTooLarge,
              .composerMissing, .composerAmbiguous, .composerNotEmpty,
              .permissionMissing, .cancelled, .accessibilityTreeTooLarge:
             true
-        case .writeRejected, .verificationFailed, .dependencyFailure:
+        case .targetUnavailable, .writeRejected, .verificationFailed,
+             .dependencyFailure:
             false
         }
     }

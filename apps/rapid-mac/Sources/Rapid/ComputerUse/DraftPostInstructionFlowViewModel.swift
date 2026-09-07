@@ -159,12 +159,20 @@ final class DraftPostInstructionFlowViewModel {
                 let destinationIdentity = try await self.destinationInspector.destinationIdentity(
                     for: destination
                 )
-                inspectedDestination = destinationIdentity
-                result = .success(try await planner.analyze(
+                let planningResult = try await planner.analyze(
                     instruction: requestedInstruction,
                     browserApplication: destination.applicationName,
                     destinationHost: destinationIdentity.host
-                ))
+                )
+                if case .ready = planningResult {
+                    let currentIdentity = try await self.destinationInspector
+                        .destinationIdentity(for: destination)
+                    guard currentIdentity == destinationIdentity else {
+                        throw DraftPostPlanningError.destinationUnavailable
+                    }
+                    inspectedDestination = currentIdentity
+                }
+                result = .success(planningResult)
             } catch let error as DraftPostPlanningError {
                 result = .failure(error)
             } catch let error as DraftPostFlowFailure {
