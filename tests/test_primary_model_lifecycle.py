@@ -1055,6 +1055,8 @@ def test_configure_primary_lifecycle_resets_existing_state(monkeypatch):
     cfg = reset_config()
     cfg.primary_model_lifecycle = object()
     monkeypatch.setattr(server, "_primary_model_lifecycle", object())
+    monkeypatch.setattr(server, "_primary_lazy_load", False)
+    monkeypatch.setattr(server, "_primary_idle_unload_seconds", 0.0)
     server.configure_primary_model_lifecycle(lazy_load=True, idle_unload_seconds=12)
     assert server._primary_lazy_load is True
     assert server._primary_idle_unload_seconds == 12
@@ -1075,6 +1077,8 @@ async def test_resident_primary_handoff_detaches_or_rejects(monkeypatch):
     old = FakeEngine(loaded=True)
     lifecycle = PrimaryModelLifecycle(old, idle_unload_seconds=3)
     monkeypatch.setattr(server, "_primary_model_lifecycle", lifecycle)
+    monkeypatch.setattr(server, "_primary_lazy_load", True)
+    monkeypatch.setattr(server, "_primary_idle_unload_seconds", 3.0)
     replacement = ModelEntry(FakeEngine(loaded=True), "new", "new")
     server._set_resident_primary(replacement)
     assert lifecycle._detached is True
