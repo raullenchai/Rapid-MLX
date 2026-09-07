@@ -54,3 +54,18 @@
   #3211 (`7ab445bc7`) contains the qualified implementation and evidence. No
   release or deployment action is authorized; no follow-up owner is required
   for this PR beyond managed-queue observation.
+
+## 2026-09-07 — PR validation
+
+- Validator review round 1 requested an explicit eligibility-report assertion.
+  `check()` already raises on rejection (and returns `None` on success), but
+  the test now also pins `reasons == ()` and `recommendation == "verified"`.
+- Validator review round 2 found no blocking issues. Description, supply-chain,
+  lint, and 3,443 targeted tests passed.
+- Full unit under the repository-required mflux 0.19.1 completed with 23,033
+  passed and four doctor/extras failures. All four reproduce byte-for-byte on
+  clean `origin/main@9113b5d8d` with the same venv; they arise from existing
+  subprocess optional-extra row indexing and do not intersect this diff.
+- Final exact-head validation may explicitly skip only `full_unit`, because
+  that gate has already run in full and its complete failure set has been
+  reproduced against the merge base. No product test failure is waived.
