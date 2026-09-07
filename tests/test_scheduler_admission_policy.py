@@ -156,6 +156,12 @@ def test_policy_grants_only_real_prompt_and_completion_headroom():
     scheduler._admission_prefill_uids.add(12)
     assert scheduler._shortest_tail_admission_capacity() == 0
 
+    scheduler.running = {"a": object()}
+    scheduler._admission_prefill_uids.clear()
+    scheduler.config.prefill_batch_size = 4
+    scheduler.config.completion_batch_size = 2
+    assert scheduler._shortest_tail_admission_capacity() == 1
+
 
 def test_prompt_promotion_reopens_exactly_one_slot():
     scheduler = _selector()

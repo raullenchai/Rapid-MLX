@@ -5345,10 +5345,7 @@ class Scheduler:
         )
         completion_capacity = min(
             self._max_running_sequences(),
-            max(
-                int(self.config.prefill_batch_size),
-                int(self.config.completion_batch_size),
-            ),
+            int(self.config.completion_batch_size),
         )
         completion_headroom = max(0, completion_capacity - len(self.running))
         return min(prompt_headroom, completion_headroom)

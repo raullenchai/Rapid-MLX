@@ -90,3 +90,8 @@
   integer coercion could accept malformed boolean/float/string cache offsets.
   Offset validation now requires a non-boolean Python integer and tests each
   rejected shape.
+- PR validation round 5 found the reversed batch-size edge: upstream currently
+  coerces completion capacity up to prefill capacity, but the opt-in Rapid
+  admission contract must honor the operator-configured completion limit.
+  Effective capacity now caps directly at `completion_batch_size`, with a
+  regression where prefill B=4 and completion B=2.
