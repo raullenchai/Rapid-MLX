@@ -4,6 +4,7 @@ struct ComputerUseView: View {
     let languageRuntime: DraftPostLanguageRuntime?
     let visualRuntime: DraftPostVisualRuntime?
     @State private var showingDraftPost = false
+    @State private var showingFreeUpSpace = false
 
     init(
         languageRuntime: DraftPostLanguageRuntime? = nil,
@@ -82,6 +83,9 @@ struct ComputerUseView: View {
                 visualRuntime: visualRuntime
             )
         }
+        .sheet(isPresented: $showingFreeUpSpace) {
+            FreeUpSpaceFlowSheet()
+        }
     }
 
     private func starterCard(_ starter: ComputerUseStarter) -> some View {
@@ -107,10 +111,10 @@ struct ComputerUseView: View {
                 .foregroundStyle(.secondary)
             if starter.availability == .available {
                 Button("Start flow") {
-                    showingDraftPost = true
+                    start(starter.kind)
                 }
                 .buttonStyle(.rapidPrimaryCompact)
-                .accessibilityIdentifier("ComputerUse.Starter.DraftAndPost.Start")
+                .accessibilityIdentifier(startIdentifier(starter.kind))
             }
         }
         .frame(maxWidth: .infinity, minHeight: 118, alignment: .topLeading)
@@ -129,6 +133,28 @@ struct ComputerUseView: View {
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("ComputerUse.Starter.\(starter.kind.rawValue)")
         .accessibilityLabel(starter.title)
+    }
+
+    private func start(_ kind: ComputerUseStarter.Kind) {
+        switch kind {
+        case .freeUpSpace:
+            showingFreeUpSpace = true
+        case .draftAndPost:
+            showingDraftPost = true
+        case .tidyInbox, .prospectCustomers, .createDemoVideo, .reserved:
+            break
+        }
+    }
+
+    private func startIdentifier(_ kind: ComputerUseStarter.Kind) -> String {
+        switch kind {
+        case .freeUpSpace:
+            "ComputerUse.Starter.FreeUpSpace.Start"
+        case .draftAndPost:
+            "ComputerUse.Starter.DraftAndPost.Start"
+        case .tidyInbox, .prospectCustomers, .createDemoVideo, .reserved:
+            "ComputerUse.Starter.Unavailable.Start"
+        }
     }
 
     private func availabilityLabel(
