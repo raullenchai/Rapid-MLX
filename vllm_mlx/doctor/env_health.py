@@ -54,6 +54,13 @@ class CheckStatus(str, Enum):
     FAIL = "fail"
 
 
+class _ImportProbeOutcome(str, Enum):
+    VERIFIED = "verified"
+    BROKEN = "broken"
+    TIMED_OUT = "timed_out"
+    UNVERIFIED = "unverified"
+
+
 @dataclass
 class Check:
     """One row in a section. ``detail`` is shown under ``--verbose``."""
@@ -823,6 +830,7 @@ for _audio_dist, _audio_module in (*_AUDIO_IMPORTS, *_AUDIO_DESKTOP_IMPORTS):
 _RUNTIME_PROBE_CACHE: dict[
     tuple[Path, Path | None, tuple[Path, ...]], dict[str, object] | None
 ] = {}
+_RUNTIME_PROBE_TIMEOUTS: set[tuple[Path, Path | None, tuple[Path, ...]]] = set()
 _PROBE_RESULT_PREFIX = "__RAPID_MLX_IMPORT_RESULT__"
 _RUNTIME_IMPORT_SCRIPT = """\
 import importlib
@@ -863,9 +871,13 @@ if spec is None or not _module_path_is_trusted(spec):
     _emit_import_result({"importable": False, "trusted_origin": False})
 else:
     if exercise:
-        import PIL.Image as Image
+        try:
+            import PIL.Image as Image
 
-        Image.new("RGB", (1, 1))
+            Image.new("RGB", (1, 1))
+        except (Exception, SystemExit):
+            _emit_import_result({"importable": False, "trusted_origin": True})
+            sys.exit(0)
         _emit_import_result({"importable": True, "trusted_origin": True})
     else:
         try:
@@ -878,6 +890,10 @@ else:
 _RUNTIME_IMPORT_CACHE: dict[
     tuple[Path, str, str, bool, bool, tuple[str, ...]],
     bool,
+] = {}
+_RUNTIME_IMPORT_OUTCOMES: dict[
+    tuple[Path, str, str, bool, bool, tuple[str, ...]],
+    _ImportProbeOutcome,
 ] = {}
 _RUNTIME_IMPORT_TIMEOUTS: set[tuple[Path, str, str, bool, bool, tuple[str, ...]]] = (
     set()
@@ -930,6 +946,95 @@ def _import_probe_was_interrupted(
     return cache_key in _RUNTIME_IMPORT_TIMEOUTS
 
 
+def _import_probe_outcome(
+    runtime: Path,
+    module: str,
+    sidecar_root: Path | None,
+    *,
+    trusted_roots: tuple[Path, ...] = (),
+    exercise: bool = False,
+    isolated: bool = True,
+) -> _ImportProbeOutcome | None:
+    cache_key = _import_probe_cache_key(
+        runtime,
+        module,
+        sidecar_root,
+        trusted_roots=trusted_roots,
+        exercise=exercise,
+        isolated=isolated,
+    )
+    outcome = _RUNTIME_IMPORT_OUTCOMES.get(cache_key)
+    if outcome is None and cache_key in _RUNTIME_IMPORT_TIMEOUTS:
+        return _ImportProbeOutcome.TIMED_OUT
+    if outcome is None and not trusted_roots:
+        # Local-runtime callers add the trusted sys.path roots internally.
+        # Sections should not need to reconstruct that private cache-key
+        # detail merely to classify the probe result.
+        prefix = cache_key[:5]
+        for recorded_key, recorded_outcome in reversed(
+            _RUNTIME_IMPORT_OUTCOMES.items()
+        ):
+            if recorded_key[:5] == prefix:
+                return recorded_outcome
+    return outcome
+
+
+def _runtime_import_command(runtime: Path, module: str) -> str:
+    statement = f"import {module}"
+    return f"{shlex.quote(str(runtime))} -I -c {shlex.quote(statement)}"
+
+
+def _add_inconclusive_import(
+    section: Section,
+    *,
+    label: str,
+    version: str | None,
+    runtime: Path,
+    module: str,
+    sidecar_root: Path | None,
+    exercise: bool = False,
+) -> bool:
+    """Render an inconclusive import as a warning, never a false failure."""
+    outcome = _import_probe_outcome(
+        runtime,
+        module,
+        sidecar_root,
+        exercise=exercise,
+    )
+    interrupted = (
+        _import_probe_was_interrupted(
+            runtime,
+            module,
+            sidecar_root,
+            exercise=True,
+        )
+        if exercise
+        else _import_probe_was_interrupted(runtime, module, sidecar_root)
+    )
+    if outcome is None and interrupted:
+        outcome = _ImportProbeOutcome.TIMED_OUT
+    if outcome not in {
+        _ImportProbeOutcome.TIMED_OUT,
+        _ImportProbeOutcome.UNVERIFIED,
+    }:
+        return False
+    reason = (
+        "timed out" if outcome is _ImportProbeOutcome.TIMED_OUT else "did not complete"
+    )
+    version_text = f" {version}" if version else ""
+    verify = _runtime_import_command(runtime, module)
+    section.add(
+        f"{label}{version_text} importability unknown — doctor probe {reason}",
+        CheckStatus.WARN,
+        detail=(
+            f"distribution={label} module={module} outcome={outcome.value}; "
+            f"rerun doctor after cold imports settle or verify with `{verify}`; "
+            "this result does not indicate that reinstall or rollback is needed"
+        ),
+    )
+    return True
+
+
 def _probe_package(
     probe: dict[str, object],
     distribution: str,
@@ -975,11 +1080,19 @@ def _runtime_module_importable(
         isolated=isolated,
     )
     if cache_key in _RUNTIME_IMPORT_CACHE:
+        _RUNTIME_IMPORT_OUTCOMES.setdefault(
+            cache_key,
+            _ImportProbeOutcome.VERIFIED
+            if _RUNTIME_IMPORT_CACHE[cache_key]
+            else _ImportProbeOutcome.UNVERIFIED,
+        )
         return _RUNTIME_IMPORT_CACHE[cache_key]
     _RUNTIME_IMPORT_TIMEOUTS.discard(cache_key)
+    _RUNTIME_IMPORT_OUTCOMES.pop(cache_key, None)
     if _DOCTOR_DEADLINE is not None and time.monotonic() >= _DOCTOR_DEADLINE:
         _RUNTIME_IMPORT_CACHE[cache_key] = False
         _RUNTIME_IMPORT_TIMEOUTS.add(cache_key)
+        _RUNTIME_IMPORT_OUTCOMES[cache_key] = _ImportProbeOutcome.TIMED_OUT
         return False
     importable = False
     try:
@@ -1020,17 +1133,26 @@ def _runtime_module_importable(
         if not probe_lines:
             importable = False
             _RUNTIME_IMPORT_CACHE[cache_key] = importable
+            _RUNTIME_IMPORT_OUTCOMES[cache_key] = _ImportProbeOutcome.UNVERIFIED
             return importable
         result_json = json.loads(probe_lines[-1].removeprefix(_PROBE_RESULT_PREFIX))
         if not isinstance(result_json, dict):
             importable = False
+            _RUNTIME_IMPORT_OUTCOMES[cache_key] = _ImportProbeOutcome.UNVERIFIED
         else:
             importable = bool(result_json.get("importable"))
+            _RUNTIME_IMPORT_OUTCOMES[cache_key] = (
+                _ImportProbeOutcome.VERIFIED
+                if importable
+                else _ImportProbeOutcome.BROKEN
+            )
     except subprocess.TimeoutExpired:
         importable = False
         _RUNTIME_IMPORT_TIMEOUTS.add(cache_key)
+        _RUNTIME_IMPORT_OUTCOMES[cache_key] = _ImportProbeOutcome.TIMED_OUT
     except (OSError, subprocess.CalledProcessError, json.JSONDecodeError):
         importable = False
+        _RUNTIME_IMPORT_OUTCOMES[cache_key] = _ImportProbeOutcome.UNVERIFIED
     _RUNTIME_IMPORT_CACHE[cache_key] = importable
     return importable
 
@@ -1049,9 +1171,11 @@ def _probe_runtime(
     cache = _RUNTIME_PROBE_CACHE
     if cache_key in cache:
         return cache[cache_key]
+    _RUNTIME_PROBE_TIMEOUTS.discard(cache_key)
     try:
         if _DOCTOR_DEADLINE is not None and time.monotonic() >= _DOCTOR_DEADLINE:
             cache[cache_key] = None
+            _RUNTIME_PROBE_TIMEOUTS.add(cache_key)
             return None
         env = {
             "HOME": os.environ.get("HOME", str(Path.home())),
@@ -1089,9 +1213,51 @@ def _probe_runtime(
         typed_probe = cast("dict[str, object]", probe)
         cache[cache_key] = typed_probe
         return typed_probe
+    except subprocess.TimeoutExpired:
+        cache[cache_key] = None
+        _RUNTIME_PROBE_TIMEOUTS.add(cache_key)
+        return None
     except (OSError, subprocess.SubprocessError, json.JSONDecodeError):
         cache[cache_key] = None
         return None
+
+
+def _runtime_probe_timed_out(
+    runtime: Path,
+    sidecar_root: Path | None = None,
+) -> bool:
+    cache_key = (
+        runtime,
+        sidecar_root.resolve() if sidecar_root else None,
+        tuple(_server_import_paths(runtime)),
+    )
+    return cache_key in _RUNTIME_PROBE_TIMEOUTS
+
+
+def _add_runtime_probe_unavailable(
+    section: Section,
+    runtime: Path,
+    sidecar_root: Path | None,
+) -> None:
+    if _runtime_probe_timed_out(runtime, sidecar_root):
+        section.add(
+            "Active server runtime inspection timed out — package checks skipped",
+            CheckStatus.WARN,
+            detail=(
+                f"runtime={runtime}; rerun doctor after cold imports settle; "
+                "this result does not indicate that reinstall or rollback is needed"
+            ),
+        )
+        return
+    section.add(
+        "Could not inspect the active server runtime",
+        CheckStatus.FAIL,
+        detail=(
+            f"runtime={runtime}; set RAPID_MLX_RUNTIME_PYTHON to its "
+            "Python executable, ensure that interpreter is readable and "
+            "runnable, then run doctor again"
+        ),
+    )
 
 
 def _server_import_paths(runtime: Path) -> list[Path]:
@@ -1764,15 +1930,7 @@ def section_required_packages() -> Section:
         else None
     )
     if _runtime_uses_context(runtime) and runtime_probe is None:
-        s.add(
-            "Could not inspect the active server runtime",
-            CheckStatus.FAIL,
-            detail=(
-                f"runtime={runtime}; set RAPID_MLX_RUNTIME_PYTHON to its "
-                "Python executable, ensure that interpreter is readable and "
-                "runnable, then run doctor again"
-            ),
-        )
+        _add_runtime_probe_unavailable(s, runtime, sidecar_root)
         return s
     for dist, label in REQUIRED_PACKAGES:
         ver = (
@@ -1808,32 +1966,34 @@ def section_required_packages() -> Section:
         elif ver:
             repair = sidecar_hint or _runtime_pip_command("rapid-mlx", runtime=runtime)
             module = _DISTRIBUTION_MODULES[dist]
-            if _import_probe_was_interrupted(
-                runtime,
-                module,
-                sidecar_root,
+            if _add_inconclusive_import(
+                s,
+                label=label,
+                version=ver,
+                runtime=runtime,
+                module=module,
+                sidecar_root=sidecar_root,
             ):
-                s.add(
-                    f"{label} {ver} importability unknown — doctor probe timed out",
-                    CheckStatus.WARN,
-                    detail=f"distribution={dist} module={module} timeout=true",
-                )
                 continue
             visible, import_verified = _module_visibility(
                 dist,
                 runtime if _runtime_uses_context(runtime) else None,
             )
-            if _import_probe_was_interrupted(runtime, module, sidecar_root):
-                s.add(
-                    f"{label} {ver} importability unknown — doctor probe timed out",
-                    CheckStatus.WARN,
-                    detail=f"distribution={dist} module={module} timeout=true",
-                )
+            if _add_inconclusive_import(
+                s,
+                label=label,
+                version=ver,
+                runtime=runtime,
+                module=module,
+                sidecar_root=sidecar_root,
+            ):
                 continue
             if not visible:
+                verify = _runtime_import_command(runtime, module)
                 s.add(
                     f"{label} {ver} has broken metadata or cannot import in "
-                    f"{runtime} — run `{repair}`",
+                    f"{runtime} — verify with `{verify}`; if it fails, run "
+                    f"`{repair}`",
                     CheckStatus.FAIL,
                     detail=(
                         f"distribution={dist} version={ver} "
@@ -1862,27 +2022,27 @@ def section_required_packages() -> Section:
             )
         else:
             module = _DISTRIBUTION_MODULES[dist]
-            if _import_probe_was_interrupted(
-                runtime,
-                module,
-                sidecar_root,
+            if _add_inconclusive_import(
+                s,
+                label=label,
+                version=None,
+                runtime=runtime,
+                module=module,
+                sidecar_root=sidecar_root,
             ):
-                s.add(
-                    f"{label} importability unknown — doctor probe timed out",
-                    CheckStatus.WARN,
-                    detail=f"distribution={dist} module={module} timeout=true",
-                )
                 continue
             visible, import_verified = _module_visibility(
                 dist,
                 runtime if _runtime_uses_context(runtime) else None,
             )
-            if _import_probe_was_interrupted(runtime, module, sidecar_root):
-                s.add(
-                    f"{label} importability unknown — doctor probe timed out",
-                    CheckStatus.WARN,
-                    detail=f"distribution={dist} module={module} timeout=true",
-                )
+            if _add_inconclusive_import(
+                s,
+                label=label,
+                version=None,
+                runtime=runtime,
+                module=module,
+                sidecar_root=sidecar_root,
+            ):
                 continue
             if not visible:
                 repair = sidecar_hint or _runtime_pip_command(
@@ -2010,15 +2170,7 @@ def section_optional_packages() -> Section:
         else None
     )
     if _runtime_uses_context(runtime) and runtime_probe is None:
-        s.add(
-            "Could not inspect the active server runtime",
-            CheckStatus.FAIL,
-            detail=(
-                f"runtime={runtime}; set RAPID_MLX_RUNTIME_PYTHON to its "
-                "Python executable, ensure that interpreter is readable and "
-                "runnable, then run doctor again"
-            ),
-        )
+        _add_runtime_probe_unavailable(s, runtime, sidecar_root)
         return s
     for dist, label, install_hint in OPTIONAL_PACKAGES:
         # ``pip`` on PATH may belong to ~/.rapid-mlx-python or Homebrew while
@@ -2083,14 +2235,36 @@ def section_optional_packages() -> Section:
                 )
                 continue
             if dist == "mlx-audio":
-                missing = [
-                    distribution
-                    for distribution, module in audio_contract
-                    if not _module_available(
+                missing: list[str] = []
+                inconclusive: list[str] = []
+                for distribution, module in audio_contract:
+                    if _module_available(
                         module,
                         runtime if _runtime_uses_context(runtime) else None,
+                    ):
+                        continue
+                    outcome = _import_probe_outcome(runtime, module, sidecar_root)
+                    if outcome in {
+                        _ImportProbeOutcome.TIMED_OUT,
+                        _ImportProbeOutcome.UNVERIFIED,
+                    }:
+                        inconclusive.append(distribution)
+                    else:
+                        missing.append(distribution)
+                if inconclusive:
+                    inconclusive_text = ", ".join(inconclusive)
+                    s.add(
+                        f"{label} {ver} importability unknown — doctor could "
+                        f"not verify: {inconclusive_text}",
+                        CheckStatus.WARN,
+                        detail=(
+                            f"distribution={dist} version={ver} "
+                            f"inconclusive={inconclusive_text}; rerun doctor "
+                            "after cold imports settle; this result does not "
+                            "indicate that reinstall or rollback is needed"
+                        ),
                     )
-                ]
+                    continue
                 if missing:
                     missing_text = ", ".join(missing)
                     s.add(
@@ -2113,6 +2287,16 @@ def section_optional_packages() -> Section:
             if dist == "mlx-vlm" and not _pil_importable(
                 runtime if _runtime_uses_context(runtime) else None,
             ):
+                if _add_inconclusive_import(
+                    s,
+                    label=label,
+                    version=ver,
+                    runtime=runtime,
+                    module="PIL.Image",
+                    sidecar_root=sidecar_root,
+                    exercise=True,
+                ):
+                    continue
                 s.add(
                     f"{label} {ver} present but Pillow (PIL) missing or "
                     f"broken — vision paths will fail (`{hint}`)",
@@ -2127,14 +2311,49 @@ def section_optional_packages() -> Section:
                 dist,
                 runtime if _runtime_uses_context(runtime) else None,
             )
-            if not visible or not import_verified:
+            module = _DISTRIBUTION_MODULES[dist]
+            if _add_inconclusive_import(
+                s,
+                label=label,
+                version=ver,
+                runtime=runtime,
+                module=module,
+                sidecar_root=sidecar_root,
+            ):
+                continue
+            outcome = _import_probe_outcome(runtime, module, sidecar_root)
+            if outcome is _ImportProbeOutcome.BROKEN:
+                verify = _runtime_import_command(runtime, module)
                 s.add(
-                    f"{label} {ver} present but importability is broken or unverified",
+                    f"{label} {ver} import failed in {runtime} — verify with "
+                    f"`{verify}`; if it fails, run `{hint}`",
+                    CheckStatus.WARN,
+                    detail=(
+                        f"distribution={dist} version={ver} module={module} "
+                        f"outcome=broken runtime={runtime}"
+                    ),
+                )
+                continue
+            if not visible:
+                s.add(
+                    f"{label} {ver} metadata is present but its module is not "
+                    f"discoverable (`{hint}`)",
                     CheckStatus.WARN,
                     detail=(
                         f"distribution={dist} version={ver} "
-                        f"module={_DISTRIBUTION_MODULES[dist]} "
+                        f"module={module} "
                         f"visible={visible} verified={import_verified} "
+                        f"runtime={runtime}"
+                    ),
+                )
+                continue
+            if not import_verified:
+                s.add(
+                    f"{label} {ver} is visible but importability cannot be "
+                    "verified safely",
+                    CheckStatus.WARN,
+                    detail=(
+                        f"distribution={dist} version={ver} module={module} "
                         f"runtime={runtime}"
                     ),
                 )
@@ -2146,27 +2365,27 @@ def section_optional_packages() -> Section:
             )
         else:
             module = _DISTRIBUTION_MODULES[dist]
-            if _import_probe_was_interrupted(
-                runtime,
-                module,
-                sidecar_root,
+            if _add_inconclusive_import(
+                s,
+                label=label,
+                version=None,
+                runtime=runtime,
+                module=module,
+                sidecar_root=sidecar_root,
             ):
-                s.add(
-                    f"{label} importability unknown — doctor probe timed out",
-                    CheckStatus.WARN,
-                    detail=f"distribution={dist} module={module} timeout=true",
-                )
                 continue
             visible, import_verified = _module_visibility(
                 dist,
                 runtime if _runtime_uses_context(runtime) else None,
             )
-            if _import_probe_was_interrupted(runtime, module, sidecar_root):
-                s.add(
-                    f"{label} importability unknown — doctor probe timed out",
-                    CheckStatus.WARN,
-                    detail=f"distribution={dist} module={module} timeout=true",
-                )
+            if _add_inconclusive_import(
+                s,
+                label=label,
+                version=None,
+                runtime=runtime,
+                module=module,
+                sidecar_root=sidecar_root,
+            ):
                 continue
             if not visible:
                 s.add(
@@ -2232,24 +2451,62 @@ def section_optional_packages() -> Section:
         if not _pil_importable(
             runtime if _runtime_uses_context(runtime) else None,
         ):
-            s.add(
-                "mlx-vlm 0.5.0+ (dflash extras) present but Pillow (PIL) "
-                "missing or broken — dflash/vision paths will fail",
-                CheckStatus.WARN,
-                detail=(
-                    f"distribution=mlx-vlm version={vlm_ver} "
-                    f"pil=missing-or-broken hint={vision_hint}"
-                ),
-            )
+            if not _add_inconclusive_import(
+                s,
+                label="mlx-vlm 0.5.0+ (dflash extras)",
+                version=None,
+                runtime=runtime,
+                module="PIL.Image",
+                sidecar_root=sidecar_root,
+                exercise=True,
+            ):
+                s.add(
+                    "mlx-vlm 0.5.0+ (dflash extras) present but Pillow (PIL) "
+                    "missing or broken — dflash/vision paths will fail",
+                    CheckStatus.WARN,
+                    detail=(
+                        f"distribution=mlx-vlm version={vlm_ver} "
+                        f"pil=missing-or-broken hint={vision_hint}"
+                    ),
+                )
         else:
             _, vlm_verified = _module_visibility(
                 "mlx-vlm",
                 runtime if _runtime_uses_context(runtime) else None,
             )
-            if not vlm_verified:
+            if _add_inconclusive_import(
+                s,
+                label="mlx-vlm 0.5.0+ (dflash extras)",
+                version=None,
+                runtime=runtime,
+                module=_DISTRIBUTION_MODULES["mlx-vlm"],
+                sidecar_root=sidecar_root,
+            ):
+                pass
+            elif (
+                _import_probe_outcome(
+                    runtime,
+                    _DISTRIBUTION_MODULES["mlx-vlm"],
+                    sidecar_root,
+                )
+                is _ImportProbeOutcome.BROKEN
+            ):
+                verify = _runtime_import_command(
+                    runtime, _DISTRIBUTION_MODULES["mlx-vlm"]
+                )
                 s.add(
-                    "mlx-vlm 0.5.0+ (dflash extras) present but importability "
-                    "is broken or unverified",
+                    "mlx-vlm 0.5.0+ (dflash extras) import failed — verify "
+                    f"with `{verify}`; if it fails, run `{vision_hint}`",
+                    CheckStatus.WARN,
+                    detail=(
+                        f"distribution=mlx-vlm version={vlm_ver} "
+                        f"outcome=broken runtime={runtime}"
+                    ),
+                )
+            elif not vlm_verified:
+                s.add(
+                    "mlx-vlm 0.5.0+ (dflash extras) is visible but "
+                    "importability cannot be verified safely",
                     CheckStatus.WARN,
                     detail=(
                         f"distribution=mlx-vlm version={vlm_ver} "
@@ -2884,7 +3141,9 @@ def _run_all_serialized(caller_deadline: float) -> Report:
         _DOCTOR_DEADLINE = caller_deadline
         _RUNTIME_SELECTION_DONE = False
         _RUNTIME_PROBE_CACHE.clear()
+        _RUNTIME_PROBE_TIMEOUTS.clear()
         _RUNTIME_IMPORT_CACHE.clear()
+        _RUNTIME_IMPORT_OUTCOMES.clear()
         _RUNTIME_IMPORT_TIMEOUTS.clear()
         _RUNTIME_DISTRIBUTION_CACHE.clear()
         _RUNTIME_CONTEXTS.clear()

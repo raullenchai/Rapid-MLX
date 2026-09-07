@@ -180,6 +180,36 @@ Do not disable disk encryption merely to follow this guide. An authenticated
 restart used by some managed updates is not a substitute for testing the cold
 boot behavior of your own machine.
 
+### Verify the default route on multi-interface Macs
+
+An appliance with Wi-Fi plus a private Ethernet or Thunderbolt link can remain
+reachable over SSH while losing its internet default route. macOS may rank the
+private link first; `install.sh`, pip, Hugging Face downloads, and DNS then fail
+even though the machine does not look offline from the other Mac.
+
+Before the first install and before booting out a working service for upgrade,
+inspect the configured service order and default route:
+
+```bash
+networksetup -listnetworkserviceorder
+route -n get default
+```
+
+For a point-to-point private link, prefer leaving its router/default-gateway
+field empty. If both interfaces provide a default route, put the intended
+internet service first. Use the exact service names printed on your Mac and
+include every enabled network service; for example:
+
+```bash
+sudo networksetup -ordernetworkservices \
+  "Wi-Fi" "Ethernet" "Thunderbolt Bridge"
+```
+
+Do not copy that order blindly: remote-only machines can lose their management
+path when network settings change. Recheck the default route, DNS, SSH access,
+and `curl -fsSIL https://rapidmlx.com/install.sh` before stopping the running
+daemon.
+
 ## 1. Prepare the service account
 
 Log in as the service account while the machine still has a display. Run every
@@ -364,9 +394,14 @@ sudo launchctl bootstrap system \
 ./scripts/headless_service_smoke.sh
 ```
 
-Investigate every Doctor issue, but do not use Doctor alone to accept or reject
-the update. Some 0.13.3 runtime layouts can produce false import failures. The
-API smoke test is the actionable gate: it proves that the daemon can load the
+Investigate every Doctor ✗, but distinguish it from an inconclusive ⚠. A row
+that says an import probe timed out, did not complete, was skipped because the
+time budget expired, or could not be verified is not evidence of a broken
+package and is not a rollback signal. Freshly installed vision dependencies can
+have slow first imports; rerun Doctor once after those cold imports settle and
+use `doctor --verbose` for the exact interpreter-bound verification command.
+Do not reinstall merely because a probe was inconclusive. The API smoke test is
+the actionable acceptance gate: it proves that the daemon can load the
 configured model and serve a request in its real launchd environment.
 
 The installer upgrades a compatible `~/.rapid-mlx` environment in place, so

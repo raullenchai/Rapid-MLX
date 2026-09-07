@@ -601,7 +601,9 @@ def clean_doctor_runtime_state(monkeypatch):
     env_health._RUNTIME_CONTEXTS.clear()
     env_health._RUNTIME_DISTRIBUTION_CACHE.clear()
     env_health._RUNTIME_PROBE_CACHE.clear()
+    env_health._RUNTIME_PROBE_TIMEOUTS.clear()
     env_health._RUNTIME_IMPORT_CACHE.clear()
+    env_health._RUNTIME_IMPORT_OUTCOMES.clear()
     env_health._RUNTIME_IMPORT_TIMEOUTS.clear()
 
     yield
@@ -609,7 +611,9 @@ def clean_doctor_runtime_state(monkeypatch):
     env_health._RUNTIME_CONTEXTS.clear()
     env_health._RUNTIME_DISTRIBUTION_CACHE.clear()
     env_health._RUNTIME_PROBE_CACHE.clear()
+    env_health._RUNTIME_PROBE_TIMEOUTS.clear()
     env_health._RUNTIME_IMPORT_CACHE.clear()
+    env_health._RUNTIME_IMPORT_OUTCOMES.clear()
     env_health._RUNTIME_IMPORT_TIMEOUTS.clear()
 
 
