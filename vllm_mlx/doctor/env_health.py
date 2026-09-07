@@ -21,6 +21,9 @@ Tests in ``tests/test_doctor_env_health.py`` cover each section's probe.
 
 from __future__ import annotations
 
+import base64
+import csv
+import hashlib
 import importlib.metadata as _im
 import importlib.util as _iu
 import json
@@ -37,6 +40,7 @@ import time
 import urllib.parse
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
+from email.parser import Parser
 from enum import Enum
 from pathlib import Path
 from typing import Any, cast
@@ -3106,6 +3110,357 @@ def section_agent_integrations(
     return section
 
 
+def _service_runtime_version(
+    executable: str,
+) -> str | None:
+    """Read Rapid-MLX package metadata without executing the service runtime."""
+    try:
+        executable_path = Path(executable).resolve(strict=True)
+        environment = executable_path.parent.parent
+        if executable_path.stat().st_size > 32 * 1024:
+            return None
+        launcher = executable_path.read_text(encoding="utf-8")
+        lines = launcher.splitlines()
+        if not lines or not lines[0].startswith("#!"):
+            return None
+        declared_interpreter = Path(lines[0][2:].strip())
+        if (
+            not declared_interpreter.is_absolute()
+            or declared_interpreter.parent.parent != environment
+            or not declared_interpreter.name.startswith("python")
+        ):
+            return None
+        resolved_interpreter = declared_interpreter.resolve(strict=True)
+        if not resolved_interpreter.is_file() or not os.access(
+            resolved_interpreter, os.X_OK
+        ):
+            return None
+    except (OSError, UnicodeError):
+        return None
+    try:
+        python_tag = None
+        for interpreter_name in (declared_interpreter.name, resolved_interpreter.name):
+            match = re.fullmatch(r"python(?:w)?(\d+\.\d+)", interpreter_name)
+            if match:
+                python_tag = match.group(1)
+                break
+        if python_tag is None:
+            config = environment / "pyvenv.cfg"
+            if config.is_file():
+                for line in config.read_text(encoding="utf-8").splitlines():
+                    key, separator, value = line.partition("=")
+                    if separator and key.strip().lower() in {"version", "version_info"}:
+                        match = re.match(r"\s*(\d+\.\d+)", value)
+                        if match:
+                            python_tag = match.group(1)
+                            break
+        if python_tag is None:
+            return None
+        metadata_root = environment / "lib" / f"python{python_tag}" / "site-packages"
+        distributions: list[tuple[str, Path]] = []
+        for metadata_file in metadata_root.glob("rapid_mlx-*.dist-info/METADATA"):
+            metadata = Parser().parsestr(metadata_file.read_text(encoding="utf-8"))
+            name = str(metadata.get("Name") or "").strip().lower().replace("_", "-")
+            version = str(metadata.get("Version") or "").strip()
+            if name != "rapid-mlx":
+                continue
+            Version(version)
+            distributions.append((version, metadata_file.parent))
+        if len(distributions) != 1:
+            return None
+        version, distribution_root = distributions[0]
+        record_path = distribution_root / "RECORD"
+        record_rows = csv.reader(record_path.read_text(encoding="utf-8").splitlines())
+        recorded_hash = recorded_size = None
+        for relative_path, digest, size in record_rows:
+            try:
+                recorded_path = (metadata_root / relative_path).resolve(strict=True)
+            except OSError:
+                continue
+            if recorded_path == executable_path:
+                recorded_hash = digest
+                recorded_size = size
+                break
+        if not recorded_hash or not recorded_hash.startswith("sha256="):
+            return None
+        launcher_bytes = executable_path.read_bytes()
+        actual_hash = (
+            base64.urlsafe_b64encode(hashlib.sha256(launcher_bytes).digest())
+            .rstrip(b"=")
+            .decode("ascii")
+        )
+        if recorded_hash != f"sha256={actual_hash}" or recorded_size != str(
+            len(launcher_bytes)
+        ):
+            return None
+    except (csv.Error, InvalidVersion, OSError, UnicodeError, ValueError):
+        return None
+    return version
+
+
+def section_always_on_service(
+    *,
+    status_data: dict[str, Any] | None = None,
+    platform_name: str | None = None,
+) -> Section:
+    """Explain the installed LaunchDaemon from definition through readiness."""
+    section = Section("Always-on Service")
+    current_platform = platform_name or sys.platform
+    if current_platform != "darwin":
+        section.add(
+            "Always-on launchd service is macOS-only",
+            CheckStatus.OK,
+            check_id="service.platform",
+        )
+        return section
+
+    if status_data is None:
+        from vllm_mlx.headless_service.status import collect_status
+
+        status_data = collect_status(probe_timeout_s=_bounded_timeout(0.5))
+
+    launchctl_error = status_data.get("launchctl_error")
+    installed = bool(status_data.get("plist_present") or status_data.get("registered"))
+    if not installed and launchctl_error:
+        section.add(
+            "Always-on service installation could not be verified",
+            CheckStatus.WARN,
+            detail=str(launchctl_error),
+            check_id="service.installation",
+        )
+        return section
+    if not installed:
+        section.add(
+            "Always-on service is not installed (optional)",
+            CheckStatus.OK,
+            detail="install with `sudo rapid-mlx service install ...` when needed",
+            check_id="service.installation",
+        )
+        return section
+
+    plist_present = bool(status_data.get("plist_present"))
+    section.add(
+        "LaunchDaemon definition is installed"
+        if plist_present
+        else "LaunchDaemon definition is missing",
+        CheckStatus.OK if plist_present else CheckStatus.FAIL,
+        detail=str(status_data.get("plist") or ""),
+        check_id="service.definition",
+    )
+
+    registered = bool(status_data.get("registered"))
+    if launchctl_error:
+        section.add(
+            "launchd registration could not be verified",
+            CheckStatus.WARN,
+            detail=str(launchctl_error),
+            check_id="service.registration",
+        )
+    else:
+        section.add(
+            "launchd job is registered"
+            if registered
+            else "launchd job is not registered",
+            CheckStatus.OK if registered else CheckStatus.FAIL,
+            detail="repair with `sudo rapid-mlx service restart`; reinstall if registration still fails",
+            check_id="service.registration",
+        )
+
+    pid = status_data.get("pid")
+    crash_loop = bool(status_data.get("crash_loop_suspected"))
+    runs = status_data.get("runs")
+    rendered_runs = runs if runs is not None else "unknown"
+    if pid:
+        section.add(
+            f"service process is running (pid {pid})",
+            CheckStatus.OK,
+            detail=f"launchd state={status_data.get('launchd_state') or 'unknown'}; runs={rendered_runs}",
+            check_id="service.process",
+        )
+    elif launchctl_error:
+        section.add(
+            "service process could not be verified",
+            CheckStatus.WARN,
+            detail=str(launchctl_error),
+            check_id="service.process",
+        )
+    else:
+        label = "service process is not running"
+        if crash_loop:
+            label += "; repeated startup failure suspected"
+        section.add(
+            label,
+            CheckStatus.FAIL,
+            detail=f"last exit={status_data.get('last_exit')}; inspect `rapid-mlx service logs --stderr`",
+            check_id="service.process",
+        )
+
+    owner = status_data.get("owner")
+    declared_user = status_data.get("declared_user")
+    if pid:
+        declared_account = (
+            declared_user
+            if isinstance(declared_user, str) and declared_user.strip()
+            else None
+        )
+        actual_owner = owner if isinstance(owner, str) and owner.strip() else None
+        matches = bool(
+            declared_account
+            and declared_account != "root"
+            and actual_owner
+            and actual_owner == declared_account
+        )
+        if declared_account is None:
+            owner_label = "service account is not declared"
+        elif declared_account == "root":
+            owner_label = "service is configured to run as root"
+        elif actual_owner is None:
+            owner_label = (
+                f"service owner could not be verified; expected {declared_account}"
+            )
+        else:
+            owner_label = f"service owner is {actual_owner}"
+            if not matches:
+                owner_label += f"; expected {declared_account}"
+        section.add(
+            owner_label,
+            CheckStatus.OK if matches else CheckStatus.FAIL,
+            detail="the daemon and model cache must use the configured non-root service account",
+            check_id="service.owner",
+        )
+
+    config_error = status_data.get("config_error")
+    config_valid = status_data.get("config_valid") is True
+    section.add(
+        "service configuration is valid"
+        if config_valid
+        else "service configuration is invalid",
+        CheckStatus.OK if config_valid else CheckStatus.FAIL,
+        detail=str(
+            config_error
+            or status_data.get("config_file")
+            or "no recognizable service configuration was found"
+        ),
+        check_id="service.config",
+    )
+    if status_data.get("pending_config"):
+        section.add(
+            "qualified configuration changes are pending",
+            CheckStatus.WARN,
+            detail="review with `rapid-mlx service config`, then activate with `sudo rapid-mlx service apply`",
+            check_id="service.config.pending",
+        )
+
+    executable = status_data.get("executable")
+    if not isinstance(executable, str) or not executable.strip():
+        section.add(
+            "configured service executable is missing from the definition",
+            CheckStatus.FAIL,
+            detail="reinstall the service to restore a qualified runtime path",
+            check_id="service.runtime",
+        )
+    else:
+        if not Path(executable).is_file():
+            section.add(
+                "configured service executable is missing",
+                CheckStatus.FAIL,
+                detail=executable,
+                check_id="service.runtime",
+            )
+        elif not os.access(executable, os.X_OK):
+            section.add(
+                "configured service executable is not executable",
+                CheckStatus.FAIL,
+                detail=executable,
+                check_id="service.runtime",
+            )
+        else:
+            from vllm_mlx import __version__
+
+            service_version = _service_runtime_version(executable)
+            if service_version is None:
+                section.add(
+                    "service runtime version could not be verified",
+                    CheckStatus.WARN,
+                    detail=executable,
+                    check_id="service.runtime",
+                )
+            elif __version__ != "0.0.0" and Version(service_version) != Version(
+                __version__
+            ):
+                section.add(
+                    f"service runtime {service_version} differs from Doctor {__version__}",
+                    CheckStatus.WARN,
+                    detail=f"service executable={executable}; restart after upgrading the service runtime",
+                    check_id="service.runtime",
+                )
+            else:
+                section.add(
+                    f"service runtime {service_version} matches Doctor",
+                    CheckStatus.OK,
+                    detail=executable,
+                    check_id="service.runtime",
+                )
+
+    endpoint_attributable = bool(
+        pid
+        and config_valid
+        and status_data.get("endpoint_configured") is True
+        and status_data.get("endpoint_attributable", False) is True
+    )
+    if not endpoint_attributable:
+        for endpoint, check_id in (
+            ("/livez", "service.endpoint.liveness"),
+            ("/readyz", "service.endpoint.readiness"),
+        ):
+            section.add(
+                f"endpoint {endpoint} was not attributed to the service",
+                CheckStatus.SKIPPED,
+                detail="requires a live service PID and a validated configured bind",
+                check_id=check_id,
+            )
+    else:
+        live = status_data.get("livez")
+        ready = status_data.get("readyz")
+        if live is None:
+            section.add(
+                "endpoint /livez probe was not verified",
+                CheckStatus.SKIPPED,
+                detail="the attributed endpoint timed out or returned an invalid response",
+                check_id="service.endpoint.liveness",
+            )
+        else:
+            section.add(
+                f"endpoint /livez is {'healthy' if live else 'down'}",
+                CheckStatus.OK if live else CheckStatus.FAIL,
+                detail=f"http://{status_data.get('host')}:{status_data.get('port')}/livez",
+                check_id="service.endpoint.liveness",
+            )
+        if ready is None:
+            section.add(
+                "endpoint /readyz probe was not verified",
+                CheckStatus.SKIPPED,
+                detail="the attributed endpoint timed out or returned an invalid response",
+                check_id="service.endpoint.readiness",
+            )
+        else:
+            section.add(
+                f"endpoint /readyz is {'ready' if ready else 'not ready'}",
+                CheckStatus.OK
+                if ready
+                else CheckStatus.WARN
+                if live is True
+                else CheckStatus.FAIL,
+                detail=(
+                    "a live but unready endpoint may still be loading or waiting in lazy mode; inspect service logs"
+                    if live is True and not ready
+                    else f"model={status_data.get('model') or 'unknown'}"
+                ),
+                check_id="service.endpoint.readiness",
+            )
+    return section
+
+
 # ---------------------------------------------------------------------------
 # Public entry point
 # ---------------------------------------------------------------------------
@@ -3125,6 +3480,7 @@ _SECTION_BUILDERS = (
     section_shell_integration,
     section_optional_tools,
     section_agent_integrations,
+    section_always_on_service,
 )
 
 # Select the diagnostic runtime once before any section that consumes it so
@@ -3149,6 +3505,7 @@ _SECTION_TITLES = {
     section_shell_integration: "Shell Integration",
     section_optional_tools: "Optional Tools",
     section_agent_integrations: "Agent Integrations",
+    section_always_on_service: "Always-on Service",
 }
 
 _SECTION_IDS = {
@@ -3162,6 +3519,7 @@ _SECTION_IDS = {
     section_shell_integration: "shell",
     section_optional_tools: "tools.optional",
     section_agent_integrations: "agents",
+    section_always_on_service: "service",
 }
 
 

@@ -56,7 +56,32 @@ rapid-mlx doctor --skip updates --skip network
 
 Available IDs are `system`, `python`, `packages.required`, `updates`,
 `packages.optional`, `cache.huggingface`, `network`, `shell`,
-`tools.optional`, and `agents`.
+`tools.optional`, `agents`, and `service`.
+
+On macOS, the default report also diagnoses an installed Always-on service
+from end to end: LaunchDaemon definition, launchd registration, process and
+service-account ownership, active/pending configuration, service runtime
+version, `/livez`, and `/readyz`. An absent service is healthy because the
+feature is optional. Once either its plist or launchd registration exists,
+inconsistencies are actionable failures. A live endpoint that is not ready is
+a warning rather than a hard failure because it may still be loading a model
+or waiting in lazy mode.
+
+Before making an HTTP request, Doctor requires `/usr/sbin/lsof` to prove that
+the launchd PID owns a listener covering the configured host and port. A
+different PID/address, a permission error, timeout, truncated response, or
+invalid response is reported as skipped/unverified (`unknown` in `service
+status`), never as healthy or as a confirmed outage. Runtime version evidence
+is read without executing the service binary and is accepted only when its
+wheel `RECORD` size/SHA-256 authenticates that executable in the interpreter's
+matching `pythonX.Y/site-packages` directory.
+
+Run only these checks with:
+
+```bash
+rapid-mlx doctor --only service --verbose
+rapid-mlx doctor --only service --json
+```
 
 JSON output uses `schemaVersion: 1` and includes the Rapid-MLX version,
 overall status (`ok`, `warn`, `fail`, or `skipped`), exit code, total and per-section durations, counts, stable

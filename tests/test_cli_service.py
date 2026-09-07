@@ -335,7 +335,7 @@ def test_uninstall_dry_run_prints_removal_and_touches_nothing(monkeypatch, capsy
 def test_status_json_shape(monkeypatch, capsys):
     from vllm_mlx.headless_service import status as st
 
-    monkeypatch.setattr(st, "_launchctl_print", staticmethod(lambda _label: None))
+    monkeypatch.setattr(st, "_launchctl_probe", lambda *_a, **_k: (None, None))
     monkeypatch.setattr(st, "_read_installed_plist", staticmethod(lambda _label: None))
     monkeypatch.setattr(
         st, "_endpoint_health", staticmethod(lambda h, p: (False, False))
@@ -974,13 +974,14 @@ def test_collect_status_full_branch(monkeypatch, plist_kwargs, tmp_path):
 
     monkeypatch.setattr(
         st,
-        "_launchctl_print",
-        staticmethod(lambda _l: _fake_launchctl_print(pid=4242, last_exit=0)),
+        "_launchctl_probe",
+        lambda *_a, **_k: (_fake_launchctl_print(pid=4242, last_exit=0), None),
     )
     plist = tmp_path / "com.rapidmlx.server.plist"
     plist.write_bytes(serialize_plist(build_plist_dict(**plist_kwargs)))
     monkeypatch.setattr(st, "_plist_path", staticmethod(lambda _l: plist))
     monkeypatch.setattr(st, "_endpoint_health", staticmethod(lambda h, p: (True, True)))
+    monkeypatch.setattr(st, "_pid_listens_on_port", lambda *_a, **_k: True)
     monkeypatch.setattr(st, "_port_busy", staticmethod(lambda h, p: True))
     # Stub `ps -o user=` so the owner lookup is hermetic.
     monkeypatch.setattr(
@@ -1016,10 +1017,22 @@ def test_status_command_json_and_exit_codes(monkeypatch, capsys):
     import vllm_mlx.headless_service.status as st
 
     monkeypatch.setattr(
-        st, "_launchctl_print", staticmethod(lambda _l: _fake_launchctl_print(pid=9))
+        st,
+        "_launchctl_probe",
+        lambda *_a, **_k: (_fake_launchctl_print(pid=9), None),
     )
-    monkeypatch.setattr(st, "_read_installed_plist", staticmethod(lambda _l: None))
+    monkeypatch.setattr(
+        st,
+        "_read_installed_plist",
+        lambda _label: {"ProgramArguments": ["/bin/rapid-mlx", "serve", "model"]},
+    )
+    monkeypatch.setattr(
+        st,
+        "_parse_legacy_serve",
+        lambda _argv: ("/bin/rapid-mlx", "model", "127.0.0.1", 8000),
+    )
     monkeypatch.setattr(st, "_endpoint_health", staticmethod(lambda h, p: (True, True)))
+    monkeypatch.setattr(st, "_pid_listens_on_port", lambda *_a, **_k: True)
     monkeypatch.setattr(st, "_port_busy", staticmethod(lambda h, p: True))
     ns = _ns(json=True)
     assert st.status_command(ns) == 0
@@ -1028,9 +1041,207 @@ def test_status_command_json_and_exit_codes(monkeypatch, capsys):
 
     # Ready but no PID → not "up" → exit 1.
     monkeypatch.setattr(
-        st, "_launchctl_print", staticmethod(lambda _l: _fake_launchctl_print(pid=None))
+        st,
+        "_launchctl_probe",
+        lambda *_a, **_k: (_fake_launchctl_print(pid=None), None),
     )
     assert st.status_command(_ns(json=True)) == 1
+
+
+def test_listener_pid_probe_distinguishes_owner_mismatch_and_errors(monkeypatch):
+    import vllm_mlx.headless_service.status as st
+
+    monkeypatch.setattr(st.Path, "is_file", lambda _self: True)
+    monkeypatch.setattr(
+        st.subprocess,
+        "run",
+        lambda *_a, **_k: types.SimpleNamespace(
+            returncode=0, stdout="p42\nn127.0.0.1:8000\n"
+        ),
+    )
+    assert st._pid_listens_on_port(42, "127.0.0.1", 8000) is True
+    assert st._pid_listens_on_port(42, "127.0.0.2", 8000) is False
+    assert st._pid_listens_on_port(41, "127.0.0.1", 8000) is False
+
+    monkeypatch.setattr(
+        st.subprocess,
+        "run",
+        lambda *_a, **_k: types.SimpleNamespace(returncode=1, stdout="", stderr=""),
+    )
+    assert st._pid_listens_on_port(42, "127.0.0.1", 8000) is False
+
+    monkeypatch.setattr(
+        st.subprocess,
+        "run",
+        lambda *_a, **_k: types.SimpleNamespace(
+            returncode=1, stdout="", stderr="permission denied"
+        ),
+    )
+    assert st._pid_listens_on_port(42, "127.0.0.1", 8000) is None
+
+
+def test_listener_pid_probe_resolves_legacy_hostname_only_when_enabled(monkeypatch):
+    import vllm_mlx.headless_service.status as st
+
+    monkeypatch.setattr(st.Path, "is_file", lambda _self: True)
+    monkeypatch.setattr(
+        st.subprocess,
+        "run",
+        lambda *_a, **_k: types.SimpleNamespace(
+            returncode=0, stdout="p42\nn192.0.2.10:8000\n"
+        ),
+    )
+    monkeypatch.setattr(
+        st.socket,
+        "getaddrinfo",
+        lambda *_a, **_k: [
+            (st.socket.AF_INET, st.socket.SOCK_STREAM, 6, "", ("192.0.2.10", 0))
+        ],
+    )
+
+    assert st._pid_listens_on_port(42, "my-mac.local", 8000) is False
+    assert (
+        st._pid_listens_on_port(42, "my-mac.local", 8000, resolve_hostnames=True)
+        is True
+    )
+
+
+def test_collect_status_does_not_probe_unattributed_endpoint(monkeypatch):
+    import vllm_mlx.headless_service.status as st
+
+    monkeypatch.setattr(
+        st,
+        "_launchctl_probe",
+        lambda *_a, **_k: (_fake_launchctl_print(pid=42), None),
+    )
+    monkeypatch.setattr(
+        st,
+        "_read_installed_plist",
+        lambda _label: {"ProgramArguments": ["/bin/rapid-mlx", "serve", "model"]},
+    )
+    monkeypatch.setattr(
+        st,
+        "_parse_legacy_serve",
+        lambda _argv: ("/bin/rapid-mlx", "model", "127.0.0.1", 8000),
+    )
+    monkeypatch.setattr(st, "_pid_listens_on_port", lambda *_a, **_k: False)
+    monkeypatch.setattr(st, "_port_busy", lambda *_a, **_k: True)
+    monkeypatch.setattr(
+        st,
+        "_endpoint_health",
+        lambda *_a, **_k: (_ for _ in ()).throw(
+            AssertionError("unattributed endpoint was probed")
+        ),
+    )
+    monkeypatch.setattr(
+        st.subprocess,
+        "run",
+        lambda *_a, **_k: types.SimpleNamespace(returncode=0, stdout="serveuser\n"),
+    )
+
+    status = st.collect_status()
+    assert status["endpoint_attributable"] is False
+    assert status["livez"] is None
+    assert status["readyz"] is None
+
+
+def test_collect_status_records_invalid_legacy_definition(monkeypatch):
+    import vllm_mlx.headless_service.definition as definition
+    import vllm_mlx.headless_service.status as st
+
+    monkeypatch.setattr(st, "_launchctl_probe", lambda *_a, **_k: (None, None))
+    monkeypatch.setattr(
+        st,
+        "_read_installed_plist",
+        lambda _label: {"ProgramArguments": ["invalid"]},
+    )
+    monkeypatch.setattr(definition, "installed_identity", lambda _label: None)
+    monkeypatch.setattr(st, "_port_busy", lambda *_a, **_k: False)
+    monkeypatch.setattr(st, "_plist_path", lambda _label: Path("/missing.plist"))
+
+    status = st.collect_status()
+    assert status["config_valid"] is False
+    assert "unrecognized legacy" in status["config_error"]
+
+
+def test_collect_status_prefers_valid_config_backed_identity(monkeypatch, tmp_path):
+    import vllm_mlx.headless_service.config as config
+    import vllm_mlx.headless_service.definition as definition
+    import vllm_mlx.headless_service.status as st
+
+    config_file = tmp_path / "active.json"
+    pending = tmp_path / "pending.json"
+    pending.write_text("{}")
+    effective = types.SimpleNamespace(
+        executable="/opt/rapid/bin/rapid-mlx",
+        model="model-from-config",
+        host="127.0.0.1",
+        port=8123,
+        credential_file=None,
+    )
+    monkeypatch.setattr(st, "_launchctl_probe", lambda *_a, **_k: (None, None))
+    monkeypatch.setattr(
+        st,
+        "_read_installed_plist",
+        lambda _label: {"ProgramArguments": ["invalid"], "UserName": "serveuser"},
+    )
+    monkeypatch.setattr(
+        definition,
+        "installed_identity",
+        lambda _label: ("serveuser", tmp_path, config_file),
+    )
+    monkeypatch.setattr(config, "pending_config_path", lambda *_a, **_k: pending)
+    monkeypatch.setattr(config, "load_config", lambda _path: effective)
+    monkeypatch.setattr(config, "config_digest", lambda _config: "digest")
+    monkeypatch.setattr(st, "_port_busy", lambda *_a, **_k: False)
+    monkeypatch.setattr(st, "_plist_path", lambda _label: Path("/missing.plist"))
+
+    status = st.collect_status()
+    assert status["config_valid"] is True
+    assert status["pending_config"] is True
+    assert status["model"] == "model-from-config"
+    assert status["port"] == 8123
+    assert status["config_sha256"] == "digest"
+
+
+def test_collect_status_bounded_probe_rejects_legacy_hostname(monkeypatch):
+    import vllm_mlx.headless_service.definition as definition
+    import vllm_mlx.headless_service.status as st
+
+    monkeypatch.setattr(
+        st,
+        "_launchctl_probe",
+        lambda *_a, **_k: (_fake_launchctl_print(pid=42), None),
+    )
+    monkeypatch.setattr(
+        st,
+        "_read_installed_plist",
+        lambda _label: {"ProgramArguments": ["legacy"], "UserName": "serveuser"},
+    )
+    monkeypatch.setattr(
+        st,
+        "_parse_legacy_serve",
+        lambda _argv: ("/bin/rapid-mlx", "model", "legacy-host.local", 8000),
+    )
+    monkeypatch.setattr(definition, "installed_identity", lambda _label: None)
+    monkeypatch.setattr(st, "_pid_listens_on_port", lambda *_a, **_k: True)
+    monkeypatch.setattr(
+        st,
+        "_endpoint_health",
+        lambda *_a, **_k: (_ for _ in ()).throw(
+            AssertionError("bounded legacy host must not be probed")
+        ),
+    )
+    monkeypatch.setattr(
+        st.subprocess,
+        "run",
+        lambda *_a, **_k: types.SimpleNamespace(returncode=0, stdout="serveuser\n"),
+    )
+    monkeypatch.setattr(st, "_port_busy", lambda *_a, **_k: False)
+    monkeypatch.setattr(st, "_plist_path", lambda _label: Path("/missing.plist"))
+
+    status = st.collect_status(probe_timeout_s=0.5)
+    assert status["endpoint_attributable"] is False
 
 
 def test_render_human_lines():
@@ -1169,6 +1380,63 @@ def test_launchctl_print_returns_none_on_error(monkeypatch):
     assert st._launchctl_print("com.rapidmlx.server") is None
 
 
+def test_launchctl_probe_preserves_execution_error(monkeypatch):
+    import vllm_mlx.headless_service.status as st
+
+    monkeypatch.setattr(
+        subprocess,
+        "run",
+        staticmethod(lambda *_a, **_k: (_ for _ in ()).throw(OSError("denied"))),
+    )
+
+    output, error = st._launchctl_probe("com.rapidmlx.server", timeout_s=0.1)
+    assert output is None
+    assert error == "OSError: denied"
+
+
+def test_launchctl_probe_distinguishes_missing_job_from_permission_failure(monkeypatch):
+    import vllm_mlx.headless_service.status as st
+
+    outcomes = iter(
+        [
+            types.SimpleNamespace(
+                returncode=113, stdout="", stderr='Could not find service "x"'
+            ),
+            types.SimpleNamespace(
+                returncode=113, stdout="", stderr="Operation not permitted"
+            ),
+        ]
+    )
+    monkeypatch.setattr(subprocess, "run", lambda *_a, **_k: next(outcomes))
+
+    assert st._launchctl_probe("missing") == (None, None)
+    output, error = st._launchctl_probe("denied")
+    assert output is None
+    assert error == "launchctl exited 113: Operation not permitted"
+
+
+def test_legacy_service_definition_rejects_incomplete_arguments():
+    import vllm_mlx.headless_service.status as st
+
+    with pytest.raises(ValueError, match="invalid legacy serve arguments"):
+        st._parse_legacy_serve(["/bin/rapid-mlx", "serve", "qwen", "--host"])
+
+
+@pytest.mark.parametrize(
+    ("argv", "message"),
+    [
+        (None, "string array"),
+        (["rapid-mlx", "serve", "model"], "unrecognized legacy"),
+        (["/bin/rapid-mlx", "bench", "model"], "not a serve command"),
+    ],
+)
+def test_legacy_service_definition_rejects_wrong_shapes(argv, message):
+    import vllm_mlx.headless_service.status as st
+
+    with pytest.raises(ValueError, match=message):
+        st._parse_legacy_serve(argv)
+
+
 def test_read_installed_plist_none_when_missing(monkeypatch, tmp_path):
     import vllm_mlx.headless_service.status as st
 
@@ -1198,8 +1466,89 @@ def test_endpoint_health_connection_error(monkeypatch):
     monkeypatch.setattr(socket, "create_connection", _boom)
     monkeypatch.setattr(ins_mod, "_readyz_ready", staticmethod(lambda h, p: False))
     live, ready = st._endpoint_health("127.0.0.1", 1)
-    assert live is False
-    assert ready is False
+    assert live is None
+    assert ready is None
+
+
+def test_endpoint_health_deadlines_are_inconclusive(monkeypatch):
+    import vllm_mlx.headless_service.status as st
+
+    class _Conn:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def settimeout(self, *_args):
+            pass
+
+        def sendall(self, *_args):
+            pass
+
+        def recv(self, _size):
+            raise AssertionError("expired probes must not read")
+
+    ticks = iter(range(0, 100, 10))
+    monkeypatch.setattr(st.time, "monotonic", lambda: next(ticks))
+    monkeypatch.setattr(st.socket, "create_connection", lambda *_a, **_k: _Conn())
+
+    assert st._endpoint_health("127.0.0.1", 8000, timeout_s=1) == (None, None)
+
+
+def test_endpoint_health_shared_deadline_normalizes_or_rejects_hosts(monkeypatch):
+    import vllm_mlx.headless_service.status as st
+
+    seen = []
+
+    def refused(address, **_kwargs):
+        seen.append(address)
+        raise OSError("refused")
+
+    monkeypatch.setattr(st.socket, "create_connection", refused)
+    assert st._endpoint_health("localhost", 8000, shared_deadline=True) == (None, None)
+    assert seen[0] == ("127.0.0.1", 8000)
+
+    seen.clear()
+    assert st._endpoint_health("legacy-host.local", 8000, shared_deadline=True) == (
+        None,
+        None,
+    )
+    assert seen == []
+
+
+def test_listener_host_matching_special_cases(monkeypatch):
+    import vllm_mlx.headless_service.status as st
+
+    assert st._listener_covers_host("*", "127.0.0.1") is True
+    assert st._listener_covers_host("[::1]", "localhost") is True
+
+    monkeypatch.setattr(
+        st.socket,
+        "getaddrinfo",
+        lambda *_a, **_k: (_ for _ in ()).throw(OSError("dns unavailable")),
+    )
+    assert (
+        st._listener_covers_host(
+            "192.0.2.10", "legacy-host.local", resolve_hostnames=True
+        )
+        is False
+    )
+
+
+def test_listener_pid_probe_missing_tool_and_execution_error(monkeypatch):
+    import vllm_mlx.headless_service.status as st
+
+    monkeypatch.setattr(st.Path, "is_file", lambda _self: False)
+    assert st._pid_listens_on_port(42, "127.0.0.1", 8000) is None
+
+    monkeypatch.setattr(st.Path, "is_file", lambda _self: True)
+    monkeypatch.setattr(
+        st.subprocess,
+        "run",
+        lambda *_a, **_k: (_ for _ in ()).throw(OSError("lsof failed")),
+    )
+    assert st._pid_listens_on_port(42, "127.0.0.1", 8000) is None
 
 
 def test_status_owner_ps_error(monkeypatch, plist_kwargs, tmp_path):
@@ -1207,7 +1556,9 @@ def test_status_owner_ps_error(monkeypatch, plist_kwargs, tmp_path):
     import vllm_mlx.headless_service.status as st
 
     monkeypatch.setattr(
-        st, "_launchctl_print", staticmethod(lambda _l: _fake_launchctl_print(pid=7))
+        st,
+        "_launchctl_probe",
+        lambda *_a, **_k: (_fake_launchctl_print(pid=7), None),
     )
     monkeypatch.setattr(st, "_endpoint_health", staticmethod(lambda h, p: (True, True)))
     monkeypatch.setattr(st, "_port_busy", staticmethod(lambda h, p: False))
@@ -1229,7 +1580,9 @@ def test_status_command_human_branch(monkeypatch, capsys):
     import vllm_mlx.headless_service.status as st
 
     monkeypatch.setattr(
-        st, "_launchctl_print", staticmethod(lambda _l: _fake_launchctl_print())
+        st,
+        "_launchctl_probe",
+        lambda *_a, **_k: (_fake_launchctl_print(), None),
     )
     monkeypatch.setattr(st, "_read_installed_plist", staticmethod(lambda _l: None))
     monkeypatch.setattr(
@@ -1242,7 +1595,7 @@ def test_status_command_human_branch(monkeypatch, capsys):
     assert "launcher registration:" in text
     # Down state surfaces in the human table.
     assert "(no live process)" in text
-    assert "livez=down readyz=down port=closed" in text
+    assert "livez=unknown readyz=unknown port=closed" in text
 
 
 def test_resolve_executable_success(monkeypatch, tmp_path):
@@ -1461,6 +1814,15 @@ def test_endpoint_health_live_200(monkeypatch):
     import vllm_mlx.headless_service.status as st
 
     class _Conn:
+        def __init__(self):
+            self.responses = iter(
+                [
+                    b'HTTP/1.1 200 OK\r\nContent-Length: 15\r\n\r\n{"ready": ',
+                    b"true}",
+                    b"",
+                ]
+            )
+
         def __enter__(self):
             return self
 
@@ -1474,15 +1836,138 @@ def test_endpoint_health_live_200(monkeypatch):
             pass
 
         def recv(self, n):
-            return b"HTTP/1.1 200 OK\r\n\r\n"
+            return next(self.responses, b"")
 
     monkeypatch.setattr(
         socket, "create_connection", staticmethod(lambda *a, **k: _Conn())
     )
-    monkeypatch.setattr(ins_mod, "_readyz_ready", staticmethod(lambda h, p: True))
     live, ready = st._endpoint_health("127.0.0.1", 8000)
     assert live is True
     assert ready is True
+
+
+def test_endpoint_health_rejects_truncated_live_headers(monkeypatch):
+    """A status line alone is not a complete HTTP response."""
+    import vllm_mlx.headless_service.status as st
+
+    class _Conn:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def settimeout(self, *_args):
+            pass
+
+        def sendall(self, *_args):
+            pass
+
+        def recv(self, _size):
+            response, self.response = (
+                getattr(self, "response", b"HTTP/1.1 200 OK\r\n"),
+                b"",
+            )
+            return response
+
+    monkeypatch.setattr(socket, "create_connection", lambda *_a, **_k: _Conn())
+
+    live, _ready = st._endpoint_health("127.0.0.1", 8000)
+    assert live is None
+
+
+def test_endpoint_health_treats_recursive_json_as_unverified(monkeypatch):
+    import vllm_mlx.headless_service.status as st
+
+    class _Conn:
+        def __init__(self):
+            self.responses = iter(
+                [b'HTTP/1.1 200 OK\r\nContent-Length: 15\r\n\r\n{"ready": true}']
+            )
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def settimeout(self, *_args):
+            pass
+
+        def sendall(self, *_args):
+            pass
+
+        def recv(self, _size):
+            return next(self.responses, b"")
+
+    monkeypatch.setattr(socket, "create_connection", lambda *_a, **_k: _Conn())
+    monkeypatch.setattr(
+        st.json,
+        "loads",
+        lambda _body: (_ for _ in ()).throw(RecursionError("too deep")),
+    )
+
+    assert st._endpoint_health("127.0.0.1", 8000) == (True, None)
+
+
+def test_endpoint_health_accepts_split_status_line(monkeypatch):
+    import vllm_mlx.headless_service.status as st
+
+    class _Conn:
+        def __init__(self):
+            self.responses = iter(
+                [
+                    b"HTTP/1.1 ",
+                    b"200 OK\r\nContent-Length: 15\r\n\r\n",
+                    b'{"ready": true}',
+                ]
+            )
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def settimeout(self, *_args):
+            pass
+
+        def sendall(self, *_args):
+            pass
+
+        def recv(self, _size):
+            return next(self.responses, b"")
+
+    monkeypatch.setattr(socket, "create_connection", lambda *_a, **_k: _Conn())
+
+    assert st._endpoint_health("127.0.0.1", 8000) == (True, True)
+
+
+def test_endpoint_health_rejects_non_http_status_line(monkeypatch):
+    import vllm_mlx.headless_service.status as st
+
+    class _Conn:
+        def __init__(self):
+            self.responses = iter([b'garbage 200\r\n\r\n{"ready": true}'])
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def settimeout(self, *_args):
+            pass
+
+        def sendall(self, *_args):
+            pass
+
+        def recv(self, _size):
+            return next(self.responses, b"")
+
+    monkeypatch.setattr(socket, "create_connection", lambda *_a, **_k: _Conn())
+
+    assert st._endpoint_health("127.0.0.1", 8000) == (None, None)
 
 
 def test_endpoint_health_probes_wildcard_bind_via_loopback(monkeypatch):
@@ -1491,6 +1976,9 @@ def test_endpoint_health_probes_wildcard_bind_via_loopback(monkeypatch):
     seen = []
 
     class _Conn:
+        def __init__(self):
+            self.responses = iter([b'HTTP/1.1 200 OK\r\n\r\n{"ready": true}', b""])
+
         def __enter__(self):
             return self
 
@@ -1504,20 +1992,296 @@ def test_endpoint_health_probes_wildcard_bind_via_loopback(monkeypatch):
             pass
 
         def recv(self, n):
-            return b"HTTP/1.1 200 OK\r\n\r\n"
+            return next(self.responses, b"")
 
     def _connect(address, **_kwargs):
         seen.append(address)
         return _Conn()
 
     monkeypatch.setattr(socket, "create_connection", _connect)
-    monkeypatch.setattr(
-        ins_mod,
-        "_readyz_ready",
-        lambda host, port: seen.append((host, port)) or True,
-    )
     assert st._endpoint_health("0.0.0.0", 8000) == (True, True)
     assert seen == [("127.0.0.1", 8000), ("127.0.0.1", 8000)]
+
+
+def test_endpoint_health_decodes_chunked_readiness(monkeypatch):
+    import vllm_mlx.headless_service.status as st
+
+    class _Conn:
+        def __init__(self):
+            self.responses = iter(
+                [
+                    b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n",
+                    b'f\r\n{"ready": true}\r\n0\r\n\r\n',
+                ]
+            )
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def settimeout(self, *_args):
+            pass
+
+        def sendall(self, *_args):
+            pass
+
+        def recv(self, _size):
+            return next(self.responses, b"")
+
+    monkeypatch.setattr(socket, "create_connection", lambda *_a, **_k: _Conn())
+
+    assert st._endpoint_health("127.0.0.1", 8000) == (True, True)
+
+
+def test_endpoint_health_parses_transfer_encoding_whitespace(monkeypatch):
+    import vllm_mlx.headless_service.status as st
+
+    class _Conn:
+        def __init__(self):
+            self.responses = iter(
+                [
+                    b"HTTP/1.1 200 OK\r\nTransfer-Encoding:\tChunked\r\n\r\n",
+                    b'f\r\n{"ready": true}\r\n0\r\n\r\n',
+                ]
+            )
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def settimeout(self, *_args):
+            pass
+
+        def sendall(self, *_args):
+            pass
+
+        def recv(self, _size):
+            return next(self.responses, b"")
+
+    monkeypatch.setattr(socket, "create_connection", lambda *_a, **_k: _Conn())
+
+    assert st._endpoint_health("127.0.0.1", 8000) == (True, True)
+
+
+def test_endpoint_health_rejects_chunked_readiness_without_terminal_chunk(monkeypatch):
+    import vllm_mlx.headless_service.status as st
+
+    class _Conn:
+        def __init__(self):
+            self.responses = iter(
+                [
+                    b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n",
+                    b'f\r\n{"ready": true}\r\n',
+                    b"",
+                ]
+            )
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def settimeout(self, *_args):
+            pass
+
+        def sendall(self, *_args):
+            pass
+
+        def recv(self, _size):
+            return next(self.responses, b"")
+
+    monkeypatch.setattr(socket, "create_connection", lambda *_a, **_k: _Conn())
+
+    assert st._endpoint_health("127.0.0.1", 8000) == (True, None)
+
+
+def test_endpoint_health_rejects_incomplete_chunk_terminator(monkeypatch):
+    import vllm_mlx.headless_service.status as st
+
+    class _Conn:
+        def __init__(self):
+            self.responses = iter(
+                [
+                    b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n",
+                    b'f\r\n{"ready": true}\r\n0\r\n',
+                    b"",
+                ]
+            )
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def settimeout(self, *_args):
+            pass
+
+        def sendall(self, *_args):
+            pass
+
+        def recv(self, _size):
+            return next(self.responses, b"")
+
+    monkeypatch.setattr(socket, "create_connection", lambda *_a, **_k: _Conn())
+
+    assert st._endpoint_health("127.0.0.1", 8000) == (True, None)
+
+
+def test_endpoint_health_accepts_valid_chunked_trailer(monkeypatch):
+    import vllm_mlx.headless_service.status as st
+
+    class _Conn:
+        def __init__(self):
+            self.response = (
+                b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n"
+                b'f\r\n{"ready": true}\r\n0\r\nX-Trace: done\r\n\r\n'
+            )
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def settimeout(self, *_args):
+            pass
+
+        def sendall(self, *_args):
+            pass
+
+        def recv(self, _size):
+            if not self.response:
+                raise AssertionError("complete chunked response was read again")
+            response, self.response = self.response, b""
+            return response
+
+    monkeypatch.setattr(socket, "create_connection", lambda *_a, **_k: _Conn())
+
+    assert st._endpoint_health("127.0.0.1", 8000) == (True, True)
+
+
+def test_endpoint_health_rejects_truncated_content_length(monkeypatch):
+    import vllm_mlx.headless_service.status as st
+
+    class _Conn:
+        def __init__(self):
+            self.responses = iter(
+                [
+                    b'HTTP/1.1 200 OK\r\nContent-Length: 99\r\n\r\n{"ready": true}',
+                    b"",
+                ]
+            )
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def settimeout(self, *_args):
+            pass
+
+        def sendall(self, *_args):
+            pass
+
+        def recv(self, _size):
+            return next(self.responses, b"")
+
+    monkeypatch.setattr(socket, "create_connection", lambda *_a, **_k: _Conn())
+
+    assert st._endpoint_health("127.0.0.1", 8000) == (True, None)
+
+
+@pytest.mark.parametrize(
+    "chunked_body",
+    [
+        b"z\r\ninvalid\r\n0\r\n\r\n",
+        b"f\r\nshortXX",
+        b"missing-size-separator",
+    ],
+)
+def test_endpoint_health_rejects_malformed_chunk_frames(monkeypatch, chunked_body):
+    import vllm_mlx.headless_service.status as st
+
+    responses = iter(
+        [
+            b"HTTP/1.1 200 OK\r\n\r\n",
+            b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n" + chunked_body,
+        ]
+    )
+
+    class _Conn:
+        def __init__(self, response):
+            self.response = response
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def settimeout(self, *_args):
+            pass
+
+        def sendall(self, *_args):
+            pass
+
+        def recv(self, _size):
+            response, self.response = self.response, b""
+            return response
+
+    monkeypatch.setattr(
+        st.socket, "create_connection", lambda *_a, **_k: _Conn(next(responses))
+    )
+
+    assert st._endpoint_health("127.0.0.1", 8000) == (True, None)
+
+
+@pytest.mark.parametrize("payload", [b"[]", b'{"state": "loading"}'])
+def test_endpoint_health_requires_ready_object_field(monkeypatch, payload):
+    import vllm_mlx.headless_service.status as st
+
+    responses = iter(
+        [
+            b"HTTP/1.1 200 OK\r\n\r\n",
+            b"HTTP/1.1 200 OK\r\nContent-Length: "
+            + str(len(payload)).encode()
+            + b"\r\n\r\n"
+            + payload,
+        ]
+    )
+
+    class _Conn:
+        def __init__(self, response):
+            self.response = response
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def settimeout(self, *_args):
+            pass
+
+        def sendall(self, *_args):
+            pass
+
+        def recv(self, _size):
+            response, self.response = self.response, b""
+            return response
+
+    monkeypatch.setattr(
+        st.socket, "create_connection", lambda *_a, **_k: _Conn(next(responses))
+    )
+
+    assert st._endpoint_health("127.0.0.1", 8000) == (True, None)
 
 
 def test_logs_follow_keyboard_interrupt(monkeypatch, tmp_path, capsys):

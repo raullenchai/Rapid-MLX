@@ -3967,6 +3967,7 @@ def test_run_all_returns_all_sections():
         "Shell Integration",
         "Optional Tools",
         "Agent Integrations",
+        "Always-on Service",
     ]
     assert titles == expected, (
         f"sections drifted from spec order. got {titles}, expected {expected}"
