@@ -50,6 +50,7 @@
   was fixed before the focused rerun.
 - Durable benchmark evidence:
   `docs/engineering/performance/muse-glimmer-30b-dflash-qualification.md`.
-- Completion FYI fallback for Atlas, Pixel, Harbor, Echo, and ds0731: the
-  implementation is ready for commit/PR validation. No release or deployment
-  action is authorized; no follow-up owner is required for this PR.
+- Completion FYI fallback for Atlas, Pixel, Harbor, Echo, and ds0731: PR
+  #3211 (`7ab445bc7`) contains the qualified implementation and evidence. No
+  release or deployment action is authorized; no follow-up owner is required
+  for this PR beyond managed-queue observation.
