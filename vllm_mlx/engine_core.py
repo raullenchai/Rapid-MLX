@@ -1426,6 +1426,10 @@ class EngineCore:
                 req_output.matched_stop
                 or (buf.matched_stop if buf is not None else None)
             ),
+            spec_decode_metrics=(
+                req_output.spec_decode_metrics
+                or (buf.spec_decode_metrics if buf is not None else None)
+            ),
         )
 
     async def stream_outputs(

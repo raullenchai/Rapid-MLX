@@ -3420,6 +3420,22 @@ def test_install_mtp_vendored_latches_prompt_lookup_and_complete_history(
     assert (policy.min_ngram, policy.max_ngram, policy.max_tokens) == (18, 42, 6)
     assert seen["timing_stats"] is batch_gen._mtp_vendored_stats
     assert batch_gen._mtp_vendored_stats["prompt_lookup_proposals"] == 0.0
+    # #3155: the singleton verifier receives a fan-out recorder so its
+    # existing process-wide Prometheus accounting and this request's response
+    # telemetry advance from the same outcomes, without global delta math.
+    seen["accept_counter"].record_round(2, 1)
+    assert request_stub._mtp_accept_counter.snapshot().response_metrics() == {
+        "verify_calls": 1,
+        "correction_tokens": 1,
+        "bonus_tokens": 0,
+        "drafted_by_depth": [1, 1],
+        "accepted_by_depth": [1, 0],
+    }
+    from vllm_mlx.spec_decode.mtp.accept_counter import (
+        reset_global_counter_for_tests,
+    )
+
+    reset_global_counter_for_tests()
 
 
 def test_scheduler_stats_export_vendored_mtp_counters_by_value():

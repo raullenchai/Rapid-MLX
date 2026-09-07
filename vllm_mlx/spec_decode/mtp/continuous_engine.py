@@ -144,6 +144,7 @@ class SelfMTPLaneSpec:
     sampling: SelfMTPSampling = SelfMTPSampling()
     prompt_cache: Any = None
     mtp_cache: Any = None
+    accept_counter: Any = None
 
     def __post_init__(self) -> None:
         if isinstance(self.uid, bool) or not isinstance(self.uid, int):
@@ -186,6 +187,7 @@ class SelfMTPLane:
     pending_hidden: Any = None
     pending_tokens: list[int] = field(default_factory=list)
     backend_state: Any = None
+    accept_counter: Any = None
 
 
 @dataclass
@@ -449,6 +451,7 @@ def prepare_self_mtp_lane(
         num_draft=spec.num_draft,
         sampling=spec.sampling,
         backend_state=prepared.backend_state,
+        accept_counter=spec.accept_counter,
     )
     return (
         DetachedSelfMTPLane(lane, prepared.caches, runtime),
@@ -585,8 +588,12 @@ def propose_batched_self_mtp(batch: BatchedSelfMTPState) -> SelfMTPCycleResult:
     # the default (tier-verified) route.  Every validated row is one verify
     # call with a prefix-accepted chain of ``accepted`` drafts.
     counter = get_global_counter()
-    for depth, accepted in zip(computation.draft_depths, computation.accepted_lengths):
+    for lane, depth, accepted in zip(
+        batch.lanes, computation.draft_depths, computation.accepted_lengths
+    ):
         counter.record_round(depth, accepted)
+        if lane.accept_counter is not None:
+            lane.accept_counter.record_round(depth, accepted)
     proposal = SelfMTPCycleResult(
         membership_epoch=batch.membership_epoch,
         lane_uids=computation.lane_uids,

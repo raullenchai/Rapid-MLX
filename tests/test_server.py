@@ -547,12 +547,14 @@ class TestRequestOutputCollectorThreadSafety:
             completion_tokens=2,
             cached_tokens=64,
             error="exact repetition loop detected",
+            spec_decode_metrics={"verify_calls": 1},
         )
         merged = collector._merge_outputs(existing, new)
         assert merged.cached_tokens == 64
         assert merged.new_token_ids == [1, 2]
         assert merged.completion_tokens == 2
         assert merged.error == "exact repetition loop detected"
+        assert merged.spec_decode_metrics == {"verify_calls": 1}
 
 
 class TestEngineCoreStreamBufferMerge:
@@ -578,12 +580,14 @@ class TestEngineCoreStreamBufferMerge:
             completion_tokens=1,
             cached_tokens=128,
             error="generation aborted",
+            spec_decode_metrics={"verify_calls": 1},
         )
         merged = EngineCore._merge_stream_buffer(None, chunk)
         assert merged.cached_tokens == 128
         assert merged.new_token_ids == [7]
         assert merged.new_text == "hi"
         assert merged.error == "generation aborted"
+        assert merged.spec_decode_metrics == {"verify_calls": 1}
 
     def test_merge_into_existing_buffer_preserves_cached_tokens(self):
         from vllm_mlx.engine_core import EngineCore
@@ -605,6 +609,7 @@ class TestEngineCoreStreamBufferMerge:
             completion_tokens=3,
             cached_tokens=128,
             error="generation aborted",
+            spec_decode_metrics={"verify_calls": 2},
         )
         merged = EngineCore._merge_stream_buffer(prev, chunk)
         assert merged.cached_tokens == 128
@@ -613,6 +618,7 @@ class TestEngineCoreStreamBufferMerge:
         assert merged.new_text == "abc"
         assert merged.completion_tokens == 3
         assert merged.error == "generation aborted"
+        assert merged.spec_decode_metrics == {"verify_calls": 2}
 
 
 class TestRequestTimeoutField:

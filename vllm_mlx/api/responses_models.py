@@ -21,6 +21,7 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 from .models import (
     _TOP_K_SENTINEL_CAP,
     _VALID_REASONING_EFFORTS,
+    PerRequestMetrics,
     ResponseFormat,
     StreamOptions,
     _validate_nonnegative_int,
@@ -534,6 +535,7 @@ class ResponsesResponse(BaseModel):
     status: str = "completed"  # "completed" | "failed" | "incomplete"
     output: list[ResponsesOutputItem]
     usage: ResponsesUsage = Field(default_factory=ResponsesUsage)
+    metrics: PerRequestMetrics | None = None
     parallel_tool_calls: bool = False
     tool_choice: str | dict = "auto"
     tools: list[dict] = Field(default_factory=list)

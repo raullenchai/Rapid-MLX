@@ -215,6 +215,12 @@ class Request:
     # share one typed lifecycle boundary.  ``init=False`` preserves every
     # positional Request constructor used by existing clients.
     _continuous_mtp_state: Any | None = field(default=None, init=False, repr=False)
+    # Request-owned speculative acceptance counter. The MTP installers create
+    # it lazily only after this request enters a verifier path; the process
+    # counter remains the separate Prometheus lifetime. Keeping this state on
+    # the Request prevents concurrent generations from contaminating response
+    # telemetry through global before/after snapshots.
+    _mtp_accept_counter: Any | None = field(default=None, init=False, repr=False)
 
     # PFlash prompt compression state. When pflash_metadata["compressed"]
     # is True, prompt_token_ids is the compressed list and
@@ -385,6 +391,10 @@ class RequestOutput:
     # the end of the dataclass so positional constructor args for the pre-existing
     # fields keep their indices.
     error_kind: str | None = None
+    # Per-request speculative-decoding metrics, populated only on the terminal
+    # output and only when at least one MTP verify call ran. Appended last to
+    # preserve positional compatibility for downstream RequestOutput callers.
+    spec_decode_metrics: dict[str, int | list[int]] | None = None
 
     @property
     def usage(self) -> dict[str, int]:

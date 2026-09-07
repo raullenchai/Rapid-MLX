@@ -75,6 +75,13 @@ class _CountingEngine:
             completion_tokens=3,
             finished=True,
             finish_reason="stop",
+            spec_decode_metrics={
+                "verify_calls": 2,
+                "correction_tokens": 1,
+                "bonus_tokens": 1,
+                "accepted_by_depth": [2, 1],
+                "drafted_by_depth": [2, 2],
+            },
         )
 
 
@@ -138,6 +145,11 @@ def test_repeated_deterministic_request_served_from_cache():
     # (fresh id) carrying the SAME stored completion body. The id differs
     # (each hit is a distinct response), the content is the replayed one.
     assert r1.json()["id"] != r2.json()["id"]
+    assert r1.json()["metrics"]["speculative_decoding"]["verify_calls"] == 2
+    assert "metrics" not in r2.json(), (
+        "a response-cache hit must not replay request metrics from the engine "
+        "execution that originally populated the cache"
+    )
 
     # The cache recorded exactly one hit and one miss.
     snap = get_response_cache().snapshot()

@@ -181,6 +181,12 @@ class RequestOutputCollector:
             # ``/v1/messages`` reads this on the FINAL output and would
             # otherwise lose the stop_sequence signal under aggregation.
             matched_stop=new.matched_stop or existing.matched_stop,
+            # Request-scoped speculative metrics are terminal-only. Prefer the
+            # newest terminal payload, while retaining one already buffered if
+            # a later synthetic flush carries no metrics.
+            spec_decode_metrics=(
+                new.spec_decode_metrics or existing.spec_decode_metrics
+            ),
         )
 
     def clear(self) -> None:

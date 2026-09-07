@@ -193,8 +193,12 @@ def test_rapid_forward_seams_use_return_hidden_and_n_confirmed():
 
 def test_fixed_membership_prepare_attach_propose_commit_detach_lifecycle():
     runtime, compute, caches, _calls = _runtime()
-    lane1, first1 = _prepare(runtime, 1)
-    lane2, first2 = _prepare(runtime, 2)
+    from vllm_mlx.spec_decode.mtp.accept_counter import MTPAcceptCounter
+
+    lane1_counter = MTPAcceptCounter()
+    lane2_counter = MTPAcceptCounter()
+    lane1, first1 = _prepare(runtime, 1, accept_counter=lane1_counter)
+    lane2, first2 = _prepare(runtime, 2, accept_counter=lane2_counter)
     assert (first1.token, first2.token) == (101, 102)
 
     batch = engine.attach_self_mtp_lanes(None, [lane1, lane2])
@@ -219,6 +223,22 @@ def test_fixed_membership_prepare_attach_propose_commit_detach_lifecycle():
     assert snap.accepts == sum(proposal.accepted_lengths) == 1
     assert dict(snap.drafted_by_depth)[1] == snap.verify_calls
     assert dict(snap.accepted_by_depth) == {1: 1}
+    # Each response accumulator sees only its own lane, even though the
+    # continuous verifier executes both rows in one batched proposal.
+    assert lane1_counter.snapshot().response_metrics() == {
+        "verify_calls": 1,
+        "correction_tokens": 1,
+        "bonus_tokens": 0,
+        "drafted_by_depth": [1, 1],
+        "accepted_by_depth": [1, 0],
+    }
+    assert lane2_counter.snapshot().response_metrics() == {
+        "verify_calls": 1,
+        "correction_tokens": 1,
+        "bonus_tokens": 0,
+        "drafted_by_depth": [1, 1],
+        "accepted_by_depth": [0, 0],
+    }
     assert not [call for call in caches.calls if call[0] == "rollback"]
     with pytest.raises(engine.ContinuousSelfMTPError, match="proposal is open"):
         engine.detach_self_mtp_lanes(batch, [0, 1])
