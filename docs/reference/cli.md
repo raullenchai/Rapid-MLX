@@ -146,6 +146,8 @@ are the argparse defaults from `vllm_mlx/cli.py`.
 | `--disk-stream-cache-gb` | Byte budget (GB) for the disk-stream expert LRU cache; only used with `--disk-stream` | 1.0 |
 | `--resident-memory-limit-gb` | Process-wide resident model ceiling in GiB; loading another model evicts the least-recently-used idle unpinned model first. 0 disables. | 0 (disabled) |
 | `--resident-model-idle-ttl` | Evict idle unpinned secondary models after this many seconds. 0 disables. | 0 (disabled) |
+| `--lazy-load` | Start the endpoint with the configured primary in standby; its first text-generation request loads and warms the weights. The independently configured `--embedding-model` lane is unaffected. | off |
+| `--idle-unload-seconds` | Release the configured primary after this many idle seconds without stopping the endpoint; the next request reloads it. | 0 (disabled) |
 | `--mllm` | Force-load as multimodal (vision) even if the name doesn't match auto-detection, and hard-fail instead of silently auto-degrading to text-only when the checkpoint ships no usable vision tower | off |
 | `--no-mllm` / `--text-only` | Force-load as text-only even when auto-detection would route to the multimodal path (escape hatch for incomplete vision-tower checkpoints) | off |
 | `--vision-min-pixels` | Minimum pixels for dynamic-resolution VLM image processors; 0 keeps the model default | 0 |

@@ -113,6 +113,8 @@ needed by the application; leave it unset for URL/base64-only deployments.
 | `--disk-stream-cache-gb` | Byte budget (GB) for the disk-stream expert LRU cache | `1.0` |
 | `--resident-memory-limit-gb` | Process-wide resident model ceiling in GiB; LRU idle unpinned models are evicted first. `0` disables. | `0` |
 | `--resident-model-idle-ttl` | Evict idle unpinned secondary models after this many seconds. `0` disables. | `0` |
+| `--lazy-load` | Bind the stable API endpoint with the configured primary in `standby`; load and warm its weights on the first text-generation request. The separate `--embedding-model` lane is unaffected. | `false` |
+| `--idle-unload-seconds` | Release the configured primary model after this many idle seconds while keeping the endpoint online; the next request reloads it. `0` disables. | `0` |
 | `--mllm` / `--no-mllm` | Force multimodal (vision) loading / force text-only loading, overriding auto-detection | auto-detect |
 | `--enable-audio` | Mount `/v1/audio/*` routes on a text-only server (audio-capable models auto-mount them) | `false` |
 

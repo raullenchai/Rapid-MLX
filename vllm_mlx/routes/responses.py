@@ -99,6 +99,7 @@ from ..service.helpers import (
     _parse_tool_calls_with_parser,
     _raise_lifecycle_cancel_or_reraise,
     _release_admission_unless_committed,
+    _release_route_ownership,
     _resolve_enable_thinking,
     _resolve_max_tokens,
     _resolve_temperature,
@@ -110,6 +111,7 @@ from ..service.helpers import (
     build_extended_sampling_kwargs,
     enforce_context_length,
     enforce_context_length_for_messages,
+    ensure_engine_ready,
     get_engine,
     get_model_max_context,
     maybe_apply_reasoning_effort,
@@ -971,13 +973,16 @@ async def create_response(request: Request):
     if not (responses_request.model or "").startswith(("claude-", "gpt-")):
         _validate_model_name(responses_request.model)
     engine = get_engine(responses_request.model)
+    await ensure_engine_ready(engine)
 
     # Pre-flight admission — same C4 reservation shape the other two
     # routes use. ``_admission_committed`` flips to True when the
     # streaming path takes over so ``_disconnect_guard`` owns release.
-    _check_admission_or_503(engine)
     _admission_committed = False
+    _admission_acquired = False
     try:
+        _check_admission_or_503(engine)
+        _admission_acquired = True
         _log_request(responses_request)
 
         cfg_for_log = get_config()
@@ -1446,7 +1451,12 @@ async def create_response(request: Request):
     except asyncio.CancelledError as exc:
         _raise_lifecycle_cancel_or_reraise(engine, exc)
     finally:
-        _release_admission_unless_committed(engine, _admission_committed)
+        _release_route_ownership(
+            engine,
+            admission_acquired=_admission_acquired,
+            committed=_admission_committed,
+            release_admission=_release_admission_unless_committed,
+        )
 
 
 # ---------------------------------------------------------------------------

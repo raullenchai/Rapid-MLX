@@ -145,17 +145,61 @@ def _release_admission_unless_committed(engine, committed: bool) -> None:
     the route handler also releases) cannot corrupt the accounting.
     """
     if committed:
+        # Streaming ownership was transferred to `_disconnect_guard`; its
+        # terminal finally both releases the reservation and touches the
+        # lifecycle after the final chunk/disconnect. Touching here would
+        # incorrectly start the idle clock while the SSE response is active.
+        _transfer_primary_request_to_stream(engine)
         return
     release = getattr(engine, "release_admission_reservation", None)
-    if release is None:
-        return
     try:
-        release()
+        if release is not None:
+            release()
     except Exception:
         logger.warning(
             "release_admission_reservation raised on route finally",
             exc_info=True,
         )
+    finally:
+        _release_primary_request(engine)
+
+
+def _release_primary_request(engine) -> None:
+    """Release route ownership and start the primary's idle window."""
+
+    lifecycle = get_config().primary_model_lifecycle
+    if lifecycle is not None and lifecycle.engine is engine:
+        lifecycle.release_request()
+
+
+def _release_primary_request_unless_committed(engine, committed: bool) -> None:
+    """Keep streaming ownership until `_disconnect_guard` reaches terminal."""
+
+    if committed:
+        _transfer_primary_request_to_stream(engine)
+    else:
+        _release_primary_request(engine)
+
+
+def _release_route_ownership(
+    engine,
+    *,
+    admission_acquired: bool,
+    committed: bool,
+    release_admission=None,
+) -> None:
+    """Release whichever lease a generation route successfully acquired."""
+
+    if admission_acquired:
+        (release_admission or _release_admission_unless_committed)(engine, committed)
+    else:
+        _release_primary_request_unless_committed(engine, committed)
+
+
+def _transfer_primary_request_to_stream(engine) -> None:
+    lifecycle = get_config().primary_model_lifecycle
+    if lifecycle is not None and lifecycle.engine is engine:
+        lifecycle.transfer_request_to_stream()
 
 
 def _raise_lifecycle_cancel_or_reraise(engine, exc: asyncio.CancelledError) -> None:
@@ -2757,6 +2801,34 @@ def get_engine(model_name: str | None = None) -> BaseEngine:
     return cfg.engine
 
 
+async def ensure_engine_ready(engine: BaseEngine) -> BaseEngine:
+    """Demand-load ``engine`` when it is the configured standby primary."""
+
+    lifecycle = get_config().primary_model_lifecycle
+    if lifecycle is not None and engine is lifecycle.engine:
+        lifecycle.acquire_request()
+        try:
+            await lifecycle.ensure_loaded()
+        except asyncio.CancelledError:
+            lifecycle.release_request()
+            raise
+        except BaseException as exc:
+            lifecycle.release_request()
+            logger.exception("Configured primary model failed to load on demand")
+            raise HTTPException(
+                status_code=503,
+                headers={"Retry-After": "5"},
+                detail="Configured model failed to load; retry after the delay.",
+            ) from exc
+    return engine
+
+
+async def get_ready_engine(model_name: str | None = None) -> BaseEngine:
+    """Resolve an engine and demand-load the configured primary if needed."""
+
+    return await ensure_engine_ready(get_engine(model_name))
+
+
 def _resolve_reasoning_enabled(model_name: str | None) -> bool:
     """Return whether the selected alias is reasoning-capable.
 
@@ -3900,9 +3972,9 @@ async def _disconnect_guard(
     the ``finally`` clause so the slot acquired by
     ``_check_admission_or_503`` is returned to the pool once the
     streaming response finishes (or the client disconnects, or the
-    generator raises). The release is the safety net for the
-    streaming path; non-streaming routes mirror it via
-    ``_wait_with_disconnect``.
+    generator raises). The same terminal block resets the primary lifecycle's
+    idle clock. Non-streaming routes mirror both actions in their route-level
+    finalizers.
 
     SSE keepalive (F-070): when ``keepalive_seconds > 0`` (default
     falls through to ``ServerConfig.sse_keepalive_seconds``), emit a
@@ -4319,14 +4391,16 @@ async def _disconnect_guard(
             _force_abort_request(engine, request_id_holder)
         if engine is not None:
             release = getattr(engine, "release_admission_reservation", None)
-            if release is not None:
-                try:
+            try:
+                if release is not None:
                     release()
-                except Exception:
-                    logger.warning(
-                        "[disconnect_guard] release_admission_reservation raised",
-                        exc_info=True,
-                    )
+            except Exception:
+                logger.warning(
+                    "[disconnect_guard] release_admission_reservation raised",
+                    exc_info=True,
+                )
+            finally:
+                _release_primary_request(engine)
         logger.info(
             f"[disconnect_guard] CLEANUP done, {chunk_count} chunks total, elapsed={_elapsed()}"
         )

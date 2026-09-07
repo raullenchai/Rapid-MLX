@@ -359,6 +359,27 @@ def test_serve_command_dispatches_uvicorn_with_fd_when_listen_fd_set(
     assert cfg.bind_port is None
 
 
+def test_lazy_fd_startup_message_is_pure_and_reports_standby():
+    ns = _minimal_serve_ns(listen_fd=9)
+    ns.lazy_load = True
+    assert (
+        "inherited fd 9 (standby — model loads on first request)"
+        in cli._serve_startup_message(ns)
+    )
+
+
+@pytest.mark.parametrize("invalid", [-1.0, float("nan"), float("inf")])
+def test_serve_command_rejects_invalid_idle_unload_seconds(invalid, capsys):
+    ns = _minimal_serve_ns()
+    ns.idle_unload_seconds = invalid
+
+    with pytest.raises(SystemExit) as raised:
+        cli._validate_primary_lifecycle_args(ns)
+
+    assert raised.value.code == 1
+    assert "--idle-unload-seconds must be finite and >= 0" in capsys.readouterr().out
+
+
 def test_dflash_memory_check_receives_original_alias(
     stub_heavy_serve_deps, monkeypatch, scheduler_config_stub
 ):

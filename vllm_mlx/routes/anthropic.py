@@ -7,6 +7,7 @@ import logging
 import time
 import uuid
 from collections.abc import AsyncIterator
+from functools import wraps
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import Response, StreamingResponse
@@ -55,6 +56,7 @@ from ..service.helpers import (
     _parse_tool_calls_with_parser,
     _raise_lifecycle_cancel_or_reraise,
     _release_admission_unless_committed,
+    _release_route_ownership,
     _rescue_silent_drop_from_reasoning,
     _resolve_enable_thinking,
     _resolve_max_tokens,
@@ -69,6 +71,7 @@ from ..service.helpers import (
     build_extended_sampling_kwargs,
     count_prompt_tokens,
     enforce_context_length_for_messages,
+    ensure_engine_ready,
     get_engine,
     maybe_auto_disable_thinking_for_casual_chat,
     maybe_auto_disable_thinking_for_tools,
@@ -134,6 +137,21 @@ async def _attach_mllm_schema_processor(engine, openai_request, chat_kwargs) -> 
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
+
+
+def _release_primary_request_after_route(func):
+    """Ensure non-generation primary users cannot leak a standby lease."""
+
+    @wraps(func)
+    async def wrapped(*args, **kwargs):
+        try:
+            return await func(*args, **kwargs)
+        finally:
+            lifecycle = get_config().primary_model_lifecycle
+            if lifecycle is not None:
+                lifecycle.release_request()
+
+    return wrapped
 
 
 def _should_start_in_thinking(
@@ -624,6 +642,7 @@ async def create_anthropic_message(
     if not (anthropic_request.model or "").startswith(("claude-", "gpt-")):
         _validate_model_name(anthropic_request.model)
     engine = get_engine(anthropic_request.model)
+    await ensure_engine_ready(engine)
 
     # Pre-flight admission gate (C4) — see routes/chat.py for rationale.
     # Reservation released by the route-level ``finally`` below; on the
@@ -631,9 +650,11 @@ async def create_anthropic_message(
     # ``_disconnect_guard`` owns the release once the SSE generator
     # closes. Closes the codex R3 leak (validation errors between the
     # reservation and the helper used to pin the slot until restart).
-    _check_admission_or_503(engine)
     _admission_committed = False
+    _admission_acquired = False
     try:
+        _check_admission_or_503(engine)
+        _admission_acquired = True
         # --- Detailed request logging ---
         n_msgs = len(anthropic_request.messages)
         total_chars = 0
@@ -1201,7 +1222,12 @@ async def create_anthropic_message(
     except asyncio.CancelledError as exc:
         _raise_lifecycle_cancel_or_reraise(engine, exc)
     finally:
-        _release_admission_unless_committed(engine, _admission_committed)
+        _release_route_ownership(
+            engine,
+            admission_acquired=_admission_acquired,
+            committed=_admission_committed,
+            release_admission=_release_admission_unless_committed,
+        )
 
 
 @router.post(
@@ -1211,6 +1237,7 @@ async def create_anthropic_message(
         Depends(check_rate_limit_or_x_api_key),
     ],
 )
+@_release_primary_request_after_route
 async def count_anthropic_tokens(request: Request):
     """Count tokens for an Anthropic Messages API request.
 
@@ -1319,6 +1346,7 @@ async def count_anthropic_tokens(request: Request):
             _validate_model_name(requested_model)
 
     engine = get_engine()
+    await ensure_engine_ready(engine)
 
     # F12: count_tokens must apply the SAME chat template + tools
     # rendering that ``/v1/messages`` applies before tokenizing,

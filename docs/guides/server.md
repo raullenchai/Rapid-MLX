@@ -84,7 +84,13 @@ flag visible in `rapid-mlx serve --help`, grouped by category — lives in the
 | `--enable-audio` | Mount `/v1/audio/*` routes on a text-only server (audio-capable models auto-mount them) | False |
 | `--disk-stream` | Stream MoE routed-expert weights from disk instead of holding them resident (opt-in; budget via `--disk-stream-cache-gb`) | False |
 | `--resident-memory-limit-gb` | Process-wide resident model ceiling in GiB (multi-model serving); LRU idle unpinned models are evicted first; 0 disables (companion: `--resident-model-idle-ttl`) | 0 |
+| `--lazy-load` | Keep the endpoint online in `standby` until the configured primary receives its first text-generation request | False |
+| `--idle-unload-seconds` | Unload the configured primary after an idle interval, preserving its route and reloading on demand; 0 disables | 0 |
 | `--pflash` | PFlash long-prompt prefill compression (`off`, `auto`, `always`); tuning knobs in the [CLI reference](../reference/cli.md#pflash-long-prompt-compression) | `always` for verified aliases, `off` otherwise |
+
+Primary standby applies to Chat Completions, legacy Completions, Responses,
+and Anthropic Messages/counting. `/v1/embeddings` has an independent engine
+selected by `--embedding-model`; it neither wakes nor uses the primary model.
 
 ## API Endpoints
 
