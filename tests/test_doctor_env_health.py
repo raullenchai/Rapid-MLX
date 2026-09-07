@@ -1812,8 +1812,45 @@ def test_runtime_probes_stop_after_deadline(tmp_path, monkeypatch):
     monkeypatch.setattr(eh, "_RUNTIME_IMPORT_CACHE", {})
 
     assert eh._probe_runtime(runtime) is None
+    assert eh._runtime_probe_timed_out(runtime)
     assert not eh._runtime_module_importable(runtime, "transformers", None)
     assert eh._import_probe_was_interrupted(runtime, "transformers", None)
+
+
+def test_runtime_probe_timeout_is_warning_not_environment_failure(
+    tmp_path,
+    monkeypatch,
+):
+    doctor_exe = tmp_path / "doctor" / "bin" / "python"
+    doctor_exe.parent.mkdir(parents=True)
+    doctor_exe.write_text("")
+    runtime = Path(sys.executable)
+    monkeypatch.setattr(eh.sys, "executable", str(doctor_exe))
+    monkeypatch.setattr(eh, "_runtime_python_path", lambda: runtime)
+    monkeypatch.setattr(eh, "_DOCTOR_DEADLINE", 0.0)
+
+    section = eh.section_required_packages()
+    report = eh.Report(sections=[section])
+
+    assert len(section.checks) == 1
+    assert section.checks[0].status is eh.CheckStatus.WARN
+    assert "inspection timed out" in section.checks[0].label
+    assert "does not indicate" in section.checks[0].detail
+    assert report.exit_code == 0
+
+
+def test_runtime_probe_records_subprocess_timeout(tmp_path, monkeypatch):
+    runtime = tmp_path / "server-runtime" / "bin" / "python"
+    runtime.parent.mkdir(parents=True)
+    runtime.write_text("")
+    monkeypatch.setattr(
+        eh.subprocess,
+        "run",
+        mock.Mock(side_effect=subprocess.TimeoutExpired([str(runtime)], 1.0)),
+    )
+
+    assert eh._probe_runtime(runtime) is None
+    assert eh._runtime_probe_timed_out(runtime)
 
 
 def test_timed_out_required_import_is_unknown_not_failed(
@@ -1886,6 +1923,32 @@ def test_timeout_during_visibility_is_unknown_not_failed(
     row = next(check for check in section.checks if "transformers" in check.label)
     assert row.status is eh.CheckStatus.WARN
     assert "importability unknown" in row.label
+
+
+def test_unverified_required_import_is_warning_without_reinstall_instruction(
+    tmp_path,
+    monkeypatch,
+):
+    doctor_exe = tmp_path / "doctor" / "bin" / "python"
+    doctor_exe.parent.mkdir(parents=True)
+    doctor_exe.write_text("")
+    runtime = tmp_path / "server-runtime" / "bin" / "python"
+    runtime.parent.mkdir(parents=True)
+    monkeypatch.setattr(eh.sys, "executable", str(doctor_exe))
+    monkeypatch.setattr(eh, "_runtime_python_path", lambda: runtime)
+    monkeypatch.setattr(eh, "_probe_runtime", lambda *args, **kwargs: {"packages": {}})
+    monkeypatch.setattr(eh, "_safe_version", lambda dist, runtime=None: "5.12.1")
+    eh._RUNTIME_IMPORT_OUTCOMES[
+        eh._import_probe_cache_key(runtime, "transformers", None)
+    ] = eh._ImportProbeOutcome.UNVERIFIED
+
+    section = eh.section_required_packages()
+    row = next(check for check in section.checks if "transformers" in check.label)
+
+    assert row.status is eh.CheckStatus.WARN
+    assert "probe did not complete" in row.label
+    assert "does not indicate that reinstall" in row.detail
+    assert "pip install" not in row.label
 
 
 def test_unrelated_vllm_mlx_module_server_is_not_selected(
@@ -3075,6 +3138,32 @@ def test_incomplete_audio_dependency_import_stack_marks_warning():
     assert broken.status is eh.CheckStatus.WARN
 
 
+def test_audio_dependency_timeout_is_inconclusive_not_incomplete(monkeypatch):
+    runtime = Path(sys.executable)
+
+    def fake_ver(dist: str, runtime=None) -> str | None:
+        return "0.4.3" if dist == "mlx-audio" else None
+
+    def module_available(module, _runtime=None, *, real_import=False):
+        if module == "f5_tts_mlx":
+            key = eh._import_probe_cache_key(runtime, module, None)
+            eh._RUNTIME_IMPORT_OUTCOMES[key] = eh._ImportProbeOutcome.TIMED_OUT
+            return False
+        return True
+
+    monkeypatch.setattr(eh, "_safe_version", fake_ver)
+    monkeypatch.setattr(eh, "_module_available", module_available)
+
+    section = eh.section_optional_packages()
+    audio_row = next(c for c in section.checks if c.label.startswith("mlx-audio"))
+
+    assert audio_row.status is eh.CheckStatus.WARN
+    assert "importability unknown" in audio_row.label
+    assert "not verify: f5-tts-mlx" in audio_row.label
+    assert "incomplete" not in audio_row.label
+    assert "does not indicate" in audio_row.detail
+
+
 def _stage_sidecar_bundle(tmp_path: Path, *, slot: str = "embedded") -> Path:
     """Build the on-disk shape ``build-sidecar.sh`` produces and return the
     interpreter.
@@ -4180,6 +4269,10 @@ def test_runtime_import_probe_rejects_non_object_and_timeout(tmp_path):
     result = SimpleNamespace(stdout=f"{eh._PROBE_RESULT_PREFIX}{json.dumps([])}\n")
     with mock.patch.object(eh.subprocess, "run", return_value=result):
         assert not eh._runtime_module_importable(runtime, "transformers", None)
+        assert (
+            eh._import_probe_outcome(runtime, "transformers", None)
+            is eh._ImportProbeOutcome.UNVERIFIED
+        )
 
     with mock.patch.object(
         eh.subprocess,
@@ -4190,6 +4283,10 @@ def test_runtime_import_probe_rejects_non_object_and_timeout(tmp_path):
         assert not eh._import_probe_was_interrupted(runtime, "transformers", None)
         assert not eh._runtime_module_importable(runtime, "mlx_vlm", None)
         assert eh._import_probe_was_interrupted(runtime.absolute(), "mlx_vlm", None)
+        assert (
+            eh._import_probe_outcome(runtime.absolute(), "mlx_vlm", None)
+            is eh._ImportProbeOutcome.TIMED_OUT
+        )
 
 
 def test_python_section_warns_when_selected_runtime_cannot_be_probed(
@@ -4854,6 +4951,98 @@ def test_optional_package_probe_can_interrupt_after_visibility(tmp_path, monkeyp
     assert all(check.status is eh.CheckStatus.WARN for check in timeout_rows)
 
 
+def test_installed_vision_import_timeout_is_explicit_and_non_failing(
+    tmp_path,
+    monkeypatch,
+):
+    doctor_exe = tmp_path / "doctor" / "bin" / "python"
+    doctor_exe.parent.mkdir(parents=True)
+    doctor_exe.write_text("")
+    runtime = tmp_path / "server" / "bin" / "python"
+    runtime.parent.mkdir(parents=True)
+    runtime.write_text("")
+    probe = {"packages": {}}
+
+    def safe_version(dist, runtime=None):
+        return "0.6.17" if dist == "mlx-vlm" else None
+
+    def visibility(dist, runtime=None):
+        module = eh._DISTRIBUTION_MODULES[dist]
+        if dist == "mlx-vlm":
+            key = eh._import_probe_cache_key(runtime, module, None)
+            eh._RUNTIME_IMPORT_OUTCOMES[key] = eh._ImportProbeOutcome.TIMED_OUT
+            return True, False
+        return False, False
+
+    monkeypatch.setattr(eh.sys, "executable", str(doctor_exe))
+    monkeypatch.setattr(eh, "_runtime_python_path", lambda: runtime)
+    monkeypatch.setattr(eh, "_probe_runtime", lambda *args, **kwargs: probe)
+    monkeypatch.setattr(eh, "_safe_version", safe_version)
+    monkeypatch.setattr(eh, "_pil_importable", lambda runtime=None: True)
+    monkeypatch.setattr(eh, "_module_visibility", visibility)
+
+    section = eh.section_optional_packages()
+    vision_rows = [row for row in section.checks if row.label.startswith("mlx-vlm")]
+
+    assert vision_rows
+    assert all(row.status is eh.CheckStatus.WARN for row in vision_rows)
+    assert all("importability unknown" in row.label for row in vision_rows)
+    assert all("broken or unverified" not in row.label for row in vision_rows)
+    assert all("does not indicate" in row.detail for row in vision_rows)
+    assert eh.Report(sections=[section]).exit_code == 0
+
+
+def test_installed_vision_pillow_timeout_is_inconclusive(tmp_path, monkeypatch):
+    runtime = Path(sys.executable)
+    key = eh._import_probe_cache_key(
+        runtime,
+        "PIL.Image",
+        None,
+        exercise=True,
+    )
+    eh._RUNTIME_IMPORT_OUTCOMES[key] = eh._ImportProbeOutcome.TIMED_OUT
+
+    monkeypatch.setattr(
+        eh,
+        "_safe_version",
+        lambda dist, runtime=None: "0.6.17" if dist == "mlx-vlm" else None,
+    )
+    monkeypatch.setattr(eh, "_pil_importable", lambda runtime=None: False)
+
+    section = eh.section_optional_packages()
+    row = next(c for c in section.checks if c.label.startswith("mlx-vlm"))
+
+    assert row.status is eh.CheckStatus.WARN
+    assert "probe timed out" in row.label
+    assert "Pillow (PIL) missing or broken" not in row.label
+
+
+def test_confirmed_vision_import_failure_is_explicit(tmp_path, monkeypatch):
+    runtime = Path(sys.executable)
+
+    def visibility(dist, runtime=None):
+        module = eh._DISTRIBUTION_MODULES[dist]
+        key = eh._import_probe_cache_key(Path(sys.executable), module, None)
+        eh._RUNTIME_IMPORT_OUTCOMES[key] = eh._ImportProbeOutcome.BROKEN
+        return True, False
+
+    monkeypatch.setattr(
+        eh,
+        "_safe_version",
+        lambda dist, runtime=None: "0.6.17" if dist == "mlx-vlm" else None,
+    )
+    monkeypatch.setattr(eh, "_pil_importable", lambda runtime=None: True)
+    monkeypatch.setattr(eh, "_module_visibility", visibility)
+
+    section = eh.section_optional_packages()
+    rows = [c for c in section.checks if c.label.startswith("mlx-vlm")]
+
+    assert len(rows) == 2
+    assert all(row.status is eh.CheckStatus.WARN for row in rows)
+    assert all("import failed" in row.label for row in rows)
+    assert all(str(runtime) in row.label for row in rows)
+
+
 def test_dflash_reports_supported_vlm_with_unverified_import(tmp_path, monkeypatch):
     doctor_exe = tmp_path / "doctor" / "bin" / "python"
     doctor_exe.parent.mkdir(parents=True)
@@ -4885,5 +5074,5 @@ def test_dflash_reports_supported_vlm_with_unverified_import(tmp_path, monkeypat
     row = next(c for c in section.checks if c.label.startswith("mlx-vlm 0.5.0+"))
 
     assert row.status is eh.CheckStatus.WARN
-    assert "broken or unverified" in row.label
+    assert "cannot be verified safely" in row.label
     assert str(runtime) in row.detail

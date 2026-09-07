@@ -21,7 +21,7 @@
 | `rapid-mlx connect` | Show the server's connection info and wire up a tool |
 | `rapid-mlx agents` | List, configure, and test agent integrations |
 | `rapid-mlx start` | Start an AI agent with a local model in one command |
-| `rapid-mlx doctor` | Run self-diagnostic / regression harness |
+| `rapid-mlx doctor` | Diagnose the selected runtime; timeout/unverified checks are warnings, not broken-package failures |
 | `rapid-mlx telemetry` | Manage anonymous usage telemetry (opt-in) |
 | `rapid-mlx upgrade` | Upgrade rapid-mlx with its detected manager (brew / uv / pipx / pip / install.sh) |
 | `rapid-mlx version` | Show version number |
