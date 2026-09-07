@@ -231,6 +231,60 @@ async def livez():
     return {"status": "alive"}
 
 
+@admin_router.post("/v1/models/activate")
+async def activate_primary_model():
+    """Load and warm the configured primary without running user inference.
+
+    Probe endpoints deliberately leave a lazy service in ``standby``.  This
+    authenticated control-plane operation is the explicit opt-in used by the
+    transactional launchd installer/apply/upgrade gates (and by operators who
+    want to pre-warm an always-on endpoint).  It never selects or downloads a
+    request-supplied model: only the primary fixed in the server configuration
+    can be activated.
+    """
+    cfg = get_config()
+    if not cfg.ready or cfg.draining:
+        raise HTTPException(status_code=503, detail="Service is not accepting work")
+    lifecycle = cfg.primary_model_lifecycle
+    if lifecycle is None:
+        if cfg.engine is None:
+            raise HTTPException(status_code=503, detail="Primary model unavailable")
+        return {
+            "status": "ready",
+            "model": cfg.model_name,
+            "state": "ready",
+            "model_loaded": True,
+        }
+
+    acquired = False
+    try:
+        lifecycle.acquire_request()
+        acquired = True
+        await lifecycle.ensure_loaded()
+        status = lifecycle.snapshot()
+    except Exception as exc:
+        # Keep model paths / loader messages out of the wire response.  The
+        # full traceback remains in the service log for the local operator.
+        logger.exception("Primary model activation failed")
+        raise HTTPException(
+            status_code=503, detail="Primary model activation failed"
+        ) from exc
+    finally:
+        if acquired:
+            lifecycle.release_request()
+
+    if status["state"] != "ready" or not status["model_loaded"]:
+        raise HTTPException(
+            status_code=503, detail="Primary model did not reach ready state"
+        )
+    return {
+        "status": "ready",
+        "model": cfg.model_name,
+        "state": status["state"],
+        "model_loaded": True,
+    }
+
+
 @admin_router.post("/v1/requests/{request_id}/cancel")
 async def cancel_request(request_id: str):
     """Cancel an active or queued request.

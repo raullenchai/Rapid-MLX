@@ -50,8 +50,11 @@ also lets a venv rebuild leave service configuration untouched.
 
 Change an installed definition as a two-step transaction. `configure` validates
 and stages a candidate but does not disturb the running server. `apply` swaps
-the candidate into place, restarts, and requires `/readyz`; if bootstrap or
-readiness fails it restores the previous config and service.
+the candidate into place, restarts, requires `/readyz`, and activates the
+configured primary model before committing. If bootstrap, endpoint readiness,
+or model activation fails, it restores the previous config and service.
+This prevents a lazy service from appearing successfully deployed in
+`standby` only to fail hours later on its first real request.
 
 An installation created by the original argv-in-plist service release has no
 versioned config yet. Migrate it once with `service uninstall` followed by
@@ -86,6 +89,14 @@ independent `--embedding-model` lane is unaffected. A request can only wake the
 primary configured by the service definition—it cannot select an arbitrary
 repository or trigger a new download.
 
+The service transaction uses the authenticated `POST /v1/models/activate`
+control-plane operation after the endpoint becomes ready. It loads and warms
+only the model fixed in the service definition, never a model supplied by the
+request. If service authentication is enabled, the CLI reads the existing
+mode-0600 credential into an in-memory Authorization header; the key is not
+placed in argv, command output, or logs. Successful qualification may leave the
+model resident until its configured idle timeout returns it to `standby`.
+
 For API authentication, send the key over stdin to a private credential file.
 It never appears in argv, the plist, shell history, `service config`, or status:
 
@@ -118,8 +129,9 @@ retention. Stage different limits with `service configure --log-max-mb`,
 Upgrade the service with the same health gate and rollback behavior. The
 command freezes the working environment before stopping the server, runs the
 package upgrade as the service account, diagnoses it with `doctor`, and only
-accepts it after launchd `/readyz` succeeds. On failure it restores the frozen
-environment and starts the previous service.
+accepts it after launchd `/readyz` succeeds and the configured primary model
+loads and completes its standard warmup path. On activation failure it restores
+the frozen environment and starts the previous service.
 
 ```bash
 sudo rapid-mlx service upgrade --dry-run

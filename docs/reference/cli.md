@@ -548,6 +548,8 @@ rapid-mlx service uninstall [--dry-run]
   deterministic root-owned plist to `/Library/LaunchDaemons/`, and
   bootstraps the daemon. It refuses an administrator/system account, a
   secret in the definition, and a target port that already has a server.
+  Before reporting success it activates and warms the configured model, so a
+  lazy endpoint cannot pass installation while its weights are unusable.
   `--dry-run` prints every step without changing anything.
 - Additional `serve` options must follow a `--` separator, for example
   `-- --max-num-seqs 4`. Bind overrides and secret-bearing options are
@@ -557,6 +559,9 @@ rapid-mlx service uninstall [--dry-run]
 - `logs` tails the daemon's stdout/stderr logs (`--follow` streams across
   KeepAlive restarts).
 - `restart` kickstarts the daemon and waits for readiness.
+- `apply` and `upgrade` require both endpoint readiness and authenticated model
+  activation before committing; a model-load failure restores the previous
+  configuration or runtime.
 - `uninstall` removes the launchd registration and plist only — models,
   cache, and logs are never deleted.
 

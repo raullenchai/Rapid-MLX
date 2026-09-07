@@ -21,12 +21,18 @@ already documented — this command just makes it safe and one-shot.
 
 from __future__ import annotations
 
+import json
 import os
+import stat
 import subprocess
 import sys
 import tempfile
 import time
 from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from .config import ServiceConfig
 
 from .common import (
     DEFAULT_DOMAIN,
@@ -242,7 +248,8 @@ def _mutation_list(
         "validate temporary plist with plutil -lint",
         f"install -o root -g wheel -m 644 temporary plist -> {plist_path}",
         f"launchctl bootstrap {DEFAULT_DOMAIN} {plist_path}",
-        f"poll {host}:{port}/readyz until ready (max 120s)",
+        f"poll {host}:{port}/readyz until endpoint-ready (max 120s)",
+        "activate and qualify the configured primary model before commit",
     ]
 
 
@@ -282,10 +289,10 @@ def _readyz_ready(host: str, port: int) -> bool:
     """True when ``/readyz`` reports ready.
 
     rapid-mlx ``/readyz`` returns HTTP 200 once the process is able to serve
-    (sets ``"ready": true`` in the body once the model is loaded; it returns
-    503 while draining). Matching the smoke script's contract, we require
-    BOTH an HTTP 200 status line AND a ``"ready": true`` in the body — a bare
-    200 during early boot (model still loading) does NOT count.
+    (including a lazy primary in ``standby``; it returns 503 during early boot,
+    lifecycle error, or drain). Matching the smoke script's contract, we
+    require BOTH an HTTP 200 status line AND a ``"ready": true`` in the body.
+    Model residency is qualified separately by ``_wait_qualified``.
     """
     import socket
 
@@ -316,6 +323,102 @@ def _wait_ready(host: str, port: int, timeout_s: int = 120) -> bool:
             return True
         time.sleep(1.0)
     return False
+
+
+def _read_service_credential(
+    credential_file: str | None, *, expected_uid: int
+) -> str | None:
+    """Securely read the daemon credential into memory as root.
+
+    Open with ``O_NOFOLLOW`` first, then validate the opened inode.  This
+    avoids a check/read replacement race in the service-user-owned home and
+    prevents the privileged CLI from reading a foreign file through a link.
+    """
+    if not credential_file:
+        return None
+    path = Path(credential_file)
+    from .config import ServiceConfigError
+
+    try:
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+    except FileNotFoundError:
+        return None
+    except OSError as exc:
+        raise ServiceConfigError(f"cannot open credential file: {exc}") from None
+    try:
+        info = os.fstat(fd)
+        if not stat.S_ISREG(info.st_mode):
+            raise ServiceConfigError("credential file must be a regular file")
+        if stat.S_IMODE(info.st_mode) & 0o077:
+            raise ServiceConfigError(
+                "credential file must not be accessible by group or others"
+            )
+        if info.st_uid != expected_uid:
+            raise ServiceConfigError(
+                f"credential file is owned by uid {info.st_uid}, expected {expected_uid}"
+            )
+        with os.fdopen(fd, encoding="utf-8") as handle:
+            fd = -1
+            secret = handle.read(65_537)
+    finally:
+        if fd >= 0:
+            os.close(fd)
+    if len(secret) > 65_536:
+        raise ServiceConfigError("credential file is unexpectedly large")
+    secret = secret.strip()
+    if not secret or "\n" in secret or "\r" in secret:
+        raise ServiceConfigError("credential file must contain one non-empty line")
+    return secret
+
+
+def _activate_model(
+    host: str,
+    port: int,
+    *,
+    credential_file: str | None,
+    credential_uid: int,
+    timeout_s: int = 600,
+) -> bool:
+    """Ask the local service to load/warm its configured primary model."""
+    import http.client
+
+    try:
+        secret = _read_service_credential(credential_file, expected_uid=credential_uid)
+        headers = {"Content-Length": "0"}
+        if secret is not None:
+            headers["Authorization"] = f"Bearer {secret}"
+        connection = http.client.HTTPConnection(
+            _probe_host(host), port, timeout=timeout_s
+        )
+        try:
+            connection.request("POST", "/v1/models/activate", headers=headers)
+            response = connection.getresponse()
+            payload = json.loads(response.read())
+        finally:
+            connection.close()
+    except (OSError, ValueError, http.client.HTTPException):
+        return False
+    return bool(
+        response.status == 200
+        and isinstance(payload, dict)
+        and payload.get("state") == "ready"
+        and payload.get("model_loaded") is True
+    )
+
+
+def _wait_qualified(config: ServiceConfig, *, ready_timeout_s: int = 120) -> bool:
+    """Require both an accepting endpoint and a loadable configured model."""
+    if not _wait_ready(config.host, config.port, timeout_s=ready_timeout_s):
+        return False
+    credential_uid = user_uid(config.service_user)
+    if credential_uid is None:
+        return False
+    return _activate_model(
+        config.host,
+        config.port,
+        credential_file=config.credential_file,
+        credential_uid=credential_uid,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -578,9 +681,9 @@ def install_command(args) -> int:
             raise ServiceInstallError(f"launchctl bootstrap failed: {boot_err}")
         # Wait for readiness; on failure roll back the load AND the plist so
         # nothing persists to auto-start on the next boot.
-        if not _wait_ready(host, port):
+        if not _wait_qualified(service_config):
             raise ServiceInstallError(
-                f"service did not become ready on {host}:{port} within 120s; "
+                f"service endpoint or configured model did not qualify on {host}:{port}; "
                 f"rolled back. Check {home}/Library/Logs/Rapid-MLX/"
                 "server.stderr.log"
             )

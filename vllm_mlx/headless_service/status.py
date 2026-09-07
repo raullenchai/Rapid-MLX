@@ -100,11 +100,12 @@ def _read_installed_plist(label: str) -> dict | None:
 def _endpoint_health(host: str, port: int) -> tuple[bool, bool]:
     """``(live, ready)`` for ``/livez`` and ``/readyz`` over HTTP.
 
-    ``live`` = the process is alive (``/livez`` returns 200 — it never means
-    "model ready"). ``ready`` = the model is loaded (``/readyz`` returns 200
-    AND ``"ready": true``), sharing the corrected ``install._readyz_ready``
-    so status, install, and restart all agree on "healthy". Best-effort via
-    a raw socket GET — no external HTTP client dependency.
+    ``live`` = the process is alive (``/livez`` returns 200). ``ready`` = the
+    endpoint can accept work (``/readyz`` returns 200 AND ``"ready": true``).
+    A lazy service can therefore be ready in ``standby`` without resident
+    weights; install/apply/upgrade separately use the authenticated activation
+    gate to qualify the configured model. Best-effort via a raw socket GET —
+    no external HTTP client dependency.
     """
     import socket
 
