@@ -85,7 +85,7 @@ struct ComputerUseView: View {
             // sidecar changes. A user can start or restart a model while this
             // sheet is open; retaining the old planner would leave Analyze
             // disabled or permanently bound to an invalidated session.
-            .id(languageRuntime?.sessionID)
+            .id(languageRuntime?.viewIdentity)
         }
     }
 

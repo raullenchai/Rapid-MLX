@@ -147,6 +147,13 @@ struct DraftPostLanguageRuntime: Equatable, Sendable {
             && lhs.sessionID == rhs.sessionID
     }
 
+    /// Secret-free SwiftUI identity. Dynamic residency can switch the active
+    /// model without replacing the process, so sessionID alone is insufficient
+    /// to retire a sheet's captured planner.
+    var viewIdentity: String {
+        "\(sessionID?.uuidString ?? "none")|\(model)|\(baseURL.absoluteString)"
+    }
+
     private static func canGenerateText(_ profile: ServerModelProfile) -> Bool {
         guard let modality = profile.modality?.lowercased() else { return false }
         return modality == "text" || modality == "text-diffusion"

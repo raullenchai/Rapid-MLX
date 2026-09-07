@@ -531,6 +531,24 @@ struct DraftPostInstructionPlannerTests {
         ))
         #expect(runtime.model == profile.id)
         #expect(runtime.sessionID == nil)
+        let sharedSession = UUID()
+        let firstIdentity = try #require(DraftPostLanguageRuntime(
+            host: "127.0.0.1",
+            port: 7659,
+            model: "qwen3.5-9b-4bit",
+            bearerToken: "secret",
+            sessionID: sharedSession,
+            sessionValidator: validator
+        )).viewIdentity
+        let switchedIdentity = try #require(DraftPostLanguageRuntime(
+            host: "127.0.0.1",
+            port: 7659,
+            model: "gemma-4-12b-4bit",
+            bearerToken: "secret",
+            sessionID: sharedSession,
+            sessionValidator: validator
+        )).viewIdentity
+        #expect(firstIdentity != switchedIdentity)
         #expect(DraftPostLanguageRuntime(
             profile: ServerModelProfile(id: "flux", modality: "image-gen"),
             selectedAlias: "flux",
