@@ -94,6 +94,7 @@ struct DraftPostFlowTests {
         let transport = RecordingDraftPostGroundingTransport()
         let recovery = MacOSDraftPostVisualRecovery(
             configuration: configuration,
+            sessionValidator: { true },
             transport: transport,
             actuator: actuator
         )
@@ -280,12 +281,14 @@ struct DraftPostFlowTests {
             id: "ui-tars-1.5-7b-4bit",
             toolCallParser: "ui_tars"
         )
+        let currentSession: DraftPostVisualRuntime.SessionValidator = { true }
         let runtime = try #require(DraftPostVisualRuntime(
             profile: profile,
             selectedAlias: "UI-TARS-1.5-7B-4BIT",
             host: "127.0.0.1",
             port: 7659,
-            bearerToken: "secret"
+            bearerToken: "secret",
+            sessionValidator: currentSession
         ))
         #expect(runtime.model == profile.id)
         #expect(runtime.baseURL.absoluteString == "http://127.0.0.1:7659/v1")
@@ -295,29 +298,63 @@ struct DraftPostFlowTests {
             selectedAlias: "another-model",
             host: "127.0.0.1",
             port: 7659,
-            bearerToken: "secret"
+            bearerToken: "secret",
+            sessionValidator: currentSession
         ) == nil)
         #expect(DraftPostVisualRuntime(
             profile: ServerModelProfile(id: profile.id, toolCallParser: "hermes"),
             selectedAlias: profile.id,
             host: "127.0.0.1",
             port: 7659,
-            bearerToken: "secret"
+            bearerToken: "secret",
+            sessionValidator: currentSession
         ) == nil)
         #expect(DraftPostVisualRuntime(
             profile: profile,
             selectedAlias: profile.id,
             host: "localhost",
             port: 7659,
-            bearerToken: "secret"
+            bearerToken: "secret",
+            sessionValidator: currentSession
         ) == nil)
         #expect(DraftPostVisualRuntime(
             profile: profile,
             selectedAlias: profile.id,
             host: "127.0.0.1",
             port: 7659,
-            bearerToken: nil
+            bearerToken: nil,
+            sessionValidator: currentSession
         ) == nil)
+    }
+
+    @Test("Visual inference rejects a server-session change before acceptance")
+    func visualInferenceRequiresOneSession() async {
+        let session = VisualSessionProbe(isCurrent: true)
+        let validator: DraftPostVisualRuntime.SessionValidator = {
+            session.current
+        }
+        await #expect(throws: DraftPostFlowFailure.dependencyFailure) {
+            try await MacOSDraftPostVisualRecovery.withValidatedSession(
+                validator
+            ) {
+                session.current = false
+                return "unused"
+            }
+        }
+    }
+
+    @Test("Chrome accessibility activation balances cancellation")
+    func browserAccessibilityActivationBalancesCancellation() async {
+        let probe = BrowserAccessibilityLeaseProbe()
+        await #expect(throws: CancellationError.self) {
+            try await MacOSDraftPostFlowDriver.establishBrowserAccessibilityLease(
+                activate: { probe.activate() },
+                settle: { throw CancellationError() },
+                release: { probe.release() }
+            )
+        }
+        #expect(probe.activations == 1)
+        #expect(probe.releases == 1)
     }
 
     @Test("Visual coordinates can authorize only the expected editable value")
@@ -769,6 +806,32 @@ private actor ScriptedVisualRecoveryAttempt {
             throw DraftPostFlowFailure.targetUnavailable
         }
     }
+}
+
+private final class VisualSessionProbe: @unchecked Sendable {
+    private let lock = NSLock()
+    private var value: Bool
+
+    init(isCurrent: Bool) {
+        self.value = isCurrent
+    }
+
+    var current: Bool {
+        get { lock.withLock { value } }
+        set { lock.withLock { value = newValue } }
+    }
+}
+
+private final class BrowserAccessibilityLeaseProbe: @unchecked Sendable {
+    private let lock = NSLock()
+    private var activationCount = 0
+    private var releaseCount = 0
+
+    var activations: Int { lock.withLock { activationCount } }
+    var releases: Int { lock.withLock { releaseCount } }
+
+    func activate() { lock.withLock { activationCount += 1 } }
+    func release() { lock.withLock { releaseCount += 1 } }
 }
 
 private enum RecordedDraftPostComposerAction: Equatable {

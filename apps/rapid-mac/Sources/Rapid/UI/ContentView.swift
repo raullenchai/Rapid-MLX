@@ -1149,7 +1149,8 @@ struct ContentView: View {
                         selectedAlias: alias,
                         host: server.host,
                         port: server.activePort,
-                        bearerToken: server.activeBearer
+                        bearerToken: server.activeBearer,
+                        liveServer: server
                     )
                 )
             } else {

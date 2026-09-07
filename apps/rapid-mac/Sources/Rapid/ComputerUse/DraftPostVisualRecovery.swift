@@ -4,11 +4,20 @@ import Foundation
 /// Computer Use model. The bearer remains in memory and is never persisted or
 /// included in workflow/ledger state.
 struct DraftPostVisualRuntime: Equatable, Sendable {
+    typealias SessionValidator = @MainActor @Sendable () -> Bool
+
     let baseURL: URL
     let model: String
     let bearerToken: String
+    private let sessionValidator: SessionValidator
 
-    init?(host: String, port: Int, model: String?, bearerToken: String?) {
+    init?(
+        host: String,
+        port: Int,
+        model: String?,
+        bearerToken: String?,
+        sessionValidator: @escaping SessionValidator
+    ) {
         guard host == "127.0.0.1",
               (1 ... 65_535).contains(port),
               let model,
@@ -20,6 +29,7 @@ struct DraftPostVisualRuntime: Equatable, Sendable {
         self.baseURL = baseURL
         self.model = model
         self.bearerToken = bearerToken
+        self.sessionValidator = sessionValidator
     }
 
     init?(
@@ -27,7 +37,8 @@ struct DraftPostVisualRuntime: Equatable, Sendable {
         selectedAlias: String,
         host: String,
         port: Int,
-        bearerToken: String?
+        bearerToken: String?,
+        sessionValidator: @escaping SessionValidator
     ) {
         guard let profile,
               profile.id.caseInsensitiveCompare(selectedAlias) == .orderedSame,
@@ -37,8 +48,51 @@ struct DraftPostVisualRuntime: Equatable, Sendable {
             host: host,
             port: port,
             model: profile.id,
-            bearerToken: bearerToken
+            bearerToken: bearerToken,
+            sessionValidator: sessionValidator
         )
+    }
+
+    /// Production constructor: the tuple accepted by this snapshot must still
+    /// describe the app-owned server immediately around every visual request.
+    @MainActor
+    init?(
+        profile: ServerModelProfile?,
+        selectedAlias: String,
+        host: String,
+        port: Int,
+        bearerToken: String?,
+        liveServer server: ServerManager
+    ) {
+        guard let profile, let bearerToken else { return nil }
+        let expectedModel = profile.id
+        self.init(
+            profile: profile,
+            selectedAlias: selectedAlias,
+            host: host,
+            port: port,
+            bearerToken: bearerToken,
+            sessionValidator: { [weak server] in
+                guard let server,
+                      server.host == host,
+                      server.activePort == port,
+                      server.activeBearer == bearerToken,
+                      let currentProfile = server.activeModelProfile
+                else { return false }
+                return currentProfile.id.caseInsensitiveCompare(expectedModel)
+                    == .orderedSame
+                    && currentProfile.toolCallParser?.caseInsensitiveCompare(
+                        "ui_tars"
+                    ) == .orderedSame
+                    && server.isModelResident(selectedAlias)
+            }
+        )
+    }
+
+    static func == (lhs: Self, rhs: Self) -> Bool {
+        lhs.baseURL == rhs.baseURL
+            && lhs.model == rhs.model
+            && lhs.bearerToken == rhs.bearerToken
     }
 
     func makeRecovery() -> (any DraftPostVisualRecovering)? {
@@ -49,7 +103,10 @@ struct DraftPostVisualRuntime: Equatable, Sendable {
             deadline: .seconds(30),
             wireContract: .uiTars
         ) else { return nil }
-        return MacOSDraftPostVisualRecovery(configuration: configuration)
+        return MacOSDraftPostVisualRecovery(
+            configuration: configuration,
+            sessionValidator: sessionValidator
+        )
     }
 }
 
@@ -72,6 +129,7 @@ actor MacOSDraftPostVisualRecovery: DraftPostVisualRecovering {
 
     init(
         configuration: LocalComputerUseVisualGrounder.Configuration,
+        sessionValidator: @escaping DraftPostVisualRuntime.SessionValidator,
         captureSource: any ComputerUseWindowCapturing =
             ScreenCaptureKitComputerUseCapture(),
         transport: any LocalComputerUseGroundingTransport =
@@ -93,10 +151,14 @@ actor MacOSDraftPostVisualRecovery: DraftPostVisualRecovering {
                 )
                 let step = Self.composerStep
                 let groundingObservation = try await observer.observe(for: step)
-                let action = try await grounder.ground(
-                    step: step,
-                    observation: groundingObservation
-                )
+                let action = try await Self.withValidatedSession(
+                    sessionValidator
+                ) {
+                    try await grounder.ground(
+                        step: step,
+                        observation: groundingObservation
+                    )
+                }
                 let currentObservation = try await observer.observe(for: step)
                 try Task.checkCancellation()
                 try MacOSDraftPostFlowDriver.focusGroundedEmptyComposer(
@@ -117,6 +179,23 @@ actor MacOSDraftPostVisualRecovery: DraftPostVisualRecovering {
 
     init(attempt: @escaping Attempt) {
         self.attempt = attempt
+    }
+
+    /// The local server may restart onto another port or rotate its bearer
+    /// while the sheet remains open. Validate immediately around inference so
+    /// a screenshot is never sent to, or accepted from, a superseded session.
+    static func withValidatedSession<Result: Sendable>(
+        _ validator: DraftPostVisualRuntime.SessionValidator,
+        operation: @Sendable () async throws -> Result
+    ) async throws -> Result {
+        guard await validator() else {
+            throw DraftPostFlowFailure.dependencyFailure
+        }
+        let result = try await operation()
+        guard await validator() else {
+            throw DraftPostFlowFailure.dependencyFailure
+        }
+        return result
     }
 
     func focusComposer(

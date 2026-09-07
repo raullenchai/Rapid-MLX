@@ -374,16 +374,41 @@ struct MacOSDraftPostFlowDriver: DraftPostFlowDriving {
         let application = Self.applicationElement(
             destination.selection.processIdentifier
         )
-        guard AXUIElementSetAttributeValue(
-            application,
-            "AXEnhancedUserInterface" as CFString,
-            kCFBooleanTrue
-        ) == .success else {
-            throw DraftPostFlowFailure.dependencyFailure
-        }
-        try await Task.sleep(for: .seconds(3))
-        try Task.checkCancellation()
+        try await Self.establishBrowserAccessibilityLease(
+            activate: {
+                guard AXUIElementSetAttributeValue(
+                    application,
+                    "AXEnhancedUserInterface" as CFString,
+                    kCFBooleanTrue
+                ) == .success else {
+                    throw DraftPostFlowFailure.dependencyFailure
+                }
+            },
+            settle: {
+                try await Task.sleep(for: .seconds(3))
+                try Task.checkCancellation()
+            },
+            release: {
+                Self.releaseBrowserAccessibility(for: destination)
+            }
+        )
         return true
+    }
+
+    /// Transfers cleanup ownership to the caller only after activation has
+    /// fully settled. Any error or cancellation before then is balanced here.
+    static func establishBrowserAccessibilityLease(
+        activate: () throws -> Void,
+        settle: () async throws -> Void,
+        release: () -> Void
+    ) async throws {
+        try activate()
+        do {
+            try await settle()
+        } catch {
+            release()
+            throw error
+        }
     }
 
     private static func releaseBrowserAccessibility(
