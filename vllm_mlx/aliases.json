@@ -24,6 +24,7 @@
     "mtp_draft_model": "mlx-community/Qwen3.5-4B-MTP-4bit",
     "mtp_speculative_tokens": 2,
     "mtp_continuous_batching_tier": "verified",
+    "mtp_default_enabled": false,
     "recommended_prefill_step_size": 512,
     "pflash_tier": "verified"
   },

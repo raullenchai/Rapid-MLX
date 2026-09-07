@@ -2212,6 +2212,26 @@ def _alias_continuous_mtp_tier(model_name) -> str:
     return tier if tier in {"unknown", "verified", "blocked"} else "unknown"
 
 
+def _alias_mtp_default_enabled(model_name) -> bool:
+    """Whether the alias ships its declared MTP preset on by default.
+
+    Distinct from the qualification tier: ``verified`` says the continuous
+    route is correct, this says the product turns it on unasked.  A registry
+    failure fails closed to *off* — the plain decode path is always safe.
+    """
+    if not model_name:
+        return False
+    try:
+        from .model_aliases import resolve_profile as _resolve_alias
+
+        profile = _resolve_alias(model_name)
+    except Exception:  # noqa: BLE001 - registry failure must fail closed
+        return False
+    if profile is None:
+        return False
+    return bool(getattr(profile, "mtp_default_enabled", True))
+
+
 def _normalize_speculative_config_or_exit(args):
     """Parse ``--speculative-config`` and map methods to runtime fields."""
     import json
@@ -2477,11 +2497,14 @@ def _normalize_speculative_config_or_exit(args):
         elif (
             not getattr(args, "no_spec_decode", False)
             and _alias_continuous_mtp_tier(getattr(args, "model", None)) == "verified"
+            and _alias_mtp_default_enabled(getattr(args, "model", None))
         ):
             # Exact artifacts that passed the mixed-workload qualification
-            # select their declared MTP preset by default.  The alias registry
-            # remains the single source of truth, and --no-spec-decode stays
-            # the explicit user escape hatch on every surface.
+            # select their declared MTP preset by default, unless the catalog
+            # ships them default-off (#3115: qwen3.5-4b-4bit measured -25%..-37%
+            # single-stream on M2 Pro / M3 Ultra).  The alias registry remains
+            # the single source of truth, and --no-spec-decode stays the
+            # explicit user escape hatch on every surface.
             raw_config = '{"method":"mtp"}'
             args.speculative_config = raw_config
 
@@ -6935,6 +6958,7 @@ def _available_models_json_payload() -> dict:
             "mtp_continuous_batching_tier": getattr(
                 p, "mtp_continuous_batching_tier", "unknown"
             ),
+            "mtp_default_enabled": bool(getattr(p, "mtp_default_enabled", True)),
             "modality": modality,
             "video_modes": list(p.video_modes or ()),
             "min_memory_gb": p.min_memory_gb,
