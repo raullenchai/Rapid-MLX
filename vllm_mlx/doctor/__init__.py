@@ -10,7 +10,7 @@ never loads a model, boots a server, or runs benchmarks.
 Model-validation tiers that used to live here (``smoke / check / full /
 benchmark``) moved to ``rapid-mlx bench --tier ...`` as of v0.7.22.
 
-Entry point: ``rapid-mlx doctor [--verbose|--json|--summary]``.
+Entry point: ``rapid-mlx doctor [--verbose|--json|--summary|--deep|--fix]``.
 
 Exit codes:
   0 — everything ok, skipped, or only warnings

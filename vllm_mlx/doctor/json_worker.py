@@ -34,11 +34,14 @@ def main(argv: list[str] | None = None) -> int:
     staging_path = result_path.with_suffix(".json.tmp")
     try:
         request = json.loads(request_path.read_text(encoding="utf-8"))
-        if not isinstance(request, dict) or set(request) != {"only", "skip"}:
+        if not isinstance(request, dict) or set(request) != {"only", "skip", "deep"}:
             raise TypeError("request fields are invalid")
+        if not isinstance(request["deep"], bool):
+            raise TypeError("deep flag is invalid")
         report = run_all(
             only=_selection(request, "only"),
             skip=_selection(request, "skip"),
+            deep=request["deep"],
         )
         message: dict[str, object] = {"ok": True, "report": report_document(report)}
     except Exception as exc:  # noqa: BLE001 - parent renders schema-valid failure
