@@ -6,6 +6,8 @@ from __future__ import annotations
 import io
 import os
 import sys
+import threading
+import time
 from types import ModuleType, SimpleNamespace
 from unittest.mock import patch
 
@@ -981,6 +983,86 @@ def test_scan_hf_cache_models_reports_blob_bytes_not_double(tmp_path, monkeypatc
     rows = cli._scan_hf_cache_models()
     sizes = {repo_id: size for repo_id, size, _mtime in rows}
     assert sizes["acme/Widget-4bit"] == 8192
+
+
+def test_scan_hf_cache_models_skips_unresponsive_relocated_entry(
+    tmp_path, monkeypatch, caplog
+):
+    """One stalled external cache link must not hang CLI or GUI inventory."""
+    cache_root = tmp_path / "hub"
+    local = cache_root / "models--acme--Local-4bit"
+    _make_hf_cache_repo(local, {"sha_weights": 1024})
+    external = tmp_path / "external" / "Stalled-4bit"
+    external.mkdir(parents=True)
+    relocated = cache_root / "models--acme--Stalled-4bit"
+    relocated.symlink_to(external, target_is_directory=True)
+
+    release_worker = threading.Event()
+    real_dir_size = cli._dir_size_bytes
+
+    def blocking_dir_size(path):
+        if os.path.islink(path):
+            release_worker.wait(1.0)
+            return 2048
+        return real_dir_size(path)
+
+    monkeypatch.setattr(
+        "huggingface_hub.constants.HF_HUB_CACHE", str(cache_root), raising=False
+    )
+    monkeypatch.setattr(cli, "_dir_size_bytes", blocking_dir_size)
+    monkeypatch.setattr(cli, "_RELOCATED_CACHE_SCAN_TIMEOUT_SECONDS", 0.02)
+
+    started = time.monotonic()
+    rows = cli._scan_hf_cache_models()
+    elapsed = time.monotonic() - started
+    release_worker.set()
+
+    assert elapsed < 0.25
+    assert [repo for repo, _size, _mtime in rows] == ["acme/Local-4bit"]
+    assert "Skipped 1 relocated cache entry" in caplog.text
+
+
+def test_scan_hf_cache_models_keeps_healthy_relocated_entry(tmp_path, monkeypatch):
+    """The deadline must not regress supported, responsive cache relocation."""
+    cache_root = tmp_path / "hub"
+    real = tmp_path / "external" / "Widget-4bit"
+    _make_hf_cache_repo(real, {"sha_weights": 4096})
+    cache_root.mkdir()
+    (cache_root / "models--acme--Widget-4bit").symlink_to(
+        real, target_is_directory=True
+    )
+    monkeypatch.setattr(
+        "huggingface_hub.constants.HF_HUB_CACHE", str(cache_root), raising=False
+    )
+
+    rows = cli._scan_hf_cache_models()
+
+    assert [(repo, size) for repo, size, _mtime in rows] == [("acme/Widget-4bit", 4096)]
+
+
+def test_scan_hf_cache_models_keeps_relocated_entry_when_mtime_is_unreadable(
+    tmp_path, monkeypatch
+):
+    """A metadata error must not discard an otherwise readable relocation."""
+    cache_root = tmp_path / "hub"
+    real = tmp_path / "external" / "Widget-4bit"
+    _make_hf_cache_repo(real, {"sha_weights": 4096})
+    cache_root.mkdir()
+    relocated = cache_root / "models--acme--Widget-4bit"
+    relocated.symlink_to(real, target_is_directory=True)
+    real_getmtime = cli.os.path.getmtime
+
+    def getmtime(path):
+        if os.fspath(path) == os.fspath(relocated):
+            raise OSError("metadata temporarily unavailable")
+        return real_getmtime(path)
+
+    monkeypatch.setattr(
+        "huggingface_hub.constants.HF_HUB_CACHE", str(cache_root), raising=False
+    )
+    monkeypatch.setattr(cli.os.path, "getmtime", getmtime)
+
+    assert cli._scan_hf_cache_models() == [("acme/Widget-4bit", 4096, 0.0)]
 
 
 # ---------------------------------------------------------------------------
