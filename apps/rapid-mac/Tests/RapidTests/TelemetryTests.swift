@@ -58,6 +58,34 @@ final class TelemetryTests {
         #expect(TelemetryConfig.isEnabled(defaults: defaults) == false)
     }
 
+    @Test("RAPID_MLX_TELEMETRY=0 disables telemetry even after the user opted in")
+    func killSwitchWinsOverConsent() {
+        let defaults = freshDefaults()
+        defaults.set(true, forKey: TelemetryConfig.enabledKey)
+        for value in ["0", "false", "NO", " off ", ""] {
+            #expect(
+                TelemetryConfig.isEnabled(
+                    defaults: defaults, environment: ["RAPID_MLX_TELEMETRY": value]
+                ) == false,
+                "value \(value.debugDescription) must disable telemetry"
+            )
+        }
+    }
+
+    @Test("A truthy RAPID_MLX_TELEMETRY never forces telemetry on; consent still decides")
+    func truthyValueIsIgnored() {
+        let defaults = freshDefaults()
+        for value in ["1", "true", "yes"] {
+            #expect(TelemetryConfig.isEnabled(
+                defaults: defaults, environment: ["RAPID_MLX_TELEMETRY": value]) == false)
+            defaults.set(true, forKey: TelemetryConfig.enabledKey)
+            #expect(TelemetryConfig.isEnabled(
+                defaults: defaults, environment: ["RAPID_MLX_TELEMETRY": value]) == true)
+            defaults.removeObject(forKey: TelemetryConfig.enabledKey)
+        }
+        #expect(TelemetryConfig.killSwitchActive(environment: [:]) == false)
+    }
+
     @Test("TelemetryConfig.isEnabled honours an explicit true override")
     func explicitOptIn() {
         let defaults = freshDefaults()

@@ -1960,12 +1960,18 @@ wait_send_idle() {
 flow_fresh_install() {
     log "1/6 fresh install and onboarding"
     start_telemetry_sink "$OUT_ROOT/fresh-install"
+    # CI exports RAPID_MLX_TELEMETRY=0 so no golden-flow app launch can reach
+    # production; these two flows are the exception because they prove the
+    # consent boundary against the loopback sink. A truthy value only lifts
+    # the kill switch — it never forces telemetry on (the consent logic still
+    # decides), which is exactly what the sink assertions below check.
     # The real engine registry always contains the starter. Without this row,
     # the fake catalog makes the app correctly fall back to its only chat row
     # and the assertion below can never prove the production first-run rule.
     start_persona fresh-install FAKE_INCLUDE_STARTER=1 \
         RAPID_GUI_HARDWARE_FIXTURE=1 RAPID_HARDWARE_RAM_GB=$GOLDEN_RAM_GB \
         RAPID_HARDWARE_BRAND="$GOLDEN_BRAND" \
+        RAPID_MLX_TELEMETRY=1 \
         RAPID_MLX_TELEMETRY_ENDPOINT="http://127.0.0.1:$TELEMETRY_SINK_PORT/v1/events"
     wait_identifier Quickstart.GetStarted "$OUT/welcome.json"
     assert_no_telemetry_requests before-onboarding
@@ -2102,6 +2108,7 @@ flow_fresh_install() {
     start_persona fresh-install-share FAKE_INCLUDE_STARTER=1 \
         RAPID_GUI_HARDWARE_FIXTURE=1 RAPID_HARDWARE_RAM_GB=$GOLDEN_RAM_GB \
         RAPID_HARDWARE_BRAND="$GOLDEN_BRAND" \
+        RAPID_MLX_TELEMETRY=1 \
         RAPID_MLX_TELEMETRY_ENDPOINT="http://127.0.0.1:$TELEMETRY_SINK_PORT/v1/events"
     dismiss_first_run
     assert_no_telemetry_requests share-before-first-value

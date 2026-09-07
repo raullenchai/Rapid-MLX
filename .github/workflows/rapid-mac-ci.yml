@@ -41,6 +41,14 @@ concurrency:
   group: rapid-mac-ci-${{ github.ref }}
   cancel-in-progress: true
 
+# Every job in this workflow runs product code (engine, CLI, Desktop app) on
+# shared or self-hosted machines. None of that is a user: keep it out of the
+# production telemetry store. The engine and the Desktop app both honour this
+# kill switch; the golden-flow harness lifts it only for the two flows that
+# prove the consent boundary against a loopback sink.
+env:
+  RAPID_MLX_TELEMETRY: "0"
+
 jobs:
   changes:
     runs-on: ubuntu-latest

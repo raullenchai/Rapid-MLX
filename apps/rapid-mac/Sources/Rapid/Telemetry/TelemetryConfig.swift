@@ -83,6 +83,29 @@ enum TelemetryConfig {
     /// (issue #530 — flaky ``clientIDPersists`` under the parallel
     /// test pool).
     static func isEnabled(defaults: UserDefaults) -> Bool {
-        defaults.object(forKey: enabledKey) as? Bool ?? false
+        isEnabled(defaults: defaults, environment: ProcessInfo.processInfo.environment)
+    }
+
+    /// Full decision: the process-level kill switch wins over any stored
+    /// consent; otherwise the user's recorded decision (default off).
+    static func isEnabled(defaults: UserDefaults, environment: [String: String]) -> Bool {
+        if killSwitchActive(environment: environment) { return false }
+        return defaults.object(forKey: enabledKey) as? Bool ?? false
+    }
+
+    /// Name of the process-level kill switch shared with the engine
+    /// (``vllm_mlx/telemetry/state.py`` reads the same variable).
+    static let killSwitchEnvironmentKey = "RAPID_MLX_TELEMETRY"
+
+    /// ``RAPID_MLX_TELEMETRY=0`` (or ``false`` / ``no`` / ``off`` / empty)
+    /// disables telemetry for this process regardless of consent — the same
+    /// falsy set the engine honours. CI exports it so a Desktop launch on a
+    /// build machine can never reach the production store. A truthy value is
+    /// deliberately ignored: nothing can force telemetry ON past the user's
+    /// decision, it only leaves the consent logic in charge.
+    static func killSwitchActive(environment: [String: String]) -> Bool {
+        guard let raw = environment[killSwitchEnvironmentKey] else { return false }
+        let value = raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        return ["0", "false", "no", "off", ""].contains(value)
     }
 }
