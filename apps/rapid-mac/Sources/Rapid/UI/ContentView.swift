@@ -277,6 +277,27 @@ struct ContentView: View {
         .onAppear {
             showCommandPaletteFromRequest(commandPaletteRequest.requestID)
         }
+        .lifecycleModifiers(
+            of: self,
+            displayedMemoryWarning: displayedMemoryWarning,
+            displayedModelSwitch: displayedModelSwitch
+        )
+        .sessionModifiers(of: self)
+    }
+
+    /// Middle section of the shell's modifier chain (lifecycle observers,
+    /// the memory alert, and the model-switch dialog).
+    ///
+    /// Split for the same reason as ``applySessionModifiers(to:)`` — one
+    /// chain of this size exceeds the type-checker's budget. Order is
+    /// unchanged.
+    @ViewBuilder
+    fileprivate func applyLifecycleModifiers(
+        to content: some View,
+        displayedMemoryWarning: ModelSizing.MemoryWarning?,
+        displayedModelSwitch: ServerManager.PendingModelSwitch?
+    ) -> some View {
+        content
         .onChange(of: server.state) { _, newState in
             // A chat-model replacement can keep the process or respawn it.
             // Dictation owns the same reconciliation entry point for both so
@@ -411,6 +432,19 @@ struct ContentView: View {
         } message: { request in
             Text("Switching to \(request.risk.targetAlias) may interrupt those responses.")
         }
+    }
+
+    /// Second half of the shell's modifier chain.
+    ///
+    /// Split out purely so the type-checker solves two moderate expressions
+    /// instead of one that exceeds its budget: `body` had grown past the
+    /// solver's limit and failed to compile with
+    /// "unable to type-check this expression in reasonable time".
+    /// Order is preserved exactly — these modifiers still apply after the
+    /// ones that remain in `body`.
+    @ViewBuilder
+    fileprivate func applySessionModifiers(to content: some View) -> some View {
+        content
         .onChange(of: settingsRouter.quickstartReturnGeneration) { _, _ in
             quickstartDismissedThisSession = false
         }
@@ -2393,5 +2427,31 @@ private struct LogDrawer: View {
                 proxy.scrollTo(Self.bottomAnchor, anchor: .bottom)
             }
         }
+    }
+}
+
+/// Applies the second half of ``ContentView``'s modifier chain.
+///
+/// Exists only to split one over-budget type-check into two. See
+/// ``ContentView/applySessionModifiers(to:)``.
+private extension View {
+    @ViewBuilder
+    func sessionModifiers(of owner: ContentView) -> some View {
+        owner.applySessionModifiers(to: self)
+    }
+}
+
+private extension View {
+    @ViewBuilder
+    func lifecycleModifiers(
+        of owner: ContentView,
+        displayedMemoryWarning: ModelSizing.MemoryWarning?,
+        displayedModelSwitch: ServerManager.PendingModelSwitch?
+    ) -> some View {
+        owner.applyLifecycleModifiers(
+            to: self,
+            displayedMemoryWarning: displayedMemoryWarning,
+            displayedModelSwitch: displayedModelSwitch
+        )
     }
 }
