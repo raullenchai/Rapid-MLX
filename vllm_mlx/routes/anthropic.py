@@ -7,6 +7,7 @@ import logging
 import time
 import uuid
 from collections.abc import AsyncIterator
+from functools import wraps
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import Response, StreamingResponse
@@ -136,6 +137,21 @@ async def _attach_mllm_schema_processor(engine, openai_request, chat_kwargs) -> 
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
+
+
+def _release_primary_request_after_route(func):
+    """Ensure non-generation primary users cannot leak a standby lease."""
+
+    @wraps(func)
+    async def wrapped(*args, **kwargs):
+        try:
+            return await func(*args, **kwargs)
+        finally:
+            lifecycle = get_config().primary_model_lifecycle
+            if lifecycle is not None:
+                lifecycle.release_request()
+
+    return wrapped
 
 
 def _should_start_in_thinking(
@@ -1219,6 +1235,7 @@ async def create_anthropic_message(
         Depends(check_rate_limit_or_x_api_key),
     ],
 )
+@_release_primary_request_after_route
 async def count_anthropic_tokens(request: Request):
     """Count tokens for an Anthropic Messages API request.
 

@@ -250,6 +250,29 @@ async def test_shutdown_drains_cancellation_isolated_load():
 
 
 @pytest.mark.asyncio
+async def test_shutdown_load_drain_has_a_deadline():
+    engine = FakeEngine()
+    engine.start_gate = asyncio.Event()
+    lifecycle = PrimaryModelLifecycle(
+        engine, lazy_load=True, shutdown_load_timeout_seconds=0.01
+    )
+    waiter = asyncio.create_task(lifecycle.ensure_loaded())
+    await asyncio.sleep(0)
+    waiter.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await waiter
+
+    with pytest.raises(TimeoutError, match="timed out waiting"):
+        await lifecycle.shutdown()
+    assert lifecycle.snapshot()["state"] == "error"
+    assert lifecycle.snapshot()["error"] == "ShutdownLoadDrainTimeout"
+
+    engine.start_gate.set()
+    assert lifecycle._load_task is not None
+    await lifecycle._load_task
+
+
+@pytest.mark.asyncio
 async def test_demand_warmup_runs_off_the_event_loop(monkeypatch):
     from vllm_mlx import server
 
@@ -379,6 +402,27 @@ async def test_streaming_release_starts_idle_window_after_final_chunk():
     assert await lifecycle.evict_if_idle() is False
     now[0] += 2
     assert await lifecycle.evict_if_idle() is True
+    reset_config()
+
+
+@pytest.mark.asyncio
+async def test_non_generation_route_decorator_releases_primary_owner():
+    from vllm_mlx.config import reset_config
+    from vllm_mlx.routes.anthropic import _release_primary_request_after_route
+
+    engine = FakeEngine(loaded=True)
+    lifecycle = PrimaryModelLifecycle(engine, idle_unload_seconds=5)
+    cfg = reset_config()
+    cfg.primary_model_lifecycle = lifecycle
+
+    @_release_primary_request_after_route
+    async def route():
+        lifecycle.acquire_request()
+        assert lifecycle.snapshot()["active_request_owners"] == 1
+        return "done"
+
+    assert await route() == "done"
+    assert lifecycle.snapshot()["active_request_owners"] == 0
     reset_config()
 
 

@@ -50,6 +50,7 @@ class PrimaryModelLifecycle:
         release_allocator_cache: LifecycleHook | None = None,
         on_state_change: StateHook | None = None,
         clock: Callable[[], float] = time.monotonic,
+        shutdown_load_timeout_seconds: float = 25.0,
     ) -> None:
         self.engine = engine
         self.lazy_load = bool(lazy_load)
@@ -59,6 +60,9 @@ class PrimaryModelLifecycle:
         self._release_allocator_cache = release_allocator_cache
         self._on_state_change = on_state_change
         self._clock = clock
+        self._shutdown_load_timeout_seconds = max(
+            0.01, float(shutdown_load_timeout_seconds)
+        )
         self._transition_lock = asyncio.Lock()
         self._load_task: asyncio.Task | None = None
         self._monitor_task: asyncio.Task | None = None
@@ -143,21 +147,24 @@ class PrimaryModelLifecycle:
         # safely and would create a start/stop race.
         load_task = self._load_task
         if load_task is not None and not load_task.done():
-            while not load_task.done():
-                try:
-                    await asyncio.shield(load_task)
-                except asyncio.CancelledError:
-                    # Teardown owns the engine and must not race its executor-
-                    # backed load. Re-arm the shield until the worker reaches
-                    # a terminal state, matching resident-model retirement.
-                    continue
-                except Exception:
-                    break
-            if load_task.done() and not load_task.cancelled():
-                try:
-                    load_task.result()
-                except Exception:
-                    logger.exception("Primary model load failed during shutdown drain")
+            try:
+                await asyncio.wait_for(
+                    asyncio.shield(load_task),
+                    timeout=self._shutdown_load_timeout_seconds,
+                )
+            except TimeoutError:
+                self._set_state("error")
+                self._last_error = "ShutdownLoadDrainTimeout"
+                raise TimeoutError(
+                    "timed out waiting for primary model load during shutdown"
+                ) from None
+            except asyncio.CancelledError:
+                # Propagate process-teardown cancellation. The caller must not
+                # proceed to stop the engine concurrently with the shielded
+                # load; lifespan cancellation terminates that teardown path.
+                raise
+            except Exception:
+                logger.exception("Primary model load failed during shutdown drain")
 
     def detach(self) -> None:
         """Synchronously retire this coordinator during a primary handoff."""
