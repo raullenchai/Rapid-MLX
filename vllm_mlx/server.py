@@ -131,9 +131,11 @@ from .engine import (
     BatchedEngine,
 )
 from .runtime.model_registry import ModelEntry, ModelRegistry
+from .runtime.primary_lifecycle import PrimaryModelLifecycle
 from .runtime.resident_models import (
     ResidentModelBusyError,
     ResidentModelManager,
+    _release_allocator_cache,
     estimate_model_bytes,
 )
 from .service.helpers import (  # noqa: F401 — re-export for backward compat
@@ -205,6 +207,9 @@ _resident_idle_ttl_seconds: float = 0.0
 # ``None`` = per-model auto budgeting (#2858); a float is the operator's
 # explicit --gpu-memory-utilization, applied to every resident model.
 _resident_gpu_memory_utilization: float | None = None
+_primary_lazy_load: bool = False
+_primary_idle_unload_seconds: float = 0.0
+_primary_model_lifecycle: PrimaryModelLifecycle | None = None
 
 # Global engine instance (single-model legacy path, also primary model in multi-model)
 _engine: BaseEngine | None = None
@@ -616,9 +621,85 @@ def _detect_hybrid_for_warmup(engine) -> bool:
     return False
 
 
+async def _warmup_primary_engine(engine: BaseEngine) -> None:
+    """Compile the configured engine on its model-owning worker."""
+
+    import time as _time
+
+    logger.info("Warming up (compiling Metal shaders)...")
+    warmup_start = _time.monotonic()
+    try:
+        is_hybrid = _detect_hybrid_for_warmup(engine)
+        if not is_hybrid:
+            # `generate_warmup()` synchronously waits for the model-owning MLX
+            # executor. During eager boot there is no traffic yet, but on a
+            # demand load that wait must leave the event loop free for health
+            # probes and other coalesced requests.
+            await asyncio.to_thread(engine.generate_warmup)
+        else:
+            logger.info(
+                "Hybrid model: running full request warmup "
+                "(compiling GatedDeltaNet kernels)"
+            )
+            try:
+                async for _ in engine.stream_chat(
+                    messages=[{"role": "user", "content": "Hi"}],
+                    max_tokens=2,
+                    temperature=0.0,
+                ):
+                    pass
+            except Exception as exc:  # noqa: BLE001
+                logger.debug("Hybrid warmup error (non-fatal): %s", exc)
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("Warmup failed (non-fatal): %s", exc)
+    logger.info("Warmup complete (%.1fs)", _time.monotonic() - warmup_start)
+
+
+async def _finish_primary_demand_load() -> None:
+    """Run the same post-load work used by eager startup."""
+
+    global _prefix_cache_load_task
+    if _engine is None:
+        return
+    await _warmup_primary_engine(_engine)
+    try:
+        await _warmup_tool_grammar(_engine)
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("Tool-grammar warmup failed (non-fatal): %s", exc)
+    if hasattr(_engine, "load_cache_from_disk"):
+        _prefix_cache_load_task = asyncio.create_task(
+            _deferred_load_prefix_cache(),
+            name="primary-prefix-cache-load",
+        )
+
+
+async def _prepare_primary_idle_unload() -> None:
+    """Finish cache restore and persist it before releasing model weights."""
+
+    await _drain_deferred_prefix_cache_load()
+    await _shutdown_save_prefix_cache()
+
+
+def _mirror_primary_lifecycle_state(engine: object, state: str) -> None:
+    if _residency_manager is not None:
+        _residency_manager.set_primary_lifecycle_state(engine, state)
+
+
+def _build_primary_model_lifecycle(engine: object) -> PrimaryModelLifecycle:
+    return PrimaryModelLifecycle(
+        engine,
+        lazy_load=_primary_lazy_load,
+        idle_unload_seconds=_primary_idle_unload_seconds,
+        on_loaded=_finish_primary_demand_load,
+        before_unload=_prepare_primary_idle_unload,
+        release_allocator_cache=_release_allocator_cache,
+        on_state_change=lambda state: _mirror_primary_lifecycle_state(engine, state),
+    )
+
+
 async def lifespan(app: FastAPI):
     """FastAPI lifespan for startup/shutdown events."""
-    global _engine, _mcp_manager
+    global _engine, _mcp_manager, _primary_model_lifecycle
 
     # Install process-death observability BEFORE any executor is created.
     # Two complementary mechanisms (codex r3 NIT clarification):
@@ -660,10 +741,39 @@ async def lifespan(app: FastAPI):
         gc.set_threshold(100_000, 50, 50)
         logger.info("GC control enabled: thresholds set to (100000, 50, 50)")
 
-    # Startup: Start engine if loaded (needed for BatchedEngine in uvicorn's event loop)
-    if _engine is not None and hasattr(_engine, "_loaded") and not _engine._loaded:
+    # The configured engine object is built before uvicorn starts, but its
+    # weights may remain absent until the first request.  Keeping that exact
+    # object preserves every serve-time option and avoids request-controlled
+    # model discovery/downloads.
+    _primary_post_load_done = False
+    if _engine is not None and (_primary_lazy_load or _primary_idle_unload_seconds > 0):
+        if not (
+            hasattr(_engine, "_loaded")
+            and callable(getattr(_engine, "start", None))
+            and callable(getattr(_engine, "stop", None))
+        ):
+            raise RuntimeError(
+                "--lazy-load and --idle-unload-seconds currently support "
+                "text and vision-language serving engines only"
+            )
+        _primary_model_lifecycle = _build_primary_model_lifecycle(_engine)
+        get_config().primary_model_lifecycle = _primary_model_lifecycle
+
+    # Normal mode keeps the established eager-load contract.  An idle-unload
+    # deployment also loads eagerly unless --lazy-load was requested, but does
+    # so through the same coordinator later requests use to wake from standby.
+    if (
+        _engine is not None
+        and hasattr(_engine, "_loaded")
+        and not _engine._loaded
+        and not _primary_lazy_load
+    ):
         try:
-            await _engine.start()
+            if _primary_model_lifecycle is not None:
+                await _primary_model_lifecycle.ensure_loaded()
+                _primary_post_load_done = True
+            else:
+                await _engine.start()
         except Exception as _start_exc:
             # Opt-in telemetry (Phase 2.2 error wiring): serve's real weight
             # load happens HERE in the async lifespan, not in the CLI's
@@ -684,43 +794,8 @@ async def lifespan(app: FastAPI):
 
     # Warmup: generate one token to trigger Metal shader compilation.
     # Runs here (not in CLI) so all engine types are fully started first.
-    if _engine is not None:
-        import time as _time
-
-        logger.info("Warming up (compiling Metal shaders)...")
-        _warmup_start = _time.monotonic()
-        try:
-            _is_hybrid = _detect_hybrid_for_warmup(_engine)
-            if not _is_hybrid:
-                _engine.generate_warmup()
-                # NOTE: do NOT call `mx.eval(mx.zeros(1))` here — that
-                # allocates on the main (asyncio loop) thread which lazily
-                # creates Stream(gpu, 1), and any subsequent eval of arrays
-                # whose graph touches that stream from the mlx-step worker
-                # raises "There is no Stream(gpu, 1) in current thread"
-                # (#170). `generate_warmup()` already routes its own forward
-                # + eval through the step thread, which is what we want.
-            else:
-                # Hybrid models need a full request warmup to compile
-                # Metal shaders and prime the BatchGenerator, preventing
-                # corruption on the first concurrent batch.
-                logger.info(
-                    "Hybrid model: running full request warmup "
-                    "(compiling GatedDeltaNet kernels)"
-                )
-                try:
-                    async for _ in _engine.stream_chat(
-                        messages=[{"role": "user", "content": "Hi"}],
-                        max_tokens=2,
-                        temperature=0.0,
-                    ):
-                        pass
-                except Exception as _e:
-                    logger.debug(f"Hybrid warmup error (non-fatal): {_e}")
-        except Exception as e:
-            logger.debug(f"Warmup failed (non-fatal): {e}")
-        _warmup_secs = _time.monotonic() - _warmup_start
-        logger.info(f"Warmup complete ({_warmup_secs:.1f}s)")
+    if _engine is not None and not _primary_lazy_load and not _primary_post_load_done:
+        await _warmup_primary_engine(_engine)
 
     # Publish the startup engine into the resident-model lifecycle after it is
     # fully started. Legacy routes still expose this engine through cfg.engine,
@@ -760,6 +835,8 @@ async def lifespan(app: FastAPI):
                 ),
             )
     await _residency_manager.start()
+    if _primary_model_lifecycle is not None:
+        await _primary_model_lifecycle.start()
 
     # Tool-grammar warmup (#558): the FIRST grammar-constrained tool call
     # otherwise pays a one-time ~1s llguidance ``LLTokenizer`` build on the
@@ -768,7 +845,7 @@ async def lifespan(app: FastAPI):
     # cost is the shared tokenizer build, not per-schema compile). Pre-build it
     # at startup, off the event loop, so no user request eats the cold-start.
     # Self-gates to grammar-capable tool deployments and is non-fatal.
-    if _engine is not None:
+    if _engine is not None and not _primary_lazy_load and not _primary_post_load_done:
         try:
             await _warmup_tool_grammar(_engine)
         except Exception as _e:
@@ -854,7 +931,12 @@ async def lifespan(app: FastAPI):
     # arrives mid-load either misses (recompute — always correct) or hits the
     # fully-installed cache, never a partially-populated one. Worst case a few
     # early requests recompute their prefix; they never see a wedged server.
-    if _engine is not None and hasattr(_engine, "load_cache_from_disk"):
+    if (
+        _engine is not None
+        and not _primary_lazy_load
+        and not _primary_post_load_done
+        and hasattr(_engine, "load_cache_from_disk")
+    ):
         global _prefix_cache_load_task
         _prefix_cache_load_task = asyncio.create_task(_deferred_load_prefix_cache())
 
@@ -921,6 +1003,9 @@ async def lifespan(app: FastAPI):
         from .routes.video import shutdown_video_jobs
 
         await shutdown_video_jobs()
+
+        if _primary_model_lifecycle is not None:
+            await _primary_model_lifecycle.shutdown()
 
         # Let the deferred prefix-cache load (#1350) finish before we save or
         # tear down the engine — see the helper's docstring for why we await
@@ -2423,7 +2508,11 @@ def load_model(
         _engine._load_blocking()  # noqa: SLF001 — internal helper
         logger.info(f"Model loaded: {model_name}")
     else:
-        logger.info(f"Loading model with BatchedEngine: {model_name}")
+        logger.info(
+            "%s BatchedEngine: %s",
+            "Preparing lazy" if _primary_lazy_load else "Loading model with",
+            model_name,
+        )
         _engine = BatchedEngine(
             model_name=_engine_model_path,
             chat_template_id=(
@@ -2444,7 +2533,15 @@ def load_model(
             enable_disk_stream=enable_disk_stream,
             disk_stream_cache_gb=disk_stream_cache_gb,
         )
-        logger.info(f"Model loaded: {model_name}")
+        logger.info(
+            (
+                "Model configured in standby; weights will load on the first "
+                "inference request: %s"
+                if _primary_lazy_load
+                else "Model loaded: %s"
+            ),
+            model_name,
+        )
 
     # Sync globals into ServerConfig BEFORE _detect_native_tool_support reads
     # them via get_config(). Detection short-circuits when cfg.tool_call_parser
@@ -2735,6 +2832,21 @@ def configure_model_residency(
     return _residency_manager
 
 
+def configure_primary_model_lifecycle(
+    *, lazy_load: bool = False, idle_unload_seconds: float = 0
+) -> None:
+    """Configure standby/wake behavior before the server lifespan starts."""
+
+    global _primary_lazy_load
+    global _primary_idle_unload_seconds
+    global _primary_model_lifecycle
+
+    _primary_lazy_load = bool(lazy_load)
+    _primary_idle_unload_seconds = max(0.0, float(idle_unload_seconds))
+    _primary_model_lifecycle = None
+    get_config().primary_model_lifecycle = None
+
+
 class _ResidentPrimaryAudioHandoff:
     """Adapt the audio dispatcher's lease to residency model entries."""
 
@@ -2774,6 +2886,19 @@ def _set_resident_primary(entry: ModelEntry | None) -> None:
     global _engine, _model_name, _model_alias, _model_path, _served_model_name_set
     global _enable_auto_tool_choice, _tool_call_parser, _tool_parser_instance
     global _reasoning_parser, _reasoning_parser_name
+    global _primary_model_lifecycle
+
+    if _primary_model_lifecycle is not None and (
+        entry is None or entry.engine is not _primary_model_lifecycle.engine
+    ):
+        try:
+            _primary_model_lifecycle.detach()
+        except RuntimeError as exc:
+            raise ResidentModelBusyError(
+                "primary model lifecycle transition is in progress"
+            ) from exc
+        _primary_model_lifecycle = None
+        get_config().primary_model_lifecycle = None
 
     if entry is None:
         _engine = None
@@ -2828,6 +2953,10 @@ def _set_resident_primary(entry: ModelEntry | None) -> None:
     cfg.reasoning_parser = _reasoning_parser
     cfg.reasoning_parser_name = entry.reasoning_parser
     cfg.ready = True
+    if _primary_lazy_load or _primary_idle_unload_seconds > 0:
+        _primary_model_lifecycle = _build_primary_model_lifecycle(entry.engine)
+        cfg.primary_model_lifecycle = _primary_model_lifecycle
+        asyncio.create_task(_primary_model_lifecycle.start())
 
 
 def _sync_config() -> None:

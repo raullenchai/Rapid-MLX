@@ -501,6 +501,32 @@ def _run_uvicorn(app, args, log_level: str) -> None:
         raise
 
 
+def _serve_startup_message(args) -> str:
+    """Render the pre-bind status without importing the inference stack."""
+
+    startup_status = (
+        "standby — model loads on first request"
+        if getattr(args, "lazy_load", False)
+        else "warming up — this can take a few seconds"
+    )
+    listen_fd = getattr(args, "listen_fd", None)
+    if listen_fd is not None:
+        return f"  Starting server on inherited fd {listen_fd} ({startup_status})"
+    host_display = "localhost" if args.host == "0.0.0.0" else args.host
+    return f"  Starting server on http://{host_display}:{args.port} ({startup_status})"
+
+
+def _validate_primary_lifecycle_args(args) -> None:
+    """Reject invalid standby policy before model discovery or MLX imports."""
+
+    import math
+
+    idle_unload_seconds = getattr(args, "idle_unload_seconds", 0.0)
+    if not math.isfinite(idle_unload_seconds) or idle_unload_seconds < 0:
+        print("Error: --idle-unload-seconds must be finite and >= 0")
+        raise SystemExit(1)
+
+
 def _port_is_busy(host: str, port: int) -> bool:
     """Best-effort probe: is ``(host, port)`` already bound by another
     process? Used by ``_run_uvicorn`` to disambiguate an uvicorn
@@ -3441,6 +3467,8 @@ def serve_command(args):
     import os
     import sys
 
+    _validate_primary_lifecycle_args(args)
+
     if bounds_error := _vision_pixel_bounds_error(
         getattr(args, "vision_min_pixels", 0),
         getattr(args, "vision_max_pixels", 0),
@@ -3833,10 +3861,10 @@ def serve_command(args):
     if getattr(args, "resident_model_idle_ttl", 0.0) < 0:
         print("Error: --resident-model-idle-ttl must be >= 0")
         sys.exit(1)
+    import math
+
     idle_cache_clear_seconds = getattr(args, "idle_cache_clear_seconds", None)
     if idle_cache_clear_seconds is not None:
-        import math
-
         if not math.isfinite(idle_cache_clear_seconds) or idle_cache_clear_seconds < 0:
             print("Error: --idle-cache-clear-seconds must be finite and >= 0")
             sys.exit(1)
@@ -5084,6 +5112,10 @@ def serve_command(args):
         idle_ttl_seconds=getattr(args, "resident_model_idle_ttl", 0.0),
         gpu_memory_utilization=args.gpu_memory_utilization,
     )
+    server.configure_primary_model_lifecycle(
+        lazy_load=bool(getattr(args, "lazy_load", False)),
+        idle_unload_seconds=getattr(args, "idle_unload_seconds", 0.0),
+    )
     try:
         load_model(
             args.model,
@@ -5165,19 +5197,7 @@ def serve_command(args):
     print()
     host_display = "localhost" if args.host == "0.0.0.0" else args.host
     listen_fd = getattr(args, "listen_fd", None)
-    if listen_fd is not None:
-        # Socket activation path — supervisor pre-bound the listening
-        # socket. We don't know the actual address from the fd without a
-        # ``getsockname`` lookup; surfacing fd=<N> in the banner is the
-        # honest thing to print here.
-        print(
-            f"  Starting server on inherited fd {listen_fd} "
-            "(warming up — this can take a few seconds)"
-        )
-    else:
-        print(
-            f"  Starting server on http://{host_display}:{args.port} (warming up — this can take a few seconds)"
-        )
+    print(_serve_startup_message(args))
     from vllm_mlx._version_check import print_staleness_warning_if_any
 
     # Long-lived launchd/daemon servers have no interactive prompt. Preserve
@@ -11694,6 +11714,24 @@ Examples:
         help=(
             "Evict idle unpinned secondary models after this many seconds. "
             "0 disables idle eviction (default: 0)."
+        ),
+    )
+    serve_parser.add_argument(
+        "--lazy-load",
+        action="store_true",
+        help=(
+            "Bind the API endpoint without loading the configured model's "
+            "weights; the first inference request loads and warms it."
+        ),
+    )
+    serve_parser.add_argument(
+        "--idle-unload-seconds",
+        type=float,
+        default=0.0,
+        help=(
+            "Release the configured primary model after this many idle "
+            "seconds while keeping the API endpoint online. A later request "
+            "reloads it. 0 disables primary idle unload (default: 0)."
         ),
     )
     # Paged cache options (experimental)

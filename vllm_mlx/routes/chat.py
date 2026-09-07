@@ -98,6 +98,7 @@ from ..service.helpers import (
     _parse_tool_calls_with_parser,
     _raise_lifecycle_cancel_or_reraise,
     _release_admission_unless_committed,
+    _release_primary_request_unless_committed,
     _rescue_silent_drop_from_reasoning,
     _resolve_enable_thinking,
     _resolve_max_tokens,
@@ -115,6 +116,7 @@ from ..service.helpers import (
     build_extended_sampling_kwargs,
     enable_thinking_warning_header,
     enforce_context_length_for_messages,
+    ensure_engine_ready,
     get_engine,
     get_model_max_context,
     maybe_apply_reasoning_effort,
@@ -3444,6 +3446,7 @@ async def create_chat_completion(request: ChatCompletionRequest, raw_request: Re
     """
     _validate_model_name(request.model)
     engine = get_engine(request.model)
+    await ensure_engine_ready(engine)
 
     # Admission reservation is acquired LATER — after cheap validation
     # that may raise HTTPException (codex R3: validation errors used to
@@ -3463,6 +3466,8 @@ async def create_chat_completion(request: ChatCompletionRequest, raw_request: Re
     finally:
         if _admission_acquired[0]:
             _release_admission_unless_committed(engine, _commit_state[0])
+        else:
+            _release_primary_request_unless_committed(engine, _commit_state[0])
 
 
 def _effective_posthoc_reasoning_cap(sampling_kwargs: dict, request) -> int | None:

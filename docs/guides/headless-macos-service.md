@@ -69,6 +69,23 @@ To clear advanced serve flags, use `service configure --clear-serve-args`.
 Changing the service account or executable still requires uninstall/install,
 because those are security boundaries rather than runtime preferences.
 
+For an endpoint that survives reboot without permanently reserving model
+memory, pass the primary standby policy through to `serve`:
+
+```bash
+sudo rapid-mlx service configure --model qwen3.5-9b-4bit -- \
+  --lazy-load --idle-unload-seconds 1800
+sudo rapid-mlx service apply
+```
+
+`/readyz` remains successful in `standby` because the endpoint can accept and
+coalesce a demand load; `/health` and `/health/ready` expose the lifecycle state
+and whether weights are currently loaded. Chat Completions, legacy Completions,
+Responses, and Anthropic Messages/counting wake the configured primary. The
+independent `--embedding-model` lane is unaffected. A request can only wake the
+primary configured by the service definition—it cannot select an arbitrary
+repository or trigger a new download.
+
 For API authentication, send the key over stdin to a private credential file.
 It never appears in argv, the plist, shell history, `service config`, or status:
 

@@ -91,6 +91,15 @@ async def health():
     # any future lane from tripping the handler.
     engine = cfg.engine
     engine_stats = engine.get_stats() if engine is not None else {}
+    primary_lifecycle = cfg.primary_model_lifecycle
+    primary_status = (
+        primary_lifecycle.snapshot() if primary_lifecycle is not None else None
+    )
+    model_loaded = (
+        bool(primary_status["model_loaded"])
+        if primary_status is not None
+        else engine is not None
+    )
 
     if getattr(engine, "is_image_gen", False):
         model_type = "image-gen"
@@ -104,11 +113,12 @@ async def health():
     return {
         "status": "healthy",
         "ready": cfg.ready,
-        "model_loaded": engine is not None,
+        "model_loaded": model_loaded,
         "model_name": cfg.model_name,
         "model_type": model_type,
         "engine_type": engine_stats.get("engine_type", "unknown"),
         "mcp": mcp_info,
+        "model_lifecycle": primary_status,
     }
 
 
@@ -126,7 +136,20 @@ async def health_ready():
     cfg = get_config()
     if not cfg.ready:
         raise HTTPException(status_code=503, detail="model loading")
-    return {"ready": True, "model": cfg.model_name}
+    lifecycle = cfg.primary_model_lifecycle
+    status = lifecycle.snapshot() if lifecycle is not None else None
+    if status is not None and status["state"] == "error":
+        raise HTTPException(status_code=503, detail="model lifecycle error")
+    return {
+        "ready": True,
+        "model": cfg.model_name,
+        "state": status["state"] if status is not None else "ready",
+        "model_loaded": (
+            bool(status["model_loaded"])
+            if status is not None
+            else cfg.engine is not None
+        ),
+    }
 
 
 @probe_router.get("/healthz")
@@ -166,6 +189,13 @@ async def healthz():
     close.
     """
     cfg = get_config()
+    lifecycle = cfg.primary_model_lifecycle
+    lifecycle_status = lifecycle.snapshot() if lifecycle is not None else None
+    model_loaded = (
+        bool(lifecycle_status["model_loaded"])
+        if lifecycle_status is not None
+        else cfg.engine is not None
+    )
     if cfg.draining:
         # Mirror the JSON shape the healthy path emits so operators /
         # dashboards parsing the body get a structured ``status`` field
@@ -176,14 +206,14 @@ async def healthz():
             content={
                 "status": "draining",
                 "ready": False,
-                "model_loaded": cfg.engine is not None,
+                "model_loaded": model_loaded,
                 "model_name": cfg.model_name,
             },
         )
     return {
         "status": "healthy",
         "ready": cfg.ready,
-        "model_loaded": cfg.engine is not None,
+        "model_loaded": model_loaded,
         "model_name": cfg.model_name,
     }
 
