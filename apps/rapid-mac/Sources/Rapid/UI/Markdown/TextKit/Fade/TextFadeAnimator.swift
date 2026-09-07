@@ -337,7 +337,8 @@ final class TextFadeAnimator {
             return
         }
 
-        var needsRedraw = false
+        var dirtyRect = CGRect.null
+        var needsFullRedraw = false
         for index in fadingParts.indices {
             let part = fadingParts[index]
             let elapsed = now - part.startTime
@@ -347,8 +348,12 @@ final class TextFadeAnimator {
             guard elapsed >= 0 else {
                 if fadingParts[index].lastAppliedBucket != 0 {
                     fadingParts[index].lastAppliedBucket = 0
-                    apply(alpha: 0, to: part.range, now: now)
-                    needsRedraw = true
+                    if let textRange = apply(alpha: 0, to: part.range, now: now),
+                       let rect = renderingBounds(for: textRange) {
+                        dirtyRect = dirtyRect.isNull ? rect : dirtyRect.union(rect)
+                    } else {
+                        needsFullRedraw = true
+                    }
                 }
                 continue
             }
@@ -361,8 +366,12 @@ final class TextFadeAnimator {
                 if fadingParts[index].lastAppliedBucket == bucket { continue }
                 fadingParts[index].lastAppliedBucket = bucket
             }
-            apply(alpha: alpha, to: part.range, now: now)
-            needsRedraw = true
+            if let textRange = apply(alpha: alpha, to: part.range, now: now),
+               let rect = renderingBounds(for: textRange) {
+                dirtyRect = dirtyRect.isNull ? rect : dirtyRect.union(rect)
+            } else {
+                needsFullRedraw = true
+            }
         }
 
         // Drop finished parts. Their final write left them at full opacity,
@@ -372,7 +381,19 @@ final class TextFadeAnimator {
         if fadingParts.isEmpty {
             displayLink.stop()
         }
-        if needsRedraw { hostView?.needsDisplay = true }
+        guard let hostView, needsFullRedraw || !dirtyRect.isNull else { return }
+        if needsFullRedraw {
+            // Geometry can be temporarily unavailable between a storage edit
+            // and its next layout pass. Preserve correctness in that rare
+            // case instead of risking stale glyphs.
+            hostView.needsDisplay = true
+        } else {
+            // A rendering attribute can affect antialiasing just outside the
+            // segment frame. Pad slightly, then keep the invalidation inside
+            // the view so AppKit can preserve the rest of a long answer.
+            let padded = dirtyRect.insetBy(dx: -2, dy: -2).intersection(hostView.bounds)
+            hostView.setNeedsDisplay(padded)
+        }
     }
 
     /// Paint everything not yet started as fully transparent.
@@ -395,8 +416,11 @@ final class TextFadeAnimator {
         Int(alpha * 32)
     }
 
-    private func apply(alpha: Double, to range: NSRange, now: CFTimeInterval) {
-        guard let textRange = textRange(from: range) else { return }
+    @discardableResult
+    private func apply(
+        alpha: Double, to range: NSRange, now: CFTimeInterval
+    ) -> NSTextRange? {
+        guard let textRange = textRange(from: range) else { return nil }
         // Resolve the colour under the host view's appearance.
         //
         // `withAlphaComponent` and `blended(withFraction:of:)` both FLATTEN a
@@ -425,6 +449,25 @@ final class TextFadeAnimator {
         textLayoutManager.setRenderingAttributes(
             [.foregroundColor: colour], for: textRange
         )
+
+        return textRange
+    }
+
+    /// Exact laid-out bounds affected by one rendering-attribute update.
+    ///
+    /// Kept separate from ``apply(alpha:to:now:)`` because the same method is
+    /// also used to hide newly queued words during a content flush. The owner
+    /// already schedules a content redraw for that flush; computing geometry
+    /// there would add work without narrowing any invalidation.
+    private func renderingBounds(for textRange: NSTextRange) -> CGRect? {
+        var bounds = CGRect.null
+        textLayoutManager.enumerateTextSegments(
+            in: textRange, type: .standard, options: []
+        ) { _, frame, _, _ in
+            bounds = bounds.isNull ? frame : bounds.union(frame)
+            return true
+        }
+        return bounds.isNull ? nil : bounds
     }
 
     private func resolvedColor(alpha: Double, now: CFTimeInterval) -> NSColor {
