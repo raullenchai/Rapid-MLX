@@ -676,9 +676,9 @@ async def _prepare_primary_idle_unload() -> None:
     await _shutdown_save_prefix_cache()
 
 
-def _mirror_primary_lifecycle_state(state: str) -> None:
+def _mirror_primary_lifecycle_state(engine: object, state: str) -> None:
     if _residency_manager is not None:
-        _residency_manager.set_primary_lifecycle_state(state)
+        _residency_manager.set_primary_lifecycle_state(engine, state)
 
 
 def _build_primary_model_lifecycle(engine: object) -> PrimaryModelLifecycle:
@@ -689,7 +689,7 @@ def _build_primary_model_lifecycle(engine: object) -> PrimaryModelLifecycle:
         on_loaded=_finish_primary_demand_load,
         before_unload=_prepare_primary_idle_unload,
         release_allocator_cache=_release_allocator_cache,
-        on_state_change=_mirror_primary_lifecycle_state,
+        on_state_change=lambda state: _mirror_primary_lifecycle_state(engine, state),
     )
 
 
@@ -2885,7 +2885,12 @@ def _set_resident_primary(entry: ModelEntry | None) -> None:
     if _primary_model_lifecycle is not None and (
         entry is None or entry.engine is not _primary_model_lifecycle.engine
     ):
-        _primary_model_lifecycle.detach()
+        try:
+            _primary_model_lifecycle.detach()
+        except RuntimeError as exc:
+            raise ResidentModelBusyError(
+                "primary model lifecycle transition is in progress"
+            ) from exc
         _primary_model_lifecycle = None
         get_config().primary_model_lifecycle = None
 

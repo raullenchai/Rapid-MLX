@@ -60,11 +60,12 @@ class PrimaryModelLifecycle:
         self._monitor_task: asyncio.Task | None = None
         self._last_activity = self._clock()
         self._last_error: str | None = None
+        self._detached = False
         self.state = "ready" if self._is_loaded() else "standby"
 
     def _set_state(self, state: str) -> None:
         self.state = state
-        if self._on_state_change is not None:
+        if not self._detached and self._on_state_change is not None:
             self._on_state_change(state)
 
     @property
@@ -78,6 +79,15 @@ class PrimaryModelLifecycle:
     @property
     def model_loaded(self) -> bool:
         return self._is_loaded()
+
+    @property
+    def transitioning(self) -> bool:
+        task = self._load_task
+        return (
+            self._transition_lock.locked()
+            or self.state in {"loading", "unloading"}
+            or (task is not None and not task.done())
+        )
 
     def _is_loaded(self) -> bool:
         loaded = getattr(self.engine, "_loaded", None)
@@ -97,7 +107,11 @@ class PrimaryModelLifecycle:
         }
 
     async def start(self) -> None:
-        if self.idle_unload_seconds <= 0 or self._monitor_task is not None:
+        if (
+            self._detached
+            or self.idle_unload_seconds <= 0
+            or self._monitor_task is not None
+        ):
             return
         self._monitor_task = asyncio.create_task(
             self._monitor_idle(), name="primary-model-idle-unload"
@@ -117,6 +131,9 @@ class PrimaryModelLifecycle:
     def detach(self) -> None:
         """Synchronously retire this coordinator during a primary handoff."""
 
+        if self.transitioning:
+            raise RuntimeError("primary model lifecycle transition is in progress")
+        self._detached = True
         task = self._monitor_task
         self._monitor_task = None
         if task is not None:
@@ -126,6 +143,8 @@ class PrimaryModelLifecycle:
     async def ensure_loaded(self) -> None:
         """Load once and let concurrent/cancelled callers share the attempt."""
 
+        if self._detached:
+            raise RuntimeError("primary model lifecycle is detached")
         self.touch()
         if self._is_loaded() and self.state == "ready":
             self._set_state("ready")
@@ -179,7 +198,7 @@ class PrimaryModelLifecycle:
     async def evict_if_idle(self) -> bool:
         """Move an idle loaded primary to standby without removing its route."""
 
-        if self.idle_unload_seconds <= 0 or self.state != "ready":
+        if self._detached or self.idle_unload_seconds <= 0 or self.state != "ready":
             return False
         if self._clock() - self._last_activity < self.idle_unload_seconds:
             return False
@@ -215,21 +234,64 @@ class PrimaryModelLifecycle:
                         if inspect.isawaitable(result):
                             await result
                     return False
+                except BaseException:
+                    # Cancellation can arrive after the engine closed
+                    # admission but before pause_generation returned. Reopen
+                    # defensively even though our local `paused` flag was not
+                    # assigned yet.
+                    self.touch()
+                    resume = getattr(self.engine, "resume_generation", None)
+                    if callable(resume):
+                        result = resume()
+                        if inspect.isawaitable(result):
+                            await result
+                    raise
 
             self._set_state("unloading")
             try:
-                await _run_hook(self._before_unload)
+                try:
+                    await _run_hook(self._before_unload)
+                except asyncio.CancelledError:
+                    self._set_state("ready")
+                    self.touch()
+                    raise
+                except Exception as exc:
+                    # Cache persistence is best-effort. A failure before stop
+                    # leaves a perfectly usable resident engine and must not
+                    # turn the stable endpoint into a permanent 503.
+                    self._last_error = type(exc).__name__
+                    self._set_state("ready")
+                    self.touch()
+                    logger.exception(
+                        "Primary model pre-unload hook failed; keeping it resident"
+                    )
+                    return False
+
                 stop = getattr(self.engine, "stop", None)
                 if not callable(stop):
+                    self._set_state("ready")
+                    self.touch()
                     raise RuntimeError("configured engine does not support stop()")
-                result = stop()
-                if inspect.isawaitable(result):
-                    await result
-                await _run_hook(self._release_allocator_cache)
-            except BaseException as exc:
-                self._set_state("error")
-                self._last_error = type(exc).__name__
-                raise
+                try:
+                    result = stop()
+                    if inspect.isawaitable(result):
+                        await result
+                except BaseException as exc:
+                    self._last_error = type(exc).__name__
+                    if self._is_loaded():
+                        self._set_state("ready")
+                        self.touch()
+                    else:
+                        self._set_state("error")
+                    raise
+
+                try:
+                    await _run_hook(self._release_allocator_cache)
+                except Exception:
+                    # The engine and its model references are already gone.
+                    # Allocator cleanup can reduce RSS but is not required for
+                    # correctness, so remain reloadable in standby.
+                    logger.exception("Primary allocator cache release failed")
             finally:
                 if paused:
                     resume = getattr(self.engine, "resume_generation", None)

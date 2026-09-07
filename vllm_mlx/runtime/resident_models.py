@@ -800,11 +800,15 @@ class ResidentModelManager:
         self._index_record(record)
         return record
 
-    def set_primary_lifecycle_state(self, state: str) -> None:
+    def set_primary_lifecycle_state(self, engine: object, state: str) -> None:
         """Mirror the configured primary's standby lifecycle into accounting."""
 
         record = next(
-            (candidate for candidate in self._records.values() if candidate.primary),
+            (
+                candidate
+                for candidate in self._records.values()
+                if candidate.primary and candidate.entry.engine is engine
+            ),
             None,
         )
         if record is None:

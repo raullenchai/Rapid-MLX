@@ -105,6 +105,52 @@ async def test_idle_unload_keeps_engine_reloadable_and_runs_cache_hooks():
 
 
 @pytest.mark.asyncio
+async def test_pre_unload_failure_keeps_loaded_engine_ready():
+    now = [100.0]
+    engine = FakeEngine(loaded=True)
+
+    async def fail_save() -> None:
+        raise OSError("disk full")
+
+    lifecycle = PrimaryModelLifecycle(
+        engine,
+        idle_unload_seconds=5,
+        before_unload=fail_save,
+        clock=lambda: now[0],
+    )
+    now[0] += 6
+
+    assert await lifecycle.evict_if_idle() is False
+    assert engine._loaded is True
+    assert engine.stop_calls == 0
+    assert engine.paused is False
+    assert lifecycle.snapshot()["state"] == "ready"
+    await lifecycle.ensure_loaded()
+    assert engine.start_calls == 0
+
+
+@pytest.mark.asyncio
+async def test_detach_refuses_in_flight_load_then_suppresses_callbacks():
+    engine = FakeEngine()
+    engine.start_gate = asyncio.Event()
+    states: list[str] = []
+    lifecycle = PrimaryModelLifecycle(
+        engine, lazy_load=True, on_state_change=states.append
+    )
+    load = asyncio.create_task(lifecycle.ensure_loaded())
+    await asyncio.sleep(0)
+
+    with pytest.raises(RuntimeError, match="transition is in progress"):
+        lifecycle.detach()
+
+    engine.start_gate.set()
+    await load
+    lifecycle.detach()
+    lifecycle._set_state("standby")
+    assert states == ["loading", "ready"]
+
+
+@pytest.mark.asyncio
 async def test_active_request_restarts_idle_window():
     now = [10.0]
     engine = FakeEngine(loaded=True)
@@ -190,6 +236,26 @@ async def test_ready_engine_wakes_only_the_configured_primary():
     assert await get_ready_engine("primary-alias") is primary
     lifecycle.ensure_loaded.assert_awaited_once()
     reset_config()
+
+
+def test_residency_state_callback_is_bound_to_engine_identity():
+    from vllm_mlx.runtime.model_registry import ModelEntry, ModelRegistry
+    from vllm_mlx.runtime.resident_models import ResidentModelManager
+
+    old_engine = FakeEngine(loaded=True)
+    new_engine = FakeEngine(loaded=True)
+    registry = ModelRegistry()
+    registry.add(ModelEntry(old_engine, "old", "old"), is_default=True)
+    manager = ResidentModelManager(registry, AsyncMock())
+    old_record = manager.register_primary(registry.get_entry("old"))
+    old_record.primary = False
+    registry.add(ModelEntry(new_engine, "new", "new"), is_default=True)
+    new_record = manager.register_primary(registry.get_entry("new"))
+
+    manager.set_primary_lifecycle_state(old_engine, "standby")
+    assert new_record.state == "resident"
+    manager.set_primary_lifecycle_state(new_engine, "standby")
+    assert new_record.state == "standby"
 
 
 @pytest.mark.asyncio
