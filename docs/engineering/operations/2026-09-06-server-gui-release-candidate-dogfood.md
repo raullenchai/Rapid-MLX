@@ -17,26 +17,34 @@ returning** to **3.05 seconds**, and the packaged sidecar completed in **4.17
 seconds**. Server and isolated-GUI dogfood passed after the fix.
 
 This is a commit-bound local qualification receipt, not authorization to
-publish a release. The source base was `caafd08df9e8d7242b081a3fc9fb7c9f6807eca0`;
-the P1 fix was tested as an uncommitted candidate on top and must pass the PR
-merge gates before Atlas uses it for release integration.
+publish a release. The initial qualification base was
+`caafd08df9e8d7242b081a3fc9fb7c9f6807eca0`. The branch was then rebased onto
+`cc7d849821643706da15a9cdc52545ea28a05ace` and the complete release app plus
+the newly merged Community Benchmark surface were requalified at
+`f09a761a26de553f0e87f66c30bd733759f6f4b2`. PR merge gates remain mandatory
+before Atlas uses the fix for release integration.
 
 ## Candidate and host
 
-- Rapid-MLX: 0.13.4, base `caafd08df9e8d7242b081a3fc9fb7c9f6807eca0`
+- Rapid-MLX: 0.13.4, latest tested head
+  `f09a761a26de553f0e87f66c30bd733759f6f4b2`
+- Latest tested upstream base:
+  `cc7d849821643706da15a9cdc52545ea28a05ace`
 - Branch: `vector/release-dogfood-20260906`
 - Host: Apple M3 Ultra, 256 GiB unified memory, macOS 26.5.2
 - Source runtime: Python 3.11.16, MLX 0.32.2
 - Desktop sidecar: Python 3.12, MLX 0.32.2, mlx-lm 0.31.3,
   mlx-vlm 0.6.17, mlx-audio 0.4.3, mflux 0.19.0
 - Release-mode sidecar: 482 MiB raw, 160 MiB compressed, 173 Mach-O files
-- Sidecar tarball SHA-256:
-  `22dd46425296d6d3644c5b4eab2fd11220e4301a2afb0ef45b451b24b33fb44d`
+- Exact-head sidecar tarball SHA-256:
+  `108556bdbea7550296863dd72a855dbddb682781401bdefbec19e2ae38cd80ba`
 - Desktop signing: deep ad-hoc signing for local dogfood only
 
 The production app at `/Applications/Rapid-MLX Desktop.app` remained running
-and untouched. GUI work used a copied app with bundle ID
-`com.rapidmlx.rapid.dogfood-8dbdee13`, a throwaway HOME, and port 59381.
+and untouched. Initial GUI work used bundle ID
+`com.rapidmlx.rapid.dogfood-8dbdee13` and port 59381. Exact-head Community
+Benchmark qualification used `com.rapidmlx.rapid.dogfood-2ec525f1`, another
+throwaway HOME, and port 59382.
 
 ## P1 reproduced and fixed
 
@@ -126,6 +134,35 @@ testing. The isolated app completed these user-visible paths:
 - Both shutdowns reaped the owned sidecar and released port 59381. The
   throwaway run was marked finished for host hygiene.
 
+### Exact-head Community Benchmark dogfood
+
+After rebasing onto upstream `cc7d84982` (Desktop Community Benchmark result,
+model-grouping, and run-progress changes), the full release app was rebuilt and
+launched as a second isolated persona. The model menu rendered the three new
+sections in order: Recommended for this Mac, Downloaded, and All models. The
+recommended group included the fitting Flux 2 Klein, Gemma 4, and Qwen focus
+models; the cached Qwen 3.5 4B model appeared under Downloaded.
+
+A first real run was stopped after the UI showed the model, workload scope,
+expected duration, and advancing elapsed timer. The benchmark process group
+was gone within the five-second observation window, the control returned to
+Run locally, and the UI reported that no incomplete result was shared.
+
+A second real `qwen3.5-4b-4bit` run completed all ten measured rounds and
+flowed from the packaged CLI's JSON record into the GUI:
+
+| Case | Measured rounds | GUI / independently recomputed result |
+| --- | ---: | ---: |
+| `pp512-tg128` | 5 | 171.0 tok/s, TTFT 266 ms |
+| `pp2048-tg512` | 5 | 169.6 tok/s, TTFT 947 ms |
+
+The independent calculation used the leaderboard formula
+`(output_tokens - 1) / decode_duration`. It matched both GUI rows exactly.
+The completion stamp `2026-09-07T05:29:39.745233Z` rendered in the local time
+zone as `Today 10:29 PM`. The exact-head app then terminated cleanly, released
+its host lock, and was marked finished. No P0 or P1 issue was found in the new
+Community Benchmark surface.
+
 ## Automated verification
 
 - `uv run pytest -q tests/test_cli_models.py`: 85 passed
@@ -139,10 +176,12 @@ testing. The isolated app completed these user-visible paths:
 - `git diff --check`: passed
 - `apps/rapid-mac/scripts/desktop-test-timeout.sh`: 3,542 tests in 306
   suites passed in 90.61 seconds
-- `RAPID_CANDIDATE_IDENTITY=candidate-caafd08e bash scripts/build.sh`:
-  passed
+- Exact-head Community Benchmark Swift selection: 29 passed
+- Exact-head cache/first-run/offline Python selection: 27 passed
+- Initial release build (`candidate-caafd08e`): passed
+- Exact-head release build (`candidate-f09a761a`): passed
 - Packaged `rapid-mlx models --cached --json` under a ten-second outer guard:
-  passed in 4.17 seconds
+  passed in 4.17 seconds initially and 4.19 seconds at exact head
 
 An initial direct `swift test` invocation produced timing failures because it
 allowed Swift Testing to parallelize suites. The repository and hosted CI
