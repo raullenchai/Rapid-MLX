@@ -123,10 +123,10 @@ enum DraftPostFlowFailure: Error, Equatable, Sendable {
              .destinationMismatch, .focusChanged,
              .draftMissing, .draftAmbiguous, .draftTooLarge,
              .composerMissing, .composerAmbiguous, .composerNotEmpty,
-             .permissionMissing, .cancelled, .accessibilityTreeTooLarge:
+             .permissionMissing, .accessibilityTreeTooLarge:
             true
         case .targetUnavailable, .writeRejected, .verificationFailed,
-             .dependencyFailure:
+             .cancelled, .dependencyFailure:
             false
         }
     }

@@ -236,7 +236,11 @@ final class DraftPostInstructionFlowViewModel {
     }
 
     func returnToPlan() {
-        guard plan != nil, !isActive else { return }
+        guard case .executionFailed(let failure, _) = phase,
+              failure.permitsReviewedRetry,
+              plan != nil,
+              !isActive
+        else { return }
         phase = .reviewing
     }
 

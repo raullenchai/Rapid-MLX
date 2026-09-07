@@ -480,7 +480,45 @@ struct DraftPostInstructionPlannerTests {
         #expect(!DraftPostFlowFailure.targetUnavailable.permitsReviewedRetry)
         #expect(!DraftPostFlowFailure.writeRejected.permitsReviewedRetry)
         #expect(!DraftPostFlowFailure.verificationFailed.permitsReviewedRetry)
+        #expect(!DraftPostFlowFailure.cancelled.permitsReviewedRetry)
         #expect(!DraftPostFlowFailure.dependencyFailure.permitsReviewedRetry)
+    }
+
+    @MainActor
+    @Test("Cancellation after a simulated write cannot return to the reviewed plan")
+    func cancellationAfterWriteRequiresStartOver() async throws {
+        let plan = DraftPostPlan(
+            purpose: "Launch",
+            audience: "Developers",
+            talkingPoints: ["Local"],
+            tone: "Concise",
+            destination: "x.com",
+            draft: "Reviewed draft"
+        )
+        let driver = WrittenThenCancelledPreparedDraftDriver()
+        let viewModel = DraftPostInstructionFlowViewModel(
+            catalog: InstructionWindowCatalog(options: [Self.destination]),
+            planner: ScriptedInstructionPlanner(result: .ready(plan)),
+            destinationInspector: InstructionDestinationInspector(),
+            driver: driver
+        )
+        await viewModel.load()
+        viewModel.destinationID = Self.destination.id
+        viewModel.instruction = "Draft a launch update for X."
+        viewModel.analyze()
+        await Self.waitUntil { viewModel.phase == .reviewing }
+        viewModel.execute()
+        await Self.waitUntil {
+            if case .executionFailed(.cancelled, _) = viewModel.phase { return true }
+            return false
+        }
+        #expect(await driver.didWrite)
+
+        viewModel.returnToPlan()
+        guard case .executionFailed(.cancelled, _) = viewModel.phase else {
+            Issue.record("An ambiguous cancellation returned to the stale reviewed plan")
+            return
+        }
     }
 
     @MainActor
@@ -735,5 +773,18 @@ private actor CancellationIgnoringPreparedDraftDriver: PreparedDraftPostFlowDriv
     func complete() {
         continuation?.resume()
         continuation = nil
+    }
+}
+
+private actor WrittenThenCancelledPreparedDraftDriver: PreparedDraftPostFlowDriving {
+    private(set) var didWrite = false
+
+    func transferPreparedDraft(
+        _: String,
+        to _: ComputerUseWindowOption,
+        expectedDestination _: ComputerUseBrowserDestinationIdentity
+    ) async throws {
+        didWrite = true
+        throw CancellationError()
     }
 }
