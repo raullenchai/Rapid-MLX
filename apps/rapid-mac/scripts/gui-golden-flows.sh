@@ -3079,7 +3079,15 @@ flow_no_dead_controls() {
     # finds all of it. Recovery buttons that highlighted, accepted the click
     # and did nothing (#1595); toggles that reported success without changing
     # value (#1608); a tray item that fired and reported nowhere (#1605).
-    start_persona no-dead-controls
+    # This inventory flips the Settings telemetry toggle ON for one step. Under
+    # CI's RAPID_MLX_TELEMETRY=0 the toggle could never read back as on, and
+    # before the kill switch existed that step was a production leak (one
+    # session per run, no models — the "(Virtual)" client-days). Lift the
+    # switch for this persona and point it at the loopback sink instead.
+    start_telemetry_sink "$OUT_ROOT/no-dead-controls"
+    start_persona no-dead-controls \
+        RAPID_MLX_TELEMETRY=1 \
+        RAPID_MLX_TELEMETRY_ENDPOINT="http://127.0.0.1:$TELEMETRY_SINK_PORT/v1/events"
     dismiss_first_run
     open_settings
     see_main "$OUT/dead-before.json"
