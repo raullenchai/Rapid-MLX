@@ -196,7 +196,7 @@ struct JumpToBottomScrollTests {
         let (scrollView, document, probe) = makeScrollView()
         let coordinator = makeCoordinator(pinned: binding)
 
-        coordinator.setStreaming(true)
+        coordinator.setStreaming(true, contentLength: 1)
         coordinator.attach(to: probe)
         await settle()
         #expect(abs(scrollView.contentView.bounds.minY - 1_800) < 1)
@@ -207,6 +207,34 @@ struct JumpToBottomScrollTests {
 
         #expect(!pinned)
         #expect(abs(scrollView.contentView.bounds.minY - 1_800) < 1)
+    }
+
+    @Test("A measured assistant row, not older document layout, controls release")
+    func measuredAssistantRowControlsRelease() async {
+        var pinned = true
+        let binding = Binding(get: { pinned }, set: { pinned = $0 })
+        let (scrollView, _, probe) = makeScrollView()
+        defer { withExtendedLifetime(scrollView) {} }
+        let coordinator = makeCoordinator(pinned: binding)
+        let messageID = UUID()
+
+        coordinator.attach(to: probe)
+        await settle()
+        coordinator.setStreaming(
+            true,
+            messageID: messageID,
+            contentLength: 20,
+            answerHeight: 200
+        )
+        #expect(pinned, "an answer exactly one viewport tall should keep following")
+
+        coordinator.setStreaming(
+            true,
+            messageID: messageID,
+            contentLength: 21,
+            answerHeight: 201
+        )
+        #expect(!pinned, "a measured answer taller than the viewport should release following")
     }
 
     @Test("Answer growth threshold is one viewport")
@@ -221,6 +249,15 @@ struct JumpToBottomScrollTests {
             documentHeightAtStreamStart: 2_000,
             viewportHeight: 200
         ))
+    }
+
+    @Test("Only transcript navigation keys count as scroll intent")
+    func transcriptScrollKeys() {
+        for keyCode: UInt16 in [115, 116, 119, 121, 125, 126] {
+            #expect(TranscriptScrollPositionProbe.Coordinator.isTranscriptScrollKey(keyCode))
+        }
+        #expect(!TranscriptScrollPositionProbe.Coordinator.isTranscriptScrollKey(0))
+        #expect(!TranscriptScrollPositionProbe.Coordinator.isTranscriptScrollKey(nil))
     }
 }
 
