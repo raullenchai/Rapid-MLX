@@ -122,13 +122,13 @@ struct DraftPostFlowTests {
         try actuator.clearLastDraftIfUnchanged()
     }
 
-    @Test("The first runnable starter is draft and post")
+    @Test("Draft and post remains runnable with its publish boundary")
     func catalogAvailability() throws {
-        let available = ComputerUseStarter.catalog.filter {
-            $0.availability == .available
-        }
-        #expect(available.map(\.kind) == [.draftAndPost])
-        #expect(try #require(available.first).approvalNote == "Rapid will stop before publishing.")
+        let starter = try #require(ComputerUseStarter.catalog.first {
+            $0.kind == .draftAndPost
+        })
+        #expect(starter.availability == .available)
+        #expect(starter.approvalNote == "Rapid will stop before publishing.")
     }
 
     @Test("A verified transfer finishes without recovery")

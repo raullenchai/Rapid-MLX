@@ -61,10 +61,10 @@ struct ComputerUseFeatureTests {
             .createDemoVideo,
             .reserved,
         ])
-        #expect(ComputerUseStarter.catalog.first?.availability == .comingSoon)
+        #expect(ComputerUseStarter.catalog.first?.availability == .available)
         #expect(ComputerUseStarter.catalog.first(where: { $0.kind == .draftAndPost })?.availability == .available)
         #expect(ComputerUseStarter.catalog.filter {
-            $0.kind != .draftAndPost && $0.kind != .reserved
+            $0.kind != .freeUpSpace && $0.kind != .draftAndPost && $0.kind != .reserved
         }.allSatisfy { $0.availability == .comingSoon })
         #expect(ComputerUseStarter.catalog.last?.availability == .reserved)
         #expect(ComputerUseStarter.catalog.allSatisfy {
