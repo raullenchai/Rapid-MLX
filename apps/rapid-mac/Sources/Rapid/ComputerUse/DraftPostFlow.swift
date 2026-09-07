@@ -204,6 +204,17 @@ protocol DraftPostComposerActuating: Sendable {
     func setDraft(_ draft: String, on composer: AXUIElement) throws
 }
 
+/// Optional, local-only recovery for a browser composer that Accessibility
+/// cannot identify by an explicit semantic label. The recovery capability may
+/// only focus one empty editable element in the selected window; draft writes
+/// remain owned by ``DraftPostComposerActuating`` and publishing is absent.
+protocol DraftPostVisualRecovering: Sendable {
+    func focusComposer(
+        in destination: ComputerUseWindowOption,
+        documentIdentity: String
+    ) async throws
+}
+
 struct AXDraftPostComposerActuator: DraftPostComposerActuating {
     func focusComposer(_ composer: AXUIElement) throws {
         guard AXUIElementSetAttributeValue(
@@ -235,11 +246,17 @@ struct MacOSDraftPostFlowDriver: DraftPostFlowDriving {
     private static let textEditBundle = "com.apple.TextEdit"
     static let browserBundles: Set<String> = [
         "com.apple.Safari",
+        "com.google.Chrome",
     ]
     private let actuator: any DraftPostComposerActuating
+    private let visualRecovery: (any DraftPostVisualRecovering)?
 
-    init(actuator: any DraftPostComposerActuating = AXDraftPostComposerActuator()) {
+    init(
+        actuator: any DraftPostComposerActuating = AXDraftPostComposerActuator(),
+        visualRecovery: (any DraftPostVisualRecovering)? = nil
+    ) {
         self.actuator = actuator
+        self.visualRecovery = visualRecovery
     }
 
     func transferDraft(
@@ -256,6 +273,14 @@ struct MacOSDraftPostFlowDriver: DraftPostFlowDriving {
             throw DraftPostFlowFailure.permissionMissing
         }
 
+        let ownsBrowserAccessibilityRequest = try await prepareBrowserAccessibility(
+            for: destination
+        )
+        defer {
+            if ownsBrowserAccessibilityRequest {
+                Self.releaseBrowserAccessibility(for: destination)
+            }
+        }
         let documentIdentity = try await browserDocumentIdentity(in: destination)
         let draft = try await readDraft(from: source)
         guard !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
@@ -264,12 +289,34 @@ struct MacOSDraftPostFlowDriver: DraftPostFlowDriving {
         guard draft.utf8.count <= Self.maximumDraftBytes else {
             throw DraftPostFlowFailure.draftTooLarge
         }
-        try await writeAndVerify(
-            draft,
-            from: source,
-            to: destination,
-            documentIdentity: documentIdentity
-        )
+        var usedVisualRecovery = false
+        do {
+            try await writeAndVerify(
+                draft,
+                from: source,
+                to: destination,
+                documentIdentity: documentIdentity,
+                allowFocusedUnlabelledComposer: false,
+                focusDestination: true
+            )
+        } catch DraftPostFlowFailure.composerMissing {
+            guard let visualRecovery else {
+                throw DraftPostFlowFailure.composerMissing
+            }
+            usedVisualRecovery = true
+            try await visualRecovery.focusComposer(
+                in: destination,
+                documentIdentity: documentIdentity
+            )
+            try await writeAndVerify(
+                draft,
+                from: source,
+                to: destination,
+                documentIdentity: documentIdentity,
+                allowFocusedUnlabelledComposer: true,
+                focusDestination: false
+            )
+        }
         // The destination may now be mutated. Every remaining observation is
         // therefore terminal on failure: recovery must never replay the write.
         do {
@@ -277,7 +324,8 @@ struct MacOSDraftPostFlowDriver: DraftPostFlowDriving {
                 draft: draft,
                 source: source,
                 destination: destination,
-                documentIdentity: documentIdentity
+                documentIdentity: documentIdentity,
+                allowFocusedUnlabelledComposer: usedVisualRecovery
             )
         } catch {
             throw DraftPostFlowFailure.verificationFailed
@@ -300,20 +348,83 @@ struct MacOSDraftPostFlowDriver: DraftPostFlowDriving {
         }
     }
 
+    /// Chromium keeps web content out of its macOS Accessibility tree until an
+    /// assistive client requests enhanced UI. Make one balanced request for
+    /// this flow only, and avoid touching Safari or a Chrome session that is
+    /// already exposing an AXWebArea.
+    private func prepareBrowserAccessibility(
+        for destination: ComputerUseWindowOption
+    ) async throws -> Bool {
+        guard destination.selection.bundleIdentifier == "com.google.Chrome" else {
+            return false
+        }
+        let alreadyAvailable = try await Self.runAXWork {
+            let application = Self.applicationElement(
+                destination.selection.processIdentifier
+            )
+            guard let window = Self.window(matching: destination, in: application) else {
+                throw DraftPostFlowFailure.targetUnavailable
+            }
+            return try Self.allElements(in: window).contains {
+                Self.stringAttribute(kAXRoleAttribute as CFString, from: $0)
+                    == "AXWebArea"
+            }
+        }
+        guard !alreadyAvailable else { return false }
+        let application = Self.applicationElement(
+            destination.selection.processIdentifier
+        )
+        guard AXUIElementSetAttributeValue(
+            application,
+            "AXEnhancedUserInterface" as CFString,
+            kCFBooleanTrue
+        ) == .success else {
+            throw DraftPostFlowFailure.dependencyFailure
+        }
+        try await Task.sleep(for: .seconds(3))
+        try Task.checkCancellation()
+        return true
+    }
+
+    private static func releaseBrowserAccessibility(
+        for destination: ComputerUseWindowOption
+    ) {
+        guard destination.selection.bundleIdentifier == "com.google.Chrome",
+              let running = NSRunningApplication(
+                processIdentifier: destination.selection.processIdentifier
+              ),
+              running.bundleIdentifier == destination.selection.bundleIdentifier,
+              running.launchDate == destination.selection.processLaunchDate
+        else { return }
+        _ = AXUIElementSetAttributeValue(
+            applicationElement(destination.selection.processIdentifier),
+            "AXEnhancedUserInterface" as CFString,
+            kCFBooleanFalse
+        )
+    }
+
     private func writeAndVerify(
         _ draft: String,
         from source: ComputerUseWindowOption,
         to destination: ComputerUseWindowOption,
-        documentIdentity: String
+        documentIdentity: String,
+        allowFocusedUnlabelledComposer: Bool,
+        focusDestination: Bool
     ) async throws {
-        try await focus(destination)
+        if focusDestination {
+            try await focus(destination)
+        }
         try Task.checkCancellation()
         try await Self.runAXWork {
             let window = try Self.exactFocusedBrowserWindow(
                 destination,
                 documentIdentity: documentIdentity
             )
-            let composer = try Self.uniqueComposer(in: window)
+            let composer = try Self.uniqueComposer(
+                in: window,
+                allowFocusedUnlabelledComposer: allowFocusedUnlabelledComposer,
+                browserBundleIdentifier: destination.selection.bundleIdentifier
+            )
             guard let existing = Self.stringAttribute(
                 kAXValueAttribute as CFString,
                 from: composer
@@ -328,7 +439,11 @@ struct MacOSDraftPostFlowDriver: DraftPostFlowDriving {
                     destination,
                     documentIdentity: documentIdentity
                 )
-                let currentComposer = try Self.uniqueComposer(in: currentWindow)
+                let currentComposer = try Self.uniqueComposer(
+                    in: currentWindow,
+                    allowFocusedUnlabelledComposer: allowFocusedUnlabelledComposer,
+                    browserBundleIdentifier: destination.selection.bundleIdentifier
+                )
                 guard CFEqual(composer, currentComposer),
                       Self.stringAttribute(
                         kAXValueAttribute as CFString,
@@ -355,7 +470,11 @@ struct MacOSDraftPostFlowDriver: DraftPostFlowDriving {
                 destination,
                 documentIdentity: documentIdentity
             )
-            let currentComposer = try Self.uniqueComposer(in: currentWindow)
+            let currentComposer = try Self.uniqueComposer(
+                in: currentWindow,
+                allowFocusedUnlabelledComposer: allowFocusedUnlabelledComposer,
+                browserBundleIdentifier: destination.selection.bundleIdentifier
+            )
             guard CFEqual(composer, currentComposer) else {
                 throw DraftPostFlowFailure.verificationFailed
             }
@@ -376,7 +495,11 @@ struct MacOSDraftPostFlowDriver: DraftPostFlowDriving {
                 destination,
                 documentIdentity: documentIdentity
             )
-            let authorizedComposer = try Self.uniqueComposer(in: authorizedWindow)
+            let authorizedComposer = try Self.uniqueComposer(
+                in: authorizedWindow,
+                allowFocusedUnlabelledComposer: allowFocusedUnlabelledComposer,
+                browserBundleIdentifier: destination.selection.bundleIdentifier
+            )
             guard CFEqual(currentComposer, authorizedComposer),
                   let authorizedValue = Self.stringAttribute(
                     kAXValueAttribute as CFString,
@@ -397,7 +520,12 @@ struct MacOSDraftPostFlowDriver: DraftPostFlowDriving {
                     destination,
                     documentIdentity: documentIdentity
                 )
-                let verifiedComposer = try Self.uniqueComposer(in: verifiedWindow)
+                let verifiedComposer = try Self.uniqueComposer(
+                    in: verifiedWindow,
+                    allowFocusedUnlabelledComposer: allowFocusedUnlabelledComposer,
+                    browserBundleIdentifier: destination.selection.bundleIdentifier,
+                    focusedUnlabelledValue: draft
+                )
                 return CFEqual(authorizedComposer, verifiedComposer)
             }
         }
@@ -421,7 +549,8 @@ struct MacOSDraftPostFlowDriver: DraftPostFlowDriving {
         draft: String,
         source: ComputerUseWindowOption,
         destination: ComputerUseWindowOption,
-        documentIdentity: String
+        documentIdentity: String,
+        allowFocusedUnlabelledComposer: Bool
     ) async throws {
         // This detached task is intentionally cancellation-insensitive: after
         // a possible write, Stop must wait for definitive source/destination
@@ -440,9 +569,17 @@ struct MacOSDraftPostFlowDriver: DraftPostFlowDriving {
             else { throw DraftPostFlowFailure.verificationFailed }
             let application = applicationElement(selection.processIdentifier)
             guard let window = window(matching: destination, in: application),
-                  try currentBrowserDocumentIdentity(in: window) == documentIdentity
+                  try currentBrowserDocumentIdentity(
+                    in: window,
+                    browserBundleIdentifier: destination.selection.bundleIdentifier
+                  ) == documentIdentity
             else { throw DraftPostFlowFailure.verificationFailed }
-            let composer = try uniqueComposer(in: window)
+            let composer = try uniqueComposer(
+                in: window,
+                allowFocusedUnlabelledComposer: allowFocusedUnlabelledComposer,
+                browserBundleIdentifier: destination.selection.bundleIdentifier,
+                focusedUnlabelledValue: draft
+            )
             guard stringAttribute(
                 kAXValueAttribute as CFString,
                 from: composer
@@ -457,13 +594,17 @@ struct MacOSDraftPostFlowDriver: DraftPostFlowDriving {
         documentIdentity: String
     ) throws -> AXUIElement {
         let window = try exactFocusedWindow(destination)
-        guard browserDocumentMatches(
+        guard browserWindowTitleMatches(
+            browserBundleIdentifier: destination.selection.bundleIdentifier,
             currentTitle: stringAttribute(
             kAXTitleAttribute as CFString,
             from: window
             ),
             selectedTitle: destination.windowTitle
-        ), try currentBrowserDocumentIdentity(in: window) == documentIdentity
+        ), try currentBrowserDocumentIdentity(
+            in: window,
+            browserBundleIdentifier: destination.selection.bundleIdentifier
+        ) == documentIdentity
         else {
             throw DraftPostFlowFailure.focusChanged
         }
@@ -476,6 +617,17 @@ struct MacOSDraftPostFlowDriver: DraftPostFlowDriving {
     ) -> Bool {
         guard let currentTitle, !selectedTitle.isEmpty else { return false }
         return utf8Matches(currentTitle, selectedTitle)
+    }
+
+    static func browserWindowTitleMatches(
+        browserBundleIdentifier: String,
+        currentTitle: String?,
+        selectedTitle: String
+    ) -> Bool {
+        guard let currentTitle, !selectedTitle.isEmpty else { return false }
+        if utf8Matches(currentTitle, selectedTitle) { return true }
+        guard browserBundleIdentifier == "com.google.Chrome" else { return false }
+        return utf8Matches(currentTitle, selectedTitle + " - Google Chrome")
     }
 
     private func browserDocumentIdentity(
@@ -491,19 +643,25 @@ struct MacOSDraftPostFlowDriver: DraftPostFlowDriving {
             let application = Self.applicationElement(selection.processIdentifier)
             guard let window = Self.window(matching: destination, in: application)
             else { throw DraftPostFlowFailure.focusChanged }
-            return try Self.currentBrowserDocumentIdentity(in: window)
+            return try Self.currentBrowserDocumentIdentity(
+                in: window,
+                browserBundleIdentifier: selection.bundleIdentifier
+            )
         }
     }
 
     private static func currentBrowserDocumentIdentity(
-        in window: AXUIElement
+        in window: AXUIElement,
+        browserBundleIdentifier: String
     ) throws -> String {
         guard let windowFrame = elementFrame(window) else {
             throw DraftPostFlowFailure.composerAmbiguous
         }
         let addressFields = try allElements(in: window).filter { element in
-            guard stringAttribute(kAXIdentifierAttribute as CFString, from: element)
-                == "WEB_BROWSER_ADDRESS_AND_SEARCH_FIELD",
+            guard isBrowserAddressField(
+                element,
+                browserBundleIdentifier: browserBundleIdentifier
+            ),
                 boolAttribute(kAXEnabledAttribute as CFString, from: element) == true,
                 let frame = elementFrame(element), windowFrame.intersects(frame)
             else { return false }
@@ -516,6 +674,36 @@ struct MacOSDraftPostFlowDriver: DraftPostFlowDriving {
               ), !identity.isEmpty
         else { throw DraftPostFlowFailure.composerAmbiguous }
         return identity
+    }
+
+    static func matchesBrowserAddressField(
+        browserBundleIdentifier: String,
+        role: String?,
+        identifier: String?,
+        description: String?
+    ) -> Bool {
+        guard role == kAXTextFieldRole as String else { return false }
+        switch browserBundleIdentifier {
+        case "com.apple.Safari":
+            return identifier == "WEB_BROWSER_ADDRESS_AND_SEARCH_FIELD"
+        case "com.google.Chrome":
+            return description?.trimmingCharacters(in: .whitespacesAndNewlines)
+                .caseInsensitiveCompare("Address and search bar") == .orderedSame
+        default:
+            return false
+        }
+    }
+
+    private static func isBrowserAddressField(
+        _ element: AXUIElement,
+        browserBundleIdentifier: String
+    ) -> Bool {
+        matchesBrowserAddressField(
+            browserBundleIdentifier: browserBundleIdentifier,
+            role: stringAttribute(kAXRoleAttribute as CFString, from: element),
+            identifier: stringAttribute(kAXIdentifierAttribute as CFString, from: element),
+            description: stringAttribute(kAXDescriptionAttribute as CFString, from: element)
+        )
     }
 
     private static func readDraftWithoutFocusing(
@@ -617,7 +805,8 @@ struct MacOSDraftPostFlowDriver: DraftPostFlowDriving {
         in application: AXUIElement
     ) -> AXUIElement? {
         guard let candidate = window(matching: option.selection, in: application),
-              browserDocumentMatches(
+              browserWindowTitleMatches(
+                browserBundleIdentifier: option.selection.bundleIdentifier,
                 currentTitle: stringAttribute(
                     kAXTitleAttribute as CFString,
                     from: candidate
@@ -776,7 +965,12 @@ struct MacOSDraftPostFlowDriver: DraftPostFlowDriving {
         return number.boolValue
     }
 
-    private static func uniqueComposer(in window: AXUIElement) throws -> AXUIElement {
+    private static func uniqueComposer(
+        in window: AXUIElement,
+        allowFocusedUnlabelledComposer: Bool = false,
+        browserBundleIdentifier: String? = nil,
+        focusedUnlabelledValue: String = ""
+    ) throws -> AXUIElement {
         guard let windowFrame = elementFrame(window) else {
             throw DraftPostFlowFailure.composerMissing
         }
@@ -784,12 +978,284 @@ struct MacOSDraftPostFlowDriver: DraftPostFlowDriving {
             isExplicitComposer($0, in: window, windowFrame: windowFrame)
         }
         guard let match = matches.first else {
-            throw DraftPostFlowFailure.composerMissing
+            guard allowFocusedUnlabelledComposer,
+                  let browserBundleIdentifier,
+                  let focused = focusedEditableElement(
+                    in: window,
+                    browserBundleIdentifier: browserBundleIdentifier,
+                    requiredValue: focusedUnlabelledValue
+                  )
+            else { throw DraftPostFlowFailure.composerMissing }
+            return focused
         }
         if matches.count > 1 {
             throw DraftPostFlowFailure.composerAmbiguous
         }
         return match
+    }
+
+    private static func focusedEditableElement(
+        in window: AXUIElement,
+        browserBundleIdentifier: String,
+        requiredValue: String = ""
+    ) -> AXUIElement? {
+        guard let application = applicationAncestor(of: window) else { return nil }
+        var focusedValue: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(
+            application,
+            kAXFocusedUIElementAttribute as CFString,
+            &focusedValue
+        ) == .success,
+            let focusedValue,
+            CFGetTypeID(focusedValue) == AXUIElementGetTypeID()
+        else { return nil }
+        let focused = unsafeDowncast(focusedValue, to: AXUIElement.self)
+        guard isSafeEmptyEditable(
+            focused,
+            in: window,
+            browserBundleIdentifier: browserBundleIdentifier,
+            requiredValue: requiredValue
+        ) else { return nil }
+        return focused
+    }
+
+    private static func applicationAncestor(of element: AXUIElement) -> AXUIElement? {
+        var current = element
+        var visited = Set<AXUIElement>()
+        for _ in 0 ..< 32 {
+            guard visited.insert(current).inserted else { return nil }
+            if stringAttribute(kAXRoleAttribute as CFString, from: current)
+                == kAXApplicationRole as String
+            {
+                return current
+            }
+            var parentValue: CFTypeRef?
+            guard AXUIElementCopyAttributeValue(
+                current,
+                kAXParentAttribute as CFString,
+                &parentValue
+            ) == .success,
+                let parentValue,
+                CFGetTypeID(parentValue) == AXUIElementGetTypeID()
+            else { return nil }
+            current = unsafeDowncast(parentValue, to: AXUIElement.self)
+        }
+        return nil
+    }
+
+    private static func isSafeEmptyEditable(
+        _ element: AXUIElement,
+        in window: AXUIElement,
+        browserBundleIdentifier: String,
+        requiredValue: String = ""
+    ) -> Bool {
+        let role = stringAttribute(kAXRoleAttribute as CFString, from: element)
+        let subrole = stringAttribute(kAXSubroleAttribute as CFString, from: element)
+        guard matchesSafeVisualComposer(
+            role: role,
+            subrole: subrole,
+            isBrowserAddressField: isBrowserAddressField(
+                element,
+                browserBundleIdentifier: browserBundleIdentifier
+            ),
+            isEnabled: boolAttribute(kAXEnabledAttribute as CFString, from: element),
+            value: stringAttribute(kAXValueAttribute as CFString, from: element),
+            requiredValue: requiredValue,
+            isValueSettable: isSettable(kAXValueAttribute as CFString, on: element)
+        ),
+              let windowFrame = elementFrame(window),
+              let elementFrame = elementFrame(element),
+              elementFrame.width >= 1,
+              elementFrame.height >= 1,
+              windowFrame.insetBy(dx: -0.5, dy: -0.5).contains(elementFrame),
+              hasVisibleAncestry(element, through: window)
+        else { return false }
+        return true
+    }
+
+    static func matchesSafeVisualComposer(
+        role: String?,
+        subrole: String?,
+        isBrowserAddressField: Bool,
+        isEnabled: Bool?,
+        value: String?,
+        requiredValue: String,
+        isValueSettable: Bool
+    ) -> Bool {
+        (role == kAXTextAreaRole as String || role == kAXTextFieldRole as String)
+            && subrole != kAXSecureTextFieldSubrole as String
+            && !isBrowserAddressField
+            && isEnabled == true
+            && value.map({ utf8Matches($0, requiredValue) }) == true
+            && isValueSettable
+    }
+
+    /// Converts one observation-bound visual point into focus on an empty
+    /// editable element. It never invokes AXPress and rejects buttons, address
+    /// bars, secure fields, non-empty fields, and anything outside the exact
+    /// selected browser window.
+    static func focusGroundedEmptyComposer(
+        action: GroundedWorkflowAction,
+        groundedAgainst groundingObservation: WorkflowObservation,
+        currentObservation: WorkflowObservation,
+        destination: ComputerUseWindowOption,
+        documentIdentity: String,
+        actuator: any DraftPostComposerActuating
+    ) throws {
+        guard action.observationID == groundingObservation.id,
+              groundingObservation.target == currentObservation.target,
+              currentObservation.target.bundleIdentifier
+                == destination.selection.bundleIdentifier,
+              currentObservation.target.processIdentifier
+                == destination.selection.processIdentifier,
+              currentObservation.target.processLaunchDate
+                == destination.selection.processLaunchDate,
+              currentObservation.target.windowIdentifier
+                == String(destination.selection.windowID),
+              case .click(let normalizedX, let normalizedY) = action.payload,
+              normalizedX > 0, normalizedX < 1,
+              normalizedY > 0, normalizedY < 1
+        else { throw DraftPostFlowFailure.composerMissing }
+
+        let frame = currentObservation.target.windowFrame
+        let point = CGPoint(
+            x: frame.x + normalizedX * frame.width,
+            y: frame.y + normalizedY * frame.height
+        )
+        let window = try exactFocusedBrowserWindow(
+            destination,
+            documentIdentity: documentIdentity
+        )
+        if groundingObservation.contentRevision != currentObservation.contentRevision {
+            guard let focused = focusedEditableElement(
+                in: window,
+                browserBundleIdentifier: destination.selection.bundleIdentifier
+            ), let focusedFrame = elementFrame(focused),
+                isWithinGroundingTolerance(
+                    point: point,
+                    elementFrame: focusedFrame,
+                    windowFrame: CGRect(
+                        x: currentObservation.target.windowFrame.x,
+                        y: currentObservation.target.windowFrame.y,
+                        width: currentObservation.target.windowFrame.width,
+                        height: currentObservation.target.windowFrame.height
+                    )
+                )
+            else { throw DraftPostFlowFailure.composerMissing }
+        }
+        let application = applicationElement(destination.selection.processIdentifier)
+        var hit: AXUIElement?
+        guard AXUIElementCopyElementAtPosition(
+            application,
+            Float(point.x),
+            Float(point.y),
+            &hit
+        ) == .success,
+            let hit
+        else { throw DraftPostFlowFailure.composerMissing }
+        guard let composer = try groundedEditable(
+            from: hit,
+            at: point,
+            in: window,
+            browserBundleIdentifier: destination.selection.bundleIdentifier
+        )
+        else { throw DraftPostFlowFailure.composerMissing }
+
+        try actuator.focusComposer(composer)
+        let reboundWindow = try exactFocusedBrowserWindow(
+            destination,
+            documentIdentity: documentIdentity
+        )
+        guard CFEqual(window, reboundWindow) else {
+            throw DraftPostFlowFailure.focusChanged
+        }
+        guard let focused = focusedEditableElement(
+                in: reboundWindow,
+                browserBundleIdentifier: destination.selection.bundleIdentifier
+              ), CFEqual(composer, focused)
+        else { throw DraftPostFlowFailure.focusChanged }
+    }
+
+    /// Prefer an exact AX hit. When a small local model lands on the label or
+    /// border next to the requested field, recover only if exactly one safe,
+    /// empty editor is within a tightly bounded window-relative neighborhood.
+    /// This never turns the model point into an unconstrained screen click.
+    private static func groundedEditable(
+        from hit: AXUIElement,
+        at point: CGPoint,
+        in window: AXUIElement,
+        browserBundleIdentifier: String
+    ) throws -> AXUIElement? {
+        if let exact = editableAncestor(
+            from: hit,
+            through: window,
+            browserBundleIdentifier: browserBundleIdentifier
+        ) {
+            return exact
+        }
+        guard let windowFrame = elementFrame(window) else { return nil }
+        let nearby = try editableElements(in: window).filter { element in
+            guard isSafeEmptyEditable(
+                element,
+                in: window,
+                browserBundleIdentifier: browserBundleIdentifier
+            ), let frame = elementFrame(element)
+            else { return false }
+            return isWithinGroundingTolerance(
+                point: point,
+                elementFrame: frame,
+                windowFrame: windowFrame
+            )
+        }
+        return nearby.count == 1 ? nearby[0] : nil
+    }
+
+    static func isWithinGroundingTolerance(
+        point: CGPoint,
+        elementFrame: CGRect,
+        windowFrame: CGRect
+    ) -> Bool {
+        guard windowFrame.width > 0, windowFrame.height > 0,
+              windowFrame.contains(point),
+              windowFrame.insetBy(dx: -0.5, dy: -0.5).contains(elementFrame)
+        else { return false }
+        let horizontalTolerance = min(64, windowFrame.width * 0.06)
+        let verticalTolerance = min(64, windowFrame.height * 0.06)
+        return elementFrame.insetBy(
+            dx: -horizontalTolerance,
+            dy: -verticalTolerance
+        ).contains(point)
+    }
+
+    private static func editableAncestor(
+        from element: AXUIElement,
+        through window: AXUIElement,
+        browserBundleIdentifier: String
+    ) -> AXUIElement? {
+        var current = element
+        var visited = Set<AXUIElement>()
+        for _ in 0 ..< 32 {
+            guard visited.insert(current).inserted else { return nil }
+            if isSafeEmptyEditable(
+                current,
+                in: window,
+                browserBundleIdentifier: browserBundleIdentifier
+            ) {
+                return current
+            }
+            if CFEqual(current, window) { return nil }
+            var parentValue: CFTypeRef?
+            guard AXUIElementCopyAttributeValue(
+                current,
+                kAXParentAttribute as CFString,
+                &parentValue
+            ) == .success,
+                let parentValue,
+                CFGetTypeID(parentValue) == AXUIElementGetTypeID()
+            else { return nil }
+            current = unsafeDowncast(parentValue, to: AXUIElement.self)
+        }
+        return nil
     }
 
     static func isExplicitComposerLabel(_ raw: String) -> Bool {

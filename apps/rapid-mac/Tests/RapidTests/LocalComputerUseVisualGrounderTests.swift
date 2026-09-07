@@ -122,6 +122,46 @@ struct LocalComputerUseVisualGrounderTests {
         #expect(userContent.last?["text"] as? String == fixture.step.instruction)
     }
 
+    @Test("UI-TARS uses the native computer click contract")
+    func uiTarsClickContract() async throws {
+        let fixture = try await Fixture(
+            responseBody: Self.response(
+                x: 350,
+                y: 650,
+                action: "click",
+                toolName: "computer"
+            ),
+            wireContract: .uiTars
+        )
+
+        let action = try await fixture.grounder.ground(
+            step: fixture.step,
+            observation: fixture.observation
+        )
+        guard case .click(let x, let y) = action.payload else {
+            Issue.record("Expected one UI-TARS click")
+            return
+        }
+        #expect(abs(x - (350.0 / 999.0)) < 0.000_001)
+        #expect(abs(y - (650.0 / 999.0)) < 0.000_001)
+
+        let request = try #require(await fixture.transport.lastRequest)
+        let body = try #require(request.httpBody)
+        let object = try #require(
+            JSONSerialization.jsonObject(with: body) as? [String: Any]
+        )
+        let choice = try #require(object["tool_choice"] as? [String: Any])
+        let choiceFunction = try #require(choice["function"] as? [String: Any])
+        #expect(choiceFunction["name"] as? String == "computer")
+        let tools = try #require(object["tools"] as? [[String: Any]])
+        let toolFunction = try #require(tools.first?["function"] as? [String: Any])
+        #expect(toolFunction["name"] as? String == "computer")
+        let parameters = try #require(toolFunction["parameters"] as? [String: Any])
+        let properties = try #require(parameters["properties"] as? [String: Any])
+        let actionSchema = try #require(properties["action"] as? [String: Any])
+        #expect(actionSchema["enum"] as? [String] == ["click"])
+    }
+
     @Test("Only literal loopback v1 endpoints are accepted")
     func endpointPolicy() {
         let rejected = [
@@ -406,6 +446,7 @@ struct LocalComputerUseVisualGrounderTests {
         x: Int,
         y: Int,
         action: String = "left_click",
+        toolName: String = "computer_use",
         extraArgument: Bool = false,
         duplicateCall: Bool = false,
         callType: String? = "function"
@@ -420,7 +461,7 @@ struct LocalComputerUseVisualGrounderTests {
         var call: [String: Any] = [
             "id": "call-1",
             "function": [
-                "name": "computer_use",
+                "name": toolName,
                 "arguments": argumentString,
             ],
         ]
@@ -466,6 +507,8 @@ struct LocalComputerUseVisualGrounderTests {
             maximumScreenshotBytes: Int = 8 * 1024 * 1024,
             maximumRequestBytes: Int = 12 * 1024 * 1024,
             maximumResponseBytes: Int = 512 * 1024,
+            wireContract: LocalComputerUseVisualGrounder.Configuration.WireContract =
+                .genericFunction,
             storeArtifact: Bool = true,
             instruction: String = "Click the button labeled Review."
         ) async throws {
@@ -522,7 +565,8 @@ struct LocalComputerUseVisualGrounderTests {
                     deadline: deadline,
                     maximumScreenshotBytes: maximumScreenshotBytes,
                     maximumRequestBytes: maximumRequestBytes,
-                    maximumResponseBytes: maximumResponseBytes
+                    maximumResponseBytes: maximumResponseBytes,
+                    wireContract: wireContract
                 ),
                 vault: vault,
                 transport: transport
