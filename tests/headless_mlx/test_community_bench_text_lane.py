@@ -168,7 +168,8 @@ def test_text_lane_measures_the_catalog_repo_id_not_a_same_named_directory(
 
     targets: list[str] = []
 
-    def fake_loader(target, **_):
+    def fake_loader(target, **kwargs):
+        assert kwargs.get("return_source") is True
         targets.append(target)
         raise RuntimeError("stop here")
 

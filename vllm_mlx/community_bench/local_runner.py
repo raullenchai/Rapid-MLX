@@ -1126,25 +1126,27 @@ def _run_local_measured(
             # stray late call in this process can never mutate a stale
             # capture.
             _CONDITIONS_AFTER.reset(capture_token)
-        # ``_LOADED_IDENTITY`` is disarmed by ``run_local`` on every path; if
-        # the helper deposited one, prefer it (covers doubles that return two).
-        if loaded.get("identity") is not None:
-            model_identity = loaded["identity"]
         measurements_completed = True
         # Taken by the helper before its engine/server context tore down. A
         # helper that never captured leaves ``after`` unknown; probing here,
         # after the model is gone, would misreport a memory-saturated run.
         conditions_after = capture.get("after")
-        # Re-read the cache now that the loader has pinned its snapshot and
-        # keep the identity only if it names the same revision.
-        model_identity = consistent_model_identity(
-            model_identity,
-            unresolved_model_identity(
-                model["repo_id"], task_type, model.get("subfolder")
-            ),
-            model["repo_id"],
-            task_type,
-        )
+        # ``_LOADED_IDENTITY`` is disarmed by ``run_local`` on every path. An
+        # identity the helper deposited describes the snapshot the loader
+        # actually pinned, so it stands even if refs/main moved during the
+        # measurements. Only a pre-load cache read needs reconciling against a
+        # post-run one, and only then does a moved snapshot degrade to unknown.
+        if loaded.get("identity") is not None:
+            model_identity = loaded["identity"]
+        else:
+            model_identity = consistent_model_identity(
+                model_identity,
+                unresolved_model_identity(
+                    model["repo_id"], task_type, model.get("subfolder")
+                ),
+                model["repo_id"],
+                task_type,
+            )
         execution = execution_config(task_type, context_length=context_length)
         run = build_run(
             repo_id=model["repo_id"],

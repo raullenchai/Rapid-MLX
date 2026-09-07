@@ -1279,7 +1279,7 @@ def test_run_local_archives_registered_token_drift_as_failure(
     measurements = _text_run()["measurements"]
     measurements[0]["prompt_tokens"] = 510
 
-    async def drifted_measurements(repo_id: str, *_: object, **__: object):
+    async def drifted_measurements(alias: str, repo_id: str, *, progress=None):
         return measurements, 32768
 
     monkeypatch.setattr(local_runner, "_text_measurements", drifted_measurements)
@@ -1476,7 +1476,7 @@ def test_asyncio_cancellation_is_archived_as_cancelled_with_before_snapshot(
     }
     monkeypatch.setattr(local_runner, "run_conditions", lambda: dict(before))
 
-    async def cancelled(alias: str, repo_id: str, **_: object):
+    async def cancelled(alias: str, repo_id: str, *, progress=None):
         assert alias == "example-text"
         assert repo_id == "mlx-community/example-text-model"
         raise asyncio.CancelledError()
@@ -5096,7 +5096,11 @@ def test_text_measurements_reports_model_load_stage(
     fake_scheduler = types.SimpleNamespace(SchedulerConfig=lambda **kwargs: None)
     fake_helpers = types.SimpleNamespace(get_model_max_context=lambda engine: 4096)
     fake_tokenizer = types.SimpleNamespace(
-        load_model_with_fallback=lambda repo_id, **_: (object(), object())
+        load_model_with_fallback=lambda repo_id, **kwargs: (
+            (object(), object())
+            if kwargs.get("return_source") is True
+            else pytest.fail("loader must be asked for its source")
+        )
     )
     monkeypatch.setitem(sys.modules, "vllm_mlx.engine_core", fake_engine_core)
     monkeypatch.setitem(sys.modules, "vllm_mlx.scheduler", fake_scheduler)
@@ -5468,8 +5472,8 @@ def test_run_local_measures_text_models_by_alias_not_bare_repo_id(
     )
     seen: list[str] = []
 
-    async def fake_measurements(model_name: str, *_: object, **__: object):
-        seen.append(model_name)
+    async def fake_measurements(alias: str, repo_id: str, *, progress=None):
+        seen.append(alias)
         return _text_run()["measurements"], 32768
 
     monkeypatch.setattr(local_runner, "_text_measurements", fake_measurements)
@@ -5548,7 +5552,7 @@ def test_run_local_prefers_the_identity_read_right_after_loading(
         "base_dtype": "unknown",
     }
 
-    async def fake_measurements(model_name: str, *_: object, **__: object):
+    async def fake_measurements(alias: str, repo_id: str, *, progress=None):
         return _text_run()["measurements"], 32768, loaded
 
     def after_read(repo_id, task_type, subfolder=None, snapshot_path=None):
@@ -5600,7 +5604,7 @@ def test_run_local_degrades_identity_when_the_cache_moves_during_the_run(
         }
         return identity
 
-    async def fake_measurements(model_name: str, *_: object, **__: object):
+    async def fake_measurements(alias: str, repo_id: str, *, progress=None):
         return _text_run()["measurements"], 32768
 
     monkeypatch.setattr(local_runner, "unresolved_model_identity", moving_cache)
@@ -5627,7 +5631,7 @@ def test_run_local_resolves_identity_before_loading_the_model(
         order.append("identity")
         return real_identity(repo_id, task_type, subfolder)
 
-    async def fake_measurements(model_name: str, *_: object, **__: object):
+    async def fake_measurements(alias: str, repo_id: str, *, progress=None):
         order.append("measure")
         return _text_run()["measurements"], 32768
 
@@ -5683,7 +5687,7 @@ def test_failed_run_after_loading_archives_the_loaded_identity(
     loaded = real("mlx-community/example-text-model", "text_generation")
     loaded["components"][0]["source"]["resolved_revision"] = "e" * 40
 
-    async def load_then_fail(model_name: str, *_: object, **__: object):
+    async def load_then_fail(alias: str, repo_id: str, *, progress=None):
         capture = local_runner._LOADED_IDENTITY.get()
         assert capture is not None
         capture["identity"] = loaded
@@ -5749,3 +5753,33 @@ def test_cached_config_reads_the_revision_after_the_last_snapshots_segment(
         {},
         None,
     )
+
+
+def test_completed_run_keeps_the_identity_the_loader_pinned_even_if_refs_moved(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A snapshot pinned at load time is the measured one; a refs/main advance
+    during the run must not degrade it to unknown (codex on #3147)."""
+    archive = LocalRunArchive(tmp_path)
+    _mock_local_context(
+        monkeypatch, "text_generation", "mlx-community/example-text-model"
+    )
+    real = local_runner.unresolved_model_identity
+    pinned = real("mlx-community/example-text-model", "text_generation")
+    pinned["components"][0]["source"]["resolved_revision"] = "a" * 40
+    moved = real("mlx-community/example-text-model", "text_generation")
+    moved["components"][0]["source"]["resolved_revision"] = "b" * 40
+
+    async def fake_measurements(alias: str, repo_id: str, *, progress=None):
+        capture = local_runner._LOADED_IDENTITY.get()
+        assert capture is not None
+        capture["identity"] = pinned
+        return _text_run()["measurements"], 32768, pinned
+
+    monkeypatch.setattr(local_runner, "_text_measurements", fake_measurements)
+    # The post-run cache read answers with the newer snapshot.
+    monkeypatch.setattr(
+        local_runner, "unresolved_model_identity", lambda *a, **k: moved
+    )
+    run = local_runner.run_local("example-text", archive=archive)
+    assert run["model"]["components"][0]["source"]["resolved_revision"] == "a" * 40
