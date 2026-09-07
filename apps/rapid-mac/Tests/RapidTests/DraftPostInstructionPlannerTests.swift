@@ -14,10 +14,13 @@ struct DraftPostInstructionPlannerTests {
             "tone": "Concise and enthusiastic",
             "destination": "x.com",
             "draft": "Rapid 0.13.4 is here — faster and fully local.",
+            "purpose_evidence": "launch post",
+            "talking_points_evidence": "faster local inference and no cloud upload",
+            "destination_evidence": "X",
             "clarifying_question": "",
         ]))
         let result = try await Self.planner(transport: transport).analyze(
-            instruction: "Write a launch post for X for Mac developers.",
+            instruction: "Write a launch post for X for Mac developers about faster local inference and no cloud upload.",
             browserApplication: "Google Chrome",
             destinationHost: "x.com"
         )
@@ -56,6 +59,9 @@ struct DraftPostInstructionPlannerTests {
             "tone": "",
             "destination": "",
             "draft": "",
+            "purpose_evidence": "",
+            "talking_points_evidence": "",
+            "destination_evidence": "",
             "clarifying_question": "Which site should I prepare this for?",
         ]))
         let result = try await Self.planner(transport: transport).analyze(
@@ -76,6 +82,9 @@ struct DraftPostInstructionPlannerTests {
             "tone": "",
             "destination": "",
             "draft": "Unreviewed draft",
+            "purpose_evidence": "",
+            "talking_points_evidence": "",
+            "destination_evidence": "",
             "clarifying_question": "Which site should I prepare this for?",
         ]))
         await #expect(throws: DraftPostPlanningError.invalidResponse) {
@@ -88,7 +97,7 @@ struct DraftPostInstructionPlannerTests {
     }
 
     @Test("The planning request requires clarification for incomplete or mismatched intent")
-    func clarificationPromptContract() throws {
+    func clarificationPromptContract() async throws {
         let data = try LocalDraftPostInstructionPlanner.requestBody(
             instruction: "Write something about the release.",
             browserApplication: "Safari",
@@ -101,9 +110,34 @@ struct DraftPostInstructionPlannerTests {
         #expect(system.contains("did not name the destination service or site"))
         #expect(system.contains("names a destination inconsistent with the trusted browser hostname"))
         #expect(system.contains("return needs_clarification and ask exactly one concise question"))
+        #expect(system.contains("purpose_evidence"))
         let user = try #require(messages.last?["content"])
         #expect(user.contains("Trusted destination hostname: x.com"))
         #expect(user.contains("Write something about the release."))
+
+        let fabricatedReady = PlannerTransport(response: try Self.response(content: [
+            "status": "ready",
+            "purpose": "Announce a major launch",
+            "audience": "Developers",
+            "talking_points": ["Breakthrough performance"],
+            "tone": "Excited",
+            "destination": "x.com",
+            "draft": "A fabricated launch announcement.",
+            "purpose_evidence": "Write something",
+            "talking_points_evidence": "breakthrough performance",
+            "destination_evidence": "X",
+            "clarifying_question": "",
+        ]))
+        let fabricatedResult = try await Self.planner(
+            transport: fabricatedReady
+        ).analyze(
+            instruction: "Write something about the release.",
+            browserApplication: "Safari",
+            destinationHost: "x.com"
+        )
+        #expect(fabricatedResult == .needsClarification(
+            "What should this update accomplish, which points should it include, and where should it be posted?"
+        ))
     }
 
     @Test("Unknown fields and incomplete ready plans fail closed")
@@ -116,6 +150,9 @@ struct DraftPostInstructionPlannerTests {
             "tone": "Concise",
             "destination": "x.com",
             "draft": "A draft",
+            "purpose_evidence": "launch post",
+            "talking_points_evidence": "Local",
+            "destination_evidence": "X",
             "clarifying_question": "",
         ]
         extra["publish_now"] = true
@@ -136,6 +173,9 @@ struct DraftPostInstructionPlannerTests {
             "tone": "Concise",
             "destination": "x.com",
             "draft": "",
+            "purpose_evidence": "launch post",
+            "talking_points_evidence": "Local",
+            "destination_evidence": "X",
             "clarifying_question": "",
         ]))
         await #expect(throws: DraftPostPlanningError.invalidResponse) {
@@ -154,6 +194,9 @@ struct DraftPostInstructionPlannerTests {
             "tone": "Concise",
             "destination": "example.com",
             "draft": "A draft",
+            "purpose_evidence": "launch post",
+            "talking_points_evidence": "Local",
+            "destination_evidence": "X",
             "clarifying_question": "",
         ]))
         await #expect(throws: DraftPostPlanningError.invalidResponse) {
@@ -172,6 +215,9 @@ struct DraftPostInstructionPlannerTests {
             "tone": "",
             "destination": "",
             "draft": "",
+            "purpose_evidence": "",
+            "talking_points_evidence": "",
+            "destination_evidence": "",
             "clarifying_question": "Who is this for? Which tone should I use?",
         ]))
         await #expect(throws: DraftPostPlanningError.invalidResponse) {
@@ -190,6 +236,9 @@ struct DraftPostInstructionPlannerTests {
             "tone": "",
             "destination": "",
             "draft": "",
+            "purpose_evidence": "",
+            "talking_points_evidence": "",
+            "destination_evidence": "",
             "clarifying_question": "?",
         ]))
         await #expect(throws: DraftPostPlanningError.invalidResponse) {
@@ -279,6 +328,9 @@ struct DraftPostInstructionPlannerTests {
             "tone": "",
             "destination": "",
             "draft": "",
+            "purpose_evidence": "",
+            "talking_points_evidence": "",
+            "destination_evidence": "",
             "clarifying_question": "Which site should I prepare this for?",
         ]))
         let validator: DraftPostLanguageRuntime.SessionValidator = { false }
@@ -330,6 +382,9 @@ struct DraftPostInstructionPlannerTests {
             "tone": "",
             "destination": "",
             "draft": "",
+            "purpose_evidence": "",
+            "talking_points_evidence": "",
+            "destination_evidence": "",
             "clarifying_question": "Which site should I prepare this for?",
         ]))
 
