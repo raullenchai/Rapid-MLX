@@ -282,15 +282,54 @@ def patch_gated_delta_net_for_mtp() -> bool:
             k = inv_scale * mx.fast.rms_norm(k, None, 1e-6)
 
             # A verify block wider than two tokens needs a restore point for
-            # every possible acceptance prefix.  The old PR #990-compatible
+            # every possible acceptance prefix. The old PR #990-compatible
             # pair below is sufficient for K=1 only: acceptance is either
-            # before or after the sole draft.  For K>1, run the very small
-            # verify block (currently at most four positions) position-wise
-            # and retain the recurrent state after each position except the
-            # final one.  This is intentionally limited to the speculative
-            # verify path; ordinary prefill/decode still takes the original
-            # fused GDN call above.
+            # before or after the sole draft. For K>1, use the fused recurrent
+            # verify pass when its Metal contract is available. It produces
+            # the same outputs and final state as gated_delta_update while also
+            # retaining every intermediate boundary in one kernel launch.
+            #
+            # Keep the position-wise implementation as the exact fallback for
+            # training, CPU, and unsupported key widths. Ordinary prefill and
+            # decode still take the original mlx-lm call above.
             if S > 2:
+                use_boundary_kernel = (
+                    not self.training
+                    and mx.default_device() == mx.gpu
+                    and mx.metal.is_available()
+                    and q.shape[-1] % 32 == 0
+                )
+                if use_boundary_kernel:
+                    from vllm_mlx.kernels.qwen4_gdn_verify import (
+                        gated_delta_verify_with_states,
+                    )
+
+                    out, cur_state, state_snapshots = gated_delta_verify_with_states(
+                        q,
+                        k,
+                        v,
+                        a,
+                        b,
+                        self.A_log,
+                        self.dt_bias,
+                        state,
+                        mask,
+                        use_kernel=True,
+                    )
+                    cache.rollback_state = [
+                        (
+                            mx.contiguous(
+                                conv_input[:, position + 1 : position + 1 + n_keep, :]
+                            ),
+                            state_snapshots[:, position],
+                        )
+                        for position in range(S - 1)
+                    ]
+                    cache[1] = cur_state
+                    cache.advance(S)
+                    out = self.norm(out, z)
+                    return self.out_proj(out.reshape(B, S, -1))
+
                 outs = []
                 snapshots = []
                 cur_state = state

@@ -586,6 +586,97 @@ def test_cache_patch_is_idempotent():
     assert second is False
 
 
+def test_qwen35_k3_verify_fuses_recurrence_without_changing_boundaries(
+    monkeypatch,
+):
+    """The Metal K=3 path must match the position-wise rollback reference."""
+    if not mx.metal.is_available():
+        pytest.skip("requires a Metal GPU")
+
+    from mlx_lm.models.cache import ArraysCache
+    from mlx_lm.models.qwen3_5 import GatedDeltaNet, TextModelArgs
+
+    from vllm_mlx.kernels import qwen4_gdn_verify
+    from vllm_mlx.spec_decode.mtp.cache_patch import (
+        patch_gated_delta_net_for_mtp,
+    )
+
+    previous_device = mx.default_device()
+    mx.set_default_device(mx.gpu)
+    try:
+        args = TextModelArgs(
+            hidden_size=8,
+            num_attention_heads=2,
+            linear_num_value_heads=2,
+            linear_num_key_heads=1,
+            linear_key_head_dim=32,
+            linear_value_head_dim=4,
+            linear_conv_kernel_dim=3,
+        )
+        layer = GatedDeltaNet(args)
+        layer.set_dtype(mx.bfloat16)
+        inputs = mx.random.normal(
+            (1, 4, args.hidden_size), key=mx.random.key(3156)
+        ).astype(mx.bfloat16)
+        patch_gated_delta_net_for_mtp()
+
+        reference_cache = ArraysCache(2)
+        reference_cache.n_confirmed_for_mtp = 1
+        layer.train(True)
+        reference = layer(inputs, cache=reference_cache)
+        mx.eval(
+            reference,
+            *reference_cache.cache,
+            *(item for pair in reference_cache.rollback_state for item in pair),
+        )
+
+        fused_cache = ArraysCache(2)
+        fused_cache.n_confirmed_for_mtp = 1
+        fused_calls = 0
+        original_fused = qwen4_gdn_verify.gated_delta_verify_with_states
+
+        def counted_fused(*args, **kwargs):
+            nonlocal fused_calls
+            fused_calls += 1
+            return original_fused(*args, **kwargs)
+
+        monkeypatch.setattr(
+            qwen4_gdn_verify,
+            "gated_delta_verify_with_states",
+            counted_fused,
+        )
+        layer.eval()
+        fused = layer(inputs, cache=fused_cache)
+        mx.eval(
+            fused,
+            *fused_cache.cache,
+            *(item for pair in fused_cache.rollback_state for item in pair),
+        )
+
+        assert mx.array_equal(fused, reference).item()
+        assert fused_calls == 1
+        assert len(fused_cache.rollback_state) == 3
+        for fused_value, reference_value in zip(
+            fused_cache.cache, reference_cache.cache, strict=True
+        ):
+            assert mx.allclose(
+                fused_value, reference_value, rtol=1e-5, atol=1e-6
+            ).item()
+        for fused_pair, reference_pair in zip(
+            fused_cache.rollback_state,
+            reference_cache.rollback_state,
+            strict=True,
+        ):
+            for fused_value, reference_value in zip(
+                fused_pair, reference_pair, strict=True
+            ):
+                assert mx.allclose(
+                    fused_value, reference_value, rtol=1e-5, atol=1e-6
+                ).item()
+    finally:
+        mx.set_default_device(previous_device)
+
+
 # ---------------------------------------------------------------------------
 # 4. CLI flag parsing + SchedulerConfig plumbing
 # ---------------------------------------------------------------------------
