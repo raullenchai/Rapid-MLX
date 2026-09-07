@@ -422,46 +422,15 @@ struct LocalDraftPostInstructionPlanner: DraftPostInstructionPlanning {
             "facebook.com": ["facebook"],
             "instagram.com": ["instagram"],
             "threads.net": ["threads"],
+            "github.com": ["github"],
+            "medium.com": ["medium"],
+            "reddit.com": ["reddit"],
+            "youtube.com": ["youtube"],
         ]
-        if aliases.first(where: { serviceHost, _ in
+        return aliases.first(where: { serviceHost, _ in
             normalizedHost == serviceHost
                 || normalizedHost.hasSuffix(".\(serviceHost)")
-        })?.value.contains(evidence) == true {
-            return true
-        }
-        return normalizedServiceName(evidence) == apexServiceLabel(
-            from: normalizedHost
-        )
-    }
-
-    /// Matches an explicit service name such as "GitHub" to github.com while
-    /// refusing unlisted subdomains and private-suffix traps such as
-    /// attacker.github.io. Recognized service subdomains are handled only by
-    /// the explicit alias map above. This is not a navigation trust decision—
-    /// the exact live URL is independently pinned—it only decides whether the
-    /// user's brief named that verified site.
-    private static func apexServiceLabel(from host: String) -> String? {
-        let labels = host.split(separator: ".").map(String.init)
-        if labels.count == 2 {
-            return normalizedServiceName(labels[0])
-        }
-        let secondLevelPublicSuffixes: Set<String> = ["co", "com", "net", "org"]
-        if labels.count == 3,
-           labels.last?.count == 2,
-           secondLevelPublicSuffixes.contains(labels[1]) {
-            return normalizedServiceName(labels[0])
-        }
-        return nil
-    }
-
-    private static func normalizedServiceName(_ value: String) -> String {
-        let folded = value.folding(
-            options: [.caseInsensitive, .diacriticInsensitive, .widthInsensitive],
-            locale: Locale(identifier: "en_US_POSIX")
-        )
-        return folded.unicodeScalars.filter {
-            CharacterSet.alphanumerics.contains($0)
-        }.map(String.init).joined()
+        })?.value.contains(evidence) == true
     }
 
     private static func groundedDraft(

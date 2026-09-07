@@ -249,8 +249,8 @@ struct DraftPostInstructionPlannerTests {
         )))
     }
 
-    @Test("A generic service name matches only the registrable host label")
-    func genericDestinationServiceName() async throws {
+    @Test("A known service name matches only its explicit hostname allowlist")
+    func allowlistedDestinationServiceName() async throws {
         func output(destination: String) -> [String: Any] {
             [
                 "status": "ready",
@@ -299,6 +299,17 @@ struct DraftPostInstructionPlannerTests {
             destinationHost: "attacker.github.io"
         )
         #expect(privateSuffix == .needsClarification(
+            "What should this update accomplish, which points should it include, and where should it be posted?"
+        ))
+
+        let deceptiveTopLevelDomain = try await Self.planner(transport: PlannerTransport(
+            response: try Self.response(content: output(destination: "github.zip"))
+        )).analyze(
+            instruction: brief,
+            browserApplication: "Safari",
+            destinationHost: "github.zip"
+        )
+        #expect(deceptiveTopLevelDomain == .needsClarification(
             "What should this update accomplish, which points should it include, and where should it be posted?"
         ))
     }
