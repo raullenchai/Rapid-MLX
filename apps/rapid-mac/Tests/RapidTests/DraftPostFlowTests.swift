@@ -459,6 +459,15 @@ struct DraftPostFlowTests {
             elementFrame: composer,
             windowFrame: window
         ))
+        #expect(MacOSDraftPostFlowDriver.authorizesUniqueVisualEditor(
+            candidateCount: 1
+        ))
+        #expect(!MacOSDraftPostFlowDriver.authorizesUniqueVisualEditor(
+            candidateCount: 0
+        ))
+        #expect(!MacOSDraftPostFlowDriver.authorizesUniqueVisualEditor(
+            candidateCount: 2
+        ))
     }
 
     @Test("Visual recovery retries only the bounded pre-mutation attempt")

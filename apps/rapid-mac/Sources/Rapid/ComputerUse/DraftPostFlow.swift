@@ -379,10 +379,12 @@ struct MacOSDraftPostFlowDriver: DraftPostFlowDriving {
         let application = Self.applicationElement(
             destination.selection.processIdentifier
         )
-        let previousValue = Self.boolAttribute(
+        guard let previousValue = Self.boolAttribute(
             "AXEnhancedUserInterface" as CFString,
             from: application
-        ) ?? false
+        ) else {
+            throw DraftPostFlowFailure.dependencyFailure
+        }
         return try await Self.establishBrowserAccessibilityLease(
             previousValue: previousValue,
             activate: {
@@ -1242,28 +1244,37 @@ struct MacOSDraftPostFlowDriver: DraftPostFlowDriving {
         in window: AXUIElement,
         browserBundleIdentifier: String
     ) throws -> AXUIElement? {
+        let safeEditors = try editableElements(in: window).filter { element in
+            isSafeEmptyEditable(
+                element,
+                in: window,
+                browserBundleIdentifier: browserBundleIdentifier
+            )
+        }
+        guard authorizesUniqueVisualEditor(candidateCount: safeEditors.count),
+              let safeEditor = safeEditors.first
+        else { return nil }
+
         if let exact = editableAncestor(
             from: hit,
             through: window,
             browserBundleIdentifier: browserBundleIdentifier
-        ) {
-            return exact
+        ), CFEqual(exact, safeEditor) {
+            return safeEditor
         }
         guard let windowFrame = elementFrame(window) else { return nil }
-        let nearby = try editableElements(in: window).filter { element in
-            guard isSafeEmptyEditable(
-                element,
-                in: window,
-                browserBundleIdentifier: browserBundleIdentifier
-            ), let frame = elementFrame(element)
-            else { return false }
-            return isWithinGroundingTolerance(
+        guard let frame = elementFrame(safeEditor),
+              isWithinGroundingTolerance(
                 point: point,
                 elementFrame: frame,
                 windowFrame: windowFrame
-            )
-        }
-        return nearby.count == 1 ? nearby[0] : nil
+              )
+        else { return nil }
+        return safeEditor
+    }
+
+    static func authorizesUniqueVisualEditor(candidateCount: Int) -> Bool {
+        candidateCount == 1
     }
 
     static func isWithinGroundingTolerance(
