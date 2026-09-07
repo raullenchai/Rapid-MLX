@@ -6,6 +6,7 @@ summary statistics, and limitations.
 
 ## Reports
 
+- [Qwen3.8 27B MTP FP16 checkpoint qualification](2026-09-07-qwen38-mtp-fp16.md)
 - [Qwen4 fp32-input fast RMSNorm qualification](2026-09-06-qwen4-fast-rmsnorm.md)
 - [FLUX.2 Klein q4/BF16 image precision qualification](2026-09-04-image-weight-precision.md)
 - [Qwen4 block-sparse QSA prefill qualification](2026-09-04-qwen4-qsa-block-sparse-prefill.md)
