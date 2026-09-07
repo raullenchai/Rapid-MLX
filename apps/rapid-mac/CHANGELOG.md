@@ -26,6 +26,11 @@ can actually understand.
   in. Nothing changes for normal launches (the variable is not set, and a
   truthy value never turns telemetry on). CI exports it so build machines
   running the app no longer show up as users in the usage data.
+- Telemetry also stays off, and the one-time invitation is never shown, when
+  `DO_NOT_TRACK=1` is set or the app runs under a CI marker (`CI`,
+  `GITHUB_ACTIONS`, `GITLAB_CI`, `CIRCLECI`, `TRAVIS`, `BUILDKITE`,
+  `JENKINS_URL`, `TEAMCITY_VERSION`) — the same rules as the engine and the
+  convention other desktop tools follow.
 - `qwen3.5-4b-4bit` no longer turns MTP speculative decoding on by default. Measured single-stream decode was 25–37% slower with the MTP drafter on M2 Pro and M3 Ultra, with no gain under concurrency. The preset stays available: `rapid-mlx serve qwen3.5-4b-4bit --speculative-config '{"method":"mtp"}'`, or the Speculative decoding toggle in Desktop Performance settings. New catalog field `mtp_default_enabled` carries the product default separately from the qualification tier. (#3115)
 
 ### Fixed
