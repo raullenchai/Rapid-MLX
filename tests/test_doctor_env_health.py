@@ -2918,7 +2918,7 @@ def test_run_all_skips_remaining_sections_after_shared_deadline(monkeypatch):
     report = eh.run_all()
 
     assert [section.title for section in report.sections] == ["First", "Must_Not_Run"]
-    assert report.sections[1].checks[0].status is eh.CheckStatus.WARN
+    assert report.sections[1].checks[0].status is eh.CheckStatus.SKIPPED
     assert "budget exhausted" in report.sections[1].checks[0].label
     assert eh._DOCTOR_DEADLINE is None
 

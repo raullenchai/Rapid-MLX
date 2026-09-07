@@ -52,6 +52,7 @@ class CheckStatus(str, Enum):
     OK = "ok"
     WARN = "warn"
     FAIL = "fail"
+    SKIPPED = "skipped"
 
 
 class _ImportProbeOutcome(str, Enum):
@@ -68,20 +69,33 @@ class Check:
     label: str
     status: CheckStatus
     detail: str = ""
+    id: str = ""
 
 
 @dataclass
 class Section:
     title: str
     checks: list[Check] = field(default_factory=list)
+    id: str = ""
+    duration_ms: int = 0
 
-    def add(self, label: str, status: CheckStatus, detail: str = "") -> None:
-        self.checks.append(Check(label=label, status=status, detail=detail))
+    def add(
+        self,
+        label: str,
+        status: CheckStatus,
+        detail: str = "",
+        *,
+        check_id: str = "",
+    ) -> None:
+        self.checks.append(
+            Check(label=label, status=status, detail=detail, id=check_id)
+        )
 
 
 @dataclass
 class Report:
     sections: list[Section] = field(default_factory=list)
+    duration_ms: int = 0
 
     def all_checks(self) -> list[Check]:
         return [c for s in self.sections for c in s.checks]
@@ -97,6 +111,18 @@ class Report:
     @property
     def n_fail(self) -> int:
         return sum(1 for c in self.all_checks() if c.status is CheckStatus.FAIL)
+
+    @property
+    def n_skipped(self) -> int:
+        return sum(1 for c in self.all_checks() if c.status is CheckStatus.SKIPPED)
+
+    @property
+    def overall_status(self) -> str:
+        if self.n_fail:
+            return "fail"
+        if self.n_warn or self.n_skipped:
+            return "warn"
+        return "ok"
 
     @property
     def exit_code(self) -> int:
@@ -3109,6 +3135,42 @@ _SECTION_TITLES = {
     section_agent_integrations: "Agent Integrations",
 }
 
+_SECTION_IDS = {
+    section_system: "system",
+    section_python: "python",
+    section_required_packages: "packages.required",
+    section_updates: "updates",
+    section_optional_packages: "packages.optional",
+    section_hf_cache: "cache.huggingface",
+    section_network: "network",
+    section_shell_integration: "shell",
+    section_optional_tools: "tools.optional",
+    section_agent_integrations: "agents",
+}
+
+
+def _builder_id(builder: Callable[[], Section]) -> str:
+    return _SECTION_IDS.get(
+        builder,
+        builder.__name__.removeprefix("section_").replace("_", "."),
+    )
+
+
+def _finish_section(
+    section: Section,
+    *,
+    builder: Callable[[], Section],
+    started_at: float,
+) -> Section:
+    """Attach the machine-readable identity and timing contract."""
+    section.id = section.id or _builder_id(builder)
+    section.duration_ms = max(0, round((time.monotonic() - started_at) * 1000))
+    for index, check in enumerate(section.checks, start=1):
+        # Existing probes predate IDs. Ordinal IDs preserve their public order;
+        # new probes may pass a semantic ``check_id`` explicitly.
+        check.id = check.id or f"{section.id}.{index:03d}"
+    return section
+
 
 def _budget_exhausted_report() -> Report:
     report = Report()
@@ -3120,14 +3182,21 @@ def _budget_exhausted_report() -> Report:
         )
         skipped.add(
             "Skipped: doctor time budget exhausted",
-            CheckStatus.WARN,
+            CheckStatus.SKIPPED,
             detail="probe did not start before the shared deadline",
+            check_id=f"{_builder_id(builder)}.budget",
         )
+        skipped.id = _builder_id(builder)
         report.sections.append(skipped)
     return report
 
 
-def _run_all_serialized(caller_deadline: float) -> Report:
+def _run_all_serialized(
+    caller_deadline: float,
+    *,
+    only: set[str] | None = None,
+    skip: set[str] | None = None,
+) -> Report:
     """Run every section and return the aggregate report.
 
     Each section builder is wrapped in a try/except so a single buggy probe
@@ -3150,9 +3219,15 @@ def _run_all_serialized(caller_deadline: float) -> Report:
         if time.monotonic() >= _DOCTOR_DEADLINE:
             return _budget_exhausted_report()
         _selected_runtime()
-        for index, builder in enumerate(_SECTION_BUILDERS):
+        selected_builders = tuple(
+            builder
+            for builder in _SECTION_BUILDERS
+            if (not only or _builder_id(builder) in only)
+            and _builder_id(builder) not in (skip or set())
+        )
+        for index, builder in enumerate(selected_builders):
             if time.monotonic() >= _DOCTOR_DEADLINE:
-                for skipped_builder in _SECTION_BUILDERS[index:]:
+                for skipped_builder in selected_builders[index:]:
                     skipped = Section(
                         _SECTION_TITLES.get(
                             skipped_builder,
@@ -3161,35 +3236,61 @@ def _run_all_serialized(caller_deadline: float) -> Report:
                     )
                     skipped.add(
                         "Skipped: doctor time budget exhausted",
-                        CheckStatus.WARN,
+                        CheckStatus.SKIPPED,
                         detail="probe did not start before the shared deadline",
+                        check_id=f"{_builder_id(skipped_builder)}.budget",
                     )
+                    skipped.id = _builder_id(skipped_builder)
                     report.sections.append(skipped)
                 break
             try:
-                report.sections.append(builder())
+                started_at = time.monotonic()
+                report.sections.append(
+                    _finish_section(builder(), builder=builder, started_at=started_at)
+                )
             except Exception as e:  # noqa: BLE001 — see docstring above
                 crashed = Section(builder.__name__.replace("section_", "").title())
                 crashed.add(
                     f"probe crashed: {type(e).__name__}: {e}",
                     CheckStatus.FAIL,
                     detail=f"{type(e).__module__}.{type(e).__name__}: {e}",
+                    check_id=f"{_builder_id(builder)}.crash",
                 )
+                crashed.id = _builder_id(builder)
                 report.sections.append(crashed)
     finally:
         _DOCTOR_DEADLINE = None
     return report
 
 
-def run_all() -> Report:
-    """Run one coherent probe set; serialize access to process-global caches."""
+def run_all(
+    *,
+    only: set[str] | None = None,
+    skip: set[str] | None = None,
+) -> Report:
+    """Run a bounded probe set; serialize access to process-global caches.
+
+    ``only`` and ``skip`` contain stable section IDs such as ``network`` or
+    ``packages.required``. Unknown IDs are rejected by the CLI before this
+    layer; library callers simply receive an empty report for no matches.
+    """
+    started_at = time.monotonic()
     caller_deadline = time.monotonic() + (
         _DOCTOR_BUDGET_S - _DOCTOR_COMPLETION_HEADROOM_S
     )
     remaining = max(0.0, caller_deadline - time.monotonic())
     if not _DOCTOR_RUN_LOCK.acquire(timeout=remaining):
-        return _budget_exhausted_report()
+        report = _budget_exhausted_report()
+        report.duration_ms = max(0, round((time.monotonic() - started_at) * 1000))
+        return report
     try:
-        return _run_all_serialized(caller_deadline)
+        if only or skip:
+            report = _run_all_serialized(caller_deadline, only=only, skip=skip)
+        else:
+            # Preserve the one-argument internal seam used by downstream
+            # embedders and older test doubles.
+            report = _run_all_serialized(caller_deadline)
+        report.duration_ms = max(0, round((time.monotonic() - started_at) * 1000))
+        return report
     finally:
         _DOCTOR_RUN_LOCK.release()
