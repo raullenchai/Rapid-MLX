@@ -86,3 +86,7 @@
   scheduler stats expose both configured and effective policy so a legacy
   runtime fallback reports effective `fcfs`. Post-fix focused run: 178 passed,
   2 deselected.
+- PR validation round 4 remained MERGE-SAFE with one final nit: permissive
+  integer coercion could accept malformed boolean/float/string cache offsets.
+  Offset validation now requires a non-boolean Python integer and tests each
+  rejected shape.

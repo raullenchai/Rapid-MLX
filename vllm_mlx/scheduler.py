@@ -5237,15 +5237,13 @@ class Scheduler:
             offset = getattr(value, "offset", None)
             if offset is None:
                 return
-            try:
-                parsed = int(offset)
-            except (TypeError, ValueError):
+            if isinstance(offset, bool) or not isinstance(offset, int):
                 valid = False
                 return
-            if parsed < 0:
+            if offset < 0:
                 valid = False
                 return
-            values.append(parsed)
+            values.append(offset)
 
         visit(cache)
         return tuple(values), valid

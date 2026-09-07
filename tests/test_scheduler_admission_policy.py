@@ -125,6 +125,10 @@ def test_cost_probe_rejects_stale_tail_and_accepts_current_prompt_suffix():
     assert scheduler._validated_prompt_tail_cost(request) == 100
     request.prompt_cache = SimpleNamespace(offset="corrupt")
     assert scheduler._validated_prompt_tail_cost(request) == 100
+    request.prompt_cache = SimpleNamespace(offset=True)
+    assert scheduler._validated_prompt_tail_cost(request) == 100
+    request.prompt_cache = SimpleNamespace(offset=98.9)
+    assert scheduler._validated_prompt_tail_cost(request) == 100
 
 
 def test_selection_is_read_only_until_admission_commit():
