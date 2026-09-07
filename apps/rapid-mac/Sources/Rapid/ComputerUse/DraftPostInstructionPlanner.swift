@@ -357,7 +357,12 @@ struct LocalDraftPostInstructionPlanner: DraftPostInstructionPlanning {
                 // The local model extracts intent but cannot silently add a
                 // claim. The preview starts from verified verbatim spans; the
                 // user can polish this bounded draft before browser fill.
-                draft: groundedDraft(purpose: purpose, talkingPoints: points)
+                draft: groundedDraft(
+                    purpose: purpose,
+                    audience: audience,
+                    talkingPoints: points,
+                    tone: tone
+                )
             ))
         }
     }
@@ -413,9 +418,30 @@ struct LocalDraftPostInstructionPlanner: DraftPostInstructionPlanning {
 
     private static func groundedDraft(
         purpose: String,
-        talkingPoints: [String]
+        audience: String,
+        talkingPoints: [String],
+        tone: String
     ) -> String {
-        ([purpose] + talkingPoints).joined(separator: "\n\n")
+        let foldedTone = tone.folding(
+            options: [.caseInsensitive, .diacriticInsensitive, .widthInsensitive],
+            locale: Locale(identifier: "en_US_POSIX")
+        )
+        let energetic = [
+            "enthusiastic", "excited", "celebratory", "energetic", "upbeat",
+            "热情", "兴奋", "活泼", "庆祝",
+        ].contains { foldedTone.contains($0) }
+        let concise = ["concise", "brief", "short", "简洁", "精炼"].contains {
+            foldedTone.contains($0)
+        }
+        let usesCJK = ([purpose, audience] + talkingPoints).joined().unicodeScalars
+            .contains { (0x3400 ... 0x9FFF).contains(Int($0.value)) }
+        let points: String
+        if usesCJK {
+            points = talkingPoints.joined(separator: concise ? "；" : "。")
+            return "面向\(audience)：\(purpose)\(concise ? "——" : "。")\(points)\(energetic ? "！" : "。")"
+        }
+        points = talkingPoints.joined(separator: concise ? "; " : ". ")
+        return "For \(audience): \(purpose)\(concise ? " — " : ". ")\(points)\(energetic ? "!" : ".")"
     }
 
     private static func instructionContainsDestinationEvidence(

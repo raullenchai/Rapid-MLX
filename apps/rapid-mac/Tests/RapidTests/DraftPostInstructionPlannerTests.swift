@@ -31,7 +31,7 @@ struct DraftPostInstructionPlannerTests {
             talkingPoints: ["faster local inference", "no cloud upload"],
             tone: "Concise and enthusiastic",
             destination: "x.com",
-            draft: "launch post\n\nfaster local inference\n\nno cloud upload"
+            draft: "For Mac developers: launch post — faster local inference; no cloud upload!"
         )))
 
         let request = try #require(await transport.requests.first)
@@ -245,8 +245,51 @@ struct DraftPostInstructionPlannerTests {
             talkingPoints: ["local inference"],
             tone: "concise",
             destination: "mobile.twitter.com",
-            draft: "launch post\n\nlocal inference"
+            draft: "For developers: launch post — local inference."
         )))
+    }
+
+    @Test("Verified audience and tone materially shape the grounded draft")
+    func groundedDraftStyle() async throws {
+        func output(tone: String) -> [String: Any] {
+            [
+                "status": "ready",
+                "purpose": "announce Rapid",
+                "audience": "Mac developers",
+                "talking_points": ["local inference"],
+                "tone": tone,
+                "destination": "x.com",
+                "purpose_evidence": "announce Rapid",
+                "audience_evidence": "Mac developers",
+                "talking_points_evidence": ["local inference"],
+                "tone_evidence": tone,
+                "destination_evidence": "X",
+                "clarifying_question": "",
+            ]
+        }
+        let enthusiastic = try await Self.planner(transport: PlannerTransport(
+            response: try Self.response(content: output(tone: "enthusiastic"))
+        )).analyze(
+            instruction: "For Mac developers, announce Rapid on X with an enthusiastic tone and mention local inference.",
+            browserApplication: "Safari",
+            destinationHost: "x.com"
+        )
+        let professional = try await Self.planner(transport: PlannerTransport(
+            response: try Self.response(content: output(tone: "professional"))
+        )).analyze(
+            instruction: "For Mac developers, announce Rapid on X with a professional tone and mention local inference.",
+            browserApplication: "Safari",
+            destinationHost: "x.com"
+        )
+        guard case .ready(let enthusiasticPlan) = enthusiastic,
+              case .ready(let professionalPlan) = professional
+        else {
+            Issue.record("Evidence-backed plans did not reach review")
+            return
+        }
+        #expect(enthusiasticPlan.draft == "For Mac developers: announce Rapid. local inference!")
+        #expect(professionalPlan.draft == "For Mac developers: announce Rapid. local inference.")
+        #expect(enthusiasticPlan.draft != professionalPlan.draft)
     }
 
     @Test("Unknown fields and incomplete ready plans fail closed")
