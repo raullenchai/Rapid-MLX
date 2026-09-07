@@ -161,6 +161,44 @@ struct FreeUpSpaceFlowTests {
         #expect(FileManager.default.fileExists(atPath: reviewed.url.path))
     }
 
+    @Test("Trash permission failures are reported without claiming a move")
+    func trashPermissionFailureIsClassified() async throws {
+        let fixture = try Fixture()
+        defer { fixture.remove() }
+        let now = Date(timeIntervalSince1970: 2_000_000_000)
+        try fixture.file(
+            "protected.txt",
+            bytes: 20,
+            modifiedAt: now.addingTimeInterval(-40 * 24 * 60 * 60)
+        )
+        let denied: MacOSDownloadsCleanupService.TrashOperation = { _ in
+            throw NSError(
+                domain: NSCocoaErrorDomain,
+                code: CocoaError.fileWriteUnknown.rawValue,
+                userInfo: [
+                    NSUnderlyingErrorKey: NSError(
+                        domain: NSPOSIXErrorDomain,
+                        code: Int(EACCES)
+                    )
+                ]
+            )
+        }
+        let service = try #require(MacOSDownloadsCleanupService(
+            root: fixture.root,
+            trashOperation: denied
+        ))
+        let reviewed = try #require(try await service.scan(now: now).first)
+
+        let outcome = await service.moveToTrash([reviewed])
+
+        #expect(outcome.moved.isEmpty)
+        #expect(outcome.failures == [FreeUpSpaceMoveFailure(
+            candidate: reviewed,
+            reason: .permissionDenied
+        )])
+        #expect(FileManager.default.fileExists(atPath: reviewed.url.path))
+    }
+
     @Test("a crafted candidate outside the reviewed root fails closed")
     func candidateOutsideRootIsRejected() async throws {
         let fixture = try Fixture()

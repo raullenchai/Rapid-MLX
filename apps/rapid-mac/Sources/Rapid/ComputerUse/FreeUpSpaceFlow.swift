@@ -161,16 +161,12 @@ actor MacOSDownloadsCleanupService: FreeUpSpaceServicing {
             }
             do {
                 try trashOperation(candidate.url)
-            } catch let error as CocoaError where error.code == .fileWriteNoPermission {
-                outcome.failures.append(FreeUpSpaceMoveFailure(
-                    candidate: candidate,
-                    reason: .permissionDenied
-                ))
-                continue
             } catch {
                 outcome.failures.append(FreeUpSpaceMoveFailure(
                     candidate: candidate,
-                    reason: .moveRejected
+                    reason: Self.isPermissionError(error)
+                        ? .permissionDenied
+                        : .moveRejected
                 ))
                 continue
             }
@@ -249,18 +245,30 @@ actor MacOSDownloadsCleanupService: FreeUpSpaceServicing {
     }
 
     static func scanError(for error: Error) -> FreeUpSpaceScanError {
+        isPermissionError(error) ? .permissionDenied : .enumerationFailed
+    }
+
+    private static func isPermissionError(
+        _ error: Error,
+        remainingUnderlyingErrors: Int = 4
+    ) -> Bool {
         let nsError = error as NSError
         if nsError.domain == NSCocoaErrorDomain,
-           nsError.code == CocoaError.fileReadNoPermission.rawValue {
-            return .permissionDenied
+           (nsError.code == CocoaError.fileReadNoPermission.rawValue
+               || nsError.code == CocoaError.fileWriteNoPermission.rawValue) {
+            return true
         }
         if nsError.domain == NSPOSIXErrorDomain,
            (nsError.code == Int(EACCES) || nsError.code == Int(EPERM)) {
-            return .permissionDenied
+            return true
         }
-        if let underlying = nsError.userInfo[NSUnderlyingErrorKey] as? Error {
-            return scanError(for: underlying)
+        if remainingUnderlyingErrors > 0,
+           let underlying = nsError.userInfo[NSUnderlyingErrorKey] as? Error {
+            return isPermissionError(
+                underlying,
+                remainingUnderlyingErrors: remainingUnderlyingErrors - 1
+            )
         }
-        return .enumerationFailed
+        return false
     }
 }
