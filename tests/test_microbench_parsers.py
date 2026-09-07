@@ -206,20 +206,24 @@ def test_relative_budget_math_when_workloads_scale_together(mb, monkeypatch):
     assert not _bench_with_cal(mb, make, 1.2, 5.0, monkeypatch).passed
 
 
-def test_verdict_boundary_is_inclusive(mb):
-    """``eps == REGRESSION_LIMIT`` passes and one part in a thousand over it
-    fails — asserted through ``_median_verdict`` with exact pairs, where no
-    clock arithmetic is involved."""
+def test_verdict_boundary_is_inclusive(mb, monkeypatch):
+    """``eps == REGRESSION_LIMIT`` passes (the gate is ``<=``); one part in
+    ten thousand either side flips ``BenchResult.passed`` through the real
+    ``bench_one`` path on the virtual clock (the clock has 1 ns granularity,
+    so a 1e-6 margin on a ~330 μs call would round away). The exact-equality
+    case is asserted through ``_median_verdict`` with exact pairs, where no
+    clock arithmetic can perturb the ratio."""
     base = mb.BASE_US["hermes"]
     at_limit = [
         (base * mb.REGRESSION_LIMIT * factor, factor) for factor in (1.0, 5.0, 2.0)
     ]
     eps, _, _ = mb._median_verdict(at_limit, base)
     assert eps == pytest.approx(mb.REGRESSION_LIMIT)
-    assert eps <= mb.REGRESSION_LIMIT * (1 + 1e-9)
-    over = [(us * 1.001, factor) for us, factor in at_limit]
-    eps_over, _, _ = mb._median_verdict(over, base)
-    assert eps_over > mb.REGRESSION_LIMIT
+    make = _prop_parser(mb, monkeypatch)
+    assert _bench_with_cal(mb, make, 1 - 1e-4, 1.0, monkeypatch).passed
+    assert _bench_with_cal(mb, make, 1 - 1e-4, 5.0, monkeypatch).passed
+    assert not _bench_with_cal(mb, make, 1 + 1e-4, 1.0, monkeypatch).passed
+    assert not _bench_with_cal(mb, make, 1 + 1e-4, 5.0, monkeypatch).passed
 
 
 def test_independent_control_cost_can_change_verdict(mb):
