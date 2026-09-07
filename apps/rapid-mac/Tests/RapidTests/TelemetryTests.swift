@@ -566,13 +566,13 @@ final class TelemetryTests {
     func sendBatchTransportErrorReturnsFalse() async {
         let defaults = freshDefaults()
         defaults.set(true, forKey: TelemetryConfig.enabledKey)
-        // Point the client at a session that always fails (zero
-        // timeout). We can't override TelemetryConfig.endpoint without
-        // a hook, but we CAN swap in a URLSession whose request
-        // resolution will always fail fast.
+        // Point the client at a session whose loader fails every request
+        // in-process. A real session with a tiny timeout was used before;
+        // that still opened a connection to the production endpoint from
+        // an opted-in client, which is exactly what the test target's
+        // environment pin must never allow.
         let cfg = URLSessionConfiguration.ephemeral
-        cfg.timeoutIntervalForRequest = 0.001
-        cfg.timeoutIntervalForResource = 0.001
+        cfg.protocolClasses = [AlwaysFailingURLProtocol.self]
         let failing = URLSession(configuration: cfg)
         var client = TelemetryClient()
         client.session = failing
@@ -1077,4 +1077,17 @@ struct TelemetryAuditBatch8Contracts {
             "Oversized batch was dispatched to the network — should have short-circuited"
         )
     }
+}
+
+
+/// Stateless loader that fails every request before it leaves the process.
+/// Unlike ``TelemetryAuditURLProtocol`` it holds no shared state, so a
+/// parallel suite can use it without serialisation.
+private final class AlwaysFailingURLProtocol: URLProtocol {
+    override class func canInit(with request: URLRequest) -> Bool { true }
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+    override func startLoading() {
+        client?.urlProtocol(self, didFailWithError: URLError(.cannotConnectToHost))
+    }
+    override func stopLoading() {}
 }
