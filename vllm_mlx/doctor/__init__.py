@@ -2,7 +2,7 @@
 """
 Rapid-MLX Doctor — environment-health check.
 
-``rapid-mlx doctor`` is a fast (≤ 5 s) self-diagnostic that answers one
+``rapid-mlx doctor`` is a fast, cooperatively budgeted self-diagnostic that answers one
 question: *is my install/env broken?*  It probes hardware, Python, packages,
 HuggingFace cache, network, shell integration, and optional tooling.  It
 never loads a model, boots a server, or runs benchmarks.
@@ -10,10 +10,10 @@ never loads a model, boots a server, or runs benchmarks.
 Model-validation tiers that used to live here (``smoke / check / full /
 benchmark``) moved to ``rapid-mlx bench --tier ...`` as of v0.7.22.
 
-Entry point: ``rapid-mlx doctor [--verbose]``.
+Entry point: ``rapid-mlx doctor [--verbose|--json|--summary]``.
 
 Exit codes:
-  0 — everything ok or only warnings
+  0 — everything ok, skipped, or only warnings
   1 — one or more ✗ issues
 """
 

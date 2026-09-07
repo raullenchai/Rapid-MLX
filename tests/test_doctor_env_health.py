@@ -1438,12 +1438,15 @@ def test_doctor_uses_one_cached_runtime_selection(monkeypatch, tmp_path):
         return runtime
 
     def section():
+        assert eh._selected_runtime()[0] == runtime
+        assert eh._selected_runtime()[0] == runtime
         section_section = eh.Section("Cached")
         section_section.add("cached", eh.CheckStatus.OK)
         return section_section
 
     monkeypatch.setattr(eh, "_runtime_python_path", select_runtime)
     monkeypatch.setattr(eh, "_SECTION_BUILDERS", (section,))
+    monkeypatch.setattr(eh, "_RUNTIME_SECTION_BUILDERS", frozenset({section}))
     monkeypatch.setattr(eh, "_DOCTOR_DEADLINE", None)
     eh._RUNTIME_SELECTION_DONE = False
     try:
@@ -2918,7 +2921,7 @@ def test_run_all_skips_remaining_sections_after_shared_deadline(monkeypatch):
     report = eh.run_all()
 
     assert [section.title for section in report.sections] == ["First", "Must_Not_Run"]
-    assert report.sections[1].checks[0].status is eh.CheckStatus.WARN
+    assert report.sections[1].checks[0].status is eh.CheckStatus.SKIPPED
     assert "budget exhausted" in report.sections[1].checks[0].label
     assert eh._DOCTOR_DEADLINE is None
 
@@ -2939,6 +2942,101 @@ def test_expired_caller_does_not_start_runtime_discovery(monkeypatch):
     )
     eh._selected_runtime.assert_not_called()
     assert eh._DOCTOR_DEADLINE is None
+
+
+def test_runtime_discovery_budget_overrun_skips_selected_sections(monkeypatch):
+    clock = [100.0]
+
+    def consume_budget():
+        clock[0] = 105.0
+        return Path(sys.executable), False
+
+    monkeypatch.setattr(eh.time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(eh, "_selected_runtime", consume_budget)
+    monkeypatch.setattr(eh, "_SECTION_BUILDERS", (eh.section_python,))
+    monkeypatch.setattr(eh, "_RUNTIME_SECTION_BUILDERS", frozenset({eh.section_python}))
+
+    report = eh.run_all()
+
+    assert [section.id for section in report.sections] == ["python"]
+    assert report.sections[0].checks[0].status is eh.CheckStatus.SKIPPED
+    assert "budget exhausted" in report.sections[0].checks[0].label
+
+
+def test_runtime_discovery_runs_after_preceding_independent_sections(monkeypatch):
+    clock = [100.0]
+    calls = []
+
+    def independent_section():
+        calls.append("independent")
+        section = eh.Section("Independent")
+        section.add("ran", eh.CheckStatus.OK)
+        return section
+
+    def runtime_section():
+        raise AssertionError("runtime section started after discovery exhausted budget")
+
+    def consume_budget():
+        calls.append("runtime discovery")
+        clock[0] = 105.0
+        return Path(sys.executable), False
+
+    monkeypatch.setattr(eh.time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(eh, "_selected_runtime", consume_budget)
+    monkeypatch.setattr(eh, "_SECTION_BUILDERS", (independent_section, runtime_section))
+    monkeypatch.setattr(eh, "_RUNTIME_SECTION_BUILDERS", frozenset({runtime_section}))
+
+    report = eh.run_all()
+
+    assert calls == ["independent", "runtime discovery"]
+    assert [section.id for section in report.sections] == [
+        "independent.section",
+        "runtime.section",
+    ]
+    assert report.sections[0].checks[0].status is eh.CheckStatus.OK
+    assert report.sections[1].checks[0].status is eh.CheckStatus.SKIPPED
+
+
+def test_runtime_discovery_crash_is_reported_without_aborting_independent_checks(
+    monkeypatch,
+):
+    calls = []
+
+    def runtime_one():
+        raise AssertionError("runtime builder must not run without discovery")
+
+    def independent():
+        calls.append("independent")
+        section = eh.Section("Independent")
+        section.add("ran", eh.CheckStatus.OK)
+        return section
+
+    def runtime_two():
+        raise AssertionError("dependent runtime builder must be skipped")
+
+    monkeypatch.setattr(
+        eh, "_selected_runtime", mock.Mock(side_effect=RuntimeError("bad plist"))
+    )
+    monkeypatch.setattr(
+        eh, "_SECTION_BUILDERS", (runtime_one, independent, runtime_two)
+    )
+    monkeypatch.setattr(
+        eh, "_RUNTIME_SECTION_BUILDERS", frozenset({runtime_one, runtime_two})
+    )
+
+    report = eh.run_all()
+
+    assert calls == ["independent"]
+    assert [section.id for section in report.sections] == [
+        "runtime.one",
+        "independent",
+        "runtime.two",
+    ]
+    assert report.sections[0].checks[0].status is eh.CheckStatus.FAIL
+    assert "bad plist" in report.sections[0].checks[0].detail
+    assert report.sections[1].checks[0].status is eh.CheckStatus.OK
+    assert report.sections[2].checks[0].status is eh.CheckStatus.SKIPPED
+    eh._selected_runtime.assert_called_once_with()
 
 
 def test_bounded_timeout_uses_only_one_millisecond_after_deadline(monkeypatch):
@@ -3879,19 +3977,23 @@ def test_run_all_crashing_probe_does_not_abort_report(monkeypatch):
     """If a section builder crashes, run_all() records it as a single ✗
     row but keeps going. A buggy probe must not blank the whole report."""
 
+    clock = [100.0]
+
     def boom() -> eh.Section:
+        clock[0] += 0.002
         raise RuntimeError("synthetic")
 
-    # Patch the second builder so we can confirm earlier sections still rendered.
-    builders = list(eh._SECTION_BUILDERS)
-    builders[1] = boom
-    monkeypatch.setattr(eh, "_SECTION_BUILDERS", tuple(builders))
+    monkeypatch.setattr(eh.time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(eh, "_SECTION_BUILDERS", (boom,))
+    monkeypatch.setattr(eh, "_RUNTIME_SECTION_BUILDERS", frozenset())
 
     report = eh.run_all()
-    assert len(report.sections) == len(builders)
-    crashed = report.sections[1]
+    assert len(report.sections) == 1
+    crashed = report.sections[0]
     assert any("probe crashed" in c.label for c in crashed.checks)
     assert any(c.status is eh.CheckStatus.FAIL for c in crashed.checks)
+    assert crashed.id == "boom"
+    assert crashed.duration_ms == 2
 
 
 def test_render_outputs_section_headers(capsys):

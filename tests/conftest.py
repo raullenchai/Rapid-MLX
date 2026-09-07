@@ -598,6 +598,7 @@ def clean_doctor_runtime_state(monkeypatch):
     monkeypatch.setattr(env_health, "_SELECTED_RUNTIME", None)
     monkeypatch.setattr(env_health, "_SELECTED_SERVER_RUNTIME", False)
     monkeypatch.setattr(env_health, "_RUNTIME_SELECTION_DONE", False)
+    monkeypatch.setattr(env_health, "_DOCTOR_DEADLINE", None)
     env_health._RUNTIME_CONTEXTS.clear()
     env_health._RUNTIME_DISTRIBUTION_CACHE.clear()
     env_health._RUNTIME_PROBE_CACHE.clear()
