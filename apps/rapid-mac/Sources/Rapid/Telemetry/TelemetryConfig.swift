@@ -86,18 +86,19 @@ enum TelemetryConfig {
         isEnabled(defaults: defaults, environment: environment)
     }
 
-    /// The environment the kill switch reads. Product code never assigns it
-    /// (it is the process environment); the Desktop test target pins it to
-    /// an empty environment so the suite's opt-in assertions do not depend
-    /// on whatever the machine running them exported — CI exports
-    /// ``RAPID_MLX_TELEMETRY=0`` for every job.
+    /// The environment the kill switch reads: the process environment,
+    /// unless a task-local override is in effect. Product code never sets
+    /// the override; the Desktop test target scopes it to each test (see
+    /// ``PinnedTelemetryEnvironmentTrait``) so opt-in assertions do not
+    /// depend on what the machine running them exported — CI exports
+    /// ``RAPID_MLX_TELEMETRY=0`` for every job. A task-local is inherited by
+    /// child tasks and invisible to unrelated tasks, so parallel tests can
+    /// never observe each other's value.
     static var environment: [String: String] {
-        get { environmentLock.withLock { environmentOverride } ?? ProcessInfo.processInfo.environment }
-        set { environmentLock.withLock { environmentOverride = newValue } }
+        environmentOverride ?? ProcessInfo.processInfo.environment
     }
 
-    nonisolated(unsafe) private static var environmentOverride: [String: String]?
-    private static let environmentLock = NSLock()
+    @TaskLocal static var environmentOverride: [String: String]?
 
     /// Full decision: the process-level kill switch wins over any stored
     /// consent; otherwise the user's recorded decision (default off).

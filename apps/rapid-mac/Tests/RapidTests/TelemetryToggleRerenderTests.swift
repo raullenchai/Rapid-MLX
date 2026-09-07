@@ -20,13 +20,8 @@ import Testing
 /// source-grep guard over the comment- and whitespace-stripped view file.
 /// A behavioural test is not possible here; what *is* checkable is the exact
 /// shape that caused the bug, and that it has not come back.
-@Suite("Telemetry consent toggle re-renders")
+@Suite("Telemetry consent toggle re-renders", .pinnedTelemetryEnvironment)
 struct TelemetryToggleRerenderTests {
-    init() {
-        // CI exports RAPID_MLX_TELEMETRY=0 for every job; these assertions
-        // are about consent, not the machine's environment.
-        TelemetryConfig.environment = [:]
-    }
 
     private static var sourceRoot: URL {
         URL(fileURLWithPath: #filePath)

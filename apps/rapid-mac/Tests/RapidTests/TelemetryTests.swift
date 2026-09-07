@@ -7,7 +7,7 @@ import Testing
 /// ``telemetry.rapidmlx.com`` Worker expects, the opt-in default,
 /// or the per-install identity persistence.
 @MainActor
-@Suite("Telemetry pipeline — schema, identity, opt-out")
+@Suite("Telemetry pipeline — schema, identity, opt-out", .pinnedTelemetryEnvironment)
 final class TelemetryTests {
 
     // Every defaults-touching test mints its OWN private
@@ -20,12 +20,6 @@ final class TelemetryTests {
     // ``~/Library/Preferences`` (issue #139).
     nonisolated(unsafe) private var createdSuiteNames: [String] = []
     deinit { TestDefaultsScope.cleanup(suiteNames: createdSuiteNames) }
-
-    init() {
-        // CI exports RAPID_MLX_TELEMETRY=0 for every job; these assertions
-        // are about consent, not the machine's environment.
-        TelemetryConfig.environment = [:]
-    }
 
     private func freshDefaults() -> UserDefaults {
         let name = TestDefaultsScope.mintSuiteName(prefix: "rapid-telemetry-test-")
@@ -736,14 +730,8 @@ final class TelemetryAuditURLProtocol: URLProtocol, @unchecked Sendable {
 }
 
 @MainActor
-@Suite("Telemetry audit batch 8 contracts", .serialized)
+@Suite("Telemetry audit batch 8 contracts", .serialized, .pinnedTelemetryEnvironment)
 struct TelemetryAuditBatch8Contracts {
-    init() {
-        // CI exports RAPID_MLX_TELEMETRY=0 for every job; these assertions
-        // are about consent, not the machine's environment.
-        TelemetryConfig.environment = [:]
-    }
-
     private func platform() -> TelemetryEvent.Platform {
         TelemetryEvent.Platform(
             app: "rapid-desktop",
