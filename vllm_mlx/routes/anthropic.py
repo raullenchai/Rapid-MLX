@@ -55,8 +55,7 @@ from ..service.helpers import (
     _finalize_content_and_reasoning,
     _parse_tool_calls_with_parser,
     _raise_lifecycle_cancel_or_reraise,
-    _release_admission_unless_committed,
-    _release_primary_request_unless_committed,
+    _release_route_ownership,
     _rescue_silent_drop_from_reasoning,
     _resolve_enable_thinking,
     _resolve_max_tokens,
@@ -1222,10 +1221,11 @@ async def create_anthropic_message(
     except asyncio.CancelledError as exc:
         _raise_lifecycle_cancel_or_reraise(engine, exc)
     finally:
-        if _admission_acquired:
-            _release_admission_unless_committed(engine, _admission_committed)
-        else:
-            _release_primary_request_unless_committed(engine, _admission_committed)
+        _release_route_ownership(
+            engine,
+            admission_acquired=_admission_acquired,
+            committed=_admission_committed,
+        )
 
 
 @router.post(

@@ -359,6 +359,46 @@ def test_serve_command_dispatches_uvicorn_with_fd_when_listen_fd_set(
     assert cfg.bind_port is None
 
 
+def test_serve_command_lazy_fd_banner_and_lifecycle_wiring(
+    stub_heavy_serve_deps, monkeypatch, capsys
+):
+    """The always-on path advertises standby and forwards both lifecycle knobs."""
+    from vllm_mlx import server as server_mod
+
+    configured: list[dict] = []
+    monkeypatch.setattr(
+        server_mod,
+        "configure_primary_model_lifecycle",
+        lambda **kwargs: configured.append(kwargs),
+    )
+    _capture_uvicorn_run(monkeypatch)
+    ns = _minimal_serve_ns(listen_fd=9)
+    ns.lazy_load = True
+    ns.idle_unload_seconds = 42.0
+
+    cli.serve_command(ns)
+
+    assert configured == [{"lazy_load": True, "idle_unload_seconds": 42.0}]
+    assert (
+        "inherited fd 9 (standby — model loads on first request)"
+        in capsys.readouterr().out
+    )
+
+
+@pytest.mark.parametrize("invalid", [-1.0, float("nan"), float("inf")])
+def test_serve_command_rejects_invalid_idle_unload_seconds(
+    invalid, capsys, stub_heavy_serve_deps
+):
+    ns = _minimal_serve_ns()
+    ns.idle_unload_seconds = invalid
+
+    with pytest.raises(SystemExit) as raised:
+        cli.serve_command(ns)
+
+    assert raised.value.code == 1
+    assert "--idle-unload-seconds must be finite and >= 0" in capsys.readouterr().out
+
+
 def test_dflash_memory_check_receives_original_alias(
     stub_heavy_serve_deps, monkeypatch, scheduler_config_stub
 ):

@@ -2508,10 +2508,11 @@ def load_model(
         _engine._load_blocking()  # noqa: SLF001 — internal helper
         logger.info(f"Model loaded: {model_name}")
     else:
-        if _primary_lazy_load:
-            logger.info(f"Preparing lazy BatchedEngine: {model_name}")
-        else:
-            logger.info(f"Loading model with BatchedEngine: {model_name}")
+        logger.info(
+            "%s BatchedEngine: %s",
+            "Preparing lazy" if _primary_lazy_load else "Loading model with",
+            model_name,
+        )
         _engine = BatchedEngine(
             model_name=_engine_model_path,
             chat_template_id=(
@@ -2532,14 +2533,15 @@ def load_model(
             enable_disk_stream=enable_disk_stream,
             disk_stream_cache_gb=disk_stream_cache_gb,
         )
-        if _primary_lazy_load:
-            logger.info(
+        logger.info(
+            (
                 "Model configured in standby; weights will load on the first "
-                "inference request: %s",
-                model_name,
-            )
-        else:
-            logger.info(f"Model loaded: {model_name}")
+                "inference request: %s"
+                if _primary_lazy_load
+                else "Model loaded: %s"
+            ),
+            model_name,
+        )
 
     # Sync globals into ServerConfig BEFORE _detect_native_tool_support reads
     # them via get_config(). Detection short-circuits when cfg.tool_call_parser

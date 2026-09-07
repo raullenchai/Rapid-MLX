@@ -181,6 +181,17 @@ def _release_primary_request_unless_committed(engine, committed: bool) -> None:
         _release_primary_request(engine)
 
 
+def _release_route_ownership(
+    engine, *, admission_acquired: bool, committed: bool
+) -> None:
+    """Release whichever lease a generation route successfully acquired."""
+
+    if admission_acquired:
+        _release_admission_unless_committed(engine, committed)
+    else:
+        _release_primary_request_unless_committed(engine, committed)
+
+
 def _transfer_primary_request_to_stream(engine) -> None:
     lifecycle = get_config().primary_model_lifecycle
     if lifecycle is not None and lifecycle.engine is engine:

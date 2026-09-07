@@ -496,6 +496,668 @@ async def test_ready_probe_reports_standby_as_available():
     reset_config()
 
 
+@pytest.mark.asyncio
+async def test_lifecycle_properties_and_request_token_edges():
+    engine = FakeEngine(loaded=True)
+    lifecycle = PrimaryModelLifecycle(engine)
+
+    assert lifecycle.enabled is False
+    assert lifecycle.last_error is None
+    assert lifecycle.model_loaded is True
+    lifecycle.release_request()  # no request in this context
+
+    lifecycle.acquire_request()
+    lifecycle.acquire_request()  # acquisition is idempotent within one route
+    assert lifecycle.snapshot()["active_request_owners"] == 1
+    lifecycle.transfer_request_to_stream()
+    assert list(lifecycle._request_tokens.values()) == [True]
+    lifecycle.release_request()
+    assert lifecycle.snapshot()["active_request_owners"] == 0
+
+
+@pytest.mark.asyncio
+async def test_start_shutdown_and_detach_monitor_paths(monkeypatch):
+    engine = FakeEngine(loaded=True)
+    lifecycle = PrimaryModelLifecycle(engine, idle_unload_seconds=10)
+    await lifecycle.start()
+    monitor = lifecycle._monitor_task
+    assert monitor is not None
+    await lifecycle.start()  # does not install a duplicate monitor
+    await lifecycle.shutdown()
+    assert monitor.cancelled()
+
+    detached = PrimaryModelLifecycle(engine, idle_unload_seconds=10)
+    await detached.start()
+    monitor = detached._monitor_task
+    detached.detach()
+    assert monitor is not None and monitor.cancelled() is False
+    await asyncio.sleep(0)
+    assert monitor.cancelled()
+    await detached.start()  # detached coordinators stay retired
+    assert detached._monitor_task is None
+
+
+@pytest.mark.asyncio
+async def test_shutdown_logs_failed_detached_load(caplog):
+    engine = FakeEngine()
+    engine.start_gate = asyncio.Event()
+    engine.fail_start = True
+    lifecycle = PrimaryModelLifecycle(engine, lazy_load=True)
+    load = asyncio.create_task(lifecycle.ensure_loaded())
+    await asyncio.sleep(0)
+    load.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await load
+
+    shutdown = asyncio.create_task(lifecycle.shutdown())
+    await asyncio.sleep(0)
+    engine.start_gate.set()
+    await shutdown
+    assert "load failed during shutdown drain" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_loaded_fast_paths_and_closed_acquisition():
+    engine = FakeEngine(loaded=True)
+    lifecycle = PrimaryModelLifecycle(engine)
+    lifecycle._last_error = "old"
+    await lifecycle.ensure_loaded()
+    assert lifecycle.last_error is None
+
+    # Force the first fast-path check to miss, then become ready while waiting
+    # for the transition lock so the in-lock fast path owns the decision.
+    await lifecycle._transition_lock.acquire()
+    lifecycle.state = "standby"
+    waiter = asyncio.create_task(lifecycle.ensure_loaded())
+    await asyncio.sleep(0)
+    lifecycle.state = "ready"
+    lifecycle._transition_lock.release()
+    await waiter
+    assert engine.start_calls == 0
+
+    await lifecycle.shutdown()
+    with pytest.raises(RuntimeError, match="closed"):
+        lifecycle.acquire_request()
+
+
+@pytest.mark.asyncio
+async def test_error_state_loaded_retry_resets_before_loading():
+    engine = FakeEngine(loaded=True)
+    lifecycle = PrimaryModelLifecycle(engine)
+    lifecycle.state = "error"
+    await lifecycle.ensure_loaded()
+    assert engine.stop_calls == 1
+    assert engine.start_calls == 1
+
+
+@pytest.mark.asyncio
+async def test_missing_or_ineffective_engine_lifecycle_methods():
+    class NoStop:
+        _loaded = True
+
+    lifecycle = PrimaryModelLifecycle(NoStop())
+    with pytest.raises(RuntimeError, match="cannot be reset"):
+        await lifecycle._reset_partial_load()
+
+    class IneffectiveStop:
+        _loaded = True
+
+        def stop(self):
+            return None
+
+    lifecycle = PrimaryModelLifecycle(IneffectiveStop())
+    with pytest.raises(RuntimeError, match="did not stop"):
+        await lifecycle._reset_partial_load()
+
+    class NoResume:
+        _loaded = False
+
+    lifecycle = PrimaryModelLifecycle(NoResume())
+    with pytest.raises(RuntimeError, match="resume_generation"):
+        await lifecycle._resume_admission()
+
+    class NoStart:
+        _loaded = False
+
+    lifecycle = PrimaryModelLifecycle(NoStart(), lazy_load=True)
+    with pytest.raises(RuntimeError, match=r"support start\(\)"):
+        await lifecycle.ensure_loaded()
+
+
+@pytest.mark.asyncio
+async def test_load_task_ready_shortcut_and_failed_cleanup_logging(caplog):
+    engine = FakeEngine(loaded=True)
+    lifecycle = PrimaryModelLifecycle(engine)
+    lifecycle.state = "standby"
+    await lifecycle._load()
+    assert lifecycle.state == "ready"
+
+    engine = FakeEngine()
+    engine.fail_start = True
+    engine.partial_start_failure = True
+
+    async def broken_stop():
+        raise RuntimeError("cleanup failed")
+
+    engine.stop = broken_stop
+    lifecycle = PrimaryModelLifecycle(engine, lazy_load=True)
+    with pytest.raises(RuntimeError, match="load failed"):
+        await lifecycle.ensure_loaded()
+    assert "Failed to reset partially loaded primary engine" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_idle_rechecks_state_and_clock_after_lock_wait():
+    now = [20.0]
+    engine = FakeEngine(loaded=True)
+    lifecycle = PrimaryModelLifecycle(
+        engine, idle_unload_seconds=1, clock=lambda: now[0]
+    )
+    now[0] = 22.0
+    await lifecycle._transition_lock.acquire()
+    eviction = asyncio.create_task(lifecycle.evict_if_idle())
+    await asyncio.sleep(0)
+    lifecycle.state = "standby"
+    lifecycle._transition_lock.release()
+    assert await eviction is False
+
+    lifecycle.state = "ready"
+    lifecycle._last_activity = 20.0
+    await lifecycle._transition_lock.acquire()
+    eviction = asyncio.create_task(lifecycle.evict_if_idle())
+    await asyncio.sleep(0)
+    lifecycle.touch()
+    lifecycle._transition_lock.release()
+    assert await eviction is False
+
+
+@pytest.mark.asyncio
+async def test_pause_timeout_recovers_or_reports_resume_failure():
+    now = [10.0]
+    engine = FakeEngine(loaded=True)
+    engine.active_requests = 1
+
+    # Hide the activity from the pre-pause status check so pause_generation
+    # remains the final authority and raises its TimeoutError.
+    engine.lifecycle_status = lambda: {"active_requests": 0}
+    lifecycle = PrimaryModelLifecycle(
+        engine, idle_unload_seconds=1, clock=lambda: now[0]
+    )
+    now[0] = 12.0
+    assert await lifecycle.evict_if_idle() is False
+    assert lifecycle.state == "ready"
+
+    engine.fail_resume = True
+    now[0] = 14.0
+    with pytest.raises(RuntimeError, match="resume failed"):
+        await lifecycle.evict_if_idle()
+    assert lifecycle.state == "error"
+
+
+@pytest.mark.asyncio
+async def test_pause_exception_recovers_or_reports_resume_failure():
+    now = [10.0]
+    engine = FakeEngine(loaded=True)
+
+    async def broken_pause(*_args, **_kwargs):
+        raise RuntimeError("pause failed")
+
+    engine.pause_generation = broken_pause
+    lifecycle = PrimaryModelLifecycle(
+        engine, idle_unload_seconds=1, clock=lambda: now[0]
+    )
+    now[0] = 12.0
+    with pytest.raises(RuntimeError, match="pause failed"):
+        await lifecycle.evict_if_idle()
+    assert lifecycle.state == "ready"
+
+    engine.fail_resume = True
+    now[0] = 14.0
+    with pytest.raises(RuntimeError, match="resume failed"):
+        await lifecycle.evict_if_idle()
+    assert lifecycle.state == "error"
+
+
+@pytest.mark.asyncio
+async def test_request_during_pause_resume_failure_is_terminal():
+    now = [10.0]
+    engine = FakeEngine(loaded=True)
+    engine.pause_gate = asyncio.Event()
+    lifecycle = PrimaryModelLifecycle(
+        engine, idle_unload_seconds=1, clock=lambda: now[0]
+    )
+    now[0] = 12.0
+    eviction = asyncio.create_task(lifecycle.evict_if_idle())
+    await asyncio.sleep(0)
+    lifecycle.acquire_request()
+    engine.fail_resume = True
+    engine.pause_gate.set()
+    with pytest.raises(RuntimeError, match="resume failed"):
+        await eviction
+    assert lifecycle.state == "error"
+    lifecycle.release_request()
+
+
+@pytest.mark.asyncio
+async def test_unload_cancellation_and_stop_contract_failures():
+    now = [10.0]
+    engine = FakeEngine(loaded=True)
+
+    async def cancelled_save():
+        raise asyncio.CancelledError
+
+    lifecycle = PrimaryModelLifecycle(
+        engine,
+        idle_unload_seconds=1,
+        before_unload=cancelled_save,
+        clock=lambda: now[0],
+    )
+    now[0] = 12.0
+    with pytest.raises(asyncio.CancelledError):
+        await lifecycle.evict_if_idle()
+    assert lifecycle.state == "ready"
+
+    class NoStop(FakeEngine):
+        stop = None
+
+    no_stop = NoStop(loaded=True)
+    lifecycle = PrimaryModelLifecycle(
+        no_stop, idle_unload_seconds=1, clock=lambda: now[0]
+    )
+    lifecycle._last_activity = 10.0
+    with pytest.raises(RuntimeError, match=r"support stop\(\)"):
+        await lifecycle.evict_if_idle()
+    assert lifecycle.state == "ready"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("remains_loaded", [True, False])
+async def test_stop_failure_publishes_truthful_state(remains_loaded):
+    now = [10.0]
+    engine = FakeEngine(loaded=True)
+
+    async def broken_stop():
+        engine._loaded = remains_loaded
+        raise RuntimeError("stop failed")
+
+    engine.stop = broken_stop
+    lifecycle = PrimaryModelLifecycle(
+        engine, idle_unload_seconds=1, clock=lambda: now[0]
+    )
+    now[0] = 12.0
+    with pytest.raises(RuntimeError, match="stop failed"):
+        await lifecycle.evict_if_idle()
+    assert lifecycle.state == ("ready" if remains_loaded else "error")
+
+
+@pytest.mark.asyncio
+async def test_allocator_release_failure_is_best_effort(caplog):
+    now = [10.0]
+    engine = FakeEngine(loaded=True)
+
+    async def broken_release():
+        raise RuntimeError("allocator failed")
+
+    lifecycle = PrimaryModelLifecycle(
+        engine,
+        idle_unload_seconds=1,
+        release_allocator_cache=broken_release,
+        clock=lambda: now[0],
+    )
+    now[0] = 12.0
+    assert await lifecycle.evict_if_idle() is True
+    assert lifecycle.state == "standby"
+    assert "allocator cache release failed" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_monitor_logs_failures_and_propagates_cancellation(monkeypatch, caplog):
+    from vllm_mlx.runtime import primary_lifecycle as lifecycle_module
+
+    engine = FakeEngine(loaded=True)
+    lifecycle = PrimaryModelLifecycle(engine, idle_unload_seconds=4)
+    lifecycle.evict_if_idle = AsyncMock(side_effect=RuntimeError("evict failed"))
+    sleeps = 0
+
+    async def fake_sleep(_interval):
+        nonlocal sleeps
+        sleeps += 1
+        if sleeps == 2:
+            raise asyncio.CancelledError
+
+    monkeypatch.setattr(lifecycle_module.asyncio, "sleep", fake_sleep)
+    with pytest.raises(asyncio.CancelledError):
+        await lifecycle._monitor_idle()
+    assert "idle unload failed" in caplog.text
+
+    lifecycle = PrimaryModelLifecycle(engine, idle_unload_seconds=4)
+    lifecycle.evict_if_idle = AsyncMock(side_effect=asyncio.CancelledError)
+
+    async def one_sleep(_interval):
+        return None
+
+    monkeypatch.setattr(lifecycle_module.asyncio, "sleep", one_sleep)
+    with pytest.raises(asyncio.CancelledError):
+        await lifecycle._monitor_idle()
+
+
+@pytest.mark.asyncio
+async def test_ensure_engine_ready_releases_on_cancel_and_failure():
+    from fastapi import HTTPException
+
+    from vllm_mlx.config import reset_config
+    from vllm_mlx.service.helpers import ensure_engine_ready
+
+    engine = FakeEngine()
+    cfg = reset_config()
+    lifecycle = PrimaryModelLifecycle(engine, lazy_load=True)
+    cfg.primary_model_lifecycle = lifecycle
+    lifecycle.ensure_loaded = AsyncMock(side_effect=asyncio.CancelledError)
+    with pytest.raises(asyncio.CancelledError):
+        await ensure_engine_ready(engine)
+    assert lifecycle.snapshot()["active_request_owners"] == 0
+
+    lifecycle.ensure_loaded = AsyncMock(side_effect=RuntimeError("bad load"))
+    with pytest.raises(HTTPException) as raised:
+        await ensure_engine_ready(engine)
+    assert raised.value.status_code == 503
+    assert raised.value.headers == {"Retry-After": "5"}
+    assert lifecycle.snapshot()["active_request_owners"] == 0
+
+    other = FakeEngine(loaded=True)
+    assert await ensure_engine_ready(other) is other
+    reset_config()
+
+
+@pytest.mark.asyncio
+async def test_route_ownership_helpers_cover_all_lease_shapes():
+    from vllm_mlx.config import reset_config
+    from vllm_mlx.service.helpers import _release_route_ownership
+
+    engine = FakeEngine(loaded=True)
+    lifecycle = PrimaryModelLifecycle(engine, idle_unload_seconds=5)
+    cfg = reset_config()
+    cfg.primary_model_lifecycle = lifecycle
+
+    lifecycle.acquire_request()
+    _release_route_ownership(engine, admission_acquired=True, committed=True)
+    assert list(lifecycle._request_tokens.values()) == [True]
+    lifecycle.release_request()
+
+    lifecycle.acquire_request()
+    _release_route_ownership(engine, admission_acquired=False, committed=True)
+    assert list(lifecycle._request_tokens.values()) == [True]
+    lifecycle.release_request()
+
+    lifecycle.acquire_request()
+    _release_route_ownership(engine, admission_acquired=False, committed=False)
+    assert lifecycle.snapshot()["active_request_owners"] == 0
+
+    lifecycle.acquire_request()
+    _release_route_ownership(engine, admission_acquired=True, committed=False)
+    assert lifecycle.snapshot()["active_request_owners"] == 0
+    assert engine.release_calls == 1
+    reset_config()
+
+
+@pytest.mark.asyncio
+async def test_stream_cleanup_releases_lifecycle_when_admission_release_raises():
+    from vllm_mlx.config import reset_config
+    from vllm_mlx.service import helpers
+
+    class ConnectedRequest:
+        async def is_disconnected(self) -> bool:
+            return False
+
+    class BrokenReleaseEngine(FakeEngine):
+        def release_admission_reservation(self) -> None:
+            raise RuntimeError("release failed")
+
+    async def stream():
+        yield "done"
+
+    engine = BrokenReleaseEngine(loaded=True)
+    lifecycle = PrimaryModelLifecycle(engine, idle_unload_seconds=5)
+    cfg = reset_config()
+    cfg.primary_model_lifecycle = lifecycle
+    lifecycle.acquire_request()
+
+    assert [
+        chunk
+        async for chunk in helpers._disconnect_guard(
+            stream(),
+            ConnectedRequest(),
+            poll_interval=0.01,
+            engine=engine,
+            keepalive_seconds=0,
+        )
+    ] == ["done"]
+    assert lifecycle.snapshot()["active_request_owners"] == 0
+
+    aborted = Mock()
+    original_abort = helpers._force_abort_request
+    helpers._force_abort_request = aborted
+
+    async def failed_stream():
+        raise RuntimeError("stream failed")
+        yield  # pragma: no cover - makes this an async generator
+
+    try:
+        chunks = [
+            chunk
+            async for chunk in helpers._disconnect_guard(
+                failed_stream(),
+                ConnectedRequest(),
+                poll_interval=0.01,
+                engine=None,
+                keepalive_seconds=0,
+            )
+        ]
+        assert chunks
+        aborted.assert_called_once()
+    finally:
+        helpers._force_abort_request = original_abort
+
+    cfg.engine = engine
+    cfg.model_registry = None
+    assert helpers.get_engine() is engine
+    reset_config()
+
+
+@pytest.mark.asyncio
+async def test_health_probe_rejects_lifecycle_error():
+    from fastapi import HTTPException
+
+    from vllm_mlx.config import reset_config
+    from vllm_mlx.routes.health import health_ready
+
+    engine = FakeEngine()
+    lifecycle = PrimaryModelLifecycle(engine, lazy_load=True)
+    lifecycle.state = "error"
+    cfg = reset_config()
+    cfg.ready = True
+    cfg.engine = engine
+    cfg.primary_model_lifecycle = lifecycle
+    with pytest.raises(HTTPException) as raised:
+        await health_ready()
+    assert raised.value.status_code == 503
+    reset_config()
+
+
+@pytest.mark.asyncio
+async def test_primary_server_lifecycle_helpers(monkeypatch):
+    from types import SimpleNamespace
+
+    from vllm_mlx import server
+
+    class HybridEngine(FakeEngine):
+        async def stream_chat(self, **_kwargs):
+            yield "token"
+
+    hybrid = HybridEngine(loaded=True)
+    monkeypatch.setattr(server, "_detect_hybrid_for_warmup", lambda _engine: True)
+    await server._warmup_primary_engine(hybrid)
+
+    async def broken_stream(**_kwargs):
+        raise RuntimeError("warmup failed")
+        yield  # pragma: no cover - makes this an async generator
+
+    hybrid.stream_chat = broken_stream
+    await server._warmup_primary_engine(hybrid)
+
+    monkeypatch.setattr(
+        server, "_detect_hybrid_for_warmup", Mock(side_effect=RuntimeError("detect"))
+    )
+    await server._warmup_primary_engine(hybrid)
+
+    monkeypatch.setattr(server, "_engine", None)
+    await server._finish_primary_demand_load()
+
+    engine = FakeEngine(loaded=True)
+    engine.load_cache_from_disk = Mock()
+    monkeypatch.setattr(server, "_engine", engine)
+    warmup = AsyncMock()
+    grammar = AsyncMock(side_effect=RuntimeError("grammar"))
+    cache_load = AsyncMock()
+    monkeypatch.setattr(server, "_warmup_primary_engine", warmup)
+    monkeypatch.setattr(server, "_warmup_tool_grammar", grammar)
+    monkeypatch.setattr(server, "_deferred_load_prefix_cache", cache_load)
+    await server._finish_primary_demand_load()
+    assert server._prefix_cache_load_task is not None
+    await server._prefix_cache_load_task
+
+    drain = AsyncMock()
+    save = AsyncMock()
+    monkeypatch.setattr(server, "_drain_deferred_prefix_cache_load", drain)
+    monkeypatch.setattr(server, "_shutdown_save_prefix_cache", save)
+    await server._prepare_primary_idle_unload()
+    drain.assert_awaited_once()
+    save.assert_awaited_once()
+
+    manager = SimpleNamespace(set_primary_lifecycle_state=Mock())
+    monkeypatch.setattr(server, "_residency_manager", None)
+    server._mirror_primary_lifecycle_state(engine, "standby")
+    monkeypatch.setattr(server, "_residency_manager", manager)
+    server._mirror_primary_lifecycle_state(engine, "ready")
+    manager.set_primary_lifecycle_state.assert_called_once_with(engine, "ready")
+
+    monkeypatch.setattr(server, "_primary_lazy_load", True)
+    monkeypatch.setattr(server, "_primary_idle_unload_seconds", 9.0)
+    lifecycle = server._build_primary_model_lifecycle(engine)
+    assert lifecycle.lazy_load is True
+    assert lifecycle.idle_unload_seconds == 9.0
+
+
+def test_configure_primary_lifecycle_resets_existing_state(monkeypatch):
+    from vllm_mlx import server
+    from vllm_mlx.config import reset_config
+
+    cfg = reset_config()
+    cfg.primary_model_lifecycle = object()
+    monkeypatch.setattr(server, "_primary_model_lifecycle", object())
+    server.configure_primary_model_lifecycle(lazy_load=True, idle_unload_seconds=12)
+    assert server._primary_lazy_load is True
+    assert server._primary_idle_unload_seconds == 12
+    assert server._primary_model_lifecycle is None
+    assert cfg.primary_model_lifecycle is None
+
+
+@pytest.mark.asyncio
+async def test_resident_primary_handoff_detaches_or_rejects(monkeypatch):
+    from types import SimpleNamespace
+
+    from vllm_mlx import server
+    from vllm_mlx.config import reset_config
+    from vllm_mlx.runtime.model_registry import ModelEntry
+    from vllm_mlx.runtime.resident_models import ResidentModelBusyError
+
+    cfg = reset_config()
+    old = FakeEngine(loaded=True)
+    lifecycle = PrimaryModelLifecycle(old, idle_unload_seconds=3)
+    monkeypatch.setattr(server, "_primary_model_lifecycle", lifecycle)
+    replacement = ModelEntry(FakeEngine(loaded=True), "new", "new")
+    server._set_resident_primary(replacement)
+    assert lifecycle._detached is True
+    assert server._primary_model_lifecycle is not None
+    assert server._primary_model_lifecycle.engine is replacement.engine
+    assert cfg.primary_model_lifecycle is server._primary_model_lifecycle
+    await server._primary_model_lifecycle.shutdown()
+
+    busy = SimpleNamespace(engine=old, detach=Mock(side_effect=RuntimeError("busy")))
+    monkeypatch.setattr(server, "_primary_model_lifecycle", busy)
+    with pytest.raises(ResidentModelBusyError, match="transition"):
+        server._set_resident_primary(None)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("lazy_load", "idle_seconds", "expected_start_calls"),
+    [(True, 0.0, 0), (False, 10.0, 1), (False, 0.0, 1)],
+)
+async def test_lifespan_primary_lifecycle_modes(
+    monkeypatch, lazy_load, idle_seconds, expected_start_calls
+):
+    from types import SimpleNamespace
+
+    from vllm_mlx import server
+    from vllm_mlx.config import reset_config
+    from vllm_mlx.routes import audio, video
+    from vllm_mlx.runtime import audio_worker
+
+    engine = FakeEngine()
+    manager = SimpleNamespace(
+        start=AsyncMock(),
+        shutdown=AsyncMock(),
+        contains=Mock(return_value=False),
+        register_primary=Mock(),
+        set_primary_lifecycle_state=Mock(),
+    )
+    registry = SimpleNamespace(list_entries=Mock(return_value=[]))
+    cfg = reset_config()
+    cfg.bind_host = None
+    cfg.bind_port = None
+    monkeypatch.setattr(server, "_engine", engine)
+    monkeypatch.setattr(server, "_model_registry", registry)
+    monkeypatch.setattr(server, "_residency_manager", manager)
+    monkeypatch.setattr(server, "_primary_model_lifecycle", None)
+    monkeypatch.setattr(server, "_primary_lazy_load", lazy_load)
+    monkeypatch.setattr(server, "_primary_idle_unload_seconds", idle_seconds)
+    monkeypatch.setattr(server, "_warmup_primary_engine", AsyncMock())
+    monkeypatch.setattr(server, "_warmup_tool_grammar", AsyncMock())
+    monkeypatch.setattr(server, "_drain_deferred_prefix_cache_load", AsyncMock())
+    monkeypatch.setattr(server, "_shutdown_save_prefix_cache", AsyncMock())
+    monkeypatch.setattr(audio, "audio_routes_should_register", Mock(return_value=False))
+    monkeypatch.setattr(audio, "shutdown_audio_lanes", AsyncMock())
+    monkeypatch.setattr(video, "start_video_jobs", Mock())
+    monkeypatch.setattr(video, "shutdown_video_jobs", AsyncMock())
+    monkeypatch.setattr(audio_worker, "bind_audio_worker", Mock())
+
+    lifespan = server.lifespan(server.app)
+    await lifespan.__anext__()
+    assert engine.start_calls == expected_start_calls
+    assert (server._primary_model_lifecycle is not None) is (
+        lazy_load or idle_seconds > 0
+    )
+    with pytest.raises(StopAsyncIteration):
+        await lifespan.__anext__()
+    assert cfg.ready is False
+
+
+@pytest.mark.asyncio
+async def test_lifespan_rejects_unsupported_lazy_engine(monkeypatch):
+    from vllm_mlx import server
+    from vllm_mlx.config import reset_config
+
+    reset_config()
+    monkeypatch.setattr(server, "_engine", object())
+    monkeypatch.setattr(server, "_primary_lazy_load", True)
+    monkeypatch.setattr(server, "_primary_idle_unload_seconds", 0.0)
+    monkeypatch.setattr(server, "_primary_model_lifecycle", None)
+    lifespan = server.lifespan(server.app)
+    with pytest.raises(RuntimeError, match="text and vision-language"):
+        await lifespan.__anext__()
+
+
 def test_serve_parser_exposes_primary_standby_options():
     from vllm_mlx.cli import build_parser
 
