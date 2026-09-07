@@ -410,10 +410,43 @@ struct LocalDraftPostInstructionPlanner: DraftPostInstructionPlanning {
             "instagram.com": ["instagram"],
             "threads.net": ["threads"],
         ]
-        return aliases.first { serviceHost, _ in
+        if aliases.first(where: { serviceHost, _ in
             normalizedHost == serviceHost
                 || normalizedHost.hasSuffix(".\(serviceHost)")
-        }?.value.contains(evidence) == true
+        })?.value.contains(evidence) == true {
+            return true
+        }
+        return normalizedServiceName(evidence) == registrableServiceLabel(
+            from: normalizedHost
+        )
+    }
+
+    /// Matches an explicit service name such as "GitHub" to github.com while
+    /// refusing a deceptive subdomain such as github.evil.com. This is not a
+    /// navigation trust decision—the exact live URL is independently pinned—
+    /// it only decides whether the user's brief named that verified site.
+    private static func registrableServiceLabel(from host: String) -> String? {
+        let labels = host.split(separator: ".").map(String.init)
+        guard labels.count >= 2 else { return nil }
+        let secondLevelPublicSuffixes: Set<String> = ["co", "com", "net", "org"]
+        let suffixLabels = labels.last?.count == 2
+            && labels.count >= 3
+            && secondLevelPublicSuffixes.contains(labels[labels.count - 2])
+            ? 2
+            : 1
+        let serviceIndex = labels.count - suffixLabels - 1
+        guard serviceIndex >= 0 else { return nil }
+        return normalizedServiceName(labels[serviceIndex])
+    }
+
+    private static func normalizedServiceName(_ value: String) -> String {
+        let folded = value.folding(
+            options: [.caseInsensitive, .diacriticInsensitive, .widthInsensitive],
+            locale: Locale(identifier: "en_US_POSIX")
+        )
+        return folded.unicodeScalars.filter {
+            CharacterSet.alphanumerics.contains($0)
+        }.map(String.init).joined()
     }
 
     private static func groundedDraft(

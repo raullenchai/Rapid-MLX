@@ -249,6 +249,49 @@ struct DraftPostInstructionPlannerTests {
         )))
     }
 
+    @Test("A generic service name matches only the registrable host label")
+    func genericDestinationServiceName() async throws {
+        func output(destination: String) -> [String: Any] {
+            [
+                "status": "ready",
+                "purpose": "release update",
+                "audience": "contributors",
+                "talking_points": ["local inference"],
+                "tone": "concise",
+                "destination": destination,
+                "purpose_evidence": "release update",
+                "audience_evidence": "contributors",
+                "talking_points_evidence": ["local inference"],
+                "tone_evidence": "concise",
+                "destination_evidence": "GitHub",
+                "clarifying_question": "",
+            ]
+        }
+        let brief = "Write a concise release update for contributors on GitHub about local inference."
+        let github = try await Self.planner(transport: PlannerTransport(
+            response: try Self.response(content: output(destination: "github.com"))
+        )).analyze(
+            instruction: brief,
+            browserApplication: "Safari",
+            destinationHost: "github.com"
+        )
+        guard case .ready = github else {
+            Issue.record("An explicit generic service did not match its verified host")
+            return
+        }
+
+        let deceptiveSubdomain = try await Self.planner(transport: PlannerTransport(
+            response: try Self.response(content: output(destination: "github.evil.com"))
+        )).analyze(
+            instruction: brief,
+            browserApplication: "Safari",
+            destinationHost: "github.evil.com"
+        )
+        #expect(deceptiveSubdomain == .needsClarification(
+            "What should this update accomplish, which points should it include, and where should it be posted?"
+        ))
+    }
+
     @Test("Verified audience and tone materially shape the grounded draft")
     func groundedDraftStyle() async throws {
         func output(tone: String) -> [String: Any] {
