@@ -8421,6 +8421,13 @@ class Scheduler:
                 else:
                     raise
 
+            # Opt-in selection is deliberately transactional: an empty insert
+            # result has not committed queue or fairness state. Leave the
+            # request in place and retry on a later scheduler tick instead of
+            # spinning forever in this unchanged loop.
+            if not uids and shortest_tail:
+                break
+
             if uids:
                 uid = uids[0]
                 if shortest_tail:

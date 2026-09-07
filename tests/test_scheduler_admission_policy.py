@@ -276,6 +276,31 @@ def test_opt_in_keeps_excess_prompts_out_of_generator_but_fcfs_is_unchanged():
     assert not fcfs.waiting
 
 
+def test_empty_uid_insert_preserves_opt_in_request_without_spinning():
+    scheduler = Scheduler(
+        model=object(),
+        tokenizer=SimpleNamespace(
+            encode=lambda value: value,
+            decode=lambda value: str(value),
+            eos_token_id=0,
+            eos_token_ids={0},
+        ),
+        config=SchedulerConfig(
+            enable_prefix_cache=False,
+            scheduling_policy="shortest_validated_tail",
+        ),
+    )
+    scheduler.batch_generator = SimpleNamespace(insert=lambda *args, **kwargs: [])
+    scheduler._current_sampler_params = (frozenset(), False)
+    request = _request("retry-empty-uid", 1)
+    scheduler.requests[request.request_id] = request
+    scheduler.waiting.append(request)
+
+    assert scheduler._schedule_waiting() == []
+    assert list(scheduler.waiting) == [request]
+    assert request._admission_deferrals == 0
+
+
 def test_legacy_flat_response_runtime_falls_back_to_fcfs_without_sticking_slots():
     scheduler = Scheduler(
         MagicMock(),
