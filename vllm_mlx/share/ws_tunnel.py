@@ -31,6 +31,7 @@ Protocol (JSON text frames):
 
     client → worker:
         {"t":"ready", "v":1}                              (sent once on connect)
+        {"t":"ready", "v":1, "key":"qspsk-…"}   (pool mode: keyed claim)
         {"t":"head", "id":<reqId>, "status":<int>, "headers":<obj>}
         {"t":"chunk", "id":<reqId>, "data":<base64>}
         {"t":"end", "id":<reqId>}
@@ -135,11 +136,36 @@ class TunnelClient:
         tunnel_id: str | None = None,
         relay_url: str = DEFAULT_RAPIDSERVER_WSS,
         ready_event: threading.Event | None = None,
+        share_key: str | None = None,
+        override_authorization: str | None = None,
+        inject_stream_usage: bool = False,
     ) -> None:
+        """
+        QuickSilver-pool mode knobs (all default to the historical plain
+        ``share`` behaviour — a default-constructed client sends the same
+        bytes and forwards the same headers it always did):
+
+        * ``share_key`` — when set, the greeting frame becomes
+          ``{"t":"ready","v":1,"key":<share_key>}`` so a keyed relay can
+          prove node ownership without the key ever touching the
+          connect URL (and therefore never in exception reprs / WS logs).
+        * ``override_authorization`` — every forwarded request has its
+          ``Authorization`` header replaced with ``Bearer <value>``.
+          Pool traffic arrives bearing a QuickSilver-side credential the
+          local serve has never seen; share mints its own loopback
+          bearer, so the tunnel is the only place that knows both.
+        * ``inject_stream_usage`` — streaming chat/completions bodies
+          get ``stream_options.include_usage = true`` injected server-of-
+          origin-side: the pool ledger reads ``usage`` off the final SSE
+          frame, which rapid-mlx serve only emits when asked.
+        """
         self.local_port = local_port
         self.tunnel_id = tunnel_id or new_tunnel_id()
         self.relay_url = relay_url
         self.ready_event = ready_event or threading.Event()
+        self._share_key = share_key
+        self._override_authorization = override_authorization
+        self._inject_stream_usage = inject_stream_usage
         # Set by ``run`` on its event loop; used by ``_sync_send`` to
         # post messages back from per-request threads.
         self._loop: asyncio.AbstractEventLoop | None = None
@@ -149,9 +175,35 @@ class TunnelClient:
         # Populated when ``run`` exits with an exception. Cleared on
         # success (clean WS close — same as Ctrl-C on the parent).
         self.error: BaseException | None = None
+        # HTTP status of a failed WS handshake (401 = keyed relay
+        # rejected our share_key). Surfaced separately from ``error``
+        # because the exception repr may embed the connect URI.
+        self.error_status: int | None = None
+        # Live local fetches, keyed by tunnel request id. Populated for
+        # every client (cheap bookkeeping) — the QuickSilver relay uses
+        # it to cancel generations for aborted requests; the count backs
+        # the pool heartbeat's ``inflight`` field.
+        self._active: dict[str, http.client.HTTPConnection] = {}
+        self._active_lock = threading.Lock()
         # Caller-visible "tunnel died after banner" sentinel. Set when
         # the WS closes unexpectedly; the parent's monitor loop polls it.
         self.closed_event = threading.Event()
+
+    @property
+    def inflight(self) -> int:
+        """Requests currently being fetched from the local serve."""
+        with self._active_lock:
+            return len(self._active)
+
+    def _greeting(self) -> dict[str, Any]:
+        """The first frame on every connection. Byte-identical to the
+        historical ``{"t":"ready","v":1}`` unless a pool share_key is
+        set (method, not inline, so tests can pin the plain-share
+        byte-compat claim directly)."""
+        greeting: dict[str, Any] = {"t": "ready", "v": 1}
+        if self._share_key is not None:
+            greeting["key"] = self._share_key
+        return greeting
 
     @property
     def public_url(self) -> str:
@@ -179,7 +231,10 @@ class TunnelClient:
             # in user messages) easily reaches several MiB on modern
             # VLM apps.
             async with websockets.connect(uri, max_size=None) as ws:
-                await ws.send(json.dumps({"t": "ready", "v": 1}))
+                # Keyed claim (QuickSilver pool): the share_key rides
+                # the first frame, never the URL — keeping it out of
+                # exception reprs and websockets-library logs.
+                await ws.send(json.dumps(self._greeting()))
                 self.ready_event.set()
                 sender = asyncio.create_task(self._sender_loop(ws))
                 try:
@@ -201,6 +256,13 @@ class TunnelClient:
                         t.cancel()
         except Exception as exc:
             self.error = exc
+            # A rejected keyed claim surfaces as an HTTP 401 during the
+            # WS handshake. Record the status separately: the caller
+            # must not pattern-match on ``str(exc)`` — for keyed
+            # clients the repr can embed the connect URI.
+            status = getattr(exc, "status_code", None)
+            if isinstance(status, int):
+                self.error_status = status
             raise
         finally:
             self.closed_event.set()
@@ -271,11 +333,23 @@ class TunnelClient:
             self._tasks.add(task)
             task.add_done_callback(self._tasks.discard)
         elif t == "abort":
-            # We trust the worker to have already cancelled the inbound
-            # HTTP request stream; the corresponding ``to_thread`` will
-            # finish on its own (the local serve sees a TCP RST when
-            # the response is dropped). No bookkeeping needed.
-            pass
+            # The pool relay sends this when the downstream client
+            # disconnected or the request timed out before headers.
+            # The tunnel↔serve connection is OURS — a remote disconnect
+            # never propagates to 127.0.0.1 on its own — so we must
+            # close the local socket explicitly. serve's
+            # ``_disconnect_guard`` sees the break and force-aborts the
+            # scheduler request, freeing the slot. (The pre-pool code
+            # assumed a TCP RST would arrive on its own; it does not.)
+            req_id = msg.get("id")
+            if isinstance(req_id, str):
+                with self._active_lock:
+                    conn = self._active.get(req_id)
+                if conn is not None:
+                    try:
+                        conn.close()
+                    except OSError:
+                        pass
 
     async def _handle_request(self, msg: dict[str, Any]) -> None:
         req_id = msg.get("id")
@@ -293,6 +367,26 @@ class TunnelClient:
             )
             return
 
+        if self._override_authorization is not None and method == "POST":
+            # Pool traffic bears a QuickSilver credential our loopback
+            # serve has never seen. Swap in the bearer share minted for
+            # THIS serve (case-insensitive replace — the relay may
+            # forward any casing of the inbound header name).
+            headers = {k: v for k, v in headers.items() if k.lower() != "authorization"}
+            headers["Authorization"] = f"Bearer {self._override_authorization}"
+
+        if self._inject_stream_usage and method == "POST":
+            new_body = _inject_stream_options_usage(path, body)
+            if new_body is not body:
+                body = new_body
+                # The relay forwarded a Content-Length matching the
+                # original bytes; http.client recomputes it for a bytes
+                # body, so drop the stale value instead of shipping a
+                # header/body mismatch.
+                headers = {
+                    k: v for k, v in headers.items() if k.lower() != "content-length"
+                }
+
         # ``http.client`` is synchronous; run it in a worker thread so
         # the asyncio loop stays responsive while the response streams
         # back from the local serve.
@@ -302,6 +396,36 @@ class TunnelClient:
             )
         except Exception as exc:  # noqa: BLE001 — surfaced to the chat client
             await self._send({"t": "err", "id": req_id, "msg": str(exc)[:200]})
+
+
+_USAGE_INJECTION_PATHS = frozenset({"/v1/chat/completions", "/v1/completions"})
+
+
+def _inject_stream_options_usage(path: str, body: bytes) -> bytes:
+    """Force ``stream_options.include_usage=true`` on streaming request
+    bodies so serve stamps ``usage`` on the final SSE frame (the pool
+    ledger's primary billing signal). Non-streaming bodies are left
+    byte-identical (their responses already carry usage); bodies that
+    don't parse as a JSON object are passed through untouched — a
+    malformed body is serve's problem to report, not ours to rewrite.
+    """
+    root = path.split("?", 1)[0].rstrip("/")
+    if root not in _USAGE_INJECTION_PATHS or not body:
+        return body
+    try:
+        payload = json.loads(body)
+    except (ValueError, UnicodeDecodeError):
+        return body
+    if not isinstance(payload, dict) or not payload.get("stream"):
+        return body
+    options = payload.get("stream_options")
+    if not isinstance(options, dict):
+        options = {}
+    if options.get("include_usage") is True:
+        return body  # already asked for; don't re-encode
+    options["include_usage"] = True
+    payload["stream_options"] = options
+    return json.dumps(payload).encode("utf-8")
 
     def _perform_local_fetch(
         self,
@@ -315,6 +439,8 @@ class TunnelClient:
         conn = http.client.HTTPConnection(
             "127.0.0.1", self.local_port, timeout=LOCAL_FETCH_TIMEOUT_SECONDS
         )
+        with self._active_lock:
+            self._active[req_id] = conn
         try:
             conn.request(method, path, body=body, headers=headers)
             resp = conn.getresponse()
@@ -343,6 +469,12 @@ class TunnelClient:
                 )
             self._sync_send({"t": "end", "id": req_id})
         finally:
+            with self._active_lock:
+                # Only drop OUR registration — an abort already closed
+                # the conn, and a retried request id must not evict a
+                # newer connection.
+                if self._active.get(req_id) is conn:
+                    del self._active[req_id]
             conn.close()
 
     async def _send(self, obj: Any) -> None:
