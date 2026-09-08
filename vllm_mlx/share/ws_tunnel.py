@@ -397,36 +397,6 @@ class TunnelClient:
         except Exception as exc:  # noqa: BLE001 — surfaced to the chat client
             await self._send({"t": "err", "id": req_id, "msg": str(exc)[:200]})
 
-
-_USAGE_INJECTION_PATHS = frozenset({"/v1/chat/completions", "/v1/completions"})
-
-
-def _inject_stream_options_usage(path: str, body: bytes) -> bytes:
-    """Force ``stream_options.include_usage=true`` on streaming request
-    bodies so serve stamps ``usage`` on the final SSE frame (the pool
-    ledger's primary billing signal). Non-streaming bodies are left
-    byte-identical (their responses already carry usage); bodies that
-    don't parse as a JSON object are passed through untouched — a
-    malformed body is serve's problem to report, not ours to rewrite.
-    """
-    root = path.split("?", 1)[0].rstrip("/")
-    if root not in _USAGE_INJECTION_PATHS or not body:
-        return body
-    try:
-        payload = json.loads(body)
-    except (ValueError, UnicodeDecodeError):
-        return body
-    if not isinstance(payload, dict) or not payload.get("stream"):
-        return body
-    options = payload.get("stream_options")
-    if not isinstance(options, dict):
-        options = {}
-    if options.get("include_usage") is True:
-        return body  # already asked for; don't re-encode
-    options["include_usage"] = True
-    payload["stream_options"] = options
-    return json.dumps(payload).encode("utf-8")
-
     def _perform_local_fetch(
         self,
         req_id: str,
@@ -498,6 +468,36 @@ def _inject_stream_options_usage(path: str, body: bytes) -> bytes:
             # mid-request). Drop quietly — the chat-side stream will
             # see a tunnel error.
             pass
+
+
+_USAGE_INJECTION_PATHS = frozenset({"/v1/chat/completions", "/v1/completions"})
+
+
+def _inject_stream_options_usage(path: str, body: bytes) -> bytes:
+    """Force ``stream_options.include_usage=true`` on streaming request
+    bodies so serve stamps ``usage`` on the final SSE frame (the pool
+    ledger's primary billing signal). Non-streaming bodies are left
+    byte-identical (their responses already carry usage); bodies that
+    don't parse as a JSON object are passed through untouched — a
+    malformed body is serve's problem to report, not ours to rewrite.
+    """
+    root = path.split("?", 1)[0].rstrip("/")
+    if root not in _USAGE_INJECTION_PATHS or not body:
+        return body
+    try:
+        payload = json.loads(body)
+    except (ValueError, UnicodeDecodeError):
+        return body
+    if not isinstance(payload, dict) or not payload.get("stream"):
+        return body
+    options = payload.get("stream_options")
+    if not isinstance(options, dict):
+        options = {}
+    if options.get("include_usage") is True:
+        return body  # already asked for; don't re-encode
+    options["include_usage"] = True
+    payload["stream_options"] = options
+    return json.dumps(payload).encode("utf-8")
 
 
 def wait_for_public_url(

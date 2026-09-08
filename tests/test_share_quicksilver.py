@@ -122,6 +122,15 @@ def _register_payload(**over) -> dict:
 # ─────────────────────── ws_tunnel: keyed-claim knobs ───────────────────────
 
 
+def test_tunnel_client_class_shape_intact():
+    """The pool-mode edits inserted a module-level function mid-class
+    once, silently orphaning ``_perform_local_fetch``/``_send``/
+    ``_sync_send`` into dead code (unit stubs hid it). Pin that the
+    request-path methods are real class members, not instance attrs."""
+    for name in ("_perform_local_fetch", "_send", "_sync_send", "_dispatch_inbound"):
+        assert callable(getattr(ws_tunnel.TunnelClient, name, None)), name
+
+
 def test_greeting_plain_is_byte_identical_to_history():
     client = ws_tunnel.TunnelClient(local_port=1)
     assert json.dumps(client._greeting()) == '{"t": "ready", "v": 1}'
