@@ -64,10 +64,10 @@ EXPECTED_APPLICATIONS_POSITION = (540, 228)
 # So park it below the fold instead. An Iloc is the icon's centre, so with a
 # 96pt icon and a 460pt-tall window (``EXPECTED_BOUNDS``) the template ships it
 # at (100, 560): the icon top lands ~512pt down and cannot intrude on the
-# visible install page. This mirrors what ChatGPT's own installer DMG ends up
-# doing with its ``.background.tiff`` / ``.VolumeIcon.icns`` (measured at y=450
-# against a 400pt window). The position is verified as "below the fold" rather
-# than pinned to this exact pair — see the icon-position block in verify().
+# visible install page. This mirrors the below-fold support-item pattern used
+# by other shipped installer DMGs. The position is verified as "below the
+# fold" rather than pinned to this exact pair — see the icon-position block in
+# verify().
 EXPECTED_ICON_SIZE = 96.0
 EXPECTED_TEXT_SIZE = 13.0
 EXPECTED_BOUNDS = {"left": 180, "top": 120, "right": 900, "bottom": 580}
@@ -285,6 +285,8 @@ def verify(path: Path) -> None:
             break
         payload = _find_records(data[marker_pos:], ILOC_BLOB_MARKER)[0]
         name = _iloc_filename(data, marker_pos)
+        if name in positions:
+            raise ValueError(f"duplicate Iloc record for {name!r}")
         positions[name] = _parse_iloc_payload(payload)
         iloc_cursor = marker_pos + 1
 

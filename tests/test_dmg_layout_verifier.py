@@ -310,6 +310,20 @@ class TestIconPositions:
         assert rc == 1
         assert "FAIL" in err
 
+    def test_duplicate_background_iloc_fails(self, tmp_path: Path) -> None:
+        """A second record must not overwrite an earlier visible position."""
+        fixture = build_store(
+            ilocs=[
+                ("Rapid-MLX Desktop.app", *EXPECTED_APP_POSITION),
+                ("Applications", *EXPECTED_APPLICATIONS_POSITION),
+                (".background", 105, 64),
+                (".background", *EXPECTED_BACKGROUND_POSITION),
+            ]
+        )
+        rc, _, err = _run_on_file(_write_fixture(fixture, tmp_path))
+        assert rc == 1
+        assert "duplicate Iloc record" in err
+
     def test_background_inside_window_fails(self, tmp_path: Path) -> None:
         """A .background parked on the visible page must be rejected.
 
