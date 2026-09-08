@@ -118,7 +118,7 @@ struct SettingsView: View {
             case .tools: return "Tools"
             case .connectors: return "Connectors"
             case .performance: return "Performance"
-            case .experimentalFeatures: return "Experimental Features"
+            case .experimentalFeatures: return "Experimental"
             case .appearance: return "Appearance"
             case .privacy: return "Privacy"
             case .app: return "App"
@@ -520,7 +520,7 @@ struct SettingsView: View {
     private var experimentalFeaturesPanel: some View {
         VStack(alignment: .leading, spacing: RapidTheme.Space.xl) {
             SectionHeader(
-                "Experimental Features",
+                "Experimental",
                 subtitle: "Opt in to features that are still being validated across supported Macs.",
                 emphasis: .page
             )
@@ -528,16 +528,16 @@ struct SettingsView: View {
                 Toggle(isOn: $videoGenerationEnabled) {
                     SettingsRowLabel(
                         title: "Enable Video Generation",
-                        description: "Shows the Video tab. Video models need Apple silicon, large downloads, and typically 24 GB or more of unified memory. Nothing downloads or starts until you choose a model."
+                        description: "Adds the Video tab; requires Apple silicon and typically 24 GB+ of unified memory, with no downloads or activity until you choose a model."
                     )
                 }
                 .toggleStyle(TrailingSettingsToggleStyle())
                 .accessibilityIdentifier("Settings.Experimental.VideoGenerationToggle")
-                Divider()
+                SettingsRowDivider()
                 Toggle(isOn: $computerUseEnabled) {
                     SettingsRowLabel(
                         title: "Enable Computer Use",
-                        description: "Shows the Computer Use tab with local starter tasks. Nothing observes your screen, downloads a model, or acts until you choose a task. Rapid previews consequential actions for your approval."
+                        description: "Adds the Computer Use tab; Rapid acts only on a task you choose and previews consequential actions for your approval."
                     )
                 }
                 .toggleStyle(TrailingSettingsToggleStyle())

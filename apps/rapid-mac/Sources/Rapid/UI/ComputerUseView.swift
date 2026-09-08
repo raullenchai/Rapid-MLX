@@ -5,6 +5,13 @@ struct ComputerUseView: View {
     let visualRuntime: DraftPostVisualRuntime?
     @State private var showingDraftPost = false
     @State private var showingFreeUpSpace = false
+    /// A shared minimum keeps the flow grid even at the common text size;
+    /// cards still grow past it rather than clip when the summary wraps under
+    /// larger Dynamic Type. Scaled so the floor tracks the viewer's text size.
+    @ScaledMetric(relativeTo: .body) private var starterCardMinHeight: CGFloat = 210
+    /// Space reserved at the bottom of every card for the (bottom-anchored)
+    /// action, so content never collides with it. Scaled with Dynamic Type.
+    @ScaledMetric(relativeTo: .body) private var starterActionReserve: CGFloat = 44
 
     init(
         languageRuntime: DraftPostLanguageRuntime? = nil,
@@ -38,7 +45,7 @@ struct ComputerUseView: View {
                         columns: [GridItem(.adaptive(minimum: 260, maximum: 320), spacing: 12)],
                         spacing: 12
                     ) {
-                        ForEach(ComputerUseStarter.catalog) { starter in
+                        ForEach(ComputerUseStarter.ordered) { starter in
                             starterCard(starter)
                         }
                     }
@@ -89,11 +96,14 @@ struct ComputerUseView: View {
     }
 
     private func starterCard(_ starter: ComputerUseStarter) -> some View {
-        VStack(alignment: .leading, spacing: 10) {
+        let isAvailable = starter.availability == .available
+        return VStack(alignment: .leading, spacing: 10) {
             HStack {
                 Image(systemName: starter.systemImage)
                     .font(.title2)
-                    .foregroundStyle(RapidTheme.brandPrimaryDeep)
+                    .foregroundStyle(
+                        isAvailable ? RapidTheme.brandPrimaryDeep : RapidTheme.textSecondary
+                    )
                 Spacer()
                 Text(availabilityLabel(starter.availability))
                     .font(.caption2.weight(.bold))
@@ -103,22 +113,40 @@ struct ComputerUseView: View {
             Text(starter.summary)
                 .font(.caption)
                 .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
             Text(starter.applications)
                 .font(.caption2.weight(.medium))
                 .foregroundStyle(.secondary)
             Label(starter.approvalNote, systemImage: "checkmark.shield")
                 .font(.caption2)
                 .foregroundStyle(.secondary)
-            if starter.availability == .available {
-                Button("Start flow") {
-                    start(starter.kind)
-                }
-                .buttonStyle(.rapidPrimaryCompact)
-                .accessibilityIdentifier(startIdentifier(starter.kind))
+        }
+        // Dim only the content of not-yet-available cards; the card fill,
+        // border, and action below stay full strength so the tile still
+        // reads as present.
+        .opacity(isAvailable ? 1 : 0.6)
+        .frame(maxWidth: .infinity, alignment: .topLeading)
+        .padding(16)
+        // Reserve the action row on every card so text never runs under the
+        // bottom-anchored button and the tiles line up whether or not they
+        // carry one. Scales with Dynamic Type.
+        .padding(.bottom, starterActionReserve)
+        // A shared *minimum* height keeps the grid even at the common text
+        // size; using a minimum (not a fixed height) lets a card grow rather
+        // than clip when the summary wraps to more lines under larger
+        // Dynamic Type. Scales so the floor tracks the text size.
+        .frame(minHeight: starterCardMinHeight, alignment: .topLeading)
+        // Anchor the action to the card's true bottom edge with an overlay,
+        // so it stays pinned regardless of how the height is proposed and
+        // follows the card as it grows.
+        .overlay(alignment: .bottomLeading) {
+            if isAvailable {
+                Button("Start flow") { start(starter.kind) }
+                    .buttonStyle(.rapidPrimaryCompact)
+                    .accessibilityIdentifier(startIdentifier(starter.kind))
+                    .padding(16)
             }
         }
-        .frame(maxWidth: .infinity, minHeight: 118, alignment: .topLeading)
-        .padding(16)
         .background(RapidTheme.surfaceRaised, in: RoundedRectangle(cornerRadius: 14))
         .overlay(
             RoundedRectangle(cornerRadius: 14)
