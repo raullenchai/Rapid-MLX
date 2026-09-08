@@ -152,9 +152,11 @@ if [[ "$LEGACY_ARTIFACT" == "1" ]]; then
     exit 0
 fi
 
-# Dot-prefixed support files remain hidden
-# from the user's icon view but must survive both UDRW -> UDZO conversion and
-# release notarisation.
+# Dot-prefixed support files are kept off the
+# visible install page by the template's icon positions (verify-dmg-layout.py
+# gates .background against the window fold — a dot prefix alone does not hide
+# it from a viewer running with AppleShowAllFiles=1), but they must still
+# survive both UDRW -> UDZO conversion and release notarisation.
 BACKGROUND="$MOUNT/.background/background.png"
 [[ -f "$BACKGROUND" ]] || fail "Finder background missing at .background/background.png"
 BG_WIDTH="$(sips -g pixelWidth "$BACKGROUND" | awk '/pixelWidth:/ {print $2}')"
