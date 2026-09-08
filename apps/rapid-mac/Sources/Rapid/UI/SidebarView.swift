@@ -40,6 +40,9 @@ struct SidebarView: View {
     /// Computer Use is a deliberately opt-in preview. Enabling discoverability
     /// does not start observation, request permissions, or load a model.
     var computerUseEnabled: Bool = false
+    /// The Benchmark tab is an opt-in experimental surface. Enabling
+    /// discoverability does not start the server or run any measurement.
+    var benchmarkEnabled: Bool = false
     /// The chat model — source of the conversation history list + the
     /// active conversation id (for highlighting).
     @Bindable var chat: ChatViewModel
@@ -183,24 +186,6 @@ struct SidebarView: View {
                 action: { selection = .audio }
             )
             .accessibilityIdentifier("Sidebar.Audio")
-            if videoGenerationEnabled {
-                row(
-                    title: "Video",
-                    systemImage: "film",
-                    isSelected: selection == .video,
-                    action: { selection = .video }
-                )
-                .accessibilityIdentifier("Sidebar.Video")
-            }
-            if computerUseEnabled {
-                row(
-                    title: "Computer Use",
-                    systemImage: "macwindow.on.rectangle",
-                    isSelected: selection == .computerUse,
-                    action: { selection = .computerUse }
-                )
-                .accessibilityIdentifier("Sidebar.ComputerUse")
-            }
             row(
                 title: "Launch",
                 systemImage: "paperplane",
@@ -208,13 +193,45 @@ struct SidebarView: View {
                 action: { selection = .launch }
             )
             .accessibilityIdentifier("Sidebar.Launch")
-            row(
-                title: "Community Benchmark",
-                systemImage: "gauge.with.dots.needle.50percent",
-                isSelected: selection == .benchmark,
-                action: { selection = .benchmark }
-            )
-            .accessibilityIdentifier("Sidebar.CommunityBenchmark")
+
+            // Experimental workspaces live in their own labelled group below
+            // the everyday tabs (rather than interleaved with them), so the
+            // opt-in previews read as a distinct, still-being-validated set.
+            // The header appears only when at least one is enabled.
+            if videoGenerationEnabled || computerUseEnabled || benchmarkEnabled {
+                SectionHeader("Experimental")
+                    .padding(.horizontal, RapidTheme.Space.sm)
+                    .padding(.top, RapidTheme.Space.lg)
+                    .padding(.bottom, RapidTheme.Space.xs)
+                    .accessibilityIdentifier("Sidebar.ExperimentalHeader")
+                if videoGenerationEnabled {
+                    row(
+                        title: "Video",
+                        systemImage: "film",
+                        isSelected: selection == .video,
+                        action: { selection = .video }
+                    )
+                    .accessibilityIdentifier("Sidebar.Video")
+                }
+                if computerUseEnabled {
+                    row(
+                        title: "Computer Use",
+                        systemImage: "macwindow.on.rectangle",
+                        isSelected: selection == .computerUse,
+                        action: { selection = .computerUse }
+                    )
+                    .accessibilityIdentifier("Sidebar.ComputerUse")
+                }
+                if benchmarkEnabled {
+                    row(
+                        title: "Benchmark",
+                        systemImage: "gauge.with.dots.needle.50percent",
+                        isSelected: selection == .benchmark,
+                        action: { selection = .benchmark }
+                    )
+                    .accessibilityIdentifier("Sidebar.CommunityBenchmark")
+                }
+            }
 
             // Folders can exist before any conversation does (create one, then
             // file into it), so an empty history no longer means an empty rail.

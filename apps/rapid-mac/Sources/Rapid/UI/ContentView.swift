@@ -102,6 +102,8 @@ struct ContentView: View {
     private var videoGenerationEnabled = VideoFeatureConfig.defaultEnabled
     @AppStorage(ComputerUseFeatureConfig.enabledKey)
     private var computerUseEnabled = ComputerUseFeatureConfig.defaultEnabled
+    @AppStorage(CommunityBenchmarkFeatureConfig.enabledKey)
+    private var communityBenchmarkEnabled = CommunityBenchmarkFeatureConfig.defaultEnabled
     /// Window-level conversation search, opened from the toolbar.
     @State private var showConversationSearch = false
     // Was @SceneStorage. Moved to @AppStorage so the View menu command in
@@ -325,11 +327,14 @@ struct ContentView: View {
                 mcpCatalog.clear()
             }
         }
-        .onChange(of: experimentalDestinationState) { _, state in
+        .onChange(of: experimentalDestinationState, initial: true) { _, state in
             // Removing an experimental destination while it is active must
-            // never leave an unreachable detail pane on screen. Keep both
+            // never leave an unreachable detail pane on screen. Keep the
             // gates in one observation node so the already-large shell body
-            // remains tractable for Swift's type checker.
+            // remains tractable for Swift's type checker. `initial: true`
+            // also sanitises the selection on first appearance, so an app
+            // launched with a now-disabled experimental tab still selected
+            // (e.g. a persisted or deep-linked section) lands on Chat.
             section = Self.sectionAfterVideoGateChange(
                 current: section,
                 enabled: state.videoEnabled
@@ -337,6 +342,10 @@ struct ContentView: View {
             section = Self.sectionAfterComputerUseGateChange(
                 current: section,
                 enabled: state.computerUseEnabled
+            )
+            section = Self.sectionAfterBenchmarkGateChange(
+                current: section,
+                enabled: state.benchmarkEnabled
             )
         }
         .onChange(of: server.state) { _, newState in
@@ -611,6 +620,7 @@ struct ContentView: View {
                     selection: $section,
                     videoGenerationEnabled: videoGenerationEnabled,
                     computerUseEnabled: computerUseEnabled,
+                    benchmarkEnabled: communityBenchmarkEnabled,
                     chat: chat,
                 onNewChat: {
                     chat.newConversation()
@@ -1208,15 +1218,24 @@ struct ContentView: View {
                 onReadinessAction: performReadinessAction
             )
         case .benchmark:
-            CommunityBenchmarkView(
-                catalog: catalogEntries,
-                binary: server.binaryPath,
-                prepareServer: { try await server.prepareForCommunityBenchmark() },
-                releaseServer: { server.finishCommunityBenchmark($0) },
-                retainServerDuringDeferredReap: {
-                    server.retainCommunityBenchmarkDuringDeferredReap($0)
-                }
-            )
+            if communityBenchmarkEnabled {
+                CommunityBenchmarkView(
+                    catalog: catalogEntries,
+                    binary: server.binaryPath,
+                    prepareServer: { try await server.prepareForCommunityBenchmark() },
+                    releaseServer: { server.finishCommunityBenchmark($0) },
+                    retainServerDuringDeferredReap: {
+                        server.retainCommunityBenchmarkDuringDeferredReap($0)
+                    }
+                )
+            } else {
+                // Flag flipped off while this tab was selected. Show the
+                // default surface until the experimentalDestinationState
+                // onChange routes back to Chat — same fallback the Video and
+                // Computer Use branches use. Not recursive: `mainArea`
+                // switches on `server.state`, not `section`.
+                mainArea
+            }
         }
     }
 
@@ -1429,15 +1448,24 @@ struct ContentView: View {
         !enabled && current == .computerUse ? .chat : current
     }
 
+    static func sectionAfterBenchmarkGateChange(
+        current: SidebarSection,
+        enabled: Bool
+    ) -> SidebarSection {
+        !enabled && current == .benchmark ? .chat : current
+    }
+
     private struct ExperimentalDestinationState: Equatable {
         let videoEnabled: Bool
         let computerUseEnabled: Bool
+        let benchmarkEnabled: Bool
     }
 
     private var experimentalDestinationState: ExperimentalDestinationState {
         ExperimentalDestinationState(
             videoEnabled: videoGenerationEnabled,
-            computerUseEnabled: computerUseEnabled
+            computerUseEnabled: computerUseEnabled,
+            benchmarkEnabled: communityBenchmarkEnabled
         )
     }
 
