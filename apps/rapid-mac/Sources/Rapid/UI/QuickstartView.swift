@@ -2322,17 +2322,30 @@ struct QuickstartView: View {
         tradeUps: [QuickstartModelChoice],
         hardware: MacHardware
     ) -> [OnboardingComparisonTable.Column] {
-        tradeUps.map { choice in
+        let titles = comparisonColumnTitles(for: tradeUps)
+        return tradeUps.enumerated().map { index, choice in
             let footprint = ModelSizing.estimate(alias: choice.alias)
             let fit = ModelSizing.classify(footprint, on: hardware)
             return OnboardingComparisonTable.Column(
-                title: comparisonColumnTitle(for: choice),
+                title: titles[index],
                 isPicked: choice.alias == selection,
                 download: sizeText(for: choice),
                 memory: footprint.totalGB > 0 ? "≈ \(preciseGB(footprint.totalGB))" : "Unknown",
                 fit: fitText(fit),
                 fitIsWarning: fit != .recommended
             )
+        }
+    }
+
+    /// Prefer the compact parameter-count header, but disambiguate models of
+    /// the same size with their authored display names. A comparison can offer
+    /// multiple 9B choices; two identical "9B" columns would make the picked
+    /// state and the sourced cost figures impossible to attribute.
+    static func comparisonColumnTitles(for choices: [QuickstartModelChoice]) -> [String] {
+        let compact = choices.map(comparisonColumnTitle(for:))
+        let frequencies = Dictionary(compact.map { ($0, 1) }, uniquingKeysWith: +)
+        return zip(choices, compact).map { choice, title in
+            frequencies[title, default: 0] > 1 ? choice.displayName : title
         }
     }
 
