@@ -20,6 +20,7 @@ import json
 import logging
 import plistlib
 import stat
+import subprocess
 import threading
 import urllib.error
 from pathlib import Path
@@ -96,8 +97,11 @@ class _FakeResp:
         self._data = json.dumps(payload).encode()
         self.status = status
 
-    def read(self) -> bytes:
-        return self._data
+    def read(self, size: int = -1) -> bytes:
+        # honour the size hint like a real fp — _bounded_read caps it
+        if size is None or size < 0:
+            return self._data
+        return self._data[:size]
 
     def __enter__(self):
         return self
@@ -600,6 +604,27 @@ def test_cache_corrupt_file_is_not_reused(tmp_path):
     assert qs._load_cache("qwen3.6-35b", "qwen3.6-35b") is None
 
 
+@pytest.mark.parametrize(
+    "field",
+    ["node_id", "share_key", "model", "relay_url", "heartbeat_url", "alias"],
+)
+def test_cache_nonstring_wire_field_is_not_reused(tmp_path, field):
+    """Disk is attacker-adjacent: a cache whose share_key is a number or
+    whose relay_url is a nested object must be rejected on load, not
+    rendered, URL-parsed, or shoved into the greeting frame verbatim."""
+    payload = dict(_register_payload(), alias="qwen3.6-35b")
+    payload[field] = {"nested": [1, 2]}
+    qs._save_cache("qwen3.6-35b", payload)
+    assert qs._load_cache("qwen3.6-35b", "qwen3.6-35b") is None
+
+
+def test_cache_missing_interval_field_is_not_reused(tmp_path):
+    payload = dict(_register_payload(), alias="qwen3.6-35b")
+    del payload["heartbeat_interval_s"]
+    qs._save_cache("qwen3.6-35b", payload)
+    assert qs._load_cache("qwen3.6-35b", "qwen3.6-35b") is None
+
+
 def test_cache_path_rejects_path_shaped_ids():
     with pytest.raises(qs.QuickSilverError):
         qs._cache_path("../evil")
@@ -708,7 +733,7 @@ def test_register_unparseable_2xx_is_actionable_error():
     class _GarbageResp:
         status = 200
 
-        def read(self):
+        def read(self, size: int = -1) -> bytes:
             return b"<html>nginx is not json</html>"
 
         def __enter__(self):
@@ -722,6 +747,44 @@ def test_register_unparseable_2xx_is_actionable_error():
         pytest.raises(qs.QuickSilverError, match="unparseable"),
     ):
         qs.register_node("https://pay.test", PROVIDER_KEY, "m", "a")
+
+
+def test_register_oversized_success_response_is_terminal_not_buffered():
+    """A hostile pay.* streaming an unbounded 2xx body must hit the
+    size cap and exit terminal — no buffering the blob, no retry."""
+    calls = {"n": 0}
+
+    def fake_urlopen(req, timeout=None):
+        calls["n"] += 1
+        return _FakeResp(
+            _register_payload(junk="x" * (qs._REGISTER_RESPONSE_MAX_BYTES + 16))
+        )
+
+    with (
+        patch.object(qs, "_open", fake_urlopen),
+        patch("time.sleep"),
+        pytest.raises(qs.QuickSilverError, match="too large"),
+    ):
+        qs.register_node("https://pay.test", PROVIDER_KEY, "m", "a")
+    assert calls["n"] == 1
+
+
+def test_register_oversized_error_body_reports_code_without_blob():
+    """The error-body cap protects memory AND stderr: an oversized body
+    is dropped, the actionable code/hint still surfaces."""
+    blob = b"e" * (qs._ERROR_BODY_MAX_BYTES + 1)
+
+    def fake_urlopen(req, timeout=None):
+        raise _http_error(422, blob)
+
+    with (
+        patch.object(qs, "_open", fake_urlopen),
+        pytest.raises(qs.QuickSilverError) as ei,
+    ):
+        qs.register_node("https://pay.test", PROVIDER_KEY, "m", "a")
+    msg = str(ei.value)
+    assert "422" in msg or "unknown/unsupported" in msg
+    assert "eeee" not in msg
 
 
 def test_wire_urls_reject_credential_bearing_components():
@@ -977,6 +1040,18 @@ def test_heartbeat_transport_error_is_transparent():
     assert not hb.fatal.is_set()
 
 
+def test_heartbeat_stop_join_window_covers_request_timeout():
+    """A beat mid-flight in _open keeps sending the node credential;
+    stop() must outlast the beat's own socket timeout or run_share
+    returns with a still-beating thread."""
+    hb = _hb()
+    hb._thread = MagicMock()
+    hb.stop()
+    hb._thread.join.assert_called_once()
+    join_kwargs = hb._thread.join.call_args.kwargs
+    assert join_kwargs["timeout"] >= qs._BEAT_REQUEST_TIMEOUT
+
+
 # ─────────────────────────── run_share integration ───────────────────────────
 
 
@@ -1167,6 +1242,30 @@ def test_run_share_respects_user_max_seqs_override():
         )
     # Injection skipped — the user's own --max-num-seqs passthrough wins.
     assert spawned["extra_args"] == ["--max-num-seqs", "8"]
+
+
+def test_run_share_reaps_serve_proc_after_kill():
+    """SIGKILL only signals — without a follow-up wait(), a serve that
+    ignored SIGTERM lingers as a zombie child for the life of the
+    node process (which KeepAlive keeps alive forever)."""
+    tunnel = _fake_tunnel()
+    serve, ctrl_c = _patched_run_env(None)
+    # terminate() → wait(5) times out → kill() → wait() must be called
+    # a second time to reap.
+    serve.wait.side_effect = [subprocess.TimeoutExpired("serve", 5), 0]
+    ctxs = _run_patches(serve, lambda **kw: tunnel, ctrl_c) + (
+        patch.object(
+            qs,
+            "_open",
+            lambda req, timeout=None: _FakeResp(_register_payload()),
+        ),
+        patch.object(qs, "_Heartbeat", return_value=_fake_heartbeat_class()),
+    )
+    with _enter(*ctxs):
+        qs.run_share(_make_args(provider_key=PROVIDER_KEY))
+    serve.terminate.assert_called_once()
+    serve.kill.assert_called_once_with()
+    assert serve.wait.call_count == 2
 
 
 def test_run_share_ws_401_is_terminal_no_spin():
@@ -1380,6 +1479,24 @@ def test_install_service_plist_keeps_registration_origin(capsys):
     argv = plistlib.loads(plist_path.read_bytes())["ProgramArguments"]
     assert "--quicksilver-api" in argv
     assert argv[argv.index("--quicksilver-api") + 1] == "https://pay.staging.example"
+
+
+def test_install_service_refuses_unvalidatable_cached_origin():
+    """An unparseable/illegal cached api_base used to be dropped with a
+    bare try/pass — the job would then restart against the DEFAULT
+    origin and KeepAlive-hot-loop rejecting its own wire hosts. Refuse
+    the install instead, and write no plist."""
+    qs._save_cache(
+        "qwen3.6-35b",
+        dict(_register_payload(), alias="qwen3.6-35b", api_base="not-a-url"),
+    )
+    with pytest.raises(SystemExit) as ei:
+        qs.run_share(_make_args(install_service=True))
+    assert ei.value.code == 2
+    plist_path = (
+        Path.home() / "Library/LaunchAgents/com.quicksilver.node.qwen3.6-35b.plist"
+    )
+    assert not plist_path.exists()
 
 
 def test_cached_run_validates_against_cached_registration_origin(capsys):

@@ -124,6 +124,12 @@ _CACHE_REQUIRED_KEYS = _WIRE_REQUIRED_KEYS + ("heartbeat_interval_s", "alias")
 # cache).
 _CACHE_ALLOWED_KEYS = _CACHE_REQUIRED_KEYS + ("payout_account", "api_base")
 
+# Socket timeout for one §3.3 beat. Bounded so ``_Heartbeat.stop()``
+# can join the thread faster than a hung heartbeat can block; the beat
+# is best-effort (a missed one never drops the node) so a short ceiling
+# costs nothing.
+_BEAT_REQUEST_TIMEOUT = 5.0
+
 
 class QuickSilverError(Exception):
     """Fatal, user-facing failure. Message must be redacted by the
@@ -193,7 +199,16 @@ def _load_cache(catalog_id: str, alias: str) -> dict[str, Any] | None:
         return None
     if not isinstance(payload, dict):
         return None
-    if any(payload.get(k) in (None, "") for k in _CACHE_REQUIRED_KEYS):
+    # Presence is not shape: a non-string share_key would sail through
+    # _register_secret and detonate _redact (str.replace of a non-str
+    # needle) on the first render. heartbeat_interval_s is the one
+    # non-string field and _resolve_heartbeat_interval gates it.
+    if any(
+        not isinstance(payload.get(k), str) or not payload[k]
+        for k in _WIRE_REQUIRED_KEYS + ("alias",)
+    ):
+        return None
+    if payload.get("heartbeat_interval_s") is None:
         return None
     if payload.get("alias") != alias or payload.get("model") != catalog_id:
         return None
@@ -375,6 +390,27 @@ def _resolve_heartbeat_interval(cache: dict[str, Any], *, source: str) -> float:
     return value
 
 
+# Response caps: a registration payload is a few KiB of JSON, an error
+# body a one-liner. Anything larger is a faulty or hostile endpoint —
+# reading it whole would let pay.* exhaust the node's memory, so the
+# reads are bounded and oversized is terminal.
+_REGISTER_RESPONSE_MAX_BYTES = 1 * 1024 * 1024
+_ERROR_BODY_MAX_BYTES = 8 * 1024
+
+
+class _ResponseTooLargeError(Exception):
+    pass
+
+
+def _bounded_read(fp, limit: int) -> bytes:
+    """Read at most limit+1 bytes — fp.read() with no argument is the
+    unbounded memory pin we are defending against."""
+    data = fp.read(limit + 1)
+    if len(data) > limit:
+        raise _ResponseTooLargeError(f"response exceeded {limit} byte cap")
+    return data
+
+
 def _error_detail(body: bytes) -> str:
     # Every branch redacts: a server-side echo (or an error body that
     # happens to embed our credential) must not reach the terminal.
@@ -489,11 +525,19 @@ def register_node(
         try:
             with _open(req, timeout=15) as r:
                 status = r.status
-                raw = r.read()
+                raw = _bounded_read(r, _REGISTER_RESPONSE_MAX_BYTES)
             payload = json.loads(raw)
+        except _ResponseTooLargeError as exc:
+            raise QuickSilverError(
+                f"QuickSilver register response too large: {exc}"
+            ) from None
         except urllib.error.HTTPError as exc:
             status = exc.code
-            detail = _error_detail(exc.read())
+            try:
+                body = _bounded_read(exc, _ERROR_BODY_MAX_BYTES)
+            except _ResponseTooLargeError:
+                body = b""  # oversized error body: report the code, not the blob
+            detail = _error_detail(body)
         except (urllib.error.URLError, TimeoutError, ConnectionError) as exc:
             status = None
             detail = _redact(str(exc))[:200]
@@ -604,7 +648,10 @@ class _Heartbeat:
     def stop(self) -> None:
         self._stop.set()
         if self._thread is not None:
-            self._thread.join(timeout=5)
+            # Join must exceed the beat's request timeout, or a beat
+            # mid-flight in _open survives stop() and keeps sending the
+            # node credential after run_share() has returned.
+            self._thread.join(timeout=_BEAT_REQUEST_TIMEOUT + 5)
 
     def beat_now(self) -> None:
         self._beat_once()
@@ -637,7 +684,7 @@ class _Heartbeat:
             method="POST",
         )
         try:
-            with _open(req, timeout=10) as r:
+            with _open(req, timeout=_BEAT_REQUEST_TIMEOUT) as r:
                 if 200 <= r.status < 300:
                     self._logged_404 = False
         except urllib.error.HTTPError as exc:
@@ -733,10 +780,10 @@ def install_service(
     # heartbeat hosts (KeepAlive then hot-loops a doomed restart).
     cached_api = str(cache.get("api_base") or "")
     if cached_api and cached_api != DEFAULT_PAY_API:
-        try:
-            argv += ["--quicksilver-api", _validate_api_base(cached_api)]
-        except QuickSilverError:
-            pass  # tampered cache value; share run will fail with the real message
+        # Do NOT install a job that will restart against the wrong
+        # origin and KeepAlive-hot-loop a doomed validation — refuse
+        # the install and send the operator to --reregister.
+        argv += ["--quicksilver-api", _validate_api_base(cached_api)]
 
     plist: dict[str, Any] = {
         "Label": label,
@@ -1114,6 +1161,12 @@ def _run_share(args: argparse.Namespace) -> None:
                 serve_proc.wait(timeout=5)
             except subprocess.TimeoutExpired:
                 serve_proc.kill()
+                # kill() only signals — reap it, or the SIGKILL'd child
+                # lingers as a zombie for the life of this process.
+                try:
+                    serve_proc.wait(timeout=5)
+                except (subprocess.TimeoutExpired, OSError):
+                    pass
             except OSError:
                 pass
         try:
