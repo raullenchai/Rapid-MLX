@@ -307,6 +307,15 @@ final class QuickstartCoordinator {
             tier: .tradeUp
         ),
         QuickstartModelChoice(
+            alias: "neohorse-9b-4bit",
+            displayName: "NeoHorse 1 · 9B",
+            hfRepo: "rapid-mlx/NeoHorse-1-9B-MLX-4bit",
+            downloadBytes: 5_058_235_254,
+            blurb: "Experimental 9B chat and tools for comparing model behavior.",
+            tier: .tradeUp,
+            minRAMGB: 18
+        ),
+        QuickstartModelChoice(
             alias: "qwen3.8-27b-4bit",
             displayName: "Qwen 3.8 · 27B",
             hfRepo: nil,
