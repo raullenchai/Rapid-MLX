@@ -998,6 +998,19 @@ def register(subparsers: argparse._SubParsersAction) -> None:
         ),
     )
     p.add_argument(
+        "--worker",
+        type=str,
+        default=None,
+        metavar="NAME",
+        help=(
+            "Per-machine worker label (like a mining pool's account.worker). "
+            "Defaults to this machine's hostname. Node identity is "
+            "(account, worker), so give two machines under one account "
+            "distinct workers to run them as separate, separately-credited "
+            "nodes."
+        ),
+    )
+    p.add_argument(
         "--reregister",
         action="store_true",
         help=(

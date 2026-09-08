@@ -65,6 +65,7 @@ def _make_args(**overrides) -> argparse.Namespace:
         quicksilver=True,
         provider_key=None,
         quicksilver_model=None,
+        worker="test-worker",
         reregister=False,
         install_service=False,
         quicksilver_api=None,
@@ -117,6 +118,7 @@ def _register_payload(**over) -> dict:
         "node_id": "qspnode-1a2b3c4d",
         "share_key": SHARE_KEY,
         "model": "qwen3.6-35b",
+        "worker": "test-worker",
         "relay_url": "wss://rapidserver.quicksilverpro.io/up",
         "pool_base": "https://rapidserver.quicksilverpro.io/pool/v1",
         "heartbeat_url": "https://rapidserver.quicksilverpro.io/hb",
@@ -904,7 +906,9 @@ def test_register_success_sets_alias_and_ua():
         return _FakeResp(_register_payload())
 
     with patch.object(qs, "_open", fake_urlopen):
-        out = qs.register_node("https://pay.test", PROVIDER_KEY, "qwen3.6-35b", "al")
+        out = qs.register_node(
+            "https://pay.test", PROVIDER_KEY, "qwen3.6-35b", "al", "w"
+        )
     assert out["alias"] == "al"
     req = calls[0]
     assert req.headers["User-agent"] == qs._user_agent()  # urllib title-cases
@@ -930,7 +934,7 @@ def test_register_terminal_codes(code, hint):
         patch.object(qs, "_open", fake_urlopen),
         pytest.raises(qs.QuickSilverError, match=hint),
     ):
-        qs.register_node("https://pay.test", PROVIDER_KEY, "m", "a")
+        qs.register_node("https://pay.test", PROVIDER_KEY, "m", "a", "w")
 
 
 def test_register_retries_429_then_succeeds():
@@ -946,7 +950,9 @@ def test_register_retries_429_then_succeeds():
         patch.object(qs, "_open", fake_urlopen),
         patch("time.sleep") as sleep,
     ):
-        out = qs.register_node("https://pay.test", PROVIDER_KEY, "qwen3.6-35b", "al")
+        out = qs.register_node(
+            "https://pay.test", PROVIDER_KEY, "qwen3.6-35b", "al", "w"
+        )
     assert out["node_id"] == "qspnode-1a2b3c4d"
     assert sleep.call_count == 1
     # The retry must re-POST the ORIGINAL registration payload — an
@@ -971,7 +977,7 @@ def test_register_error_detail_never_leaks_secrets():
         patch.object(qs, "_open", fake_urlopen),
         pytest.raises(qs.QuickSilverError) as ei,
     ):
-        qs.register_node("https://pay.test", PROVIDER_KEY, "m", "a")
+        qs.register_node("https://pay.test", PROVIDER_KEY, "m", "a", "w")
     assert SHARE_KEY not in str(ei.value)
 
 
@@ -992,7 +998,7 @@ def test_register_400_is_terminal_without_retrying():
             patch("time.sleep") as sleep,
             pytest.raises(qs.QuickSilverError, match=f"HTTP {code}"),
         ):
-            qs.register_node("https://pay.test", PROVIDER_KEY, "m", "a")
+            qs.register_node("https://pay.test", PROVIDER_KEY, "m", "a", "w")
         return calls["n"], sleep
 
     for code in (400, 404):
@@ -1018,7 +1024,7 @@ def test_register_unparseable_2xx_is_actionable_error():
         patch.object(qs, "_open", lambda req, timeout=None: _GarbageResp()),
         pytest.raises(qs.QuickSilverError, match="unparseable"),
     ):
-        qs.register_node("https://pay.test", PROVIDER_KEY, "m", "a")
+        qs.register_node("https://pay.test", PROVIDER_KEY, "m", "a", "w")
 
 
 def test_register_oversized_success_response_is_terminal_not_buffered():
@@ -1037,7 +1043,7 @@ def test_register_oversized_success_response_is_terminal_not_buffered():
         patch("time.sleep"),
         pytest.raises(qs.QuickSilverError, match="too large"),
     ):
-        qs.register_node("https://pay.test", PROVIDER_KEY, "m", "a")
+        qs.register_node("https://pay.test", PROVIDER_KEY, "m", "a", "w")
     assert calls["n"] == 1
 
 
@@ -1053,7 +1059,7 @@ def test_register_oversized_error_body_reports_code_without_blob():
         patch.object(qs, "_open", fake_urlopen),
         pytest.raises(qs.QuickSilverError) as ei,
     ):
-        qs.register_node("https://pay.test", PROVIDER_KEY, "m", "a")
+        qs.register_node("https://pay.test", PROVIDER_KEY, "m", "a", "w")
     msg = str(ei.value)
     assert "422" in msg or "unknown/unsupported" in msg
     assert "eeee" not in msg
@@ -1071,7 +1077,7 @@ def test_register_model_echo_mismatch_is_terminal():
         patch.object(qs, "_open", fake_urlopen),
         pytest.raises(qs.QuickSilverError, match="does not match"),
     ):
-        qs.register_node("https://pay.test", PROVIDER_KEY, "qwen3.6-35b", "a")
+        qs.register_node("https://pay.test", PROVIDER_KEY, "qwen3.6-35b", "a", "w")
 
 
 def test_wire_urls_reject_credential_bearing_components():
@@ -1119,7 +1125,7 @@ def test_register_302_is_terminal_single_call():
         patch.object(qs, "_open", fake_urlopen),
         pytest.raises(qs.QuickSilverError, match="HTTP 302"),
     ):
-        qs.register_node("https://pay.test", PROVIDER_KEY, "m", "a")
+        qs.register_node("https://pay.test", PROVIDER_KEY, "m", "a", "w")
     assert calls["n"] == 1
 
 
@@ -1391,7 +1397,9 @@ def test_register_http_error_response_is_closed():
         patch.object(qs, "_open", fake_urlopen),
         pytest.raises(qs.QuickSilverError, match="403"),
     ):
-        qs.register_node("https://pay.test", PROVIDER_KEY, "qwen3.6-35b", "qwen3.6-35b")
+        qs.register_node(
+            "https://pay.test", PROVIDER_KEY, "qwen3.6-35b", "qwen3.6-35b", "w"
+        )
     assert fp.closed
 
 
@@ -1552,6 +1560,37 @@ def test_run_share_serve_uses_served_model_name_catalog_id():
     extra = spawn.call_args.kwargs["extra_args"]
     assert "--served-model-name" in extra
     assert extra[extra.index("--served-model-name") + 1] == "qwen3.6-35b"
+
+
+def test_register_body_carries_worker():
+    """The register request names the per-machine worker (account.worker)."""
+    seen = {}
+
+    def fake_open(req, timeout):
+        seen["body"] = json.loads(req.data.decode())
+        return _FakeResp(_register_payload())
+
+    with patch.object(qs, "_open", fake_open):
+        qs.register_node(
+            "https://pay.test", PROVIDER_KEY, "qwen3.6-35b", "qwen3.6-35b", "mac-studio"
+        )
+    assert seen["body"]["worker"] == "mac-studio"
+    assert seen["body"]["model"] == "qwen3.6-35b"
+
+
+def test_resolve_worker_defaults_to_hostname(monkeypatch):
+    monkeypatch.setattr(qs.socket, "gethostname", lambda: "Some.Host-01")
+    assert qs._resolve_worker(_make_args(worker=None)) == "Some.Host-01"
+    # explicit --worker wins and is sanitized to the id charset
+    assert qs._resolve_worker(_make_args(worker="mac mini!")) == "macmini"
+
+
+def test_load_cache_worker_mismatch_forces_reregister(tmp_path, monkeypatch):
+    qs._save_cache("qwen3.6-35b", dict(_register_payload(), alias="qwen3.6-35b"))
+    # same catalog+alias but a DIFFERENT machine (worker) => different node => miss
+    assert qs._load_cache("qwen3.6-35b", "qwen3.6-35b", "other-machine") is None
+    # matching worker => hit
+    assert qs._load_cache("qwen3.6-35b", "qwen3.6-35b", "test-worker") is not None
 
 
 def test_run_share_cached_run_never_calls_register(capsys):

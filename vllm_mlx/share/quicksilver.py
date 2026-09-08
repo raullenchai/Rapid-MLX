@@ -39,6 +39,7 @@ import json
 import logging
 import math
 import os
+import socket
 import secrets
 import signal
 import subprocess
@@ -127,7 +128,7 @@ _CACHE_REQUIRED_KEYS = _WIRE_REQUIRED_KEYS + ("heartbeat_interval_s", "alias")
 # runs keep validating against the RIGHT origin (a staging-registered
 # node restarted against the default origin would reject its own
 # cache).
-_CACHE_ALLOWED_KEYS = _CACHE_REQUIRED_KEYS + ("payout_account", "api_base")
+_CACHE_ALLOWED_KEYS = _CACHE_REQUIRED_KEYS + ("payout_account", "api_base", "worker")
 
 # Socket timeout for one §3.3 beat. Bounded so ``_Heartbeat.stop()``
 # can join the thread faster than a hung heartbeat can block; the beat
@@ -190,7 +191,9 @@ def _cache_path(catalog_id: str) -> Path:
     return _cache_dir() / f"{catalog_id}.json"
 
 
-def _load_cache(catalog_id: str, alias: str) -> dict[str, Any] | None:
+def _load_cache(
+    catalog_id: str, alias: str, worker: str | None = None
+) -> dict[str, Any] | None:
     """Return a cached §3.1 response iff it is complete AND bound to
     the same local alias. Registration is idempotent per
     (account, model, alias) but the cache filename keys only the
@@ -236,6 +239,11 @@ def _load_cache(catalog_id: str, alias: str) -> dict[str, Any] | None:
         return None
     if payload.get("alias") != alias or payload.get("model") != catalog_id:
         return None
+    # Node identity is (account, worker): a worker mismatch (or an old cache
+    # with no worker) means a DIFFERENT node — re-register rather than reuse a
+    # stale node id under a new machine label.
+    if worker is not None and payload.get("worker") != worker:
+        return None
     return payload
 
 
@@ -267,6 +275,16 @@ def _save_cache(catalog_id: str, payload: dict[str, Any]) -> Path:
 
 
 # ─────────────────────────── catalog resolution (§5.4) ───────────────────────────
+
+
+def _resolve_worker(args: argparse.Namespace) -> str:
+    """The per-machine worker label (Stratum's account.worker). Defaults to the
+    machine hostname so two machines under one account register as DISTINCT
+    nodes (node identity is (account, worker)); an explicit ``--worker`` wins.
+    Sanitized to the id charset; the server sanitizes again and is authoritative."""
+    raw = (getattr(args, "worker", None) or socket.gethostname() or "node").strip()
+    cleaned = "".join(c for c in raw if c.isalnum() or c in "._-")[:64]
+    return cleaned or "node"
 
 
 def resolve_catalog(args: argparse.Namespace) -> tuple[str, str]:
@@ -549,14 +567,19 @@ def _open(req: urllib.request.Request, timeout: float):
 
 
 def register_node(
-    api_base: str, provider_key: str, catalog_id: str, alias: str
+    api_base: str, provider_key: str, catalog_id: str, alias: str, worker: str
 ) -> dict[str, Any]:
     """§3.1 self-serve registration with the §3.1 retry taxonomy.
     Returns the parsed 200 response body. Raises QuickSilverError on
     terminal or exhausted-retry outcomes."""
     url = api_base.rstrip("/") + "/v1/pool/nodes/register"
     body = json.dumps(
-        {"model": catalog_id, "alias": alias, "hardware": _hardware_info()}
+        {
+            "model": catalog_id,
+            "worker": worker,
+            "alias": alias,
+            "hardware": _hardware_info(),
+        }
     ).encode("utf-8")
     headers = {
         "Authorization": f"Bearer {provider_key}",
@@ -841,7 +864,8 @@ def install_service(
     carries NO key material (§6): the resident process relies on the
     0600 cache, so a machine without one refuses here rather than
     install a job that would prompt for a provider key into the void."""
-    cache = _load_cache(catalog_id, serve_alias)
+    worker = _resolve_worker(args)
+    cache = _load_cache(catalog_id, serve_alias, worker)
     if cache is None:
         raise QuickSilverError(
             f"no node cache for {catalog_id!r} / {serve_alias!r} — run "
@@ -872,6 +896,7 @@ def install_service(
     home = Path.home()
 
     argv = [sys.executable, "-m", "vllm_mlx.cli", "share", serve_alias, "--quicksilver"]
+    argv += ["--worker", worker]
     if catalog_id != serve_alias:
         argv += ["--quicksilver-model", catalog_id]
     # Reproduce every declared behavior flag so the resident job serves
@@ -993,12 +1018,13 @@ def _run_share(args: argparse.Namespace) -> None:
         args.quicksilver_api if args.quicksilver_api is not None else DEFAULT_PAY_API
     )
 
-    cache = None if args.reregister else _load_cache(catalog_id, serve_alias)
+    worker = _resolve_worker(args)
+    cache = None if args.reregister else _load_cache(catalog_id, serve_alias, worker)
     if cache is None:
         provider_key = _resolve_provider_key(args)
         _register_secret(provider_key)
         print("Registering node with QuickSilver…", file=sys.stderr)
-        cache = register_node(api_base, provider_key, catalog_id, serve_alias)
+        cache = register_node(api_base, provider_key, catalog_id, serve_alias, worker)
         # Register the share-key for redaction BEFORE rendering any
         # server-controlled field — node_id / payout_account are the
         # response's to fill, and if either echoed the resident key,
