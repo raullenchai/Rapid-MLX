@@ -2,7 +2,7 @@
 
 - Owner/host: Vector, Studio
 - Audit branch: `vector/release-delta-audit-20260906`
-- Audit range: `v0.13.4..caafd08df` (80 first-parent merged PRs)
+- Audit range: `v0.13.4..18d488664` (103 first-parent merged PRs)
 - Durable report: `docs/engineering/operations/2026-09-06-v0.13.4-to-main-release-audit.md`
 
 ## Verified facts
@@ -26,14 +26,21 @@
   actuation, and fail-closed boundaries. #3193 is test-only and keeps its live
   Calculator action behind three explicit operator values. No new P0/P1
   finding survived.
+- Harbor reviewed the final 23 merges through #3231. The two resulting P1
+  findings are fixed on main: #3242 binds CUA visual recovery to an exact
+  per-launch Desktop server session (`430974e56`), and #3244 removes persistent
+  credential transmission from root-run service qualification (`463ecd39e`).
+  Their exact-head and combined queue candidates passed; both issues closed on
+  merge.
+- The exact `18d488664` Desktop package passed 3,610 tests across 311 suites.
 - Combined-main validation passes 204 service tests, Python 3.12 compileall,
   release-range diff checks, and 3,542 Swift tests across 306 suites at the
   exact #3193 head.
 
 ## Risks and next action
 
-Atlas should arrange a healthy cache volume for a complete
-`make release-check-m3` rerun. Harbor should rerun the exact source/artifact
-image dogfood receipt on the final signed and notarized candidate. Do not
-delete shared model caches without explicit human authorization and a recovery
-plan.
+The reviewed source range is P0/P1-clean at `463ecd39e`. Atlas should arrange
+a healthy cache volume for a complete `make release-check-m3` rerun. Harbor
+should rerun the exact source/artifact image dogfood receipt on the final
+signed and notarized candidate. Do not delete shared model caches without
+explicit human authorization and a recovery plan.
