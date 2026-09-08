@@ -13018,11 +13018,73 @@ Examples:
         choices=["smoke", "check", "full", "benchmark"],
         help=argparse.SUPPRESS,
     )
-    doctor_parser.add_argument(
+    doctor_output = doctor_parser.add_mutually_exclusive_group()
+    doctor_output.add_argument(
         "--verbose",
         "-v",
         action="store_true",
         help="Print the underlying probe detail for each check",
+    )
+    doctor_output.add_argument(
+        "--json",
+        action="store_true",
+        help="Emit the versioned machine-readable report as JSON",
+    )
+    doctor_output.add_argument(
+        "--summary",
+        action="store_true",
+        help="Print only the one-line result summary",
+    )
+    doctor_parser.add_argument(
+        "--deep",
+        action="store_true",
+        help="Run opt-in dependency, DNS, and route probes (up to 30 seconds)",
+    )
+    doctor_parser.add_argument(
+        "--fix",
+        action="store_true",
+        help=(
+            "Plan and apply only verified repairs (bounded stages may total "
+            "up to 90 seconds)"
+        ),
+    )
+    doctor_parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="With --fix, print the repair plan without making changes",
+    )
+    doctor_parser.add_argument(
+        "--yes",
+        action="store_true",
+        help="With --fix, accept the repair plan non-interactively",
+    )
+    doctor_section_ids = (
+        "system",
+        "python",
+        "packages.required",
+        "updates",
+        "packages.optional",
+        "cache.huggingface",
+        "network",
+        "shell",
+        "tools.optional",
+        "agents",
+        "service",
+        "deep",
+    )
+    doctor_parser.add_argument(
+        "--only",
+        action="append",
+        choices=doctor_section_ids,
+        metavar="SECTION",
+        help="Run only this section ID (repeatable)",
+    )
+    doctor_parser.add_argument(
+        "--skip",
+        action="append",
+        choices=doctor_section_ids,
+        metavar="SECTION",
+        help="Skip this section ID (repeatable)",
     )
     # Legacy compatibility shims — accepted-but-ignored so the redirect
     # message in ``doctor_command`` can fire (see comment above).

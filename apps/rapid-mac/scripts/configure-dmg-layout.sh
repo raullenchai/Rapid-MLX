@@ -13,6 +13,25 @@
 # size and volume-relative background alias are fixed and verified
 # structurally (scripts/verify-dmg-layout.py) — no Finder scripting.
 #
+# The template also pins an icon position for ``.background`` itself, parked
+# below the window fold at (100,560). A dot-prefixed name is hidden from Finder
+# only while the viewer keeps the default "don't show hidden files" setting;
+# with ``AppleShowAllFiles=1`` Finder draws the folder, and no file flag
+# suppresses it (``chflags hidden`` and the kIsInvisible FinderInfo bit were
+# both measured against a live Finder — neither works). Left unpositioned,
+# Finder auto-grids it into the first free cell, which at a 96pt icon size is
+# the top-left of the install page.
+#
+# The template is a binary .DS_Store. To move a position, edit it in place —
+# this preserves the bwsp/icvp records and the background alias blob verbatim:
+#
+#   uv run --no-project --with ds_store --with mac_alias python -c \
+#     "import ds_store; d=ds_store.DSStore.open('Resources/finder-layout.DS_Store','r+'); \
+#      d['.background']['Iloc']=(100,560); d.close()"
+#
+# then re-run scripts/verify-dmg-layout.py, which gates the new position
+# against the window fold.
+#
 # Usage: scripts/configure-dmg-layout.sh /Volumes/Rapid-MLX\ Desktop
 set -euo pipefail
 
@@ -70,4 +89,4 @@ sync
 python3 "$ROOT/scripts/verify-dmg-layout.py" "$MOUNT/.DS_Store"
 
 sync
-echo "==> Finder layout: 720x460, app (180,228) -> Applications (540,228)"
+echo "==> Finder layout: 720x460, app (180,228) -> Applications (540,228), .background parked below fold"

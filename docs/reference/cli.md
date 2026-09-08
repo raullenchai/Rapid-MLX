@@ -29,6 +29,140 @@
 
 Run `rapid-mlx <cmd> --help` for the full flag list of any subcommand.
 
+## `rapid-mlx doctor`
+
+Run the fast, read-only environment diagnostic without loading a model or
+starting a server:
+
+```bash
+rapid-mlx doctor                 # complete human-readable report
+rapid-mlx doctor --verbose       # include evidence and remediation detail
+rapid-mlx doctor --summary       # one line for logs and shell scripts
+rapid-mlx doctor --json          # versioned report for automation/support
+rapid-mlx doctor --deep          # active dependency/DNS/route checks (≤30s)
+```
+
+The built-in filesystem, network, and subprocess operations carry explicit
+timeouts. A shared five-second scheduling budget prevents later sections from
+starting after earlier checks consume the target runtime; it is not a process
+watchdog for arbitrary third-party Python code.
+
+To isolate a slow or suspect area, select sections by their stable IDs. Both
+flags are repeatable, and `--skip` wins when the same ID appears in both:
+
+```bash
+rapid-mlx doctor --only packages.required --only packages.optional
+rapid-mlx doctor --skip updates --skip network
+```
+
+Available IDs are `system`, `python`, `packages.required`, `updates`,
+`packages.optional`, `cache.huggingface`, `network`, `shell`,
+`tools.optional`, `agents`, and `service`.
+
+On macOS, the default report also diagnoses an installed Always-on service
+from end to end: LaunchDaemon definition, launchd registration, process and
+service-account ownership, active/pending configuration, service runtime
+version, `/livez`, and `/readyz`. An absent service is healthy because the
+feature is optional. Once either its plist or launchd registration exists,
+inconsistencies are actionable failures. A live endpoint that is not ready is
+a warning rather than a hard failure because it may still be loading a model
+or waiting in lazy mode.
+
+Before making an HTTP request, Doctor requires `/usr/sbin/lsof` to prove that
+the launchd PID owns a listener covering the configured host and port. A
+different PID/address, a permission error, timeout, truncated response, or
+invalid response is reported as skipped/unverified (`unknown` in `service
+status`), never as healthy or as a confirmed outage. Runtime version evidence
+is read without executing the service binary and is accepted only when its
+wheel `RECORD` size/SHA-256 authenticates that executable in the interpreter's
+matching `pythonX.Y/site-packages` directory.
+
+Run only these checks with:
+
+```bash
+rapid-mlx doctor --only service --verbose
+rapid-mlx doctor --only service --json
+```
+
+### Deep checks and repairs
+
+The default command remains a five-second, read-only check. Use `--deep` when
+actively troubleshooting an appliance; it allows up to 30 seconds and adds:
+
+- `pip check` in the selected Rapid-MLX runtime, to find incompatible installed
+  dependency versions. Confirmed conflicts are failures; sealed/minimal runtimes
+  without pip are skipped, while operational errors such as permission or
+  interpreter startup failures are warnings rather than false conflicts;
+- DNS resolution for PyPI and Hugging Face, which distinguishes network setup
+  trouble from a broken package;
+- the macOS default-route interface, useful on multi-NIC Mac minis that remain
+  reachable over SSH while their internet route points at a private link.
+
+```bash
+rapid-mlx doctor --deep --verbose
+rapid-mlx doctor --deep --only deep --json
+```
+
+`--fix` implies `--deep` and follows a detect → plan → apply → re-detect flow.
+It only offers repairs that have both a bounded action and an objective health
+verifier. Today, the automated repair is a kickstart of an already-registered
+Always-on service whose process or liveness check failed. Doctor never invokes
+`sudo` itself, never installs packages, and never edits service configuration.
+The read-only deep diagnosis has a 30-second budget. An applied repair has
+separate bounded stages: up to 10 seconds for the command, 20 seconds for
+health verification, and—only after verified recovery—another 30-second deep
+diagnosis. Including the initial diagnosis, the complete successful workflow
+can therefore take up to approximately 90 seconds.
+
+Preview without changing the machine:
+
+```bash
+rapid-mlx doctor --only service --fix --dry-run --verbose
+rapid-mlx doctor --only service --fix --dry-run --json
+```
+
+Apply interactively:
+
+```bash
+sudo rapid-mlx doctor --only service --fix
+```
+
+Answering anything other than `y`/`yes` records the proposal as `not_applied`
+with an operator-declined reason; it does not leave the repair result ambiguous.
+
+Apply explicitly in non-interactive appliance automation:
+
+```bash
+sudo rapid-mlx doctor --only service --fix --yes --json
+```
+
+Without root, Doctor reports the exact `sudo /bin/launchctl ...` command as
+`not_applied`; it does not prompt for or acquire privilege. A zero exit from
+`launchctl` is not enough to claim success: Doctor polls the service again and
+records `verified` only after registration, PID, and `/livez` all recover.
+Otherwise the repair is `failed` or `unverified`, and the original diagnosis
+remains visible. JSON adds a root-level `repairs` array with `id`, `status`,
+`summary`, `command`, and `detail`.
+
+Ordinary JSON output remains `schemaVersion: 1` and includes the Rapid-MLX version,
+overall status (`ok`, `warn`, `fail`, or `skipped`), exit code, total and per-section durations, counts, stable
+section IDs, optional semantic check IDs, and redacted summaries/details.
+Only explicit `--fix --json` output uses schema v2 and adds the root-level
+`repairs` array (empty when no repair was planned or attempted). Existing
+read-only automation can continue consuming schema v1 unchanged; integrations
+that opt into repair mode must support schema v2.
+Legacy checks that do not yet declare a semantic identity return `id: null`;
+consumers must not derive identity from their position or English prose. It
+writes JSON only to stdout. Exit code `0` means no confirmed failure (warnings
+and skipped checks remain visible); exit code `1` means at least one confirmed
+failure. A report containing both successful and skipped checks has root status
+`warn` (partially complete); `skipped` means no check produced a result.
+For JSON mode, the CLI starts a fresh isolated Python executable and receives
+only its atomically written structured result. Python, native-library,
+subprocess, and delayed thread output from probes therefore cannot corrupt the
+JSON stream, and the worker does not inherit initialized native-library locks
+from the caller. A parent deadline cleans up the worker's entire process group.
+
 `rapid-mlx models --cached --json` is the stable machine-readable cache
 inventory used by the Desktop app. Each row includes `repo`, `alias`,
 `subfolder`, `size_bytes`, `state`, and `external`; `subfolder: null` means the
