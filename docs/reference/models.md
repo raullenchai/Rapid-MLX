@@ -40,10 +40,9 @@ Recommendations live in one catalog (`vllm_mlx/model_recommendations.json`) shar
 
 `neohorse-9b-4bit` is an opt-in, text-only Chat model for Macs with at
 least 18 GB of unified memory. It is not a Smart/Fast recommendation and does
-not change any default. The initial qualification found stronger tool
-selection and ambiguity handling than the current 9B default, while also
-finding a factuality regression that requires broader dogfood before any
-default change.
+not change any default. Product-path qualification found unresolved gaps in
+multi-step tool use, executable coding, reasoning, and instruction following,
+so broader comparative dogfood is required before any default change.
 
 ```bash
 rapid-mlx serve neohorse-9b-4bit

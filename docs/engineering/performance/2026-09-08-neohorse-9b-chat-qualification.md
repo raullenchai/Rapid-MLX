@@ -16,8 +16,6 @@ experimental model. It is not evidence for changing the default model.
   `6cd9248d8070d8a0ad8d20aa19e2fe6848419e93`
 - Published MLX artifact: `rapid-mlx/NeoHorse-1-9B-MLX-4bit` at
   `9fe3cd3f69e2d653e82ec094e1c4d0caa9564897`
-- Baseline: `mlx-community/Qwen3.5-9B-4bit` at
-  `8b2b98c00a6b4d291155e4890773ca8f769aee53`
 - Quantization: affine 4-bit, group size 64
 - Rapid-MLX revision under test: `525b62ac3`
 
@@ -51,10 +49,16 @@ the checked-in task tests; general answers use the task-specific deterministic
 checks. All requests use temperature 0. Tool calls use at most 512 output
 tokens, coding 4,096, reasoning 1,024, and general 2,048.
 
-With the published artifact available in the standard Hugging Face cache:
+Resolve the immutable Hub revision into the standard Hugging Face cache, then
+serve that resolved snapshot path. The `--model-path` evaluator argument is
+provenance metadata; pinning the server input is what guarantees identical
+weights:
 
 ```bash
-rapid-mlx serve neohorse-9b-4bit --host 127.0.0.1 --port 8327
+NEOHORSE_SNAPSHOT="$(python -c \
+  'from huggingface_hub import snapshot_download; print(snapshot_download("rapid-mlx/NeoHorse-1-9B-MLX-4bit", revision="9fe3cd3f69e2d653e82ec094e1c4d0caa9564897"))')"
+
+rapid-mlx serve "$NEOHORSE_SNAPSHOT" --host 127.0.0.1 --port 8327
 
 python evals/run_eval.py \
   --model NeoHorse-1-9B-MLX-4bit \
@@ -64,16 +68,16 @@ python evals/run_eval.py \
   --output /private/tmp/rapid-mlx-neohorse9-standard-eval.json \
   --hardware 'Apple M3 Ultra (256 GB)' \
   --server-flags \
-    'rapid-mlx serve neohorse-9b-4bit --host 127.0.0.1 --port 8327' \
+    'rapid-mlx serve <resolved pinned snapshot> --host 127.0.0.1 --port 8327' \
   --model-path \
     'rapid-mlx/NeoHorse-1-9B-MLX-4bit@9fe3cd3f69e2d653e82ec094e1c4d0caa9564897' \
   --engine batched
 ```
 
-An earlier direct-loader screen suggested promising behavior relative to the
-current 9B default, but used a separate prompt harness and is intentionally not
-used as promotion evidence here. A default decision requires both candidates
-to be compared with this checked-in evaluator and broader user journeys.
+An earlier direct-loader screen motivated this experimental integration, but it
+used a separate prompt harness and is intentionally not used as promotion
+evidence here. A default decision requires both candidates to be compared with
+this checked-in evaluator and broader user journeys.
 
 ## Artifact checks
 
