@@ -236,6 +236,17 @@ def _resolve_serve_hf_path(serve_alias: str) -> str:
 # ───────────────────────────── registration (§3.1) ─────────────────────────────
 
 
+def _is_loopback_host(host: str) -> bool:
+    if host == "localhost":
+        return True
+    try:
+        import ipaddress
+
+        return ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        return False
+
+
 def _validate_api_base(raw: str) -> str:
     """``--quicksilver-api`` guard: the provider key rides this origin's
     Authorization header, so a typo must not silently downgrade to
@@ -244,15 +255,7 @@ def _validate_api_base(raw: str) -> str:
     parsed = urllib.parse.urlparse(raw.rstrip("/"))
     host = parsed.hostname or ""
     if parsed.scheme == "http":
-        loopback = host == "localhost"
-        if not loopback:
-            try:
-                import ipaddress
-
-                loopback = ipaddress.ip_address(host).is_loopback
-            except ValueError:
-                loopback = False
-        if not loopback:
+        if not _is_loopback_host(host):
             raise QuickSilverError(
                 f"--quicksilver-api over plain http only for loopback hosts "
                 f"(got {raw!r})"
@@ -270,6 +273,52 @@ def _validate_api_base(raw: str) -> str:
             f"(got {raw!r})"
         )
     return f"{parsed.scheme}://{parsed.netloc}"
+
+
+# Server-supplied URLs must never carry our credentials to an arbitrary
+# origin: a compromised or misconfigured API surface could otherwise
+# point ``relay_url`` at a cleartext ``ws://`` host (the greeting frame
+# leaks the share-key) or ``heartbeat_url`` at a stranger (the beat's
+# Authorization header leaks it). Scheme + host are revalidated against
+# a closed allowlist on EVERY payload, wire or cached.
+_TRUSTED_WIRE_DOMAIN = "quicksilverpro.io"
+
+
+def _wire_host_trusted(host: str, api_host: str) -> bool:
+    return (
+        _is_loopback_host(host)
+        or host == _TRUSTED_WIRE_DOMAIN
+        or host.endswith("." + _TRUSTED_WIRE_DOMAIN)
+        or (bool(api_host) and host == api_host)
+    )
+
+
+def _validate_wire_urls(payload: dict[str, Any], api_base: str, *, source: str) -> None:
+    """Check ``relay_url`` / ``heartbeat_url`` from a registration
+    response or the on-disk cache before any credential rides them."""
+    api_host = (urllib.parse.urlparse(api_base).hostname or "").lower()
+    for field, secure_scheme, plain_scheme in (
+        ("relay_url", "wss", "ws"),
+        ("heartbeat_url", "https", "http"),
+    ):
+        url = str(payload.get(field) or "")
+        parsed = urllib.parse.urlparse(url)
+        host = (parsed.hostname or "").lower()
+        scheme_ok = parsed.scheme == secure_scheme or (
+            parsed.scheme == plain_scheme and _is_loopback_host(host)
+        )
+        if not scheme_ok:
+            raise QuickSilverError(
+                f"{source} {field} must be {secure_scheme}:// (got {url!r}) — "
+                f"the node credential rides this connection"
+            )
+        if not host:
+            raise QuickSilverError(f"{source} {field} must include a host: {url!r}")
+        if not _wire_host_trusted(host, api_host):
+            raise QuickSilverError(
+                f"{source} {field} host {host!r} is not a QuickSilver origin — "
+                f"refusing to send node credentials there"
+            )
 
 
 def _error_detail(body: bytes) -> str:
@@ -339,6 +388,28 @@ def _resolve_provider_key(args: argparse.Namespace) -> str:
     return key
 
 
+class _NoRedirectHandler(urllib.request.HTTPRedirectHandler):
+    """``urlopen`` follows 30x transparently and REPLAYS the
+    Authorization header to the redirect target — on register that
+    ships the provider key to whatever host the API bounces to, on
+    heartbeat the share-key. Refusing redirects (``redirect_request``
+    → None) makes urllib surface the 3xx as an HTTPError instead, which
+    the retry taxonomy below treats as terminal."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):  # noqa: ARG001
+        return None
+
+
+_URL_OPENER = urllib.request.build_opener(_NoRedirectHandler)
+
+
+def _open(req: urllib.request.Request, timeout: float):
+    """The single HTTP exit point for this module — every request here
+    carries a credential, so every request goes through the
+    no-redirect opener."""
+    return _URL_OPENER.open(req, timeout=timeout)
+
+
 def register_node(
     api_base: str, provider_key: str, catalog_id: str, alias: str
 ) -> dict[str, Any]:
@@ -362,7 +433,7 @@ def register_node(
         payload: Any = None
         detail = ""
         try:
-            with urllib.request.urlopen(req, timeout=15) as r:  # noqa: S310
+            with _open(req, timeout=15) as r:
                 status = r.status
                 payload = json.load(r)
         except urllib.error.HTTPError as exc:
@@ -393,7 +464,15 @@ def register_node(
                 f"QuickSilver registration failed (HTTP {status}): {hint}"
                 + (f" — {detail}" if detail else "")
             )
-        # 429 / 5xx / transport: retryable, capped exponential.
+        # Only 429 / 5xx / transport (status None) are transient. A
+        # 3xx (rejected by the no-redirect opener) or any other 4xx is a
+        # permanent answer — retrying it for five minutes just delays
+        # the actionable error, so treat it as terminal here too.
+        if status is not None and status != 429 and status < 500:
+            raise QuickSilverError(
+                f"QuickSilver registration failed (HTTP {status})"
+                + (f" — {detail}" if detail else "")
+            )
         if time.monotonic() >= deadline:
             raise QuickSilverError(
                 f"QuickSilver registration unreachable (last: "
@@ -484,7 +563,7 @@ class _Heartbeat:
             method="POST",
         )
         try:
-            with urllib.request.urlopen(req, timeout=10) as r:  # noqa: S310
+            with _open(req, timeout=10) as r:
                 if 200 <= r.status < 300:
                     self._logged_404 = False
         except urllib.error.HTTPError as exc:
@@ -529,7 +608,7 @@ def _warmup(port: int, api_key: str, model: str) -> None:
         method="POST",
     )
     try:
-        with urllib.request.urlopen(req, timeout=_WARMUP_TIMEOUT_SECONDS) as r:  # noqa: S310
+        with _open(req, timeout=_WARMUP_TIMEOUT_SECONDS) as r:
             if not (200 <= r.status < 300):
                 print(
                     f"warning: warm-up returned HTTP {r.status}; the first "
@@ -642,6 +721,7 @@ def _run_share(args: argparse.Namespace) -> None:
         _register_secret(provider_key)
         print("Registering node with QuickSilver…", file=sys.stderr)
         cache = register_node(api_base, provider_key, catalog_id, serve_alias)
+        _validate_wire_urls(cache, api_base, source="register response")
         _save_cache(catalog_id, cache)
         print(
             f"Node registered: {cache['node_id']} "
@@ -654,14 +734,16 @@ def _run_share(args: argparse.Namespace) -> None:
             f"(provider key not needed)",
             file=sys.stderr,
         )
+        # A cache predating a hostile/buggy API is just as dangerous as
+        # a fresh hostile wire response — validate on load too. The
+        # only repair for a bad cached origin is a fresh registration.
+        try:
+            _validate_wire_urls(cache, api_base, source="node cache")
+        except QuickSilverError as exc:
+            raise QuickSilverError(f"{exc} — re-run with --reregister") from None
 
     _register_secret(cache["share_key"])
     relay_url = cache["relay_url"]
-    if not (relay_url.startswith("wss://") or relay_url.startswith("ws://")):
-        raise QuickSilverError(
-            f"cached relay_url is not a ws(s) URL: {relay_url!r} — re-run "
-            f"with --reregister"
-        )
 
     # Lazy import: cli.py dispatches here from inside share_command, so
     # a top-level ``from . import cli`` here would deadlock on first

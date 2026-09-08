@@ -239,7 +239,33 @@ def test_usage_injection_never_corrupts_unparsable_bodies():
     assert got["body"] == raw
 
 
-def test_error_status_captured_from_failed_handshake():
+def _real_invalid_status(code: int):
+    """Build the exception the INSTALLED websockets raises on a
+    rejected handshake — the library moved the status from
+    ``exc.status_code`` to ``exc.response.status_code`` and a synthetic
+    exception with the old shape would pass while the real 401 path
+    stayed broken."""
+    from websockets.datastructures import Headers
+    from websockets.exceptions import InvalidStatus
+    from websockets.http11 import Response
+
+    return InvalidStatus(Response(code, "Unauthorized", Headers(), b""))
+
+
+def test_error_status_captured_from_real_invalidstatus():
+    exc = _real_invalid_status(401)
+    assert not hasattr(exc, "status_code")  # guards the test itself
+
+    client = ws_tunnel.TunnelClient(local_port=1)
+    with (
+        patch.object(ws_tunnel.websockets, "connect", side_effect=exc),
+        pytest.raises(type(exc)),
+    ):
+        asyncio.run(client.run())
+    assert client.error_status == 401
+
+
+def test_error_status_captured_from_legacy_status_code_shape():
     class _RejectedError(Exception):
         status_code = 401
 
@@ -252,6 +278,42 @@ def test_error_status_captured_from_failed_handshake():
     ):
         asyncio.run(client.run())
     assert client.error_status == 401
+
+
+def test_stop_during_connect_kills_the_pending_handshake():
+    """A connect that hangs past the supervisor's ready-window must die
+    with ``stop()`` — otherwise it surfaces minutes later as an
+    untracked second tunnel proxying on stale state."""
+    import threading
+    import time as _time
+
+    pending = asyncio.Event()  # never set — the handshake "hangs"
+
+    async def fake_connect(uri, **kw):
+        await pending.wait()
+        raise AssertionError("connect must have been cancelled")
+
+    client = ws_tunnel.TunnelClient(local_port=1, share_key="qspsk-x")
+    outcome: list[BaseException | None] = []
+
+    def run_and_expect_error():
+        try:
+            with patch.object(ws_tunnel.websockets, "connect", fake_connect):
+                asyncio.run(client.run())
+        except BaseException as exc:  # noqa: BLE001 — inspected below
+            outcome.append(exc)
+
+    t = threading.Thread(target=run_and_expect_error)
+    t.start()
+    deadline = _time.monotonic() + 2
+    while client._loop is None and _time.monotonic() < deadline:
+        _time.sleep(0.01)
+    client.stop()
+    t.join(timeout=5)
+    assert not t.is_alive(), "run() outlived stop() during connect"
+    assert outcome and isinstance(outcome[0], ConnectionError)
+    assert "stopped during connect" in str(client.error)
+    assert client.closed_event.is_set()
 
 
 # ─────────────────────────── catalog resolution §5.4 ───────────────────────────
@@ -328,7 +390,7 @@ def test_register_success_sets_alias_and_ua():
         calls.append(req)
         return _FakeResp(_register_payload())
 
-    with patch.object(qs.urllib.request, "urlopen", fake_urlopen):
+    with patch.object(qs, "_open", fake_urlopen):
         out = qs.register_node("https://pay.test", PROVIDER_KEY, "qwen3.6-35b", "al")
     assert out["alias"] == "al"
     req = calls[0]
@@ -352,7 +414,7 @@ def test_register_terminal_codes(code, hint):
         raise _http_error(code)
 
     with (
-        patch.object(qs.urllib.request, "urlopen", fake_urlopen),
+        patch.object(qs, "_open", fake_urlopen),
         pytest.raises(qs.QuickSilverError, match=hint),
     ):
         qs.register_node("https://pay.test", PROVIDER_KEY, "m", "a")
@@ -368,7 +430,7 @@ def test_register_retries_429_then_succeeds():
         return _FakeResp(_register_payload())
 
     with (
-        patch.object(qs.urllib.request, "urlopen", fake_urlopen),
+        patch.object(qs, "_open", fake_urlopen),
         patch("time.sleep") as sleep,
     ):
         out = qs.register_node("https://pay.test", PROVIDER_KEY, "m", "a")
@@ -384,11 +446,71 @@ def test_register_error_detail_never_leaks_secrets():
 
     qs._register_secret(SHARE_KEY)
     with (
-        patch.object(qs.urllib.request, "urlopen", fake_urlopen),
+        patch.object(qs, "_open", fake_urlopen),
         pytest.raises(qs.QuickSilverError) as ei,
     ):
         qs.register_node("https://pay.test", PROVIDER_KEY, "m", "a")
     assert SHARE_KEY not in str(ei.value)
+
+
+def test_register_400_is_terminal_without_retrying():
+    """Only 429/5xx/transport are transient. A permanent 4xx (or a
+    3xx from the no-redirect opener) must surface immediately, not
+    hammer the API for the five-minute retry budget."""
+
+    def one(code: int) -> tuple[int, object]:
+        calls = {"n": 0}
+
+        def fake_urlopen(req, timeout=None):
+            calls["n"] += 1
+            raise _http_error(code)
+
+        with (
+            patch.object(qs, "_open", fake_urlopen),
+            patch("time.sleep") as sleep,
+            pytest.raises(qs.QuickSilverError, match=f"HTTP {code}"),
+        ):
+            qs.register_node("https://pay.test", PROVIDER_KEY, "m", "a")
+        return calls["n"], sleep
+
+    for code in (400, 404):
+        n, sleep = one(code)
+        assert n == 1
+        sleep.assert_not_called()
+
+
+def test_url_opener_refuses_redirects():
+    """urllib REPLAYS the Authorization header when following a 3xx —
+    on register that would ship the provider key to the redirect
+    target. The opener must surface the 3xx instead of following."""
+    req = urllib.request.Request(
+        "https://pay.quicksilverpro.io/v1/pool/nodes/register",
+        headers={"Authorization": f"Bearer {PROVIDER_KEY}"},
+    )
+    for handler in qs._URL_OPENER.handlers:
+        if isinstance(handler, qs._NoRedirectHandler):
+            break
+    else:
+        raise AssertionError("no-redirect handler not installed on the opener")
+    assert (
+        handler.redirect_request(req, None, 302, "Found", None, "https://evil.test")
+        is None
+    )
+
+
+def test_register_302_is_terminal_single_call():
+    calls = {"n": 0}
+
+    def fake_urlopen(req, timeout=None):
+        calls["n"] += 1
+        raise _http_error(302)
+
+    with (
+        patch.object(qs, "_open", fake_urlopen),
+        pytest.raises(qs.QuickSilverError, match="HTTP 302"),
+    ):
+        qs.register_node("https://pay.test", PROVIDER_KEY, "m", "a")
+    assert calls["n"] == 1
 
 
 def test_api_base_validation():
@@ -422,6 +544,118 @@ def test_provider_key_noninteractive_without_key_is_actionable(monkeypatch):
         qs._resolve_provider_key(_make_args(provider_key=None))
 
 
+# ────────────────── wire URL origin validation (credential leak) ──────────────────
+
+
+_API_ORIGIN = "https://pay.quicksilverpro.io"
+
+
+def test_wire_urls_trusted_origins_and_loopback_pass():
+    qs._validate_wire_urls(_register_payload(), _API_ORIGIN, source="t")
+    qs._validate_wire_urls(
+        _register_payload(
+            relay_url="ws://127.0.0.1:9/off", heartbeat_url="http://localhost:9/hb"
+        ),
+        "http://127.0.0.1:9",
+        source="t",
+    )
+    # the --quicksilver-api origin itself is trusted (test/staging APIs)
+    qs._validate_wire_urls(
+        _register_payload(
+            relay_url="wss://api.staging.example/up",
+            heartbeat_url="https://api.staging.example/hb",
+        ),
+        "https://api.staging.example",
+        source="t",
+    )
+
+
+def test_wire_urls_reject_cleartext_off_loopback():
+    # A ws:// relay would carry the greeting-frame share-key in clear.
+    with pytest.raises(qs.QuickSilverError, match="relay_url must be wss"):
+        qs._validate_wire_urls(
+            _register_payload(relay_url="ws://rapidserver.quicksilverpro.io/up"),
+            _API_ORIGIN,
+            source="t",
+        )
+    # An http:// heartbeat would carry the Authorization share-key.
+    with pytest.raises(qs.QuickSilverError, match="heartbeat_url must be https"):
+        qs._validate_wire_urls(
+            _register_payload(heartbeat_url="http://hb.quicksilverpro.io/hb"),
+            _API_ORIGIN,
+            source="t",
+        )
+
+
+def test_wire_urls_reject_foreign_hosts_even_over_tls():
+    # wss/https alone is not enough — a compromised API pointing the
+    # credential at a stranger must be refused on origin.
+    with pytest.raises(qs.QuickSilverError, match="not a QuickSilver origin"):
+        qs._validate_wire_urls(
+            _register_payload(relay_url="wss://relay.evil.test/up"),
+            _API_ORIGIN,
+            source="t",
+        )
+    with pytest.raises(qs.QuickSilverError, match="not a QuickSilver origin"):
+        qs._validate_wire_urls(
+            _register_payload(heartbeat_url="https://collector.evil.test/hb"),
+            _API_ORIGIN,
+            source="t",
+        )
+
+
+def test_wire_urls_reject_lookalike_domains():
+    for relay in (
+        "wss://evil-quicksilverpro.io/up",
+        "wss://quicksilverpro.io.evil.test/up",
+        "wss://xquicksilverpro.io/up",
+    ):
+        with pytest.raises(qs.QuickSilverError, match="not a QuickSilver origin"):
+            qs._validate_wire_urls(
+                _register_payload(relay_url=relay), _API_ORIGIN, source="t"
+            )
+
+
+def test_run_share_hostile_cached_relay_never_connects(capsys):
+    """A cache written by a compromised/buggy API is just as dangerous
+    as a hostile wire response — validation must gate the tunnel, and
+    the only repair is --reregister."""
+    hostile = dict(
+        _register_payload(relay_url="wss://collector.evil.test/up"),
+        alias="qwen3.6-35b",
+    )
+    qs._save_cache("qwen3.6-35b", hostile)
+
+    def _no_net(*a, **k):
+        raise AssertionError("network touched")
+
+    with (
+        patch.object(qs, "_open", _no_net),
+        patch.object(qs.ws_tunnel, "TunnelClient") as tunnel_cls,
+        pytest.raises(SystemExit) as ei,
+    ):
+        qs.run_share(_make_args())
+    assert ei.value.code == 2
+    tunnel_cls.assert_not_called()
+    err = capsys.readouterr().err
+    assert "--reregister" in err
+    assert SHARE_KEY not in err
+
+
+def test_run_share_hostile_register_response_not_cached(capsys):
+    hostile = _register_payload(relay_url="ws://collector.evil.test/up")
+    with (
+        patch.object(qs, "_open", lambda req, timeout=None: _FakeResp(hostile)),
+        patch.object(qs.ws_tunnel, "TunnelClient") as tunnel_cls,
+        pytest.raises(SystemExit) as ei,
+    ):
+        qs.run_share(_make_args(provider_key=PROVIDER_KEY))
+    assert ei.value.code == 2
+    tunnel_cls.assert_not_called()
+    assert qs._load_cache("qwen3.6-35b", "qwen3.6-35b") is None  # never persisted
+    assert "relay_url" in capsys.readouterr().err
+
+
 # ───────────────────────────── heartbeat §3.3 ───────────────────────────
 
 
@@ -437,7 +671,7 @@ def test_heartbeat_200_ok_carries_inflight_and_never_key_in_body():
         reqs.append(req)
         return _FakeResp({"ok": True})
 
-    with patch.object(qs.urllib.request, "urlopen", fake_urlopen):
+    with patch.object(qs, "_open", fake_urlopen):
         hb._beat_once()
     body = json.loads(reqs[0].data)
     assert body == {"inflight": 3, "client": qs._user_agent()}
@@ -452,7 +686,7 @@ def test_heartbeat_404_beats_on_and_logs_once(caplog):
         raise _http_error(404)
 
     with (
-        patch.object(qs.urllib.request, "urlopen", fake_urlopen),
+        patch.object(qs, "_open", fake_urlopen),
         caplog.at_level(logging.INFO, logger="vllm_mlx.share.quicksilver"),
     ):
         hb._beat_once()
@@ -467,7 +701,7 @@ def test_heartbeat_401_is_fatal():
     def fake_urlopen(req, timeout=None):
         raise _http_error(401)
 
-    with patch.object(qs.urllib.request, "urlopen", fake_urlopen):
+    with patch.object(qs, "_open", fake_urlopen):
         hb._beat_once()
     assert hb.fatal.is_set()
 
@@ -478,7 +712,7 @@ def test_heartbeat_transport_error_is_transparent():
     def fake_urlopen(req, timeout=None):
         raise urllib.error.URLError("unreachable")
 
-    with patch.object(qs.urllib.request, "urlopen", fake_urlopen):
+    with patch.object(qs, "_open", fake_urlopen):
         hb._beat_once()  # must not raise, must not go fatal
     assert not hb.fatal.is_set()
 
@@ -552,8 +786,8 @@ def test_run_share_first_run_registers_caches_and_prints_keyless_banner(capsys):
     serve, ctrl_c = _patched_run_env(None)
     ctxs = _run_patches(serve, lambda **kw: tunnel, ctrl_c) + (
         patch.object(
-            qs.urllib.request,
-            "urlopen",
+            qs,
+            "_open",
             lambda req, timeout=None: _FakeResp(_register_payload()),
         ),
         patch.object(qs, "_Heartbeat", return_value=_fake_heartbeat_class()),
@@ -589,7 +823,7 @@ def test_run_share_cached_run_never_calls_register(capsys):
         raise AssertionError("network touched on cached path")
 
     ctxs = _run_patches(serve, lambda **kw: tunnel, ctrl_c) + (
-        patch.object(qs.urllib.request, "urlopen", _no_net),
+        patch.object(qs, "_open", _no_net),
         patch.object(qs, "_Heartbeat", return_value=_fake_heartbeat_class()),
     )
     with _enter(*ctxs):
@@ -610,7 +844,7 @@ def test_run_share_reregister_overwrites_rotated_key():
         return _FakeResp(_register_payload(share_key="qspsk-rotated"))
 
     ctxs = _run_patches(serve, lambda **kw: tunnel, ctrl_c) + (
-        patch.object(qs.urllib.request, "urlopen", fake_urlopen),
+        patch.object(qs, "_open", fake_urlopen),
         patch.object(qs, "_Heartbeat", return_value=_fake_heartbeat_class()),
     )
     with _enter(*ctxs):
@@ -630,8 +864,8 @@ def test_run_share_serves_with_max_seqs_2_and_no_rate_limit():
 
     ctxs = _run_patches(serve, lambda **kw: tunnel, ctrl_c) + (
         patch.object(
-            qs.urllib.request,
-            "urlopen",
+            qs,
+            "_open",
             lambda req, timeout=None: _FakeResp(_register_payload()),
         ),
         patch.object(qs, "_Heartbeat", return_value=_fake_heartbeat_class()),
@@ -655,8 +889,8 @@ def test_run_share_respects_user_max_seqs_override():
 
     ctxs = _run_patches(serve, lambda **kw: tunnel, ctrl_c) + (
         patch.object(
-            qs.urllib.request,
-            "urlopen",
+            qs,
+            "_open",
             lambda req, timeout=None: _FakeResp(_register_payload()),
         ),
         patch.object(qs, "_Heartbeat", return_value=_fake_heartbeat_class()),

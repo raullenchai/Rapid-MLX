@@ -47,6 +47,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import contextlib
 import http.client
 import json
 import logging
@@ -224,48 +225,93 @@ class TunnelClient:
         self._loop = asyncio.get_running_loop()
         self._send_queue = asyncio.Queue()
         uri = f"{self.relay_url}?id={self.tunnel_id}"
+        ws = None
         try:
             # ``max_size=None`` removes the 1-MiB frame ceiling so a
             # legitimately-large chat prompt doesn't get dropped. The
             # base64 inflation of multimodal prompts (images encoded
             # in user messages) easily reaches several MiB on modern
-            # VLM apps.
-            async with websockets.connect(uri, max_size=None) as ws:
-                # Keyed claim (QuickSilver pool): the share_key rides
-                # the first frame, never the URL — keeping it out of
-                # exception reprs and websockets-library logs.
-                await ws.send(json.dumps(self._greeting()))
-                self.ready_event.set()
-                sender = asyncio.create_task(self._sender_loop(ws))
-                try:
-                    async for raw in ws:
-                        if not isinstance(raw, str):
-                            # Binary frames aren't part of the protocol;
-                            # silently drop so a buggy peer can't crash
-                            # the loop.
-                            continue
-                        try:
-                            msg = json.loads(raw)
-                        except json.JSONDecodeError:
-                            continue
-                        self._dispatch_inbound(msg)
-                finally:
-                    sender.cancel()
-                    self._closed.set()
-                    for t in list(self._tasks):
-                        t.cancel()
+            # VLM apps. The connect is CANCELLABLE: a handshake that
+            # stalls past the supervisor's ready-window must die with
+            # ``stop()`` instead of surfacing minutes later as a second
+            # live tunnel the supervisor no longer tracks.
+            ws = await self._connect_cancellable(uri)
+            # Keyed claim (QuickSilver pool): the share_key rides
+            # the first frame, never the URL — keeping it out of
+            # exception reprs and websockets-library logs.
+            await ws.send(json.dumps(self._greeting()))
+            self.ready_event.set()
+            sender = asyncio.create_task(self._sender_loop(ws))
+            try:
+                async for raw in ws:
+                    if not isinstance(raw, str):
+                        # Binary frames aren't part of the protocol;
+                        # silently drop so a buggy peer can't crash
+                        # the loop.
+                        continue
+                    try:
+                        msg = json.loads(raw)
+                    except json.JSONDecodeError:
+                        continue
+                    self._dispatch_inbound(msg)
+            finally:
+                sender.cancel()
+                self._closed.set()
+                for t in list(self._tasks):
+                    t.cancel()
         except Exception as exc:
             self.error = exc
             # A rejected keyed claim surfaces as an HTTP 401 during the
             # WS handshake. Record the status separately: the caller
             # must not pattern-match on ``str(exc)`` — for keyed
-            # clients the repr can embed the connect URI.
+            # clients the repr can embed the connect URI. websockets
+            # exposes it two ways across versions: directly on the
+            # exception (legacy InvalidStatusCode) and on
+            # ``exc.response`` (modern InvalidStatus) — read both.
             status = getattr(exc, "status_code", None)
+            if not isinstance(status, int):
+                response = getattr(exc, "response", None)
+                status = getattr(response, "status_code", None)
             if isinstance(status, int):
                 self.error_status = status
             raise
         finally:
+            if ws is not None:
+                with contextlib.suppress(Exception):
+                    await ws.close()
             self.closed_event.set()
+
+    async def _connect_cancellable(self, uri: str) -> Any:
+        """``websockets.connect`` awaited, but aborted if ``stop()``
+        lands while the handshake is still in flight. Without this the
+        connect task is uncancellable and a timed-out attempt can
+        connect AFTER the supervisor abandoned it — an untracked tunnel
+        proxying requests with a stale credential state."""
+        connect_task = asyncio.ensure_future(websockets.connect(uri, max_size=None))
+        closed_task = asyncio.ensure_future(self._closed.wait())
+        try:
+            done, _ = await asyncio.wait(
+                {connect_task, closed_task},
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+            if closed_task in done:
+                connect_task.cancel()
+                abandoned = None
+                with contextlib.suppress(BaseException):
+                    await connect_task
+                    abandoned = connect_task.result()
+                if abandoned is not None:
+                    # The handshake completed in the same tick stop()
+                    # landed — close it instead of orphaning a live
+                    # socket behind a dead run().
+                    with contextlib.suppress(Exception):
+                        await abandoned.close()
+                raise ConnectionError("share tunnel stopped during connect")
+            return connect_task.result()
+        finally:
+            closed_task.cancel()
+            if not connect_task.done():
+                connect_task.cancel()
 
     def run_in_thread(self) -> threading.Thread:
         """Run the asyncio loop in a dedicated thread. Returns the
