@@ -777,8 +777,21 @@ def install_service(
         )
     from .cli import _state_dir
 
+    # Serve passthrough would have to be baked into a resident,
+    # unattended job — passthrough is free-form serve config that can
+    # carry local paths and credentials, and we cannot prove it
+    # key-free (§6: the plist carries no key material). Refuse rather
+    # than silently DROP it (the job would serve different behavior
+    # than the interactive run it claims to reproduce).
+    if list(getattr(args, "_passthrough", None) or []):
+        raise QuickSilverError(
+            "--install-service cannot bake `--` serve passthrough args "
+            "into the LaunchAgent — they may carry local config or "
+            "credentials. Re-run the interactive command with "
+            "passthrough if you need it, or install without it."
+        )
+
     plist_dir = Path.home() / "Library" / "LaunchAgents"
-    plist_dir.mkdir(parents=True, exist_ok=True)
     label = f"com.quicksilver.node.{catalog_id}"
     plist_path = plist_dir / f"{label}.plist"
     log_dir = _state_dir()
@@ -787,12 +800,31 @@ def install_service(
     argv = [sys.executable, "-m", "vllm_mlx.cli", "share", serve_alias, "--quicksilver"]
     if catalog_id != serve_alias:
         argv += ["--quicksilver-model", catalog_id]
+    # Reproduce every declared behavior flag so the resident job serves
+    # exactly what the interactive run served. --reregister is
+    # deliberately NOT serialized (a KeepAlive job that rotated its
+    # share-key on every restart would burn the credential);
+    # --provider-key is never serialized (§6). Unset --port stays unset
+    # so the job re-resolves $RAPID_MLX_SHARE_PORT/default at boot.
+    if getattr(args, "thinking", False):
+        argv.append("--thinking")
+    if args.port is not None:
+        argv += ["--port", str(args.port)]
+    if args.cors_origins:
+        argv += ["--cors-origins", *[str(origin) for origin in args.cors_origins]]
+    if args.rate_limit is not None:
+        argv += ["--rate-limit", str(args.rate_limit)]
+    if args.chat_frontend is not None:
+        argv += ["--chat-frontend", str(args.chat_frontend)]
     # Bake the registration origin into the job: a node minted against
     # a staging/custom API restarted WITHOUT the flag would validate its
     # cache against the default origin and reject its own relay /
     # heartbeat hosts (KeepAlive then hot-loops a doomed restart).
+    explicit_api = getattr(args, "quicksilver_api", None)
     cached_api = str(cache.get("api_base") or "")
-    if cached_api and cached_api != DEFAULT_PAY_API:
+    if explicit_api is not None:
+        argv += ["--quicksilver-api", _validate_api_base(explicit_api)]
+    elif cached_api and cached_api != DEFAULT_PAY_API:
         # Do NOT install a job that will restart against the wrong
         # origin and KeepAlive-hot-loop a doomed validation — refuse
         # the install and send the operator to --reregister.
@@ -818,9 +850,20 @@ def install_service(
         "StandardOutPath": str(log_dir / f"quicksilver-{catalog_id}.out.log"),
         "StandardErrorPath": str(log_dir / f"quicksilver-{catalog_id}.err.log"),
     }
-    for key in ("StandardOutPath", "StandardErrorPath"):
-        Path(plist[key]).touch()
-        Path(plist[key]).chmod(0o600)
+    # mkdir, log-file create/chmod and plist serialization all touch the
+    # filesystem and can each fail with OSError (read-only volume, full
+    # disk, perm denied). All three must surface as QuickSilverError so
+    # run_share renders a redacted exit-2 line, not a raw traceback.
+    try:
+        plist_dir.mkdir(parents=True, exist_ok=True)
+        for key in ("StandardOutPath", "StandardErrorPath"):
+            log_path = Path(plist[key])
+            log_path.touch()
+            log_path.chmod(0o600)
+    except OSError as exc:
+        raise QuickSilverError(
+            f"could not prepare service logs under {log_dir}: {exc}"
+        ) from None
 
     from vllm_mlx.headless_service.plist import serialize_plist
 

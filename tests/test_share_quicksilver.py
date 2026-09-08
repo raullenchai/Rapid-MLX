@@ -1555,6 +1555,73 @@ def test_install_service_plist_keeps_registration_origin(capsys):
     assert argv[argv.index("--quicksilver-api") + 1] == "https://pay.staging.example"
 
 
+def test_install_service_bakes_declared_flags_into_plist():
+    """The KeepAlive job must reproduce the interactive run's declared
+    behavior — --thinking/--port/--cors-origins/--rate-limit/
+    --chat-frontend/origin override all serialize; --reregister and
+    credentials never do."""
+    qs._save_cache("qwen3.6-35b", dict(_register_payload(), alias="qwen3.6-35b"))
+    qs.run_share(
+        _make_args(
+            install_service=True,
+            thinking=True,
+            port=19999,
+            cors_origins=["http://localhost:3000", "*"],
+            rate_limit=60,
+            chat_frontend="https://chat.example",
+            quicksilver_api="https://pay.staging.example",
+            reregister=True,  # one-shot action — must NOT be baked in
+        )
+    )
+    argv = plistlib.loads(
+        (
+            Path.home() / "Library/LaunchAgents/com.quicksilver.node.qwen3.6-35b.plist"
+        ).read_bytes()
+    )["ProgramArguments"]
+
+    def value_after(flag: str) -> str:
+        return argv[argv.index(flag) + 1]
+
+    assert "--thinking" in argv
+    assert value_after("--port") == "19999"
+    assert value_after("--rate-limit") == "60"
+    assert value_after("--chat-frontend") == "https://chat.example"
+    assert value_after("--quicksilver-api") == "https://pay.staging.example"
+    cors = argv[argv.index("--cors-origins") + 1 :]
+    assert cors[:2] == ["http://localhost:3000", "*"]
+    assert "--reregister" not in argv
+    assert "--provider-key" not in argv and PROVIDER_KEY not in argv
+
+
+def test_install_service_refuses_serve_passthrough():
+    """Passthrough is free-form serve config — possibly credentials.
+    Refuse loudly; silently dropping it would install a job serving
+    different behavior than the command it claims to reproduce."""
+    qs._save_cache("qwen3.6-35b", dict(_register_payload(), alias="qwen3.6-35b"))
+    with pytest.raises(SystemExit) as ei:
+        qs.run_share(
+            _make_args(install_service=True, _passthrough=["--force-spec-decode"])
+        )
+    assert ei.value.code == 2
+    plist_path = (
+        Path.home() / "Library/LaunchAgents/com.quicksilver.node.qwen3.6-35b.plist"
+    )
+    assert not plist_path.exists()
+
+
+def test_install_service_log_fs_errors_are_actionable():
+    """mkdir/touch/chmod sit on the resident-job critical path — an
+    OSError (full disk, read-only volume) must exit 2 with a redacted
+    line, not a raw traceback."""
+    qs._save_cache("qwen3.6-35b", dict(_register_payload(), alias="qwen3.6-35b"))
+    with (
+        patch.object(Path, "touch", side_effect=OSError("No space left on device")),
+        pytest.raises(SystemExit) as ei,
+    ):
+        qs.run_share(_make_args(install_service=True))
+    assert ei.value.code == 2
+
+
 def test_install_service_refuses_unvalidatable_cached_origin():
     """An unparseable/illegal cached api_base used to be dropped with a
     bare try/pass — the job would then restart against the DEFAULT
