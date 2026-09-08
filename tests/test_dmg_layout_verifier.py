@@ -23,6 +23,9 @@ VERIFIER = REPO_ROOT / "apps" / "rapid-mac" / "scripts" / "verify-dmg-layout.py"
 # Canonical layout contract (mirrors Verify's EXPECTED_* constants).
 EXPECTED_APP_POSITION = (180, 228)
 EXPECTED_APPLICATIONS_POSITION = (540, 228)
+# Parked below the 460pt window fold so Finder never draws it on the install
+# page, even for a viewer running with hidden files shown.
+EXPECTED_BACKGROUND_POSITION = (100, 560)
 
 HFS_PATH_NULL = b"Rapid-MLX Desktop:.background:\x00background.png"
 POSIX_PATH = b"/.background/background.png"
@@ -125,6 +128,7 @@ MAKE_BOUNDS = {"left": 180, "top": 120, "right": 900, "bottom": 580}
 HAPPY_ILOCS = [
     ("Rapid-MLX Desktop.app", *EXPECTED_APP_POSITION),
     ("Applications", *EXPECTED_APPLICATIONS_POSITION),
+    (".background", *EXPECTED_BACKGROUND_POSITION),
 ]
 
 
@@ -186,6 +190,7 @@ class TestHappyPath:
             ilocs=[
                 ("Rapid-MLX Desktop.app", *EXPECTED_APP_POSITION),
                 ("Applications", *EXPECTED_APPLICATIONS_POSITION),
+                (".background", *EXPECTED_BACKGROUND_POSITION),
             ]
         )
         rc, out, err = _run_on_file(_write_fixture(fixture, tmp_path))
@@ -199,6 +204,7 @@ class TestHappyPath:
             ilocs=[
                 ("Rapid-MLX Desktop.app", *EXPECTED_APP_POSITION),
                 ("Applications", *EXPECTED_APPLICATIONS_POSITION),
+                (".background", *EXPECTED_BACKGROUND_POSITION),
             ],
         )
         rc, out, _ = _run_on_file(_write_fixture(fixture, tmp_path))
@@ -220,6 +226,7 @@ class TestStructuralFailures:
             ilocs=[
                 ("Rapid-MLX Desktop.app", *EXPECTED_APP_POSITION),
                 ("Applications", *EXPECTED_APPLICATIONS_POSITION),
+                (".background", *EXPECTED_BACKGROUND_POSITION),
             ],
         )
         rc, _, err = _run_on_file(_write_fixture(fixture, tmp_path))
@@ -235,6 +242,7 @@ class TestStructuralFailures:
             ilocs=[
                 ("Rapid-MLX Desktop.app", *EXPECTED_APP_POSITION),
                 ("Applications", *EXPECTED_APPLICATIONS_POSITION),
+                (".background", *EXPECTED_BACKGROUND_POSITION),
             ],
         )
         rc, _, err = _run_on_file(_write_fixture(fixture, tmp_path))
@@ -247,6 +255,7 @@ class TestStructuralFailures:
             ilocs=[
                 ("Rapid-MLX Desktop.app", *EXPECTED_APP_POSITION),
                 ("Applications", *EXPECTED_APPLICATIONS_POSITION),
+                (".background", *EXPECTED_BACKGROUND_POSITION),
             ],
         )
         rc, _, err = _run_on_file(_write_fixture(fixture, tmp_path))
@@ -259,6 +268,7 @@ class TestStructuralFailures:
             ilocs=[
                 ("Rapid-MLX Desktop.app", *EXPECTED_APP_POSITION),
                 ("Applications", *EXPECTED_APPLICATIONS_POSITION),
+                (".background", *EXPECTED_BACKGROUND_POSITION),
             ],
         )
         rc, _, err = _run_on_file(_write_fixture(fixture, tmp_path))
@@ -271,6 +281,7 @@ class TestStructuralFailures:
             ilocs=[
                 ("Rapid-MLX Desktop.app", *EXPECTED_APP_POSITION),
                 ("Applications", *EXPECTED_APPLICATIONS_POSITION),
+                (".background", *EXPECTED_BACKGROUND_POSITION),
             ],
         )
         rc, _, err = _run_on_file(_write_fixture(fixture, tmp_path))
@@ -291,6 +302,7 @@ class TestIconPositions:
             ilocs=[
                 ("Rapid-MLX Desktop.app", *EXPECTED_APP_POSITION),
                 ("Applications", *EXPECTED_APPLICATIONS_POSITION),
+                (".background", *EXPECTED_BACKGROUND_POSITION),
                 ("Some Other.app", 10, 10),
             ]
         )
@@ -298,9 +310,62 @@ class TestIconPositions:
         assert rc == 1
         assert "FAIL" in err
 
+    def test_duplicate_background_iloc_fails(self, tmp_path: Path) -> None:
+        """A second record must not overwrite an earlier visible position."""
+        fixture = build_store(
+            ilocs=[
+                ("Rapid-MLX Desktop.app", *EXPECTED_APP_POSITION),
+                ("Applications", *EXPECTED_APPLICATIONS_POSITION),
+                (".background", 105, 64),
+                (".background", *EXPECTED_BACKGROUND_POSITION),
+            ]
+        )
+        rc, _, err = _run_on_file(_write_fixture(fixture, tmp_path))
+        assert rc == 1
+        assert "duplicate Iloc record" in err
+
+    def test_background_inside_window_fails(self, tmp_path: Path) -> None:
+        """A .background parked on the visible page must be rejected.
+
+        This is the regression the position exists for: with Finder set to
+        show hidden files there is no flag that suppresses the icon, so the
+        only defence is keeping it below the window fold.
+        """
+        fixture = build_store(
+            ilocs=[
+                ("Rapid-MLX Desktop.app", *EXPECTED_APP_POSITION),
+                ("Applications", *EXPECTED_APPLICATIONS_POSITION),
+                (".background", 105, 64),
+            ]
+        )
+        rc, _, err = _run_on_file(_write_fixture(fixture, tmp_path))
+        assert rc == 1
+        assert "window fold" in err
+
+    def test_background_below_fold_is_not_pinned(self, tmp_path: Path) -> None:
+        """Any below-fold parking spot is accepted, not just the shipped one.
+
+        The guarantee is "Finder cannot draw it on the install page", so the
+        validator must gate the property rather than one coordinate pair.
+        """
+        fixture = build_store(
+            ilocs=[
+                ("Rapid-MLX Desktop.app", *EXPECTED_APP_POSITION),
+                ("Applications", *EXPECTED_APPLICATIONS_POSITION),
+                (".background", 400, 700),
+            ]
+        )
+        rc, out, err = _run_on_file(_write_fixture(fixture, tmp_path))
+        assert rc == 0, err
+        assert "verify-dmg-layout: OK" in out
+
     def test_wrong_app_position_fails(self, tmp_path: Path) -> None:
         fixture = build_store(
-            ilocs=[("Rapid-MLX Desktop.app", 10, 228), ("Applications", 540, 228)]
+            ilocs=[
+                ("Rapid-MLX Desktop.app", 10, 228),
+                ("Applications", 540, 228),
+                (".background", *EXPECTED_BACKGROUND_POSITION),
+            ]
         )
         rc, _, err = _run_on_file(_write_fixture(fixture, tmp_path))
         assert rc == 1

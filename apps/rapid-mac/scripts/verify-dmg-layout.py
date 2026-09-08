@@ -12,8 +12,9 @@ asserts it matches the declared layout:
   - exactly one window-bounds (`bwsp`) record,
   - exactly one icon-view (`icvp`) record with volume-relative background
     alias, image backgroundType and the expected icon/text metrics,
-  - icon-position (`Iloc`) records for exactly the two volume items
-    (``Rapid-MLX Desktop.app`` and ``Applications``) at the expected spots,
+  - icon-position (`Iloc`) records for exactly the three volume items
+    (``Rapid-MLX Desktop.app``, ``Applications`` and ``.background``) at the
+    expected spots, with ``.background`` parked below the window's fold,
   - no build-host / temp-mount / absolute-mount strings anywhere in the file,
     so the template stays deterministic and remountable on any machine.
 
@@ -50,6 +51,23 @@ ALIAS_FIXED_HEADER_SIZE = 150
 #   "180,228|540,228|96|180,120,900,580"
 EXPECTED_APP_POSITION = (180, 228)
 EXPECTED_APPLICATIONS_POSITION = (540, 228)
+
+# ``.background`` holds the window wallpaper and is support data, not something
+# the user should ever drag. A dot-prefixed name is hidden from Finder only
+# while the viewer keeps the default "don't show hidden files" setting; with
+# ``AppleShowAllFiles=1`` Finder draws it, and no file flag suppresses that
+# (neither ``chflags hidden`` nor the kIsInvisible FinderInfo bit — both were
+# measured against a live Finder). Without an explicit Iloc, Finder auto-grids
+# it into the first free cell, which for a 96pt icon size is the top-left of
+# the window — squarely on top of the branded artwork.
+#
+# So park it below the fold instead. An Iloc is the icon's centre, so with a
+# 96pt icon and a 460pt-tall window (``EXPECTED_BOUNDS``) the template ships it
+# at (100, 560): the icon top lands ~512pt down and cannot intrude on the
+# visible install page. This mirrors the below-fold support-item pattern used
+# by other shipped installer DMGs. The position is verified as "below the
+# fold" rather than pinned to this exact pair — see the icon-position block in
+# verify().
 EXPECTED_ICON_SIZE = 96.0
 EXPECTED_TEXT_SIZE = 13.0
 EXPECTED_BOUNDS = {"left": 180, "top": 120, "right": 900, "bottom": 580}
@@ -267,14 +285,41 @@ def verify(path: Path) -> None:
             break
         payload = _find_records(data[marker_pos:], ILOC_BLOB_MARKER)[0]
         name = _iloc_filename(data, marker_pos)
+        if name in positions:
+            raise ValueError(f"duplicate Iloc record for {name!r}")
         positions[name] = _parse_iloc_payload(payload)
         iloc_cursor = marker_pos + 1
 
-    if positions != {
-        "Rapid-MLX Desktop.app": EXPECTED_APP_POSITION,
-        "Applications": EXPECTED_APPLICATIONS_POSITION,
+    if set(positions) != {
+        "Rapid-MLX Desktop.app",
+        "Applications",
+        ".background",
     }:
         raise ValueError(f"unexpected icon positions {positions!r}")
+
+    # The two draggable icons are the install page's design; pin them exactly.
+    for name, expected in (
+        ("Rapid-MLX Desktop.app", EXPECTED_APP_POSITION),
+        ("Applications", EXPECTED_APPLICATIONS_POSITION),
+    ):
+        if positions[name] != expected:
+            raise ValueError(
+                f"unexpected icon positions {positions!r} — {name} should be at {expected}"
+            )
+
+    # ``.background`` is support data, so what matters is not a specific spot
+    # but that Finder cannot draw it on the visible install page. Check that
+    # property against the parsed record rather than pinning a coordinate, so
+    # the parking spot can move without weakening the guarantee.
+    window_height = EXPECTED_BOUNDS["bottom"] - EXPECTED_BOUNDS["top"]
+    background_icon_top = positions[".background"][1] - EXPECTED_ICON_SIZE / 2
+    if background_icon_top <= window_height:
+        raise ValueError(
+            f".background is at {positions['.background']}, which puts its icon "
+            f"top at {background_icon_top:g} — not below the {window_height}pt "
+            "window fold, so it would show on the install page whenever Finder "
+            "is set to show hidden files"
+        )
 
     # Determinism / no-host-embedding gate. Any of these means the template was
     # produced against a specific build mount or host and is not shippable.
