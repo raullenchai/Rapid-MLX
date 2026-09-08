@@ -29,10 +29,13 @@ struct ComputerUseStarter: Identifiable, Equatable, Sendable {
 
     var id: Kind { kind }
 
-    /// The catalog ordered for display: usable starters (`.available`) first
-    /// — so the one flow a user can actually run leads the grid — then the
-    /// rest in catalog order. A stable sort over the whole catalog: it never
-    /// drops an entry, even one carrying an availability tier added later.
+    /// The catalog ordered for display, by availability tier: usable
+    /// starters (`.available`) first — so the one flow a user can actually
+    /// run leads the grid — then `.comingSoon`, then the `.reserved`
+    /// placeholder last (it is the "more flows are coming" filler and belongs
+    /// at the end). The sort is stable, so entries keep their catalog order
+    /// within a tier, and it never drops an entry — a new tier added later
+    /// still appears, ranked after the ones below.
     static var ordered: [ComputerUseStarter] {
         func rank(_ availability: Availability) -> Int {
             switch availability {
