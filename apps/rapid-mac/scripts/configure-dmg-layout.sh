@@ -89,4 +89,4 @@ sync
 python3 "$ROOT/scripts/verify-dmg-layout.py" "$MOUNT/.DS_Store"
 
 sync
-echo "==> Finder layout: 720x460, app (180,228) -> Applications (540,228), .background parked at (100,560)"
+echo "==> Finder layout: 720x460, app (180,228) -> Applications (540,228), .background parked below fold"
