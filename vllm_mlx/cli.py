@@ -13046,6 +13046,7 @@ Examples:
         "shell",
         "tools.optional",
         "agents",
+        "service",
     )
     doctor_parser.add_argument(
         "--only",

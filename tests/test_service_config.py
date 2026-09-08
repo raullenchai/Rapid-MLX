@@ -1281,7 +1281,10 @@ def test_install_service_config_helper(monkeypatch, tmp_path):
 
 
 def test_status_config_and_human_diagnostics(monkeypatch, tmp_path):
+    from vllm_mlx.headless_service import config as config_module
     from vllm_mlx.headless_service import definition, status
+
+    monkeypatch.setattr(config_module, "SERVICE_CONFIG_ROOT", tmp_path)
 
     config_file = tmp_path / "service.json"
     credential = tmp_path / "credential"
@@ -1326,8 +1329,10 @@ def test_status_config_and_human_diagnostics(monkeypatch, tmp_path):
     assert "unknown (run status with sudo)" in rendered
 
     config_file.write_text("{")
+    atomic_write(pending_config_path(tmp_path), config_bytes(effective))
     broken = status.collect_status()
     assert broken["config_error"]
+    assert broken["pending_config"] is True
 
 
 def _upgrade_fixture(monkeypatch, tmp_path):
