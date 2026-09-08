@@ -49,6 +49,7 @@ import asyncio
 import base64
 import contextlib
 import http.client
+import inspect
 import json
 import logging
 import secrets
@@ -206,10 +207,11 @@ class TunnelClient:
         ``share`` behaviour — a default-constructed client sends the same
         bytes and forwards the same headers it always did):
 
-        * ``share_key`` — when set, the greeting frame becomes
-          ``{"t":"ready","v":1,"key":<share_key>}`` so a keyed relay can
-          prove node ownership without the key ever touching the
-          connect URL (and therefore never in exception reprs / WS logs).
+        * ``share_key`` — when set, the WS upgrade carries
+          ``Authorization: Bearer <share_key>`` so a keyed relay can
+          prove node ownership at handshake time, without the key ever
+          touching the connect URL (and therefore never in exception
+          reprs / WS logs) or any post-upgrade frame.
         * ``override_authorization`` — every forwarded request has its
           ``Authorization`` header replaced with ``Bearer <value>``.
           Pool traffic arrives bearing a QuickSilver-side credential the
@@ -241,11 +243,11 @@ class TunnelClient:
         # because the exception repr may embed the connect URI.
         self.error_status: int | None = None
         # WS close code of a cleanly-closed session (or of the
-        # ConnectionClosed exception). The keyed claim's rejection may
-        # arrive AFTER the upgrade — the greeting frame carries the
-        # key, so an HTTP-401-at-upgrade is impossible by construction
-        # — and a policy rejection is conventionally close code 1008.
-        # The supervisor treats it as terminal like an HTTP 401.
+        # ConnectionClosed exception). A keyed claim's rejection is
+        # normally an HTTP 401 at the upgrade (``error_status``); this
+        # covers the defensive case where a relay instead accepts the
+        # socket and drops it with a policy close (conventionally 1008).
+        # The supervisor treats such a close as terminal like a 401.
         self.close_code: int | None = None
         # Live local fetches, keyed by tunnel request id. Populated for
         # every client (cheap bookkeeping) — the QuickSilver relay uses
@@ -276,14 +278,52 @@ class TunnelClient:
             return len(self._active)
 
     def _greeting(self) -> dict[str, Any]:
-        """The first frame on every connection. Byte-identical to the
-        historical ``{"t":"ready","v":1}`` unless a pool share_key is
-        set (method, not inline, so tests can pin the plain-share
-        byte-compat claim directly)."""
-        greeting: dict[str, Any] = {"t": "ready", "v": 1}
-        if self._share_key is not None:
-            greeting["key"] = self._share_key
-        return greeting
+        """The first frame on every connection: always the historical
+        ``{"t":"ready","v":1}``, byte-identical in plain and pool mode.
+        A pool share_key is NOT carried here — the QuickSilver relay
+        authenticates the tunnel claim at the WS *upgrade* (hashing the
+        ``Authorization`` header) and treats this frame as a no-op, so
+        the key rides the upgrade request's ``Authorization`` header
+        (see ``_auth_headers``), never the URL and never this frame."""
+        return {"t": "ready", "v": 1}
+
+    def _auth_headers(self) -> dict[str, str] | None:
+        """Extra HTTP headers for the WS upgrade. In pool mode the
+        server-minted share_key proves node ownership as a ``Bearer``
+        credential the relay hashes at upgrade time — kept out of the
+        URL (which would leak into exception reprs / launchd logs) and
+        out of any post-upgrade frame (the relay authenticates the
+        upgrade, not a later message). ``None`` for plain share so a
+        default client sends the exact upgrade request it always did."""
+        if self._share_key is None:
+            return None
+        return {"Authorization": f"Bearer {self._share_key}"}
+
+    @staticmethod
+    def _connect_kwargs(headers: dict[str, str] | None) -> dict[str, Any]:
+        """``websockets.connect`` kwargs, threading pool-auth headers
+        through the parameter the installed major actually exposes: the
+        asyncio client (default top-level ``connect`` in websockets
+        >=14) takes ``additional_headers``; the legacy client (<=13)
+        takes ``extra_headers``. Repo floor is >=12 — the same span the
+        close-code extraction in ``run`` already straddles. Prefer
+        ``additional_headers`` unless the signature positively shows
+        only the legacy name."""
+        kwargs: dict[str, Any] = {"max_size": None}
+        if headers:
+            try:
+                params = inspect.signature(websockets.connect).parameters
+            except (TypeError, ValueError):
+                params = {}
+            header_kw = "additional_headers"
+            if (
+                params
+                and "additional_headers" not in params
+                and "extra_headers" in params
+            ):
+                header_kw = "extra_headers"
+            kwargs[header_kw] = headers
+        return kwargs
 
     @property
     def public_url(self) -> str:
@@ -317,10 +357,12 @@ class TunnelClient:
             # stalls past the supervisor's ready-window must die with
             # ``stop()`` instead of surfacing minutes later as a second
             # live tunnel the supervisor no longer tracks.
-            ws = await self._connect_cancellable(uri)
-            # Keyed claim (QuickSilver pool): the share_key rides
-            # the first frame, never the URL — keeping it out of
-            # exception reprs and websockets-library logs.
+            ws = await self._connect_cancellable(uri, self._auth_headers())
+            # Plain protocol greeting only. The pool share_key (if any)
+            # was already proven on the upgrade's Authorization header —
+            # never the URL, never this frame — so a rejected/revoked
+            # key fails the handshake as an HTTP 401 (surfaced via
+            # ``error_status``), not as a post-upgrade close.
             await ws.send(json.dumps(self._greeting()))
             self.ready_event.set()
             sender = asyncio.create_task(self._sender_loop(ws))
@@ -341,10 +383,11 @@ class TunnelClient:
                 self._closed.set()
                 for t in list(self._tasks):
                     t.cancel()
-            # Clean peer close: the close code the relay chose IS the
-            # rejection signal for a keyed claim that failed after the
-            # upgrade (the greeting-key design makes an HTTP-401-at-
-            # upgrade impossible by construction). Surface it.
+            # Clean peer close: surface the close code the relay
+            # chose. Primary key rejection is an HTTP 401 at the upgrade
+            # (below), but a relay that instead drops the claim after
+            # accepting the socket signals it here — capture it so the
+            # supervisor's terminal check can act on it.
             self.close_code = getattr(ws, "close_code", None)
         except Exception as exc:
             self.error = exc
@@ -406,13 +449,17 @@ class TunnelClient:
         for conn in conns:
             _hard_close(conn)
 
-    async def _connect_cancellable(self, uri: str) -> Any:
+    async def _connect_cancellable(
+        self, uri: str, headers: dict[str, str] | None = None
+    ) -> Any:
         """``websockets.connect`` awaited, but aborted if ``stop()``
         lands while the handshake is still in flight. Without this the
         connect task is uncancellable and a timed-out attempt can
         connect AFTER the supervisor abandoned it — an untracked tunnel
         proxying requests with a stale credential state."""
-        connect_task = asyncio.ensure_future(websockets.connect(uri, max_size=None))
+        connect_task = asyncio.ensure_future(
+            websockets.connect(uri, **self._connect_kwargs(headers))
+        )
         closed_task = asyncio.ensure_future(self._closed.wait())
         try:
             done, _ = await asyncio.wait(

@@ -96,12 +96,12 @@ _WARMUP_TIMEOUT_SECONDS = 300.0
 # §3.2/§5.5: a rejected keyed claim must never be retried — the key is
 # revoked/rotated server-side and spinning just hammers the relay.
 _WS_TERMINAL_STATUS = 401
-# The claim key rides the greeting frame, so the relay CANNOT reject a
-# revoked key at HTTP-upgrade time (it never sees the key then). The
-# post-upgrade rejection signal is a WS close; RFC 6455 reserves 1008
-# (Policy Violation) for exactly this. Spec §3.2 was written for the
-# key-in-URL form ("401 + socket close") — the relay-side change the
-# ready-frame variant needs is documented in the PR body.
+# The claim key rides the upgrade's Authorization header, so a revoked
+# key is normally rejected as an HTTP 401 AT the upgrade
+# (``_WS_TERMINAL_STATUS`` above). This close-code set is the defensive
+# fallback for a relay that instead accepts the socket and then drops
+# the bad claim: RFC 6455 reserves 1008 (Policy Violation) for exactly
+# that. Both signals hit the same no-spin terminal exit.
 _WS_TERMINAL_CLOSE_CODES = frozenset({1008})
 # Defense for relays that signal rejection some OTHER way: a session
 # that the relay drops seconds after accepting the keyed claim, five
@@ -348,9 +348,10 @@ def _validate_api_base(raw: str) -> str:
 
 # Server-supplied URLs must never carry our credentials to an arbitrary
 # origin: a compromised or misconfigured API surface could otherwise
-# point ``relay_url`` at a cleartext ``ws://`` host (the greeting frame
-# leaks the share-key) or ``heartbeat_url`` at a stranger (the beat's
-# Authorization header leaks it). Scheme + host are revalidated against
+# point ``relay_url`` at a cleartext ``ws://`` host (the upgrade's
+# Authorization header leaks the share-key) or ``heartbeat_url`` at a
+# stranger (the beat's Authorization header leaks it). Scheme + host are
+# revalidated against
 # a closed allowlist on EVERY payload, wire or cached.
 _TRUSTED_WIRE_DOMAIN = "quicksilverpro.io"
 

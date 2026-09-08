@@ -143,11 +143,54 @@ def test_greeting_plain_is_byte_identical_to_history():
     assert json.dumps(client._greeting()) == '{"t": "ready", "v": 1}'
 
 
-def test_greeting_with_share_key_carries_key_not_url():
+def test_greeting_is_plain_even_in_pool_mode():
+    # The share_key does NOT ride the greeting frame — the relay
+    # authenticates the WS upgrade, not a later message, so the frame
+    # stays byte-identical to plain share in both modes.
     client = ws_tunnel.TunnelClient(local_port=1, share_key=SHARE_KEY)
-    assert client._greeting() == {"t": "ready", "v": 1, "key": SHARE_KEY}
-    # The claim URL must not gain the key (§6: no key in logs/reprs).
+    assert json.dumps(client._greeting()) == '{"t": "ready", "v": 1}'
     assert SHARE_KEY not in client.public_url
+
+
+def test_share_key_rides_the_upgrade_authorization_header_not_url():
+    # §6: the key must reach the relay as a Bearer header on the WS
+    # upgrade — never in the URL (which leaks into exception reprs /
+    # launchd logs) and never in a post-upgrade frame.
+    seen: list = []
+
+    class _FakeWS:
+        close_code = None
+
+        async def send(self, msg):
+            # The greeting that went out must carry no key.
+            assert "key" not in json.loads(msg)
+
+        async def close(self):
+            pass
+
+        def __aiter__(self):
+            return self
+
+        async def __anext__(self):
+            raise StopAsyncIteration
+
+    async def fake_connect(uri, **kw):
+        seen.append((uri, kw))
+        return _FakeWS()
+
+    client = ws_tunnel.TunnelClient(
+        local_port=1, relay_url="wss://r.test/up", share_key=SHARE_KEY
+    )
+    with patch.object(ws_tunnel.websockets, "connect", fake_connect):
+        asyncio.run(client.run())
+    assert len(seen) == 1
+    uri, kw = seen[0]
+    assert SHARE_KEY not in uri
+    # Installed websockets (asyncio client) takes ``additional_headers``;
+    # ``_connect_kwargs`` falls back to ``extra_headers`` only on a
+    # legacy major. Accept whichever the client selected.
+    hdrs = kw.get("additional_headers") or kw.get("extra_headers")
+    assert hdrs == {"Authorization": f"Bearer {SHARE_KEY}"}
 
 
 def test_abort_frame_closes_the_registered_connection():
@@ -399,9 +442,10 @@ def test_abort_wakes_blocked_worker_via_shutdown():
 
 
 def test_clean_close_captures_relay_close_code():
-    """Post-upgrade key rejection reaches the client as a close frame
-    (greeting-key design → no HTTP 401 possible). The code must
-    surface for the supervisor's terminal check."""
+    """A post-upgrade policy close (defensive path: primary key
+    rejection is an HTTP 401 at the upgrade, but a relay MAY instead
+    drop a bad claim after accepting the socket) must surface its close
+    code for the supervisor's terminal check."""
 
     class _FakeWS:
         close_code = 1008
@@ -1099,7 +1143,7 @@ def test_wire_urls_trusted_origins_and_loopback_pass():
 
 
 def test_wire_urls_reject_cleartext_off_loopback():
-    # A ws:// relay would carry the greeting-frame share-key in clear.
+    # A ws:// relay would carry the Authorization share-key in clear.
     with pytest.raises(qs.QuickSilverError, match="relay_url must be wss"):
         qs._validate_wire_urls(
             _register_payload(relay_url="ws://rapidserver.quicksilverpro.io/up"),
@@ -1543,9 +1587,10 @@ def test_run_share_tunnel_drop_reconnects_then_dies_on_401():
 
 
 def test_run_share_ws_1008_close_is_terminal_no_spin():
-    """The greeting-frame key design makes HTTP-401-at-upgrade
-    impossible — a revoked key must be caught post-upgrade via the
-    policy close code, with the same no-spin exit (§5.5)."""
+    """A revoked key normally fails as an HTTP 401 at the upgrade
+    (see ``test_run_share_ws_401_is_terminal_no_spin``), but a relay
+    that instead drops the claim post-upgrade with a 1008 policy close
+    must hit the same no-spin terminal exit (§5.5)."""
     qs._save_cache("qwen3.6-35b", dict(_register_payload(), alias="qwen3.6-35b"))
     tunnel = _fake_tunnel(ready=True, closed=True, close_code=1008)
     serve, _ = _patched_run_env(None)
