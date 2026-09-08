@@ -9,6 +9,10 @@ struct DraftPostVisualRuntime: Equatable, Sendable {
     let baseURL: URL
     let model: String
     let bearerToken: String
+    /// Process-local identity for the exact app-owned sidecar launch. A
+    /// persisted bearer can survive a restart, so connection values alone do
+    /// not identify the process that receives the private screenshot.
+    let sessionID: UUID?
     private let sessionValidator: SessionValidator
 
     init?(
@@ -16,6 +20,7 @@ struct DraftPostVisualRuntime: Equatable, Sendable {
         port: Int,
         model: String?,
         bearerToken: String?,
+        sessionID: UUID? = nil,
         sessionValidator: @escaping SessionValidator
     ) {
         guard host == "127.0.0.1",
@@ -29,6 +34,7 @@ struct DraftPostVisualRuntime: Equatable, Sendable {
         self.baseURL = baseURL
         self.model = model
         self.bearerToken = bearerToken
+        self.sessionID = sessionID
         self.sessionValidator = sessionValidator
     }
 
@@ -38,6 +44,7 @@ struct DraftPostVisualRuntime: Equatable, Sendable {
         host: String,
         port: Int,
         bearerToken: String?,
+        sessionID: UUID? = nil,
         sessionValidator: @escaping SessionValidator
     ) {
         guard let profile,
@@ -49,6 +56,7 @@ struct DraftPostVisualRuntime: Equatable, Sendable {
             port: port,
             model: profile.id,
             bearerToken: bearerToken,
+            sessionID: sessionID,
             sessionValidator: sessionValidator
         )
     }
@@ -64,7 +72,13 @@ struct DraftPostVisualRuntime: Equatable, Sendable {
         bearerToken: String?,
         liveServer server: ServerManager
     ) {
-        guard let profile, let bearerToken else { return nil }
+        guard let profile,
+              let bearerToken,
+              let expectedSessionID = server.activeServerSessionID,
+              // A private screenshot must never be authorized by a bearer
+              // that is intentionally reusable by a replacement process.
+              server.embeddedBearerLifetime == .perLaunch
+        else { return nil }
         let expectedModel = profile.id
         self.init(
             profile: profile,
@@ -72,11 +86,13 @@ struct DraftPostVisualRuntime: Equatable, Sendable {
             host: host,
             port: port,
             bearerToken: bearerToken,
+            sessionID: expectedSessionID,
             sessionValidator: { [weak server] in
                 guard let server,
                       server.host == host,
                       server.activePort == port,
                       server.activeBearer == bearerToken,
+                      server.activeServerSessionID == expectedSessionID,
                       let currentProfile = server.activeModelProfile
                 else { return false }
                 return currentProfile.id.caseInsensitiveCompare(expectedModel)
@@ -93,6 +109,13 @@ struct DraftPostVisualRuntime: Equatable, Sendable {
         lhs.baseURL == rhs.baseURL
             && lhs.model == rhs.model
             && lhs.bearerToken == rhs.bearerToken
+            && lhs.sessionID == rhs.sessionID
+    }
+
+    /// Shared by recovery construction and focused lifecycle tests so the
+    /// production session predicate is exercised without sending pixels.
+    func isCurrentSession() async -> Bool {
+        await sessionValidator()
     }
 
     func makeRecovery() -> (any DraftPostVisualRecovering)? {

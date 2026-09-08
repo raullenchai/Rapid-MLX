@@ -360,6 +360,59 @@ struct DraftPostFlowTests {
         #expect(await blockedBase.callCount == 0)
     }
 
+    @MainActor
+    @Test("A retained visual runtime rejects a restarted server with reused connection values")
+    func visualRuntimeRejectsRestartedServerSession() async throws {
+        let alias = "ui-tars-1.5-7b-4bit"
+        let bearer = "persisted-secret"
+        let profile = ServerModelProfile(id: alias, toolCallParser: "ui_tars")
+        let server = ServerManager(
+            testingState: .ready(alias: alias),
+            activePort: 7659,
+            activeBearer: bearer
+        )
+        server.applyActiveModelProfile(profile, forAlias: alias)
+        let runtime = try #require(DraftPostVisualRuntime(
+            profile: profile,
+            selectedAlias: alias,
+            host: server.host,
+            port: server.activePort,
+            bearerToken: bearer,
+            liveServer: server
+        ))
+        let originalSessionID = try #require(runtime.sessionID)
+        #expect(await runtime.isCurrentSession())
+
+        server._testReplaceActiveServerSession(bearer: bearer)
+        #expect(server.activeServerSessionID != originalSessionID)
+        server.applyActiveModelProfile(profile, forAlias: alias)
+
+        #expect(!(await runtime.isCurrentSession()))
+    }
+
+    @MainActor
+    @Test("A long-lived embedded credential cannot authorize visual recovery")
+    func persistentCredentialIsIneligibleForVisualRecovery() throws {
+        let alias = "ui-tars-1.5-7b-4bit"
+        let profile = ServerModelProfile(id: alias, toolCallParser: "ui_tars")
+        let server = ServerManager(
+            testingState: .ready(alias: alias),
+            activePort: 7659,
+            activeBearer: "persisted-secret"
+        )
+        server.applyActiveModelProfile(profile, forAlias: alias)
+        server.setEmbeddedBearerLifetime(.daily)
+
+        #expect(DraftPostVisualRuntime(
+            profile: profile,
+            selectedAlias: alias,
+            host: server.host,
+            port: server.activePort,
+            bearerToken: server.activeBearer,
+            liveServer: server
+        ) == nil)
+    }
+
     @Test("Chrome accessibility activation balances cancellation")
     func browserAccessibilityActivationBalancesCancellation() async {
         let probe = BrowserAccessibilityLeaseProbe()
