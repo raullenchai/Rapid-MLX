@@ -469,6 +469,17 @@ def _maybe_confirm_download(alias: str) -> None:
 
 
 def share_command(args: argparse.Namespace) -> None:
+    # QuickSilver compute-pool mode (§4 of the provider spec): a mode of
+    # ``share``, not a new subcommand — but the lifecycles share nothing
+    # past this line (no public URL, no banner key, keyed relay claim +
+    # heartbeat instead). Delegated wholesale so the plain path below
+    # stays byte-for-byte unchanged for non-``--quicksilver`` shares.
+    if getattr(args, "quicksilver", False):
+        from . import quicksilver
+
+        quicksilver.run_share(args)
+        return
+
     # Codex round-2 BLOCKING: ``main()`` in ``vllm_mlx/cli.py`` runs
     # alias resolution BEFORE dispatching to us — by the time we get
     # here ``args.model`` is the rewritten HF repo (e.g.
@@ -524,11 +535,15 @@ def share_command(args: argparse.Namespace) -> None:
     # is 0 (disabled), which on a public share is a leaked-key DoS
     # amplifier — a hostile client can saturate the M3 with as many
     # concurrent ``/v1/chat/completions`` as it wants. We default share
-    # to 120 rpm (2/sec) at the argparse layer; 0 here is explicitly
-    # ``do not forward`` so power users can opt out.
-    if args.rate_limit > 0:
+    # to 120 rpm (2/sec) here; 0 is explicitly ``do not forward`` so power
+    # users can opt out. The argparse default is ``None`` rather than 120
+    # so the ``--quicksilver`` branch — which deliberately does NOT cap
+    # (metering lives gateway-side) — can distinguish "unset" from an
+    # explicit ``--rate-limit 120``. Plain-path behavior is unchanged.
+    rate_limit = 120 if args.rate_limit is None else args.rate_limit
+    if rate_limit > 0:
         extra_serve_args.append("--rate-limit")
-        extra_serve_args.append(str(args.rate_limit))
+        extra_serve_args.append(str(rate_limit))
 
     # Systematic serve-flag passthrough. ``cli.main`` splits the CLI on the
     # standard ``--`` end-of-options separator and hands everything after it
@@ -915,14 +930,16 @@ def register(subparsers: argparse._SubParsersAction) -> None:
     p.add_argument(
         "--rate-limit",
         type=int,
-        default=120,
+        default=None,
         metavar="RPM",
         help=(
             "Per-client requests/minute cap forwarded to the spawned "
             "``rapid-mlx serve``. Default: 120 (2/sec) — high enough for "
             "tool-using power users and Beam-mode parallel completions, "
             "low enough that a leaked share key can't burst-DoS the "
-            "publisher's M3. Set 0 to disable the cap entirely."
+            "publisher's M3. Set 0 to disable the cap entirely. "
+            "(``--quicksilver`` mode leaves the cap off by default: "
+            "pool metering is gateway-side.)"
         ),
     )
     p.add_argument(
@@ -939,5 +956,90 @@ def register(subparsers: argparse._SubParsersAction) -> None:
             "entirely (useful for OpenWebUI and other frontends that don't "
             "speak the splash protocol; the URL+Key lines below still let "
             "you wire it up by hand)."
+        ),
+    )
+
+    # ── QuickSilver compute-pool mode (provider spec §4) ─────────────
+    # A mode of ``share`` — it never opens the public URL/key flow above;
+    # the machine earns QuickSilver credits by serving the pool through
+    # a keyed relay tunnel. See ``vllm_mlx/share/quicksilver.py``.
+    p.add_argument(
+        "--quicksilver",
+        action="store_true",
+        help=(
+            "Serve the model to the QuickSilver compute pool instead of "
+            "publishing a public share URL. First run registers the node "
+            "with a QuickSilver provider key (qsppk-…) and caches the "
+            "server-minted node credential; later runs are cache-only."
+        ),
+    )
+    p.add_argument(
+        "--provider-key",
+        type=str,
+        default=None,
+        metavar="QSPPK",
+        help=(
+            "QuickSilver provider key for first-run registration "
+            "(resolution: this flag > $QUICKSILVER_PROVIDER_KEY > "
+            "interactive prompt). Prefer the env var: argv is visible "
+            "to other local users via ps. Never stored on disk."
+        ),
+    )
+    p.add_argument(
+        "--quicksilver-model",
+        type=str,
+        default=None,
+        metavar="CATALOG_ID",
+        help=(
+            "QuickSilver catalog id to register under (e.g. qwen3.8-27b). "
+            "Only needed when the positional alias isn't a catalog id or "
+            "a known default weights alias for one. The pool listing is "
+            "authoritative — unknown ids are rejected at registration."
+        ),
+    )
+    p.add_argument(
+        "--worker",
+        type=str,
+        default=None,
+        metavar="NAME",
+        help=(
+            "Per-machine worker label (like a mining pool's account.worker). "
+            "Defaults to this machine's hostname. Node identity is "
+            "(account, worker), so give two machines under one account "
+            "distinct workers to run them as separate, separately-credited "
+            "nodes."
+        ),
+    )
+    p.add_argument(
+        "--reregister",
+        action="store_true",
+        help=(
+            "Ignore the node cache and register again (rotates the "
+            "share-key). Needed after the pool revokes a credential."
+        ),
+    )
+    p.add_argument(
+        "--install-service",
+        action="store_true",
+        help=(
+            "Write a KeepAlive LaunchAgent (com.quicksilver.node.<id>.plist) "
+            "that re-runs this share at login with the same declared flags "
+            "(--thinking/--port/--cors-origins/--rate-limit/--chat-frontend/"
+            "origin override), print the launchctl line, and exit. Serves "
+            "passthrough args are refused (they can carry credentials) and "
+            "--reregister is never baked in. Requires a prior interactive "
+            "run (the plist carries no key material — macOS only)."
+        ),
+    )
+    p.add_argument(
+        "--quicksilver-api",
+        type=str,
+        default=None,
+        metavar="URL",
+        help=(
+            "Override the registration/account origin (default: "
+            "https://pay.quicksilverpro.io). https only (loopback http "
+            "allowed for testing) — the provider key travels to it in "
+            "a header."
         ),
     )

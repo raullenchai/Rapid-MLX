@@ -13558,7 +13558,16 @@ def main():
             # text/vision alias accidentally bypassing the fail-fast.
             from .audio.probe import is_audio_model_alias
 
-            if not is_audio_model_alias(args.model):
+            # QuickSilver catalog ids are intentionally distinct from local
+            # serve aliases. Let that mode translate a known catalog id
+            # instead of rejecting it before ``share_command`` can run.
+            quicksilver_catalog = False
+            if args.command == "share" and getattr(args, "quicksilver", False):
+                from vllm_mlx.share.quicksilver import CATALOG_DEFAULT_ALIAS
+
+                quicksilver_catalog = args.model in CATALOG_DEFAULT_ALIAS
+
+            if not is_audio_model_alias(args.model) and not quicksilver_catalog:
                 # Not an alias, not a HuggingFace org/name path, not a
                 # local directory, not an audio alias — fail fast with
                 # suggestions instead of letting the request hit
