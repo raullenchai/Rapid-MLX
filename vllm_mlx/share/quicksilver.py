@@ -533,11 +533,14 @@ def register_node(
             ) from None
         except urllib.error.HTTPError as exc:
             status = exc.code
+            # NEVER reuse `body` here — the request payload must survive
+            # verbatim across retries; shadowing it with the error
+            # response would POST the server's own error JSON next round.
             try:
-                body = _bounded_read(exc, _ERROR_BODY_MAX_BYTES)
+                error_body = _bounded_read(exc, _ERROR_BODY_MAX_BYTES)
             except _ResponseTooLargeError:
-                body = b""  # oversized error body: report the code, not the blob
-            detail = _error_detail(body)
+                error_body = b""  # oversized: report the code, not the blob
+            detail = _error_detail(error_body)
         except (urllib.error.URLError, TimeoutError, ConnectionError) as exc:
             status = None
             detail = _redact(str(exc))[:200]
@@ -564,6 +567,16 @@ def register_node(
                 raise QuickSilverError(
                     f"register response fields missing or non-string: "
                     f"{', '.join(missing)}"
+                )
+            # The echo must be OUR model: a server (or hostile MITM on
+            # a misrouted pay.*) handing back a different catalog id
+            # would have this node serve and bill under a pool model
+            # nobody registered for, until the cache is rejected next
+            # launch — reject now, before cache or serve.
+            if payload["model"] != catalog_id:
+                raise QuickSilverError(
+                    f"register response model {payload['model']!r} does not "
+                    f"match requested {catalog_id!r} — refusing to bind"
                 )
             payout = payload.get("payout_account")
             if payout is not None and not isinstance(payout, str):

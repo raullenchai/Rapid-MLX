@@ -287,7 +287,10 @@ class TunnelClient:
         """
         self._loop = asyncio.get_running_loop()
         self._send_queue = asyncio.Queue()
-        uri = f"{self.relay_url}?id={self.tunnel_id}"
+        # urlencoded, not f-string-interpolated: a node id containing
+        # &/# would otherwise inject extra query params (or a fragment)
+        # into the relay request instead of staying one ``id`` value.
+        uri = self.relay_url + "?" + urllib.parse.urlencode({"id": self.tunnel_id})
         ws = None
         try:
             # ``max_size=None`` removes the 1-MiB frame ceiling so a

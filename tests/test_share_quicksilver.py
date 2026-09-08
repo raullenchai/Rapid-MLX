@@ -23,6 +23,7 @@ import stat
 import subprocess
 import threading
 import urllib.error
+import urllib.parse
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -428,6 +429,42 @@ def test_clean_close_captures_relay_close_code():
     assert client.error is None
 
 
+def test_connect_uri_percent_encodes_tunnel_id():
+    """The connect URL is query-interpolated — an id carrying & or #
+    (server-supplied in pool mode) must stay ONE ``id`` value, not
+    inject extra params or a fragment into the relay request."""
+    seen: list = []
+
+    class _FakeWS:
+        close_code = None
+
+        async def send(self, msg):
+            pass
+
+        async def close(self):
+            pass
+
+        def __aiter__(self):
+            return self
+
+        async def __anext__(self):
+            raise StopAsyncIteration
+
+    async def fake_connect(uri, **kw):
+        seen.append(uri)
+        return _FakeWS()
+
+    client = ws_tunnel.TunnelClient(
+        local_port=1, tunnel_id="qspnode-a&b=c#d", relay_url="wss://r.test/up"
+    )
+    with patch.object(ws_tunnel.websockets, "connect", fake_connect):
+        asyncio.run(client.run())
+    assert len(seen) == 1
+    parsed = urllib.parse.urlparse(seen[0])
+    assert parsed.path == "/up" and not parsed.fragment
+    assert urllib.parse.parse_qs(parsed.query) == {"id": ["qspnode-a&b=c#d"]}
+
+
 def test_fetch_registration_refused_after_shutdown_begins():
     """A to_thread worker scheduled pre-teardown that only reaches
     registration after the drain must refuse, not register into a
@@ -671,11 +708,11 @@ def test_register_terminal_codes(code, hint):
 
 
 def test_register_retries_429_then_succeeds():
-    calls = {"n": 0}
+    calls: list = []
 
     def fake_urlopen(req, timeout=None):
-        calls["n"] += 1
-        if calls["n"] == 1:
+        calls.append(req)
+        if len(calls) == 1:
             raise _http_error(429)
         return _FakeResp(_register_payload())
 
@@ -683,9 +720,18 @@ def test_register_retries_429_then_succeeds():
         patch.object(qs, "_open", fake_urlopen),
         patch("time.sleep") as sleep,
     ):
-        out = qs.register_node("https://pay.test", PROVIDER_KEY, "m", "a")
+        out = qs.register_node("https://pay.test", PROVIDER_KEY, "qwen3.6-35b", "al")
     assert out["node_id"] == "qspnode-1a2b3c4d"
     assert sleep.call_count == 1
+    # The retry must re-POST the ORIGINAL registration payload — an
+    # earlier revision shadowed the request `body` with the 429's
+    # response body, so attempt 2 shipped the server's own error JSON.
+    assert len(calls) == 2
+    for req in calls:
+        sent = json.loads(req.data)
+        assert sent["model"] == "qwen3.6-35b"
+        assert sent["alias"] == "al"
+        assert "hardware" in sent
 
 
 def test_register_error_detail_never_leaks_secrets():
@@ -785,6 +831,21 @@ def test_register_oversized_error_body_reports_code_without_blob():
     msg = str(ei.value)
     assert "422" in msg or "unknown/unsupported" in msg
     assert "eeee" not in msg
+
+
+def test_register_model_echo_mismatch_is_terminal():
+    """The response must echo the catalog id we asked for — binding a
+    different model would serve/bill under a pool model nobody
+    registered for."""
+
+    def fake_urlopen(req, timeout=None):
+        return _FakeResp(_register_payload(model="someone-elses-model"))
+
+    with (
+        patch.object(qs, "_open", fake_urlopen),
+        pytest.raises(qs.QuickSilverError, match="does not match"),
+    ):
+        qs.register_node("https://pay.test", PROVIDER_KEY, "qwen3.6-35b", "a")
 
 
 def test_wire_urls_reject_credential_bearing_components():
@@ -963,6 +1024,19 @@ def test_run_share_hostile_cached_relay_never_connects(capsys):
     err = capsys.readouterr().err
     assert "--reregister" in err
     assert SHARE_KEY not in err
+
+
+def test_run_share_model_mismatch_response_never_cached_or_served(capsys):
+    hostile = _register_payload(model="someone-elses-model")
+    with (
+        patch.object(qs, "_open", lambda req, timeout=None: _FakeResp(hostile)),
+        patch.object(qs.ws_tunnel, "TunnelClient") as tunnel_cls,
+        pytest.raises(SystemExit) as ei,
+    ):
+        qs.run_share(_make_args(provider_key=PROVIDER_KEY))
+    assert ei.value.code == 2
+    tunnel_cls.assert_not_called()
+    assert qs._load_cache("qwen3.6-35b", "qwen3.6-35b") is None
 
 
 def test_run_share_hostile_register_response_not_cached(capsys):
