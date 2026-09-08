@@ -89,6 +89,11 @@ _RETRY_MAX_SECONDS = 30.0
 # A transient pay.* outage delays the node; a sustained one must still
 # surface non-zero (or exit under launchd) instead of wedging silently.
 _RETRY_BUDGET_SECONDS = 300.0
+# Keep the retry sleeper injectable without replacing ``time.sleep`` process-wide.
+# Mocking the stdlib module function also intercepts subprocess' polling sleeps on
+# Python 3.12, making the registration tests depend on interpreter internals.
+_register_retry_sleep = time.sleep
+_supervisor_sleep = time.sleep
 
 # Warm-up request timeout (§5.3 step 3). Weights are already resident
 # (healthz passed), so this only pages Metal working sets in — seconds
@@ -348,25 +353,61 @@ def _validate_api_base(raw: str) -> str:
     allowed for the test fake), origin-only (no path/query/fragment)."""
     parsed = urllib.parse.urlparse(raw.rstrip("/"))
     host = parsed.hostname or ""
+    # Reject credential-bearing syntax before every error branch and never
+    # echo the raw URL: validation runs before the provider key is registered
+    # with the redactor, and a malformed userinfo/query/path may itself contain
+    # that secret.
+    if parsed.username or parsed.password:
+        raise QuickSilverError("--quicksilver-api must not include userinfo")
     if parsed.scheme == "http":
         if not _is_loopback_host(host):
             raise QuickSilverError(
-                f"--quicksilver-api over plain http only for loopback hosts "
-                f"(got {raw!r})"
+                "--quicksilver-api over plain http is only allowed for loopback hosts"
             )
     elif parsed.scheme != "https":
         raise QuickSilverError(
-            f"--quicksilver-api must be https (got {raw!r}) — the provider "
-            f"key travels to this host in an Authorization header"
+            "--quicksilver-api must be https — the provider "
+            "key travels to this host in an Authorization header"
         )
     if not host:
-        raise QuickSilverError(f"--quicksilver-api must include a host (got {raw!r})")
+        raise QuickSilverError("--quicksilver-api must include a host")
     if parsed.path not in ("", "/") or parsed.query or parsed.fragment:
         raise QuickSilverError(
-            f"--quicksilver-api must be an origin without path/query/fragment "
-            f"(got {raw!r})"
+            "--quicksilver-api must be an origin without path/query/fragment"
         )
     return f"{parsed.scheme}://{parsed.netloc}"
+
+
+def _validate_credential_placement(
+    payload: dict[str, Any], *, source: str, provider_key: str | None = None
+) -> None:
+    """Credentials may occupy only their protocol-defined fields.
+
+    A faulty or hostile registration response/cache must not reflect either
+    credential into ``node_id`` (which becomes a URL query), a wire URL,
+    payout text, worker identity, or another cacheable field. Decode percent
+    escapes before checking so encoding cannot bypass the invariant.
+    """
+    share_key = payload.get("share_key")
+    credentials = [
+        value
+        for value in (provider_key, share_key if isinstance(share_key, str) else None)
+        if value
+    ]
+    echoed_fields = [
+        key
+        for key in _CACHE_ALLOWED_KEYS
+        if key != "share_key"
+        and any(
+            secret in urllib.parse.unquote(str(payload.get(key, "")))
+            for secret in credentials
+        )
+    ]
+    if echoed_fields:
+        raise QuickSilverError(
+            f"{source} echoed a node credential in cacheable field(s) "
+            f"{', '.join(sorted(echoed_fields))} — refusing to persist or route it"
+        )
 
 
 # Server-supplied URLs must never carry our credentials to an arbitrary
@@ -461,7 +502,7 @@ class _ResponseTooLargeError(Exception):
 def _bounded_read(fp, limit: int) -> bytes:
     """Read at most limit+1 bytes — fp.read() with no argument is the
     unbounded memory pin we are defending against."""
-    data = fp.read(limit + 1)
+    data: bytes = fp.read(limit + 1)
     if len(data) > limit:
         raise _ResponseTooLargeError(f"response exceeded {limit} byte cap")
     return data
@@ -692,7 +733,7 @@ def register_node(
             f"({'HTTP ' + str(status) if status else detail or 'network'})…",
             file=sys.stderr,
         )
-        time.sleep(delay)
+        _register_retry_sleep(delay)
         delay = min(delay * 2, _RETRY_MAX_SECONDS)
 
 
@@ -873,6 +914,8 @@ def install_service(
             f"once first (registration needs the provider key), then "
             f"`--install-service`."
         )
+    _register_secret(cache["share_key"])
+    _validate_credential_placement(cache, source="node cache")
     from .cli import _state_dir
 
     # Serve passthrough would have to be baked into a resident,
@@ -1030,6 +1073,9 @@ def _run_share(args: argparse.Namespace) -> None:
         # response's to fill, and if either echoed the resident key,
         # the banner below would print it. _redact must be armed first.
         _register_secret(cache["share_key"])
+        _validate_credential_placement(
+            cache, source="register response", provider_key=provider_key
+        )
         # Bind the credential to the origin it was minted against (the
         # allowlist in _validate_wire_urls accepts the registration
         # origin; installed services and later cached runs must keep
@@ -1052,6 +1098,11 @@ def _run_share(args: argparse.Namespace) -> None:
         # the hardware probes below. The account credential is only ever
         # needed to register — scrub it even when we don't use it.
         os.environ.pop(PROVIDER_KEY_ENV_VAR, None)
+        # Arm redaction and validate credential placement before inspecting or
+        # printing any other cached field. In particular, node_id later becomes
+        # a query parameter and api_base errors used to precede this guard.
+        _register_secret(cache["share_key"])
+        _validate_credential_placement(cache, source="node cache")
         # An explicit --quicksilver-api always wins; otherwise the
         # cached origin is authoritative. Re-validating the cached
         # value is cheap paranoia against a tampered file.
@@ -1060,9 +1111,6 @@ def _run_share(args: argparse.Namespace) -> None:
                 api_base = _validate_api_base(str(cache["api_base"]))
             except QuickSilverError as exc:
                 raise QuickSilverError(f"{exc} (from node cache)") from None
-        # Armed before ANY print of a server-chosen field, same rule
-        # as the registration branch.
-        _register_secret(cache["share_key"])
         print(
             _redact(
                 f"Using cached node {cache['node_id']} for {catalog_id} "
@@ -1116,6 +1164,12 @@ def _run_share(args: argparse.Namespace) -> None:
     passthrough = list(getattr(args, "_passthrough", None) or [])
     if not any(t.split("=", 1)[0].startswith("--max-num-seqs") for t in passthrough):
         extra += ["--max-num-seqs", "2"]
+    # ``share`` advertises thinking off by default. The child server defaults
+    # it on, so pool mode must forward the disabling flag just like plain share.
+    if not args.thinking and not any(
+        t.split("=", 1)[0] in ("--thinking", "--no-thinking") for t in passthrough
+    ):
+        extra.append("--no-thinking")
     # Pool requests (and the relay's readiness probe) address the node by its
     # CATALOG id, but the serve alias differs (§5.4, e.g. nemotron-3.5-lightning
     # vs nemotron-3.5-lightning-30b-4bit). Expose the loaded model UNDER the
@@ -1229,7 +1283,6 @@ def _run_share(args: argparse.Namespace) -> None:
             reconnect = False
             if connected:
                 served_at = time.monotonic()
-                backoff = 1.0
                 heartbeat.enabled.set()
                 # §5.3: the first beat waits for tunnel-up AND warm-up
                 # (which already ran before the loop).
@@ -1300,10 +1353,14 @@ def _run_share(args: argparse.Namespace) -> None:
                             file=sys.stderr,
                         )
                         break
+                    connection_age = (
+                        time.monotonic() - served_at
+                        if connected and served_at
+                        else None
+                    )
                     if (
-                        connected
-                        and served_at
-                        and (time.monotonic() - served_at < _FAST_REJECT_WINDOW_SECONDS)
+                        connection_age is not None
+                        and connection_age < _FAST_REJECT_WINDOW_SECONDS
                     ):
                         fast_reject_streak += 1
                         if fast_reject_streak == _FAST_REJECT_STREAK_LIMIT:
@@ -1319,8 +1376,12 @@ def _run_share(args: argparse.Namespace) -> None:
                                 "--reregister.",
                                 file=sys.stderr,
                             )
-                    else:
+                    elif connection_age is not None:
+                        # Only a connection that survived the reject window
+                        # earns a fresh retry budget. Instant drops and failed
+                        # handshakes retain exponential backoff.
                         fast_reject_streak = 0
+                        backoff = 1.0
                     err = _redact(str(tunnel.error)) if tunnel.error else "dropped"
                     print(
                         f"share: tunnel lost ({err[:200]}) — reconnecting in "
@@ -1329,13 +1390,13 @@ def _run_share(args: argparse.Namespace) -> None:
                     )
                     reconnect = True
                     break
-                time.sleep(1)
+                _supervisor_sleep(1)
             if not reconnect:
                 break
             heartbeat.enabled.clear()
             tunnel.stop()
             tunnel_thread.join(timeout=5)
-            time.sleep(backoff)
+            _supervisor_sleep(backoff)
             backoff = min(backoff * 2, 60.0)
     except KeyboardInterrupt:
         print("\nLeaving the QuickSilver pool…", file=sys.stderr)

@@ -58,7 +58,7 @@ import socket
 import threading
 import time
 import urllib.parse
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from typing import Any
 
 try:
@@ -320,7 +320,9 @@ class TunnelClient:
         kwargs: dict[str, Any] = {"max_size": None}
         if headers:
             try:
-                params = inspect.signature(websockets.connect).parameters
+                params: Mapping[str, inspect.Parameter] = inspect.signature(
+                    websockets.connect
+                ).parameters
             except (TypeError, ValueError):
                 params = {}
             header_kw = "additional_headers"

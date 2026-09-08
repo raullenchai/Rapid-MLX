@@ -948,7 +948,7 @@ def test_register_retries_429_then_succeeds():
 
     with (
         patch.object(qs, "_open", fake_urlopen),
-        patch("time.sleep") as sleep,
+        patch.object(qs, "_register_retry_sleep") as sleep,
     ):
         out = qs.register_node(
             "https://pay.test", PROVIDER_KEY, "qwen3.6-35b", "al", "w"
@@ -995,7 +995,7 @@ def test_register_400_is_terminal_without_retrying():
 
         with (
             patch.object(qs, "_open", fake_urlopen),
-            patch("time.sleep") as sleep,
+            patch.object(qs, "_register_retry_sleep") as sleep,
             pytest.raises(qs.QuickSilverError, match=f"HTTP {code}"),
         ):
             qs.register_node("https://pay.test", PROVIDER_KEY, "m", "a", "w")
@@ -1040,7 +1040,7 @@ def test_register_oversized_success_response_is_terminal_not_buffered():
 
     with (
         patch.object(qs, "_open", fake_urlopen),
-        patch("time.sleep"),
+        patch.object(qs, "_register_retry_sleep"),
         pytest.raises(qs.QuickSilverError, match="too large"),
     ):
         qs.register_node("https://pay.test", PROVIDER_KEY, "m", "a", "w")
@@ -1144,6 +1144,8 @@ def test_api_base_validation():
     ):
         with pytest.raises(qs.QuickSilverError):
             qs._validate_api_base(bad)
+    with pytest.raises(qs.QuickSilverError, match="userinfo"):
+        qs._validate_api_base("https://user:secret@pay.quicksilverpro.io")
 
 
 def test_provider_key_resolution_order(monkeypatch):
@@ -1491,7 +1493,7 @@ def _run_patches(serve, tunnel_cls, sleep_side_effect):
         patch.object(share_cli, "_maybe_confirm_download"),
         patch.object(qs.ws_tunnel, "TunnelClient", new=tunnel_cls),
         patch.object(qs, "_warmup"),
-        patch("time.sleep", side_effect=sleep_side_effect),
+        patch.object(qs, "_supervisor_sleep", side_effect=sleep_side_effect),
     )
 
 
@@ -1548,7 +1550,7 @@ def test_run_share_serve_uses_served_model_name_catalog_id():
         patch.object(share_cli, "_maybe_confirm_download"),
         patch.object(qs.ws_tunnel, "TunnelClient", new=lambda **kw: tunnel),
         patch.object(qs, "_warmup"),
-        patch("time.sleep", side_effect=ctrl_c),
+        patch.object(qs, "_supervisor_sleep", side_effect=ctrl_c),
         patch.object(
             qs, "_open", lambda req, timeout=None: _FakeResp(_register_payload())
         ),
@@ -1560,6 +1562,22 @@ def test_run_share_serve_uses_served_model_name_catalog_id():
     extra = spawn.call_args.kwargs["extra_args"]
     assert "--served-model-name" in extra
     assert extra[extra.index("--served-model-name") + 1] == "qwen3.6-35b"
+
+
+def test_top_level_cli_accepts_known_quicksilver_catalog_id(monkeypatch):
+    """The global alias guard must let the pool resolver map catalog ids."""
+    from vllm_mlx import cli as top_cli
+
+    called = MagicMock()
+    monkeypatch.setattr(
+        top_cli.sys,
+        "argv",
+        ["rapid-mlx", "share", "qwen3.8-27b", "--quicksilver"],
+    )
+    with patch.object(qs, "run_share", called):
+        top_cli.main()
+    called.assert_called_once()
+    assert called.call_args.args[0].model == "qwen3.8-27b"
 
 
 def test_register_body_carries_worker():
@@ -1655,6 +1673,29 @@ def test_run_share_serves_with_max_seqs_2_and_no_rate_limit():
     extra = spawned["extra_args"]
     assert extra[:2] == ["--max-num-seqs", "2"]
     assert "--rate-limit" not in extra
+    assert "--no-thinking" in extra
+
+
+def test_run_share_explicit_thinking_does_not_force_disable():
+    tunnel = _fake_tunnel()
+    serve, ctrl_c = _patched_run_env(None)
+    spawned: dict = {}
+
+    def fake_spawn(**kw):
+        spawned.update(kw)
+        return serve
+
+    ctxs = _run_patches(serve, lambda **kw: tunnel, ctrl_c) + (
+        patch.object(
+            qs,
+            "_open",
+            lambda req, timeout=None: _FakeResp(_register_payload()),
+        ),
+        patch.object(qs, "_Heartbeat", return_value=_fake_heartbeat_class()),
+    )
+    with _enter(*ctxs, patch.object(share_cli, "_spawn_serve", side_effect=fake_spawn)):
+        qs.run_share(_make_args(provider_key=PROVIDER_KEY, thinking=True))
+    assert "--no-thinking" not in spawned["extra_args"]
 
 
 def test_run_share_respects_user_max_seqs_override():
@@ -1684,6 +1725,7 @@ def test_run_share_respects_user_max_seqs_override():
     # Injection skipped — the user's own --max-num-seqs passthrough wins; the
     # catalog-id --served-model-name is still added (pool addresses by catalog id).
     assert spawned["extra_args"] == [
+        "--no-thinking",
         "--served-model-name",
         "qwen3.6-35b",
         "--max-num-seqs",
@@ -1850,7 +1892,10 @@ def test_run_share_instant_drop_streak_warns_but_keeps_retrying(capsys):
         # connected, closed_event pre-set, unclassifiable close
         return _fake_tunnel(ready=True, closed=True, close_code=1001)
 
-    def sleep_then_ctrl_c(*_a, **_k):
+    sleeps: list[float] = []
+
+    def sleep_then_ctrl_c(seconds, **_k):
+        sleeps.append(seconds)
         if len(made) > limit + 2:
             raise KeyboardInterrupt
 
@@ -1865,6 +1910,7 @@ def test_run_share_instant_drop_streak_warns_but_keeps_retrying(capsys):
     assert len(made) > limit
     # … and warned exactly once, not once per drop.
     assert err.count("WARNING") == 1
+    assert sleeps[:4] == [1.0, 2.0, 4.0, 8.0]
 
 
 def test_run_share_1008_close_is_terminal_despite_instant_drop_shape(capsys):
@@ -1885,24 +1931,48 @@ def test_run_share_1008_close_is_terminal_despite_instant_drop_shape(capsys):
     assert "1008" in capsys.readouterr().err
 
 
-def test_run_share_server_echoed_key_never_printed(capsys):
-    """node_id/payout_account are server-controlled text — the secret
-    registry must be armed before ANY of it reaches a sink (§8 bullet
-    7 holds even against a malicious API)."""
+def test_run_share_server_echoed_share_key_is_rejected_and_never_printed(capsys):
+    """A share key reflected into node_id would otherwise enter the tunnel URL."""
     leaky = _register_payload(
         node_id=f"qspnode-{SHARE_KEY}", payout_account=f"a***@x*** {SHARE_KEY}"
     )
-    serve, ctrl_c = _patched_run_env(None)
-    ctxs = _run_patches(serve, lambda **kw: _fake_tunnel(), ctrl_c) + (
+    with (
         patch.object(qs, "_open", lambda req, timeout=None: _FakeResp(leaky)),
-        patch.object(qs, "_Heartbeat", return_value=_fake_heartbeat_class()),
-    )
-    with _enter(*ctxs):
+        pytest.raises(SystemExit) as exc,
+    ):
         qs.run_share(_make_args(provider_key=PROVIDER_KEY))
+    assert exc.value.code == 2
     out = capsys.readouterr()
     combined = out.out + out.err
     assert SHARE_KEY not in combined
-    assert "[redacted]" in combined
+    assert not qs._cache_path("qwen3.6-35b").exists()
+
+
+def test_register_response_cannot_persist_provider_key_in_allowed_field():
+    hostile = _register_payload(payout_account=f"echo:{PROVIDER_KEY}")
+    with (
+        patch.object(qs, "_open", lambda req, timeout=None: _FakeResp(hostile)),
+        pytest.raises(SystemExit) as exc,
+    ):
+        qs.run_share(_make_args(provider_key=PROVIDER_KEY))
+    assert exc.value.code == 2
+    assert not qs._cache_path("qwen3.6-35b").exists()
+
+
+def test_cached_encoded_share_key_in_node_id_is_rejected_before_tunnel(capsys):
+    encoded = urllib.parse.quote(SHARE_KEY, safe="").replace("-", "%2D")
+    qs._save_cache(
+        "qwen3.6-35b",
+        dict(
+            _register_payload(node_id=f"node-{encoded}"),
+            alias="qwen3.6-35b",
+        ),
+    )
+    with pytest.raises(SystemExit) as exc:
+        qs.run_share(_make_args())
+    assert exc.value.code == 2
+    captured = capsys.readouterr()
+    assert SHARE_KEY not in (captured.out + captured.err)
 
 
 def test_run_share_rejects_nonstring_wire_fields():
@@ -1955,7 +2025,10 @@ def test_run_share_key_never_reaches_tunnel_error_printing(capsys):
     # backoff went out REDACTED despite embedding the share key.
     # ctxs already pins TunnelClient + _Heartbeat; the trailing sleep
     # patch (Ctrl-C mid-backoff) overrides _run_patches' no-op sleep.
-    with _enter(*ctxs, patch("time.sleep", side_effect=sleep_then_ctrl_c)):
+    with _enter(
+        *ctxs,
+        patch.object(qs, "_supervisor_sleep", side_effect=sleep_then_ctrl_c),
+    ):
         qs.run_share(_make_args())
     combined = capsys.readouterr()
     assert SHARE_KEY not in combined.out + combined.err
