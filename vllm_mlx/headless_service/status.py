@@ -103,8 +103,9 @@ def _endpoint_health(host: str, port: int) -> tuple[bool, bool]:
     ``live`` = the process is alive (``/livez`` returns 200). ``ready`` = the
     endpoint can accept work (``/readyz`` returns 200 AND ``"ready": true``).
     A lazy service can therefore be ready in ``standby`` without resident
-    weights; install/apply/upgrade separately use the authenticated activation
-    gate to qualify the configured model. Best-effort via a raw socket GET —
+    weights; install/apply/upgrade separately start with eager loading and
+    require model-resident readiness before restoring the requested lazy policy.
+    Best-effort via a raw socket GET —
     no external HTTP client dependency.
     """
     import socket

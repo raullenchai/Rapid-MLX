@@ -236,11 +236,12 @@ async def activate_primary_model():
     """Load and warm the configured primary without running user inference.
 
     Probe endpoints deliberately leave a lazy service in ``standby``.  This
-    authenticated control-plane operation is the explicit opt-in used by the
-    transactional launchd installer/apply/upgrade gates (and by operators who
-    want to pre-warm an always-on endpoint).  It never selects or downloads a
-    request-supplied model: only the primary fixed in the server configuration
-    can be activated.
+    authenticated control-plane operation lets an operator pre-warm an
+    already-trusted endpoint. Transactional service installation qualifies the
+    model through eager startup instead, so it never sends a persistent
+    credential to a listener whose identity has not yet been established. The
+    operation never selects or downloads a request-supplied model: only the
+    primary fixed in the server configuration can be activated.
     """
     cfg = get_config()
     if not cfg.ready or cfg.draining:

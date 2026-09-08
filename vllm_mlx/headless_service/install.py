@@ -21,9 +21,7 @@ already documented — this command just makes it safe and one-shot.
 
 from __future__ import annotations
 
-import json
 import os
-import stat
 import subprocess
 import sys
 import tempfile
@@ -248,8 +246,11 @@ def _mutation_list(
         "validate temporary plist with plutil -lint",
         f"install -o root -g wheel -m 644 temporary plist -> {plist_path}",
         f"launchctl bootstrap {DEFAULT_DOMAIN} {plist_path}",
-        f"poll {host}:{port}/readyz until endpoint-ready (max 120s)",
-        "activate and qualify the configured primary model before commit",
+        (
+            f"start transiently without --lazy-load and poll {host}:{port}/readyz "
+            "until the configured model is resident (max 600s)"
+        ),
+        "commit the requested lazy-load policy only after qualification",
     ]
 
 
@@ -285,7 +286,12 @@ def _install_service_config(*, user: str, home: Path, path: Path, data: bytes) -
     atomic_write_definition(path, data)
 
 
-def _readyz_ready(host: str, port: int) -> bool:
+def _readyz_ready(
+    host: str,
+    port: int,
+    *,
+    require_model_loaded: bool = False,
+) -> bool:
     """True when ``/readyz`` reports ready.
 
     rapid-mlx ``/readyz`` returns HTTP 200 once the process is able to serve
@@ -308,10 +314,18 @@ def _readyz_ready(host: str, port: int) -> bool:
         return False
     # Compact JSON separators or pretty-printed — compare whitespace-free.
     body = b"".join(rest.split()).lower()
-    return b'"ready":true' in body
+    if b'"ready":true' not in body:
+        return False
+    return not require_model_loaded or b'"model_loaded":true' in body
 
 
-def _wait_ready(host: str, port: int, timeout_s: int = 120) -> bool:
+def _wait_ready(
+    host: str,
+    port: int,
+    timeout_s: int = 120,
+    *,
+    require_model_loaded: bool = False,
+) -> bool:
     """Poll ``/readyz`` until it reports ready or ``timeout_s`` elapses.
 
     Mirrors the readiness loop in ``scripts/headless_service_smoke.sh`` so
@@ -319,105 +333,38 @@ def _wait_ready(host: str, port: int, timeout_s: int = 120) -> bool:
     """
     deadline = time.time() + timeout_s
     while time.time() < deadline:
-        if _readyz_ready(host, port):
+        if _readyz_ready(
+            host,
+            port,
+            require_model_loaded=require_model_loaded,
+        ):
             return True
         time.sleep(1.0)
     return False
 
 
-def _read_service_credential(
-    credential_file: str | None, *, expected_uid: int
-) -> str | None:
-    """Securely read the daemon credential into memory as root.
+def _startup_qualification_config(config: ServiceConfig) -> ServiceConfig:
+    """Return a transient definition that proves weights load at startup.
 
-    Open with ``O_NOFOLLOW`` first, then validate the opened inode.  This
-    avoids a check/read replacement race in the service-user-owned home and
-    prevents the privileged CLI from reading a foreign file through a link.
+    The desired on-disk definition may use ``--lazy-load``.  Qualification
+    deliberately boots the same model and options without that one flag, then
+    commits the original definition after readiness reports resident weights.
+    This avoids sending a reusable API credential to an unverified TCP peer.
     """
-    if not credential_file:
-        return None
-    path = Path(credential_file)
-    from .config import ServiceConfigError
-
-    try:
-        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
-    except FileNotFoundError:
-        return None
-    except OSError as exc:
-        raise ServiceConfigError(f"cannot open credential file: {exc}") from None
-    try:
-        info = os.fstat(fd)
-        if not stat.S_ISREG(info.st_mode):
-            raise ServiceConfigError("credential file must be a regular file")
-        if stat.S_IMODE(info.st_mode) & 0o077:
-            raise ServiceConfigError(
-                "credential file must not be accessible by group or others"
-            )
-        if info.st_uid != expected_uid:
-            raise ServiceConfigError(
-                f"credential file is owned by uid {info.st_uid}, expected {expected_uid}"
-            )
-        with os.fdopen(fd, encoding="utf-8") as handle:
-            fd = -1
-            secret = handle.read(65_537)
-    finally:
-        if fd >= 0:
-            os.close(fd)
-    if len(secret) > 65_536:
-        raise ServiceConfigError("credential file is unexpectedly large")
-    secret = secret.strip()
-    if not secret or "\n" in secret or "\r" in secret:
-        raise ServiceConfigError("credential file must contain one non-empty line")
-    return secret
-
-
-def _activate_model(
-    host: str,
-    port: int,
-    *,
-    credential_file: str | None,
-    credential_uid: int,
-    timeout_s: int = 600,
-) -> bool:
-    """Ask the local service to load/warm its configured primary model."""
-    import http.client
-
-    try:
-        secret = _read_service_credential(credential_file, expected_uid=credential_uid)
-        headers = {"Content-Length": "0"}
-        if secret is not None:
-            headers["Authorization"] = f"Bearer {secret}"
-        connection = http.client.HTTPConnection(
-            _probe_host(host), port, timeout=timeout_s
-        )
-        try:
-            connection.request("POST", "/v1/models/activate", headers=headers)
-            response = connection.getresponse()
-            payload = json.loads(response.read())
-        finally:
-            connection.close()
-    except (OSError, ValueError, http.client.HTTPException):
-        return False
-    return bool(
-        response.status == 200
-        and isinstance(payload, dict)
-        and payload.get("state") == "ready"
-        and payload.get("model_loaded") is True
+    if "--lazy-load" not in config.serve_args:
+        return config
+    return config.updated(
+        serve_args=tuple(arg for arg in config.serve_args if arg != "--lazy-load")
     )
 
 
-def _wait_qualified(config: ServiceConfig, *, ready_timeout_s: int = 120) -> bool:
-    """Require both an accepting endpoint and a loadable configured model."""
-    if not _wait_ready(config.host, config.port, timeout_s=ready_timeout_s):
-        return False
-    credential_uid = user_uid(config.service_user)
-    if credential_uid is None:
-        return False
-    return _activate_model(
+def _wait_qualified(config: ServiceConfig, *, ready_timeout_s: int = 600) -> bool:
+    """Require startup readiness with the configured model resident."""
+    return _wait_ready(
         config.host,
         config.port,
-        credential_file=config.credential_file,
-        credential_uid=credential_uid,
+        timeout_s=ready_timeout_s,
+        require_model_loaded=True,
     )
 
 
@@ -646,7 +593,7 @@ def install_command(args) -> int:
             user=user,
             home=home,
             path=service_config_path,
-            data=config_bytes(service_config),
+            data=config_bytes(_startup_qualification_config(service_config)),
         )
         # Stage + lint. check=False so a lint failure surfaces its specific
         # message instead of a generic "install step failed" traceback.
@@ -687,6 +634,15 @@ def install_command(args) -> int:
                 f"rolled back. Check {home}/Library/Logs/Rapid-MLX/"
                 "server.stderr.log"
             )
+        # The running process has already loaded the model from the transient
+        # eager definition. Persist the operator's original lazy policy for
+        # every later launch only after qualification succeeds.
+        _install_service_config(
+            user=user,
+            home=home,
+            path=service_config_path,
+            data=config_bytes(service_config),
+        )
     except Exception as exc:
         # Best-effort rollback: remove the staged file AND the persistent
         # plist (never the models/data/logs), so a failed install cannot

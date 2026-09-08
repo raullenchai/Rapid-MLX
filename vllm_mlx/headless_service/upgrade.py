@@ -10,9 +10,20 @@ import sys
 from pathlib import Path
 
 from .common import DEFAULT_LABEL
-from .config import ServiceConfigError, atomic_write, load_config
+from .config import (
+    ServiceConfigError,
+    atomic_write,
+    atomic_write_definition,
+    config_bytes,
+    load_config,
+)
 from .configure import _account, _bootout, _bootstrap, _identity_or_error
-from .install import _wait_qualified, _wait_ready, is_root
+from .install import (
+    _startup_qualification_config,
+    _wait_qualified,
+    _wait_ready,
+    is_root,
+)
 
 
 def _target(version: str | None, extras: str | None) -> str:
@@ -97,7 +108,8 @@ def upgrade_command(args) -> int:
         f"install {target} as {user}",
         "run rapid-mlx doctor (diagnostic)",
         f"bootstrap and require {config.host}:{config.port}/readyz",
-        "activate and qualify the configured primary model",
+        "start transiently without --lazy-load and require resident model readiness",
+        "restore the requested lazy-load policy after qualification",
         "restore frozen environment and old service on any failure",
     ]
     if dry_run:
@@ -144,8 +156,17 @@ def upgrade_command(args) -> int:
                 "the real launchd readiness gate will decide acceptance.",
                 file=sys.stderr,
             )
-        boot = _bootstrap(label)
-        healthy = boot.returncode == 0 and _wait_qualified(config)
+        try:
+            atomic_write_definition(
+                current_path,
+                config_bytes(_startup_qualification_config(config)),
+            )
+            boot = _bootstrap(label)
+            healthy = boot.returncode == 0 and _wait_qualified(config)
+            if healthy:
+                atomic_write_definition(current_path, config_bytes(config))
+        except OSError:
+            healthy = False
     else:
         healthy = False
 
@@ -157,7 +178,13 @@ def upgrade_command(args) -> int:
         return 0
 
     reason = upgraded.stderr.strip() if upgraded.returncode else "readiness gate failed"
-    rollback_ok = _restore(
+    try:
+        # Rollback must never reboot from the transient eager definition.
+        atomic_write_definition(current_path, config_bytes(config))
+        definition_restored = True
+    except OSError:
+        definition_restored = False
+    rollback_ok = definition_restored and _restore(
         user=user,
         python=python,
         requirements=requirements,

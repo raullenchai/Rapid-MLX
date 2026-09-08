@@ -21,6 +21,7 @@ import pytest
 from vllm_mlx.cli import build_parser
 from vllm_mlx.headless_service import common
 from vllm_mlx.headless_service import install as ins_mod
+from vllm_mlx.headless_service.config import SCHEMA_VERSION, ServiceConfig
 from vllm_mlx.headless_service.plist import (
     build_plist_dict,
     parse_plist,
@@ -435,112 +436,61 @@ def test_readyz_ready_semantics(monkeypatch, status, body, expected):
         srv.sock.close()
 
 
-def test_activate_model_sends_credential_only_in_header(tmp_path):
-    credential = tmp_path / "credential"
-    credential.write_text("top-secret\n")
-    credential.chmod(0o600)
+def test_qualification_never_sends_the_persistent_credential():
     srv = _HttpResponder(
         b"HTTP/1.1 200 OK",
-        b'{"status":"ready","state":"ready","model_loaded":true}',
+        b'{"ready":true,"state":"ready","model_loaded":true}',
     )
     try:
-        assert ins_mod._activate_model(
-            "127.0.0.1",
-            srv.port,
-            credential_file=str(credential),
-            credential_uid=credential.stat().st_uid,
-            timeout_s=2,
+        config = types.SimpleNamespace(
+            host="127.0.0.1",
+            port=srv.port,
+            credential_file="/private/persistent-key",
         )
-        assert b"POST /v1/models/activate HTTP/1.1" in srv.request
-        assert b"Authorization: Bearer top-secret" in srv.request
+        assert ins_mod._wait_qualified(config, ready_timeout_s=2)
+        assert b"GET /readyz HTTP/1.1" in srv.request
+        assert b"Authorization:" not in srv.request
+        assert b"persistent-key" not in srv.request
     finally:
         srv.sock.close()
 
 
-def test_activate_model_rejects_endpoint_only_readiness():
+def test_qualification_rejects_endpoint_only_readiness():
     srv = _HttpResponder(
         b"HTTP/1.1 200 OK",
-        b'{"status":"ready","state":"standby","model_loaded":false}',
+        b'{"ready":true,"state":"standby","model_loaded":false}',
     )
     try:
-        assert not ins_mod._activate_model(
-            "127.0.0.1",
-            srv.port,
-            credential_file=None,
-            credential_uid=0,
-            timeout_s=2,
+        assert not ins_mod._readyz_ready(
+            "127.0.0.1", srv.port, require_model_loaded=True
         )
     finally:
         srv.sock.close()
 
 
-def test_read_service_credential_rejects_symlink_and_foreign_owner(tmp_path):
-    credential = tmp_path / "credential"
-    credential.write_text("secret\n")
-    credential.chmod(0o600)
-    link = tmp_path / "link"
-    link.symlink_to(credential)
-    with pytest.raises(ValueError, match="cannot open credential"):
-        ins_mod._read_service_credential(link, expected_uid=credential.stat().st_uid)
-    with pytest.raises(ValueError, match="owned by uid"):
-        ins_mod._read_service_credential(
-            credential, expected_uid=credential.stat().st_uid + 1
-        )
+def test_startup_qualification_removes_only_lazy_load():
+    config = ServiceConfig(
+        schema_version=SCHEMA_VERSION,
+        label="com.rapidmlx.server",
+        service_user="serveuser",
+        executable="/Users/serveuser/.local/bin/rapid-mlx",
+        model="qwen3.5-4b-4bit",
+        serve_args=("--lazy-load", "--idle-unload-seconds", "300", "--lazy-load"),
+    ).validated()
 
+    qualified = ins_mod._startup_qualification_config(config)
 
-def test_read_service_credential_missing_is_unconfigured(tmp_path):
-    assert (
-        ins_mod._read_service_credential(
-            tmp_path / "missing", expected_uid=tmp_path.stat().st_uid
-        )
-        is None
+    assert qualified.serve_args == ("--idle-unload-seconds", "300")
+    assert config.serve_args == (
+        "--lazy-load",
+        "--idle-unload-seconds",
+        "300",
+        "--lazy-load",
     )
+    assert ins_mod._startup_qualification_config(qualified) is qualified
 
 
-@pytest.mark.parametrize(
-    ("kind", "message"),
-    [
-        ("directory", "regular file"),
-        ("public", "group or others"),
-        ("large", "unexpectedly large"),
-        ("empty", "one non-empty line"),
-        ("multiline", "one non-empty line"),
-    ],
-)
-def test_read_service_credential_rejects_unsafe_contents(tmp_path, kind, message):
-    credential = tmp_path / "credential"
-    if kind == "directory":
-        credential.mkdir()
-    else:
-        contents = {
-            "public": "secret\n",
-            "large": "x" * 65_537,
-            "empty": "\n",
-            "multiline": "one\ntwo\n",
-        }[kind]
-        credential.write_text(contents)
-        credential.chmod(0o644 if kind == "public" else 0o600)
-    with pytest.raises(ValueError, match=message):
-        ins_mod._read_service_credential(
-            credential, expected_uid=credential.stat().st_uid
-        )
-
-
-def test_activate_model_rejects_malformed_response():
-    srv = _HttpResponder(b"HTTP/1.1 200 OK", b"not-json")
-    try:
-        assert not ins_mod._activate_model(
-            "127.0.0.1",
-            srv.port,
-            credential_file=None,
-            credential_uid=0,
-            timeout_s=2,
-        )
-    finally:
-        srv.sock.close()
-
-
-def test_wait_qualified_requires_endpoint_then_model_activation(monkeypatch):
+def test_wait_qualified_requires_resident_startup_readiness(monkeypatch):
     config = types.SimpleNamespace(
         host="127.0.0.1",
         port=8000,
@@ -548,27 +498,17 @@ def test_wait_qualified_requires_endpoint_then_model_activation(monkeypatch):
         service_user="serveuser",
     )
     calls = []
-    monkeypatch.setattr(
-        ins_mod,
-        "_wait_ready",
-        lambda host, port, **kwargs: calls.append(("ready", host, port)) or True,
-    )
-    monkeypatch.setattr(
-        ins_mod,
-        "_activate_model",
-        lambda host, port, **kwargs: (
-            calls.append(("activate", host, port, kwargs["credential_file"])) or True
-        ),
-    )
-    monkeypatch.setattr(ins_mod, "user_uid", lambda _user: 501)
+
+    def wait_ready(host, port, **kwargs):
+        calls.append(("ready", host, port, kwargs["require_model_loaded"]))
+        return True
+
+    monkeypatch.setattr(ins_mod, "_wait_ready", wait_ready)
     assert ins_mod._wait_qualified(config)
-    assert calls == [
-        ("ready", "127.0.0.1", 8000),
-        ("activate", "127.0.0.1", 8000, "/private/key"),
-    ]
+    assert calls == [("ready", "127.0.0.1", 8000, True)]
 
 
-def test_wait_qualified_short_circuits_unready_or_missing_account(monkeypatch):
+def test_wait_qualified_returns_false_when_model_is_not_ready(monkeypatch):
     config = types.SimpleNamespace(
         host="127.0.0.1",
         port=8000,
@@ -576,15 +516,6 @@ def test_wait_qualified_short_circuits_unready_or_missing_account(monkeypatch):
         service_user="gone",
     )
     monkeypatch.setattr(ins_mod, "_wait_ready", lambda *_a, **_k: False)
-    monkeypatch.setattr(
-        ins_mod,
-        "_activate_model",
-        lambda *_a, **_k: pytest.fail("activation must not run"),
-    )
-    assert not ins_mod._wait_qualified(config)
-
-    monkeypatch.setattr(ins_mod, "_wait_ready", lambda *_a, **_k: True)
-    monkeypatch.setattr(ins_mod, "user_uid", lambda _user: None)
     assert not ins_mod._wait_qualified(config)
 
 
@@ -1382,12 +1313,16 @@ def test_port_busy_false_on_connect_error(monkeypatch):
 
 
 def test_wait_ready_immediate(monkeypatch):
-    monkeypatch.setattr(ins_mod, "_readyz_ready", staticmethod(lambda h, p: True))
+    monkeypatch.setattr(
+        ins_mod, "_readyz_ready", staticmethod(lambda h, p, **kwargs: True)
+    )
     assert ins_mod._wait_ready("127.0.0.1", 1, timeout_s=5) is True
 
 
 def test_wait_ready_timeout(monkeypatch):
-    monkeypatch.setattr(ins_mod, "_readyz_ready", staticmethod(lambda h, p: False))
+    monkeypatch.setattr(
+        ins_mod, "_readyz_ready", staticmethod(lambda h, p, **kwargs: False)
+    )
     state = {"t": 0.0}
 
     def _tick():
@@ -1831,6 +1766,12 @@ def test_install_success_cleans_secure_staging_file(monkeypatch, tmp_path, capsy
     monkeypatch.setattr(ins, "LAUNCH_DAEMONS_DIR", tmp_path)
     monkeypatch.setattr(ins, "_wait_qualified", lambda _config: True)
     monkeypatch.setattr(ins.tempfile, "tempdir", str(tmp_path))
+    config_writes = []
+    monkeypatch.setattr(
+        ins,
+        "_install_service_config",
+        lambda **kwargs: config_writes.append(json.loads(kwargs["data"])),
+    )
 
     def _fake_run(argv, check=True):
         if argv[0] == "install":
@@ -1839,11 +1780,20 @@ def test_install_success_cleans_secure_staging_file(monkeypatch, tmp_path, capsy
 
     monkeypatch.setattr(ins, "_run", _fake_run)
     code = ins.install_command(
-        _ns(dry_run=False, serve_args=["--", "--max-num-seqs", "4"])
+        _ns(
+            dry_run=False,
+            serve_args=["--", "--lazy-load", "--max-num-seqs", "4"],
+        )
     )
     assert code == 0
     assert "Installed and running" in capsys.readouterr().out
     assert not list(tmp_path.glob("rapid-mlx-service-*.plist"))
+    assert config_writes[0]["serve_args"] == ["--max-num-seqs", "4"]
+    assert config_writes[1]["serve_args"] == [
+        "--lazy-load",
+        "--max-num-seqs",
+        "4",
+    ]
 
 
 def test_install_success_tolerates_staging_cleanup_failure(monkeypatch, tmp_path):
