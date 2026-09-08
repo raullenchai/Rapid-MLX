@@ -9,7 +9,7 @@ experimental model. It is not evidence for changing the default model.
 
 - Machine: Apple M3 Ultra, 256 GB unified memory
 - macOS: 26.5.2 (25F84)
-- Python: 3.11
+- Python: 3.12.13
 - MLX: 0.32.2
 - mlx-lm: 0.31.3
 - NeoHorse source: `TokenRhythm/NeoHorse-1-9B` at
@@ -19,25 +19,61 @@ experimental model. It is not evidence for changing the default model.
 - Baseline: `mlx-community/Qwen3.5-9B-4bit` at
   `8b2b98c00a6b4d291155e4890773ca8f769aee53`
 - Quantization: affine 4-bit, group size 64
+- Rapid-MLX revision under test: `525b62ac3`
 
 ## Results
 
-The fixed local prompt set scored reasoning, general Chat, coding, and
-first-action tool selection separately:
+The checked-in product-path evaluator produced these results:
 
-| Model | Reasoning | General Chat | Coding | Tool first action |
-|---|---:|---:|---:|---:|
-| Qwen3.5 9B 4-bit | 8/10 | 6/10 | 8/10 | 25/30 |
-| NeoHorse 1 9B 4-bit | 8/10 | 7/10 | 8/10 | 28/30 |
+| Suite | Result |
+|---|---:|
+| Tool calling, including parallel, sequential, and recovery cases | 24/31 (77%) |
+| Executable coding tasks | 6/10 (60%) |
+| Deterministically graded reasoning | 6/10 (60%) |
+| General knowledge and instruction following | 7/10 (70%) |
 
-NeoHorse was better at parallel tool selection and clarifying an ambiguous
-request. It also invented specific project names in one factuality probe.
-That regression is why the model remains experimental.
+The failures include incomplete parallel tool batches, missed later steps in
+sequential tool workflows, one failed recovery case, four coding tasks with
+runtime failures, and four incorrect reasoning answers. These results support
+an experimental listing, but do not support replacing the default 9B model.
 
-A single 256-token speed smoke on the same machine measured 115.2 tokens/s
-for NeoHorse and 112.4 tokens/s for the baseline, with reported peak memory
-of 5.25 GB and 6.75 GB respectively. This is a smoke result, not a general
-performance claim: it is one prompt, one run, and one machine.
+The same run measured 165 ms cold TTFT, 96 ms warm TTFT, 44.5 tokens/s for its
+short decode probe, 113.9 tokens/s for its 500-token decode probe, 5.5 GB active
+RAM, and 5.7 GB peak RAM. These are single-machine qualification measurements,
+not cross-hardware performance claims.
+
+## Reproduction
+
+The prompts and graders are versioned in `evals/prompts/{tool_calling,coding,
+reasoning,general}.json` and `evals/run_eval.py`. Tool and reasoning suites use
+deterministic structural/answer graders; coding outputs are executed against
+the checked-in task tests; general answers use the task-specific deterministic
+checks. All requests use temperature 0. Tool calls use at most 512 output
+tokens, coding 4,096, reasoning 1,024, and general 2,048.
+
+With the published artifact available in the standard Hugging Face cache:
+
+```bash
+rapid-mlx serve neohorse-9b-4bit --host 127.0.0.1 --port 8327
+
+python evals/run_eval.py \
+  --model NeoHorse-1-9B-MLX-4bit \
+  --host 127.0.0.1 --port 8327 \
+  --parser hermes --quantization 4bit \
+  --suite speed tool_calling coding reasoning general \
+  --output /private/tmp/rapid-mlx-neohorse9-standard-eval.json \
+  --hardware 'Apple M3 Ultra (256 GB)' \
+  --server-flags \
+    'rapid-mlx serve neohorse-9b-4bit --host 127.0.0.1 --port 8327' \
+  --model-path \
+    'rapid-mlx/NeoHorse-1-9B-MLX-4bit@9fe3cd3f69e2d653e82ec094e1c4d0caa9564897' \
+  --engine batched
+```
+
+An earlier direct-loader screen suggested promising behavior relative to the
+current 9B default, but used a separate prompt harness and is intentionally not
+used as promotion evidence here. A default decision requires both candidates
+to be compared with this checked-in evaluator and broader user journeys.
 
 ## Artifact checks
 
