@@ -523,13 +523,46 @@ def test_abort_before_fetch_registration_skips_generation():
         client._perform_local_fetch("r1", "POST", "/v1/chat/completions", {}, b"")
     conn.request.assert_not_called()
     conn.close.assert_called_once()
-    assert client._aborted == set() and client._active == {}
+    assert client._aborted == {} and client._active == {}
+
+
+def test_stale_abort_marker_does_not_discard_reused_request_id():
+    """Relays may reuse request ids (per-gateway counters that reset on
+    reconnect). An abort that arrived after its own fetch had already
+    finished left a stray marker; a LATER legitimate request carrying
+    the same id must still be served, not silently dropped."""
+    client = ws_tunnel.TunnelClient(local_port=1)
+    client._dispatch_inbound({"t": "abort", "id": "r1"})
+    # Age the marker past the race window it could possibly describe.
+    client._aborted["r1"] -= ws_tunnel._ABORT_MARKER_STALE_SECONDS + 1
+
+    conn = MagicMock()
+    with (
+        patch.object(ws_tunnel, "OneShotHTTPConnection", return_value=conn),
+        patch.object(client, "_sync_send"),
+    ):
+        conn.getresponse.return_value.getheaders.return_value = []
+        conn.getresponse.return_value.read1.return_value = b""
+        client._perform_local_fetch("r1", "GET", "/v1/models", {}, b"")
+    conn.request.assert_called_once()  # served, not discarded
+    assert client._aborted == {} and client._active == {}
+
+
+def test_fresh_abort_marker_still_wins_on_id_reuse():
+    """The stale-window exemption must not weaken the real race: a
+    marker inside the window still skips the generation."""
+    client = ws_tunnel.TunnelClient(local_port=1)
+    client._dispatch_inbound({"t": "abort", "id": "r1"})
+    conn = MagicMock()
+    with patch.object(ws_tunnel, "OneShotHTTPConnection", return_value=conn):
+        client._perform_local_fetch("r1", "POST", "/v1/chat/completions", {}, b"")
+    conn.request.assert_not_called()
 
 
 def test_late_abort_after_completion_is_harmless_and_bounded():
     """An abort for an already-finished fetch has nothing to cancel;
-    the stray marker is recorded (set is capped at 4096 internally so
-    multi-day nodes can't creep) but never consumed."""
+    the stray marker is recorded (capped at 4096 so multi-day nodes
+    can't creep) but never consumed by anything real."""
     client = ws_tunnel.TunnelClient(local_port=1)
     conn = MagicMock()
     with (
@@ -541,7 +574,7 @@ def test_late_abort_after_completion_is_harmless_and_bounded():
         client._perform_local_fetch("r1", "GET", "/v1/models", {}, b"")
     assert client._active == {}
     client._dispatch_inbound({"t": "abort", "id": "r1"})  # too late, harmless
-    assert client._aborted == {"r1"}
+    assert "r1" in client._aborted
     for i in range(5000):  # cap holds
         client._dispatch_inbound({"t": "abort", "id": f"x{i}"})
     assert len(client._aborted) <= 4096
@@ -660,6 +693,23 @@ def test_cache_missing_interval_field_is_not_reused(tmp_path):
     del payload["heartbeat_interval_s"]
     qs._save_cache("qwen3.6-35b", payload)
     assert qs._load_cache("qwen3.6-35b", "qwen3.6-35b") is None
+
+
+def test_save_cache_failure_removes_credential_bearing_tmp(tmp_path):
+    """The write is tmp→replace; if the replace fails (full disk) a
+    SECOND copy of the share-key sits on disk as the .tmp file. It must
+    be unlinked, and the OSError must surface as the redacted exit
+    path, not a raw traceback."""
+    payload = dict(_register_payload(), alias="qwen3.6-35b")
+    with (
+        patch.object(qs.os, "replace", side_effect=OSError("No space left on device")),
+        pytest.raises(qs.QuickSilverError, match="could not write node cache"),
+    ):
+        qs._save_cache("qwen3.6-35b", payload)
+    leftovers = [p.name for p in qs._cache_dir().iterdir() if ".tmp-" in p.name]
+    assert leftovers == []
+    raw = b"".join(p.read_bytes() for p in qs._cache_dir().iterdir())
+    assert SHARE_KEY.encode() not in raw
 
 
 def test_cache_path_rejects_path_shaped_ids():
@@ -1126,6 +1176,19 @@ def test_heartbeat_stop_join_window_covers_request_timeout():
     assert join_kwargs["timeout"] >= qs._BEAT_REQUEST_TIMEOUT
 
 
+def test_heartbeat_stop_warns_when_thread_survives_join(caplog):
+    """The join window already exceeds the beat's socket timeout — a
+    thread still alive past it means a credential-bearing beat may fire
+    one final request after run_share returns. Surface it, don't claim
+    a guarantee that failed."""
+    hb = _hb()
+    hb._thread = MagicMock()
+    hb._thread.is_alive.return_value = True
+    with caplog.at_level(logging.WARNING, logger="vllm_mlx.share.quicksilver"):
+        hb.stop()
+    assert "one final request" in caplog.text
+
+
 # ─────────────────────────── run_share integration ───────────────────────────
 
 
@@ -1539,8 +1602,8 @@ def test_install_service_plist_keeps_registration_origin(capsys):
         "qwen3.6-35b",
         dict(
             _register_payload(
-                relay_url="wss://relay.staging.example/up",
-                heartbeat_url="https://hb.staging.example/hb",
+                relay_url="wss://pay.staging.example/up",
+                heartbeat_url="https://pay.staging.example/hb",
             ),
             alias="qwen3.6-35b",
             api_base="https://pay.staging.example",
@@ -1553,6 +1616,32 @@ def test_install_service_plist_keeps_registration_origin(capsys):
     argv = plistlib.loads(plist_path.read_bytes())["ProgramArguments"]
     assert "--quicksilver-api" in argv
     assert argv[argv.index("--quicksilver-api") + 1] == "https://pay.staging.example"
+
+
+def test_install_service_refuses_wire_urls_job_cannot_validate():
+    """The resident job re-runs the wire-URL gate every boot against
+    ITS effective origin. A cache with sibling staging hosts
+    (relay.staging.example under pay.staging.example) passes today's
+    install but fails every start — KeepAlive hot-loops a doomed
+    restart at ThrottleInterval=10s. Refuse at install instead."""
+    qs._save_cache(
+        "qwen3.6-35b",
+        dict(
+            _register_payload(
+                relay_url="wss://relay.staging.example/up",
+                heartbeat_url="https://hb.staging.example/hb",
+            ),
+            alias="qwen3.6-35b",
+            api_base="https://pay.staging.example",
+        ),
+    )
+    with pytest.raises(SystemExit) as ei:
+        qs.run_share(_make_args(install_service=True))
+    assert ei.value.code == 2
+    plist_path = (
+        Path.home() / "Library/LaunchAgents/com.quicksilver.node.qwen3.6-35b.plist"
+    )
+    assert not plist_path.exists()
 
 
 def test_install_service_bakes_declared_flags_into_plist():

@@ -88,6 +88,15 @@ LOCAL_FETCH_TIMEOUT_SECONDS = 1800
 # ``data: ...\n\n`` flush forwards immediately.
 CHUNK_SIZE = 4096
 
+# A pre-registration abort marker is only meaningful within the race
+# window it was created for (abort frame lands while the fetch worker
+# is between connect() and registration — milliseconds). Relays are
+# allowed to reuse request ids; a marker older than this cannot refer
+# to the request currently registering under that id, and MUST NOT
+# discard it. 5 s is orders of magnitude above any scheduling delay
+# while staying far below id-reuse timescales.
+_ABORT_MARKER_STALE_SECONDS = 5.0
+
 
 def _hard_close(conn: http.client.HTTPConnection) -> None:
     """Close a loopback connection such that a thread blocked in
@@ -246,8 +255,10 @@ class TunnelClient:
         # Aborts that arrive before their req's fetch has registered in
         # ``_active`` (the fetch task only starts on the next loop
         # tick). Without this the abort is a silent no-op and the
-        # generation runs to completion against nobody.
-        self._aborted: set[str] = set()
+        # generation runs to completion against nobody. Values are
+        # ``time.monotonic()`` stamps, not bare membership — see
+        # ``_ABORT_MARKER_STALE_SECONDS``.
+        self._aborted: dict[str, float] = {}
         self._active_lock = threading.Lock()
         # Caller-visible "tunnel died after banner" sentinel. Set when
         # the WS closes unexpectedly; the parent's monitor loop polls it.
@@ -499,8 +510,18 @@ class TunnelClient:
                         # marker only ever lives one loop tick, at
                         # 4096 entries eviction cannot race a fetch.
                         if len(self._aborted) >= 4096:
-                            self._aborted.pop()
-                        self._aborted.add(req_id)
+                            # FIFO — dict preserves insertion order, so
+                            # this evicts the oldest marker.
+                            self._aborted.pop(next(iter(self._aborted)))
+                        # Timestamp, not just membership: a relay MAY
+                        # reuse request ids (per-gateway counters that
+                        # reset on reconnect), and an abort that raced
+                        # an already-finished request must not silently
+                        # discard the next legitimate request carrying
+                        # that id. Fetches only consult markers fresh
+                        # enough to still be the same race window
+                        # (``_ABORT_MARKER_STALE_SECONDS``).
+                        self._aborted[req_id] = time.monotonic()
                 if conn is not None:
                     _hard_close(conn)
 
@@ -574,13 +595,17 @@ class TunnelClient:
             if self._closed.is_set():
                 conn.close()
                 return
-            if req_id in self._aborted:
-                # The relay cancelled before we ever registered — the
-                # downstream is gone; starting the generation would
-                # burn a pool slot for nobody. Skip without sending.
-                self._aborted.discard(req_id)
-                conn.close()
-                return
+            marked_at = self._aborted.pop(req_id, None)
+            if marked_at is not None:
+                if time.monotonic() - marked_at <= _ABORT_MARKER_STALE_SECONDS:
+                    # The relay cancelled before we ever registered — the
+                    # downstream is gone; starting the generation would
+                    # burn a pool slot for nobody. Skip without sending.
+                    conn.close()
+                    return
+                # Else: a stale marker from an abort of a PREVIOUS
+                # request that reused this id — the relay's counter
+                # wrapped, not our cancellation. Serve normally.
             self._active[req_id] = conn
         try:
             conn.request(method, path, body=body, headers=headers)
@@ -618,7 +643,7 @@ class TunnelClient:
                 # left for it to cancel (bounded memory).
                 if self._active.get(req_id) is conn:
                     del self._active[req_id]
-                self._aborted.discard(req_id)
+                self._aborted.pop(req_id, None)
             conn.close()
 
     async def _send(self, obj: Any) -> None:

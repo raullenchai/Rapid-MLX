@@ -222,11 +222,23 @@ def _save_cache(catalog_id: str, payload: dict[str, Any]) -> Path:
     # "provider_key_echo"-style field must never survive to disk.
     allowed = {k: payload[k] for k in _CACHE_ALLOWED_KEYS if k in payload}
     data = json.dumps(allowed, indent=2, sort_keys=True).encode("utf-8")
-    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-    with os.fdopen(fd, "wb") as f:
-        f.write(data)
-    os.replace(tmp, path)
-    path.chmod(0o600)
+    try:
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        with os.fdopen(fd, "wb") as f:
+            f.write(data)
+        os.replace(tmp, path)
+        path.chmod(0o600)
+    except OSError as exc:
+        # A failed replace/write can leave a second copy of the
+        # share-key on disk as the .tmp file — remove it before the
+        # error even unwinds, then take the redacted exit path.
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise QuickSilverError(
+            f"could not write node cache for {catalog_id}: {exc}"
+        ) from None
     return path
 
 
@@ -665,6 +677,17 @@ class _Heartbeat:
             # mid-flight in _open survives stop() and keeps sending the
             # node credential after run_share() has returned.
             self._thread.join(timeout=_BEAT_REQUEST_TIMEOUT + 5)
+            if self._thread.is_alive():
+                # Python threads cannot be force-killed, and the join
+                # window is already well past the beat's own socket
+                # timeout — getting here means something is wedged
+                # below that timeout. Don't claim a guarantee we failed
+                # to deliver: say the beat may fire one last request.
+                log.warning(
+                    "QuickSilver heartbeat thread still alive %.0fs after "
+                    "stop — an in-flight beat may send one final request",
+                    _BEAT_REQUEST_TIMEOUT + 5,
+                )
 
     def beat_now(self) -> None:
         self._beat_once()
@@ -823,12 +846,28 @@ def install_service(
     explicit_api = getattr(args, "quicksilver_api", None)
     cached_api = str(cache.get("api_base") or "")
     if explicit_api is not None:
-        argv += ["--quicksilver-api", _validate_api_base(explicit_api)]
+        effective_api = _validate_api_base(explicit_api)
+        argv += ["--quicksilver-api", effective_api]
     elif cached_api and cached_api != DEFAULT_PAY_API:
         # Do NOT install a job that will restart against the wrong
         # origin and KeepAlive-hot-loop a doomed validation — refuse
         # the install and send the operator to --reregister.
-        argv += ["--quicksilver-api", _validate_api_base(cached_api)]
+        effective_api = _validate_api_base(cached_api)
+        argv += ["--quicksilver-api", effective_api]
+    else:
+        effective_api = DEFAULT_PAY_API
+    # The resident job re-loads this cache every boot and gates serve
+    # on the SAME wire-URL/interval checks. A cache whose relay or
+    # heartbeat lives on a host the effective origin does not trust
+    # (sibling staging hosts are the classic shape) would make the job
+    # fail _validate_wire_urls at every start — KeepAlive hot-loops a
+    # doomed restart at ThrottleInterval=10s. Refuse an unusable
+    # service at install time instead.
+    try:
+        _validate_wire_urls(cache, effective_api, source="node cache")
+        _resolve_heartbeat_interval(cache, source="node cache")
+    except QuickSilverError as exc:
+        raise QuickSilverError(f"{exc} — re-run with --reregister") from None
 
     plist: dict[str, Any] = {
         "Label": label,
