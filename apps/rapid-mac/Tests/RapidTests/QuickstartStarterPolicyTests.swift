@@ -141,6 +141,20 @@ struct QuickstartStarterPolicyTests {
         #expect(pick.alias == "qwen3.5-9b-4bit")
     }
 
+    @Test("A cached experimental trade-up never becomes the automatic first model")
+    func cachedExperimentalTradeUpIsNeverAutomatic() {
+        let pick = QuickstartCoordinator.defaultChoice(
+            hardware: hardware(24),
+            catalog: [
+                entry("qwen3.5-4b-4bit"),
+                entry("neohorse-9b-4bit", cached: true),
+            ]
+        )
+
+        #expect(pick.alias == "qwen3.5-4b-4bit")
+        #expect(QuickstartCoordinator.optionalOnlyAliases.contains("neohorse-9b-4bit"))
+    }
+
     @Test("A cached standard starter stays visible when it wins below 16 GB")
     func cachedStandardStarterRemainsVisible() {
         let catalog = [

@@ -22,6 +22,7 @@ Families with registered aliases (run `rapid-mlx models` for the full, current l
 | GPT-OSS | 20B, 120B | 4/8-bit, mxfp4 |
 | Ternary Bonsai | 1.7B, 27B | 2-bit (ternary) |
 | Hunyuan 3 (Hy3) | 295B MoE (21B active) — **Ultra-only** | 4-bit |
+| NeoHorse 1 | 9B (experimental Chat candidate) | 4-bit |
 
 ### Recommended Models
 
@@ -34,6 +35,24 @@ Recommendations live in one catalog (`vllm_mlx/model_recommendations.json`) shar
 | 18–23 GB | `qwen3.5-9b-4bit` | 8.7 GB |
 | 24–31 GB | `bonsai-27b-2bit` | 13.0 GB |
 | 32 GB+ | `qwen3.8-27b-4bit` | 20.0 GB |
+
+### Experimental Chat candidate: NeoHorse 1 9B
+
+`neohorse-9b-4bit` is an opt-in, text-only Chat model for Macs with at
+least 18 GB of unified memory. It is not a Smart/Fast recommendation and does
+not change any default. Product-path qualification found unresolved gaps in
+multi-step tool use, executable coding, reasoning, and instruction following,
+so broader comparative dogfood is required before any default change.
+
+```bash
+rapid-mlx serve neohorse-9b-4bit
+```
+
+The alias deliberately enables none of the Qwen-specific speculative or
+cache optimizations until that exact checkpoint has separate compatibility
+evidence. See the
+[reproducible qualification note](../engineering/performance/2026-09-08-neohorse-9b-chat-qualification.md)
+for the current evidence and limitations.
 
 ### Ultra-only: Hunyuan 3 (Hy3)
 

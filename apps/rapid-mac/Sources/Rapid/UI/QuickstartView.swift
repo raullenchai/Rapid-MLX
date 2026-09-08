@@ -307,6 +307,15 @@ final class QuickstartCoordinator {
             tier: .tradeUp
         ),
         QuickstartModelChoice(
+            alias: "neohorse-9b-4bit",
+            displayName: "NeoHorse 1 · 9B",
+            hfRepo: "rapid-mlx/NeoHorse-1-9B-MLX-4bit",
+            downloadBytes: 5_058_235_254,
+            blurb: "Experimental 9B chat and tools for comparing model behavior.",
+            tier: .tradeUp,
+            minRAMGB: 18
+        ),
+        QuickstartModelChoice(
             alias: "qwen3.8-27b-4bit",
             displayName: "Qwen 3.8 · 27B",
             hfRepo: nil,
@@ -324,6 +333,12 @@ final class QuickstartCoordinator {
         ),
     ]
 
+    /// Experimental choices that onboarding may offer explicitly but must
+    /// never promote merely because their weights happen to be cached. This
+    /// keeps the first-run recommendation stable while still letting an
+    /// informed user select and compare the model.
+    static let optionalOnlyAliases: Set<String> = ["neohorse-9b-4bit"]
+
     /// Hardware-aware first-run policy. The existing cache-aware policy is the
     /// eligibility SSOT for cached choices; onboarding adds only its explicit
     /// 16 GB baseline. The 1.2B choice is automatic only when it is already
@@ -335,6 +350,7 @@ final class QuickstartCoordinator {
         let baseline = baselineChoice(hardware: hardware)
         let eligibleCatalog = catalog.filter { $0.supports(.chat) }
         var excluded = CacheAwareDefault.retiredAutomaticAliases
+            .union(optionalOnlyAliases)
         if baseline.alias != lowMemoryChoice.alias {
             excluded.insert(lowMemoryChoice.alias)
         } else {
@@ -2306,17 +2322,30 @@ struct QuickstartView: View {
         tradeUps: [QuickstartModelChoice],
         hardware: MacHardware
     ) -> [OnboardingComparisonTable.Column] {
-        tradeUps.map { choice in
+        let titles = comparisonColumnTitles(for: tradeUps)
+        return tradeUps.enumerated().map { index, choice in
             let footprint = ModelSizing.estimate(alias: choice.alias)
             let fit = ModelSizing.classify(footprint, on: hardware)
             return OnboardingComparisonTable.Column(
-                title: comparisonColumnTitle(for: choice),
+                title: titles[index],
                 isPicked: choice.alias == selection,
                 download: sizeText(for: choice),
                 memory: footprint.totalGB > 0 ? "≈ \(preciseGB(footprint.totalGB))" : "Unknown",
                 fit: fitText(fit),
                 fitIsWarning: fit != .recommended
             )
+        }
+    }
+
+    /// Prefer the compact parameter-count header, but disambiguate models of
+    /// the same size with their authored display names. A comparison can offer
+    /// multiple 9B choices; two identical "9B" columns would make the picked
+    /// state and the sourced cost figures impossible to attribute.
+    static func comparisonColumnTitles(for choices: [QuickstartModelChoice]) -> [String] {
+        let compact = choices.map(comparisonColumnTitle(for:))
+        let frequencies = Dictionary(compact.map { ($0, 1) }, uniquingKeysWith: +)
+        return zip(choices, compact).map { choice, title in
+            frequencies[title, default: 0] > 1 ? choice.displayName : title
         }
     }
 

@@ -462,6 +462,22 @@ struct Step2ModelSelectionBehaviorTests {
         #expect(visible.map(\.alias) == ["chat-a", "chat-b"])
     }
 
+    @Test("NeoHorse is an optional memory-gated first-run trade-up")
+    func neoHorseIsOptionalFirstRunTradeUp() throws {
+        let choice = try #require(
+            QuickstartCoordinator.onboardingChoices.first {
+                $0.alias == "neohorse-9b-4bit"
+            }
+        )
+        #expect(choice.tier == .tradeUp)
+        #expect(choice.hfRepo == "rapid-mlx/NeoHorse-1-9B-MLX-4bit")
+        #expect(choice.downloadBytes == 5_058_235_254)
+        #expect(choice.blurb.localizedCaseInsensitiveContains("experimental"))
+        #expect(!choice.isVisible(onRAMGB: 16))
+        #expect(choice.isVisible(onRAMGB: 24))
+        #expect(QuickstartCoordinator.defaultChoice.alias == "qwen3.5-4b-4bit")
+    }
+
     @Test("Search matches alias and Hugging Face repo through the shared primitive")
     func searchUsesTheSharedFilter() {
         let catalog = [Self.entry("qwen3.5-9b-4bit"), Self.entry("gemma3-1b")]

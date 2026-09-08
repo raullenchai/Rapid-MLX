@@ -437,7 +437,7 @@ multiplication. The regular `qwen3.8-27b-4bit` alias remains unchanged for M3
 and newer Macs; Rapid does not silently swap checkpoint precision.
 
 → [Full RAM tier map + serve flags per tier](https://rapidmlx.com/docs/hardware-tiers.html)
-→ [Every alias, quant, and family (188 text + 10 image + 10 video + 44 audio aliases, 252 total)](https://rapidmlx.com/docs/aliases.html) · interactive at [models.rapidmlx.com](https://models.rapidmlx.com/)
+→ [Every alias, quant, and family (189 text + 10 image + 10 video + 44 audio aliases, 253 total)](https://rapidmlx.com/docs/aliases.html) · interactive at [models.rapidmlx.com](https://models.rapidmlx.com/)
 
 ---
 

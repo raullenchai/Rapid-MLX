@@ -219,6 +219,7 @@
     "prism-ml/Ternary-Bonsai-27B-mlx-2bit": 8521052337,
     "prism-ml/bonsai-image-ternary-4B-mlx-2bit": 3888262196,
     "rapid-mlx/Ling-3.0-tiny-MLX-4bit": 4459772529,
+    "rapid-mlx/NeoHorse-1-9B-MLX-4bit": 5058235254,
     "rapid-mlx/Qwen3.8-27B-4bit-MTP-fp16-MLX": 16313463520,
     "rapid-mlx/Qwen3.8-27B-4bit-MTP-MLX": 16320413916,
     "rapid-mlx/Qwen3.8-27B-mixed-3.5bpw-MLX": 14788605437,

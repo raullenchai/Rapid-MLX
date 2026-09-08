@@ -537,8 +537,11 @@ struct OnboardingDirectionDTests {
             let title = QuickstartView.comparisonColumnTitle(for: choice)
             #expect(title.hasSuffix("B"), "\(choice.alias) header was \(title)")
         }
-        #expect(Set(Self.tradeUps.map(QuickstartView.comparisonColumnTitle(for:))).count
-                == Self.tradeUps.count, "columns must be distinguishable")
+        let titles = QuickstartView.comparisonColumnTitles(for: Self.tradeUps)
+        #expect(Set(titles).count == Self.tradeUps.count,
+                "same-size choices must be disambiguated by model name")
+        #expect(titles.contains("Qwen 3.5 · 9B"))
+        #expect(titles.contains("NeoHorse 1 · 9B"))
     }
 
     // MARK: - The click contract (unchanged by this visual pass)
