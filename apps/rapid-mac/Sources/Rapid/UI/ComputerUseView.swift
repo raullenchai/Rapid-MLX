@@ -1,10 +1,35 @@
 import SwiftUI
 
+/// Collects the tallest starter-card height so every card can adopt it and
+/// the flow grid stays equal-height. Max-reducing: the largest reported
+/// height wins.
+private struct StarterCardHeightKey: PreferenceKey {
+    static let defaultValue: CGFloat = 0
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        value = max(value, nextValue())
+    }
+}
+
 struct ComputerUseView: View {
     let languageRuntime: DraftPostLanguageRuntime?
     let visualRuntime: DraftPostVisualRuntime?
     @State private var showingDraftPost = false
     @State private var showingFreeUpSpace = false
+    /// A shared minimum keeps the flow grid even at the common text size;
+    /// cards still grow past it rather than clip when the summary wraps under
+    /// larger Dynamic Type. Scaled so the floor tracks the viewer's text size.
+    @ScaledMetric(relativeTo: .body) private var starterCardMinHeight: CGFloat = 210
+    /// Space reserved at the bottom of every card for the (bottom-anchored)
+    /// action, so content never collides with it. Scaled with Dynamic Type.
+    @ScaledMetric(relativeTo: .body) private var starterActionReserve: CGFloat = 44
+    /// The tallest card's measured height, shared back to every card so the
+    /// whole grid is equal-height. A `LazyVGrid` does not stretch a short
+    /// cell to its row's tallest sibling, so without this a card whose
+    /// content grows (e.g. a wrapped summary at a large Dynamic Type size)
+    /// would leave the others short and the grid ragged. Measuring the real
+    /// rendered height (rather than a fixed guess) means it also tracks
+    /// Dynamic Type instead of clipping.
+    @State private var measuredStarterHeight: CGFloat = 0
 
     init(
         languageRuntime: DraftPostLanguageRuntime? = nil,
@@ -38,13 +63,16 @@ struct ComputerUseView: View {
                         columns: [GridItem(.adaptive(minimum: 260, maximum: 320), spacing: 12)],
                         spacing: 12
                     ) {
-                        ForEach(ComputerUseStarter.catalog) { starter in
+                        ForEach(ComputerUseStarter.ordered) { starter in
                             starterCard(starter)
                         }
                     }
                     // Three cards at their maximum width plus two gaps. The
                     // adaptive grid can still collapse to two or one column.
                     .frame(maxWidth: 984, alignment: .leading)
+                    .onPreferenceChange(StarterCardHeightKey.self) { height in
+                        measuredStarterHeight = height
+                    }
                 }
 
                 VStack(alignment: .leading, spacing: 8) {
@@ -57,19 +85,25 @@ struct ComputerUseView: View {
                             .foregroundStyle(.secondary)
                         VStack(alignment: .leading, spacing: 3) {
                             Text("Teach Rapid a new task").font(.headline)
-                            Text("Show Rapid how you work when no starter fits. Planned for the next Computer Use preview.")
+                            Text("Show Rapid how you work when no starter fits.")
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
                         }
                         Spacer()
-                        Button("Coming next") {}
-                            .buttonStyle(.rapidSecondaryCompact)
-                            .disabled(true)
+                        // A plain status label, not a disabled button: there is
+                        // nothing to press yet, so a button-shaped control only
+                        // invites a dead click.
+                        Text("Coming next")
+                            .font(.caption2.weight(.bold))
+                            .foregroundStyle(.secondary)
                             .accessibilityIdentifier("ComputerUse.Teach.ComingNext")
                     }
                     .padding(16)
                     .background(RapidTheme.surfaceRaised, in: RoundedRectangle(cornerRadius: 14))
                     .overlay(RoundedRectangle(cornerRadius: 14).stroke(.secondary.opacity(0.2)))
+                    // Share the grid's trailing edge so the page reads as one
+                    // column of content rather than a grid plus a wider band.
+                    .frame(maxWidth: 984, alignment: .leading)
                 }
             }
             .padding(RapidTheme.Space.xl)
@@ -89,36 +123,76 @@ struct ComputerUseView: View {
     }
 
     private func starterCard(_ starter: ComputerUseStarter) -> some View {
-        VStack(alignment: .leading, spacing: 10) {
+        let isAvailable = starter.availability == .available
+        // Quiet the supporting content of a not-yet-available card, but keep
+        // its title and status legible so the tile reads as a real, named
+        // capability rather than a greyed-out blur.
+        let supportOpacity = isAvailable ? 1.0 : 0.6
+        return VStack(alignment: .leading, spacing: 10) {
             HStack {
                 Image(systemName: starter.systemImage)
                     .font(.title2)
-                    .foregroundStyle(RapidTheme.brandPrimaryDeep)
+                    .foregroundStyle(
+                        isAvailable ? RapidTheme.brandPrimaryDeep : RapidTheme.textSecondary
+                    )
+                    .opacity(supportOpacity)
                 Spacer()
                 Text(availabilityLabel(starter.availability))
                     .font(.caption2.weight(.bold))
                     .foregroundStyle(.secondary)
             }
-            Text(starter.title).font(.headline)
+            Text(starter.title)
+                .font(.headline)
+                .foregroundStyle(isAvailable ? Color.primary : Color.secondary)
             Text(starter.summary)
                 .font(.caption)
                 .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+                .opacity(supportOpacity)
             Text(starter.applications)
                 .font(.caption2.weight(.medium))
                 .foregroundStyle(.secondary)
+                .opacity(supportOpacity)
             Label(starter.approvalNote, systemImage: "checkmark.shield")
                 .font(.caption2)
                 .foregroundStyle(.secondary)
-            if starter.availability == .available {
-                Button("Start flow") {
-                    start(starter.kind)
-                }
-                .buttonStyle(.rapidPrimaryCompact)
-                .accessibilityIdentifier(startIdentifier(starter.kind))
+                .opacity(supportOpacity)
+        }
+        .frame(maxWidth: .infinity, alignment: .topLeading)
+        .padding(16)
+        // Reserve the action row on every card so text never runs under the
+        // bottom-anchored button and the tiles line up whether or not they
+        // carry one. Scales with Dynamic Type.
+        .padding(.bottom, starterActionReserve)
+        // Equal-height across the grid: at least the scaled floor, and at
+        // least the tallest measured card (so a card that grows under large
+        // Dynamic Type pulls every sibling up to match instead of leaving
+        // them short). A minimum — never a fixed height — so growth never
+        // clips. The measurement below reports each card's real height back
+        // up through StarterCardHeightKey.
+        .frame(
+            minHeight: max(starterCardMinHeight, measuredStarterHeight),
+            alignment: .topLeading
+        )
+        .background(
+            GeometryReader { proxy in
+                Color.clear.preference(
+                    key: StarterCardHeightKey.self,
+                    value: proxy.size.height
+                )
+            }
+        )
+        // Anchor the action to the card's true bottom edge with an overlay,
+        // so it stays pinned regardless of how the height is proposed and
+        // follows the card as it grows.
+        .overlay(alignment: .bottomLeading) {
+            if isAvailable {
+                Button(actionLabel(starter.kind)) { start(starter.kind) }
+                    .buttonStyle(.rapidPrimaryCompact)
+                    .accessibilityIdentifier(startIdentifier(starter.kind))
+                    .padding(16)
             }
         }
-        .frame(maxWidth: .infinity, minHeight: 118, alignment: .topLeading)
-        .padding(16)
         .background(RapidTheme.surfaceRaised, in: RoundedRectangle(cornerRadius: 14))
         .overlay(
             RoundedRectangle(cornerRadius: 14)
@@ -143,6 +217,16 @@ struct ComputerUseView: View {
             showingDraftPost = true
         case .tidyInbox, .prospectCustomers, .createDemoVideo, .reserved:
             break
+        }
+    }
+
+    /// A concrete verb for each live flow's button, so the primary action
+    /// says what it will do instead of a generic "Start flow".
+    private func actionLabel(_ kind: ComputerUseStarter.Kind) -> String {
+        switch kind {
+        case .freeUpSpace: "Review files"
+        case .draftAndPost: "Draft update"
+        case .tidyInbox, .prospectCustomers, .createDemoVideo, .reserved: "Start flow"
         }
     }
 

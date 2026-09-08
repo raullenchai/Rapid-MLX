@@ -47,7 +47,7 @@ struct ComputerUseFeatureTests {
         let canonical = SourceGuardSupport.canonicalSource(source, literals: .preserve)
 
         #expect(canonical.contains("@AppStorage(ComputerUseFeatureConfig.enabledKey)privatevarcomputerUseEnabled"))
-        #expect(canonical.contains(".onChange(of:experimentalDestinationState){_,statein"))
+        #expect(canonical.contains(".onChange(of:experimentalDestinationState,initial:true){_,statein"))
         #expect(canonical.contains("section=Self.sectionAfterComputerUseGateChange(current:section,enabled:state.computerUseEnabled)"))
     }
 

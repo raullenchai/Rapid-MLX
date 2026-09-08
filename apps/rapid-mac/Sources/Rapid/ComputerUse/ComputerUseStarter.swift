@@ -29,6 +29,31 @@ struct ComputerUseStarter: Identifiable, Equatable, Sendable {
 
     var id: Kind { kind }
 
+    /// The catalog ordered for display, by availability tier: usable
+    /// starters (`.available`) first — so the one flow a user can actually
+    /// run leads the grid — then `.comingSoon`, then the `.reserved`
+    /// placeholder last (it is the "more flows are coming" filler and belongs
+    /// at the end). The sort is stable, so entries keep their catalog order
+    /// within a tier, and it never drops an entry — a new tier added later
+    /// still appears, ranked after the ones below.
+    static var ordered: [ComputerUseStarter] {
+        func rank(_ availability: Availability) -> Int {
+            switch availability {
+            case .available: 0
+            case .comingSoon: 1
+            case .reserved: 2
+            }
+        }
+        return catalog
+            .enumerated()
+            .sorted { lhs, rhs in
+                let l = rank(lhs.element.availability)
+                let r = rank(rhs.element.availability)
+                return l == r ? lhs.offset < rhs.offset : l < r
+            }
+            .map(\.element)
+    }
+
     static let catalog: [ComputerUseStarter] = [
         ComputerUseStarter(
             kind: .freeUpSpace,
