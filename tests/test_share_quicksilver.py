@@ -1520,6 +1520,40 @@ def test_run_share_first_run_registers_caches_and_prints_keyless_banner(capsys):
     serve.terminate.assert_called_once()
 
 
+def test_run_share_serve_uses_served_model_name_catalog_id():
+    """§5.4 + readiness: the pool addresses the node by its catalog id while the
+    serve alias differs, so serve is spawned with --served-model-name=<catalog
+    id>. Without it serve echoes the alias and the relay readiness probe
+    (response `model` must equal the pool model) never passes → the node
+    connects + heartbeats but stays unroutable and all traffic falls to cloud."""
+    tunnel = _fake_tunnel()
+    serve, ctrl_c = _patched_run_env(None)
+    spawn = MagicMock(return_value=serve)
+    ctxs = (
+        patch.object(share_cli, "_spawn_serve", spawn),
+        patch.object(share_cli, "_wait_for_healthz", return_value=True),
+        patch.object(share_cli, "_verify_auth_gate", return_value=True),
+        patch.object(share_cli, "_pick_port", return_value=18765),
+        patch.object(
+            share_cli, "_resolve_served_model_name", return_value="qwen3.6-35b"
+        ),
+        patch.object(share_cli, "_maybe_confirm_download"),
+        patch.object(qs.ws_tunnel, "TunnelClient", new=lambda **kw: tunnel),
+        patch.object(qs, "_warmup"),
+        patch("time.sleep", side_effect=ctrl_c),
+        patch.object(
+            qs, "_open", lambda req, timeout=None: _FakeResp(_register_payload())
+        ),
+        patch.object(qs, "_Heartbeat", return_value=_fake_heartbeat_class()),
+    )
+    with _enter(*ctxs):
+        qs.run_share(_make_args(provider_key=PROVIDER_KEY))
+    assert spawn.call_count == 1
+    extra = spawn.call_args.kwargs["extra_args"]
+    assert "--served-model-name" in extra
+    assert extra[extra.index("--served-model-name") + 1] == "qwen3.6-35b"
+
+
 def test_run_share_cached_run_never_calls_register(capsys):
     qs._save_cache("qwen3.6-35b", dict(_register_payload(), alias="qwen3.6-35b"))
     tunnel = _fake_tunnel()
@@ -1608,8 +1642,14 @@ def test_run_share_respects_user_max_seqs_override():
                 _passthrough=["--max-num-seqs", "8"],
             )
         )
-    # Injection skipped — the user's own --max-num-seqs passthrough wins.
-    assert spawned["extra_args"] == ["--max-num-seqs", "8"]
+    # Injection skipped — the user's own --max-num-seqs passthrough wins; the
+    # catalog-id --served-model-name is still added (pool addresses by catalog id).
+    assert spawned["extra_args"] == [
+        "--served-model-name",
+        "qwen3.6-35b",
+        "--max-num-seqs",
+        "8",
+    ]
 
 
 def test_run_share_scrubs_env_provider_key_before_serve_spawn(monkeypatch):

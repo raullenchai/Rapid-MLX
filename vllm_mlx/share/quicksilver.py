@@ -1090,6 +1090,18 @@ def _run_share(args: argparse.Namespace) -> None:
     passthrough = list(getattr(args, "_passthrough", None) or [])
     if not any(t.split("=", 1)[0].startswith("--max-num-seqs") for t in passthrough):
         extra += ["--max-num-seqs", "2"]
+    # Pool requests (and the relay's readiness probe) address the node by its
+    # CATALOG id, but the serve alias differs (§5.4, e.g. nemotron-3.5-lightning
+    # vs nemotron-3.5-lightning-30b-4bit). Expose the loaded model UNDER the
+    # catalog id so serve (a) accepts inbound requests naming the catalog id and
+    # (b) echoes the catalog id in its responses — the relay's readiness probe
+    # requires the response `model` to equal the pool model, and billing keys off
+    # it. Without this the node connects + heartbeats but never passes readiness,
+    # so it stays unroutable and every request falls back to cloud.
+    if not any(
+        t.split("=", 1)[0].startswith("--served-model-name") for t in passthrough
+    ):
+        extra += ["--served-model-name", catalog_id]
     if (
         args.rate_limit is not None
         and args.rate_limit > 0
