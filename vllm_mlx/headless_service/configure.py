@@ -24,7 +24,14 @@ from .config import (
     remove_credential,
 )
 from .definition import installed_identity
-from .install import _plist_path, _port_busy, _wait_qualified, _wait_ready, is_root
+from .install import (
+    _plist_path,
+    _port_busy,
+    _startup_qualification_config,
+    _wait_qualified,
+    _wait_ready,
+    is_root,
+)
 
 
 def _identity_or_error(label: str) -> tuple[str, Path, Path]:
@@ -150,7 +157,9 @@ def apply_command(args) -> int:
             f"[DRY-RUN] bootout {DEFAULT_DOMAIN}/{label}\n"
             f"[DRY-RUN] promote candidate {config_digest(candidate)[:12]}\n"
             f"[DRY-RUN] bootstrap {_plist_path(label)} and require /readyz\n"
-            "[DRY-RUN] activate and qualify the configured primary model\n"
+            "[DRY-RUN] start transiently without --lazy-load and require "
+            "resident model readiness\n"
+            "[DRY-RUN] commit the requested lazy-load policy after qualification\n"
             "[DRY-RUN] restore previous config and service on any failure"
         )
         return 0
@@ -172,7 +181,10 @@ def apply_command(args) -> int:
     try:
         atomic_write_definition(backup, previous)
         _bootout(label)
-        atomic_write_definition(current_path, candidate_bytes)
+        atomic_write_definition(
+            current_path,
+            config_bytes(_startup_qualification_config(candidate)),
+        )
         boot = _bootstrap(label)
         if boot.returncode != 0:
             raise ServiceConfigError(
@@ -183,6 +195,7 @@ def apply_command(args) -> int:
                 "candidate endpoint or configured model did not qualify on "
                 f"{candidate.host}:{candidate.port}"
             )
+        atomic_write_definition(current_path, candidate_bytes)
     except (OSError, ServiceConfigError) as exc:
         _bootout(label)
         try:

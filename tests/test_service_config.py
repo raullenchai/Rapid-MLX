@@ -263,16 +263,23 @@ def test_configure_stages_without_touching_active(monkeypatch, tmp_path):
 def test_apply_promotes_healthy_candidate(monkeypatch, tmp_path):
     configure, home, current_path, _ = _installed_config(monkeypatch, tmp_path)
     pending = pending_config_path(home)
-    candidate = _config(service_user="runner", model="new-model", port=9000)
+    candidate = _config(
+        service_user="runner",
+        model="new-model",
+        port=9000,
+        serve_args=("--lazy-load", "--idle-unload-seconds", "300"),
+    )
     atomic_write(pending, config_bytes(candidate))
     monkeypatch.setattr(configure, "is_root", lambda: True)
     monkeypatch.setattr(configure, "_port_busy", lambda _host, _port: False)
     monkeypatch.setattr(configure, "_bootout", lambda _label: None)
-    monkeypatch.setattr(
-        configure,
-        "_bootstrap",
-        lambda _label: types.SimpleNamespace(returncode=0, stdout="", stderr=""),
-    )
+    boot_configs = []
+
+    def bootstrap(_label):
+        boot_configs.append(load_config(current_path))
+        return types.SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(configure, "_bootstrap", bootstrap)
     qualified = []
     monkeypatch.setattr(
         configure,
@@ -283,6 +290,7 @@ def test_apply_promotes_healthy_candidate(monkeypatch, tmp_path):
         configure.apply_command(types.SimpleNamespace(label=None, dry_run=False)) == 0
     )
     assert load_config(current_path) == candidate
+    assert boot_configs[0].serve_args == ("--idle-unload-seconds", "300")
     assert not pending.exists()
     assert qualified == [candidate]
 
@@ -353,7 +361,9 @@ def test_upgrade_target_is_constrained(version, extras, expected):
 def test_upgrade_success_snapshots_before_mutation(monkeypatch, tmp_path):
     from vllm_mlx.headless_service import upgrade
 
-    configure, home, _, _ = _installed_config(monkeypatch, tmp_path)
+    configure, home, current_path, current = _installed_config(monkeypatch, tmp_path)
+    current = current.updated(serve_args=("--lazy-load", "--max-num-seqs", "4"))
+    atomic_write(current_path, config_bytes(current))
     python = home / ".rapid-mlx" / "bin" / "python"
     python.parent.mkdir(parents=True)
     python.write_text("#!/bin/sh\n")
@@ -373,11 +383,13 @@ def test_upgrade_success_snapshots_before_mutation(monkeypatch, tmp_path):
 
     monkeypatch.setattr(upgrade, "_as_user", as_user)
     monkeypatch.setattr(upgrade, "_bootout", lambda _label: events.append(("bootout",)))
-    monkeypatch.setattr(
-        upgrade,
-        "_bootstrap",
-        lambda _label: types.SimpleNamespace(returncode=0, stdout="", stderr=""),
-    )
+    boot_configs = []
+
+    def bootstrap(_label):
+        boot_configs.append(load_config(current_path))
+        return types.SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(upgrade, "_bootstrap", bootstrap)
     qualified = []
     monkeypatch.setattr(
         upgrade, "_wait_qualified", lambda config: qualified.append(config) or True
@@ -394,6 +406,8 @@ def test_upgrade_success_snapshots_before_mutation(monkeypatch, tmp_path):
     assert events[1] == ("bootout",)
     assert any("rapid-mlx[vision]==0.13.5" in event for event in events)
     assert len(qualified) == 1
+    assert boot_configs[0].serve_args == ("--max-num-seqs", "4")
+    assert load_config(current_path) == current
     snapshot = (
         tmp_path / "system-config" / "com.rapidmlx.server.previous-requirements.txt"
     )
@@ -434,6 +448,54 @@ def test_upgrade_rolls_back_after_readiness_failure(monkeypatch, tmp_path, capsy
     )
     assert upgrade.upgrade_command(args) == 2
     assert "previous environment restored" in capsys.readouterr().err
+
+
+def test_upgrade_never_restores_from_transient_config_when_definition_writes_fail(
+    monkeypatch, tmp_path, capsys
+):
+    from vllm_mlx.headless_service import upgrade
+
+    configure, home, _, _ = _installed_config(monkeypatch, tmp_path)
+    python = home / ".rapid-mlx" / "bin" / "python"
+    python.parent.mkdir(parents=True)
+    python.write_text("#!/bin/sh\n")
+    python.chmod(0o700)
+    monkeypatch.setattr(upgrade, "is_root", lambda: True)
+    monkeypatch.setattr(upgrade, "_account", configure._account)
+
+    responses = iter(
+        [
+            types.SimpleNamespace(
+                returncode=0, stdout="rapid-mlx==0.13.4\n", stderr=""
+            ),
+            types.SimpleNamespace(returncode=0, stdout="", stderr=""),
+            types.SimpleNamespace(returncode=0, stdout="", stderr=""),
+        ]
+    )
+    monkeypatch.setattr(upgrade, "_as_user", lambda *_a, **_k: next(responses))
+    monkeypatch.setattr(upgrade, "_bootout", lambda _label: None)
+    monkeypatch.setattr(
+        upgrade,
+        "atomic_write_definition",
+        lambda *_a, **_k: (_ for _ in ()).throw(OSError("read-only config")),
+    )
+    monkeypatch.setattr(
+        upgrade,
+        "_restore",
+        lambda **_kwargs: pytest.fail(
+            "must not restart while the transient definition may remain"
+        ),
+    )
+
+    args = types.SimpleNamespace(
+        label=None,
+        dry_run=False,
+        version=None,
+        extras=None,
+        pre=False,
+    )
+    assert upgrade.upgrade_command(args) == 2
+    assert "ROLLBACK FAILED" in capsys.readouterr().err
 
 
 @pytest.mark.parametrize(

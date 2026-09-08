@@ -49,10 +49,11 @@ strictly validated to exclude secrets. Keeping it outside the Python runtime
 also lets a venv rebuild leave service configuration untouched.
 
 Change an installed definition as a two-step transaction. `configure` validates
-and stages a candidate but does not disturb the running server. `apply` swaps
-the candidate into place, restarts, requires `/readyz`, and activates the
-configured primary model before committing. If bootstrap, endpoint readiness,
-or model activation fails, it restores the previous config and service.
+and stages a candidate but does not disturb the running server. `apply` starts
+the candidate once without `--lazy-load` and requires `/readyz` to report the
+configured primary model resident before committing the requested lazy policy.
+If bootstrap, endpoint readiness, or model loading fails, it restores the
+previous config and service.
 This prevents a lazy service from appearing successfully deployed in
 `standby` only to fail hours later on its first real request.
 
@@ -129,8 +130,8 @@ retention. Stage different limits with `service configure --log-max-mb`,
 Upgrade the service with the same health gate and rollback behavior. The
 command freezes the working environment before stopping the server, runs the
 package upgrade as the service account, diagnoses it with `doctor`, and only
-accepts it after launchd `/readyz` succeeds and the configured primary model
-loads and completes its standard warmup path. On activation failure it restores
+accepts it after launchd `/readyz` succeeds with the configured primary model
+resident after its standard warmup path. On qualification failure it restores
 the frozen environment and starts the previous service.
 
 ```bash

@@ -33,15 +33,15 @@ Configuration changes use two phases:
 2. `service apply` saves the active definition, stops the job, promotes the
    candidate, bootstraps it, and first gates endpoint availability on `/readyz`.
 3. Because a lazy model can correctly report endpoint readiness in `standby`,
-   the transaction then calls the authenticated `POST /v1/models/activate`
-   control-plane operation and requires `state=ready` plus `model_loaded=true`
-   before committing. Any failure restores and starts the previous definition.
+   the transaction temporarily removes `--lazy-load`, boots the candidate, and
+   requires `/readyz` to report `ready=true` plus `model_loaded=true`. Only then
+   does it persist the operator's requested lazy policy. Any failure restores
+   and starts the previous definition.
 
-The same qualification gate protects first install and runtime upgrade. The
-activation request never accepts a model identifier; it can only load and warm
-the primary already fixed in the validated service definition. When an API key
-is configured, the root-run service command reads its private credential file
-and sends it only as an in-memory Authorization header.
+The same qualification gate protects first install and runtime upgrade. It
+never reads or transmits the persistent API credential across TCP: the model is
+selected solely by the validated service definition and loaded by normal
+startup before the listener is trusted.
 
 An optional API key lives in a separate mode-0600 non-symlink credential file.
 The runtime launcher reads it immediately before `execve` and exposes it only as
