@@ -11,8 +11,9 @@ Turns this machine into a paid inference node in the QuickSilver pool
      and never see the provider key (§1, §5.1, §5.2).
   3. Spawn the loopback serve (default ``--max-num-seqs 2``), warm it
      up, and open the keyed WS tunnel (§5.3) — the claim key rides the
-     ``ready`` frame, never the URL, so no credential can leak through
-     exception reprs or websockets logs (§6).
+     upgrade ``Authorization`` header, never the URL or the ``ready``
+     frame, so no credential can leak through exception reprs or
+     websockets logs (§6).
   4. Heartbeat every 10 s while the tunnel is up (§3.3), reconnecting
      the tunnel with backoff on drops (§5.5).
 
@@ -32,6 +33,7 @@ Credential rules (§1, §6 — the reason this is its own module):
 from __future__ import annotations
 
 import argparse
+import contextlib
 import getpass
 import json
 import logging
@@ -391,8 +393,9 @@ def _validate_wire_urls(payload: dict[str, Any], api_base: str, *, source: str) 
             raise QuickSilverError(f"{source} {field} must include a host: {url!r}")
         # userinfo/query/fragment are the classic credential-embedding
         # channels (the pre-v1 protocol keyed on a path segment). The
-        # claim key rides the ready frame, so nothing legitimate lives
-        # in these components and any value there is treated as hostile.
+        # claim key rides the upgrade Authorization header, so nothing
+        # legitimate lives in these components and any value there is
+        # treated as hostile.
         if parsed.username or parsed.password or parsed.query or parsed.fragment:
             raise QuickSilverError(
                 f"{source} {field} must not carry userinfo, query, or fragment: {url!r}"
@@ -496,14 +499,17 @@ def _resolve_provider_key(args: argparse.Namespace) -> str:
     key lives only in the returned string's memory; callers must not
     log it. Non-tty (launchd, CI, piped) gets an actionable error
     instead of a getpass-EOF traceback."""
+    # POP, don't just read: once resolved, the key may live only in this
+    # process's memory. A plain ``get`` left it in ``os.environ`` for the
+    # whole session, where every later child inherits it — the hardware
+    # probes below and, worst of all, the long-lived serve process that
+    # loads third-party model code. The account credential belongs to the
+    # supervisor alone (§1/§6).
     # Strip FIRST, then test: a whitespace-only flag/env value ("") is
     # truthy, and the old order turned it into `Bearer ` — a remote 401
     # that reads like a bad key instead of the empty input it is.
-    key = (
-        getattr(args, "provider_key", None)
-        or os.environ.get(PROVIDER_KEY_ENV_VAR)
-        or ""
-    ).strip()
+    env_key = os.environ.pop(PROVIDER_KEY_ENV_VAR, "")
+    key = (getattr(args, "provider_key", None) or env_key or "").strip()
     if key:
         return key
     if not sys.stdin.isatty():
@@ -578,10 +584,16 @@ def register_node(
             # NEVER reuse `body` here — the request payload must survive
             # verbatim across retries; shadowing it with the error
             # response would POST the server's own error JSON next round.
+            # An HTTPError *is* the response: the retry loop can spin
+            # through many of these, so the socket must close each time
+            # or every rejection burns a connection for the session.
             try:
                 error_body = _bounded_read(exc, _ERROR_BODY_MAX_BYTES)
             except _ResponseTooLargeError:
                 error_body = b""  # oversized: report the code, not the blob
+            finally:
+                with contextlib.suppress(Exception):
+                    exc.close()
             detail = _error_detail(error_body)
         except (urllib.error.URLError, TimeoutError, ConnectionError) as exc:
             status = None
@@ -754,19 +766,28 @@ class _Heartbeat:
                 if 200 <= r.status < 300:
                     self._logged_404 = False
         except urllib.error.HTTPError as exc:
-            if exc.code == 401:
-                log.error(
-                    "QuickSilver heartbeat rejected (HTTP 401) — node "
-                    "credential revoked"
-                )
-                self.fatal.set()
-            elif exc.code == 404:
-                if not self._logged_404:
-                    log.info(
-                        "QuickSilver heartbeat 404 (node not visible yet) — "
-                        "keep beating"
+            # The heartbeat beats every 10 s for the whole life of the
+            # node; an HTTPError is the response object, so leaving it
+            # unclosed leaks one socket per rejected beat. The body is
+            # deliberately not read — nothing here consumes it, and an
+            # unread body still gets drained/closed.
+            try:
+                if exc.code == 401:
+                    log.error(
+                        "QuickSilver heartbeat rejected (HTTP 401) — node "
+                        "credential revoked"
                     )
-                    self._logged_404 = True
+                    self.fatal.set()
+                elif exc.code == 404:
+                    if not self._logged_404:
+                        log.info(
+                            "QuickSilver heartbeat 404 (node not visible "
+                            "yet) — keep beating"
+                        )
+                        self._logged_404 = True
+            finally:
+                with contextlib.suppress(Exception):
+                    exc.close()
         except (urllib.error.URLError, TimeoutError, ConnectionError) as exc:
             log.debug("QuickSilver heartbeat unreachable: %s", _redact(str(exc)))
 
@@ -999,6 +1020,12 @@ def _run_share(args: argparse.Namespace) -> None:
             file=sys.stderr,
         )
     else:
+        # Cached runs never call _resolve_provider_key, so an exported
+        # QUICKSILVER_PROVIDER_KEY would sit in os.environ for the whole
+        # session and be inherited by serve (third-party model code) and
+        # the hardware probes below. The account credential is only ever
+        # needed to register — scrub it even when we don't use it.
+        os.environ.pop(PROVIDER_KEY_ENV_VAR, None)
         # An explicit --quicksilver-api always wins; otherwise the
         # cached origin is authoritative. Re-validating the cached
         # value is cheap paranoia against a tampered file.

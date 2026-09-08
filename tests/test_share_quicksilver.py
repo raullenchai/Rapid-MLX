@@ -18,6 +18,7 @@ import contextlib
 import io
 import json
 import logging
+import os
 import plistlib
 import stat
 import subprocess
@@ -1359,6 +1360,41 @@ def test_heartbeat_transport_error_is_transparent():
     assert not hb.fatal.is_set()
 
 
+@pytest.mark.parametrize("code", [401, 404, 500])
+def test_heartbeat_http_error_response_is_closed(code):
+    """An HTTPError IS the response. The heartbeat beats every 10 s for
+    the node's whole life — leaving the error socket unclosed leaks one
+    per rejected beat, forever."""
+    hb = _hb()
+    fp = io.BytesIO(b"{}")
+    err = urllib.error.HTTPError("https://hb.test/hb", code, "err", {}, fp)
+
+    def fake_urlopen(req, timeout=None):
+        raise err
+
+    with patch.object(qs, "_open", fake_urlopen):
+        hb._beat_once()
+    assert fp.closed
+
+
+def test_register_http_error_response_is_closed():
+    """Same discipline on the registration path: the retry loop can
+    burn through many rejections in one session (429/5xx), and each one
+    must hand its socket back."""
+    fp = io.BytesIO(b'{"detail":"not pool-eligible"}')
+    err = urllib.error.HTTPError("https://pay.test", 403, "err", {}, fp)
+
+    def fake_urlopen(req, timeout=None):
+        raise err
+
+    with (
+        patch.object(qs, "_open", fake_urlopen),
+        pytest.raises(qs.QuickSilverError, match="403"),
+    ):
+        qs.register_node("https://pay.test", PROVIDER_KEY, "qwen3.6-35b", "qwen3.6-35b")
+    assert fp.closed
+
+
 def test_heartbeat_stop_join_window_covers_request_timeout():
     """A beat mid-flight in _open keeps sending the node credential;
     stop() must outlast the beat's own socket timeout or run_share
@@ -1574,6 +1610,60 @@ def test_run_share_respects_user_max_seqs_override():
         )
     # Injection skipped — the user's own --max-num-seqs passthrough wins.
     assert spawned["extra_args"] == ["--max-num-seqs", "8"]
+
+
+def test_run_share_scrubs_env_provider_key_before_serve_spawn(monkeypatch):
+    """§1/§6: serve loads third-party model code and inherits
+    os.environ wholesale. The account key is resolved by POP, so by
+    spawn time (and by every earlier probe child) it must be gone from
+    the environment — memory-only, in the supervisor alone."""
+    monkeypatch.setenv(qs.PROVIDER_KEY_ENV_VAR, PROVIDER_KEY)
+    tunnel = _fake_tunnel()
+    serve, ctrl_c = _patched_run_env(None)
+    seen: list = []
+
+    def fake_spawn(**kw):
+        seen.append(os.environ.get(qs.PROVIDER_KEY_ENV_VAR))
+        return serve
+
+    ctxs = _run_patches(serve, lambda **kw: tunnel, ctrl_c) + (
+        patch.object(
+            qs,
+            "_open",
+            lambda req, timeout=None: _FakeResp(_register_payload()),
+        ),
+        patch.object(qs, "_Heartbeat", return_value=_fake_heartbeat_class()),
+    )
+    with _enter(*ctxs, patch.object(share_cli, "_spawn_serve", side_effect=fake_spawn)):
+        qs.run_share(_make_args())  # provider key arrives via env, not flag
+    assert seen == [None]
+
+
+def test_cached_run_scrubs_unused_env_provider_key(monkeypatch):
+    """Cached runs never resolve the key — but an exported one would
+    otherwise sit in os.environ for the whole session and ride into the
+    serve child. Scrub even when unused."""
+    qs._save_cache("qwen3.6-35b", dict(_register_payload(), alias="qwen3.6-35b"))
+    monkeypatch.setenv(qs.PROVIDER_KEY_ENV_VAR, PROVIDER_KEY)
+    tunnel = _fake_tunnel()
+    serve, ctrl_c = _patched_run_env(None)
+    seen: list = []
+
+    def fake_spawn(**kw):
+        seen.append(os.environ.get(qs.PROVIDER_KEY_ENV_VAR))
+        return serve
+
+    def _no_net(*a, **k):
+        raise AssertionError("network touched on cached path")
+
+    ctxs = _run_patches(serve, lambda **kw: tunnel, ctrl_c) + (
+        patch.object(qs, "_open", _no_net),
+        patch.object(qs, "_Heartbeat", return_value=_fake_heartbeat_class()),
+    )
+    with _enter(*ctxs, patch.object(share_cli, "_spawn_serve", side_effect=fake_spawn)):
+        qs.run_share(_make_args())
+    assert seen == [None]
+    assert qs.PROVIDER_KEY_ENV_VAR not in os.environ
 
 
 def test_run_share_reaps_serve_proc_after_kill():

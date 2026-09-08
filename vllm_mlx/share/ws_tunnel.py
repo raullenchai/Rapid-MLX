@@ -30,8 +30,9 @@ Protocol (JSON text frames):
         {"t":"abort", "id":<reqId>}
 
     client → worker:
-        {"t":"ready", "v":1}                              (sent once on connect)
-        {"t":"ready", "v":1, "key":"qspsk-…"}   (pool mode: keyed claim)
+        {"t":"ready", "v":1}   (sent once on connect; byte-identical in
+                                plain and pool mode — the pool claim
+                                rides the upgrade Authorization header)
         {"t":"head", "id":<reqId>, "status":<int>, "headers":<obj>}
         {"t":"chunk", "id":<reqId>, "data":<base64>}
         {"t":"end", "id":<reqId>}
