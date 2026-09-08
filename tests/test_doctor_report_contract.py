@@ -614,7 +614,7 @@ def test_json_process_isolation_collects_in_fresh_executable(monkeypatch):
 
 def _run_json_worker(tmp_path, monkeypatch, request, *, result_parent=True):
     request_path = tmp_path / "request.json"
-    request_path.write_text(json.dumps(request))
+    request_path.write_text(json.dumps({"deep": False, **request}))
     result_root = tmp_path if result_parent else tmp_path / "missing"
     result_path = result_root / "report.json"
     keepalive_read, keepalive_write = os.pipe()
@@ -673,6 +673,19 @@ def test_json_worker_serializes_invalid_request_fields_as_error(tmp_path, monkey
     message = json.loads(result_path.read_text())
     assert message["ok"] is False
     assert "request fields are invalid" in message["error"]
+
+
+def test_json_worker_rejects_non_boolean_deep_flag(tmp_path, monkeypatch):
+    exit_code, result_path = _run_json_worker(
+        tmp_path,
+        monkeypatch,
+        {"only": None, "skip": None, "deep": "yes"},
+    )
+
+    assert exit_code == 0
+    message = json.loads(result_path.read_text())
+    assert message["ok"] is False
+    assert "deep flag is invalid" in message["error"]
 
 
 def test_json_worker_argument_and_write_failures(tmp_path, monkeypatch):

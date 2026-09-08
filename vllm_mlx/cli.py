@@ -13035,6 +13035,29 @@ Examples:
         action="store_true",
         help="Print only the one-line result summary",
     )
+    doctor_parser.add_argument(
+        "--deep",
+        action="store_true",
+        help="Run opt-in dependency, DNS, and route probes (up to 30 seconds)",
+    )
+    doctor_parser.add_argument(
+        "--fix",
+        action="store_true",
+        help=(
+            "Plan and apply only verified repairs (bounded stages may total "
+            "up to 90 seconds)"
+        ),
+    )
+    doctor_parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="With --fix, print the repair plan without making changes",
+    )
+    doctor_parser.add_argument(
+        "--yes",
+        action="store_true",
+        help="With --fix, accept the repair plan non-interactively",
+    )
     doctor_section_ids = (
         "system",
         "python",
@@ -13047,6 +13070,7 @@ Examples:
         "tools.optional",
         "agents",
         "service",
+        "deep",
     )
     doctor_parser.add_argument(
         "--only",
