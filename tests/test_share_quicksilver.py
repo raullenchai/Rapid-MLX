@@ -18,9 +18,11 @@ import contextlib
 import io
 import json
 import logging
+import plistlib
 import stat
 import threading
 import urllib.error
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -316,6 +318,69 @@ def test_stop_during_connect_kills_the_pending_handshake():
     assert client.closed_event.is_set()
 
 
+def _magic_conn():
+    conn = MagicMock()
+    conn.sock = MagicMock()
+    return conn
+
+
+def test_hard_close_shuts_down_socket_before_close():
+    """A bare close() does not reliably wake a thread blocked in recv
+    on Darwin; shutdown() does (and is what carries the FIN serve's
+    disconnect guard waits for)."""
+    conn = _magic_conn()
+    ws_tunnel._hard_close(conn)
+    conn.sock.shutdown.assert_called_once()
+    conn.close.assert_called_once()
+
+
+def test_hard_close_tolerates_dead_socket():
+    conn = MagicMock()
+    conn.sock = None
+    ws_tunnel._hard_close(conn)  # must not raise
+    conn.close.assert_called_once()
+
+
+def test_abort_wakes_blocked_worker_via_shutdown():
+    client = ws_tunnel.TunnelClient(local_port=1)
+    conn = _magic_conn()
+    client._active["req-1"] = conn
+    client._dispatch_inbound({"t": "abort", "id": "req-1"})
+    conn.sock.shutdown.assert_called_once()
+    conn.close.assert_called_once()
+
+
+def test_teardown_drains_inflight_connections():
+    """Task cancellation cannot stop the to_thread fetch workers — the
+    run() finally must hard-close every registered connection, or
+    generations keep running against a dead tunnel."""
+
+    class _FakeWS:
+        async def send(self, msg):
+            pass
+
+        async def close(self):
+            pass
+
+        def __aiter__(self):
+            return self
+
+        async def __anext__(self):
+            raise StopAsyncIteration
+
+    async def fake_connect(uri, **kw):
+        return _FakeWS()
+
+    client = ws_tunnel.TunnelClient(local_port=1)
+    conn = _magic_conn()
+    client._active["live-req"] = conn
+    with patch.object(ws_tunnel.websockets, "connect", fake_connect):
+        asyncio.run(client.run())
+    conn.sock.shutdown.assert_called_once()
+    conn.close.assert_called_once()
+    assert client._active == {}
+
+
 # ─────────────────────────── catalog resolution §5.4 ───────────────────────────
 
 
@@ -354,7 +419,29 @@ def test_cache_roundtrip_is_0600_and_complete(tmp_path):
     payload = dict(_register_payload(), alias="qwen3.6-35b")
     path = qs._save_cache("qwen3.6-35b", payload)
     assert stat.S_IMODE(path.stat().st_mode) == 0o600
-    assert qs._load_cache("qwen3.6-35b", "qwen3.6-35b") == payload
+    # Only allowlisted fields persist (pool_base is in the wire
+    # response but not in _CACHE_ALLOWED_KEYS — see the leak test).
+    loaded = qs._load_cache("qwen3.6-35b", "qwen3.6-35b")
+    assert loaded == {k: v for k, v in payload.items() if k in qs._CACHE_ALLOWED_KEYS}
+    assert "pool_base" not in loaded
+
+
+def test_cache_save_never_persists_unexpected_response_fields(tmp_path):
+    """The registration response is server-controlled — an echoed
+    provider key or surprise token must not become a resident secret
+    (§1: the provider key is never written down)."""
+    payload = dict(
+        _register_payload(),
+        alias="qwen3.6-35b",
+        provider_key=PROVIDER_KEY,
+        api_token="secret-token-xyz",
+    )
+    path = qs._save_cache("qwen3.6-35b", payload)
+    raw = path.read_text(encoding="utf-8")
+    assert PROVIDER_KEY not in raw
+    assert "secret-token-xyz" not in raw
+    assert "provider_key" not in raw and "api_token" not in raw
+    assert qs._load_cache("qwen3.6-35b", "qwen3.6-35b")["share_key"] == SHARE_KEY
 
 
 def test_cache_alias_mismatch_is_not_reused(tmp_path):
@@ -1017,6 +1104,129 @@ def test_install_service_writes_keyless_plist(capsys, tmp_path):
     assert SHARE_KEY.encode() not in data and b"--provider-key" not in data
     out = capsys.readouterr().out
     assert "launchctl bootstrap" in out
+
+
+def test_install_service_plist_keeps_registration_origin(capsys):
+    """A node minted against a custom API, installed WITHOUT the
+    override baked in, would restart against the default origin and
+    reject its own cached relay/heartbeat hosts in a KeepAlive loop."""
+    qs._save_cache(
+        "qwen3.6-35b",
+        dict(
+            _register_payload(
+                relay_url="wss://relay.staging.example/up",
+                heartbeat_url="https://hb.staging.example/hb",
+            ),
+            alias="qwen3.6-35b",
+            api_base="https://pay.staging.example",
+        ),
+    )
+    qs.run_share(_make_args(install_service=True))
+    plist_path = (
+        Path.home() / "Library/LaunchAgents/com.quicksilver.node.qwen3.6-35b.plist"
+    )
+    argv = plistlib.loads(plist_path.read_bytes())["ProgramArguments"]
+    assert "--quicksilver-api" in argv
+    assert argv[argv.index("--quicksilver-api") + 1] == "https://pay.staging.example"
+
+
+def test_cached_run_validates_against_cached_registration_origin(capsys):
+    """Without an explicit --quicksilver-api, the cached origin is
+    authoritative — a staging cache must not be judged by the default
+    origin's allowlist (which would reject relay.staging.example)."""
+    staging = dict(
+        _register_payload(
+            relay_url="wss://pay.staging.example/up",
+            heartbeat_url="https://pay.staging.example/hb",
+        ),
+        alias="qwen3.6-35b",
+        api_base="https://pay.staging.example",
+    )
+    qs._save_cache("qwen3.6-35b", staging)
+    # The same wire URLs MUST be rejected when the cache carries no
+    # origin binding and the default (production) origin is assumed.
+    unbound = {k: v for k, v in staging.items() if k != "api_base"}
+    qs._save_cache("qwen3.6-35b", unbound)
+    with pytest.raises(SystemExit) as ei:
+        qs.run_share(_make_args())
+    assert ei.value.code == 2
+
+    qs._save_cache("qwen3.6-35b", staging)
+    tunnel = _fake_tunnel()
+    serve, ctrl_c = _patched_run_env(None)
+
+    def _no_net(*a, **k):
+        raise AssertionError("network touched on cached path")
+
+    ctxs = _run_patches(serve, lambda **kw: tunnel, ctrl_c) + (
+        patch.object(qs, "_open", _no_net),
+        patch.object(qs, "_Heartbeat", return_value=_fake_heartbeat_class()),
+    )
+    with _enter(*ctxs):
+        qs.run_share(_make_args())  # no --quicksilver-api passed
+    assert "cached node" in capsys.readouterr().err
+
+
+# ─────────────────────────── heartbeat interval validation ───────────────────────────
+
+
+@pytest.mark.parametrize("bad", ["fast", float("nan"), float("inf"), 0, -5, None])
+def test_bad_heartbeat_interval_fails_before_serve_starts(bad):
+    qs._save_cache(
+        "qwen3.6-35b",
+        dict(_register_payload(heartbeat_interval_s=bad), alias="qwen3.6-35b"),
+    )
+    with pytest.raises(SystemExit) as ei:
+        qs.run_share(_make_args())
+    assert ei.value.code == 2
+
+
+def test_bad_heartbeat_interval_from_register_response_fails_fast():
+    hostile = _register_payload(heartbeat_interval_s="soon")
+    with (
+        patch.object(qs, "_open", lambda req, timeout=None: _FakeResp(hostile)),
+        pytest.raises(SystemExit) as ei,
+    ):
+        qs.run_share(_make_args(provider_key=PROVIDER_KEY))
+    assert ei.value.code == 2
+
+
+# ─────────────────────────── explicit --rate-limit ───────────────────────────
+
+
+def test_run_share_forwards_explicit_rate_limit_but_never_injects_default():
+    """Default (None) must stay uncapped (gateway meters pool traffic);
+    an explicit value is the user's call and must reach serve."""
+
+    def run_with(rate_limit):
+        spawned: dict = {}
+
+        def fake_spawn(**kw):
+            spawned.update(kw)
+            return _serve_proc()
+
+        def ctrl_c(*_a, **_k):
+            raise KeyboardInterrupt
+
+        ctxs = _run_patches(_serve_proc(), lambda **kw: _fake_tunnel(), ctrl_c) + (
+            patch.object(
+                qs,
+                "_open",
+                lambda req, timeout=None: _FakeResp(_register_payload()),
+            ),
+            patch.object(qs, "_Heartbeat", return_value=_fake_heartbeat_class()),
+            patch.object(share_cli, "_spawn_serve", side_effect=fake_spawn),
+        )
+        with _enter(*ctxs):
+            qs.run_share(_make_args(provider_key=PROVIDER_KEY, rate_limit=rate_limit))
+        return spawned["extra_args"]
+
+    extra = run_with(None)
+    assert extra[:2] == ["--max-num-seqs", "2"]
+    assert "--rate-limit" not in extra
+
+    extra = run_with(60)
+    assert extra[extra.index("--rate-limit") + 1] == "60"
 
 
 # ─────────────────────────── plain-share byte compat ───────────────────────────

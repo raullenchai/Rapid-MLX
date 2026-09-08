@@ -35,6 +35,7 @@ import argparse
 import getpass
 import json
 import logging
+import math
 import os
 import secrets
 import signal
@@ -101,6 +102,15 @@ _WS_TERMINAL_STATUS = 401
 # default of 10, so neither is hard-required on the wire.
 _WIRE_REQUIRED_KEYS = ("node_id", "share_key", "model", "relay_url", "heartbeat_url")
 _CACHE_REQUIRED_KEYS = _WIRE_REQUIRED_KEYS + ("heartbeat_interval_s", "alias")
+# Everything a cache may hold. The registration response is server-
+# controlled JSON; persisting it verbatim could write an echoed
+# provider key or an unexpected token to disk, breaking §1's "the
+# provider key is never written down". api_base records the origin the
+# credential was minted against so --install-service and later cached
+# runs keep validating against the RIGHT origin (a staging-registered
+# node restarted against the default origin would reject its own
+# cache).
+_CACHE_ALLOWED_KEYS = _CACHE_REQUIRED_KEYS + ("payout_account", "api_base")
 
 
 class QuickSilverError(Exception):
@@ -181,7 +191,10 @@ def _load_cache(catalog_id: str, alias: str) -> dict[str, Any] | None:
 def _save_cache(catalog_id: str, payload: dict[str, Any]) -> Path:
     path = _cache_path(catalog_id)
     tmp = path.with_name(f"{path.name}.tmp-{secrets.token_hex(4)}")
-    data = json.dumps(payload, indent=2, sort_keys=True).encode("utf-8")
+    # Whitelist, not passthrough — a server response carrying an extra
+    # "provider_key_echo"-style field must never survive to disk.
+    allowed = {k: payload[k] for k in _CACHE_ALLOWED_KEYS if k in payload}
+    data = json.dumps(allowed, indent=2, sort_keys=True).encode("utf-8")
     fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
     with os.fdopen(fd, "wb") as f:
         f.write(data)
@@ -319,6 +332,27 @@ def _validate_wire_urls(payload: dict[str, Any], api_base: str, *, source: str) 
                 f"{source} {field} host {host!r} is not a QuickSilver origin — "
                 f"refusing to send node credentials there"
             )
+
+
+def _resolve_heartbeat_interval(cache: dict[str, Any], *, source: str) -> float:
+    """Server-supplied pacing must fail FAST and LOUD. A nonnumeric
+    value surfacing as a raw ValueError after serve has booted (or a
+    NaN/infinity silently killing or freezing the beat thread, which
+    the gateway reads as an offline node) is worse than a plain error
+    before anything is spawned."""
+    raw = cache.get("heartbeat_interval_s", 10)
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        raise QuickSilverError(
+            f"{source} heartbeat_interval_s is not a number: {raw!r}"
+        ) from None
+    if not math.isfinite(value) or not 1.0 <= value <= 3600.0:
+        raise QuickSilverError(
+            f"{source} heartbeat_interval_s must be between 1 and 3600 "
+            f"seconds (got {raw!r})"
+        )
+    return value
 
 
 def _error_detail(body: bytes) -> str:
@@ -633,7 +667,8 @@ def install_service(
     carries NO key material (§6): the resident process relies on the
     0600 cache, so a machine without one refuses here rather than
     install a job that would prompt for a provider key into the void."""
-    if _load_cache(catalog_id, serve_alias) is None:
+    cache = _load_cache(catalog_id, serve_alias)
+    if cache is None:
         raise QuickSilverError(
             f"no node cache for {catalog_id!r} / {serve_alias!r} — run "
             f"`rapid-mlx share {serve_alias} --quicksilver` interactively "
@@ -652,6 +687,16 @@ def install_service(
     argv = [sys.executable, "-m", "vllm_mlx.cli", "share", serve_alias, "--quicksilver"]
     if catalog_id != serve_alias:
         argv += ["--quicksilver-model", catalog_id]
+    # Bake the registration origin into the job: a node minted against
+    # a staging/custom API restarted WITHOUT the flag would validate its
+    # cache against the default origin and reject its own relay /
+    # heartbeat hosts (KeepAlive then hot-loops a doomed restart).
+    cached_api = str(cache.get("api_base") or "")
+    if cached_api and cached_api != DEFAULT_PAY_API:
+        try:
+            argv += ["--quicksilver-api", _validate_api_base(cached_api)]
+        except QuickSilverError:
+            pass  # tampered cache value; share run will fail with the real message
 
     plist: dict[str, Any] = {
         "Label": label,
@@ -721,7 +766,13 @@ def _run_share(args: argparse.Namespace) -> None:
         _register_secret(provider_key)
         print("Registering node with QuickSilver…", file=sys.stderr)
         cache = register_node(api_base, provider_key, catalog_id, serve_alias)
+        # Bind the credential to the origin it was minted against (the
+        # allowlist in _validate_wire_urls accepts the registration
+        # origin; installed services and later cached runs must keep
+        # validating against THAT, not the default).
+        cache["api_base"] = api_base
         _validate_wire_urls(cache, api_base, source="register response")
+        interval = _resolve_heartbeat_interval(cache, source="register response")
         _save_cache(catalog_id, cache)
         print(
             f"Node registered: {cache['node_id']} "
@@ -729,6 +780,14 @@ def _run_share(args: argparse.Namespace) -> None:
             file=sys.stderr,
         )
     else:
+        # An explicit --quicksilver-api always wins; otherwise the
+        # cached origin is authoritative. Re-validating the cached
+        # value is cheap paranoia against a tampered file.
+        if args.quicksilver_api is None and cache.get("api_base"):
+            try:
+                api_base = _validate_api_base(str(cache["api_base"]))
+            except QuickSilverError as exc:
+                raise QuickSilverError(f"{exc} (from node cache)") from None
         print(
             f"Using cached node {cache['node_id']} for {catalog_id} "
             f"(provider key not needed)",
@@ -736,9 +795,10 @@ def _run_share(args: argparse.Namespace) -> None:
         )
         # A cache predating a hostile/buggy API is just as dangerous as
         # a fresh hostile wire response — validate on load too. The
-        # only repair for a bad cached origin is a fresh registration.
+        # only repair for a bad cached field is a fresh registration.
         try:
             _validate_wire_urls(cache, api_base, source="node cache")
+            interval = _resolve_heartbeat_interval(cache, source="node cache")
         except QuickSilverError as exc:
             raise QuickSilverError(f"{exc} — re-run with --reregister") from None
 
@@ -771,13 +831,22 @@ def _run_share(args: argparse.Namespace) -> None:
     )
 
     # Serve flags: the pool slot contract wants low concurrency (§5.3 —
-    # --max-num-seqs 2 unless the user overrode it after ``--``); no
-    # rate-limit injection — metering is gateway-side and the
-    # plain-share 120 rpm default would throttle paying traffic.
+    # --max-num-seqs 2 unless the user overrode it after ``--``); the
+    # plain-share 120 rpm DEFAULT is not injected (metering is
+    # gateway-side and a 120 rpm cap would throttle paying traffic),
+    # but an EXPLICIT ``--rate-limit`` is the user's own call and must
+    # be honored, not silently dropped.
     extra: list[str] = []
     passthrough = list(getattr(args, "_passthrough", None) or [])
     if not any(t.split("=", 1)[0].startswith("--max-num-seqs") for t in passthrough):
         extra += ["--max-num-seqs", "2"]
+    if (
+        args.rate_limit is not None
+        and args.rate_limit > 0
+        and not any(t.split("=", 1)[0].startswith("--rate-limit") for t in passthrough)
+    ):
+        extra.append("--rate-limit")
+        extra.append(str(args.rate_limit))
     extra.extend(passthrough)
 
     api_key = secrets.token_hex(24)
@@ -835,7 +904,8 @@ def _run_share(args: argparse.Namespace) -> None:
         print("Warming up (pages weights into Metal)…", file=sys.stderr)
         _warmup(port, api_key, display_model)
 
-        interval = float(cache.get("heartbeat_interval_s") or 10)
+        # ``interval`` was validated (finite, 1..3600) before serve
+        # booted — the beat thread can never be born frozen or dead.
         heartbeat = _Heartbeat(
             cache["heartbeat_url"],
             cache["share_key"],

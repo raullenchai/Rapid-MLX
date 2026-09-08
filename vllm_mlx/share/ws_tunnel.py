@@ -52,6 +52,7 @@ import http.client
 import json
 import logging
 import secrets
+import socket
 import threading
 import time
 import urllib.parse
@@ -86,6 +87,26 @@ LOCAL_FETCH_TIMEOUT_SECONDS = 1800
 # returns whatever has landed in the buffer right now — so each SSE
 # ``data: ...\n\n`` flush forwards immediately.
 CHUNK_SIZE = 4096
+
+
+def _hard_close(conn: http.client.HTTPConnection) -> None:
+    """Close a loopback connection such that a thread blocked in
+    ``getresponse()``/``read1`` on it WAKES UP.
+
+    A bare ``conn.close()`` closes the fd but does not reliably
+    interrupt a concurrent blocking ``recv`` on macOS/Darwin — the
+    worker stays parked and its slot stays busy. ``shutdown()`` first
+    both sends the FIN that serve's ``_disconnect_guard`` needs and
+    unblocks the local reader (EOF)."""
+    try:
+        if conn.sock is not None:
+            conn.sock.shutdown(socket.SHUT_RDWR)
+    except OSError:
+        pass  # already broken/closed — exactly the state we wanted
+    try:
+        conn.close()
+    except Exception:  # noqa: BLE001 — best-effort teardown
+        pass
 
 
 def new_tunnel_id() -> str:
@@ -276,10 +297,23 @@ class TunnelClient:
                 self.error_status = status
             raise
         finally:
+            # Drain in-flight loopback connections BEFORE declaring the
+            # tunnel closed: cancelling the asyncio wrappers does not
+            # stop the ``to_thread`` workers blocked on serve — without
+            # this their generations keep running (and serving stale
+            # responses into a dead WS) after the tunnel is gone.
+            self._drain_active()
             if ws is not None:
                 with contextlib.suppress(Exception):
                     await ws.close()
             self.closed_event.set()
+
+    def _drain_active(self) -> None:
+        with self._active_lock:
+            conns = list(self._active.values())
+            self._active.clear()
+        for conn in conns:
+            _hard_close(conn)
 
     async def _connect_cancellable(self, uri: str) -> Any:
         """``websockets.connect`` awaited, but aborted if ``stop()``
@@ -392,10 +426,7 @@ class TunnelClient:
                 with self._active_lock:
                     conn = self._active.get(req_id)
                 if conn is not None:
-                    try:
-                        conn.close()
-                    except OSError:
-                        pass
+                    _hard_close(conn)
 
     async def _handle_request(self, msg: dict[str, Any]) -> None:
         req_id = msg.get("id")
