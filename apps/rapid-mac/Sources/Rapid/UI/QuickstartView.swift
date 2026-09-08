@@ -333,6 +333,12 @@ final class QuickstartCoordinator {
         ),
     ]
 
+    /// Experimental choices that onboarding may offer explicitly but must
+    /// never promote merely because their weights happen to be cached. This
+    /// keeps the first-run recommendation stable while still letting an
+    /// informed user select and compare the model.
+    static let optionalOnlyAliases: Set<String> = ["neohorse-9b-4bit"]
+
     /// Hardware-aware first-run policy. The existing cache-aware policy is the
     /// eligibility SSOT for cached choices; onboarding adds only its explicit
     /// 16 GB baseline. The 1.2B choice is automatic only when it is already
@@ -344,6 +350,7 @@ final class QuickstartCoordinator {
         let baseline = baselineChoice(hardware: hardware)
         let eligibleCatalog = catalog.filter { $0.supports(.chat) }
         var excluded = CacheAwareDefault.retiredAutomaticAliases
+            .union(optionalOnlyAliases)
         if baseline.alias != lowMemoryChoice.alias {
             excluded.insert(lowMemoryChoice.alias)
         } else {
