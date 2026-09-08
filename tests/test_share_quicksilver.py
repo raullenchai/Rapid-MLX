@@ -429,6 +429,45 @@ def test_clean_close_captures_relay_close_code():
     assert client.error is None
 
 
+def test_real_connection_closed_error_surfaces_close_code():
+    """A policy close arrives as a REAL websockets ConnectionClosedError
+    whose code lives on ``exc.rcvd.code`` (modern) / ``exc.code``
+    (legacy, deprecated in 17). The supervisor's terminal check reads
+    client.close_code — the extraction must match the library's actual
+    shape or a revoked key enters the reconnect loop."""
+    import websockets.exceptions as ws_exc
+    from websockets.protocol import Close
+
+    class _FakeWS:
+        close_code = None  # prove the code came from the exception
+
+        async def send(self, msg):
+            pass
+
+        async def close(self):
+            pass
+
+        def __aiter__(self):
+            return self
+
+        async def __anext__(self):
+            raise ws_exc.ConnectionClosedError(
+                rcvd=Close(1008, "policy violation"), sent=None
+            )
+
+    async def fake_connect(uri, **kw):
+        return _FakeWS()
+
+    client = ws_tunnel.TunnelClient(local_port=1, share_key=SHARE_KEY)
+    with (
+        patch.object(ws_tunnel.websockets, "connect", fake_connect),
+        pytest.raises(ws_exc.ConnectionClosedError),
+    ):
+        asyncio.run(client.run())
+    assert client.close_code == 1008
+    assert client.error is not None
+
+
 def test_connect_uri_percent_encodes_tunnel_id():
     """The connect URL is query-interpolated — an id carrying & or #
     (server-supplied in pool mode) must stay ONE ``id`` value, not
@@ -559,10 +598,40 @@ def test_fresh_abort_marker_still_wins_on_id_reuse():
     conn.request.assert_not_called()
 
 
+def test_completed_id_reuse_not_cancelled_by_inflight_abort():
+    """The hard reuse case: request r1 finishes, ITS abort arrives late
+    (in flight when the gateway's counter wrapped), and a brand-new
+    legitimate r1 is already in the window. The late abort must be
+    dropped, the new request served — the pre-registration skip only
+    applies to ids that were never completed."""
+    client = ws_tunnel.TunnelClient(local_port=1)
+
+    def _served_fetch(conn: MagicMock) -> None:
+        with (
+            patch.object(ws_tunnel, "OneShotHTTPConnection", return_value=conn),
+            patch.object(client, "_sync_send"),
+        ):
+            conn.getresponse.return_value.getheaders.return_value = []
+            conn.getresponse.return_value.read1.return_value = b""
+            client._perform_local_fetch("r1", "GET", "/v1/models", {}, b"")
+
+    first = MagicMock()
+    _served_fetch(first)
+    assert first.request.called and "r1" in client._completed
+
+    client._dispatch_inbound({"t": "abort", "id": "r1"})  # late — dropped
+    assert "r1" not in client._aborted
+
+    second = MagicMock()
+    _served_fetch(second)
+    second.request.assert_called_once()  # reused id served, not skipped
+
+
 def test_late_abort_after_completion_is_harmless_and_bounded():
-    """An abort for an already-finished fetch has nothing to cancel;
-    the stray marker is recorded (capped at 4096 so multi-day nodes
-    can't creep) but never consumed by anything real."""
+    """An abort for a freshly-finished fetch is dropped (nothing to
+    cancel, marker would poison id reuse); aborts for never-seen ids
+    still record markers, capped at 4096 so multi-day nodes can't
+    creep."""
     client = ws_tunnel.TunnelClient(local_port=1)
     conn = MagicMock()
     with (
@@ -573,9 +642,9 @@ def test_late_abort_after_completion_is_harmless_and_bounded():
         conn.getresponse.return_value.read1.return_value = b""
         client._perform_local_fetch("r1", "GET", "/v1/models", {}, b"")
     assert client._active == {}
-    client._dispatch_inbound({"t": "abort", "id": "r1"})  # too late, harmless
-    assert "r1" in client._aborted
-    for i in range(5000):  # cap holds
+    client._dispatch_inbound({"t": "abort", "id": "r1"})  # too late, dropped
+    assert "r1" not in client._aborted and "r1" in client._completed
+    for i in range(5000):  # unknown ids still mark; cap holds
         client._dispatch_inbound({"t": "abort", "id": f"x{i}"})
     assert len(client._aborted) <= 4096
 
@@ -693,6 +762,31 @@ def test_cache_missing_interval_field_is_not_reused(tmp_path):
     del payload["heartbeat_interval_s"]
     qs._save_cache("qwen3.6-35b", payload)
     assert qs._load_cache("qwen3.6-35b", "qwen3.6-35b") is None
+
+
+def test_load_cache_dir_failure_is_actionable(tmp_path, monkeypatch):
+    """_cache_path CREATES the cache dir — a HOME under which it cannot
+    be made (read-only volume, path collision) must be the redacted
+    exit-2 line, not a traceback and not a silent prompt for a
+    provider key the operator may not have."""
+    blocker = tmp_path / "blocker"
+    blocker.write_text("x", encoding="utf-8")
+    monkeypatch.setenv("HOME", str(blocker / "sub"))
+    with pytest.raises(qs.QuickSilverError, match="cache directory"):
+        qs._load_cache("qwen3.6-35b", "qwen3.6-35b")
+
+
+def test_load_cache_unreadable_file_is_actionable(tmp_path):
+    """EACCES on an EXISTING cache is not 'no cache' — falling through
+    would start an unasked-for re-registration."""
+    qs._save_cache("qwen3.6-35b", dict(_register_payload(), alias="qwen3.6-35b"))
+    path = qs._cache_path("qwen3.6-35b")
+    path.chmod(0o000)
+    try:
+        with pytest.raises(qs.QuickSilverError, match="read the node cache"):
+            qs._load_cache("qwen3.6-35b", "qwen3.6-35b")
+    finally:
+        path.chmod(0o600)
 
 
 def test_save_cache_failure_removes_credential_bearing_tmp(tmp_path):

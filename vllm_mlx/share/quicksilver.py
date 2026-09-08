@@ -192,11 +192,30 @@ def _load_cache(catalog_id: str, alias: str) -> dict[str, Any] | None:
     catalog id (§5.1) — an alias mismatch means a *different* node, and
     reuse would silently mis-bind payouts. Mismatch (or corruption) is
     treated as "no cache", which routes through registration."""
-    path = _cache_path(catalog_id)
+    # ``_cache_path`` CREATES (and chmods) the cache dir — a read-only
+    # HOME or full disk must surface as the redacted actionable error,
+    # not silently route through registration (which would prompt for a
+    # provider key the operator may not have at hand, and then fail to
+    # save anyway).
     try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
+        path = _cache_path(catalog_id)
+    except OSError as exc:
+        raise QuickSilverError(
+            f"could not access the node cache directory: {exc}"
+        ) from None
+    try:
+        raw = path.read_text(encoding="utf-8")
+    except FileNotFoundError:
         return None
+    except OSError as exc:
+        # EACCES/EIO on an EXISTING cache is not "no cache" — treating
+        # it that way starts a re-registration the operator never
+        # asked for. Surface it.
+        raise QuickSilverError(f"could not read the node cache: {exc}") from None
+    try:
+        payload = json.loads(raw)
+    except ValueError:
+        return None  # corrupt file IS properly "no cache": re-register repairs it
     if not isinstance(payload, dict):
         return None
     # Presence is not shape: a non-string share_key would sail through

@@ -259,6 +259,11 @@ class TunnelClient:
         # ``time.monotonic()`` stamps, not bare membership — see
         # ``_ABORT_MARKER_STALE_SECONDS``.
         self._aborted: dict[str, float] = {}
+        # Recently completed fetches (id → completion stamp). An abort
+        # for one of these arrived too late to cancel anything;
+        # recording a marker for it could only poison the NEXT request
+        # that reuses the id, so such aborts are dropped instead.
+        self._completed: dict[str, float] = {}
         self._active_lock = threading.Lock()
         # Caller-visible "tunnel died after banner" sentinel. Set when
         # the WS closes unexpectedly; the parent's monitor loop polls it.
@@ -343,9 +348,22 @@ class TunnelClient:
             self.close_code = getattr(ws, "close_code", None)
         except Exception as exc:
             self.error = exc
-            code = getattr(exc, "code", None)
+            # ConnectionClosed family carries the close code, but the
+            # attribute shape depends on the websockets major (repo
+            # floor is >=12): modern exposes it on ``rcvd`` and
+            # deprecates ``.code``; legacy exposes ``.code`` directly.
+            # Fall through rcvd → code → ws.close_code so a revoked-key
+            # 1008 can never read as "unknown close" and feed the
+            # reconnect loop.
+            code: Any = None
+            rcvd = getattr(exc, "rcvd", None)
+            if rcvd is not None:
+                code = getattr(rcvd, "code", None)
+            elif not hasattr(exc, "rcvd"):
+                code = getattr(exc, "code", None)
+            if not isinstance(code, int) and ws is not None:
+                code = getattr(ws, "close_code", None)
             if isinstance(code, int):
-                # ConnectionClosed family: .code is the close code.
                 self.close_code = code
             # A rejected keyed claim surfaces as an HTTP 401 during the
             # WS handshake. Record the status separately: the caller
@@ -509,19 +527,32 @@ class TunnelClient:
                         # stray abort), so cap the set — a needed
                         # marker only ever lives one loop tick, at
                         # 4096 entries eviction cannot race a fetch.
-                        if len(self._aborted) >= 4096:
-                            # FIFO — dict preserves insertion order, so
-                            # this evicts the oldest marker.
-                            self._aborted.pop(next(iter(self._aborted)))
-                        # Timestamp, not just membership: a relay MAY
-                        # reuse request ids (per-gateway counters that
-                        # reset on reconnect), and an abort that raced
-                        # an already-finished request must not silently
-                        # discard the next legitimate request carrying
-                        # that id. Fetches only consult markers fresh
-                        # enough to still be the same race window
-                        # (``_ABORT_MARKER_STALE_SECONDS``).
-                        self._aborted[req_id] = time.monotonic()
+                        now = time.monotonic()
+                        completed_at = self._completed.get(req_id)
+                        if (
+                            completed_at is not None
+                            and now - completed_at <= _ABORT_MARKER_STALE_SECONDS
+                        ):
+                            # This id finished moments ago: the abort is
+                            # in flight from a request that is already
+                            # gone, and any request NOW carrying this id
+                            # is a relay-side REUSE — legitimate traffic
+                            # that must be served, not cancelled.
+                            pass
+                        else:
+                            if len(self._aborted) >= 4096:
+                                # FIFO — dict preserves insertion order,
+                                # so this evicts the oldest marker.
+                                self._aborted.pop(next(iter(self._aborted)))
+                            # Timestamp, not just membership: a relay MAY
+                            # reuse request ids (per-gateway counters that
+                            # reset on reconnect), and an abort that raced
+                            # an already-finished request must not silently
+                            # discard the next legitimate request carrying
+                            # that id. Fetches only consult markers fresh
+                            # enough to still be the same race window
+                            # (``_ABORT_MARKER_STALE_SECONDS``).
+                            self._aborted[req_id] = now
                 if conn is not None:
                     _hard_close(conn)
 
@@ -644,6 +675,9 @@ class TunnelClient:
                 if self._active.get(req_id) is conn:
                     del self._active[req_id]
                 self._aborted.pop(req_id, None)
+                if len(self._completed) >= 4096:
+                    self._completed.pop(next(iter(self._completed)))
+                self._completed[req_id] = time.monotonic()
             conn.close()
 
     async def _send(self, obj: Any) -> None:
