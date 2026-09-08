@@ -39,6 +39,7 @@ rapid-mlx doctor                 # complete human-readable report
 rapid-mlx doctor --verbose       # include evidence and remediation detail
 rapid-mlx doctor --summary       # one line for logs and shell scripts
 rapid-mlx doctor --json          # versioned report for automation/support
+rapid-mlx doctor --deep          # active dependency/DNS/route checks (≤30s)
 ```
 
 The built-in filesystem, network, and subprocess operations carry explicit
@@ -83,9 +84,73 @@ rapid-mlx doctor --only service --verbose
 rapid-mlx doctor --only service --json
 ```
 
-JSON output uses `schemaVersion: 1` and includes the Rapid-MLX version,
+### Deep checks and repairs
+
+The default command remains a five-second, read-only check. Use `--deep` when
+actively troubleshooting an appliance; it allows up to 30 seconds and adds:
+
+- `pip check` in the selected Rapid-MLX runtime, to find incompatible installed
+  dependency versions. Confirmed conflicts are failures; sealed/minimal runtimes
+  without pip are skipped, while operational errors such as permission or
+  interpreter startup failures are warnings rather than false conflicts;
+- DNS resolution for PyPI and Hugging Face, which distinguishes network setup
+  trouble from a broken package;
+- the macOS default-route interface, useful on multi-NIC Mac minis that remain
+  reachable over SSH while their internet route points at a private link.
+
+```bash
+rapid-mlx doctor --deep --verbose
+rapid-mlx doctor --deep --only deep --json
+```
+
+`--fix` implies `--deep` and follows a detect → plan → apply → re-detect flow.
+It only offers repairs that have both a bounded action and an objective health
+verifier. Today, the automated repair is a kickstart of an already-registered
+Always-on service whose process or liveness check failed. Doctor never invokes
+`sudo` itself, never installs packages, and never edits service configuration.
+The read-only deep diagnosis has a 30-second budget. An applied repair has
+separate bounded stages: up to 10 seconds for the command, 20 seconds for
+health verification, and—only after verified recovery—another 30-second deep
+diagnosis. Including the initial diagnosis, the complete successful workflow
+can therefore take up to approximately 90 seconds.
+
+Preview without changing the machine:
+
+```bash
+rapid-mlx doctor --only service --fix --dry-run --verbose
+rapid-mlx doctor --only service --fix --dry-run --json
+```
+
+Apply interactively:
+
+```bash
+sudo rapid-mlx doctor --only service --fix
+```
+
+Answering anything other than `y`/`yes` records the proposal as `not_applied`
+with an operator-declined reason; it does not leave the repair result ambiguous.
+
+Apply explicitly in non-interactive appliance automation:
+
+```bash
+sudo rapid-mlx doctor --only service --fix --yes --json
+```
+
+Without root, Doctor reports the exact `sudo /bin/launchctl ...` command as
+`not_applied`; it does not prompt for or acquire privilege. A zero exit from
+`launchctl` is not enough to claim success: Doctor polls the service again and
+records `verified` only after registration, PID, and `/livez` all recover.
+Otherwise the repair is `failed` or `unverified`, and the original diagnosis
+remains visible. JSON adds a root-level `repairs` array with `id`, `status`,
+`summary`, `command`, and `detail`.
+
+Ordinary JSON output remains `schemaVersion: 1` and includes the Rapid-MLX version,
 overall status (`ok`, `warn`, `fail`, or `skipped`), exit code, total and per-section durations, counts, stable
 section IDs, optional semantic check IDs, and redacted summaries/details.
+Only explicit `--fix --json` output uses schema v2 and adds the root-level
+`repairs` array (empty when no repair was planned or attempted). Existing
+read-only automation can continue consuming schema v1 unchanged; integrations
+that opt into repair mode must support schema v2.
 Legacy checks that do not yet declare a semantic identity return `id: null`;
 consumers must not derive identity from their position or English prose. It
 writes JSON only to stdout. Exit code `0` means no confirmed failure (warnings

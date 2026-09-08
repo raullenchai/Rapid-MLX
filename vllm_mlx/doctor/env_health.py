@@ -101,6 +101,8 @@ class Section:
 class Report:
     sections: list[Section] = field(default_factory=list)
     duration_ms: int = 0
+    repairs: list[dict[str, Any]] = field(default_factory=list)
+    schema_version: int = 1
 
     def all_checks(self) -> list[Check]:
         return [c for s in self.sections for c in s.checks]
@@ -280,6 +282,7 @@ _RUNTIME_OVERRIDE_REPAIR_HINT_TEMPLATE = (
     "sidecar), then remove {root} and relaunch so the bundled sidecar is used"
 )
 _DOCTOR_BUDGET_S = 5.0
+_DOCTOR_DEEP_BUDGET_S = 30.0
 # Leave enough scheduling-budget headroom for subprocess timeout cleanup, report
 # assembly, and CLI rendering.  ``subprocess.run(timeout=...)`` only starts
 # terminating the child at its timeout and can return a few milliseconds
@@ -743,7 +746,7 @@ def _runtime_python_path() -> Path:
 
 
 def _selected_runtime() -> tuple[Path, bool]:
-    """Return the cached runtime selection for one doctor invocation."""
+    """Return ``(runtime, selected_from_running_server)`` for this invocation."""
     global _SELECTED_RUNTIME, _RUNTIME_SELECTION_DONE
     if not _RUNTIME_SELECTION_DONE:
         _SELECTED_RUNTIME = _runtime_python_path()
@@ -3461,6 +3464,153 @@ def section_always_on_service(
     return section
 
 
+def section_deep_runtime(
+    *,
+    run: Callable[..., subprocess.CompletedProcess[str]] = subprocess.run,
+) -> Section:
+    """Opt-in active probes that are too expensive for the default Doctor."""
+    section = Section("Deep Diagnostics")
+    runtime, _selected_from_running_server = _selected_runtime()
+    pip_optional = _bundled_sidecar_root(runtime) is not None or (
+        _runtime_environment(runtime)
+        in {"desktop sidecar", "Rapid-MLX application environment"}
+    )
+    try:
+        result = run(
+            [str(runtime), "-m", "pip", "check"],
+            capture_output=True,
+            text=True,
+            timeout=_bounded_timeout(10.0),
+            check=False,
+        )
+        detail = "\n".join(
+            output.strip()
+            for output in (result.stdout, result.stderr)
+            if output and output.strip()
+        )
+        if result.returncode != 0 and "No module named pip" in detail:
+            section.add(
+                "Python dependency graph check is unavailable in this runtime",
+                CheckStatus.SKIPPED if pip_optional else CheckStatus.WARN,
+                detail=(
+                    f"{runtime} is a sealed application runtime without pip; "
+                    f"output={detail}"
+                    if pip_optional
+                    else f"{runtime} unexpectedly has no pip module; output={detail}"
+                ),
+                check_id="deep.python.pip-check",
+            )
+        else:
+            healthy = result.returncode == 0
+            validation_patterns = (
+                r"(?m)^.+ requires .+, which is not installed\.$",
+                r"(?m)^.+ has requirement .+, but you have .+\.$",
+                r"(?m)^.+ is not supported on this platform$",
+                r"(?im)^.*error parsing dependencies of .+$",
+            )
+            conflict = result.returncode == 1 and any(
+                re.search(pattern, detail) for pattern in validation_patterns
+            )
+            section.add(
+                "Python dependency graph is consistent"
+                if healthy
+                else (
+                    "Python dependency graph has conflicts"
+                    if conflict
+                    else "Python dependency graph check could not complete"
+                ),
+                CheckStatus.OK
+                if healthy
+                else CheckStatus.FAIL
+                if conflict
+                else CheckStatus.WARN,
+                detail=detail or f"runtime={runtime}",
+                check_id="deep.python.pip-check",
+            )
+    except subprocess.TimeoutExpired:
+        section.add(
+            "Python dependency graph check timed out",
+            CheckStatus.SKIPPED,
+            detail=f"runtime={runtime}",
+            check_id="deep.python.pip-check",
+        )
+    except OSError as exc:
+        section.add(
+            "Python dependency graph could not be checked",
+            CheckStatus.WARN,
+            detail=str(exc),
+            check_id="deep.python.pip-check",
+        )
+
+    dns_script = (
+        "import socket; "
+        "[socket.getaddrinfo(h, 443, type=socket.SOCK_STREAM) "
+        "for h in ('pypi.org', 'huggingface.co')]; print('ok')"
+    )
+    try:
+        result = run(
+            [str(runtime), "-I", "-c", dns_script],
+            capture_output=True,
+            text=True,
+            timeout=_bounded_timeout(5.0),
+            check=False,
+        )
+        section.add(
+            "Package and model hosts resolve through DNS"
+            if result.returncode == 0
+            else "DNS resolution failed for a package or model host",
+            CheckStatus.OK if result.returncode == 0 else CheckStatus.WARN,
+            detail=(result.stderr or result.stdout).strip(),
+            check_id="deep.network.dns",
+        )
+    except subprocess.TimeoutExpired:
+        section.add(
+            "DNS resolution check timed out",
+            CheckStatus.SKIPPED,
+            detail="pypi.org and huggingface.co were not classified as broken",
+            check_id="deep.network.dns",
+        )
+    except OSError as exc:
+        section.add(
+            "DNS resolution could not be checked",
+            CheckStatus.WARN,
+            detail=str(exc),
+            check_id="deep.network.dns",
+        )
+
+    if sys.platform == "darwin":
+        try:
+            route = run(
+                ["/sbin/route", "-n", "get", "default"],
+                capture_output=True,
+                text=True,
+                timeout=_bounded_timeout(2.0),
+                check=False,
+            )
+            match = re.search(r"^\s*interface:\s*(\S+)", route.stdout, re.MULTILINE)
+            interface = match.group(1) if match else None
+            section.add(
+                f"default network route uses {interface}"
+                if route.returncode == 0 and interface
+                else "default network route could not be identified",
+                CheckStatus.OK
+                if route.returncode == 0 and interface
+                else CheckStatus.WARN,
+                detail=(
+                    "multi-NIC appliances should keep the internet-facing service first in macOS network service order"
+                ),
+                check_id="deep.network.default-route",
+            )
+        except (OSError, subprocess.SubprocessError) as exc:
+            section.add(
+                "default network route could not be checked",
+                CheckStatus.WARN,
+                detail=str(exc),
+                check_id="deep.network.default-route",
+            )
+    return section
+
+
 # ---------------------------------------------------------------------------
 # Public entry point
 # ---------------------------------------------------------------------------
@@ -3522,6 +3672,10 @@ _SECTION_IDS = {
     section_always_on_service: "service",
 }
 
+_DEEP_SECTION_BUILDERS = (section_deep_runtime,)
+_SECTION_TITLES[section_deep_runtime] = "Deep Diagnostics"
+_SECTION_IDS[section_deep_runtime] = "deep"
+
 
 def _builder_id(builder: Callable[[], Section]) -> str:
     return _SECTION_IDS.get(
@@ -3543,23 +3697,30 @@ def _finish_section(
 
 
 def _selected_section_builders(
-    *, only: set[str] | None = None, skip: set[str] | None = None
+    *,
+    only: set[str] | None = None,
+    skip: set[str] | None = None,
+    deep: bool = False,
 ) -> tuple[Callable[[], Section], ...]:
     skipped_ids = skip or set()
+    available_builders = _SECTION_BUILDERS + (_DEEP_SECTION_BUILDERS if deep else ())
     return tuple(
         builder
-        for builder in _SECTION_BUILDERS
+        for builder in available_builders
         if (only is None or _builder_id(builder) in only)
         and _builder_id(builder) not in skipped_ids
     )
 
 
 def _budget_exhausted_report(
-    *, only: set[str] | None = None, skip: set[str] | None = None
+    *,
+    only: set[str] | None = None,
+    skip: set[str] | None = None,
+    deep: bool = False,
 ) -> Report:
     report = Report()
     _append_budget_exhausted_sections(
-        report, _selected_section_builders(only=only, skip=skip)
+        report, _selected_section_builders(only=only, skip=skip, deep=deep)
     )
     return report
 
@@ -3589,6 +3750,7 @@ def _run_all_serialized(
     *,
     only: set[str] | None = None,
     skip: set[str] | None = None,
+    deep: bool = False,
 ) -> Report:
     """Run every section and return the aggregate report.
 
@@ -3609,9 +3771,9 @@ def _run_all_serialized(
         _RUNTIME_IMPORT_TIMEOUTS.clear()
         _RUNTIME_DISTRIBUTION_CACHE.clear()
         _RUNTIME_CONTEXTS.clear()
-        selected_builders = _selected_section_builders(only=only, skip=skip)
+        selected_builders = _selected_section_builders(only=only, skip=skip, deep=deep)
         if time.monotonic() >= _DOCTOR_DEADLINE:
-            return _budget_exhausted_report(only=only, skip=skip)
+            return _budget_exhausted_report(only=only, skip=skip, deep=deep)
         if not selected_builders:
             return report
         runtime_selected = False
@@ -3698,6 +3860,7 @@ def run_all(
     *,
     only: set[str] | None = None,
     skip: set[str] | None = None,
+    deep: bool = False,
 ) -> Report:
     """Run a cooperatively budgeted probe set; serialize shared probe caches.
 
@@ -3706,17 +3869,18 @@ def run_all(
     layer; library callers simply receive an empty report for no matches.
     """
     started_at = time.monotonic()
-    caller_deadline = time.monotonic() + (
-        _DOCTOR_BUDGET_S - _DOCTOR_COMPLETION_HEADROOM_S
-    )
+    budget_s = _DOCTOR_DEEP_BUDGET_S if deep else _DOCTOR_BUDGET_S
+    caller_deadline = time.monotonic() + (budget_s - _DOCTOR_COMPLETION_HEADROOM_S)
     remaining = max(0.0, caller_deadline - time.monotonic())
     if not _DOCTOR_RUN_LOCK.acquire(timeout=remaining):
-        report = _budget_exhausted_report(only=only, skip=skip)
+        report = _budget_exhausted_report(only=only, skip=skip, deep=deep)
         report.duration_ms = max(0, round((time.monotonic() - started_at) * 1000))
         return report
     try:
-        if only is not None or skip:
-            report = _run_all_serialized(caller_deadline, only=only, skip=skip)
+        if only is not None or skip or deep:
+            report = _run_all_serialized(
+                caller_deadline, only=only, skip=skip, deep=deep
+            )
         else:
             # Preserve the one-argument internal seam used by downstream
             # embedders and older test doubles.

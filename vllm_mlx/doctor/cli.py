@@ -123,7 +123,11 @@ def _open_collector_pipes() -> tuple[int, int, int, int]:
 
 
 def _collect_report_isolated(
-    *, only: set[str] | None, skip: set[str] | None, timeout_s: float = 8.0
+    *,
+    only: set[str] | None,
+    skip: set[str] | None,
+    deep: bool = False,
+    timeout_s: float = 8.0,
 ) -> Report:
     """Collect a report in a fresh executable whose stdout is discarded."""
     with tempfile.TemporaryDirectory(prefix="rapid-mlx-doctor-") as result_dir:
@@ -134,6 +138,7 @@ def _collect_report_isolated(
                 {
                     "only": None if only is None else sorted(only),
                     "skip": None if skip is None else sorted(skip),
+                    "deep": deep,
                 }
             ),
             encoding="utf-8",
@@ -405,16 +410,91 @@ def doctor_command(args: Any) -> None:
     raw_skip = getattr(args, "skip", None)
     only = None if raw_only is None else set(raw_only)
     skip = None if raw_skip is None else set(raw_skip)
+    fix = bool(getattr(args, "fix", False))
+    dry_run = bool(getattr(args, "dry_run", False))
+    assume_yes = bool(getattr(args, "yes", False))
+    # Selecting the deep section is itself an explicit opt-in. Without this,
+    # ``--only deep`` filters out every normal builder while never registering
+    # the deep builder, producing an empty successful report.
+    deep = bool(getattr(args, "deep", False) or fix or (only and "deep" in only))
 
-    if json_output:
-        # A disposable child contains Python/native/subprocess chatter and any
-        # writer threads a dependency may start. Only the Report crosses back.
-        try:
-            report = _collect_report_isolated(only=only, skip=skip)
-        except Exception as exc:  # noqa: BLE001 - preserve JSON output contract
-            report = _collection_failure_report(exc)
-    else:
-        report = run_all(only=only, skip=skip)
+    if dry_run and not fix:
+        print("error: --dry-run requires --fix", file=sys.stderr)
+        sys.exit(2)
+    if assume_yes and not fix:
+        print("error: --yes requires --fix", file=sys.stderr)
+        sys.exit(2)
+    if fix and not dry_run and not assume_yes and not sys.stdin.isatty():
+        print(
+            "error: --fix needs interactive confirmation or explicit --yes",
+            file=sys.stderr,
+        )
+        sys.exit(2)
+
+    def collect_report(*, force_deep: bool = False) -> Report:
+        use_deep = deep or force_deep
+
+        def operation() -> Report:
+            return (
+                run_all(only=only, skip=skip, deep=True)
+                if use_deep
+                else run_all(only=only, skip=skip)
+            )
+
+        if json_output:
+            try:
+                return _collect_report_isolated(
+                    only=only,
+                    skip=skip,
+                    deep=use_deep,
+                    timeout_s=35.0 if use_deep else 8.0,
+                )
+            except Exception as exc:  # noqa: BLE001 - preserve JSON contract
+                return _collection_failure_report(exc)
+        return operation()
+
+    def execute() -> Report:
+        nonlocal assume_yes
+        report = collect_report()
+        if fix:
+            report.schema_version = 2
+            from .repairs import apply_repairs, plan_repairs, service_is_live
+
+            actions = plan_repairs(report)
+            if actions and not dry_run and not assume_yes:
+                print("Doctor proposes:", file=sys.stderr)
+                for action in actions:
+                    print(f"  - {_redact(action.summary)}", file=sys.stderr)
+                    command = " ".join(_redact(argument) for argument in action.command)
+                    print(f"    {command}", file=sys.stderr)
+                print(
+                    "Apply these repairs? [y/N] ", end="", file=sys.stderr, flush=True
+                )
+                assume_yes = sys.stdin.readline().strip().lower() in {"y", "yes"}
+                if not assume_yes:
+                    report.repairs = [
+                        {
+                            "id": action.id,
+                            "status": "not_applied",
+                            "summary": action.summary,
+                            "command": list(action.command),
+                            "detail": "operator declined the proposed repair",
+                        }
+                        for action in actions
+                    ]
+            if actions and (dry_run or assume_yes):
+                results = apply_repairs(
+                    actions,
+                    dry_run=dry_run,
+                    verify_service=service_is_live,
+                )
+                if any(result.status == "verified" for result in results):
+                    report = collect_report(force_deep=True)
+                    report.schema_version = 2
+                report.repairs = [result.to_dict() for result in results]
+        return report
+
+    report = execute()
     if json_output:
         render_json(report)
     elif summary_only:
@@ -445,6 +525,15 @@ def render(report: Report, *, verbose: bool = False, stream=None) -> None:
         write("\n")
 
     _render_summary(report, write=write, verbose=verbose)
+    if report.repairs:
+        write("\nRepairs:\n")
+        for repair in report.repairs:
+            status = _redact(str(repair["status"]))
+            summary = _redact(str(repair["summary"]))
+            command = " ".join(_redact(str(item)) for item in repair["command"])
+            write(f"  {status}: {summary} ({command})\n")
+            if verbose and repair.get("detail"):
+                write(f"      ↳ {_redact(str(repair['detail']))}\n")
 
 
 def _redact(value: str) -> str:
@@ -534,8 +623,9 @@ def _contains_unescaped_quote(value: str, quote: str) -> bool:
 
 def report_document(report: Report) -> dict[str, Any]:
     """Return the versioned, redacted machine-readable Doctor contract."""
-    return {
-        "schemaVersion": 1,
+    schema_version = 2 if report.repairs else report.schema_version
+    document = {
+        "schemaVersion": schema_version,
         "rapidMlxVersion": __version__,
         "status": report.overall_status,
         "exitCode": report.exit_code,
@@ -564,6 +654,24 @@ def report_document(report: Report) -> dict[str, Any]:
             for section in report.sections
         ],
     }
+    if schema_version >= 2:
+        document["repairs"] = [
+            {
+                key: (
+                    _redact(value)
+                    if isinstance(value, str)
+                    else [
+                        _redact(item) if isinstance(item, str) else item
+                        for item in value
+                    ]
+                    if isinstance(value, list)
+                    else value
+                )
+                for key, value in repair.items()
+            }
+            for repair in report.repairs
+        ]
+    return document
 
 
 def render_json(report: Report, *, stream=None) -> None:
