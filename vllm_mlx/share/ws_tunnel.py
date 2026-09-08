@@ -206,6 +206,11 @@ class TunnelClient:
         # it to cancel generations for aborted requests; the count backs
         # the pool heartbeat's ``inflight`` field.
         self._active: dict[str, http.client.HTTPConnection] = {}
+        # Aborts that arrive before their req's fetch has registered in
+        # ``_active`` (the fetch task only starts on the next loop
+        # tick). Without this the abort is a silent no-op and the
+        # generation runs to completion against nobody.
+        self._aborted: set[str] = set()
         self._active_lock = threading.Lock()
         # Caller-visible "tunnel died after banner" sentinel. Set when
         # the WS closes unexpectedly; the parent's monitor loop polls it.
@@ -425,6 +430,20 @@ class TunnelClient:
             if isinstance(req_id, str):
                 with self._active_lock:
                     conn = self._active.get(req_id)
+                    if conn is None:
+                        # The abort beat the req task to the registry
+                        # (the fetch worker registers only after the
+                        # loop schedules it). Remember the id so the
+                        # fetch skips instead of starting a generation
+                        # nobody is listening for. A marker for an
+                        # ALREADY-finished request is never consumed
+                        # (multi-day nodes would creep one entry per
+                        # stray abort), so cap the set — a needed
+                        # marker only ever lives one loop tick, at
+                        # 4096 entries eviction cannot race a fetch.
+                        if len(self._aborted) >= 4096:
+                            self._aborted.pop()
+                        self._aborted.add(req_id)
                 if conn is not None:
                     _hard_close(conn)
 
@@ -444,11 +463,13 @@ class TunnelClient:
             )
             return
 
-        if self._override_authorization is not None and method == "POST":
+        if self._override_authorization is not None:
             # Pool traffic bears a QuickSilver credential our loopback
-            # serve has never seen. Swap in the bearer share minted for
-            # THIS serve (case-insensitive replace — the relay may
-            # forward any casing of the inbound header name).
+            # serve has never seen — ANY method (GET /v1/models, DELETE
+            # /v1/requests/…) must arrive with the bearer the serve
+            # actually minted, or serve's auth gate 401s it.
+            # Case-insensitive replace: the relay may forward any
+            # casing of the inbound header name.
             headers = {k: v for k, v in headers.items() if k.lower() != "authorization"}
             headers["Authorization"] = f"Bearer {self._override_authorization}"
 
@@ -487,6 +508,13 @@ class TunnelClient:
             "127.0.0.1", self.local_port, timeout=LOCAL_FETCH_TIMEOUT_SECONDS
         )
         with self._active_lock:
+            if req_id in self._aborted:
+                # The relay cancelled before we ever registered — the
+                # downstream is gone; starting the generation would
+                # burn a pool slot for nobody. Skip without sending.
+                self._aborted.discard(req_id)
+                conn.close()
+                return
             self._active[req_id] = conn
         try:
             conn.request(method, path, body=body, headers=headers)
@@ -519,9 +547,12 @@ class TunnelClient:
             with self._active_lock:
                 # Only drop OUR registration — an abort already closed
                 # the conn, and a retried request id must not evict a
-                # newer connection.
+                # newer connection. Discard any late abort marker in
+                # the same breath: after this point there is nothing
+                # left for it to cancel (bounded memory).
                 if self._active.get(req_id) is conn:
                     del self._active[req_id]
+                self._aborted.discard(req_id)
             conn.close()
 
     async def _send(self, obj: Any) -> None:

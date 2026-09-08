@@ -327,6 +327,14 @@ def _validate_wire_urls(payload: dict[str, Any], api_base: str, *, source: str) 
             )
         if not host:
             raise QuickSilverError(f"{source} {field} must include a host: {url!r}")
+        # userinfo/query/fragment are the classic credential-embedding
+        # channels (the pre-v1 protocol keyed on a path segment). The
+        # claim key rides the ready frame, so nothing legitimate lives
+        # in these components and any value there is treated as hostile.
+        if parsed.username or parsed.password or parsed.query or parsed.fragment:
+            raise QuickSilverError(
+                f"{source} {field} must not carry userinfo, query, or fragment: {url!r}"
+            )
         if not _wire_host_trusted(host, api_host):
             raise QuickSilverError(
                 f"{source} {field} host {host!r} is not a QuickSilver origin — "
@@ -469,13 +477,22 @@ def register_node(
         try:
             with _open(req, timeout=15) as r:
                 status = r.status
-                payload = json.load(r)
+                raw = r.read()
+            payload = json.loads(raw)
         except urllib.error.HTTPError as exc:
             status = exc.code
             detail = _error_detail(exc.read())
         except (urllib.error.URLError, TimeoutError, ConnectionError) as exc:
             status = None
             detail = _redact(str(exc))[:200]
+        except (ValueError, UnicodeDecodeError) as exc:
+            # A 2xx that isn't valid JSON is a corrupt/unexpected
+            # response, not transport noise — surface it redacted
+            # instead of letting the raw traceback reach the user.
+            raise QuickSilverError(
+                f"QuickSilver register returned an unparseable response: "
+                f"{_redact(str(exc))[:120]}"
+            ) from None
         if status is not None and 200 <= status < 300:
             if not isinstance(payload, dict):
                 raise QuickSilverError("register returned a non-object body")
@@ -928,7 +945,8 @@ def _run_share(args: argparse.Namespace) -> None:
                 inject_stream_usage=True,
             )
             print(
-                f"Connecting to QuickSilver relay {relay_url} as {cache['node_id']}…",
+                f"Connecting to QuickSilver relay {_redact(relay_url)} "
+                f"as {cache['node_id']}…",
                 file=sys.stderr,
             )
             tunnel_thread = tunnel.run_in_thread()

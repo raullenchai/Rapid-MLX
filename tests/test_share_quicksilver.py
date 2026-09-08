@@ -381,6 +381,56 @@ def test_teardown_drains_inflight_connections():
     assert client._active == {}
 
 
+def test_abort_before_fetch_registration_skips_generation():
+    """The abort can beat the req task to the ``_active`` registry (the
+    fetch worker registers a loop tick late). A silently-dropped abort
+    would burn a pool slot for a downstream that already left."""
+    client = ws_tunnel.TunnelClient(local_port=1)
+    client._dispatch_inbound({"t": "abort", "id": "r1"})
+    assert "r1" in client._aborted
+
+    conn = MagicMock()
+    with patch.object(ws_tunnel.http.client, "HTTPConnection", return_value=conn):
+        client._perform_local_fetch("r1", "POST", "/v1/chat/completions", {}, b"")
+    conn.request.assert_not_called()
+    conn.close.assert_called_once()
+    assert client._aborted == set() and client._active == {}
+
+
+def test_late_abort_after_completion_is_harmless_and_bounded():
+    """An abort for an already-finished fetch has nothing to cancel;
+    the stray marker is recorded (set is capped at 4096 internally so
+    multi-day nodes can't creep) but never consumed."""
+    client = ws_tunnel.TunnelClient(local_port=1)
+    conn = MagicMock()
+    with (
+        patch.object(ws_tunnel.http.client, "HTTPConnection", return_value=conn),
+        patch.object(client, "_sync_send"),
+    ):
+        conn.getresponse.return_value.getheaders.return_value = []
+        conn.getresponse.return_value.read1.return_value = b""
+        client._perform_local_fetch("r1", "GET", "/v1/models", {}, b"")
+    assert client._active == {}
+    client._dispatch_inbound({"t": "abort", "id": "r1"})  # too late, harmless
+    assert client._aborted == {"r1"}
+    for i in range(5000):  # cap holds
+        client._dispatch_inbound({"t": "abort", "id": f"x{i}"})
+    assert len(client._aborted) <= 4096
+
+
+def test_override_authorization_applies_to_get_requests():
+    """The serve's auth gate guards EVERY method — a GET /v1/models
+    carrying the pool credential would 401 locally if the swap were
+    POST-only."""
+    client = ws_tunnel.TunnelClient(local_port=1, override_authorization="local-bearer")
+    msg = _req_msg(method="GET")
+    msg["headers"]["Authorization"] = "Bearer qsp-pool-key"
+    got = _run_handle_request(client, msg)
+    lowered = {k.lower(): v for k, v in got["headers"].items()}
+    assert lowered["authorization"] == "Bearer local-bearer"
+    assert "qsp-pool-key" not in json.dumps(got["headers"])
+
+
 # ─────────────────────────── catalog resolution §5.4 ───────────────────────────
 
 
@@ -564,6 +614,41 @@ def test_register_400_is_terminal_without_retrying():
         n, sleep = one(code)
         assert n == 1
         sleep.assert_not_called()
+
+
+def test_register_unparseable_2xx_is_actionable_error():
+    class _GarbageResp:
+        status = 200
+
+        def read(self):
+            return b"<html>nginx is not json</html>"
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+    with (
+        patch.object(qs, "_open", lambda req, timeout=None: _GarbageResp()),
+        pytest.raises(qs.QuickSilverError, match="unparseable"),
+    ):
+        qs.register_node("https://pay.test", PROVIDER_KEY, "m", "a")
+
+
+def test_wire_urls_reject_credential_bearing_components():
+    """userinfo/query/fragment are the classic key-in-URL channels —
+    the v1 claim rides the ready frame, so anything there is hostile
+    (or at least an unprintable leak candidate)."""
+    for relay in (
+        "wss://rapidserver.quicksilverpro.io/up?key=qspsk-leak",
+        "wss://user:qspsk-leak@rapidserver.quicksilverpro.io/up",
+        "wss://rapidserver.quicksilverpro.io/up#qspsk-leak",
+    ):
+        with pytest.raises(qs.QuickSilverError, match="userinfo, query, or fragment"):
+            qs._validate_wire_urls(
+                _register_payload(relay_url=relay), _API_ORIGIN, source="t"
+            )
 
 
 def test_url_opener_refuses_redirects():
