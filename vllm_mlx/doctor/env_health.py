@@ -10,9 +10,10 @@ optional dev tools. The user runs ``rapid-mlx doctor`` to answer one question
 * never escalate to sudo or read user data outside ``~/.cache/huggingface``;
 * report a deterministic status (✓ / ⚠ / ✗) with a one-line label.
 
-Total wall-clock for ``rapid-mlx doctor`` ≤ 5 s on a warm cache, dominated by
-the single 2-second network HEAD against ``huggingface.co`` (which downgrades
-to ⚠ on timeout — never ✗).
+On a warm cache, ``rapid-mlx doctor`` targets five seconds, dominated by the
+single two-second network HEAD against ``huggingface.co``. Built-in I/O and
+subprocess probes have explicit timeouts, and timeout results downgrade to ⚠
+or skipped — never ✗.
 
 The CLI in ``doctor/cli.py`` consumes ``run_all()`` and renders the report.
 Tests in ``tests/test_doctor_env_health.py`` cover each section's probe.
@@ -34,7 +35,7 @@ import sys
 import threading
 import time
 import urllib.parse
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
@@ -52,6 +53,7 @@ class CheckStatus(str, Enum):
     OK = "ok"
     WARN = "warn"
     FAIL = "fail"
+    SKIPPED = "skipped"
 
 
 class _ImportProbeOutcome(str, Enum):
@@ -68,20 +70,33 @@ class Check:
     label: str
     status: CheckStatus
     detail: str = ""
+    id: str | None = None
 
 
 @dataclass
 class Section:
     title: str
     checks: list[Check] = field(default_factory=list)
+    id: str = ""
+    duration_ms: int = 0
 
-    def add(self, label: str, status: CheckStatus, detail: str = "") -> None:
-        self.checks.append(Check(label=label, status=status, detail=detail))
+    def add(
+        self,
+        label: str,
+        status: CheckStatus,
+        detail: str = "",
+        *,
+        check_id: str | None = None,
+    ) -> None:
+        self.checks.append(
+            Check(label=label, status=status, detail=detail, id=check_id)
+        )
 
 
 @dataclass
 class Report:
     sections: list[Section] = field(default_factory=list)
+    duration_ms: int = 0
 
     def all_checks(self) -> list[Check]:
         return [c for s in self.sections for c in s.checks]
@@ -97,6 +112,22 @@ class Report:
     @property
     def n_fail(self) -> int:
         return sum(1 for c in self.all_checks() if c.status is CheckStatus.FAIL)
+
+    @property
+    def n_skipped(self) -> int:
+        return sum(1 for c in self.all_checks() if c.status is CheckStatus.SKIPPED)
+
+    @property
+    def overall_status(self) -> str:
+        if not self.all_checks():
+            return "skipped"
+        if self.n_fail:
+            return "fail"
+        if self.n_warn:
+            return "warn"
+        if self.n_skipped:
+            return "warn" if self.n_ok else "skipped"
+        return "ok"
 
     @property
     def exit_code(self) -> int:
@@ -245,11 +276,11 @@ _RUNTIME_OVERRIDE_REPAIR_HINT_TEMPLATE = (
     "sidecar), then remove {root} and relaunch so the bundled sidecar is used"
 )
 _DOCTOR_BUDGET_S = 5.0
-# Leave enough wall-clock headroom for subprocess timeout cleanup, report
+# Leave enough scheduling-budget headroom for subprocess timeout cleanup, report
 # assembly, and CLI rendering.  ``subprocess.run(timeout=...)`` only starts
 # terminating the child at its timeout and can return a few milliseconds
-# later; consuming the full user-facing budget inside probes therefore makes
-# the end-to-end command exceed its own contract.
+# later; consuming the full target budget inside probes would leave no room
+# for rendering and cleanup.
 _DOCTOR_COMPLETION_HEADROOM_S = 0.1
 _DOCTOR_DEADLINE: float | None = None
 _DOCTOR_RUN_LOCK = threading.Lock()
@@ -1449,7 +1480,7 @@ def _hf_cache_dir() -> Path:
 
 
 # Wall-clock budget for the recursive HF-cache size walk. The whole doctor
-# run is contracted at ≤ 5 s and the network probe alone can spend 2 s, so
+# run targets 5 s and the network probe alone can spend 2 s, so
 # the cache walk must finish in ~1 s on a hot FS / abort cleanly on a cold
 # or network-mounted cache. Codex-review round 1 flagged the previous
 # unbounded walk as a contract violation on TB-scale caches.
@@ -1855,7 +1886,7 @@ def _pil_importable(
     without relying on the version-specific moment Pillow first touches
     ``_imaging``. ``PIL.Image`` + a 1×1 allocation is microsecond-cheap and
     does NOT pull torch the way a real ``import mlx_vlm`` would, so it stays
-    well within doctor's ≤5 s budget. ANY failure (missing, shadowed, broken
+    well within Doctor's five-second target. ANY failure (missing, shadowed, broken
     native ext) ⇒ not importable."""
     if runtime is not None and _runtime_uses_context(runtime):
         probe = _probe_runtime(
@@ -2629,7 +2660,7 @@ def section_hf_cache() -> Section:
 # Single, time-boxed network probe. The whole point is to catch "user is
 # behind a proxy / offline / DNS broken" early — not to audit reachability
 # of every endpoint we ever talk to. A 2 s budget keeps the worst-case
-# doctor runtime under the 5 s contract even when the resolver hangs.
+# typical Doctor runtime under the five-second target when the resolver hangs.
 _HF_PROBE_URL = "https://huggingface.co"
 _HF_PROBE_TIMEOUT_S = 2.0
 _HF_PROBE_SCRIPT = r"""
@@ -3096,6 +3127,17 @@ _SECTION_BUILDERS = (
     section_agent_integrations,
 )
 
+# Select the diagnostic runtime once before any section that consumes it so
+# every runtime-aware probe observes one coherent environment. Lightweight
+# selections such as ``--only system`` deliberately avoid runtime discovery.
+_RUNTIME_SECTION_BUILDERS = frozenset(
+    {
+        section_python,
+        section_required_packages,
+        section_optional_packages,
+    }
+)
+
 _SECTION_TITLES = {
     section_system: "System",
     section_python: "Python",
@@ -3109,10 +3151,66 @@ _SECTION_TITLES = {
     section_agent_integrations: "Agent Integrations",
 }
 
+_SECTION_IDS = {
+    section_system: "system",
+    section_python: "python",
+    section_required_packages: "packages.required",
+    section_updates: "updates",
+    section_optional_packages: "packages.optional",
+    section_hf_cache: "cache.huggingface",
+    section_network: "network",
+    section_shell_integration: "shell",
+    section_optional_tools: "tools.optional",
+    section_agent_integrations: "agents",
+}
 
-def _budget_exhausted_report() -> Report:
+
+def _builder_id(builder: Callable[[], Section]) -> str:
+    return _SECTION_IDS.get(
+        builder,
+        builder.__name__.removeprefix("section_").replace("_", "."),
+    )
+
+
+def _finish_section(
+    section: Section,
+    *,
+    builder: Callable[[], Section],
+    started_at: float,
+) -> Section:
+    """Attach the machine-readable identity and timing contract."""
+    section.id = section.id or _builder_id(builder)
+    section.duration_ms = max(0, round((time.monotonic() - started_at) * 1000))
+    return section
+
+
+def _selected_section_builders(
+    *, only: set[str] | None = None, skip: set[str] | None = None
+) -> tuple[Callable[[], Section], ...]:
+    skipped_ids = skip or set()
+    return tuple(
+        builder
+        for builder in _SECTION_BUILDERS
+        if (only is None or _builder_id(builder) in only)
+        and _builder_id(builder) not in skipped_ids
+    )
+
+
+def _budget_exhausted_report(
+    *, only: set[str] | None = None, skip: set[str] | None = None
+) -> Report:
     report = Report()
-    for builder in _SECTION_BUILDERS:
+    _append_budget_exhausted_sections(
+        report, _selected_section_builders(only=only, skip=skip)
+    )
+    return report
+
+
+def _append_budget_exhausted_sections(
+    report: Report, builders: Sequence[Callable[[], Section]]
+) -> None:
+    """Record selected sections that could not start before the deadline."""
+    for builder in builders:
         skipped = Section(
             _SECTION_TITLES.get(
                 builder, builder.__name__.replace("section_", "").title()
@@ -3120,14 +3218,20 @@ def _budget_exhausted_report() -> Report:
         )
         skipped.add(
             "Skipped: doctor time budget exhausted",
-            CheckStatus.WARN,
+            CheckStatus.SKIPPED,
             detail="probe did not start before the shared deadline",
+            check_id=f"{_builder_id(builder)}.budget",
         )
+        skipped.id = _builder_id(builder)
         report.sections.append(skipped)
-    return report
 
 
-def _run_all_serialized(caller_deadline: float) -> Report:
+def _run_all_serialized(
+    caller_deadline: float,
+    *,
+    only: set[str] | None = None,
+    skip: set[str] | None = None,
+) -> Report:
     """Run every section and return the aggregate report.
 
     Each section builder is wrapped in a try/except so a single buggy probe
@@ -3147,49 +3251,119 @@ def _run_all_serialized(caller_deadline: float) -> Report:
         _RUNTIME_IMPORT_TIMEOUTS.clear()
         _RUNTIME_DISTRIBUTION_CACHE.clear()
         _RUNTIME_CONTEXTS.clear()
+        selected_builders = _selected_section_builders(only=only, skip=skip)
         if time.monotonic() >= _DOCTOR_DEADLINE:
-            return _budget_exhausted_report()
-        _selected_runtime()
-        for index, builder in enumerate(_SECTION_BUILDERS):
+            return _budget_exhausted_report(only=only, skip=skip)
+        if not selected_builders:
+            return report
+        runtime_selected = False
+        runtime_discovery_error: Exception | None = None
+        for index, builder in enumerate(selected_builders):
             if time.monotonic() >= _DOCTOR_DEADLINE:
-                for skipped_builder in _SECTION_BUILDERS[index:]:
+                _append_budget_exhausted_sections(report, selected_builders[index:])
+                break
+            if builder in _RUNTIME_SECTION_BUILDERS and not runtime_selected:
+                started_at = time.monotonic()
+                try:
+                    _selected_runtime()
+                except Exception as exc:  # noqa: BLE001 — diagnostic boundary
+                    runtime_discovery_error = exc
+                runtime_selected = True
+                if runtime_discovery_error is not None:
+                    crashed = Section(
+                        _SECTION_TITLES.get(
+                            builder,
+                            builder.__name__.replace("section_", "").title(),
+                        )
+                    )
+                    crashed.add(
+                        "runtime discovery crashed",
+                        CheckStatus.FAIL,
+                        detail=(
+                            f"{type(runtime_discovery_error).__module__}."
+                            f"{type(runtime_discovery_error).__name__}: "
+                            f"{runtime_discovery_error}"
+                        ),
+                        check_id=f"{_builder_id(builder)}.runtime.discovery",
+                    )
+                    report.sections.append(
+                        _finish_section(crashed, builder=builder, started_at=started_at)
+                    )
+                    continue
+                if time.monotonic() >= _DOCTOR_DEADLINE:
+                    _append_budget_exhausted_sections(report, selected_builders[index:])
+                    break
+            elif builder in _RUNTIME_SECTION_BUILDERS:
+                if runtime_discovery_error is not None:
                     skipped = Section(
                         _SECTION_TITLES.get(
-                            skipped_builder,
-                            skipped_builder.__name__.replace("section_", "").title(),
+                            builder,
+                            builder.__name__.replace("section_", "").title(),
                         )
                     )
                     skipped.add(
-                        "Skipped: doctor time budget exhausted",
-                        CheckStatus.WARN,
-                        detail="probe did not start before the shared deadline",
+                        "Skipped: runtime discovery failed",
+                        CheckStatus.SKIPPED,
+                        detail="a prerequisite runtime probe crashed",
+                        check_id=f"{_builder_id(builder)}.runtime.dependency",
                     )
-                    report.sections.append(skipped)
-                break
+                    report.sections.append(
+                        _finish_section(
+                            skipped,
+                            builder=builder,
+                            started_at=time.monotonic(),
+                        )
+                    )
+                    continue
             try:
-                report.sections.append(builder())
+                started_at = time.monotonic()
+                report.sections.append(
+                    _finish_section(builder(), builder=builder, started_at=started_at)
+                )
             except Exception as e:  # noqa: BLE001 — see docstring above
                 crashed = Section(builder.__name__.replace("section_", "").title())
                 crashed.add(
                     f"probe crashed: {type(e).__name__}: {e}",
                     CheckStatus.FAIL,
                     detail=f"{type(e).__module__}.{type(e).__name__}: {e}",
+                    check_id=f"{_builder_id(builder)}.crash",
                 )
-                report.sections.append(crashed)
+                report.sections.append(
+                    _finish_section(crashed, builder=builder, started_at=started_at)
+                )
     finally:
         _DOCTOR_DEADLINE = None
     return report
 
 
-def run_all() -> Report:
-    """Run one coherent probe set; serialize access to process-global caches."""
+def run_all(
+    *,
+    only: set[str] | None = None,
+    skip: set[str] | None = None,
+) -> Report:
+    """Run a cooperatively budgeted probe set; serialize shared probe caches.
+
+    ``only`` and ``skip`` contain stable section IDs such as ``network`` or
+    ``packages.required``. Unknown IDs are rejected by the CLI before this
+    layer; library callers simply receive an empty report for no matches.
+    """
+    started_at = time.monotonic()
     caller_deadline = time.monotonic() + (
         _DOCTOR_BUDGET_S - _DOCTOR_COMPLETION_HEADROOM_S
     )
     remaining = max(0.0, caller_deadline - time.monotonic())
     if not _DOCTOR_RUN_LOCK.acquire(timeout=remaining):
-        return _budget_exhausted_report()
+        report = _budget_exhausted_report(only=only, skip=skip)
+        report.duration_ms = max(0, round((time.monotonic() - started_at) * 1000))
+        return report
     try:
-        return _run_all_serialized(caller_deadline)
+        if only is not None or skip:
+            report = _run_all_serialized(caller_deadline, only=only, skip=skip)
+        else:
+            # Preserve the one-argument internal seam used by downstream
+            # embedders and older test doubles.
+            report = _run_all_serialized(caller_deadline)
+        report.duration_ms = max(0, round((time.monotonic() - started_at) * 1000))
+        return report
     finally:
         _DOCTOR_RUN_LOCK.release()

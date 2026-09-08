@@ -29,6 +29,50 @@
 
 Run `rapid-mlx <cmd> --help` for the full flag list of any subcommand.
 
+## `rapid-mlx doctor`
+
+Run the fast, read-only environment diagnostic without loading a model or
+starting a server:
+
+```bash
+rapid-mlx doctor                 # complete human-readable report
+rapid-mlx doctor --verbose       # include evidence and remediation detail
+rapid-mlx doctor --summary       # one line for logs and shell scripts
+rapid-mlx doctor --json          # versioned report for automation/support
+```
+
+The built-in filesystem, network, and subprocess operations carry explicit
+timeouts. A shared five-second scheduling budget prevents later sections from
+starting after earlier checks consume the target runtime; it is not a process
+watchdog for arbitrary third-party Python code.
+
+To isolate a slow or suspect area, select sections by their stable IDs. Both
+flags are repeatable, and `--skip` wins when the same ID appears in both:
+
+```bash
+rapid-mlx doctor --only packages.required --only packages.optional
+rapid-mlx doctor --skip updates --skip network
+```
+
+Available IDs are `system`, `python`, `packages.required`, `updates`,
+`packages.optional`, `cache.huggingface`, `network`, `shell`,
+`tools.optional`, and `agents`.
+
+JSON output uses `schemaVersion: 1` and includes the Rapid-MLX version,
+overall status (`ok`, `warn`, `fail`, or `skipped`), exit code, total and per-section durations, counts, stable
+section IDs, optional semantic check IDs, and redacted summaries/details.
+Legacy checks that do not yet declare a semantic identity return `id: null`;
+consumers must not derive identity from their position or English prose. It
+writes JSON only to stdout. Exit code `0` means no confirmed failure (warnings
+and skipped checks remain visible); exit code `1` means at least one confirmed
+failure. A report containing both successful and skipped checks has root status
+`warn` (partially complete); `skipped` means no check produced a result.
+For JSON mode, the CLI starts a fresh isolated Python executable and receives
+only its atomically written structured result. Python, native-library,
+subprocess, and delayed thread output from probes therefore cannot corrupt the
+JSON stream, and the worker does not inherit initialized native-library locks
+from the caller. A parent deadline cleans up the worker's entire process group.
+
 `rapid-mlx models --cached --json` is the stable machine-readable cache
 inventory used by the Desktop app. Each row includes `repo`, `alias`,
 `subfolder`, `size_bytes`, `state`, and `external`; `subfolder: null` means the
