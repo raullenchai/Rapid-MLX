@@ -96,6 +96,18 @@ _WARMUP_TIMEOUT_SECONDS = 300.0
 # §3.2/§5.5: a rejected keyed claim must never be retried — the key is
 # revoked/rotated server-side and spinning just hammers the relay.
 _WS_TERMINAL_STATUS = 401
+# The claim key rides the greeting frame, so the relay CANNOT reject a
+# revoked key at HTTP-upgrade time (it never sees the key then). The
+# post-upgrade rejection signal is a WS close; RFC 6455 reserves 1008
+# (Policy Violation) for exactly this. Spec §3.2 was written for the
+# key-in-URL form ("401 + socket close") — the relay-side change the
+# ready-frame variant needs is documented in the PR body.
+_WS_TERMINAL_CLOSE_CODES = frozenset({1008})
+# Defense for relays that signal rejection some OTHER way: a session
+# that the relay drops seconds after accepting the keyed claim, five
+# times running, is a rejection — stop instead of spinning forever.
+_FAST_REJECT_WINDOW_SECONDS = 5.0
+_FAST_REJECT_STREAK_LIMIT = 5
 
 # §3.1 response fields the client must be able to act on. ``alias`` is
 # client-side sugar (§5.1) and ``heartbeat_interval_s`` has a spec
@@ -496,11 +508,22 @@ def register_node(
         if status is not None and 200 <= status < 300:
             if not isinstance(payload, dict):
                 raise QuickSilverError("register returned a non-object body")
-            missing = [k for k in _WIRE_REQUIRED_KEYS if not payload.get(k)]
+            # Strings only — a nested object/echo sneaked into, say,
+            # node_id would otherwise render (or worse, key the tunnel)
+            # verbatim.
+            missing = [
+                k
+                for k in _WIRE_REQUIRED_KEYS
+                if not isinstance(payload.get(k), str) or not payload[k]
+            ]
             if missing:
                 raise QuickSilverError(
-                    f"register response missing fields: {', '.join(missing)}"
+                    f"register response fields missing or non-string: "
+                    f"{', '.join(missing)}"
                 )
+            payout = payload.get("payout_account")
+            if payout is not None and not isinstance(payout, str):
+                payload.pop("payout_account", None)
             payload.setdefault("heartbeat_interval_s", 10)
             payload["alias"] = alias
             return payload
@@ -783,6 +806,11 @@ def _run_share(args: argparse.Namespace) -> None:
         _register_secret(provider_key)
         print("Registering node with QuickSilver…", file=sys.stderr)
         cache = register_node(api_base, provider_key, catalog_id, serve_alias)
+        # Register the share-key for redaction BEFORE rendering any
+        # server-controlled field — node_id / payout_account are the
+        # response's to fill, and if either echoed the resident key,
+        # the banner below would print it. _redact must be armed first.
+        _register_secret(cache["share_key"])
         # Bind the credential to the origin it was minted against (the
         # allowlist in _validate_wire_urls accepts the registration
         # origin; installed services and later cached runs must keep
@@ -792,8 +820,10 @@ def _run_share(args: argparse.Namespace) -> None:
         interval = _resolve_heartbeat_interval(cache, source="register response")
         _save_cache(catalog_id, cache)
         print(
-            f"Node registered: {cache['node_id']} "
-            f"(payout account: {cache.get('payout_account') or 'n/a'})",
+            _redact(
+                f"Node registered: {cache['node_id']} "
+                f"(payout account: {cache.get('payout_account') or 'n/a'})"
+            ),
             file=sys.stderr,
         )
     else:
@@ -805,9 +835,14 @@ def _run_share(args: argparse.Namespace) -> None:
                 api_base = _validate_api_base(str(cache["api_base"]))
             except QuickSilverError as exc:
                 raise QuickSilverError(f"{exc} (from node cache)") from None
+        # Armed before ANY print of a server-chosen field, same rule
+        # as the registration branch.
+        _register_secret(cache["share_key"])
         print(
-            f"Using cached node {cache['node_id']} for {catalog_id} "
-            f"(provider key not needed)",
+            _redact(
+                f"Using cached node {cache['node_id']} for {catalog_id} "
+                f"(provider key not needed)"
+            ),
             file=sys.stderr,
         )
         # A cache predating a hostile/buggy API is just as dangerous as
@@ -819,7 +854,6 @@ def _run_share(args: argparse.Namespace) -> None:
         except QuickSilverError as exc:
             raise QuickSilverError(f"{exc} — re-run with --reregister") from None
 
-    _register_secret(cache["share_key"])
     relay_url = cache["relay_url"]
 
     # Lazy import: cli.py dispatches here from inside share_command, so
@@ -935,6 +969,8 @@ def _run_share(args: argparse.Namespace) -> None:
 
         backoff = 1.0
         banner_printed = False
+        served_at = 0.0
+        fast_reject_streak = 0
         while True:
             tunnel = ws_tunnel.TunnelClient(
                 local_port=port,
@@ -945,14 +981,17 @@ def _run_share(args: argparse.Namespace) -> None:
                 inject_stream_usage=True,
             )
             print(
-                f"Connecting to QuickSilver relay {_redact(relay_url)} "
-                f"as {cache['node_id']}…",
+                _redact(
+                    f"Connecting to QuickSilver relay {relay_url} "
+                    f"as {cache['node_id']}…"
+                ),
                 file=sys.stderr,
             )
             tunnel_thread = tunnel.run_in_thread()
             connected = tunnel.ready_event.wait(timeout=30) and tunnel.error is None
             reconnect = False
             if connected:
+                served_at = time.monotonic()
                 backoff = 1.0
                 heartbeat.enabled.set()
                 # §5.3: the first beat waits for tunnel-up AND warm-up
@@ -961,10 +1000,12 @@ def _run_share(args: argparse.Namespace) -> None:
                 if not banner_printed:
                     payout = cache.get("payout_account")
                     print(
-                        f"rapid-mlx: serving {display_model} to the QuickSilver "
-                        f"pool — node {cache['node_id']}"
-                        + (f", payout account {payout}" if payout else "")
-                        + f", heartbeat every {interval:.0f}s. Ctrl-C to stop.",
+                        _redact(
+                            f"rapid-mlx: serving {display_model} to the "
+                            f"QuickSilver pool — node {cache['node_id']}"
+                            + (f", payout account {payout}" if payout else "")
+                            + f", heartbeat every {interval:.0f}s. Ctrl-C to stop."
+                        ),
                         flush=True,
                     )
                     banner_printed = True
@@ -992,6 +1033,15 @@ def _run_share(args: argparse.Namespace) -> None:
                     )
                     break
                 if not connected or tunnel.closed_event.is_set():
+                    # Terminal share-key rejections must never spin
+                    # (§5.5). Three shapes of "the relay knows this key
+                    # is dead": HTTP 401 at upgrade (plain claim), and
+                    # post-upgrade close codes — 1008 Policy Violation,
+                    # or (fallback) an immediate drop we can't classify
+                    # that repeats back-to-back (§3.2 predates the
+                    # ready-frame key move, so its close code isn't
+                    # nailed down; a same-instant drop every retry is
+                    # indistinguishable from rejection).
                     if tunnel.error_status == _WS_TERMINAL_STATUS:
                         exit_code = 1
                         print(
@@ -1000,6 +1050,32 @@ def _run_share(args: argparse.Namespace) -> None:
                             file=sys.stderr,
                         )
                         break
+                    if tunnel.close_code in _WS_TERMINAL_CLOSE_CODES:
+                        exit_code = 1
+                        print(
+                            "share: QuickSilver relay rejected our share-key "
+                            f"(WS close {tunnel.close_code}). Re-run with "
+                            f"--reregister.",
+                            file=sys.stderr,
+                        )
+                        break
+                    if (
+                        connected
+                        and served_at
+                        and (time.monotonic() - served_at < _FAST_REJECT_WINDOW_SECONDS)
+                    ):
+                        fast_reject_streak += 1
+                        if fast_reject_streak >= _FAST_REJECT_STREAK_LIMIT:
+                            exit_code = 1
+                            print(
+                                "share: relay keeps dropping this node the "
+                                "instant it connects — treating the share-key "
+                                "as rejected. Re-run with --reregister.",
+                                file=sys.stderr,
+                            )
+                            break
+                    else:
+                        fast_reject_streak = 0
                     err = _redact(str(tunnel.error)) if tunnel.error else "dropped"
                     print(
                         f"share: tunnel lost ({err[:200]}) — reconnecting in "

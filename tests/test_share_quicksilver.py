@@ -393,6 +393,51 @@ def test_abort_wakes_blocked_worker_via_shutdown():
     conn.close.assert_called_once()
 
 
+def test_clean_close_captures_relay_close_code():
+    """Post-upgrade key rejection reaches the client as a close frame
+    (greeting-key design → no HTTP 401 possible). The code must
+    surface for the supervisor's terminal check."""
+
+    class _FakeWS:
+        close_code = 1008
+        close_reason = "policy violation"
+
+        async def send(self, msg):
+            pass
+
+        async def close(self):
+            pass
+
+        def __aiter__(self):
+            return self
+
+        async def __anext__(self):
+            raise StopAsyncIteration
+
+    async def fake_connect(uri, **kw):
+        return _FakeWS()
+
+    client = ws_tunnel.TunnelClient(local_port=1, share_key=SHARE_KEY)
+    with patch.object(ws_tunnel.websockets, "connect", fake_connect):
+        asyncio.run(client.run())
+    assert client.close_code == 1008
+    assert client.error is None
+
+
+def test_fetch_registration_refused_after_shutdown_begins():
+    """A to_thread worker scheduled pre-teardown that only reaches
+    registration after the drain must refuse, not register into a
+    tunnel nobody will ever drain again."""
+    client = ws_tunnel.TunnelClient(local_port=1)
+    client._closed.set()
+    conn = MagicMock()
+    with patch.object(ws_tunnel, "OneShotHTTPConnection", return_value=conn):
+        client._perform_local_fetch("r9", "POST", "/v1/chat/completions", {}, b"")
+    conn.request.assert_not_called()
+    conn.close.assert_called_once()
+    assert client._active == {}
+
+
 def test_teardown_drains_inflight_connections():
     """Task cancellation cannot stop the to_thread fetch workers — the
     run() finally must hard-close every registered connection, or
@@ -935,10 +980,13 @@ def test_heartbeat_transport_error_is_transparent():
 # ─────────────────────────── run_share integration ───────────────────────────
 
 
-def _fake_tunnel(ready=True, closed=False, error=None, error_status=None):
+def _fake_tunnel(
+    ready=True, closed=False, error=None, error_status=None, close_code=None
+):
     t = MagicMock()
     t.error = error
     t.error_status = error_status
+    t.close_code = close_code
     t.inflight = 0
     # ``ready_event.wait(30)`` must not actually block 30 s in tests —
     # stub the wait to report the configured state instantly.
@@ -1162,6 +1210,82 @@ def test_run_share_tunnel_drop_reconnects_then_dies_on_401():
         qs.run_share(_make_args())
     assert ei.value.code == 1
     assert sleeps == [1.0]  # one backoff between attempts
+
+
+def test_run_share_ws_1008_close_is_terminal_no_spin():
+    """The greeting-frame key design makes HTTP-401-at-upgrade
+    impossible — a revoked key must be caught post-upgrade via the
+    policy close code, with the same no-spin exit (§5.5)."""
+    qs._save_cache("qwen3.6-35b", dict(_register_payload(), alias="qwen3.6-35b"))
+    tunnel = _fake_tunnel(ready=True, closed=True, close_code=1008)
+    serve, _ = _patched_run_env(None)
+    made: list = []
+
+    def factory(**kw):
+        made.append(kw)
+        return tunnel
+
+    ctxs = _run_patches(serve, factory, lambda *a, **k: None) + (
+        patch.object(qs, "_Heartbeat", return_value=_fake_heartbeat_class()),
+    )
+    with pytest.raises(SystemExit) as ei, _enter(*ctxs):
+        qs.run_share(_make_args())
+    assert ei.value.code == 1
+    assert len(made) == 1  # no retry spin on a post-upgrade rejection
+
+
+def test_run_share_instant_drop_streak_becomes_terminal(capsys):
+    """Five relay-accepted-then-instantly-dropped sessions in a row is
+    indistinguishable from rejection — stop instead of spinning under
+    KeepAlive forever."""
+    qs._save_cache("qwen3.6-35b", dict(_register_payload(), alias="qwen3.6-35b"))
+    serve, _ = _patched_run_env(None)
+    made: list = []
+
+    def factory(**kw):
+        made.append(kw)
+        # connected, closed_event pre-set, unclassifiable close
+        return _fake_tunnel(ready=True, closed=True, close_code=1001)
+
+    ctxs = _run_patches(serve, factory, lambda *a, **k: None) + (
+        patch.object(qs, "_Heartbeat", return_value=_fake_heartbeat_class()),
+    )
+    with pytest.raises(SystemExit) as ei, _enter(*ctxs):
+        qs.run_share(_make_args())
+    assert ei.value.code == 1
+    assert len(made) == qs._FAST_REJECT_STREAK_LIMIT
+    assert "rejected" in capsys.readouterr().err
+
+
+def test_run_share_server_echoed_key_never_printed(capsys):
+    """node_id/payout_account are server-controlled text — the secret
+    registry must be armed before ANY of it reaches a sink (§8 bullet
+    7 holds even against a malicious API)."""
+    leaky = _register_payload(
+        node_id=f"qspnode-{SHARE_KEY}", payout_account=f"a***@x*** {SHARE_KEY}"
+    )
+    serve, ctrl_c = _patched_run_env(None)
+    ctxs = _run_patches(serve, lambda **kw: _fake_tunnel(), ctrl_c) + (
+        patch.object(qs, "_open", lambda req, timeout=None: _FakeResp(leaky)),
+        patch.object(qs, "_Heartbeat", return_value=_fake_heartbeat_class()),
+    )
+    with _enter(*ctxs):
+        qs.run_share(_make_args(provider_key=PROVIDER_KEY))
+    out = capsys.readouterr()
+    combined = out.out + out.err
+    assert SHARE_KEY not in combined
+    assert "[redacted]" in combined
+
+
+def test_run_share_rejects_nonstring_wire_fields():
+    leaky = _register_payload(node_id={"evil": "object"})
+    with (
+        patch.object(qs, "_open", lambda req, timeout=None: _FakeResp(leaky)),
+        pytest.raises(SystemExit) as ei,
+    ):
+        qs.run_share(_make_args(provider_key=PROVIDER_KEY))
+    assert ei.value.code == 2
+    assert qs._load_cache("qwen3.6-35b", "qwen3.6-35b") is None
 
 
 def test_run_share_heartbeat_fatal_exits_nonzero(capsys):

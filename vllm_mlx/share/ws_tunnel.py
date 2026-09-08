@@ -231,6 +231,13 @@ class TunnelClient:
         # rejected our share_key). Surfaced separately from ``error``
         # because the exception repr may embed the connect URI.
         self.error_status: int | None = None
+        # WS close code of a cleanly-closed session (or of the
+        # ConnectionClosed exception). The keyed claim's rejection may
+        # arrive AFTER the upgrade — the greeting frame carries the
+        # key, so an HTTP-401-at-upgrade is impossible by construction
+        # — and a policy rejection is conventionally close code 1008.
+        # The supervisor treats it as terminal like an HTTP 401.
+        self.close_code: int | None = None
         # Live local fetches, keyed by tunnel request id. Populated for
         # every client (cheap bookkeeping) — the QuickSilver relay uses
         # it to cancel generations for aborted requests; the count backs
@@ -315,8 +322,17 @@ class TunnelClient:
                 self._closed.set()
                 for t in list(self._tasks):
                     t.cancel()
+            # Clean peer close: the close code the relay chose IS the
+            # rejection signal for a keyed claim that failed after the
+            # upgrade (the greeting-key design makes an HTTP-401-at-
+            # upgrade impossible by construction). Surface it.
+            self.close_code = getattr(ws, "close_code", None)
         except Exception as exc:
             self.error = exc
+            code = getattr(exc, "code", None)
+            if isinstance(code, int):
+                # ConnectionClosed family: .code is the close code.
+                self.close_code = code
             # A rejected keyed claim surfaces as an HTTP 401 during the
             # WS handshake. Record the status separately: the caller
             # must not pattern-match on ``str(exc)`` — for keyed
@@ -332,6 +348,14 @@ class TunnelClient:
                 self.error_status = status
             raise
         finally:
+            # Give cancelled req tasks a beat to unwind BEFORE the
+            # drain — then the drain itself refuses-to-see any late
+            # registration (below in _perform_local_fetch), because a
+            # queued to_thread worker can still be between task-start
+            # and registry-insert no matter how long we await here.
+            if self._tasks:
+                with contextlib.suppress(Exception):
+                    await asyncio.wait(list(self._tasks), timeout=2.0)
             # Drain in-flight loopback connections BEFORE declaring the
             # tunnel closed: cancelling the asyncio wrappers does not
             # stop the ``to_thread`` workers blocked on serve — without
@@ -538,6 +562,15 @@ class TunnelClient:
             "127.0.0.1", self.local_port, timeout=LOCAL_FETCH_TIMEOUT_SECONDS
         )
         with self._active_lock:
+            # ``_closed`` is set by every loop-exit path BEFORE the
+            # drain runs, so a worker scheduled just before teardown
+            # that only NOW reaches registration refuses to register:
+            # the drain's snapshot would miss it and the generation
+            # would serve into a dead tunnel. (asyncio.Event.is_set()
+            # only reads a flag — safe from this worker thread.)
+            if self._closed.is_set():
+                conn.close()
+                return
             if req_id in self._aborted:
                 # The relay cancelled before we ever registered — the
                 # downstream is gone; starting the generation would
