@@ -318,6 +318,49 @@ def test_stop_during_connect_kills_the_pending_handshake():
     assert client.closed_event.is_set()
 
 
+def test_one_shot_connection_close_poisons_redial():
+    """Stock HTTPConnection.request() silently RE-DIALS when close()
+    nulled the socket — an abort landing between registration and
+    request would otherwise have its cancellation undone."""
+    conn = ws_tunnel.OneShotHTTPConnection("127.0.0.1", 1)
+    conn.close()
+    assert conn.dead is True
+    with pytest.raises(OSError, match="aborted"):
+        conn.connect()
+
+
+def test_abort_via_dispatch_poisons_connection():
+    client = ws_tunnel.TunnelClient(local_port=1)
+    conn = ws_tunnel.OneShotHTTPConnection("127.0.0.1", 1)
+    client._active["req-1"] = conn
+    client._dispatch_inbound({"t": "abort", "id": "req-1"})
+    assert conn.dead is True
+
+
+def test_hard_close_survives_concurrent_sock_none():
+    """The fetch worker may clear conn.sock between the two attribute
+    reads of the naive pattern — the drain must read once."""
+
+    class _RaceConn:
+        def __init__(self) -> None:
+            self._sock = MagicMock()
+            self._reads = 0
+            self.closed = False
+
+        @property
+        def sock(self):
+            self._reads += 1
+            return None if self._reads > 1 else self._sock
+
+        def close(self):
+            self.closed = True
+
+    race = _RaceConn()
+    ws_tunnel._hard_close(race)  # must not raise AttributeError
+    race._sock.shutdown.assert_called_once()
+    assert race.closed
+
+
 def _magic_conn():
     conn = MagicMock()
     conn.sock = MagicMock()
@@ -390,7 +433,7 @@ def test_abort_before_fetch_registration_skips_generation():
     assert "r1" in client._aborted
 
     conn = MagicMock()
-    with patch.object(ws_tunnel.http.client, "HTTPConnection", return_value=conn):
+    with patch.object(ws_tunnel, "OneShotHTTPConnection", return_value=conn):
         client._perform_local_fetch("r1", "POST", "/v1/chat/completions", {}, b"")
     conn.request.assert_not_called()
     conn.close.assert_called_once()
@@ -404,7 +447,7 @@ def test_late_abort_after_completion_is_harmless_and_bounded():
     client = ws_tunnel.TunnelClient(local_port=1)
     conn = MagicMock()
     with (
-        patch.object(ws_tunnel.http.client, "HTTPConnection", return_value=conn),
+        patch.object(ws_tunnel, "OneShotHTTPConnection", return_value=conn),
         patch.object(client, "_sync_send"),
     ):
         conn.getresponse.return_value.getheaders.return_value = []

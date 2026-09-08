@@ -97,16 +97,46 @@ def _hard_close(conn: http.client.HTTPConnection) -> None:
     interrupt a concurrent blocking ``recv`` on macOS/Darwin — the
     worker stays parked and its slot stays busy. ``shutdown()`` first
     both sends the FIN that serve's ``_disconnect_guard`` needs and
-    unblocks the local reader (EOF)."""
-    try:
-        if conn.sock is not None:
-            conn.sock.shutdown(socket.SHUT_RDWR)
-    except OSError:
-        pass  # already broken/closed — exactly the state we wanted
+    unblocks the local reader (EOF).
+
+    ``sock`` is captured ONCE: the fetch worker may set
+    ``conn.sock = None`` (inside its own ``close()``) between the two
+    reads, and calling ``shutdown`` through the re-read attribute
+    would die on AttributeError in whichever thread runs the drain."""
+    sock = conn.sock
+    if sock is not None:
+        with contextlib.suppress(OSError, AttributeError):
+            sock.shutdown(socket.SHUT_RDWR)
     try:
         conn.close()
     except Exception:  # noqa: BLE001 — best-effort teardown
         pass
+
+
+class OneShotHTTPConnection(http.client.HTTPConnection):
+    """An ``HTTPConnection`` that a teardown ``close()`` cannot undo.
+
+    The stock ``request()`` AUTO-RECONNECTS when ``sock`` is None — so
+    an abort that lands in the window between the fetch worker's
+    registration in ``_active`` and its ``conn.request()`` would have
+    its cancellation silently undone: close() clears the socket, the
+    aborted request's ``putrequest`` sees ``sock is None``, dials a
+    fresh loopback connection, and the cancelled generation runs
+    anyway. Marking the connection dead at close() makes the redial
+    raise instead, exactly as if the serve had vanished."""
+
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        super().__init__(*args, **kwargs)
+        self.dead = False
+
+    def close(self) -> None:
+        self.dead = True
+        super().close()
+
+    def connect(self) -> None:
+        if self.dead:
+            raise OSError("connection aborted before the request was sent")
+        super().connect()
 
 
 def new_tunnel_id() -> str:
@@ -504,7 +534,7 @@ class TunnelClient:
         body: bytes,
     ) -> None:
         """Sync fetch + chunked WS forwarding. Runs in ``to_thread``."""
-        conn = http.client.HTTPConnection(
+        conn = OneShotHTTPConnection(
             "127.0.0.1", self.local_port, timeout=LOCAL_FETCH_TIMEOUT_SECONDS
         )
         with self._active_lock:
