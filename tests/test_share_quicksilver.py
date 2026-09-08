@@ -2330,3 +2330,453 @@ def test_plain_share_default_rate_limit_still_120():
     extra = seen["extra_args"]
     assert "--rate-limit" in extra
     assert extra[extra.index("--rate-limit") + 1] == "120"
+
+
+# ─────────────── changed-line gate: defensive lifecycle contracts ───────────────
+
+
+def test_cache_non_object_is_not_reused():
+    path = qs._cache_path("qwen3.6-35b")
+    path.write_text("[]", encoding="utf-8")
+    assert qs._load_cache("qwen3.6-35b", "qwen3.6-35b") is None
+
+
+def test_save_cache_preserves_primary_error_when_tmp_cleanup_fails():
+    payload = dict(_register_payload(), alias="qwen3.6-35b")
+    with (
+        patch.object(qs.os, "replace", side_effect=OSError("disk full")),
+        patch.object(qs.os, "unlink", side_effect=OSError("cleanup failed")),
+        pytest.raises(qs.QuickSilverError, match="could not write node cache"),
+    ):
+        qs._save_cache("qwen3.6-35b", payload)
+
+
+def test_resolve_serve_hf_path_uses_profile_and_falls_back():
+    import vllm_mlx.model_aliases as aliases
+
+    with patch.object(aliases, "resolve_profile", return_value={"hf_path": "org/repo"}):
+        assert qs._resolve_serve_hf_path("alias") == "org/repo"
+    with patch.object(aliases, "resolve_profile", return_value=None):
+        assert qs._resolve_serve_hf_path("raw/repo") == "raw/repo"
+
+
+def test_wire_urls_require_a_host_even_with_secure_scheme():
+    with pytest.raises(qs.QuickSilverError, match="include a host"):
+        qs._validate_wire_urls(
+            _register_payload(relay_url="wss:///up"), _API_ORIGIN, source="cache"
+        )
+
+
+def test_hardware_info_is_best_effort(monkeypatch):
+    import vllm_mlx
+
+    monkeypatch.delattr(vllm_mlx, "__version__")
+    with patch.object(qs.subprocess, "run", side_effect=OSError("no sysctl")):
+        assert qs._hardware_info() == {}
+
+
+def test_provider_key_interactive_prompt(monkeypatch):
+    monkeypatch.setattr("sys.stdin.isatty", lambda: True, raising=False)
+    with patch.object(qs.getpass, "getpass", return_value=" qsppk-prompt "):
+        assert qs._resolve_provider_key(_make_args()) == "qsppk-prompt"
+    with (
+        patch.object(qs.getpass, "getpass", return_value="   "),
+        pytest.raises(qs.QuickSilverError, match="empty provider key"),
+    ):
+        qs._resolve_provider_key(_make_args())
+
+
+def test_open_uses_the_no_redirect_opener():
+    req = urllib.request.Request("https://pay.test")
+    with patch.object(qs._URL_OPENER, "open", return_value="response") as opened:
+        assert qs._open(req, 3.5) == "response"
+    opened.assert_called_once_with(req, timeout=3.5)
+
+
+def test_register_transport_retry_exhaustion_and_response_shapes():
+    with (
+        patch.object(qs, "_open", side_effect=urllib.error.URLError("offline")),
+        patch.object(qs.time, "monotonic", side_effect=[0.0, 999.0]),
+        pytest.raises(qs.QuickSilverError, match="unreachable"),
+    ):
+        qs.register_node("https://pay.test", PROVIDER_KEY, "m", "a", "w")
+
+    with (
+        patch.object(qs, "_open", return_value=_FakeResp([])),
+        pytest.raises(qs.QuickSilverError, match="non-object"),
+    ):
+        qs.register_node("https://pay.test", PROVIDER_KEY, "m", "a", "w")
+
+    payload = _register_payload(payout_account={"hostile": True})
+    with patch.object(qs, "_open", return_value=_FakeResp(payload)):
+        out = qs.register_node(
+            "https://pay.test", PROVIDER_KEY, "qwen3.6-35b", "a", "w"
+        )
+    assert "payout_account" not in out
+
+
+def test_heartbeat_thread_controls_and_inflight_failure():
+    hb = _hb()
+    with patch.object(qs.threading, "Thread") as thread_cls:
+        hb.start()
+    thread_cls.assert_called_once()
+    thread_cls.return_value.start.assert_called_once()
+
+    with patch.object(hb, "_beat_once") as beat:
+        hb.beat_now()
+    beat.assert_called_once()
+
+    stopped = _hb()
+    stopped._stop.set()
+    stopped._beat_once()
+
+    bad = qs._Heartbeat("https://hb.test", SHARE_KEY, 1, lambda: 1 / 0)
+    requests = []
+
+    def record(req, timeout=None):
+        requests.append(req)
+        return _FakeResp({})
+
+    with patch.object(qs, "_open", record):
+        bad._beat_once()
+    assert json.loads(requests[0].data)["inflight"] == 0
+
+
+def test_heartbeat_run_pauses_then_stops_on_fatal():
+    hb = _hb()
+    hb.enabled.set()
+    hb._stop.wait = MagicMock(return_value=False)  # type: ignore[method-assign]
+    beat = MagicMock(side_effect=lambda: hb.fatal.set())
+    hb._beat_once = beat  # type: ignore[method-assign]
+    hb._run()
+    beat.assert_called_once()
+
+
+def test_heartbeat_run_pauses_while_tunnel_is_disabled():
+    hb = _hb()
+    hb._stop.wait = MagicMock(return_value=False)  # type: ignore[method-assign]
+    hb.enabled.is_set = MagicMock(side_effect=[False, True])  # type: ignore[method-assign]
+    hb._beat_once = MagicMock(side_effect=lambda: hb.fatal.set())  # type: ignore[method-assign]
+    hb._run()
+    hb._beat_once.assert_called_once()
+
+
+def test_warmup_warns_on_http_failure_and_exception(capsys):
+    with patch.object(qs, "_open", return_value=_FakeResp({}, status=503)):
+        qs._warmup(1, "local-key", "m")
+    assert "HTTP 503" in capsys.readouterr().err
+    with patch.object(qs, "_open", side_effect=OSError("offline")):
+        qs._warmup(1, "local-key", "m")
+    assert "warm-up failed" in capsys.readouterr().err
+
+
+def test_install_service_catalog_alias_and_plist_write_error():
+    qs._save_cache(
+        "qwen3.8-27b",
+        dict(
+            _register_payload(model="qwen3.8-27b", worker="test-worker"),
+            alias="qwen3.8-27b-4bit",
+        ),
+    )
+    args = _make_args(
+        model="qwen3.8-27b-4bit",
+        quicksilver_model="qwen3.8-27b",
+        install_service=True,
+    )
+    qs.run_share(args)
+    plist = plistlib.loads(
+        (
+            Path.home() / "Library/LaunchAgents/com.quicksilver.node.qwen3.8-27b.plist"
+        ).read_bytes()
+    )
+    argv = plist["ProgramArguments"]
+    assert argv[argv.index("--quicksilver-model") + 1] == "qwen3.8-27b"
+
+    with (
+        patch.object(Path, "write_bytes", side_effect=OSError("read only")),
+        pytest.raises(qs.QuickSilverError, match="could not write"),
+    ):
+        qs.install_service(args, "qwen3.8-27b", "qwen3.8-27b-4bit")
+
+
+def test_ws_connect_kwargs_legacy_and_uninspectable():
+    import inspect
+
+    client = ws_tunnel.TunnelClient(local_port=1)
+    legacy = MagicMock()
+    legacy.__signature__ = inspect.Signature(
+        [inspect.Parameter("extra_headers", inspect.Parameter.POSITIONAL_OR_KEYWORD)]
+    )
+    with patch.object(ws_tunnel.websockets, "connect", legacy):
+        assert "extra_headers" in client._connect_kwargs({"A": "B"})
+    with patch.object(ws_tunnel.inspect, "signature", side_effect=TypeError("opaque")):
+        assert "additional_headers" in client._connect_kwargs({"A": "B"})
+
+
+def test_hard_close_suppresses_close_failure_and_one_shot_can_connect():
+    import http.client
+
+    conn = MagicMock()
+    conn.sock = None
+    conn.close.side_effect = RuntimeError("already dead")
+    ws_tunnel._hard_close(conn)
+    live = ws_tunnel.OneShotHTTPConnection("127.0.0.1", 1)
+    with patch.object(http.client.HTTPConnection, "connect") as connect:
+        live.connect()
+    connect.assert_called_once()
+
+
+def test_dispatch_request_tracks_epoch_and_completed_map_is_bounded():
+    async def exercise():
+        client = ws_tunnel.TunnelClient(local_port=1)
+        client._serve_request = MagicMock(  # type: ignore[method-assign]
+            return_value=asyncio.sleep(0)
+        )
+        client._dispatch_inbound(_req_msg({"stream": False}))
+        assert client._pending["r1"] == 1
+        await asyncio.gather(*list(client._tasks))
+        assert "r1" not in client._pending
+
+        client._completed = {f"old-{i}": 0.0 for i in range(4096)}
+        conn = MagicMock()
+        with (
+            patch.object(ws_tunnel, "OneShotHTTPConnection", return_value=conn),
+            patch.object(client, "_sync_send"),
+        ):
+            conn.getresponse.return_value.getheaders.return_value = []
+            conn.getresponse.return_value.read1.return_value = b""
+            client._perform_local_fetch("fresh", "GET", "/v1/models", {}, b"")
+        assert len(client._completed) == 4096 and "fresh" in client._completed
+
+    asyncio.run(exercise())
+
+
+def test_usage_injection_keeps_already_requested_body_identical():
+    body = json.dumps(
+        {"stream": True, "stream_options": {"include_usage": True}}
+    ).encode()
+    assert ws_tunnel._inject_stream_options_usage("/v1/chat/completions", body) is body
+
+
+def test_connect_cancellable_closes_same_tick_socket_and_cancels_on_wait_error():
+    class Socket:
+        closed = False
+
+        async def close(self):
+            self.closed = True
+
+    async def same_tick():
+        socket = Socket()
+
+        async def connect(*_a, **_k):
+            return socket
+
+        client = ws_tunnel.TunnelClient(local_port=1)
+        client._closed.set()
+        with (
+            patch.object(ws_tunnel.websockets, "connect", connect),
+            pytest.raises(ConnectionError, match="stopped during connect"),
+        ):
+            await client._connect_cancellable("wss://r.test")
+        assert socket.closed
+
+    async def wait_error():
+        pending = asyncio.Event()
+
+        async def connect(*_a, **_k):
+            await pending.wait()
+
+        client = ws_tunnel.TunnelClient(local_port=1)
+        with (
+            patch.object(ws_tunnel.websockets, "connect", connect),
+            patch.object(asyncio, "wait", side_effect=RuntimeError("wait failed")),
+            pytest.raises(RuntimeError, match="wait failed"),
+        ):
+            await client._connect_cancellable("wss://r.test")
+
+    asyncio.run(same_tick())
+    asyncio.run(wait_error())
+
+
+def test_cached_invalid_api_origin_is_actionable_before_serve():
+    qs._save_cache(
+        "qwen3.6-35b",
+        dict(_register_payload(), alias="qwen3.6-35b", api_base="not-a-url"),
+    )
+    with pytest.raises(SystemExit) as exc:
+        qs.run_share(_make_args())
+    assert exc.value.code == 2
+
+
+def test_run_share_port_health_and_auth_startup_failures(capsys):
+    qs._save_cache("qwen3.6-35b", dict(_register_payload(), alias="qwen3.6-35b"))
+
+    with (
+        patch.object(share_cli, "_maybe_confirm_download"),
+        patch.object(share_cli, "_pick_port", side_effect=RuntimeError("no port")),
+        pytest.raises(SystemExit) as exc,
+    ):
+        qs.run_share(_make_args())
+    assert exc.value.code == 1 and "no port" in capsys.readouterr().err
+
+    for failed, expected in (
+        ("health", "before becoming ready"),
+        ("auth", "authenticated"),
+    ):
+        serve = _serve_proc()
+        with (
+            patch.object(share_cli, "_maybe_confirm_download"),
+            patch.object(share_cli, "_pick_port", return_value=18765),
+            patch.object(share_cli, "_spawn_serve", return_value=serve),
+            patch.object(
+                share_cli, "_wait_for_healthz", return_value=failed != "health"
+            ),
+            patch.object(share_cli, "_verify_auth_gate", return_value=failed != "auth"),
+            pytest.raises(SystemExit) as exc,
+        ):
+            qs.run_share(_make_args())
+        assert exc.value.code == 1 and expected in capsys.readouterr().err
+
+
+def test_run_share_signal_handler_and_cleanup_defenses():
+    qs._save_cache("qwen3.6-35b", dict(_register_payload(), alias="qwen3.6-35b"))
+    tunnel = _fake_tunnel()
+    tunnel.run_in_thread.return_value.is_alive.return_value = True
+    serve, ctrl_c = _patched_run_env(None)
+    serve.wait.side_effect = [subprocess.TimeoutExpired("serve", 5), OSError("gone")]
+    handlers = []
+
+    def signal_side_effect(_sig, handler):
+        handlers.append(handler)
+        if len(handlers) == 2:
+            raise ValueError("not main thread")
+        if len(handlers) == 3:
+            raise TypeError("invalid restore")
+        return "original"
+
+    ctxs = _run_patches(serve, lambda **kw: tunnel, ctrl_c) + (
+        patch.object(qs, "_Heartbeat", return_value=_fake_heartbeat_class()),
+        patch.object(qs.signal, "signal", side_effect=signal_side_effect),
+    )
+    with _enter(*ctxs):
+        qs.run_share(_make_args())
+    with pytest.raises(KeyboardInterrupt):
+        handlers[0](None, None)
+    tunnel.run_in_thread.return_value.join.assert_called()
+    serve.kill.assert_called_once()
+
+
+def test_run_share_cleanup_tolerates_terminate_oserror():
+    qs._save_cache("qwen3.6-35b", dict(_register_payload(), alias="qwen3.6-35b"))
+    tunnel = _fake_tunnel()
+    serve, ctrl_c = _patched_run_env(None)
+    serve.terminate.side_effect = OSError("already gone")
+    ctxs = _run_patches(serve, lambda **kw: tunnel, ctrl_c) + (
+        patch.object(qs, "_Heartbeat", return_value=_fake_heartbeat_class()),
+    )
+    with _enter(*ctxs):
+        qs.run_share(_make_args())
+
+
+def test_run_share_propagates_serve_exit_and_resets_after_healthy_connection():
+    qs._save_cache("qwen3.6-35b", dict(_register_payload(), alias="qwen3.6-35b"))
+    exited = _serve_proc()
+    exited.poll.return_value = 7
+    tunnel = _fake_tunnel()
+    ctxs = _run_patches(exited, lambda **kw: tunnel, lambda *_a, **_k: None) + (
+        patch.object(qs, "_Heartbeat", return_value=_fake_heartbeat_class()),
+    )
+    with pytest.raises(SystemExit) as exc, _enter(*ctxs):
+        qs.run_share(_make_args())
+    assert exc.value.code == 7
+
+    healthy_drop = _fake_tunnel(closed=True)
+    serve = _serve_proc()
+    sleeps = []
+
+    def sleep_then_stop(seconds):
+        sleeps.append(seconds)
+        raise KeyboardInterrupt
+
+    ctxs = _run_patches(serve, lambda **kw: healthy_drop, sleep_then_stop) + (
+        patch.object(qs, "_Heartbeat", return_value=_fake_heartbeat_class()),
+        patch.object(
+            qs.time,
+            "monotonic",
+            side_effect=[100.0, 100.0 + qs._FAST_REJECT_WINDOW_SECONDS + 1],
+        ),
+    )
+    with _enter(*ctxs):
+        qs.run_share(_make_args())
+    assert sleeps == [1.0]
+
+
+def test_ws_run_ignores_non_protocol_frames_and_cancels_request_tasks():
+    class Frames:
+        close_code = None
+
+        def __init__(self):
+            self.frames = iter([b"binary", "not-json", json.dumps(_req_msg())])
+
+        async def send(self, _msg):
+            pass
+
+        async def close(self):
+            pass
+
+        def __aiter__(self):
+            return self
+
+        async def __anext__(self):
+            try:
+                return next(self.frames)
+            except StopIteration:
+                raise StopAsyncIteration from None
+
+    async def exercise():
+        client = ws_tunnel.TunnelClient(local_port=1)
+
+        async def pending(_msg):
+            await asyncio.Event().wait()
+
+        client._handle_request = pending  # type: ignore[method-assign]
+
+        async def connect(*_a, **_k):
+            return Frames()
+
+        with patch.object(ws_tunnel.websockets, "connect", connect):
+            await client.run()
+        assert client.closed_event.is_set()
+
+    asyncio.run(exercise())
+
+
+def test_ws_exception_falls_back_to_socket_close_code():
+    class PeerError(Exception):
+        rcvd = None
+
+    class Socket:
+        close_code = 1008
+
+        async def send(self, _msg):
+            pass
+
+        async def close(self):
+            pass
+
+        def __aiter__(self):
+            return self
+
+        async def __anext__(self):
+            raise PeerError("peer failed")
+
+    async def connect(*_a, **_k):
+        return Socket()
+
+    client = ws_tunnel.TunnelClient(local_port=1)
+    with (
+        patch.object(ws_tunnel.websockets, "connect", connect),
+        pytest.raises(PeerError),
+    ):
+        asyncio.run(client.run())
+    assert client.close_code == 1008
