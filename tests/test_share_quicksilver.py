@@ -2375,6 +2375,15 @@ def test_hardware_info_is_best_effort(monkeypatch):
         assert qs._hardware_info() == {}
 
 
+def test_hardware_info_parses_sysctl_results_on_every_platform():
+    chip = subprocess.CompletedProcess([], 0, stdout="Apple M3 Max\n", stderr="")
+    ram = subprocess.CompletedProcess([], 0, stdout=str(64 * 2**30), stderr="")
+    with patch.object(qs.subprocess, "run", side_effect=[chip, ram]):
+        info = qs._hardware_info()
+    assert info["chip"] == "Apple M3 Max"
+    assert info["ram_gb"] == 64
+
+
 def test_provider_key_interactive_prompt(monkeypatch):
     monkeypatch.setattr("sys.stdin.isatty", lambda: True, raising=False)
     with patch.object(qs.getpass, "getpass", return_value=" qsppk-prompt "):
