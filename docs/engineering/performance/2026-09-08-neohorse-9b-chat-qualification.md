@@ -58,7 +58,10 @@ weights:
 NEOHORSE_SNAPSHOT="$(python -c \
   'from huggingface_hub import snapshot_download; print(snapshot_download("rapid-mlx/NeoHorse-1-9B-MLX-4bit", revision="9fe3cd3f69e2d653e82ec094e1c4d0caa9564897"))')"
 
-rapid-mlx serve "$NEOHORSE_SNAPSHOT" --host 127.0.0.1 --port 8327
+rapid-mlx serve "$NEOHORSE_SNAPSHOT" \
+  --host 127.0.0.1 --port 8327 \
+  --enable-auto-tool-choice --tool-call-parser hermes \
+  --reasoning-parser qwen3
 
 python evals/run_eval.py \
   --model NeoHorse-1-9B-MLX-4bit \
@@ -68,7 +71,7 @@ python evals/run_eval.py \
   --output /private/tmp/rapid-mlx-neohorse9-standard-eval.json \
   --hardware 'Apple M3 Ultra (256 GB)' \
   --server-flags \
-    'rapid-mlx serve <resolved pinned snapshot> --host 127.0.0.1 --port 8327' \
+    'rapid-mlx serve <resolved pinned snapshot> --host 127.0.0.1 --port 8327 --enable-auto-tool-choice --tool-call-parser hermes --reasoning-parser qwen3' \
   --model-path \
     'rapid-mlx/NeoHorse-1-9B-MLX-4bit@9fe3cd3f69e2d653e82ec094e1c4d0caa9564897' \
   --engine batched
