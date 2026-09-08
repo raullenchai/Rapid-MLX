@@ -103,9 +103,12 @@ _WS_TERMINAL_STATUS = 401
 # the bad claim: RFC 6455 reserves 1008 (Policy Violation) for exactly
 # that. Both signals hit the same no-spin terminal exit.
 _WS_TERMINAL_CLOSE_CODES = frozenset({1008})
-# Defense for relays that signal rejection some OTHER way: a session
-# that the relay drops seconds after accepting the keyed claim, five
-# times running, is a rejection — stop instead of spinning forever.
+# Heuristic LOUDNESS threshold, not a kill switch: a session the relay
+# drops seconds after accepting the keyed claim, five times running
+# with no 401/1008 anywhere, gets one prominent warning (likely
+# relay-side instability — an actual rejection now always carries a
+# code). Killing the node on this pattern would misclassify a relay
+# incident as a revoked credential.
 _FAST_REJECT_WINDOW_SECONDS = 5.0
 _FAST_REJECT_STREAK_LIMIT = 5
 
@@ -493,9 +496,16 @@ def _resolve_provider_key(args: argparse.Namespace) -> str:
     key lives only in the returned string's memory; callers must not
     log it. Non-tty (launchd, CI, piped) gets an actionable error
     instead of a getpass-EOF traceback."""
-    key = getattr(args, "provider_key", None) or os.environ.get(PROVIDER_KEY_ENV_VAR)
+    # Strip FIRST, then test: a whitespace-only flag/env value ("") is
+    # truthy, and the old order turned it into `Bearer ` — a remote 401
+    # that reads like a bad key instead of the empty input it is.
+    key = (
+        getattr(args, "provider_key", None)
+        or os.environ.get(PROVIDER_KEY_ENV_VAR)
+        or ""
+    ).strip()
     if key:
-        return key.strip()
+        return key
     if not sys.stdin.isatty():
         raise QuickSilverError(
             f"first run needs a QuickSilver provider key (qsppk-…): pass "
@@ -1196,14 +1206,18 @@ def _run_share(args: argparse.Namespace) -> None:
                     break
                 if not connected or tunnel.closed_event.is_set():
                     # Terminal share-key rejections must never spin
-                    # (§5.5). Three shapes of "the relay knows this key
-                    # is dead": HTTP 401 at upgrade (plain claim), and
-                    # post-upgrade close codes — 1008 Policy Violation,
-                    # or (fallback) an immediate drop we can't classify
-                    # that repeats back-to-back (§3.2 predates the
-                    # ready-frame key move, so its close code isn't
-                    # nailed down; a same-instant drop every retry is
-                    # indistinguishable from rejection).
+                    # (§5.5), but ONLY an explicit rejection signal may
+                    # kill the node: HTTP 401 at upgrade, or WS close
+                    # 1008. Close-code extraction is version-complete
+                    # (rcvd / exc / ws.close_code), so an UNCLASSIFIED
+                    # instant drop — no code at all — is far more likely
+                    # relay/LB instability than a dead key. Repeated
+                    # unclassified drops get a loud warning, never an
+                    # exit: killing a healthy node during a relay
+                    # incident turns a blip into lost earnings until an
+                    # operator notices (backoff caps at 30 s, so
+                    # continuing is not the §5.5 spin the heuristic was
+                    # built to avoid).
                     if tunnel.error_status == _WS_TERMINAL_STATUS:
                         exit_code = 1
                         print(
@@ -1227,15 +1241,19 @@ def _run_share(args: argparse.Namespace) -> None:
                         and (time.monotonic() - served_at < _FAST_REJECT_WINDOW_SECONDS)
                     ):
                         fast_reject_streak += 1
-                        if fast_reject_streak >= _FAST_REJECT_STREAK_LIMIT:
-                            exit_code = 1
+                        if fast_reject_streak == _FAST_REJECT_STREAK_LIMIT:
+                            # Warn once, keep serving the retry loop.
                             print(
-                                "share: relay keeps dropping this node the "
-                                "instant it connects — treating the share-key "
-                                "as rejected. Re-run with --reregister.",
+                                "share: WARNING — the relay has dropped this "
+                                "node the instant it connected "
+                                f"{_FAST_REJECT_STREAK_LIMIT} times running. "
+                                "No rejection was signalled (no 401, no close "
+                                "1008), so this reads as relay-side "
+                                "instability; continuing to retry. If the "
+                                "pool shows this node offline, re-run with "
+                                "--reregister.",
                                 file=sys.stderr,
                             )
-                            break
                     else:
                         fast_reject_streak = 0
                     err = _redact(str(tunnel.error)) if tunnel.error else "dropped"

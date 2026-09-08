@@ -261,11 +261,18 @@ class TunnelClient:
         # ``time.monotonic()`` stamps, not bare membership — see
         # ``_ABORT_MARKER_STALE_SECONDS``.
         self._aborted: dict[str, float] = {}
-        # Recently completed fetches (id → completion stamp). An abort
-        # for one of these arrived too late to cancel anything;
-        # recording a marker for it could only poison the NEXT request
-        # that reuses the id, so such aborts are dropped instead.
+        # Recently completed fetches (id → completion stamp, FIFO
+        # capped). Membership is ABORT OWNERSHIP: the latest epoch of
+        # this id is retired, so an abort arriving now was in flight
+        # from a dead request — dropping it is what keeps a reused id
+        # from being poisoned. In-flight epochs count in ``_pending``.
         self._completed: dict[str, float] = {}
+        # Epochs dispatched but not finished (id → in-flight count),
+        # incremented when a ``req`` frame is dispatched and released
+        # when its ``_handle_request`` task completes. An abort for a
+        # pending id belongs to that epoch even before its fetch
+        # registers — ownership by state, not by timestamps.
+        self._pending: dict[str, int] = {}
         self._active_lock = threading.Lock()
         # Caller-visible "tunnel died after banner" sentinel. Set when
         # the WS closes unexpectedly; the parent's monitor loop polls it.
@@ -544,9 +551,32 @@ class TunnelClient:
                 # the close on its next iteration. Drop quietly.
                 return
 
+    def _release_epoch(self, req_id: str) -> None:
+        """One epoch of ``req_id`` finished. Keep the id in ``_pending``
+        while other epochs of the same id are still in flight — a
+        blanket pop would make an abort for the survivor look like a
+        never-seen id (and a completion marker for the finished one
+        would then be the only thing standing between a late abort and
+        poisoning the survivor)."""
+        remaining = self._pending.get(req_id, 1) - 1
+        if remaining > 0:
+            self._pending[req_id] = remaining
+        else:
+            self._pending.pop(req_id, None)
+
     def _dispatch_inbound(self, msg: dict[str, Any]) -> None:
         t = msg.get("t")
         if t == "req":
+            req_id = msg.get("id")
+            if isinstance(req_id, str):
+                # Epoch opens at DISPATCH, on the loop thread that also
+                # reads aborts: from here until _release_epoch, an abort
+                # naming this id is unambiguously for THIS request even
+                # if its fetch worker has not reached the registry yet.
+                # No window in which a legitimate abort can be mistaken
+                # for a late one (or vice versa).
+                with self._active_lock:
+                    self._pending[req_id] = self._pending.get(req_id, 0) + 1
             task = asyncio.create_task(self._handle_request(msg))
             self._tasks.add(task)
             task.add_done_callback(self._tasks.discard)
@@ -563,50 +593,60 @@ class TunnelClient:
             if isinstance(req_id, str):
                 with self._active_lock:
                     conn = self._active.get(req_id)
-                    if conn is None:
-                        # The abort beat the req task to the registry
-                        # (the fetch worker registers only after the
-                        # loop schedules it). Remember the id so the
-                        # fetch skips instead of starting a generation
-                        # nobody is listening for. A marker for an
-                        # ALREADY-finished request is never consumed
-                        # (multi-day nodes would creep one entry per
-                        # stray abort), so cap the set — a needed
-                        # marker only ever lives one loop tick, at
-                        # 4096 entries eviction cannot race a fetch.
-                        now = time.monotonic()
-                        completed_at = self._completed.get(req_id)
-                        if (
-                            completed_at is not None
-                            and now - completed_at <= _ABORT_MARKER_STALE_SECONDS
-                        ):
-                            # This id finished moments ago: the abort is
-                            # in flight from a request that is already
-                            # gone, and any request NOW carrying this id
-                            # is a relay-side REUSE — legitimate traffic
-                            # that must be served, not cancelled.
-                            pass
-                        else:
-                            if len(self._aborted) >= 4096:
-                                # FIFO — dict preserves insertion order,
-                                # so this evicts the oldest marker.
-                                self._aborted.pop(next(iter(self._aborted)))
-                            # Timestamp, not just membership: a relay MAY
-                            # reuse request ids (per-gateway counters that
-                            # reset on reconnect), and an abort that raced
-                            # an already-finished request must not silently
-                            # discard the next legitimate request carrying
-                            # that id. Fetches only consult markers fresh
-                            # enough to still be the same race window
-                            # (``_ABORT_MARKER_STALE_SECONDS``).
-                            self._aborted[req_id] = now
+                    if conn is not None:
+                        # Epoch live AND registered: close the local
+                        # socket, which is how cancellation reaches
+                        # serve at all (see comment above).
+                        pass
+                    elif self._pending.get(req_id):
+                        # Epoch in flight but its fetch worker has not
+                        # reached the registry yet — ownership is settled
+                        # by the dispatch-side counter, so this abort is
+                        # unambiguously for the live epoch. Mark it; the
+                        # fetch pops the marker and skips instead of
+                        # starting a generation nobody listens for.
+                        self._mark_aborted(req_id)
+                    elif req_id in self._completed:
+                        # The id's last epoch is RETIRED. This abort was
+                        # in flight from a request that is already gone;
+                        # nothing left to cancel, and recording it would
+                        # discard the NEXT request that reuses the id.
+                        pass
+                    else:
+                        # Never-seen id: the req frame is still behind
+                        # this abort on the wire. Mark it, same as the
+                        # in-flight case.
+                        self._mark_aborted(req_id)
                 if conn is not None:
                     _hard_close(conn)
+
+    def _mark_aborted(self, req_id: str) -> None:
+        # Caller holds ``_active_lock``. Timestamped so a fetch that
+        # arrives long after the race window (relay id reuse) can tell a
+        # live cancellation from a stale marker — see
+        # ``_ABORT_MARKER_STALE_SECONDS``. Capped so multi-day nodes
+        # cannot creep on stray aborts; a needed marker only ever lives
+        # one loop tick.
+        if len(self._aborted) >= 4096:
+            # FIFO — dict preserves insertion order, so this evicts the
+            # oldest marker.
+            self._aborted.pop(next(iter(self._aborted)))
+        self._aborted[req_id] = time.monotonic()
 
     async def _handle_request(self, msg: dict[str, Any]) -> None:
         req_id = msg.get("id")
         if not isinstance(req_id, str):
             return
+        # Epoch opened at DISPATCH (see _dispatch_inbound); this task
+        # owns its release no matter which path out it takes — the
+        # finally covers the err-returns and fetch failures alike.
+        try:
+            await self._serve_request(msg, req_id)
+        finally:
+            with self._active_lock:
+                self._release_epoch(req_id)
+
+    async def _serve_request(self, msg: dict[str, Any], req_id: str) -> None:
         method = msg.get("method", "GET")
         path = msg.get("path", "/")
         headers: dict[str, str] = msg.get("headers") or {}
@@ -684,6 +724,13 @@ class TunnelClient:
                 # Else: a stale marker from an abort of a PREVIOUS
                 # request that reused this id — the relay's counter
                 # wrapped, not our cancellation. Serve normally.
+            if req_id in self._active:
+                # A live generation already owns this id (relay sent a
+                # duplicate while the first is in flight). Overwriting
+                # would orphan the first: unabortable, and the teardown
+                # drain would miss it. Refuse the NEWCOMER instead.
+                conn.close()
+                return
             self._active[req_id] = conn
         try:
             conn.request(method, path, body=body, headers=headers)

@@ -671,6 +671,43 @@ def test_completed_id_reuse_not_cancelled_by_inflight_abort():
     second.request.assert_called_once()  # reused id served, not skipped
 
 
+def test_abort_for_pending_id_owns_marker_despite_retired_ancestor():
+    """Ownership is by EPOCH STATE, not timestamp: the id's previous
+    epoch is retired AND completed, but a new epoch is in flight — the
+    abort belongs to the live epoch and must mark, even though the
+    retired-ancestor rule alone would have dropped it."""
+    client = ws_tunnel.TunnelClient(local_port=1)
+    client._pending["r1"] = 1
+    client._completed["r1"] = 0.0  # an ancestor epoch retired
+    client._dispatch_inbound({"t": "abort", "id": "r1"})
+    assert "r1" in client._aborted
+
+
+def test_release_epoch_keeps_id_while_other_epochs_in_flight():
+    client = ws_tunnel.TunnelClient(local_port=1)
+    client._pending["r1"] = 2
+    client._release_epoch("r1")
+    assert client._pending.get("r1") == 1
+    client._release_epoch("r1")
+    assert "r1" not in client._pending
+
+
+def test_duplicate_active_id_is_refused_not_overwritten():
+    """Relay protocol violation (duplicate id while the first is still
+    generating): overwriting _active would orphan the first —
+    unabortable, invisible to the teardown drain. The newcomer is
+    refused instead."""
+    client = ws_tunnel.TunnelClient(local_port=1)
+    existing = MagicMock()
+    client._active["r1"] = existing
+    newcomer = MagicMock()
+    with patch.object(ws_tunnel, "OneShotHTTPConnection", return_value=newcomer):
+        client._perform_local_fetch("r1", "POST", "/v1/chat/completions", {}, b"")
+    newcomer.request.assert_not_called()
+    newcomer.close.assert_called_once()
+    assert client._active["r1"] is existing  # original stays owned
+
+
 def test_late_abort_after_completion_is_harmless_and_bounded():
     """An abort for a freshly-finished fetch is dropped (nothing to
     cancel, marker would poison id reuse); aborts for never-seen ids
@@ -1108,6 +1145,26 @@ def test_provider_key_resolution_order(monkeypatch):
     assert (
         qs._resolve_provider_key(_make_args(provider_key="qsppk-flag")) == "qsppk-flag"
     )
+
+
+@pytest.mark.parametrize("blank", ["   ", "\t\n"])
+def test_provider_key_whitespace_only_rejected_without_network(monkeypatch, blank):
+    """ "Empty but truthy" must not become `Bearer ` — the remote 401 it
+    produces reads like a revoked key, not like the operator error it
+    is. Reject locally, before any request."""
+    monkeypatch.setenv(qs.PROVIDER_KEY_ENV_VAR, blank)
+
+    def _no_net(*a, **k):
+        raise AssertionError("network touched with a blank key")
+
+    with (
+        patch.object(qs, "_open", _no_net),
+        pytest.raises(SystemExit) as ei,
+    ):
+        qs.run_share(_make_args())
+    assert ei.value.code == 2
+    with pytest.raises(qs.QuickSilverError):
+        qs._resolve_provider_key(_make_args(provider_key=blank))
 
 
 def test_provider_key_noninteractive_without_key_is_actionable(monkeypatch):
@@ -1609,18 +1666,46 @@ def test_run_share_ws_1008_close_is_terminal_no_spin():
     assert len(made) == 1  # no retry spin on a post-upgrade rejection
 
 
-def test_run_share_instant_drop_streak_becomes_terminal(capsys):
-    """Five relay-accepted-then-instantly-dropped sessions in a row is
-    indistinguishable from rejection — stop instead of spinning under
-    KeepAlive forever."""
+def test_run_share_instant_drop_streak_warns_but_keeps_retrying(capsys):
+    """Five relay-accepted-then-instantly-dropped sessions with NO
+    rejection signal (no 401, no 1008) reads as relay instability. The
+    node must warn loudly and keep trying — exiting would turn a relay
+    incident into lost earnings until an operator notices."""
     qs._save_cache("qwen3.6-35b", dict(_register_payload(), alias="qwen3.6-35b"))
     serve, _ = _patched_run_env(None)
     made: list = []
+    limit = qs._FAST_REJECT_STREAK_LIMIT
 
     def factory(**kw):
         made.append(kw)
         # connected, closed_event pre-set, unclassifiable close
         return _fake_tunnel(ready=True, closed=True, close_code=1001)
+
+    def sleep_then_ctrl_c(*_a, **_k):
+        if len(made) > limit + 2:
+            raise KeyboardInterrupt
+
+    ctxs = _run_patches(serve, factory, sleep_then_ctrl_c) + (
+        patch.object(qs, "_Heartbeat", return_value=_fake_heartbeat_class()),
+    )
+    with _enter(*ctxs):
+        qs.run_share(_make_args())  # Ctrl-C after past-threshold retries
+    err = capsys.readouterr().err
+    assert "WARNING" in err and "instability" in err
+    # Went PAST the streak threshold without exiting …
+    assert len(made) > limit
+    # … and warned exactly once, not once per drop.
+    assert err.count("WARNING") == 1
+
+
+def test_run_share_1008_close_is_terminal_despite_instant_drop_shape(capsys):
+    """The explicit-signal path must still exit: an immediate drop
+    carrying close 1008 IS a rejection, streak heuristic irrelevant."""
+    qs._save_cache("qwen3.6-35b", dict(_register_payload(), alias="qwen3.6-35b"))
+    serve, _ = _patched_run_env(None)
+
+    def factory(**kw):
+        return _fake_tunnel(ready=True, closed=True, close_code=1008)
 
     ctxs = _run_patches(serve, factory, lambda *a, **k: None) + (
         patch.object(qs, "_Heartbeat", return_value=_fake_heartbeat_class()),
@@ -1628,8 +1713,7 @@ def test_run_share_instant_drop_streak_becomes_terminal(capsys):
     with pytest.raises(SystemExit) as ei, _enter(*ctxs):
         qs.run_share(_make_args())
     assert ei.value.code == 1
-    assert len(made) == qs._FAST_REJECT_STREAK_LIMIT
-    assert "rejected" in capsys.readouterr().err
+    assert "1008" in capsys.readouterr().err
 
 
 def test_run_share_server_echoed_key_never_printed(capsys):
