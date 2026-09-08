@@ -134,6 +134,33 @@ def test_qwen38_flash_next_alias_is_experimental_and_memory_gated() -> None:
     assert detect_model_config(profile.hf_path) == profile
 
 
+def test_neohorse_9b_alias_is_experimental_text_only_and_conservative() -> None:
+    """NeoHorse ships as an opt-in Chat candidate without borrowed speedups."""
+
+    alias = "neohorse-9b-4bit"
+    profile = list_profiles()[alias]
+
+    assert profile.hf_path == "rapid-mlx/NeoHorse-1-9B-MLX-4bit"
+    assert profile.modality == "text"
+    assert profile.is_text_only is True
+    assert profile.experimental is True
+    assert profile.min_memory_gb == 18.0
+    assert profile.tool_call_parser == "hermes"
+    assert profile.reasoning_parser == "qwen3"
+    assert profile.is_hybrid is False
+    assert profile.is_hybrid_explicit is True
+    assert profile.is_moe is False
+    assert profile.supports_spec_decode is False
+    assert profile.supports_native_mtp is False
+    assert profile.mtp_draft_model is None
+    assert profile.mtp_default_enabled is False
+    assert profile.pflash_tier == "unknown"
+    assert profile.turboquant_tier == "unknown"
+    assert detect_model_config(alias) == profile
+    assert detect_model_config(profile.hf_path) == profile
+    assert alias not in POPULAR_ALIASES
+
+
 def test_qwen38_27b_aliases_pin_the_native_named_xml_tool_contract() -> None:
     """Every shipped 27B checkpoint uses the same native XML tool template."""
 
