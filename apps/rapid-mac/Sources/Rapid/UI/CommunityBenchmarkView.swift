@@ -555,10 +555,62 @@ enum CommunityBenchmarkRunStatus {
 
     static func expectedDuration(for task: ModelTask) -> String {
         switch task {
-        case .imageGeneration: return "usually 1–3 minutes"
+        // Image time is dominated by the model: a small SD-class model lands
+        // in a couple of minutes, a flux-class one can take ten. Keep the
+        // up-front hint wide and honest; the live ETA below carries accuracy.
+        case .imageGeneration: return "usually 2–10 minutes"
         case .videoGeneration: return "usually 5–15 minutes"
         default: return "usually 2–5 minutes"
         }
+    }
+
+    /// Record-separator prefix the CLI puts on machine-readable progress
+    /// lines under `--json --progress`. Mirrors `PROGRESS_TAG` in
+    /// `vllm_mlx/community_bench/cli.py`.
+    static let progressTag = "\u{1e}"
+
+    /// A tagged progress line with its marker removed and whitespace
+    /// collapsed, or nil for any other stderr (the untagged failure
+    /// document, warnings, tracebacks) so the view never mirrors it.
+    static func strippedProgress(from line: String) -> String? {
+        guard line.hasPrefix(progressTag) else { return nil }
+        let body = line.dropFirst(progressTag.count)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !body.isEmpty, body.count <= 200 else { return nil }
+        return body.split(whereSeparator: \.isWhitespace).joined(separator: " ")
+    }
+
+    /// True when a (stripped) progress line marks one completed unit of work
+    /// — a warmup pass or a measured round — so the view can count steps.
+    static func isStepLine(_ stripped: String) -> Bool {
+        stripped.range(of: #"\bround \d+/\d+\b"#, options: .regularExpression) != nil
+            || stripped.range(of: #"\bwarmup\b"#, options: .regularExpression) != nil
+    }
+
+    /// Total warmup + measured passes for a task, i.e. how many step lines to
+    /// expect. Returns nil for shapes too coarse for a determinate bar (a
+    /// single measured pass), where the spinner + elapsed clock read better.
+    static func totalSteps(for task: ModelTask) -> Int? {
+        switch task {
+        case .imageGeneration: return 2   // 1 warmup + 1 measured
+        case .videoGeneration: return nil // 1 measured render — no useful bar
+        default: return 12                // 2 buckets × (1 warmup + 5 measured)
+        }
+    }
+
+    /// A `~m:ss left` estimate from the average time per completed step,
+    /// measured from the first step so model-load time does not skew it.
+    /// nil until at least one step has completed and while none remain.
+    static func eta(
+        stepsDone: Int,
+        totalSteps: Int,
+        since firstStepAt: Date,
+        now: Date
+    ) -> String? {
+        guard stepsDone >= 1, stepsDone < totalSteps else { return nil }
+        let perStep = max(0, now.timeIntervalSince(firstStepAt)) / Double(stepsDone)
+        let remaining = Int((perStep * Double(totalSteps - stepsDone)).rounded())
+        return String(format: "~%d:%02d left", remaining / 60, remaining % 60)
     }
 
     /// `m:ss` elapsed clock, clamped at zero so a clock adjustment mid-run
@@ -708,6 +760,9 @@ enum CommunityBenchmarkCommand {
     static func benchmarkRunArguments(alias: String) -> [String] {
         [
             "benchmark", "run", alias, "--json",
+            // Stream RS-tagged live progress so the run shows a determinate
+            // bar + ETA; the untagged failure document stays clean.
+            "--progress",
             "--inherit-process-group",
         ]
     }
@@ -813,7 +868,14 @@ enum CommunityBenchmarkCommand {
                     let output = await outputTask.value
                     let errorCapture = await errorTask.value
                     guard child.terminationStatus == 0 else {
+                        // Drop RS-tagged live-progress lines so the failure
+                        // document the user sees stays clean.
                         let detail = String(data: errorCapture.data, encoding: .utf8)?
+                            .split(separator: "\n", omittingEmptySubsequences: false)
+                            .filter {
+                                !$0.hasPrefix(CommunityBenchmarkRunStatus.progressTag)
+                            }
+                            .joined(separator: "\n")
                             .trimmingCharacters(in: .whitespacesAndNewlines)
                         let message = detail.flatMap { $0.isEmpty ? nil : $0 }
                             ?? "Benchmark exited with code \(child.terminationStatus)."
@@ -971,6 +1033,10 @@ struct CommunityBenchmarkView: View {
     /// arrival order off the main actor and applied only if newer, so the
     /// unordered main-actor hops can never show an older round.
     @State private var appliedProgressSequence = 0
+    /// Completed warmup + measured passes, and when the first one landed, for
+    /// the determinate progress bar and the live ETA.
+    @State private var stepsDone = 0
+    @State private var firstStepAt: Date?
     @State private var errorMessage: String?
     @State private var runTask: Task<Void, Never>?
     @State private var shareTask: Task<Void, Never>?
@@ -1192,17 +1258,44 @@ struct CommunityBenchmarkView: View {
     /// live elapsed clock — the only feedback the user gets for several
     /// minutes while the CLI owns the machine.
     private var runningStatus: some View {
-        VStack(alignment: .leading, spacing: 3) {
+        // A determinate bar is only honest when we know how many passes to
+        // expect (text, image); other shapes keep the spinner + clock.
+        let totalSteps = runningModel.flatMap {
+            CommunityBenchmarkRunStatus.totalSteps(for: $0.task)
+        }
+        return VStack(alignment: .leading, spacing: 6) {
             if let runningModel {
                 Text(CommunityBenchmarkRunStatus.description(for: runningModel))
                     .font(.callout)
                     .accessibilityIdentifier("CommunityBenchmark.RunStatus")
             }
+            if let totalSteps {
+                ProgressView(
+                    value: Double(min(stepsDone, totalSteps)),
+                    total: Double(totalSteps)
+                )
+                .progressViewStyle(.linear)
+                .frame(maxWidth: 360)
+                .accessibilityIdentifier("CommunityBenchmark.RunProgressBar")
+            }
             HStack(spacing: 8) {
                 if let runStartedAt {
                     TimelineView(.periodic(from: runStartedAt, by: 1)) { context in
-                        Text("Elapsed \(CommunityBenchmarkRunStatus.elapsed(from: runStartedAt, to: context.date))")
-                            .monospacedDigit()
+                        HStack(spacing: 8) {
+                            Text("Elapsed \(CommunityBenchmarkRunStatus.elapsed(from: runStartedAt, to: context.date))")
+                                .monospacedDigit()
+                            if let totalSteps, let firstStepAt,
+                               let eta = CommunityBenchmarkRunStatus.eta(
+                                   stepsDone: stepsDone,
+                                   totalSteps: totalSteps,
+                                   since: firstStepAt,
+                                   now: context.date
+                               ) {
+                                Text(eta)
+                                    .monospacedDigit()
+                                    .accessibilityIdentifier("CommunityBenchmark.RunETA")
+                            }
+                        }
                     }
                     .accessibilityIdentifier("CommunityBenchmark.RunElapsed")
                 }
@@ -1325,6 +1418,8 @@ struct CommunityBenchmarkView: View {
         runStartedAt = Date()
         runProgressLine = nil
         appliedProgressSequence = 0
+        stepsDone = 0
+        firstStepAt = nil
         let activeRunID = UUID()
         currentRunID = activeRunID
         let sequencer = ProgressSequencer()
@@ -1342,10 +1437,11 @@ struct CommunityBenchmarkView: View {
                     ),
                     onDeferredReap: retainServerDuringDeferredReap,
                     onStandardErrorLine: { line in
-                        guard let progress = CommunityBenchmarkRunStatus.progressLine(
+                        guard let progress = CommunityBenchmarkRunStatus.strippedProgress(
                             from: line
                         ) else { return }
                         let sequence = sequencer.next()
+                        let isStep = CommunityBenchmarkRunStatus.isStepLine(progress)
                         Task { @MainActor in
                             // A line that arrives after Stop / a new run must
                             // not resurrect stale progress, and an older line
@@ -1357,6 +1453,10 @@ struct CommunityBenchmarkView: View {
                             else { return }
                             appliedProgressSequence = sequence
                             runProgressLine = progress
+                            if isStep {
+                                stepsDone += 1
+                                if firstStepAt == nil { firstStepAt = Date() }
+                            }
                         }
                     }
                 )
@@ -1373,6 +1473,8 @@ struct CommunityBenchmarkView: View {
             runningModel = nil
             runStartedAt = nil
             runProgressLine = nil
+            stepsDone = 0
+            firstStepAt = nil
             runTask = nil
         }
     }
