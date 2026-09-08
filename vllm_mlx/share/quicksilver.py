@@ -39,9 +39,9 @@ import json
 import logging
 import math
 import os
-import socket
 import secrets
 import signal
+import socket
 import subprocess
 import sys
 import threading
