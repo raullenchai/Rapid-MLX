@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Rapid-MLX — Collective Compute UI mock</title>
+  <title>Rapid-MLX — Compute UI mock</title>
   <style>
     :root {
       color-scheme: light dark;
@@ -323,7 +323,7 @@
         <button class="nav-row"><span class="nav-icon">▶</span>Video</button>
         <button class="nav-row"><span class="nav-icon">▣</span>Computer Use</button>
         <button class="nav-row"><span class="nav-icon">◴</span>Benchmark</button>
-        <button class="nav-row active" id="computeNav"><span class="nav-icon">⌁</span>Collective Compute</button>
+        <button class="nav-row active" id="computeNav"><span class="nav-icon">⌁</span>Compute</button>
         <div class="history">Recent</div>
         <div class="ghost-row">Optimizing a local model</div>
         <div class="ghost-row">Swift concurrency notes</div>
@@ -333,9 +333,9 @@
         <section class="page compute-page" id="offlinePage">
           <div class="page-header">
             <div>
-              <div class="eyebrow">Collective Compute</div>
+              <div class="eyebrow">Compute</div>
               <h1>Put this Mac to work</h1>
-              <p class="subtitle">Contribute private, local inference capacity to the QuickSilver pool when you choose.</p>
+              <p class="subtitle">Contribute private, local inference capacity through QuickSilver, the current compute-pool provider.</p>
             </div>
             <div class="status-pill"><span class="dot"></span>Not connected</div>
           </div>
@@ -376,7 +376,7 @@
 
         <section class="page compute-page" id="connectingPage" hidden>
           <div class="page-header">
-            <div><div class="eyebrow">Collective Compute</div><h1>Joining the pool</h1><p class="subtitle">Rapid is preparing a private provider session on this Mac.</p></div>
+            <div><div class="eyebrow">Compute</div><h1>Joining the pool</h1><p class="subtitle">Rapid is preparing a private QuickSilver provider session on this Mac.</p></div>
             <div class="status-pill working"><span class="dot"></span>Starting</div>
           </div>
           <div class="card progress-card">
@@ -395,7 +395,7 @@
 
         <section class="page compute-page" id="onlinePage" hidden>
           <div class="page-header">
-            <div><div class="eyebrow">Collective Compute</div><h1>This Mac is contributing</h1><p class="subtitle">Rapid will stay available while the app is open and this node remains connected.</p></div>
+            <div><div class="eyebrow">Compute</div><h1>This Mac is contributing</h1><p class="subtitle">Connected to QuickSilver. Rapid will stay available while the app is open and this node remains connected.</p></div>
             <div class="status-pill online"><span class="dot"></span>Available</div>
           </div>
           <div class="card online-hero">
@@ -413,12 +413,12 @@
             <div class="activity-row"><span class="activity-dot muted"></span><div><div class="activity-title">Model warmed up</div><div class="activity-sub">Qwen3.8 27B · max 2 concurrent requests</div></div><span class="activity-time">12m</span></div>
             <div class="activity-row"><span class="activity-dot muted"></span><div><div class="activity-title">Secure relay connected</div><div class="activity-sub">Node qs-node-••••18b4</div></div><span class="activity-time">12m</span></div>
           </div>
-          <div class="footer-actions"><a class="text-button" href="https://pay.quicksilverpro.io" target="_blank" rel="noreferrer">View earnings in QuickSilver ↗</a><button class="text-button" id="detailsButton">Connection details</button></div>
+          <div class="footer-actions"><a class="text-button" href="https://quicksilverpro.io/" target="_blank" rel="noreferrer">Open QuickSilver ↗</a><button class="text-button" id="detailsButton">Connection details</button></div>
         </section>
 
         <section class="page compute-page" id="errorPage" hidden>
           <div class="page-header">
-            <div><div class="eyebrow">Collective Compute</div><h1>This node needs attention</h1><p class="subtitle">Rapid stopped serving because QuickSilver rejected the saved node credential.</p></div>
+            <div><div class="eyebrow">Compute</div><h1>This node needs attention</h1><p class="subtitle">Rapid stopped serving because QuickSilver rejected the saved node credential.</p></div>
             <div class="status-pill error"><span class="dot"></span>Stopped</div>
           </div>
           <div class="card setup-card">
@@ -434,7 +434,7 @@
             <div class="settings-row"><div class="settings-copy"><strong>Enable Video Generation</strong><span>Adds the Video tab; requires Apple silicon and typically 24 GB+ of unified memory.</span></div><button class="switch on" aria-label="Video generation enabled"></button></div>
             <div class="settings-row"><div class="settings-copy"><strong>Enable Computer Use</strong><span>Adds the Computer Use tab; Rapid previews consequential actions for your approval.</span></div><button class="switch on" aria-label="Computer Use enabled"></button></div>
             <div class="settings-row"><div class="settings-copy"><strong>Enable Benchmark</strong><span>Adds the Benchmark tab for measuring models on this Mac.</span></div><button class="switch on" aria-label="Benchmark enabled"></button></div>
-            <div class="settings-row"><div class="settings-copy"><strong>Enable Collective Compute</strong><span>Adds the Collective Compute tab. Nothing is shared or started until you explicitly join a compute pool.</span></div><button class="switch on" id="collectiveSwitch" aria-label="Collective Compute enabled"></button></div>
+            <div class="settings-row"><div class="settings-copy"><strong>Enable Compute</strong><span>Adds the Compute tab. Nothing is shared or started until you explicitly join a compute pool.</span></div><button class="switch on" id="collectiveSwitch" aria-label="Compute enabled"></button></div>
           </div>
           <div class="notice"><span class="notice-icon">i</span><span>Turning off this feature while connected will first leave the pool, stop its model server, and then remove the tab.</span></div>
         </section>
@@ -477,6 +477,7 @@
       <div class="sheet-head"><div><h2 id="detailsTitle">Connection details</h2><p class="sheet-subtitle">Non-secret identifiers for this provider session.</p></div><button class="close" id="closeDetails" aria-label="Close">×</button></div>
       <div class="sheet-body">
         <div class="detail-list">
+          <div class="detail-row"><span class="detail-label">Provider</span><span class="detail-value">QuickSilver · quicksilverpro.io</span></div>
           <div class="detail-row"><span class="detail-label">Pool model</span><span class="detail-value">qwen3.8-27b</span></div>
           <div class="detail-row"><span class="detail-label">Local weights</span><span class="detail-value">qwen3.8-27b-4bit</span></div>
           <div class="detail-row"><span class="detail-label">Worker</span><span class="detail-value">studio</span></div>
