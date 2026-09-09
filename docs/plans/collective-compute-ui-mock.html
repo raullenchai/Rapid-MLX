@@ -145,6 +145,11 @@
     .eyebrow { color: var(--amber-deep); font-size: 11px; font-weight: 700; letter-spacing: .06em; text-transform: uppercase; margin-bottom: 7px; }
     h1 { margin: 0; font-size: 28px; line-height: 1.14; letter-spacing: -.035em; }
     .subtitle { max-width: 550px; margin: 8px 0 0; color: var(--secondary); font-size: 14px; }
+    .provider-proof { display: flex; align-items: center; flex-wrap: wrap; gap: 6px 13px; margin-top: 13px; color: var(--secondary); font-size: 10.5px; }
+    .provider-proof span { display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; }
+    .provider-proof span::before { content: ""; width: 5px; height: 5px; border-radius: 50%; background: var(--amber); }
+    .provider-proof a { color: var(--blue); font-weight: 650; text-decoration: none; white-space: nowrap; }
+    .provider-proof a:hover { text-decoration: underline; }
     .status-pill {
       display: inline-flex; align-items: center; gap: 7px; min-height: 27px; padding: 0 10px;
       border: 1px solid var(--line); border-radius: 99px; background: var(--card); color: var(--secondary);
@@ -335,7 +340,13 @@
             <div>
               <div class="eyebrow">Share Compute</div>
               <h1>Put this Mac to work</h1>
-              <p class="subtitle">Contribute private, local inference capacity through QuickSilver, the current compute-pool provider.</p>
+              <p class="subtitle">QuickSilver unifies 48 frontier and open models behind one OpenAI-compatible API. Share spare Apple silicon to help power its open-model capacity—and earn when this Mac serves requests.</p>
+              <div class="provider-proof" aria-label="About QuickSilver">
+                <span>48 models</span>
+                <span>One API</span>
+                <span>Public pricing &amp; live status</span>
+                <a href="https://quicksilverpro.io/" target="_blank" rel="noreferrer">Meet QuickSilver ↗</a>
+              </div>
             </div>
             <div class="status-pill"><span class="dot"></span>Not connected</div>
           </div>

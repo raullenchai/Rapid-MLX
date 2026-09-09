@@ -21,6 +21,11 @@ change Swift, Python, a public API, credentials, services, or release state.
 - The primary path is choose model + worker, join, watch startup, observe node
   health, and leave. First registration asks for the provider key in a sheet;
   the everyday surface never displays it.
+- The setup header introduces QuickSilver with current, checkable product proof:
+  a 48-model frontier/open catalog behind one OpenAI-compatible API, public
+  pricing, and live status. It says Mac providers add open-model capacity and
+  does not imply that local nodes serve closed GPT, Claude, Gemini, or Grok
+  routes.
 - The mock covers setup, empty-key validation, startup, online, transient relay
   semantics, revoked credential recovery, explicit stop, dark mode, and the
   720-point window floor.
