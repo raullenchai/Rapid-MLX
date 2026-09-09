@@ -108,6 +108,17 @@ struct ToolUseCapabilityTests {
         #expect(ToolUseCapability.confidence(for: "ornith-1.5-135b") == .unknown)
     }
 
+    @Test("MiniCPM5-2B official MLX artifact is .known after product-path dogfood")
+    func miniCPM5_2BIsKnown() {
+        #expect(ToolUseCapability.confidence(for: "minicpm5-2b-4bit") == .known)
+    }
+
+    @Test("Unverified MiniCPM5 size siblings remain .unknown")
+    func miniCPM5UnverifiedSizesAreUnknown() {
+        #expect(ToolUseCapability.confidence(for: "minicpm5-1b-4bit") == .unknown)
+        #expect(ToolUseCapability.confidence(for: "minicpm5-3b-4bit") == .unknown)
+    }
+
     @Test("llama3-3b-4bit is .known — smallest empirically-good llama")
     func llama3_3bIsKnown() {
         #expect(ToolUseCapability.confidence(for: "llama3-3b-4bit") == .known)
