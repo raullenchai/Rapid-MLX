@@ -101,19 +101,32 @@ final class ShareComputeManager {
         state = .preparing
         activeModel = model
         snapshot = nil
-        restoreAlias = server.servingAlias
+        // Preserve the model captured by the first join in a cancel/rejoin
+        // chain. The first preparation may already have stopped it by the
+        // time the replacement join reads `servingAlias`.
+        restoreAlias = Self.restoreAliasForJoin(
+            pending: restoreAlias,
+            currentlyServing: server.servingAlias
+        )
         let operation = UUID()
         operationID = operation
         let lease: UUID
         do {
             lease = try await server.prepareForCommunityBenchmark()
         } catch is CancellationError {
-            guard operationID == operation else { return }
+            guard operationID == operation else {
+                restoreIfPreparationHasNoSuccessor()
+                return
+            }
             operationID = nil
             resetToIdle()
+            restorePreviousModelIfNeeded()
             return
         } catch {
-            guard operationID == operation else { return }
+            guard operationID == operation else {
+                restoreIfPreparationHasNoSuccessor()
+                return
+            }
             operationID = nil
             state = .failed("Rapid couldn't pause the current model safely.")
             activeModel = nil
@@ -124,7 +137,10 @@ final class ShareComputeManager {
             server.finishCommunityBenchmark(lease)
             // This operation no longer owns manager state. A subsequent join
             // may already have replaced activeModel and restoreAlias, so only
-            // release the lease acquired by this stale operation.
+            // release the lease acquired by this stale operation. The pending
+            // restore is inherited by a successor, or performed now if the
+            // user simply cancelled and no successor exists.
+            restoreIfPreparationHasNoSuccessor()
             return
         }
         reservation = lease
@@ -292,6 +308,13 @@ final class ShareComputeManager {
         }
     }
 
+    nonisolated static func restoreAliasForJoin(
+        pending: String?,
+        currentlyServing: String?
+    ) -> String? {
+        pending ?? currentlyServing
+    }
+
     /// Pure representation of every caller-controlled value handed to the
     /// process boundary. Keeping stdin beside argv and environment makes the
     /// credential transport invariant directly testable.
@@ -386,6 +409,11 @@ final class ShareComputeManager {
         }
         restoreAlias = nil
         Task { await server.start(alias: alias) }
+    }
+
+    private func restoreIfPreparationHasNoSuccessor() {
+        guard operationID == nil else { return }
+        restorePreviousModelIfNeeded()
     }
 
     private func installDiscardingDrainer(on pipe: Pipe) {

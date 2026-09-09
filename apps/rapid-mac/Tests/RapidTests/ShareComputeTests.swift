@@ -95,6 +95,18 @@ struct ShareComputeTests {
         manager.finishShutdown()
     }
 
+    @Test("A replacement join inherits the original restore model")
+    func replacementInheritsRestoreAlias() {
+        #expect(ShareComputeManager.restoreAliasForJoin(
+            pending: "previous-model",
+            currentlyServing: nil
+        ) == "previous-model")
+        #expect(ShareComputeManager.restoreAliasForJoin(
+            pending: nil,
+            currentlyServing: "current-model"
+        ) == "current-model")
+    }
+
     @Test("Cache paths follow the HOME inherited by the provider child")
     func runtimeHome() {
         let fallback = URL(fileURLWithPath: "/fallback", isDirectory: true)
