@@ -2634,7 +2634,7 @@ def test_routing_override_kwargs_are_keyword_only_in_load_model():
         )
 
 
-def _make_engine_core_for_override_test(monkeypatch, cfg, *, base=None):
+def _make_engine_core_for_override_test(monkeypatch, cfg, *, base=None, detector=None):
     """Build an ``EngineCore`` with heavy dependencies stubbed so the
     routing-override block in ``__init__`` can be exercised in
     isolation. Returns the constructed core (or raises if __init__
@@ -2683,7 +2683,11 @@ def _make_engine_core_for_override_test(monkeypatch, cfg, *, base=None):
     if base is None:
         base = ModelConfig(is_hybrid=True, supports_spec_decode=False)
 
-    monkeypatch.setattr(mac, "detect_model_config", lambda _name: base)
+    monkeypatch.setattr(
+        mac,
+        "detect_model_config",
+        detector if detector is not None else lambda _name: base,
+    )
 
     # Stub respects its argument (not closure). This means pre-enrich
     # mutation of ``base_cfg`` is invisible — matching production
@@ -2812,6 +2816,64 @@ def test_engine_core_profile_log_shows_explicit_mtp(monkeypatch, caplog):
 
     assert "spec decode MTP (active)" in caplog.text
     assert "spec decode OFF" not in caplog.text
+
+
+def test_engine_core_profile_log_uses_alias_capabilities(monkeypatch, caplog):
+    """Resolved snapshots must not erase alias-only sidecar facts in logs."""
+    try:
+        from vllm_mlx.engine_core import EngineConfig
+        from vllm_mlx.model_auto_config import ModelConfig
+        from vllm_mlx.scheduler import SchedulerConfig
+    except (ImportError, RuntimeError) as exc:
+        pytest.skip(f"MLX runtime unavailable ({exc})")
+
+    alias = "qwen3.5-9b-4bit"
+    snapshot = "/cache/models--mlx-community--Qwen3.5-9B-4bit/snapshots/rev"
+    loaded_cfg = ModelConfig(is_hybrid=False, supports_spec_decode=False)
+    alias_cfg = ModelConfig(
+        is_hybrid=False,
+        supports_spec_decode=False,
+        mtp_draft_model="mlx-community/Qwen3.5-9B-MTP-4bit",
+    )
+
+    def detect(name):
+        return alias_cfg if name == alias else loaded_cfg
+
+    cfg = EngineConfig(
+        model_name=snapshot,
+        profile_name=alias,
+        scheduler_config=SchedulerConfig(spec_decode="mtp"),
+    )
+    monkeypatch.setenv("RAPID_MLX_PROFILE_VERBOSE", "1")
+    with caplog.at_level("INFO", logger="vllm_mlx.engine_core"):
+        _make_engine_core_for_override_test(
+            monkeypatch,
+            cfg,
+            base=loaded_cfg,
+            detector=detect,
+        )
+
+    assert f"Model: {alias}" in caplog.text
+    assert "Spec decode      : ✓ default-on (MTP)" in caplog.text
+    assert "MTP path         : sidecar (default; --no-spec-decode off)" in caplog.text
+    assert "Suffix tier      : n/a (suffix uses the standard spec lane)" in caplog.text
+    assert "MTP path         : disabled" not in caplog.text
+    assert "no MTP/drafter" not in caplog.text
+
+
+def test_engine_config_profile_name_preserves_positional_scheduler_argument():
+    """Appending diagnostics must not shift the public dataclass constructor."""
+    try:
+        from vllm_mlx.engine_core import EngineConfig
+        from vllm_mlx.scheduler import SchedulerConfig
+    except (ImportError, RuntimeError) as exc:
+        pytest.skip(f"MLX runtime unavailable ({exc})")
+
+    scheduler = SchedulerConfig()
+    config = EngineConfig("model-under-test", scheduler)
+
+    assert config.scheduler_config is scheduler
+    assert config.profile_name is None
 
 
 def test_engine_core_suffix_lane_reconciles_profile_log(monkeypatch, caplog):

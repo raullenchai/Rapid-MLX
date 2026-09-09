@@ -649,6 +649,7 @@ def test_load_model_threads_saved_cli_alias_into_checkpoint_resolution(monkeypat
     assert seen == ["lfm2.5-2.6b-4bit"]
     assert server._engine is not None
     assert server._engine.kwargs["model_name"] == "/cache/snapshots/revision/4bit"
+    assert server._engine.kwargs["profile_name"] == "lfm2.5-2.6b-4bit"
 
 
 def test_load_model_detects_config_from_resolved_pulled_variant(monkeypatch):
