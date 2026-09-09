@@ -231,6 +231,8 @@ are the argparse defaults from `vllm_mlx/cli.py`.
 | `--max-concurrent-requests` | Admission cap on in-flight requests (queued + running); when exceeded, new requests get HTTP 503 with `Retry-After` | 256 |
 | `--prefill-batch-size` | Max prompts prefilled together in one cold wave; lower it to cut first-token latency under concurrent cold load, at an aggregate-throughput cost on large MoE models | 8 |
 | `--completion-batch-size` | Completion batch size | 32 |
+| `--scheduling-policy` | Prompt-slot admission order: `fcfs`, or opt-in `shortest_validated_tail` to favor cache-hot/short prompts under contention | `fcfs` |
+| `--scheduling-max-deferrals` | Compatible grants that may pass over one request before `shortest_validated_tail` forces it through in FIFO order | 8 |
 | `--prefill-step-size` | Chunk size for prompt prefill processing; larger values use more memory but can improve prefill throughput | 2048 |
 | `--stream-interval` | Tokens to batch before streaming (1 = smooth, higher = throughput) | 1 |
 | `--gpu-memory-utilization` | Fraction of device memory for the Metal allocation limit and admission cap (0.0-1.0). Advanced override — by default the budget is sized automatically to the loaded model (measured weights + headroom, 0.90–0.97 of the device working-set budget) | auto |

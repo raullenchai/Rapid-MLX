@@ -4740,6 +4740,8 @@ def serve_command(args):
         max_concurrent_requests=args.max_concurrent_requests,
         prefill_batch_size=args.prefill_batch_size,
         completion_batch_size=args.completion_batch_size,
+        scheduling_policy=args.scheduling_policy,
+        scheduling_max_deferrals=args.scheduling_max_deferrals,
         enable_prefix_cache=enable_prefix_cache,
         prefix_cache_size=args.prefix_cache_size,
         # R15-P1 (task #303): radix-tree prefix-cache index.
@@ -11215,6 +11217,26 @@ Examples:
     )
     serve_parser.add_argument(
         "--completion-batch-size", type=int, default=32, help="Completion batch size"
+    )
+    serve_parser.add_argument(
+        "--scheduling-policy",
+        choices=("fcfs", "shortest_validated_tail"),
+        default="fcfs",
+        help=(
+            "Prompt-slot admission order (default: fcfs). "
+            "shortest_validated_tail favors cache-hot and short prompts while "
+            "bounding how often an older compatible request may be deferred."
+        ),
+    )
+    serve_parser.add_argument(
+        "--scheduling-max-deferrals",
+        type=int,
+        default=8,
+        metavar="N",
+        help=(
+            "Maximum compatible prompt-slot grants that may pass over a request "
+            "under shortest_validated_tail before it is forced FIFO (default: 8)."
+        ),
     )
     serve_parser.add_argument(
         "--enable-prefix-cache",

@@ -3535,6 +3535,19 @@ Examples:
         "Larger values may improve TTFT on Apple Silicon with sufficient memory.",
     )
     parser.add_argument(
+        "--scheduling-policy",
+        choices=("fcfs", "shortest_validated_tail"),
+        default="fcfs",
+        help="Prompt-slot admission order (default: fcfs).",
+    )
+    parser.add_argument(
+        "--scheduling-max-deferrals",
+        type=int,
+        default=8,
+        metavar="N",
+        help="Starvation bound for shortest_validated_tail (default: 8 grants).",
+    )
+    parser.add_argument(
         "--vision-prefill-token-budget",
         type=int,
         default=None,
@@ -3931,6 +3944,8 @@ Examples:
 
     scheduler_config = SchedulerConfig(
         prefill_step_size=args.prefill_step_size,
+        scheduling_policy=args.scheduling_policy,
+        scheduling_max_deferrals=args.scheduling_max_deferrals,
         vision_prefill_token_budget=vision_prefill_token_budget,
         vision_min_pixels=args.vision_min_pixels,
         vision_max_pixels=args.vision_max_pixels,

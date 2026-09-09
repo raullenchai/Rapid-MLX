@@ -251,6 +251,10 @@ class Request:
         None  # Type of cache hit: exact/prefix/supersequence/lcp/miss
     )
 
+    # Opt-in scheduler-local starvation accounting. ``init=False`` keeps the
+    # public and positional Request constructor unchanged.
+    _admission_deferrals: int = field(default=0, init=False, repr=False)
+
     @property
     def num_output_tokens(self) -> int:
         """Number of output tokens generated so far."""

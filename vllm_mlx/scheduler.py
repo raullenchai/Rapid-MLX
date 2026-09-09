@@ -561,7 +561,26 @@ class SchedulerConfig:
     # positional_prefix``.
     kv_cache_dtype_explicit: bool = False
 
+    # Opt-in queue discipline for prompt-slot admission. ``fcfs`` preserves
+    # the historical zero-scan path. ``shortest_validated_tail`` keeps excess
+    # requests in Rapid's queue and grants an open prompt slot to the request
+    # with the least cache-validated work. Appended for positional callers.
+    scheduling_policy: str = "fcfs"
+    # Bound how many compatible grants may pass over one request before it is
+    # forced into the next available slot. Only used by the opt-in policy.
+    scheduling_max_deferrals: int = 8
+
     def __post_init__(self) -> None:
+        if self.scheduling_policy not in ("fcfs", "shortest_validated_tail"):
+            raise ValueError(
+                "scheduling_policy must be 'fcfs' or 'shortest_validated_tail'"
+            )
+        if (
+            isinstance(self.scheduling_max_deferrals, bool)
+            or not isinstance(self.scheduling_max_deferrals, int)
+            or self.scheduling_max_deferrals < 1
+        ):
+            raise ValueError("scheduling_max_deferrals must be a positive integer")
         if not isinstance(self.mtp_continuous_batching, bool):
             raise ValueError("mtp_continuous_batching must be a boolean")
         if not isinstance(self.mtp_allow_dynamic_membership, bool):
@@ -3797,6 +3816,16 @@ class Scheduler:
         # Mapping between our request IDs and BatchGenerator UIDs
         self.request_id_to_uid: dict[str, int] = {}
         self.uid_to_request_id: dict[int, str] = {}
+        # Uids admitted to mlx-lm but not yet promoted out of prompt
+        # processing. The opt-in admission policy uses this public-response-
+        # driven mirror to avoid filling mlx-lm's private FIFO ahead of its
+        # actual prefill slots. Default FCFS never reads this set.
+        self._admission_prefill_uids: set[int] = set()
+        # None until the first BatchGenerator response establishes whether the
+        # public prompt-promotion stream is available. Older mlx-lm versions
+        # return a flat generation list; the opt-in policy then fails safe to
+        # historical FCFS because it cannot observe prompt-slot release.
+        self._shortest_tail_runtime_supported: bool | None = None
 
         # #558 PR-3: authoritative per-uid logits-processor state. mlx-lm's
         # ``GenerationBatch`` keys ``logits_processors`` positionally by uid
@@ -4066,6 +4095,9 @@ class Scheduler:
         self.num_requests_processed = 0
         self.total_prompt_tokens = 0
         self.total_completion_tokens = 0
+        # Opt-in admission-policy observability. Counters stay zero on FCFS.
+        self.num_admission_deferrals = 0
+        self.num_admission_forced_grants = 0
         # Last observed text-path throughput. The upstream BatchGenerator has
         # no stats object, so derive rates from request timing in our wrapper.
         self._last_prompt_tps = 0.0
@@ -5127,6 +5159,7 @@ class Scheduler:
             except Exception as e:
                 logger.debug(f"Error closing BatchGenerator: {e}")
             self.batch_generator = None
+        getattr(self, "_admission_prefill_uids", set()).clear()
         # The hook lives on the closed generator. Clear its published runtime
         # state even when close() raised; a replacement will republish only
         # after its own installer succeeds.
@@ -5214,6 +5247,170 @@ class Scheduler:
             self._current_sampler_params = sampler_params
 
         return True
+
+    @staticmethod
+    def _request_generator_key(request: Request) -> tuple[frozenset[int], bool]:
+        params = request.sampling_params
+        return (
+            frozenset(params.stop_token_ids or ()),
+            bool(params.ignore_eos),
+        )
+
+    def _request_is_generator_compatible(self, request: Request) -> bool:
+        """Pure compatibility probe used while ranking waiting requests."""
+        if self.batch_generator is None or not self.running:
+            return True
+        return self._current_sampler_params == self._request_generator_key(request)
+
+    @staticmethod
+    def _observable_prompt_cache_offsets(cache: Any) -> tuple[tuple[int, ...], bool]:
+        """Read logical cache offsets without modifying cache objects."""
+        values: list[int] = []
+        valid = True
+
+        def visit(value: Any) -> None:
+            nonlocal valid
+            children = getattr(value, "caches", None)
+            if isinstance(children, (list, tuple)):
+                for child in children:
+                    visit(child)
+                return
+            if isinstance(value, (list, tuple)):
+                for child in value:
+                    visit(child)
+                return
+            offset = getattr(value, "offset", None)
+            if offset is None:
+                return
+            if isinstance(offset, bool) or not isinstance(offset, int):
+                valid = False
+                return
+            if offset < 0:
+                valid = False
+                return
+            values.append(offset)
+
+        visit(cache)
+        return tuple(values), valid
+
+    def _validated_prompt_tail_cost(self, request: Request) -> int:
+        """Estimate committed prompt work without mutating cache/request state."""
+        prompt_tokens = request.prompt_token_ids or []
+        cache = request.prompt_cache
+        if cache is None:
+            return len(prompt_tokens)
+        if not self._validate_cache(cache):
+            return len(prompt_tokens)
+        remaining = request.remaining_tokens
+        cached_tokens = request.cached_tokens
+        if (
+            remaining is None
+            or isinstance(cached_tokens, bool)
+            or not isinstance(cached_tokens, int)
+            or cached_tokens < 0
+            or cached_tokens > len(prompt_tokens)
+            or len(remaining) != len(prompt_tokens) - cached_tokens
+            or remaining != prompt_tokens[cached_tokens:]
+        ):
+            return len(prompt_tokens)
+        observed_offsets, offsets_valid = self._observable_prompt_cache_offsets(cache)
+        if (
+            not offsets_valid
+            or observed_offsets
+            and any(offset != cached_tokens for offset in observed_offsets)
+        ):
+            return len(prompt_tokens)
+        if remaining:
+            return len(remaining)
+        try:
+            from mlx_lm.models.cache import can_trim_prompt_cache
+
+            if can_trim_prompt_cache(cache):
+                return 1
+        except Exception:  # noqa: BLE001 - commit path safely cold-prefills
+            pass
+        return len(prompt_tokens)
+
+    def _select_waiting_request(self) -> tuple[Request, bool] | None:
+        """Choose, but do not remove, the next opt-in admission candidate.
+
+        Incompatible requests remain in place and do not accrue deferrals:
+        they cannot legally join the live generator. Compatible candidates
+        passed over by a grant accrue one deferral. Once the configured bound
+        is reached, the oldest forced candidate outranks the cost metric.
+        """
+        candidates = [
+            (index, request)
+            for index, request in enumerate(self.waiting)
+            if self._request_is_generator_compatible(request)
+        ]
+        if not candidates:
+            return None
+        max_deferrals = self.config.scheduling_max_deferrals
+        forced = [
+            pair for pair in candidates if pair[1]._admission_deferrals >= max_deferrals
+        ]
+        if forced:
+            _selected_index, selected = forced[0]
+            forced_selection = True
+        else:
+            _selected_index, selected = min(
+                candidates,
+                key=lambda pair: (self._validated_prompt_tail_cost(pair[1]), pair[0]),
+            )
+            forced_selection = False
+        return selected, forced_selection
+
+    def _commit_waiting_selection(self, selected: Request, forced: bool) -> None:
+        """Commit queue/fairness state only after generator insertion succeeds."""
+        candidates = [
+            request
+            for request in self.waiting
+            if self._request_is_generator_compatible(request)
+        ]
+        if forced:
+            self.num_admission_forced_grants += 1
+        for request in candidates:
+            if request is selected:
+                continue
+            request._admission_deferrals += 1
+            self.num_admission_deferrals += 1
+        selected._admission_deferrals = 0
+        self.waiting.remove(selected)
+
+    def _shortest_tail_admission_capacity(self) -> int:
+        """Return grants available without creating an internal prompt FIFO."""
+        prompt_headroom = max(
+            0,
+            int(self.config.prefill_batch_size) - len(self._admission_prefill_uids),
+        )
+        completion_capacity = min(
+            self._max_running_sequences(),
+            int(self.config.completion_batch_size),
+        )
+        completion_headroom = max(0, completion_capacity - len(self.running))
+        return min(prompt_headroom, completion_headroom)
+
+    def _record_prompt_promotions(self, prompt_responses: Any) -> None:
+        for response in prompt_responses or ():
+            if getattr(response, "end_of_prompt", False):
+                self._admission_prefill_uids.discard(response.uid)
+
+    def _fallback_from_unobservable_prompt_runtime(self) -> None:
+        """Disable opt-in ranking when an old runtime hides promotions."""
+        if (
+            getattr(self.config, "scheduling_policy", "fcfs")
+            != "shortest_validated_tail"
+            or getattr(self, "_shortest_tail_runtime_supported", None) is False
+        ):
+            return
+        self._shortest_tail_runtime_supported = False
+        self._admission_prefill_uids.clear()
+        logger.warning(
+            "shortest_validated_tail requires prompt-promotion responses; "
+            "this mlx-lm runtime returns the legacy flat response shape, "
+            "falling back to FCFS"
+        )
 
     def _validate_cache(self, cache: Any) -> bool:
         """
@@ -7431,6 +7628,7 @@ class Scheduler:
         disarms the guard (codex). Penalty-only uids carry no stateful processor
         and are simply dropped.
         """
+        getattr(self, "_admission_prefill_uids", set()).discard(uid)
         self._uids_with_grammar.discard(uid)
         self._uids_with_reasoning_budget.pop(uid, None)
         self._uids_with_suppressed_tokens.pop(uid, None)
@@ -7948,8 +8146,22 @@ class Scheduler:
         # and explicitly supports B=1. Keep later requests in the ordinary
         # scheduler queue until that request departs; this preserves liveness
         # without ever attempting a lossy MTP-to-plain handoff mid-stream.
+        shortest_tail = (
+            getattr(self.config, "scheduling_policy", "fcfs")
+            == "shortest_validated_tail"
+            and getattr(self, "_shortest_tail_runtime_supported", None) is not False
+        )
         while self.waiting and len(self.running) < self._max_running_sequences():
-            request = self.waiting.popleft()
+            if shortest_tail:
+                if self._shortest_tail_admission_capacity() <= 0:
+                    break
+                selection = self._select_waiting_request()
+                if selection is None:
+                    break
+                request, selection_forced = selection
+            else:
+                request = self.waiting.popleft()
+                selection_forced = False
 
             # Ensure we have a batch generator. The False return means
             # the live generator has incompatible stop_tokens / sampler
@@ -7958,12 +8170,14 @@ class Scheduler:
             # PR #612). Requeue and break so the next ``step`` retries
             # once the running batch completes.
             if not self._ensure_batch_generator(request.sampling_params):
-                self.waiting.appendleft(request)
+                if not shortest_tail:
+                    self.waiting.appendleft(request)
                 break
 
             if self.batch_generator is None:
                 # Put back and try again later
-                self.waiting.appendleft(request)
+                if not shortest_tail:
+                    self.waiting.appendleft(request)
                 break
 
             # Determine tokens to process and cache to use
@@ -8252,10 +8466,21 @@ class Scheduler:
                 else:
                     raise
 
+            # Opt-in selection is deliberately transactional: an empty insert
+            # result has not committed queue or fairness state. Leave the
+            # request in place and retry on a later scheduler tick instead of
+            # spinning forever in this unchanged loop.
+            if not uids and shortest_tail:
+                break
+
             if uids:
                 uid = uids[0]
+                if shortest_tail:
+                    self._commit_waiting_selection(request, selection_forced)
                 self.request_id_to_uid[request.request_id] = uid
                 self.uid_to_request_id[uid] = request.request_id
+                if shortest_tail:
+                    self._admission_prefill_uids.add(uid)
                 request.batch_uid = uid
                 request.status = RequestStatus.RUNNING
                 request._prefill_started_at = time.time()
@@ -9251,12 +9476,19 @@ class Scheduler:
                     # older versions return a flat list of responses
                     if isinstance(raw_next, tuple):
                         prompt_responses, responses = raw_next
+                        if (
+                            getattr(self.config, "scheduling_policy", "fcfs")
+                            == "shortest_validated_tail"
+                        ):
+                            self._shortest_tail_runtime_supported = True
+                            self._record_prompt_promotions(prompt_responses)
                         self._snapshot_promoted_prompts(prompt_responses)
                         # issue #427: per-message boundary snapshot for
                         # multi-turn hybrid workloads (segment finished
                         # but prompt still has tail to process).
                         self._snapshot_boundary_segments(prompt_responses)
                     else:
+                        self._fallback_from_unobservable_prompt_runtime()
                         responses = raw_next
 
                     if responses:
@@ -9829,6 +10061,18 @@ class Scheduler:
             "num_repetition_loop_breaks": self.num_repetition_loop_breaks,
             "total_prompt_tokens": self.total_prompt_tokens,
             "total_completion_tokens": self.total_completion_tokens,
+            "configured_scheduling_policy": getattr(
+                self.config, "scheduling_policy", "fcfs"
+            ),
+            "scheduling_policy": (
+                "fcfs"
+                if getattr(self, "_shortest_tail_runtime_supported", None) is False
+                else getattr(self.config, "scheduling_policy", "fcfs")
+            ),
+            "num_admission_deferrals": getattr(self, "num_admission_deferrals", 0),
+            "num_admission_forced_grants": getattr(
+                self, "num_admission_forced_grants", 0
+            ),
             "batch_generator": {
                 "prompt_tps": round(self._last_prompt_tps, 2),
                 "generation_tps": round(self._last_generation_tps, 2),
