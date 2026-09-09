@@ -67,3 +67,15 @@ struct ShareComputeStatusSnapshot: Decodable, Equatable, Sendable {
         case updatedAt = "updated_at"
     }
 }
+
+struct ShareComputeRegistrationSnapshot: Decodable, Equatable, Sendable {
+    let schemaVersion: Int
+    let model: String
+    let alias: String
+    let worker: String
+
+    enum CodingKeys: String, CodingKey {
+        case schemaVersion = "schema_version"
+        case model, alias, worker
+    }
+}

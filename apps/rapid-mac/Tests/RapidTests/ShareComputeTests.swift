@@ -107,6 +107,32 @@ struct ShareComputeTests {
         ) == "current-model")
     }
 
+    @Test("Registration proof is non-secret and bound to model, alias, and worker")
+    func registrationProof() throws {
+        let home = FileManager.default.temporaryDirectory
+            .appendingPathComponent("share-compute-registration-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: home) }
+        let model = ShareComputeModel.supported[0]
+        let url = ShareComputeManager.registrationURL(catalogID: model.catalogID, home: home)
+        try FileManager.default.createDirectory(
+            at: url.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        try Data(#"{"schema_version":1,"model":"qwen3.8-27b","alias":"qwen3.8-27b-4bit","worker":"Miniwest"}"#.utf8)
+            .write(to: url)
+
+        #expect(ShareComputeManager.registrationMatches(
+            model: model,
+            worker: "Mini / west",
+            home: home
+        ))
+        #expect(!ShareComputeManager.registrationMatches(
+            model: model,
+            worker: "Other Mac",
+            home: home
+        ))
+    }
+
     @Test("Cache paths follow the HOME inherited by the provider child")
     func runtimeHome() {
         let fallback = URL(fileURLWithPath: "/fallback", isDirectory: true)

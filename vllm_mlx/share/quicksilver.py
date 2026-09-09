@@ -300,6 +300,40 @@ def _cache_path(catalog_id: str) -> Path:
     return _cache_dir() / f"{catalog_id}.json"
 
 
+def _desktop_registration_path(catalog_id: str) -> Path:
+    """Non-secret proof Desktop can inspect without reading the node cache."""
+    return _cache_path(catalog_id).with_suffix(".registration.json")
+
+
+def _save_desktop_registration(catalog_id: str, *, alias: str, worker: str) -> Path:
+    path = _desktop_registration_path(catalog_id)
+    tmp = path.with_name(f"{path.name}.tmp-{secrets.token_hex(4)}")
+    data = json.dumps(
+        {
+            "schema_version": 1,
+            "model": catalog_id,
+            "alias": alias,
+            "worker": worker,
+        },
+        sort_keys=True,
+    ).encode("utf-8")
+    try:
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        with os.fdopen(fd, "wb") as f:
+            f.write(data)
+        os.replace(tmp, path)
+        path.chmod(0o600)
+    except OSError as exc:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise QuickSilverError(
+            f"could not write Desktop registration marker for {catalog_id}: {exc}"
+        ) from None
+    return path
+
+
 def _load_cache(
     catalog_id: str, alias: str, worker: str | None = None
 ) -> dict[str, Any] | None:
@@ -358,12 +392,17 @@ def _load_cache(
 
 def _save_cache(catalog_id: str, payload: dict[str, Any]) -> Path:
     path = _cache_path(catalog_id)
+    registration_path = _desktop_registration_path(catalog_id)
     tmp = path.with_name(f"{path.name}.tmp-{secrets.token_hex(4)}")
     # Whitelist, not passthrough — a server response carrying an extra
     # "provider_key_echo"-style field must never survive to disk.
     allowed = {k: payload[k] for k in _CACHE_ALLOWED_KEYS if k in payload}
     data = json.dumps(allowed, indent=2, sort_keys=True).encode("utf-8")
     try:
+        # Any writer outside the Desktop flow (including a CLI registration
+        # for another worker) invalidates Desktop's non-secret proof first.
+        # A crash can therefore cause an extra key prompt, never false reuse.
+        registration_path.unlink(missing_ok=True)
         fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
         with os.fdopen(fd, "wb") as f:
             f.write(data)
@@ -1189,7 +1228,8 @@ def run_share(args: argparse.Namespace) -> None:
         raise
     else:
         if desktop_status is not None:
-            desktop_status.publish("stopped")
+            with contextlib.suppress(QuickSilverError):
+                desktop_status.publish("stopped")
 
 
 def _run_share(
@@ -1234,6 +1274,12 @@ def _run_share(
         _validate_wire_urls(cache, api_base, source="register response")
         interval = _resolve_heartbeat_interval(cache, source="register response")
         _save_cache(catalog_id, cache)
+        if desktop_status is not None:
+            _save_desktop_registration(
+                catalog_id,
+                alias=serve_alias,
+                worker=worker,
+            )
         print(
             _redact(
                 f"Node registered: {cache['node_id']} "

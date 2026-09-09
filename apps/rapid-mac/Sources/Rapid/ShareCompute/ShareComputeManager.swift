@@ -70,11 +70,32 @@ final class ShareComputeManager {
 
     nonisolated static func registrationURL(catalogID: String, home: URL? = nil) -> URL {
         let home = home ?? runtimeHomeURL()
-        return home.appendingPathComponent(".rapid-mlx/quicksilver/\(catalogID).json")
+        return home.appendingPathComponent(
+            ".rapid-mlx/quicksilver/\(catalogID).registration.json"
+        )
     }
 
-    func hasRegistration(for model: ShareComputeModel) -> Bool {
-        FileManager.default.fileExists(atPath: Self.registrationURL(catalogID: model.catalogID).path)
+    func hasRegistration(for model: ShareComputeModel, worker: String) -> Bool {
+        Self.registrationMatches(model: model, worker: worker)
+    }
+
+    nonisolated static func registrationMatches(
+        model: ShareComputeModel,
+        worker: String,
+        home: URL? = nil
+    ) -> Bool {
+        let url = registrationURL(catalogID: model.catalogID, home: home)
+        guard let handle = try? FileHandle(forReadingFrom: url) else { return false }
+        defer { try? handle.close() }
+        guard let data = try? handle.read(upToCount: 4_097), data.count <= 4_096,
+              let marker = try? JSONDecoder().decode(
+                  ShareComputeRegistrationSnapshot.self,
+                  from: data
+              ) else { return false }
+        return marker.schemaVersion == 1
+            && marker.model == model.catalogID
+            && marker.alias == model.alias
+            && marker.worker == ShareComputeModel.sanitizedWorker(worker)
     }
 
     func join(model: ShareComputeModel, worker: String, providerKey: String? = nil) async {
@@ -93,7 +114,7 @@ final class ShareComputeManager {
             state = .failed("That provider key is not valid.")
             return
         }
-        if !hasRegistration(for: model), trimmedKey?.isEmpty != false {
+        if !hasRegistration(for: model, worker: worker), trimmedKey?.isEmpty != false {
             state = .failed("Connect QuickSilver with a provider key first.")
             return
         }
@@ -347,6 +368,7 @@ final class ShareComputeManager {
     private func childExited(_ process: ProcessGroupChild) {
         guard child === process else { return }
         let wasExpected = expectedStop
+        let groupIsAlive = process.isProcessGroupAlive
         // The provider can publish its actionable terminal status and exit
         // between two 250 ms polls. Read once at process-exit before removing
         // the snapshot so a revoked credential does not degrade into the
@@ -357,10 +379,8 @@ final class ShareComputeManager {
         stopEscalationTask?.cancel()
         removeCurrentStatusFile()
         cleanupPipes()
-        child = nil
-        activeModel = nil
         if wasExpected || shuttingDown {
-            state = .idle
+            state = groupIsAlive ? .stopping : .idle
         } else if let finalSnapshot, finalSnapshot.phase == "error" {
             state = Self.state(for: finalSnapshot)
         } else if case .failed = state {
@@ -368,23 +388,28 @@ final class ShareComputeManager {
         } else {
             state = .failed(finalSnapshot?.message ?? "Share Compute stopped unexpectedly.")
         }
-        if process.isProcessGroupAlive, !shuttingDown {
+        if groupIsAlive, !shuttingDown {
             // The supervisor may exit a beat before its nested serve child.
             // Keep exclusive residency until the kernel confirms the whole
-            // group is gone; otherwise restoration could overlap its weights.
+            // group is gone; retain `child` too so leave/app shutdown can
+            // still signal that surviving process group.
             ProcessGroupChild.monitorProcessGroupUntilExit(
                 processGroupID: process.processGroupID
             ) { [weak self] in
                 Task { @MainActor [weak self] in
-                    self?.finishDeferredExit()
+                    self?.finishDeferredExit(process)
                 }
             }
         } else {
-            finishDeferredExit()
+            finishDeferredExit(process)
         }
     }
 
-    private func finishDeferredExit() {
+    private func finishDeferredExit(_ process: ProcessGroupChild) {
+        guard child === process else { return }
+        child = nil
+        activeModel = nil
+        if expectedStop, !shuttingDown { state = .idle }
         releaseReservation()
         restorePreviousModelIfNeeded()
     }

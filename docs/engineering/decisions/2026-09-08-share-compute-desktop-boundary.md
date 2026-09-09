@@ -12,9 +12,10 @@ actions.
 - A first-run `qsppk-` provider key is sent as one bounded line over the
   child's stdin. It is never placed in argv, the child environment, Desktop
   preferences, or a Desktop-owned file.
-- Python owns the existing `0600` QuickSilver node cache. Swift deliberately
-  checks only whether the fixed catalog cache path exists; it never decodes
-  the cached share credential.
+- Python owns the existing `0600` QuickSilver node cache. After a successful
+  Desktop registration it also writes a separate non-secret, `0600` marker
+  bound to model, alias, and worker. Swift decodes only that bounded marker;
+  it never opens or decodes the node cache containing the share credential.
 - Python publishes a field-whitelisted, credential-scanned, atomically replaced
   `0600` status snapshot under `~/.rapid-mlx/quicksilver/`. Desktop consumes
   that snapshot instead of parsing human log text.

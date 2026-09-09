@@ -23,7 +23,7 @@ struct ShareComputeView: View {
     private var selectedIsCached: Bool { selectedEntry?.cached == true }
 
     private var requiresRegistration: Bool {
-        if !manager.hasRegistration(for: selected) { return true }
+        if !manager.hasRegistration(for: selected, worker: worker) { return true }
         if case .failed(let message) = manager.state {
             return message.localizedCaseInsensitiveContains("register again")
                 || message.localizedCaseInsensitiveContains("re-register")

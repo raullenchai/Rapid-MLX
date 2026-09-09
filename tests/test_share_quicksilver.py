@@ -26,7 +26,7 @@ import threading
 import urllib.error
 import urllib.parse
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, call, patch
 
 import pytest
 
@@ -809,6 +809,29 @@ def test_cache_save_never_persists_unexpected_response_fields(tmp_path):
     assert "secret-token-xyz" not in raw
     assert "provider_key" not in raw and "api_token" not in raw
     assert qs._load_cache("qwen3.6-35b", "qwen3.6-35b")["share_key"] == SHARE_KEY
+
+
+def test_desktop_registration_marker_is_nonsecret_worker_bound_and_invalidated():
+    payload = dict(_register_payload(), alias="qwen3.6-35b")
+    qs._save_cache("qwen3.6-35b", payload)
+    marker = qs._save_desktop_registration(
+        "qwen3.6-35b", alias="qwen3.6-35b", worker="test-worker"
+    )
+    raw = marker.read_text(encoding="utf-8")
+    assert json.loads(raw) == {
+        "schema_version": 1,
+        "model": "qwen3.6-35b",
+        "alias": "qwen3.6-35b",
+        "worker": "test-worker",
+    }
+    assert PROVIDER_KEY not in raw and SHARE_KEY not in raw
+    assert stat.S_IMODE(marker.stat().st_mode) == 0o600
+
+    qs._save_cache(
+        "qwen3.6-35b",
+        dict(payload, worker="different-worker"),
+    )
+    assert not marker.exists()
 
 
 def test_cache_alias_mismatch_is_not_reused(tmp_path):
@@ -2455,6 +2478,21 @@ def test_desktop_status_is_private_atomic_whitelisted_and_secret_free(
 def test_desktop_status_rejects_path_shaped_session_ids(session):
     with pytest.raises(qs.QuickSilverError, match="invalid Desktop provider session"):
         qs._DesktopStatus(session)
+
+
+def test_clean_exit_ignores_final_desktop_status_write_failure():
+    status = MagicMock()
+    status.phase = "online"
+    status.publish.side_effect = [None, qs.QuickSilverError("disk full")]
+    with (
+        patch.object(qs._DesktopStatus, "from_args", return_value=status),
+        patch.object(qs, "_run_share"),
+    ):
+        qs.run_share(_make_args(desktop_session="a" * 32))
+    assert status.publish.call_args_list == [
+        call("preparing"),
+        call("stopped"),
+    ]
 
 
 def test_open_uses_the_no_redirect_opener():
