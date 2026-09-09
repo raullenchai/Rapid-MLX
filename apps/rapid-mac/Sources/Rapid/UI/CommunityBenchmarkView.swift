@@ -1295,10 +1295,11 @@ struct CommunityBenchmarkView: View {
 
     private var header: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text("Community Benchmark")
+            Text("Benchmark")
                 .font(.system(size: 28, weight: .semibold))
-            Text("Measure any supported model on this Mac. Results stay local unless you choose to share them later.")
+            Text("How fast is local AI on this Mac? Find out in minutes — then share your result to help build an open leaderboard of real models on real Macs, so everyone can pick the fastest local AI for their machine.")
                 .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
         }
     }
 
