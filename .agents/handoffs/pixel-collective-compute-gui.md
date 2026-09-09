@@ -1,4 +1,4 @@
-# Pixel → Atlas: Compute Desktop integration
+# Pixel → Atlas: Share Compute Desktop integration
 
 - Owner/host: Pixel / Studio Mac
 - Branch: `pixel/collective-compute-ui-mock`
@@ -9,7 +9,7 @@
 ## Goal and boundary
 
 Expose QuickSilver provider mode as an Experimental Desktop surface named
-Compute. QuickSilver (`https://quicksilverpro.io/`) is the first pool provider,
+Share Compute. QuickSilver (`https://quicksilverpro.io/`) is the first pool provider,
 not the identity of the product surface; future providers should fit the same
 tab and lifecycle contract. This pass is a product/interaction mock only: it does not
 change Swift, Python, a public API, credentials, services, or release state.
