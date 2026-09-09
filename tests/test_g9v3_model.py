@@ -230,7 +230,9 @@ def test_released_defaults():
 
 
 def test_head_dim_derived_like_remote_config():
-    args = g9v3.ModelArgs.from_dict(dict(TINY, head_dim=None))
+    config = dict(TINY)
+    config.pop("head_dim")
+    args = g9v3.ModelArgs.from_dict(config)
     assert args.head_dim == TINY["hidden_size"] // TINY["num_attention_heads"]
     model = g9v3.Model(args)
     assert model(mx.array([[1, 2, 3]])).shape == (1, 3, TINY["vocab_size"])

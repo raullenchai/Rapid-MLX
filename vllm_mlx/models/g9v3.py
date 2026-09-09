@@ -140,6 +140,19 @@ class ModelArgs(BaseModelArgs):
     norm_topk_prob: bool = True
     tie_word_embeddings: bool = False
 
+    @classmethod
+    def from_dict(cls, params):
+        config = dict(params)
+        if "head_dim" not in config and (
+            "hidden_size" in config or "num_attention_heads" in config
+        ):
+            # Match the remote config for shape-overriding/real checkpoint
+            # dictionaries: an omitted head_dim is derived from their supplied
+            # dimensions. Keep ModelArgs() and the model_type-only fallback on
+            # the released checkpoint's explicit 128-wide head default.
+            config["head_dim"] = None
+        return super().from_dict(config)
+
     def __post_init__(self):
         for name in (
             "hidden_size",
