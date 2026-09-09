@@ -105,12 +105,18 @@ async def test_idle_unload_keeps_engine_reloadable_and_runs_cache_hooks():
     assert engine.stop_calls == 1
     assert events == ["save", "release"]
     assert lifecycle.snapshot()["state"] == "standby"
+    assert lifecycle.snapshot()["unload_total"] == 1
+    assert lifecycle.snapshot()["unload_total_by_reason"] == {"idle": 1}
+    assert lifecycle.snapshot()["last_unload_reason"] == "idle"
     assert engine.paused is False
 
     await lifecycle.ensure_loaded()
     assert engine.start_calls == 1
     assert events == ["save", "release", "restore"]
     assert states == ["unloading", "standby", "loading", "ready"]
+    assert lifecycle.snapshot()["load_total"] == 1
+    assert lifecycle.snapshot()["load_failures_total"] == 0
+    assert lifecycle.snapshot()["last_load_duration_seconds"] == 0.0
 
 
 @pytest.mark.asyncio
@@ -339,24 +345,59 @@ async def test_failed_load_is_retryable_and_reports_only_error_type():
         await lifecycle.ensure_loaded()
     assert lifecycle.snapshot()["state"] == "error"
     assert lifecycle.snapshot()["error"] == "RuntimeError"
+    assert lifecycle.snapshot()["load_total"] == 1
+    assert lifecycle.snapshot()["load_failures_total"] == 1
 
     engine.fail_start = False
     await lifecycle.ensure_loaded()
     assert engine.start_calls == 2
     assert lifecycle.snapshot()["state"] == "ready"
+    assert lifecycle.snapshot()["load_total"] == 2
+    assert lifecycle.snapshot()["load_failures_total"] == 1
+
+
+@pytest.mark.asyncio
+async def test_load_duration_includes_post_load_hooks():
+    now = [10.0]
+    engine = FakeEngine()
+
+    def finish_load() -> None:
+        now[0] += 2.5
+
+    lifecycle = PrimaryModelLifecycle(
+        engine,
+        lazy_load=True,
+        on_loaded=finish_load,
+        clock=lambda: now[0],
+    )
+
+    await lifecycle.ensure_loaded()
+
+    assert lifecycle.snapshot()["last_load_duration_seconds"] == 2.5
 
 
 @pytest.mark.asyncio
 async def test_partial_failed_load_is_cleaned_and_retryable():
+    now = [10.0]
     engine = FakeEngine()
     engine.fail_start = True
     engine.partial_start_failure = True
-    lifecycle = PrimaryModelLifecycle(engine, lazy_load=True)
+
+    async def release_allocator_cache():
+        now[0] += 2.5
+
+    lifecycle = PrimaryModelLifecycle(
+        engine,
+        lazy_load=True,
+        release_allocator_cache=release_allocator_cache,
+        clock=lambda: now[0],
+    )
 
     with pytest.raises(RuntimeError, match="load failed"):
         await lifecycle.ensure_loaded()
     assert engine._loaded is False
     assert engine.stop_calls == 1
+    assert lifecycle.snapshot()["last_load_duration_seconds"] == 2.5
 
     engine.fail_start = False
     await lifecycle.ensure_loaded()

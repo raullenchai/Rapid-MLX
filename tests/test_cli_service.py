@@ -982,6 +982,27 @@ def test_collect_status_full_branch(monkeypatch, plist_kwargs, tmp_path):
     monkeypatch.setattr(st, "_plist_path", staticmethod(lambda _l: plist))
     monkeypatch.setattr(st, "_endpoint_health", staticmethod(lambda h, p: (True, True)))
     monkeypatch.setattr(st, "_pid_listens_on_port", lambda *_a, **_k: True)
+    monkeypatch.setattr(
+        st,
+        "_endpoint_model_status",
+        staticmethod(
+            lambda h, p, **_kwargs: {
+                "model_loaded": False,
+                "model_lifecycle": {
+                    "state": "standby",
+                    "idle_seconds": 4.0,
+                    "idle_unload_seconds": 1800.0,
+                    "lazy_load": True,
+                    "load_total": 2,
+                    "load_failures_total": 1,
+                    "last_load_duration_seconds": 8.4,
+                    "unload_total": 1,
+                    "last_unload_reason": "idle",
+                    "error": None,
+                },
+            }
+        ),
+    )
     monkeypatch.setattr(st, "_port_busy", staticmethod(lambda h, p: True))
     # Stub `ps -o user=` so the owner lookup is hermetic.
     monkeypatch.setattr(
@@ -1011,6 +1032,10 @@ def test_collect_status_full_branch(monkeypatch, plist_kwargs, tmp_path):
     assert data["host"] == "127.0.0.1"
     assert data["port"] == 8000
     assert data["log_dir"]
+    assert data["model_state"] == "standby"
+    assert data["model_loaded"] is False
+    assert data["model_last_load_duration_seconds"] == 8.4
+    assert data["model_last_unload_reason"] == "idle"
 
 
 def test_status_command_json_and_exit_codes(monkeypatch, capsys):
@@ -1033,6 +1058,9 @@ def test_status_command_json_and_exit_codes(monkeypatch, capsys):
     )
     monkeypatch.setattr(st, "_endpoint_health", staticmethod(lambda h, p: (True, True)))
     monkeypatch.setattr(st, "_pid_listens_on_port", lambda *_a, **_k: True)
+    monkeypatch.setattr(
+        st, "_endpoint_model_status", staticmethod(lambda h, p, **_kwargs: None)
+    )
     monkeypatch.setattr(st, "_port_busy", staticmethod(lambda h, p: True))
     ns = _ns(json=True)
     assert st.status_command(ns) == 0
@@ -1131,6 +1159,13 @@ def test_collect_status_does_not_probe_unattributed_endpoint(monkeypatch):
         "_endpoint_health",
         lambda *_a, **_k: (_ for _ in ()).throw(
             AssertionError("unattributed endpoint was probed")
+        ),
+    )
+    monkeypatch.setattr(
+        st,
+        "_endpoint_model_status",
+        lambda *_a, **_k: (_ for _ in ()).throw(
+            AssertionError("unattributed lifecycle endpoint was probed")
         ),
     )
     monkeypatch.setattr(
@@ -1268,6 +1303,37 @@ def test_render_human_lines():
     assert "registered" in text
     assert "pid:                   42 (as serveuser)" in text
     assert "healthy" not in text
+
+    lifecycle_status = dict(
+        s,
+        model_state="standby",
+        model_loaded=False,
+        model_idle_unload_seconds=1800.0,
+        model_last_load_duration_seconds=8.4,
+        model_load_total=2,
+        model_load_failures_total=1,
+        model_last_unload_reason="idle",
+        model_unload_total=1,
+        model_last_error=None,
+    )
+    lifecycle_text = st._render_human(lifecycle_status)
+    assert "state=standby loaded=no" in lifecycle_text
+    assert "unload after 1800s" in lifecycle_text
+    assert "8.400s (attempts=2 failures=1)" in lifecycle_text
+    assert "idle (successful=1)" in lifecycle_text
+    assert "last model error:      none" in lifecycle_text
+
+    never_loaded = dict(
+        lifecycle_status,
+        model_last_load_duration_seconds=None,
+        model_load_total=0,
+        model_load_failures_total=0,
+        model_last_unload_reason=None,
+        model_unload_total=0,
+    )
+    never_loaded_text = st._render_human(never_loaded)
+    assert "never (attempts=0 failures=0)" in never_loaded_text
+    assert "none (successful=0)" in never_loaded_text
 
     # Down + no pid + hint.
     s2 = dict(
@@ -1551,6 +1617,295 @@ def test_listener_pid_probe_missing_tool_and_execution_error(monkeypatch):
     assert st._pid_listens_on_port(42, "127.0.0.1", 8000) is None
 
 
+def test_endpoint_model_status_reads_bounded_health_json(monkeypatch):
+    import http.client
+
+    import vllm_mlx.headless_service.status as st
+
+    class _Response:
+        status = 200
+
+        def read(self, _limit):
+            return b'{"model_loaded":false,"model_lifecycle":{"state":"standby"}}'
+
+    class _Connection:
+        def __init__(self, host, port, timeout):
+            assert (host, port) == ("127.0.0.1", 8123)
+            assert 0 < timeout <= 2.0
+            self.timeout = timeout
+            self.sock = None
+
+        def connect(self):
+            class _Socket:
+                def settimeout(self, _timeout):
+                    pass
+
+            self.sock = _Socket()
+
+        def request(self, method, path, headers):
+            assert (method, path, headers) == (
+                "GET",
+                "/health",
+                {"Connection": "close"},
+            )
+
+        def getresponse(self):
+            return _Response()
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(http.client, "HTTPConnection", _Connection)
+    payload = st._endpoint_model_status("localhost", 8123)
+    assert payload == {
+        "model_loaded": False,
+        "model_lifecycle": {"state": "standby"},
+    }
+
+
+def test_endpoint_model_status_uses_one_deadline_and_suppresses_close_error(
+    monkeypatch,
+):
+    import http.client
+
+    import vllm_mlx.headless_service.status as st
+
+    now = iter((10.0, 10.1, 10.2, 10.3, 10.4, 10.45, 10.475, 10.49))
+    socket_timeouts = []
+    timer_intervals = []
+
+    class _Timer:
+        daemon = False
+
+        def __init__(self, interval, _callback):
+            timer_intervals.append(interval)
+
+        def start(self):
+            pass
+
+        def cancel(self):
+            pass
+
+    class _Socket:
+        def settimeout(self, timeout):
+            socket_timeouts.append(timeout)
+
+    class _Response:
+        status = 200
+
+        def read(self, _limit):
+            return b'{"model_loaded":true}'
+
+    class _Connection:
+        def __init__(self, _host, _port, timeout):
+            assert timeout == pytest.approx(0.4)
+            self.timeout = timeout
+            self.sock = None
+
+        def connect(self):
+            assert self.timeout == pytest.approx(0.3)
+            self.sock = _Socket()
+
+        def request(self, *_args, **_kwargs):
+            pass
+
+        def getresponse(self):
+            return _Response()
+
+        def close(self):
+            raise OSError("late socket close")
+
+    monkeypatch.setattr(st.time, "monotonic", lambda: next(now))
+    monkeypatch.setattr(st.threading, "Timer", _Timer)
+    monkeypatch.setattr(http.client, "HTTPConnection", _Connection)
+
+    assert st._endpoint_model_status("127.0.0.1", 8123, timeout_s=0.5) == {
+        "model_loaded": True
+    }
+    assert timer_intervals == pytest.approx([0.2])
+    assert socket_timeouts == pytest.approx([0.1, 0.025, 0.01])
+
+
+def test_endpoint_model_status_hard_deadline_aborts_live_socket(monkeypatch):
+    import http.client
+    import socket
+
+    import vllm_mlx.headless_service.status as st
+
+    shutdowns = []
+    closes = []
+    timer_cancels = []
+
+    class _Socket:
+        def settimeout(self, _timeout):
+            pass
+
+        def shutdown(self, how):
+            shutdowns.append(how)
+
+    class _Connection:
+        def __init__(self, _host, _port, timeout):
+            self.timeout = timeout
+            self.sock = None
+            self.closed = False
+
+        def connect(self):
+            self.sock = _Socket()
+
+        def request(self, *_args, **_kwargs):
+            _Timer.current.callback()
+
+        def close(self):
+            self.closed = True
+            closes.append(True)
+
+    class _Timer:
+        daemon = False
+        current = None
+
+        def __init__(self, _interval, callback):
+            self.callback = callback
+            type(self).current = self
+
+        def start(self):
+            pass
+
+        def cancel(self):
+            timer_cancels.append(True)
+
+    monkeypatch.setattr(st.threading, "Timer", _Timer)
+    monkeypatch.setattr(http.client, "HTTPConnection", _Connection)
+
+    assert st._endpoint_model_status("127.0.0.1", 8123, timeout_s=0.5) is None
+    assert shutdowns == [socket.SHUT_RDWR]
+    assert len(closes) == 2
+    assert timer_cancels == [True]
+
+
+def test_endpoint_model_status_stops_after_total_deadline(monkeypatch):
+    import http.client
+
+    import vllm_mlx.headless_service.status as st
+
+    now = iter((10.0, 10.6))
+    monkeypatch.setattr(st.time, "monotonic", lambda: next(now))
+    monkeypatch.setattr(
+        http.client,
+        "HTTPConnection",
+        lambda *_a, **_k: (_ for _ in ()).throw(
+            AssertionError("expired probe opened a connection")
+        ),
+    )
+
+    assert st._endpoint_model_status("127.0.0.1", 8123, timeout_s=0.5) is None
+
+
+def test_endpoint_model_status_refuses_unbounded_dns(monkeypatch):
+    import http.client
+
+    import vllm_mlx.headless_service.status as st
+
+    monkeypatch.setattr(
+        http.client,
+        "HTTPConnection",
+        lambda *_a, **_k: (_ for _ in ()).throw(
+            AssertionError("same-host lifecycle probe attempted DNS")
+        ),
+    )
+
+    assert st._endpoint_model_status("service.example", 8123) is None
+
+
+def test_collect_status_bounds_lifecycle_probe_to_shared_deadline(monkeypatch):
+    import vllm_mlx.headless_service.status as st
+
+    observed_timeouts = []
+    monkeypatch.setattr(
+        st,
+        "_launchctl_probe",
+        lambda *_a, **_k: (_fake_launchctl_print(pid=42), None),
+    )
+    monkeypatch.setattr(
+        st,
+        "_read_installed_plist",
+        lambda _label: {"ProgramArguments": ["/bin/rapid-mlx", "serve", "model"]},
+    )
+    monkeypatch.setattr(
+        st,
+        "_parse_legacy_serve",
+        lambda _argv: ("/bin/rapid-mlx", "model", "127.0.0.1", 8000),
+    )
+    monkeypatch.setattr(st, "_pid_listens_on_port", lambda *_a, **_k: True)
+    monkeypatch.setattr(st, "_endpoint_health", lambda *_a, **_k: (True, True))
+
+    def model_status(_host, _port, *, timeout_s):
+        observed_timeouts.append(timeout_s)
+        return {"model_loaded": True, "model_lifecycle": {"state": "ready"}}
+
+    monkeypatch.setattr(st, "_endpoint_model_status", model_status)
+    monkeypatch.setattr(st, "_port_busy", lambda *_a, **_k: True)
+    monkeypatch.setattr(
+        st.subprocess,
+        "run",
+        lambda *_a, **_k: types.SimpleNamespace(returncode=0, stdout="serveuser\n"),
+    )
+    monkeypatch.setattr(st, "_plist_path", lambda _label: Path("/missing.plist"))
+
+    status = st.collect_status(probe_timeout_s=0.5)
+
+    assert status["model_state"] == "ready"
+    assert len(observed_timeouts) == 1
+    assert 0 < observed_timeouts[0] <= 0.5
+
+
+def test_endpoint_model_status_rejects_unusable_responses(monkeypatch):
+    import http.client
+
+    import vllm_mlx.headless_service.status as st
+
+    class _Response:
+        def __init__(self, status, body):
+            self.status = status
+            self._body = body
+
+        def read(self, _limit):
+            return self._body
+
+    class _Connection:
+        response = _Response(503, b"")
+        request_error = False
+
+        def __init__(self, *_args, timeout, **_kwargs):
+            self.timeout = timeout
+            self.sock = None
+
+        def connect(self):
+            class _Socket:
+                def settimeout(self, _timeout):
+                    pass
+
+            self.sock = _Socket()
+
+        def request(self, *_args, **_kwargs):
+            if self.request_error:
+                raise OSError("endpoint disappeared")
+
+        def getresponse(self):
+            return self.response
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(http.client, "HTTPConnection", _Connection)
+    assert st._endpoint_model_status("127.0.0.1", 8123) is None
+
+    _Connection.response = _Response(200, b"x" * 65_537)
+    assert st._endpoint_model_status("127.0.0.1", 8123) is None
+
+    _Connection.request_error = True
+    assert st._endpoint_model_status("127.0.0.1", 8123) is None
+
+
 def test_status_owner_ps_error(monkeypatch, plist_kwargs, tmp_path):
     """A failing `ps` owner lookup degrades to owner=None, not a crash."""
     import vllm_mlx.headless_service.status as st
@@ -1561,6 +1916,9 @@ def test_status_owner_ps_error(monkeypatch, plist_kwargs, tmp_path):
         lambda *_a, **_k: (_fake_launchctl_print(pid=7), None),
     )
     monkeypatch.setattr(st, "_endpoint_health", staticmethod(lambda h, p: (True, True)))
+    monkeypatch.setattr(
+        st, "_endpoint_model_status", staticmethod(lambda h, p, **_kwargs: None)
+    )
     monkeypatch.setattr(st, "_port_busy", staticmethod(lambda h, p: False))
     plist = tmp_path / "com.rapidmlx.server.plist"
     plist.write_bytes(serialize_plist(build_plist_dict(**plist_kwargs)))

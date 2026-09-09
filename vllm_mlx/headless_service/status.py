@@ -25,6 +25,7 @@ import re
 import socket
 import subprocess
 import sys
+import threading
 import time
 from pathlib import Path
 
@@ -416,6 +417,87 @@ def _pid_listens_on_port(
     return None
 
 
+def _endpoint_model_status(
+    host: str, port: int, *, timeout_s: float = 2.0
+) -> dict | None:
+    """Best-effort lifecycle snapshot from the public ``/health`` view."""
+    import http.client
+
+    from .install import _probe_host
+
+    connection: http.client.HTTPConnection | None = None
+    deadline_timer: threading.Timer | None = None
+    deadline_expired = threading.Event()
+    deadline = time.monotonic() + max(0.0, timeout_s)
+
+    def remaining() -> float:
+        if deadline_expired.is_set():
+            raise TimeoutError("lifecycle status probe deadline exceeded")
+        left = deadline - time.monotonic()
+        if left <= 0:
+            raise TimeoutError("lifecycle status probe deadline exceeded")
+        return max(0.001, left)
+
+    def bound_socket() -> None:
+        # ``HTTPConnection.timeout`` is otherwise reused independently for
+        # connect, headers and body. Reset the live socket before each phase
+        # so all of them share one wall-clock budget.
+        sock = getattr(connection, "sock", None)
+        if sock is not None:
+            sock.settimeout(remaining())
+
+    def abort_connection() -> None:
+        # Socket timeouts are inactivity timeouts, so a peer that trickles
+        # bytes can otherwise outlive the absolute Doctor budget. A one-shot
+        # deadline closes the live socket and interrupts any blocking phase.
+        deadline_expired.set()
+        assert connection is not None  # timer is created only after assignment
+        sock = getattr(connection, "sock", None)
+        if sock is not None:
+            with contextlib.suppress(OSError):
+                sock.shutdown(socket.SHUT_RDWR)
+        with contextlib.suppress(OSError):
+            connection.close()
+
+    try:
+        probe_host = _probe_host(host)
+        if probe_host.lower() == "localhost":
+            probe_host = "127.0.0.1"
+        try:
+            ipaddress.ip_address(probe_host.strip("[]"))
+        except ValueError:
+            # This is a same-host diagnostic. Refuse DNS here rather than let
+            # resolver latency escape Doctor's shared wall-clock budget.
+            return None
+        connection = http.client.HTTPConnection(probe_host, port, timeout=remaining())
+        connection.timeout = remaining()
+        deadline_timer = threading.Timer(remaining(), abort_connection)
+        deadline_timer.daemon = True
+        deadline_timer.start()
+        connection.connect()
+        bound_socket()
+        remaining()
+        connection.request("GET", "/health", headers={"Connection": "close"})
+        bound_socket()
+        response = connection.getresponse()
+        bound_socket()
+        if response.status != 200:
+            return None
+        body = response.read(65_537)
+        if len(body) > 65_536:
+            return None
+        payload = json.loads(body)
+        return payload if isinstance(payload, dict) else None
+    except (http.client.HTTPException, OSError, ValueError, RecursionError):
+        return None
+    finally:
+        if deadline_timer is not None:
+            deadline_timer.cancel()
+        if connection is not None:
+            with contextlib.suppress(OSError):
+                connection.close()
+
+
 def collect_status(
     *,
     label: str = DEFAULT_LABEL,
@@ -549,6 +631,31 @@ def collect_status(
     else:
         live, ready = None, None
 
+    # Read lifecycle detail only from the endpoint already proven to belong to
+    # this launchd PID. This avoids attributing an unrelated process on the
+    # configured port and preserves Doctor's shared deadline.
+    endpoint_status = (
+        _endpoint_model_status(
+            effective_host,
+            effective_port,
+            timeout_s=2.0 if probe_timeout_s is None else remaining(probe_timeout_s),
+        )
+        if endpoint_attributable and live is True
+        else None
+    )
+    lifecycle = (
+        endpoint_status.get("model_lifecycle")
+        if isinstance(endpoint_status, dict)
+        and isinstance(endpoint_status.get("model_lifecycle"), dict)
+        else None
+    )
+    endpoint_model_loaded = (
+        endpoint_status.get("model_loaded")
+        if isinstance(endpoint_status, dict)
+        and isinstance(endpoint_status.get("model_loaded"), bool)
+        else None
+    )
+
     effective_user = user or (declared_user if isinstance(declared_user, str) else None)
     log_dir = log_dir_for(effective_user) if effective_user else None
     return {
@@ -583,6 +690,41 @@ def collect_status(
         "endpoint_attributable": endpoint_attributable,
         "pending_config": pending_config,
         "credential_configured": credential_configured,
+        "model_state": (
+            lifecycle.get("state")
+            if lifecycle is not None
+            else "ready"
+            if endpoint_model_loaded is True
+            else None
+        ),
+        "model_loaded": endpoint_model_loaded,
+        "model_idle_seconds": (
+            lifecycle.get("idle_seconds") if lifecycle is not None else None
+        ),
+        "model_idle_unload_seconds": (
+            lifecycle.get("idle_unload_seconds") if lifecycle is not None else None
+        ),
+        "model_lazy_load": (
+            lifecycle.get("lazy_load") if lifecycle is not None else None
+        ),
+        "model_load_total": (
+            lifecycle.get("load_total") if lifecycle is not None else None
+        ),
+        "model_load_failures_total": (
+            lifecycle.get("load_failures_total") if lifecycle is not None else None
+        ),
+        "model_last_load_duration_seconds": (
+            lifecycle.get("last_load_duration_seconds")
+            if lifecycle is not None
+            else None
+        ),
+        "model_unload_total": (
+            lifecycle.get("unload_total") if lifecycle is not None else None
+        ),
+        "model_last_unload_reason": (
+            lifecycle.get("last_unload_reason") if lifecycle is not None else None
+        ),
+        "model_last_error": (lifecycle.get("error") if lifecycle is not None else None),
     }
 
 
@@ -632,6 +774,44 @@ def _render_human(s: dict) -> str:
         f"readyz={'unknown' if s['readyz'] is None else 'ok' if s['readyz'] else 'down'} "
         f"port={'open' if s['port_open'] else 'closed'}"
     )
+    if s.get("model_state") is not None:
+        loaded = s.get("model_loaded")
+        loaded_label = (
+            "yes" if loaded is True else "no" if loaded is False else "unknown"
+        )
+        lines.append(
+            f"  model lifecycle:       state={s['model_state']} loaded={loaded_label}"
+        )
+    idle_timeout = s.get("model_idle_unload_seconds")
+    if isinstance(idle_timeout, (int, float)):
+        idle_policy = (
+            f"unload after {idle_timeout:g}s"
+            if idle_timeout > 0
+            else "resident (idle unload disabled)"
+        )
+        lines.append(f"  idle policy:           {idle_policy}")
+    load_duration = s.get("model_last_load_duration_seconds")
+    if isinstance(load_duration, (int, float)):
+        attempts = s.get("model_load_total")
+        failures = s.get("model_load_failures_total")
+        lines.append(
+            f"  last load:             {load_duration:.3f}s "
+            f"(attempts={attempts} failures={failures})"
+        )
+    elif s.get("model_load_total") is not None:
+        lines.append(
+            "  last load:             never "
+            f"(attempts={s.get('model_load_total')} "
+            f"failures={s.get('model_load_failures_total')})"
+        )
+    if s.get("model_unload_total") is not None:
+        unload_reason = s.get("model_last_unload_reason") or "none"
+        lines.append(
+            f"  last unload:           {unload_reason} "
+            f"(successful={s.get('model_unload_total')})"
+        )
+    if s.get("model_load_total") is not None:
+        lines.append(f"  last model error:      {s.get('model_last_error') or 'none'}")
     lines.append(f"  plist:                 {s['plist']}")
     if s["log_dir"]:
         lines.append(f"  logs:                  {s['log_dir']}/server.stdout.log")

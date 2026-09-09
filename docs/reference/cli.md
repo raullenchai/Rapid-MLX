@@ -693,7 +693,9 @@ rapid-mlx service uninstall [--dry-run]
   `-- --max-num-seqs 4`. Bind overrides and secret-bearing options are
   rejected; use the service command's own `--host` and `--port` flags.
 - `status` reports launchd registration, PID and owner, the declared model
-  and bind, endpoint (`/livez`/`/readyz`) health, and log paths.
+  and bind, endpoint (`/livez`/`/readyz`) health, model lifecycle/residency,
+  idle policy, recent load/unload outcome, and log paths. `--json` keeps the
+  lifecycle keys present with `null` values when querying an older server.
 - `logs` tails the daemon's stdout/stderr logs (`--follow` streams across
   KeepAlive restarts).
 - `restart` kickstarts the daemon and waits for readiness.

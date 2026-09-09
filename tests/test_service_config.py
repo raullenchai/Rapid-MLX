@@ -1310,6 +1310,7 @@ def test_status_config_and_human_diagnostics(monkeypatch, tmp_path):
         lambda _label: ("runner", tmp_path, config_file),
     )
     monkeypatch.setattr(status, "_endpoint_health", lambda *_a: (True, True))
+    monkeypatch.setattr(status, "_endpoint_model_status", lambda *_a: None)
     monkeypatch.setattr(status, "_port_busy", lambda *_a: True)
     data = status.collect_status()
     assert data["config_sha256"] == config_digest(effective)
