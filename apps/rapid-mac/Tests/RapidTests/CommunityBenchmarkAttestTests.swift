@@ -34,6 +34,7 @@ private struct FakeService: AttestService {
         var generatedKeys = 0
         var attestCalls: [(keyID: String, clientDataHash: Data)] = []
         var assertionCalls: [(keyID: String, clientDataHash: Data)] = []
+        var invalidKeyOnce = false  // throw .invalidKey on the first assertion
         init(supported: Bool) { self.supported = supported }
     }
     var isSupported: Bool { box.supported }
@@ -47,6 +48,10 @@ private struct FakeService: AttestService {
     }
     func generateAssertion(_ keyID: String, clientDataHash: Data) async throws -> Data {
         box.assertionCalls.append((keyID, clientDataHash))
+        if box.invalidKeyOnce {
+            box.invalidKeyOnce = false
+            throw AppAttestError.invalidKey
+        }
         return Data("assertion".utf8)
     }
 }
@@ -129,6 +134,26 @@ struct CommunityBenchmarkAttestTests {
 
         #expect(await client.attestMaterial(forBody: Data("b".utf8), target: target) == nil)
         #expect(keychain.read(account: "Rapid.communityBenchmark.attestKeyId") == nil)
+    }
+
+    @Test("A dead cached key is dropped and re-registered once, then the upload attests")
+    func invalidKeyClearsCacheAndReRegisters() async throws {
+        // Recovery consumes three challenges: the first (failed) assertion,
+        // then re-register + the successful assertion. The stale key triggers
+        // .invalidKey on the first assertion.
+        let http = FakeHTTP(box: .init(challenges: ["chal-1", "chal-register", "chal-assert"]))
+        let service = FakeService(box: .init(supported: true))
+        service.box.invalidKeyOnce = true
+        let keychain = InMemoryKeychain()
+        keychain.write(account: "Rapid.communityBenchmark.attestKeyId", secret: "stale-key")
+        let client = AppAttestClient(service: service, http: http, keychain: keychain)
+
+        let material = try #require(await client.attestMaterial(forBody: Data("b".utf8), target: target))
+        // Recovered: stale key dropped, a fresh one minted + attested + cached.
+        #expect(material.keyID == "key-1")
+        #expect(service.box.generatedKeys == 1)
+        #expect(http.box.registerCalls.count == 1)
+        #expect(keychain.read(account: "Rapid.communityBenchmark.attestKeyId") == "key-1")
     }
 
     @Test("Share arguments relay the attest triple only when present")

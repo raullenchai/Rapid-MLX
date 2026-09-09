@@ -43,6 +43,9 @@ protocol AttestHTTP: Sendable {
 
 enum AppAttestError: Error, Equatable {
     case unsupported
+    /// The cached key is gone (App Attest keys do not survive reinstall,
+    /// migration, or a backup restore). The client drops it and re-registers.
+    case invalidKey
     case badChallengeResponse
     case registrationRejected(status: Int, body: String)
 }
@@ -88,9 +91,18 @@ final class AppAttestClient: Sendable {
         guard service.isSupported else { throw AppAttestError.unsupported }
         let challengeURL = target.appendingPathComponent("challenge")
         let attestURL = target.appendingPathComponent("attest")
+        do {
+            return try await sign(body: body, challengeURL: challengeURL, attestURL: attestURL)
+        } catch AppAttestError.invalidKey {
+            // The cached key is dead (reinstall / migration). Drop it and
+            // register a fresh one exactly once, then sign again.
+            keychain.delete(account: keyAccount)
+            return try await sign(body: body, challengeURL: challengeURL, attestURL: attestURL)
+        }
+    }
 
+    private func sign(body: Data, challengeURL: URL, attestURL: URL) async throws -> AttestMaterial {
         let keyID = try await ensureRegisteredKey(challengeURL: challengeURL, attestURL: attestURL)
-
         // Fresh challenge per assertion; sign SHA256(challenge ‖ body).
         let challenge = try await http.fetchChallenge(challengeURL)
         var signed = Data(challenge.utf8)
@@ -130,11 +142,18 @@ struct DeviceCheckAttestService: AttestService {
 
     var isSupported: Bool { DCAppAttestService.shared.isSupported }
 
+    /// Normalise a DeviceCheck "key no longer valid" error so the client can
+    /// recover (drop the cached id + re-register) regardless of framework type.
+    private func mapped(_ error: Error?) -> Error {
+        if let error, (error as? DCError)?.code == .invalidKey { return AppAttestError.invalidKey }
+        return error ?? AppAttestError.unsupported
+    }
+
     func generateKey() async throws -> String {
         try await withCheckedThrowingContinuation { continuation in
             shared.generateKey { keyID, error in
                 if let keyID { continuation.resume(returning: keyID) }
-                else { continuation.resume(throwing: error ?? AppAttestError.unsupported) }
+                else { continuation.resume(throwing: self.mapped(error)) }
             }
         }
     }
@@ -143,7 +162,7 @@ struct DeviceCheckAttestService: AttestService {
         try await withCheckedThrowingContinuation { continuation in
             shared.attestKey(keyID, clientDataHash: clientDataHash) { attestation, error in
                 if let attestation { continuation.resume(returning: attestation) }
-                else { continuation.resume(throwing: error ?? AppAttestError.unsupported) }
+                else { continuation.resume(throwing: self.mapped(error)) }
             }
         }
     }
@@ -152,7 +171,7 @@ struct DeviceCheckAttestService: AttestService {
         try await withCheckedThrowingContinuation { continuation in
             shared.generateAssertion(keyID, clientDataHash: clientDataHash) { assertion, error in
                 if let assertion { continuation.resume(returning: assertion) }
-                else { continuation.resume(throwing: error ?? AppAttestError.unsupported) }
+                else { continuation.resume(throwing: self.mapped(error)) }
             }
         }
     }

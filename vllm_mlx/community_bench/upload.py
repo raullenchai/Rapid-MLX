@@ -268,8 +268,13 @@ def post_submission(
     if attest_headers:
         headers.update(attest_headers)
     last: Exception | None = None
+    # An App Attest assertion is one-use (its signature counter must strictly
+    # increase and the server records it), so a retry would replay identical
+    # headers and be rejected as stale. Do not auto-retry attested requests —
+    # the app acquires a fresh challenge + assertion and calls again instead.
+    max_attempts = 1 if attest_headers else _MAX_ATTEMPTS
 
-    for attempt in range(1, _MAX_ATTEMPTS + 1):
+    for attempt in range(1, max_attempts + 1):
         req = urllib.request.Request(
             target,
             data=body,
@@ -314,14 +319,14 @@ def post_submission(
                 detail = exc.read().decode("utf-8", "replace")[:500]
             except Exception:  # noqa: BLE001 - diagnostic only
                 pass
-            if exc.code < 500 or attempt == _MAX_ATTEMPTS:
+            if exc.code < 500 or attempt == max_attempts:
                 raise SubmitError(
                     f"the board rejected this submission (HTTP {exc.code}). {detail}"
                 ) from exc
             last = exc
             _sleep_before_retry(attempt, getattr(exc, "headers", None))
         except (urllib.error.URLError, TimeoutError, OSError) as exc:
-            if attempt == _MAX_ATTEMPTS:
+            if attempt == max_attempts:
                 # No persistence claim here: whether a local copy exists is
                 # something only the caller knows, and asserting it from this
                 # layer told users their run was safe when archiving had

@@ -629,3 +629,29 @@ def test_post_submission_omits_attest_headers_when_absent(monkeypatch) -> None:
     monkeypatch.setattr(upload.urllib.request, "urlopen", fake_open)
     upload.post_submission({"submission_id": "abcdef012345"}, url="https://x/api")
     assert not any(k.startswith("x-rapid-attest") for k in seen["headers"])
+
+
+def test_attested_post_is_not_retried(monkeypatch) -> None:
+    """A one-use assertion must not be replayed: attested POST tries once."""
+    monkeypatch.setattr(upload.time, "sleep", lambda _s: None)
+    calls = {"n": 0}
+
+    def fake_open(req, timeout=None):
+        calls["n"] += 1
+        raise upload.urllib.error.HTTPError(req.full_url, 500, "server error", {}, None)
+
+    monkeypatch.setattr(upload.urllib.request, "urlopen", fake_open)
+
+    with pytest.raises(upload.SubmitError):
+        upload.post_submission(
+            {"submission_id": "abcdef012345"},
+            url="https://x/api",
+            attest_headers={"X-Rapid-Attest-Key-Id": "k"},
+        )
+    assert calls["n"] == 1  # no replay of the single-use assertion
+
+    # An un-attested POST keeps the normal 3-attempt retry budget.
+    calls["n"] = 0
+    with pytest.raises(upload.SubmitError):
+        upload.post_submission({"submission_id": "abcdef012345"}, url="https://x/api")
+    assert calls["n"] == 3
