@@ -774,6 +774,17 @@ enum CommunityBenchmarkCommand {
         ["benchmark", "results", "--limit", String(limit), "--json"]
     }
 
+    /// The `run_id` from a `benchmark run --json` payload, so the caller can
+    /// act on the exact run that finished rather than inferring it from list
+    /// order. nil for any payload without one (e.g. a deferred-reap result).
+    static func runID(from data: Data) -> String? {
+        struct RunID: Decodable {
+            let runID: String
+            enum CodingKeys: String, CodingKey { case runID = "run_id" }
+        }
+        return try? JSONDecoder().decode(RunID.self, from: data).runID
+    }
+
     static func benchmarkSharePreviewArguments(runID: String) -> [String] {
         ["benchmark", "share", runID, "--preview", "--json"]
     }
@@ -1553,7 +1564,7 @@ struct CommunityBenchmarkView: View {
                 acquiredReservation = true
                 defer { releaseServer(reservation) }
                 try Task.checkCancellation()
-                _ = try await CommunityBenchmarkCommand.run(
+                let runOutput = try await CommunityBenchmarkCommand.run(
                     binary: binary,
                     arguments: CommunityBenchmarkCommand.benchmarkRunArguments(
                         alias: selected.entry.alias
@@ -1566,9 +1577,12 @@ struct CommunityBenchmarkView: View {
                         let sequence = sequencer.next()
                         // Cumulative step index (0 for non-step lines), assigned
                         // in arrival order so the count survives unordered hops.
-                        let stepIndex = CommunityBenchmarkRunStatus.isStepLine(progress)
-                            ? stepCounter.next()
-                            : 0
+                        let isStep = CommunityBenchmarkRunStatus.isStepLine(progress)
+                        let stepIndex = isStep ? stepCounter.next() : 0
+                        // Timestamp the step at emission (arrival order), not
+                        // when its main-actor hop lands, so the ETA baseline is
+                        // the first step's real completion time.
+                        let stepAt = isStep ? Date() : nil
                         Task { @MainActor in
                             guard isRunning, runStartedAt != nil,
                                   currentRunID == activeRunID
@@ -1581,9 +1595,10 @@ struct CommunityBenchmarkView: View {
                             }
                             // Count: monotonic max, so an out-of-order hop can
                             // never discard a completed step (undercounting the
-                            // bar/ETA).
-                            if stepIndex > 0 {
-                                if firstStepAt == nil { firstStepAt = Date() }
+                            // bar/ETA). The baseline keeps the earliest step
+                            // timestamp (step 1) regardless of hop order.
+                            if stepIndex > 0, let stepAt {
+                                firstStepAt = min(firstStepAt ?? stepAt, stepAt)
                                 stepsDone = max(stepsDone, stepIndex)
                             }
                         }
@@ -1591,8 +1606,11 @@ struct CommunityBenchmarkView: View {
                 )
                 await refreshProductCatalog()
                 await refreshResults()
-                // Invite the user to contribute the run that just finished.
-                pendingShareResultID = results.first?.id
+                // Invite the user to contribute the run that just finished —
+                // by the exact run id the CLI reported, not "whatever sorts
+                // first" (guards against sort/ordering surprises).
+                pendingShareResultID = CommunityBenchmarkCommand.runID(from: runOutput)
+                    ?? results.first?.id
             } catch is CancellationError {
                 errorMessage = acquiredReservation
                     ? "Benchmark stopped. No incomplete result was shared."
