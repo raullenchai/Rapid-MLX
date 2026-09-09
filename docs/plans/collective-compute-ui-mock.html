@@ -1,0 +1,571 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Rapid-MLX — Collective Compute UI mock</title>
+  <style>
+    :root {
+      color-scheme: light dark;
+      --canvas: #fafaf9;
+      --sidebar: #f4f4f1;
+      --card: #fff;
+      --ink: #191a1c;
+      --secondary: #686a6e;
+      --tertiary: #929397;
+      --line: #e7e7e4;
+      --line-strong: #d9d9d5;
+      --amber: #efa23a;
+      --amber-deep: #a86615;
+      --amber-tint: #fbf1e2;
+      --green: #2e7d55;
+      --green-tint: #eaf5ef;
+      --red: #b64242;
+      --red-tint: #faeeee;
+      --blue: #3a5c86;
+      --blue-tint: #eef2f7;
+      --shadow: 0 18px 55px rgba(30, 29, 25, .14), 0 2px 10px rgba(30, 29, 25, .07);
+      --control-shadow: 0 1px 2px rgba(20, 20, 18, .08);
+    }
+
+    html[data-theme="dark"] {
+      --canvas: #141619;
+      --sidebar: #181a1e;
+      --card: #1a1d21;
+      --ink: #f2f2ef;
+      --secondary: #b3b4b6;
+      --tertiary: #7d8085;
+      --line: #26292e;
+      --line-strong: #34383e;
+      --amber: #efa23a;
+      --amber-deep: #efa23a;
+      --amber-tint: #2a2113;
+      --green: #5fc7a0;
+      --green-tint: #172a22;
+      --red: #ef8585;
+      --red-tint: #321d1f;
+      --blue: #9cbeff;
+      --blue-tint: #1e2a3a;
+      --shadow: 0 20px 70px rgba(0, 0, 0, .48), 0 2px 12px rgba(0, 0, 0, .28);
+      --control-shadow: 0 1px 2px rgba(0, 0, 0, .25);
+    }
+
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      min-width: 740px;
+      min-height: 100vh;
+      overflow: hidden;
+      background:
+        radial-gradient(circle at 50% -10%, rgba(239, 162, 58, .12), transparent 34rem),
+        #d8d7d2;
+      color: var(--ink);
+      font: 13px/1.45 -apple-system, BlinkMacSystemFont, "SF Pro Text", Inter, sans-serif;
+      -webkit-font-smoothing: antialiased;
+    }
+    html[data-theme="dark"] body { background: #090a0c; }
+    button, input, select { font: inherit; }
+    button { color: inherit; }
+
+    .stage {
+      height: 100vh;
+      padding: 26px 26px 84px;
+      display: grid;
+      place-items: center;
+    }
+    .window {
+      width: min(1180px, calc(100vw - 52px));
+      height: min(760px, calc(100vh - 110px));
+      min-height: 570px;
+      display: grid;
+      grid-template-columns: 214px minmax(0, 1fr);
+      grid-template-rows: 38px minmax(0, 1fr) 31px;
+      overflow: hidden;
+      border: 1px solid color-mix(in srgb, var(--line-strong), transparent 2%);
+      border-radius: 13px;
+      background: var(--canvas);
+      box-shadow: var(--shadow);
+    }
+
+    .titlebar {
+      grid-column: 1 / -1;
+      display: grid;
+      grid-template-columns: 214px 1fr 214px;
+      align-items: center;
+      border-bottom: 1px solid var(--line);
+      background: color-mix(in srgb, var(--canvas) 92%, transparent);
+      backdrop-filter: blur(18px);
+      -webkit-app-region: drag;
+    }
+    .traffic { display: flex; gap: 8px; padding-left: 14px; }
+    .traffic i { width: 12px; height: 12px; border-radius: 50%; display: block; }
+    .traffic i:nth-child(1) { background: #ff5f57; }
+    .traffic i:nth-child(2) { background: #febc2e; }
+    .traffic i:nth-child(3) { background: #28c840; }
+    .window-title { text-align: center; font-size: 12px; font-weight: 600; color: var(--secondary); }
+    .title-actions { display: flex; justify-content: flex-end; gap: 6px; padding-right: 10px; }
+    .icon-button {
+      width: 28px; height: 26px; display: grid; place-items: center;
+      border: 0; border-radius: 7px; background: transparent; cursor: pointer;
+    }
+    .icon-button:hover { background: color-mix(in srgb, var(--ink) 7%, transparent); }
+
+    .sidebar {
+      grid-row: 2;
+      padding: 14px 10px 12px;
+      border-right: 1px solid var(--line);
+      background: var(--sidebar);
+      overflow: hidden;
+    }
+    .brand { height: 35px; display: flex; align-items: center; gap: 9px; padding: 0 8px 9px; font-weight: 700; letter-spacing: -.15px; }
+    .mark {
+      width: 22px; height: 22px; display: grid; place-items: center;
+      border-radius: 7px; background: var(--amber); color: #21170a; font-size: 11px; font-weight: 900;
+      transform: skew(-5deg);
+    }
+    .nav-row {
+      width: 100%; height: 34px; display: flex; align-items: center; gap: 10px;
+      padding: 0 9px; border: 0; border-radius: 8px; background: transparent;
+      color: var(--ink); text-align: left; cursor: pointer;
+    }
+    .nav-row:hover { background: color-mix(in srgb, var(--ink) 5%, transparent); }
+    .nav-row.active { background: var(--amber-tint); font-weight: 600; }
+    .nav-row .nav-icon { width: 17px; text-align: center; color: var(--secondary); font-size: 15px; }
+    .nav-row.active .nav-icon { color: var(--amber-deep); }
+    .section-label {
+      margin: 18px 9px 5px; color: var(--tertiary); font-size: 10px; font-weight: 700;
+      letter-spacing: .055em; text-transform: uppercase;
+    }
+    .history { margin: 19px 9px 6px; color: var(--tertiary); font-size: 10px; font-weight: 700; letter-spacing: .055em; text-transform: uppercase; }
+    .ghost-row { height: 27px; margin: 0 9px; color: var(--secondary); overflow: hidden; white-space: nowrap; text-overflow: ellipsis; font-size: 12px; }
+
+    .main { grid-row: 2; min-width: 0; overflow: auto; background: var(--canvas); }
+    .page { width: min(820px, calc(100% - 64px)); min-width: 520px; margin: 0 auto; padding: 42px 0 50px; }
+    .page-header { display: flex; align-items: flex-start; justify-content: space-between; gap: 24px; margin-bottom: 24px; }
+    .eyebrow { color: var(--amber-deep); font-size: 11px; font-weight: 700; letter-spacing: .06em; text-transform: uppercase; margin-bottom: 7px; }
+    h1 { margin: 0; font-size: 28px; line-height: 1.14; letter-spacing: -.035em; }
+    .subtitle { max-width: 550px; margin: 8px 0 0; color: var(--secondary); font-size: 14px; }
+    .status-pill {
+      display: inline-flex; align-items: center; gap: 7px; min-height: 27px; padding: 0 10px;
+      border: 1px solid var(--line); border-radius: 99px; background: var(--card); color: var(--secondary);
+      font-size: 11px; font-weight: 600; white-space: nowrap;
+    }
+    .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--tertiary); }
+    .status-pill.online { color: var(--green); background: var(--green-tint); border-color: color-mix(in srgb, var(--green) 23%, transparent); }
+    .status-pill.online .dot { background: var(--green); box-shadow: 0 0 0 3px color-mix(in srgb, var(--green) 15%, transparent); }
+    .status-pill.working { color: var(--amber-deep); background: var(--amber-tint); border-color: color-mix(in srgb, var(--amber) 28%, transparent); }
+    .status-pill.working .dot { background: var(--amber); animation: pulse 1.1s ease-in-out infinite; }
+    .status-pill.error { color: var(--red); background: var(--red-tint); border-color: color-mix(in srgb, var(--red) 25%, transparent); }
+    .status-pill.error .dot { background: var(--red); }
+    @keyframes pulse { 50% { opacity: .35; transform: scale(.82); } }
+
+    .card { border: 1px solid var(--line); border-radius: 12px; background: var(--card); box-shadow: 0 1px 0 rgba(0,0,0,.015); }
+    .setup-card { display: grid; grid-template-columns: 76px 1fr; gap: 22px; padding: 27px; }
+    .hero-icon { width: 70px; height: 70px; display: grid; place-items: center; border-radius: 19px; background: var(--amber-tint); color: var(--amber-deep); }
+    .hero-icon svg { width: 35px; height: 35px; }
+    .setup-card h2 { margin: 0 0 5px; font-size: 19px; letter-spacing: -.02em; }
+    .setup-card p { margin: 0; color: var(--secondary); max-width: 610px; }
+    .form-grid { display: grid; grid-template-columns: minmax(230px, 1fr) minmax(180px, .72fr); gap: 14px; margin-top: 23px; }
+    label.field { display: grid; gap: 6px; color: var(--secondary); font-size: 11px; font-weight: 600; }
+    select, input[type="text"], input[type="password"] {
+      width: 100%; height: 35px; padding: 0 11px; color: var(--ink); border: 1px solid var(--line-strong);
+      border-radius: 8px; background: var(--canvas); outline: none; box-shadow: var(--control-shadow);
+    }
+    select:focus, input:focus { border-color: var(--amber); box-shadow: 0 0 0 3px color-mix(in srgb, var(--amber) 20%, transparent); }
+    .model-note { grid-column: 1 / -1; display: flex; gap: 7px; align-items: center; color: var(--secondary); font-size: 11px; }
+    .model-note b { color: var(--green); font-weight: 600; }
+    .actions { display: flex; align-items: center; gap: 10px; margin-top: 23px; }
+    .primary, .secondary-button, .danger-button {
+      height: 34px; padding: 0 15px; border-radius: 8px; border: 1px solid transparent; font-weight: 650; cursor: pointer;
+      box-shadow: var(--control-shadow); transition: transform .08s ease, filter .12s ease;
+    }
+    .primary { background: var(--amber); color: #21170a; }
+    .primary:hover { filter: brightness(.97); }
+    .primary:active, .secondary-button:active, .danger-button:active { transform: scale(.985); }
+    .secondary-button { background: var(--card); border-color: var(--line-strong); }
+    .danger-button { background: var(--card); border-color: color-mix(in srgb, var(--red) 28%, var(--line)); color: var(--red); }
+    .text-button { border: 0; padding: 5px 2px; background: transparent; color: var(--blue); cursor: pointer; font-weight: 600; }
+    a.text-button { text-decoration: none; }
+    .fine-print { color: var(--tertiary); font-size: 10.5px; }
+
+    .notice { display: flex; align-items: flex-start; gap: 10px; margin-top: 14px; padding: 11px 13px; border-radius: 8px; background: var(--amber-tint); color: var(--ink); font-size: 11.5px; }
+    .notice .notice-icon { color: var(--amber-deep); font-weight: 800; }
+    .notice.error { background: var(--red-tint); }
+    .notice.error .notice-icon { color: var(--red); }
+
+    .online-hero { padding: 24px 25px; display: flex; align-items: center; justify-content: space-between; gap: 24px; }
+    .online-lead { display: flex; align-items: center; gap: 15px; min-width: 0; }
+    .live-orb { width: 45px; height: 45px; flex: none; display: grid; place-items: center; border-radius: 50%; color: var(--green); background: var(--green-tint); }
+    .live-orb::after { content: ""; width: 11px; height: 11px; border-radius: 50%; background: currentColor; box-shadow: 0 0 0 5px color-mix(in srgb, currentColor 15%, transparent); }
+    .online-hero h2 { margin: 0 0 3px; font-size: 18px; }
+    .online-hero p { margin: 0; color: var(--secondary); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .metric-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; margin-top: 12px; }
+    .metric { min-height: 92px; padding: 16px 17px; }
+    .metric-label { color: var(--secondary); font-size: 11px; }
+    .metric-value { margin-top: 7px; font-size: 19px; font-weight: 650; letter-spacing: -.025em; }
+    .metric-value.mono { font: 600 14px/1.35 ui-monospace, SFMono-Regular, Menlo, monospace; letter-spacing: -.02em; }
+    .metric-hint { margin-top: 4px; color: var(--tertiary); font-size: 10px; }
+    .activity { margin-top: 12px; overflow: hidden; }
+    .card-title { height: 45px; display: flex; align-items: center; justify-content: space-between; padding: 0 17px; border-bottom: 1px solid var(--line); }
+    .card-title h3 { margin: 0; font-size: 12px; }
+    .activity-row { display: grid; grid-template-columns: 12px minmax(0, 1fr) auto; align-items: center; gap: 10px; min-height: 48px; padding: 0 17px; border-bottom: 1px solid var(--line); }
+    .activity-row:last-child { border-bottom: 0; }
+    .activity-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--green); }
+    .activity-dot.muted { background: var(--tertiary); }
+    .activity-title { font-size: 12px; }
+    .activity-sub { color: var(--tertiary); font-size: 10px; }
+    .activity-time { color: var(--secondary); font: 10px ui-monospace, SFMono-Regular, Menlo, monospace; }
+    .footer-actions { display: flex; align-items: center; justify-content: space-between; margin-top: 15px; }
+
+    .progress-card { padding: 31px; text-align: center; }
+    .spinner { width: 34px; height: 34px; margin: 0 auto 16px; border-radius: 50%; border: 3px solid var(--line); border-top-color: var(--amber); animation: spin .8s linear infinite; }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    .progress-card h2 { margin: 0; font-size: 18px; }
+    .progress-card p { margin: 7px auto 0; color: var(--secondary); max-width: 520px; }
+    .steps { width: min(440px, 100%); margin: 24px auto 0; text-align: left; }
+    .step { display: grid; grid-template-columns: 18px 1fr auto; align-items: center; gap: 9px; height: 34px; color: var(--tertiary); }
+    .step.complete { color: var(--secondary); }
+    .step.current { color: var(--ink); font-weight: 600; }
+    .step-mark { width: 16px; height: 16px; display: grid; place-items: center; border-radius: 50%; border: 1px solid var(--line-strong); font-size: 9px; }
+    .step.complete .step-mark { color: var(--green); background: var(--green-tint); border-color: transparent; }
+    .step.current .step-mark { border: 4px solid color-mix(in srgb, var(--amber) 30%, transparent); background: var(--amber); }
+    .step-time { color: var(--tertiary); font: 10px ui-monospace, SFMono-Regular, Menlo, monospace; }
+
+    .settings-page { display: none; }
+    .settings-list { overflow: hidden; }
+    .settings-row { min-height: 68px; padding: 13px 16px; display: flex; align-items: center; gap: 20px; border-bottom: 1px solid var(--line); }
+    .settings-row:last-child { border-bottom: 0; }
+    .settings-copy { flex: 1; }
+    .settings-copy strong { display: block; font-size: 12px; }
+    .settings-copy span { display: block; max-width: 620px; margin-top: 3px; color: var(--secondary); font-size: 11px; }
+    .switch { position: relative; width: 34px; height: 20px; flex: none; border: 0; border-radius: 99px; background: #b8b9ba; cursor: pointer; padding: 0; }
+    .switch::after { content: ""; position: absolute; width: 16px; height: 16px; left: 2px; top: 2px; border-radius: 50%; background: white; box-shadow: 0 1px 2px rgba(0,0,0,.22); transition: left .16s ease; }
+    .switch.on { background: var(--amber); }
+    .switch.on::after { left: 16px; }
+
+    .statusbar { grid-column: 1 / -1; display: flex; align-items: center; justify-content: space-between; padding: 0 12px; border-top: 1px solid var(--line); background: var(--canvas); color: var(--tertiary); font-size: 10px; }
+    .status-left, .status-right { display: flex; align-items: center; gap: 13px; }
+    .tiny-status { display: flex; align-items: center; gap: 5px; }
+    .tiny-status i { width: 6px; height: 6px; border-radius: 50%; background: var(--green); }
+
+    .prototype-bar {
+      position: fixed; left: 50%; bottom: 17px; transform: translateX(-50%);
+      display: flex; align-items: center; gap: 5px; padding: 6px;
+      border: 1px solid rgba(255,255,255,.15); border-radius: 11px; background: rgba(27, 28, 30, .94);
+      box-shadow: 0 8px 28px rgba(0,0,0,.28); color: #eee; backdrop-filter: blur(18px); z-index: 30;
+    }
+    .prototype-bar .proto-label { padding: 0 8px 0 5px; color: #aaa; font-size: 10px; font-weight: 700; letter-spacing: .05em; text-transform: uppercase; }
+    .prototype-bar button { height: 27px; padding: 0 10px; border: 0; border-radius: 7px; background: transparent; color: #d3d3d3; font-size: 11px; cursor: pointer; }
+    .prototype-bar button:hover { background: rgba(255,255,255,.09); }
+    .prototype-bar button.active { background: #efa23a; color: #21170a; font-weight: 700; }
+    .prototype-bar .divider { width: 1px; height: 18px; margin: 0 2px; background: rgba(255,255,255,.13); }
+
+    .backdrop { position: fixed; inset: 0; display: none; place-items: center; z-index: 20; background: rgba(14, 14, 15, .34); backdrop-filter: blur(3px); }
+    .backdrop.visible { display: grid; }
+    .sheet { width: min(480px, calc(100vw - 50px)); border: 1px solid var(--line-strong); border-radius: 13px; background: var(--card); box-shadow: 0 24px 80px rgba(0,0,0,.32); overflow: hidden; }
+    .sheet-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 15px; padding: 22px 23px 16px; }
+    .sheet h2 { margin: 0; font-size: 18px; }
+    .sheet .sheet-subtitle { margin: 5px 0 0; color: var(--secondary); font-size: 12px; }
+    .sheet-body { padding: 0 23px 18px; }
+    .key-help { display: flex; gap: 9px; align-items: flex-start; margin-top: 12px; padding: 11px; background: var(--blue-tint); border-radius: 8px; color: var(--secondary); font-size: 11px; }
+    .key-help b { color: var(--ink); }
+    .field-error { display: none; margin-top: 6px; color: var(--red); font-size: 10.5px; }
+    .field-error.visible { display: block; }
+    .sheet-actions { display: flex; justify-content: flex-end; gap: 8px; padding: 13px 23px; border-top: 1px solid var(--line); background: color-mix(in srgb, var(--canvas) 65%, var(--card)); }
+    .close { width: 25px; height: 25px; border: 0; border-radius: 50%; background: color-mix(in srgb, var(--ink) 8%, transparent); cursor: pointer; }
+    .detail-list { overflow: hidden; border: 1px solid var(--line); border-radius: 9px; }
+    .detail-row { min-height: 44px; display: grid; grid-template-columns: 130px minmax(0, 1fr); align-items: center; gap: 12px; padding: 8px 11px; border-bottom: 1px solid var(--line); }
+    .detail-row:last-child { border-bottom: 0; }
+    .detail-label { color: var(--secondary); font-size: 11px; }
+    .detail-value { min-width: 0; overflow: hidden; text-overflow: ellipsis; color: var(--ink); font: 11px ui-monospace, SFMono-Regular, Menlo, monospace; text-align: right; white-space: nowrap; }
+    .service-row { display: flex; align-items: center; justify-content: space-between; gap: 18px; margin-top: 13px; padding: 12px; border-radius: 9px; background: var(--canvas); }
+    .service-row strong { display: block; font-size: 11.5px; }
+    .service-row span { display: block; margin-top: 2px; color: var(--secondary); font-size: 10.5px; }
+
+    [hidden] { display: none !important; }
+    @media (max-width: 890px) {
+      .window { grid-template-columns: 184px minmax(0, 1fr); }
+      .titlebar { grid-template-columns: 184px 1fr 120px; }
+      .page { width: calc(100% - 38px); min-width: 0; padding-top: 30px; }
+      .metric-grid { grid-template-columns: 1fr; }
+      .metric { min-height: 72px; }
+      .form-grid { grid-template-columns: 1fr; }
+      .model-note { grid-column: 1; }
+    }
+    @media (max-width: 780px) {
+      .stage { padding: 10px 10px 70px; }
+      .window { width: 720px; }
+    }
+    @media (prefers-reduced-motion: reduce) {
+      *, *::before, *::after { animation-duration: .001ms !important; transition-duration: .001ms !important; }
+    }
+  </style>
+</head>
+<body>
+  <div class="stage">
+    <div class="window" role="application" aria-label="Rapid-MLX Desktop mock">
+      <header class="titlebar">
+        <div class="traffic" aria-hidden="true"><i></i><i></i><i></i></div>
+        <div class="window-title">Rapid-MLX Desktop</div>
+        <div class="title-actions">
+          <button class="icon-button" id="themeButton" aria-label="Toggle appearance" title="Toggle appearance">◐</button>
+          <button class="icon-button" id="settingsButton" aria-label="Open Experimental settings" title="Experimental settings">⚙︎</button>
+        </div>
+      </header>
+
+      <aside class="sidebar" aria-label="Sidebar">
+        <div class="brand"><span class="mark">R</span>Rapid-MLX</div>
+        <button class="nav-row"><span class="nav-icon">✎</span>New Chat</button>
+        <button class="nav-row"><span class="nav-icon">▧</span>Images</button>
+        <button class="nav-row"><span class="nav-icon">≋</span>Audio</button>
+        <button class="nav-row"><span class="nav-icon">↗</span>Launch</button>
+        <div class="section-label">Experimental</div>
+        <button class="nav-row"><span class="nav-icon">▶</span>Video</button>
+        <button class="nav-row"><span class="nav-icon">▣</span>Computer Use</button>
+        <button class="nav-row"><span class="nav-icon">◴</span>Benchmark</button>
+        <button class="nav-row active" id="computeNav"><span class="nav-icon">⌁</span>Collective Compute</button>
+        <div class="history">Recent</div>
+        <div class="ghost-row">Optimizing a local model</div>
+        <div class="ghost-row">Swift concurrency notes</div>
+      </aside>
+
+      <main class="main" id="mainSurface">
+        <section class="page compute-page" id="offlinePage">
+          <div class="page-header">
+            <div>
+              <div class="eyebrow">Collective Compute</div>
+              <h1>Put this Mac to work</h1>
+              <p class="subtitle">Contribute private, local inference capacity to the QuickSilver pool when you choose.</p>
+            </div>
+            <div class="status-pill"><span class="dot"></span>Not connected</div>
+          </div>
+
+          <div class="card setup-card">
+            <div class="hero-icon" aria-hidden="true">
+              <svg viewBox="0 0 40 40" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+                <rect x="5" y="8" width="13" height="13" rx="3"></rect>
+                <rect x="22" y="19" width="13" height="13" rx="3"></rect>
+                <path d="M18 14.5h4.5a5 5 0 0 1 5 5V19M22 25.5h-4.5a5 5 0 0 1-5-5V21"></path>
+              </svg>
+            </div>
+            <div>
+              <h2>Share spare Apple silicon</h2>
+              <p>Rapid loads one supported model and accepts pool requests through an encrypted relay. You stay in control and can leave at any time.</p>
+              <div class="form-grid">
+                <label class="field">Model
+                  <select id="modelSelect">
+                    <option value="qwen3.8-27b">Qwen3.8 27B · 4-bit</option>
+                    <option value="qwen3.6-35b">Qwen3.6 35B</option>
+                    <option value="nemotron-3.5-lightning">Nemotron 3.5 Lightning · 4-bit</option>
+                  </select>
+                </label>
+                <label class="field">Worker name
+                  <input id="workerInput" type="text" value="studio" maxlength="48" autocomplete="off" spellcheck="false">
+                </label>
+                <div class="model-note"><span>●</span><b>Downloaded</b><span>· Recommended for this Mac · Uses about 19 GB while active</span></div>
+              </div>
+              <div class="actions">
+                <button class="primary" id="joinButton">Join compute pool</button>
+                <span class="fine-print">Nothing starts until you join.</span>
+              </div>
+            </div>
+          </div>
+
+          <div class="notice"><span class="notice-icon">i</span><span><b>Before you join:</b> requests from other people will run on this Mac. Rapid pauses your current local model so only one large model stays loaded. The selected weights remain local, but pool prompts and output are processed in memory; energy use may increase.</span></div>
+        </section>
+
+        <section class="page compute-page" id="connectingPage" hidden>
+          <div class="page-header">
+            <div><div class="eyebrow">Collective Compute</div><h1>Joining the pool</h1><p class="subtitle">Rapid is preparing a private provider session on this Mac.</p></div>
+            <div class="status-pill working"><span class="dot"></span>Starting</div>
+          </div>
+          <div class="card progress-card">
+            <div class="spinner" aria-hidden="true"></div>
+            <h2 id="progressTitle">Loading Qwen3.8 27B</h2>
+            <p>The first start can take a moment while model weights are paged into Metal memory.</p>
+            <div class="steps">
+              <div class="step complete"><span class="step-mark">✓</span><span>Registered this Mac</span><span class="step-time">done</span></div>
+              <div class="step complete"><span class="step-mark">✓</span><span>Started private local server</span><span class="step-time">done</span></div>
+              <div class="step current"><span class="step-mark"></span><span>Warming up model</span><span class="step-time">now</span></div>
+              <div class="step"><span class="step-mark"></span><span>Connecting encrypted relay</span><span class="step-time">next</span></div>
+            </div>
+            <div class="actions" style="justify-content:center"><button class="secondary-button" id="cancelButton">Cancel</button></div>
+          </div>
+        </section>
+
+        <section class="page compute-page" id="onlinePage" hidden>
+          <div class="page-header">
+            <div><div class="eyebrow">Collective Compute</div><h1>This Mac is contributing</h1><p class="subtitle">Rapid will stay available while the app is open and this node remains connected.</p></div>
+            <div class="status-pill online"><span class="dot"></span>Available</div>
+          </div>
+          <div class="card online-hero">
+            <div class="online-lead"><div class="live-orb"></div><div><h2 id="onlineModel">Qwen3.8 27B is ready</h2><p>Worker <b id="onlineWorker">studio</b> · encrypted relay connected</p></div></div>
+            <button class="danger-button" id="stopButton">Leave pool</button>
+          </div>
+          <div class="metric-grid">
+            <div class="card metric"><div class="metric-label">Active requests</div><div class="metric-value">0 <span style="font-size:12px;color:var(--secondary);font-weight:500">of 2</span></div><div class="metric-hint">Updates with the pool heartbeat</div></div>
+            <div class="card metric"><div class="metric-label">Connected</div><div class="metric-value">12 min</div><div class="metric-hint">Reconnects automatically after a drop</div></div>
+            <div class="card metric"><div class="metric-label">Payout account</div><div class="metric-value mono">acct_••••7K2F</div><div class="metric-hint">Provider key is never stored</div></div>
+          </div>
+          <div class="card activity">
+            <div class="card-title"><h3>Node activity</h3><span class="fine-print">No prompt content is shown</span></div>
+            <div class="activity-row"><span class="activity-dot"></span><div><div class="activity-title">Ready for requests</div><div class="activity-sub">Heartbeat acknowledged · pool routing enabled</div></div><span class="activity-time">now</span></div>
+            <div class="activity-row"><span class="activity-dot muted"></span><div><div class="activity-title">Model warmed up</div><div class="activity-sub">Qwen3.8 27B · max 2 concurrent requests</div></div><span class="activity-time">12m</span></div>
+            <div class="activity-row"><span class="activity-dot muted"></span><div><div class="activity-title">Secure relay connected</div><div class="activity-sub">Node qs-node-••••18b4</div></div><span class="activity-time">12m</span></div>
+          </div>
+          <div class="footer-actions"><a class="text-button" href="https://pay.quicksilverpro.io" target="_blank" rel="noreferrer">View earnings in QuickSilver ↗</a><button class="text-button" id="detailsButton">Connection details</button></div>
+        </section>
+
+        <section class="page compute-page" id="errorPage" hidden>
+          <div class="page-header">
+            <div><div class="eyebrow">Collective Compute</div><h1>This node needs attention</h1><p class="subtitle">Rapid stopped serving because QuickSilver rejected the saved node credential.</p></div>
+            <div class="status-pill error"><span class="dot"></span>Stopped</div>
+          </div>
+          <div class="card setup-card">
+            <div class="hero-icon" style="background:var(--red-tint);color:var(--red)">!</div>
+            <div><h2>Reconnect this Mac</h2><p>The node credential may have been revoked or rotated. Register again with a current provider key; the old credential will not be retried.</p><div class="actions"><button class="primary" id="reconnectButton">Register again</button><button class="secondary-button" id="dismissError">Leave disconnected</button></div></div>
+          </div>
+          <div class="notice error"><span class="notice-icon">!</span><span><b>Credential rejected.</b> No pool requests are reaching this Mac. Provider keys are used once for registration and are never written to disk.</span></div>
+        </section>
+
+        <section class="page settings-page" id="settingsPage">
+          <div class="page-header"><div><div class="eyebrow">Settings</div><h1>Experimental</h1><p class="subtitle">Opt in to features that are still being validated across supported Macs.</p></div></div>
+          <div class="card settings-list">
+            <div class="settings-row"><div class="settings-copy"><strong>Enable Video Generation</strong><span>Adds the Video tab; requires Apple silicon and typically 24 GB+ of unified memory.</span></div><button class="switch on" aria-label="Video generation enabled"></button></div>
+            <div class="settings-row"><div class="settings-copy"><strong>Enable Computer Use</strong><span>Adds the Computer Use tab; Rapid previews consequential actions for your approval.</span></div><button class="switch on" aria-label="Computer Use enabled"></button></div>
+            <div class="settings-row"><div class="settings-copy"><strong>Enable Benchmark</strong><span>Adds the Benchmark tab for measuring models on this Mac.</span></div><button class="switch on" aria-label="Benchmark enabled"></button></div>
+            <div class="settings-row"><div class="settings-copy"><strong>Enable Collective Compute</strong><span>Adds the Collective Compute tab. Nothing is shared or started until you explicitly join a compute pool.</span></div><button class="switch on" id="collectiveSwitch" aria-label="Collective Compute enabled"></button></div>
+          </div>
+          <div class="notice"><span class="notice-icon">i</span><span>Turning off this feature while connected will first leave the pool, stop its model server, and then remove the tab.</span></div>
+        </section>
+      </main>
+
+      <footer class="statusbar">
+        <div class="status-left"><span class="tiny-status"><i></i>Server ready</span><span>M3 Ultra · 128 GB</span></div>
+        <div class="status-right"><span>CPU 8%</span><span>GPU 2%</span><span>Memory 21.4 GB</span></div>
+      </footer>
+    </div>
+  </div>
+
+  <div class="prototype-bar" aria-label="Prototype state controls">
+    <span class="proto-label">Mock state</span>
+    <button data-state="offline" class="active">Setup</button>
+    <button data-state="connecting">Starting</button>
+    <button data-state="online">Online</button>
+    <button data-state="error">Credential error</button>
+    <span class="divider"></span>
+    <button data-state="settings">Experimental gate</button>
+  </div>
+
+  <div class="backdrop" id="registrationBackdrop" role="dialog" aria-modal="true" aria-labelledby="registrationTitle">
+    <div class="sheet">
+      <div class="sheet-head"><div><h2 id="registrationTitle">Connect QuickSilver</h2><p class="sheet-subtitle">Use a provider key once to register this Mac.</p></div><button class="close" id="closeSheet" aria-label="Close">×</button></div>
+      <div class="sheet-body">
+        <label class="field">Provider key
+          <input id="providerKey" type="password" placeholder="qsppk-…" autocomplete="off" spellcheck="false">
+        </label>
+        <div class="field-error" id="providerKeyError" role="alert">Enter a QuickSilver provider key beginning with qsppk-.</div>
+        <div class="key-help"><span>⌁</span><span><b>Kept private:</b> Rapid sends this key only to QuickSilver registration over HTTPS. It is removed from memory after registration and never saved on this Mac.</span></div>
+        <button class="text-button" style="margin-top:9px">Create a provider key in QuickSilver ↗</button>
+      </div>
+      <div class="sheet-actions"><button class="secondary-button" id="cancelSheet">Cancel</button><button class="primary" id="registerButton">Register &amp; join</button></div>
+    </div>
+  </div>
+
+  <div class="backdrop" id="detailsBackdrop" role="dialog" aria-modal="true" aria-labelledby="detailsTitle">
+    <div class="sheet">
+      <div class="sheet-head"><div><h2 id="detailsTitle">Connection details</h2><p class="sheet-subtitle">Non-secret identifiers for this provider session.</p></div><button class="close" id="closeDetails" aria-label="Close">×</button></div>
+      <div class="sheet-body">
+        <div class="detail-list">
+          <div class="detail-row"><span class="detail-label">Pool model</span><span class="detail-value">qwen3.8-27b</span></div>
+          <div class="detail-row"><span class="detail-label">Local weights</span><span class="detail-value">qwen3.8-27b-4bit</span></div>
+          <div class="detail-row"><span class="detail-label">Worker</span><span class="detail-value">studio</span></div>
+          <div class="detail-row"><span class="detail-label">Node</span><span class="detail-value">qs-node-••••18b4</span></div>
+        </div>
+        <div class="service-row"><div><strong>Keep available after login</strong><span>Runs this node in the background, even when the Rapid window is closed.</span></div><button class="switch" id="loginServiceSwitch" aria-label="Keep available after login disabled"></button></div>
+        <div class="key-help"><span>⌁</span><span>The reusable node credential is stored privately for reconnects. Your account-level provider key is used only for registration and is never saved.</span></div>
+      </div>
+      <div class="sheet-actions"><button class="primary" id="doneDetails">Done</button></div>
+    </div>
+  </div>
+
+  <script>
+    const pages = {
+      offline: document.getElementById('offlinePage'),
+      connecting: document.getElementById('connectingPage'),
+      online: document.getElementById('onlinePage'),
+      error: document.getElementById('errorPage'),
+      settings: document.getElementById('settingsPage')
+    };
+    const stateButtons = [...document.querySelectorAll('[data-state]')];
+    const backdrop = document.getElementById('registrationBackdrop');
+    const detailsBackdrop = document.getElementById('detailsBackdrop');
+    const providerKey = document.getElementById('providerKey');
+    const providerKeyError = document.getElementById('providerKeyError');
+
+    function showState(state) {
+      Object.entries(pages).forEach(([key, page]) => {
+        const visible = key === state;
+        page.hidden = !visible;
+        if (key === 'settings') page.style.display = visible ? 'block' : 'none';
+      });
+      stateButtons.forEach(button => button.classList.toggle('active', button.dataset.state === state));
+      document.getElementById('computeNav').classList.toggle('active', state !== 'settings');
+      document.querySelector('.window-title').textContent = state === 'settings' ? 'Rapid-MLX Settings' : 'Rapid-MLX Desktop';
+    }
+
+    function openRegistration() {
+      backdrop.classList.add('visible');
+      setTimeout(() => document.getElementById('providerKey').focus(), 40);
+    }
+    function closeRegistration() {
+      backdrop.classList.remove('visible');
+      providerKeyError.classList.remove('visible');
+      providerKey.removeAttribute('aria-invalid');
+    }
+    function closeDetails() { detailsBackdrop.classList.remove('visible'); }
+
+    stateButtons.forEach(button => button.addEventListener('click', () => showState(button.dataset.state)));
+    document.getElementById('joinButton').addEventListener('click', openRegistration);
+    document.getElementById('reconnectButton').addEventListener('click', openRegistration);
+    document.getElementById('closeSheet').addEventListener('click', closeRegistration);
+    document.getElementById('cancelSheet').addEventListener('click', closeRegistration);
+    backdrop.addEventListener('click', event => { if (event.target === backdrop) closeRegistration(); });
+    detailsBackdrop.addEventListener('click', event => { if (event.target === detailsBackdrop) closeDetails(); });
+    document.addEventListener('keydown', event => { if (event.key === 'Escape') { closeRegistration(); closeDetails(); } });
+    document.getElementById('registerButton').addEventListener('click', () => {
+      if (!providerKey.value.trim().startsWith('qsppk-')) {
+        providerKeyError.classList.add('visible');
+        providerKey.setAttribute('aria-invalid', 'true');
+        providerKey.focus();
+        return;
+      }
+      closeRegistration();
+      const select = document.getElementById('modelSelect');
+      const label = select.options[select.selectedIndex].text.split(' · ')[0];
+      document.getElementById('progressTitle').textContent = `Loading ${label}`;
+      document.getElementById('onlineModel').textContent = `${label} is ready`;
+      document.getElementById('onlineWorker').textContent = document.getElementById('workerInput').value || 'This Mac';
+      showState('connecting');
+      setTimeout(() => showState('online'), 2200);
+    });
+    document.getElementById('cancelButton').addEventListener('click', () => showState('offline'));
+    document.getElementById('stopButton').addEventListener('click', () => showState('offline'));
+    document.getElementById('dismissError').addEventListener('click', () => showState('offline'));
+    document.getElementById('settingsButton').addEventListener('click', () => showState('settings'));
+    document.getElementById('computeNav').addEventListener('click', () => showState('offline'));
+    document.getElementById('detailsButton').addEventListener('click', () => detailsBackdrop.classList.add('visible'));
+    document.getElementById('closeDetails').addEventListener('click', closeDetails);
+    document.getElementById('doneDetails').addEventListener('click', closeDetails);
+    document.getElementById('themeButton').addEventListener('click', () => {
+      const root = document.documentElement;
+      root.dataset.theme = root.dataset.theme === 'dark' ? 'light' : 'dark';
+    });
+    document.querySelectorAll('.switch').forEach(toggle => toggle.addEventListener('click', () => toggle.classList.toggle('on')));
+    document.getElementById('collectiveSwitch').addEventListener('click', event => {
+      if (!event.currentTarget.classList.contains('on')) document.getElementById('computeNav').style.display = 'none';
+      else document.getElementById('computeNav').style.display = 'flex';
+    });
+  </script>
+</body>
+</html>
