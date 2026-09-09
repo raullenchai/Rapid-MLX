@@ -722,13 +722,24 @@ enum CommunityBenchmarkCommand {
 
     static func benchmarkShareArguments(
         runID: String, installID: String, payloadDigest: String,
-        bodyDigest: String, target: String
+        bodyDigest: String, target: String, attest: AttestMaterial? = nil
     ) -> [String] {
-        [
+        var arguments = [
             "benchmark", "share", runID, "--yes", "--install-id", installID,
             "--payload-digest", payloadDigest, "--body-digest", bodyDigest,
-            "--target", target, "--json",
+            "--target", target,
         ]
+        // App Attest material (computed in-app) is relayed by the engine as
+        // X-Rapid-Attest-* headers so the run can rank. Absent → un-attested.
+        if let attest {
+            arguments += [
+                "--attest-key-id", attest.keyID,
+                "--attest-assertion", attest.assertionBase64,
+                "--attest-challenge", attest.challenge,
+            ]
+        }
+        arguments.append("--json")
+        return arguments
     }
 
     static func decodeSharePreview(_ data: Data, runID: String) throws
@@ -1409,6 +1420,15 @@ struct CommunityBenchmarkView: View {
         errorMessage = nil
         shareTask = Task {
             do {
+                // Attest in-app over the exact bytes the engine will POST, so
+                // this run can rank. nil (unsupported device / older build /
+                // transient failure) → un-attested upload, which will not rank.
+                var attest: AttestMaterial?
+                if let target = URL(string: preview.target) {
+                    attest = await AppAttestClient().attestMaterial(
+                        forBody: Data(preview.payloadJSON.utf8), target: target
+                    )
+                }
                 let data = try await CommunityBenchmarkCommand.run(
                     binary: binary,
                     arguments: CommunityBenchmarkCommand.benchmarkShareArguments(
@@ -1416,7 +1436,8 @@ struct CommunityBenchmarkView: View {
                         installID: preview.installID,
                         payloadDigest: preview.payloadDigest,
                         bodyDigest: preview.bodyDigest,
-                        target: preview.target
+                        target: preview.target,
+                        attest: attest
                     )
                 )
                 let response = try JSONDecoder().decode(
