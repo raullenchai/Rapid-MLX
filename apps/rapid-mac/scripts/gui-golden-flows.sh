@@ -3105,7 +3105,7 @@ flow_no_dead_controls() {
     see_main "$OUT/dead-before.json"
 
     local category
-    local settings_categories=(modelManagement instructions tools connectors performance appearance privacy app)
+    local settings_categories=(modelManagement instructions tools performance experimentalFeatures appearance privacy app)
     if jq -e '.data.ui_elements[]?
               | select(.identifier == "Settings.Category.developer")' \
         "$OUT/dead-before.json" >/dev/null; then
@@ -3268,8 +3268,8 @@ flow_no_dead_controls() {
     press_and_require_selected Settings.Tools.WebSearch.Backend.duckduckgo dead-actions-backend-restore
 
     see_main "$OUT/dead-actions-tools-done.json"
-    press "$OUT/dead-actions-tools-done.json" Settings.Category.connectors \
-        "$OUT/dead-actions-connectors-open.json"
+    press "$OUT/dead-actions-tools-done.json" Settings.Category.experimentalFeatures \
+        "$OUT/dead-actions-experimental-open.json"
     round_trip_toggle Settings.Connectors.MasterToggle dead-actions-connectors-master
 
     see_main "$OUT/dead-actions-connectors-done.json"

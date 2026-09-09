@@ -59,9 +59,6 @@ AXApplication title="Rapid-MLX"
               AXButton id="Settings.Category.tools" desc="Tools" enabled=true
           AXRow subrole=AXOutlineRow
             AXCell enabled=true
-              AXButton id="Settings.Category.connectors" desc="Connectors" enabled=true
-          AXRow subrole=AXOutlineRow
-            AXCell enabled=true
               AXButton id="Settings.Category.performance" desc="Performance" enabled=true
           AXRow subrole=AXOutlineRow
             AXCell enabled=true

@@ -21,11 +21,16 @@ struct CommandPaletteTests {
             CommandPalette.Command.allCases,
             matching: "export diagnostics"
         )
+        let connectorResults = CommandPalette.filter(
+            CommandPalette.Command.allCases,
+            matching: "mcp connectors"
+        )
 
         #expect(titleResults == [.newChat])
         #expect(imageTitleResults == [.images])
         #expect(updateTitleResults == [.checkUpdates])
         #expect(punctuationResults == [.exportDiagnostics])
+        #expect(connectorResults == [.connectors])
     }
 
     @Test("Filtering is case-insensitive and ignores diacritics")

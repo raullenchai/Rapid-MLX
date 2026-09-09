@@ -1,6 +1,6 @@
 import SwiftUI
 
-/// Settings → Connectors. The whole user-facing surface for MCP (issue #1716).
+/// Settings → Experimental → MCP Connectors configuration (issue #1716).
 ///
 /// Before this, MCP was engine-complete and app-invisible: the only way to use
 /// it from the desktop was to hand-author `~/.config/rapid-mlx/mcp.json` and
@@ -57,21 +57,12 @@ struct SettingsConnectorsPanel: View {
     }
 
     var body: some View {
-        @Bindable var config = config
-        return VStack(alignment: .leading, spacing: RapidTheme.Space.xl) {
-            SectionHeader(
-                "Connectors",
-                subtitle: "Connect the model to MCP servers — programs on this Mac that expose tools like file access, databases or search. Off by default: a connector is a program that runs on your machine and that the model can invoke.",
-                emphasis: .page
-            )
-            masterSection
-            if config.isEnabled {
-                serversSection
-                if !catalog.tools.isEmpty {
-                    toolsSection
-                }
-                approvalSection
+        VStack(alignment: .leading, spacing: RapidTheme.Space.xl) {
+            serversSection
+            if !catalog.tools.isEmpty {
+                toolsSection
             }
+            approvalSection
         }
         .task(id: config.isEnabled) {
             // Reflect reality on open: the panel is the one place a user comes
@@ -107,37 +98,6 @@ struct SettingsConnectorsPanel: View {
         }
     }
 
-    // MARK: - Master switch
-
-    private var masterSection: some View {
-        @Bindable var config = config
-        return SettingsSection {
-                Toggle(isOn: $config.isEnabled) {
-                    SettingsRowLabel(
-                        title: "Enable connectors",
-                        description: "The local server only loads connectors when this is on."
-                    )
-                }
-                .toggleStyle(TrailingSettingsToggleStyle())
-                .accessibilityIdentifier("Settings.Connectors.MasterToggle")
-                // Turning the master switch on or off changes whether the child
-                // gets --mcp-config at all, which a hot reload cannot express —
-                // the flag is read once at spawn. ``needsRestart`` derives that
-                // from live state, so nothing is recorded here.
-                .onChange(of: config.isEnabled) { _, isOn in
-                    if !isOn {
-                        // Don't make the user wait for that restart to stop
-                        // offering connector tools. The child may still have
-                        // them loaded, but "connectors are off" has to mean
-                        // the model is not handed them on the very next turn —
-                        // dropping the catalog is what enforces that, since
-                        // ``MCPToolRegistry/definitions`` reads from it.
-                        catalog.clear()
-                    }
-                }
-        }
-    }
-
     // MARK: - Servers
 
     private var serversSection: some View {
@@ -164,7 +124,7 @@ struct SettingsConnectorsPanel: View {
                 InlineNotice(message: why, tone: .error)
             }
 
-            SettingsSection("Servers", subtitle: "Each server runs as its own program and exposes a set of tools.") {
+            SettingsSection("MCP connector servers", subtitle: "Each server exposes tools the model can request; local servers run as separate programs.") {
                 Button("Add…") { editing = EditorTarget(original: nil) }
                     .buttonStyle(.rapidSecondaryCompact)
                     .accessibilityIdentifier("Settings.Connectors.AddButton")

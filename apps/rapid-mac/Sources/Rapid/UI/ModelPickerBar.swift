@@ -1600,21 +1600,16 @@ struct ModelPickerBar: View {
             }
             return
         }
-        let fit = ModelSizing.classify(
-            ModelSizing.estimate(alias: trimmed),
-            on: hardware
-        )
         // A recommended pick trusts the curated table's measured
         // footprint over ModelSizing's estimate (which over-states
         // low-bit / MoE models), so it skips the .tooBig gate — the
         // table already vetted it fits this Mac's RAM tier.
         let catalogEntry = catalog.first(where: { $0.alias == trimmed })
-        let isRecommended = RAMBucketedDefault.isRecommendedPick(
+        if !ModelSizing.isAvailable(
             alias: trimmed,
-            physicalRAMGB: hardware.physicalRAMGB,
+            on: hardware,
             catalogEntry: catalogEntry
-        )
-        if fit == .tooBig && !isRecommended {
+        ) {
             pendingTooBigStart = trimmed
             return
         }

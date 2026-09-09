@@ -366,7 +366,7 @@ final class ChatViewModel {
     ///
     /// Issue #1716: since the registry became a ``CompositeToolRegistry``,
     /// ``tools/definitions`` also carries connector tools. Those get their own
-    /// switch in Settings → Connectors, backed by a different defaults key
+    /// switch in Settings → Experimental, backed by a different defaults key
     /// (``MCPToolRegistry``). Listing them in both panels would give one tool
     /// two independent off switches — flip the wrong one and the tool stays
     /// live with no indication why. Each surface owns exactly its own set.

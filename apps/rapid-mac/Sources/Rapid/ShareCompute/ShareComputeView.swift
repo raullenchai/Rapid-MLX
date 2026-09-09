@@ -11,6 +11,8 @@ struct ShareComputeView: View {
     @State private var providerKey = ""
     @State private var showingConnection = false
 
+    private let hardware = MacHardware.detect()
+
     private var selected: ShareComputeModel {
         ShareComputeModel.supported.first { $0.catalogID == selectedID }
             ?? ShareComputeModel.supported[0]
@@ -21,6 +23,18 @@ struct ShareComputeView: View {
     }
 
     private var selectedIsCached: Bool { selectedEntry?.cached == true }
+    private var selectedIsSupported: Bool {
+        ModelSizing.isAvailable(alias: selected.alias, on: hardware, catalogEntry: selectedEntry)
+    }
+
+    private func isSupported(_ model: ShareComputeModel) -> Bool {
+        let entry = catalog.first { $0.alias.caseInsensitiveCompare(model.alias) == .orderedSame }
+        return ModelSizing.isAvailable(alias: model.alias, on: hardware, catalogEntry: entry)
+    }
+
+    private var memoryTierLabel: String {
+        "Doesn't fit this \(Int(hardware.physicalRAMGB.rounded())) GB Mac"
+    }
 
     private var requiresRegistration: Bool {
         if !manager.hasRegistration(for: selected, worker: worker) { return true }
@@ -66,7 +80,7 @@ struct ShareComputeView: View {
     }
 
     private var providerCard: some View {
-        SettingsSection("Compute provider") {
+        SettingsSection("Inference Pool") {
             VStack(alignment: .leading, spacing: RapidTheme.Space.md) {
                 HStack(alignment: .top, spacing: RapidTheme.Space.md) {
                     Image(systemName: "bolt.horizontal.circle.fill")
@@ -109,9 +123,14 @@ struct ShareComputeView: View {
                 }
                 Picker("Pool model", selection: $selectedID) {
                     ForEach(ShareComputeModel.supported) { model in
-                        Text(model.title).tag(model.catalogID)
+                        Text(!catalogLoaded || isSupported(model)
+                             ? model.title
+                             : "\(model.title) — Doesn't fit this Mac")
+                            .tag(model.catalogID)
+                            .disabled(catalogLoaded && !isSupported(model))
                     }
                 }
+                .disabled(!catalogLoaded)
                 .accessibilityIdentifier("ShareCompute.ModelPicker")
 
                 HStack {
@@ -119,11 +138,13 @@ struct ShareComputeView: View {
                         Text(selected.detail).font(RapidFont.body)
                         Text(!catalogLoaded
                              ? "Checking this Mac…"
+                             : !selectedIsSupported
+                                ? memoryTierLabel
                              : selectedIsCached
                                 ? "Ready on this Mac"
                                 : "Download required before sharing")
                             .font(RapidFont.secondary)
-                            .foregroundStyle(selectedIsCached ? .green : .secondary)
+                            .foregroundStyle(selectedIsSupported && selectedIsCached ? .green : .secondary)
                     }
                     Spacer()
                     if !catalogLoaded {
@@ -131,6 +152,11 @@ struct ShareComputeView: View {
                             .buttonStyle(.rapidPrimaryCompact)
                             .disabled(true)
                             .accessibilityIdentifier("ShareCompute.CatalogChecking")
+                    } else if !selectedIsSupported {
+                        Button("Unavailable") {}
+                            .buttonStyle(.rapidPrimaryCompact)
+                            .disabled(true)
+                            .accessibilityIdentifier("ShareCompute.ModelUnavailable")
                     } else if selectedIsCached {
                         Button(requiresRegistration ? "Connect & Share" : "Start Sharing") {
                             if !requiresRegistration {
