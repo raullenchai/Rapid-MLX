@@ -83,6 +83,7 @@ struct ShareComputeView: View {
                     Spacer(minLength: RapidTheme.Space.md)
                     Link("Learn more", destination: URL(string: "https://quicksilverpro.io/")!)
                         .buttonStyle(.rapidSecondaryCompact)
+                        .accessibilityIdentifier("ShareCompute.ProviderLearnMore")
                 }
                 HStack(spacing: RapidTheme.Space.lg) {
                     proof("48", "models")
@@ -129,6 +130,7 @@ struct ShareComputeView: View {
                         Button("Checking…") {}
                             .buttonStyle(.rapidPrimaryCompact)
                             .disabled(true)
+                            .accessibilityIdentifier("ShareCompute.CatalogChecking")
                     } else if selectedIsCached {
                         Button(requiresRegistration ? "Connect & Share" : "Start Sharing") {
                             if !requiresRegistration {
@@ -233,12 +235,14 @@ struct ShareComputeView: View {
                 .accessibilityIdentifier("ShareCompute.Worker")
             HStack {
                 Link("Open QuickSilver", destination: URL(string: "https://quicksilverpro.io/")!)
+                    .accessibilityIdentifier("ShareCompute.OpenQuickSilver")
                 Spacer()
                 Button("Cancel") {
                     providerKey = ""
                     showingConnection = false
                 }
                 .buttonStyle(.rapidSecondary)
+                .accessibilityIdentifier("ShareCompute.Cancel")
                 Button("Connect & Share") {
                     let key = providerKey
                     providerKey = ""
