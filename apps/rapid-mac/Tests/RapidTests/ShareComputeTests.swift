@@ -28,6 +28,10 @@ struct ShareComputeTests {
         let snapshot = try JSONDecoder().decode(ShareComputeStatusSnapshot.self, from: data)
         #expect(ShareComputeManager.state(for: snapshot) == .online)
         #expect(snapshot.inflight == 2)
+
+        let stoppedData = Data(#"{"schema_version":1,"session":"0123456789abcdef0123456789abcdef","phase":"stopped","catalog_id":"qwen3.8-27b","alias":"qwen3.8-27b-4bit","worker":"Mini","updated_at":3}"#.utf8)
+        let stopped = try JSONDecoder().decode(ShareComputeStatusSnapshot.self, from: stoppedData)
+        #expect(ShareComputeManager.state(for: stopped) == .stopping)
     }
 
     @Test("Disabling the gate routes the hidden destination to Chat")
@@ -82,6 +86,8 @@ struct ShareComputeTests {
             await manager.join(model: firstModel, worker: "first", providerKey: "first-key")
         }
         for _ in 0..<10 { await Task.yield() }
+        await manager.join(model: firstModel, worker: "first", providerKey: "first-key")
+        #expect(manager.state == .preparing)
         manager.leave()
 
         let currentJoin = Task { @MainActor in

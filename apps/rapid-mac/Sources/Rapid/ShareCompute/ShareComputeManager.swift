@@ -116,8 +116,11 @@ final class ShareComputeManager {
     }
 
     func join(model: ShareComputeModel, worker: String, providerKey: String? = nil) async {
-        guard child == nil, operationID == nil,
-              let server, let binary = server.binaryPath else {
+        // Connect is idempotent while a preparation or provider is already
+        // live. A second button event must not replace truthful session state
+        // with an unrelated engine-availability error.
+        guard child == nil, operationID == nil else { return }
+        guard let server, let binary = server.binaryPath else {
             state = .failed("Rapid-MLX's local engine is not available.")
             return
         }
@@ -344,7 +347,10 @@ final class ShareComputeManager {
         case "connecting": .connecting
         case "online": .online
         case "reconnecting": .reconnecting
-        case "stopped": .idle
+        // The provider publishes this before its process group is necessarily
+        // gone. Keep controls locked until childExited/finishDeferredExit has
+        // confirmed teardown and released unified-memory residency.
+        case "stopped": .stopping
         case "error": .failed(snapshot.message ?? "Share Compute stopped unexpectedly.")
         default: .failed("Share Compute reported an unsupported status.")
         }
