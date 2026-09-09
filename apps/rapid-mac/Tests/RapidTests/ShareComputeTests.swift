@@ -147,10 +147,15 @@ struct ShareComputeTests {
         defer { try? FileManager.default.removeItem(at: home) }
         let model = ShareComputeModel.supported[0]
         let url = ShareComputeManager.registrationURL(catalogID: model.catalogID, home: home)
+        let credentialURL = ShareComputeManager.credentialCacheURL(
+            catalogID: model.catalogID,
+            home: home
+        )
         try FileManager.default.createDirectory(
             at: url.deletingLastPathComponent(),
             withIntermediateDirectories: true
         )
+        try Data("opaque credential cache".utf8).write(to: credentialURL)
         try Data(#"{"schema_version":1,"model":"qwen3.8-27b","alias":"qwen3.8-27b-4bit","worker":"Miniwest"}"#.utf8)
             .write(to: url)
 
@@ -162,6 +167,12 @@ struct ShareComputeTests {
         #expect(!ShareComputeManager.registrationMatches(
             model: model,
             worker: "Other Mac",
+            home: home
+        ))
+        try FileManager.default.removeItem(at: credentialURL)
+        #expect(!ShareComputeManager.registrationMatches(
+            model: model,
+            worker: "Mini / west",
             home: home
         ))
     }

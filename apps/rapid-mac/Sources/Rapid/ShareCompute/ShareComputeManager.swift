@@ -48,6 +48,7 @@ final class ShareComputeManager {
     private var shuttingDown = false
     private var shutdownSignalledAt: Date?
     private var currentStatusURL: URL?
+    private var currentSession: String?
     /// Invalidates a join that is still waiting for the shared residency
     /// lease. Without this, disabling the experiment during preparation could
     /// let the suspended task wake later and start a now-hidden provider.
@@ -77,6 +78,14 @@ final class ShareComputeManager {
         )
     }
 
+    nonisolated static func credentialCacheURL(
+        catalogID: String,
+        home: URL? = nil
+    ) -> URL {
+        let home = home ?? runtimeHomeURL()
+        return home.appendingPathComponent(".rapid-mlx/quicksilver/\(catalogID).json")
+    }
+
     func hasRegistration(for model: ShareComputeModel, worker: String) -> Bool {
         Self.registrationMatches(model: model, worker: worker)
     }
@@ -87,6 +96,12 @@ final class ShareComputeManager {
         home: URL? = nil
     ) -> Bool {
         let url = registrationURL(catalogID: model.catalogID, home: home)
+        let credentialURL = credentialCacheURL(catalogID: model.catalogID, home: home)
+        let credentialValues = try? credentialURL.resourceValues(forKeys: [.isRegularFileKey])
+        guard credentialValues?.isRegularFile == true,
+              FileManager.default.isReadableFile(atPath: credentialURL.path) else {
+            return false
+        }
         guard let handle = try? FileHandle(forReadingFrom: url) else { return false }
         defer { try? handle.close() }
         guard let data = try? handle.read(upToCount: 4_097), data.count <= 4_096,
@@ -177,6 +192,7 @@ final class ShareComputeManager {
         let session = UUID().uuidString.replacingOccurrences(of: "-", with: "").lowercased()
         let statusURL = Self.statusURL(session: session)
         currentStatusURL = statusURL
+        currentSession = session
         try? FileManager.default.removeItem(at: statusURL)
         let inputPipe = Pipe()
         let out = Pipe()
@@ -384,7 +400,14 @@ final class ShareComputeManager {
         // between two 250 ms polls. Read once at process-exit before removing
         // the snapshot so a revoked credential does not degrade into the
         // generic "stopped unexpectedly" message.
-        let finalSnapshot = currentStatusURL.flatMap(Self.loadStatus(at:)) ?? snapshot
+        let diskSnapshot = currentStatusURL.flatMap(Self.loadStatus(at:))
+        let finalSnapshot = if let diskSnapshot, let currentSession,
+                               diskSnapshot.schemaVersion == 1,
+                               diskSnapshot.session == currentSession {
+            diskSnapshot
+        } else {
+            snapshot
+        }
         if let finalSnapshot { snapshot = finalSnapshot }
         statusTask?.cancel()
         removeCurrentStatusFile()
@@ -498,8 +521,10 @@ final class ShareComputeManager {
     }
 
     private func removeCurrentStatusFile() {
-        guard let currentStatusURL else { return }
-        try? FileManager.default.removeItem(at: currentStatusURL)
+        if let currentStatusURL {
+            try? FileManager.default.removeItem(at: currentStatusURL)
+        }
         self.currentStatusURL = nil
+        currentSession = nil
     }
 }
