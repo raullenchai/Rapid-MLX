@@ -598,17 +598,20 @@ enum CommunityBenchmarkRunStatus {
         }
     }
 
-    /// A `~m:ss left` estimate from the average time per completed step,
-    /// measured from the first step so model-load time does not skew it.
-    /// nil until at least one step has completed and while none remain.
+    /// A `~m:ss left` estimate from the average interval BETWEEN completed
+    /// steps. `firstStepAt` is the first step's completion, so the elapsed
+    /// span covers `stepsDone - 1` intervals — dividing by that (not by
+    /// `stepsDone`) is what keeps the estimate honest and excludes the
+    /// one-off model-load + first-step time. Suppressed until two steps have
+    /// completed (one interval), and once none remain.
     static func eta(
         stepsDone: Int,
         totalSteps: Int,
         since firstStepAt: Date,
         now: Date
     ) -> String? {
-        guard stepsDone >= 1, stepsDone < totalSteps else { return nil }
-        let perStep = max(0, now.timeIntervalSince(firstStepAt)) / Double(stepsDone)
+        guard stepsDone >= 2, stepsDone < totalSteps else { return nil }
+        let perStep = max(0, now.timeIntervalSince(firstStepAt)) / Double(stepsDone - 1)
         let remaining = Int((perStep * Double(totalSteps - stepsDone)).rounded())
         return String(format: "~%d:%02d left", remaining / 60, remaining % 60)
     }
@@ -1539,6 +1542,10 @@ struct CommunityBenchmarkView: View {
         let activeRunID = UUID()
         currentRunID = activeRunID
         let sequencer = ProgressSequencer()
+        // Cumulative step index, stamped off the main actor in arrival order
+        // (LineSplitter delivers lines sequentially). The view applies it as
+        // a monotonic max, so a late/out-of-order hop can never drop a step.
+        let stepCounter = ProgressSequencer()
         runTask = Task {
             var acquiredReservation = false
             do {
@@ -1557,21 +1564,27 @@ struct CommunityBenchmarkView: View {
                             from: line
                         ) else { return }
                         let sequence = sequencer.next()
-                        let isStep = CommunityBenchmarkRunStatus.isStepLine(progress)
+                        // Cumulative step index (0 for non-step lines), assigned
+                        // in arrival order so the count survives unordered hops.
+                        let stepIndex = CommunityBenchmarkRunStatus.isStepLine(progress)
+                            ? stepCounter.next()
+                            : 0
                         Task { @MainActor in
-                            // A line that arrives after Stop / a new run must
-                            // not resurrect stale progress, and an older line
-                            // whose hop landed late must not overwrite a
-                            // newer one.
                             guard isRunning, runStartedAt != nil,
-                                  currentRunID == activeRunID,
-                                  sequence > appliedProgressSequence
+                                  currentRunID == activeRunID
                             else { return }
-                            appliedProgressSequence = sequence
-                            runProgressLine = progress
-                            if isStep {
-                                stepsDone += 1
+                            // Display: show only the newest line — a hop that
+                            // lands late must not overwrite a newer status.
+                            if sequence > appliedProgressSequence {
+                                appliedProgressSequence = sequence
+                                runProgressLine = progress
+                            }
+                            // Count: monotonic max, so an out-of-order hop can
+                            // never discard a completed step (undercounting the
+                            // bar/ETA).
+                            if stepIndex > 0 {
                                 if firstStepAt == nil { firstStepAt = Date() }
+                                stepsDone = max(stepsDone, stepIndex)
                             }
                         }
                     }
