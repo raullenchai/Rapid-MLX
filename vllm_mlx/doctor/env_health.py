@@ -831,9 +831,24 @@ for distribution, module_name in distributions.items():
     spec = None
     try:
         spec = importlib.util.find_spec(module_name)
+        # Namespace packages (mlx is one) have ``origin is None`` but a
+        # real ``submodule_search_locations`` directory. Ownership
+        # matching needs an existing path, so fall back to the package
+        # directory — otherwise a perfectly readable distribution
+        # (mlx 0.32.2) was reported as "version metadata unavailable"
+        # (0.13.4 dogfood P2). The path-trust check is unchanged:
+        # ``_module_path_is_trusted`` already accepts
+        # ``submodule_search_locations``.
+        probe_path = spec.origin if spec is not None else None
+        if (
+            probe_path is None
+            and spec is not None
+            and spec.submodule_search_locations
+        ):
+            probe_path = next(iter(spec.submodule_search_locations), None)
         version = None if spec is None else distribution_version(
             distribution,
-            spec.origin,
+            probe_path,
         )
     except importlib.metadata.PackageNotFoundError:
         version = None
@@ -1659,23 +1674,36 @@ def section_system() -> Section:
 def _install_location(exe: Path | None = None) -> tuple[str, Path]:
     """Classify where ``rapid-mlx`` is installed: ``uv tool``, ``pipx``,
     ``virtualenv``, ``system``. Returned label is for display; the path
-    is shown in --verbose."""
-    exe = (exe or Path(sys.executable)).resolve()
+    is shown in --verbose.
+
+    The returned path is the interpreter as configured — symlinks are
+    NOT dereferenced — so a virtualenv reports its own ``bin/python``
+    instead of the base interpreter its symlink points at. Resolving
+    first used to land the display path in Homebrew's Cellar (or a uv-
+    managed CPython) while the label read ``virtualenv``, mixing two
+    semantics on one line (0.13.4 dogfood P2). The label classification
+    below still inspects the resolved path, because uv/pipx layouts are
+    only recognizable through the real location; the base interpreter
+    remains reachable via ``sys.base_prefix`` for verbose detail.
+    """
+    raw = exe or Path(sys.executable)
+    exe = raw.resolve()
+    display = raw.absolute()
     parts = exe.parts
     lower = str(exe).lower()
     if "uv/tools" in lower or "/uv/tools/" in lower:
-        return "uv tool", exe
+        return "uv tool", display
     if "pipx" in lower:
-        return "pipx", exe
+        return "pipx", display
     # site-packages under a venv-style structure
     if (
         sys.prefix != getattr(sys, "base_prefix", sys.prefix)
         or "VIRTUAL_ENV" in os.environ
     ):
-        return "virtualenv", exe
+        return "virtualenv", display
     if "Cellar" in parts or "/homebrew/" in lower:
-        return "Homebrew", exe
-    return "system", exe
+        return "Homebrew", display
+    return "system", display
 
 
 def section_python() -> Section:
@@ -1760,7 +1788,8 @@ def section_python() -> Section:
         f"Install location: {install_label} ({path})",
         CheckStatus.OK,
         detail=(
-            f"sys.executable={path}; all package checks use this runtime's "
+            f"sys.executable={path}; base interpreter prefix="
+            f"{Path(sys.base_prefix)}; all package checks use this runtime's "
             "sys.path (or the running server's equivalent runtime)"
         ),
     )

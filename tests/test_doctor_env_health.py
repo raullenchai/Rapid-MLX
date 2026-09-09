@@ -5179,3 +5179,86 @@ def test_dflash_reports_supported_vlm_with_unverified_import(tmp_path, monkeypat
     assert row.status is eh.CheckStatus.WARN
     assert "cannot be verified safely" in row.label
     assert str(runtime) in row.detail
+
+
+# ---------------------------------------------------------------------------
+# 0.13.4 dogfood P2 fixes
+# ---------------------------------------------------------------------------
+
+
+def test_install_location_reports_unresolved_venv_interpreter(
+    tmp_path, monkeypatch
+):
+    """A virtualenv must display its own interpreter, not the resolved base.
+
+    ``_install_location()`` used to ``.resolve()`` the venv python symlink
+    first, so the display path landed in Homebrew's Cellar / a uv-managed
+    CPython while the label read ``virtualenv`` — two semantics on one
+    line (0.13.4 dogfood). The label classification may keep inspecting
+    the resolved path; the displayed path must stay the configured one.
+    """
+    base_bin = tmp_path / "base" / "bin"
+    base_bin.mkdir(parents=True)
+    base_python = base_bin / "python3.14"
+    base_python.write_text("#!/bin/sh\n")
+    venv_bin = tmp_path / "venv" / "bin"
+    venv_bin.mkdir(parents=True)
+    venv_python = venv_bin / "python3.14"
+    venv_python.symlink_to(base_python)
+
+    monkeypatch.setattr(eh.sys, "prefix", str(tmp_path / "venv"))
+    monkeypatch.setattr(eh.sys, "base_prefix", str(tmp_path / "base"))
+
+    label, path = eh._install_location(venv_python)
+    assert label == "virtualenv"
+    assert path == venv_python
+    assert "base" not in path.parts
+
+
+def test_install_location_row_details_base_interpreter(tmp_path, monkeypatch):
+    """The verbose detail carries the base interpreter prefix so venv
+    users can still see which interpreter the venv was seeded from."""
+    monkeypatch.setattr(eh.sys, "prefix", str(tmp_path / "venv"))
+    monkeypatch.setattr(eh.sys, "base_prefix", str(tmp_path / "base"))
+
+    section = eh.section_python()
+    row = next(c for c in section.checks if "Install location" in c.label)
+    assert "base interpreter prefix=" in row.detail
+    assert str(tmp_path / "base") in row.detail
+
+
+def test_probe_reports_namespace_package_version(tmp_path):
+    """Namespace packages must not lose their distribution version.
+
+    ``mlx`` is a namespace package: ``find_spec("mlx").origin`` is None
+    while ``submodule_search_locations`` points at the real
+    ``site-packages/mlx`` directory. The probe used to pass the None
+    origin into distribution-ownership matching, which failed, and
+    doctor warned "version metadata is unavailable" for a perfectly
+    readable distribution (0.13.4 dogfood).
+    """
+    site = tmp_path / "sidecar" / "site-packages"
+    ns_pkg = site / "dogfoodns"
+    ns_pkg.mkdir(parents=True)
+    (ns_pkg / "bridge.py").write_text("x = 1\n")
+    dist_info = site / "dogfoodns-stub-1.2.3.dist-info"
+    dist_info.mkdir()
+    (dist_info / "METADATA").write_text(
+        "Metadata-Version: 2.1\nName: dogfoodns-stub\nVersion: 1.2.3\n"
+    )
+    (dist_info / "RECORD").write_text(
+        "dogfoodns/bridge.py,,\ndogfoodns-stub-1.2.3.dist-info/METADATA,,\n"
+    )
+
+    monkey_packages = {"dogfoodns-stub": "dogfoodns"}
+    eh._RUNTIME_PROBE_CACHE.clear()
+    try:
+        with mock.patch.object(eh, "_RUNTIME_PACKAGES", monkey_packages):
+            probe = eh._probe_runtime(Path(sys.executable), tmp_path / "sidecar")
+    finally:
+        eh._RUNTIME_PROBE_CACHE.clear()
+
+    assert probe is not None
+    entry = probe["packages"]["dogfoodns-stub"]
+    assert entry["discoverable"] is True
+    assert entry["version"] == "1.2.3"
