@@ -55,6 +55,8 @@ struct ShareComputeTests {
             key.contains(secret) || value.contains(secret)
         }))
         #expect(request.standardInput == Data((secret + "\n").utf8))
+        #expect(ShareComputeManager.isValidProviderKey(String(repeating: "a", count: 4_095)))
+        #expect(!ShareComputeManager.isValidProviderKey(String(repeating: "🚀", count: 1_024)))
     }
 
     @Test("A stale join cannot erase the next join's state")

@@ -719,12 +719,17 @@ def _resolve_provider_key(args: argparse.Namespace) -> str:
         # Bound the read itself, not only the post-read validation: stdin is a
         # Desktop-owned pipe, but a malformed/injected writer must not pin an
         # unbounded allocation in the long-lived provider supervisor.
-        value = sys.stdin.readline(_PROVIDER_KEY_STDIN_MAX_BYTES + 1)
-        if len(value) > _PROVIDER_KEY_STDIN_MAX_BYTES or not value.endswith("\n"):
+        value = sys.stdin.buffer.readline(_PROVIDER_KEY_STDIN_MAX_BYTES + 1)
+        if len(value) > _PROVIDER_KEY_STDIN_MAX_BYTES or not value.endswith(b"\n"):
             raise QuickSilverError(
                 "provider key from stdin is missing a newline or too long"
             )
-        key = value.strip()
+        try:
+            key = value.decode("utf-8").strip()
+        except UnicodeDecodeError:
+            raise QuickSilverError(
+                "provider key from stdin is not valid UTF-8"
+            ) from None
         if not key:
             raise QuickSilverError("empty provider key — nothing to register with.")
         return key

@@ -2421,25 +2421,36 @@ def test_provider_key_interactive_prompt(monkeypatch):
 
 
 def test_provider_key_stdin_is_bounded_and_exclusive(monkeypatch):
-    monkeypatch.setattr(qs.sys, "stdin", io.StringIO(f" {PROVIDER_KEY} \n"))
+    def stdin(value: bytes):
+        return io.TextIOWrapper(io.BytesIO(value), encoding="utf-8")
+
+    monkeypatch.setattr(qs.sys, "stdin", stdin(f" {PROVIDER_KEY} \n".encode()))
     assert qs._resolve_provider_key(_make_args(provider_key_stdin=True)) == PROVIDER_KEY
 
-    monkeypatch.setattr(qs.sys, "stdin", io.StringIO(f"{PROVIDER_KEY}\n"))
+    monkeypatch.setattr(qs.sys, "stdin", stdin(f"{PROVIDER_KEY}\n".encode()))
     with pytest.raises(qs.QuickSilverError, match="cannot be combined"):
         qs._resolve_provider_key(
             _make_args(provider_key_stdin=True, provider_key=PROVIDER_KEY)
         )
 
-    monkeypatch.setattr(qs.sys, "stdin", io.StringIO("x" * 4097 + "\n"))
+    monkeypatch.setattr(qs.sys, "stdin", stdin(("x" * 4097 + "\n").encode()))
     with pytest.raises(qs.QuickSilverError, match="too long"):
         qs._resolve_provider_key(_make_args(provider_key_stdin=True))
 
-    monkeypatch.setattr(qs.sys, "stdin", io.StringIO(PROVIDER_KEY))
+    monkeypatch.setattr(qs.sys, "stdin", stdin(PROVIDER_KEY.encode()))
     with pytest.raises(qs.QuickSilverError, match="missing a newline"):
         qs._resolve_provider_key(_make_args(provider_key_stdin=True))
 
-    monkeypatch.setattr(qs.sys, "stdin", io.StringIO("   \n"))
+    monkeypatch.setattr(qs.sys, "stdin", stdin(b"   \n"))
     with pytest.raises(qs.QuickSilverError, match="empty provider key"):
+        qs._resolve_provider_key(_make_args(provider_key_stdin=True))
+
+    monkeypatch.setattr(qs.sys, "stdin", stdin(("🚀" * 1024 + "\n").encode()))
+    with pytest.raises(qs.QuickSilverError, match="too long"):
+        qs._resolve_provider_key(_make_args(provider_key_stdin=True))
+
+    monkeypatch.setattr(qs.sys, "stdin", stdin(b"\xff\n"))
+    with pytest.raises(qs.QuickSilverError, match="valid UTF-8"):
         qs._resolve_provider_key(_make_args(provider_key_stdin=True))
 
 

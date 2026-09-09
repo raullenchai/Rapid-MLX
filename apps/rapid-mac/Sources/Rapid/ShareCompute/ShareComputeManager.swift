@@ -109,8 +109,7 @@ final class ShareComputeManager {
             return
         }
         let trimmedKey = providerKey?.trimmingCharacters(in: .whitespacesAndNewlines)
-        if let trimmedKey,
-           (trimmedKey.count > 4095 || trimmedKey.contains("\n") || trimmedKey.contains("\r")) {
+        if let trimmedKey, !Self.isValidProviderKey(trimmedKey) {
             state = .failed("That provider key is not valid.")
             return
         }
@@ -328,6 +327,12 @@ final class ShareComputeManager {
         currentlyServing: String?
     ) -> String? {
         pending ?? currentlyServing
+    }
+
+    nonisolated static func isValidProviderKey(_ value: String) -> Bool {
+        value.utf8.count <= 4_095
+            && !value.contains("\n")
+            && !value.contains("\r")
     }
 
     /// Pure representation of every caller-controlled value handed to the
