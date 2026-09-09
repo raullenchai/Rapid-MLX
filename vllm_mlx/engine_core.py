@@ -416,8 +416,14 @@ class EngineCore:
         # SuffixDecoding lane leaves it "none" while decoding speculatively
         # (adversarial review round 2 on #3266). DDTree/DFlash run dedicated
         # single-user servers that never construct EngineCore, so Suffix is
-        # the only such lane reachable here.
-        suffix_active = bool(getattr(scheduler_config, "enable_suffix_decoding", False))
+        # the only such lane reachable here. Keyed on supports_spec_decode
+        # too because that is the install gate (scheduler refuses to install
+        # suffix for profiles with it False — including the --no-spec-decode
+        # forced False above): claiming an active lane that nothing installs
+        # would be its own registry-vs-reality lie (round 3 on #3266).
+        suffix_active = bool(
+            getattr(scheduler_config, "enable_suffix_decoding", False)
+        ) and bool(self.model_config.supports_spec_decode)
         lane_active = (
             runtime_spec_decode
             if runtime_spec_decode != "none"

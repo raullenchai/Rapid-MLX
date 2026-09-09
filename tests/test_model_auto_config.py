@@ -3040,7 +3040,9 @@ class TestCheckpointMetadataFallback:
         assert detect_model_config("publisher/unknown-model") is None
 
 
-def test_registry_invariant_default_on_implies_declared_mechanism():
+def test_registry_invariant_default_on_implies_declared_mechanism(
+    tmp_path, monkeypatch
+):
     """Pins the seam round-2 review on #3266 flagged: `_mtp_path_label`
     only consults the serve-side default-on helpers when the DETECTED cfg
     declares a mechanism (``supports_native_mtp`` or ``mtp_draft_model``).
@@ -3051,6 +3053,14 @@ def test_registry_invariant_default_on_implies_declared_mechanism():
     alias must keep the two views consistent."""
     from vllm_mlx.model_aliases import list_profiles
     from vllm_mlx.model_auto_config import detect_model_config
+
+    # Hermeticity (round-3 review on #3266): list_profiles() merges the
+    # host's user-alias file, which is outside the conftest env
+    # allowlist — point it at an empty tmp file so a corrupt/dev-machine
+    # alias config can't fail this suite.
+    empty_aliases = tmp_path / "user-aliases.json"
+    empty_aliases.write_text('{"version": 1, "aliases": {}}\n')
+    monkeypatch.setenv("RAPID_MLX_USER_ALIASES_FILE", str(empty_aliases))
 
     offenders: list[str] = []
     for alias, profile in list_profiles().items():
