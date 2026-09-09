@@ -611,18 +611,26 @@ enum CommunityBenchmarkRunStatus {
     /// `stepsDone - 1` intervals — so it is stable between steps (dividing by
     /// intervals, not steps, excludes the one-off model-load + first-step
     /// time). `now` is used only to count the projection DOWN as time passes,
-    /// never to inflate the per-step average. Suppressed until two steps have
-    /// completed (one interval), and once none remain.
+    /// never to inflate the per-step average. Text estimates wait for two
+    /// completions. A two-step image run uses its warmup duration from run
+    /// start; otherwise its ETA would first become available at completion.
     static func eta(
         stepsDone: Int,
         totalSteps: Int,
+        runStartedAt: Date,
         firstStepAt: Date,
         lastStepAt: Date,
         now: Date
     ) -> String? {
-        guard stepsDone >= 2, stepsDone < totalSteps else { return nil }
-        let perStep = max(0, lastStepAt.timeIntervalSince(firstStepAt))
-            / Double(stepsDone - 1)
+        guard stepsDone >= 1, stepsDone < totalSteps else { return nil }
+        let perStep: TimeInterval
+        if stepsDone == 1, totalSteps == 2 {
+            perStep = max(0, lastStepAt.timeIntervalSince(runStartedAt))
+        } else {
+            guard stepsDone >= 2 else { return nil }
+            perStep = max(0, lastStepAt.timeIntervalSince(firstStepAt))
+                / Double(stepsDone - 1)
+        }
         let projected = perStep * Double(totalSteps - stepsDone)
         let remaining = projected - max(0, now.timeIntervalSince(lastStepAt))
         // Past the projection with no new step: don't sit on a stale
@@ -1407,6 +1415,7 @@ struct CommunityBenchmarkView: View {
                                let eta = CommunityBenchmarkRunStatus.eta(
                                    stepsDone: stepsDone,
                                    totalSteps: totalSteps,
+                                   runStartedAt: runStartedAt,
                                    firstStepAt: firstStepAt,
                                    lastStepAt: lastStepAt,
                                    now: context.date

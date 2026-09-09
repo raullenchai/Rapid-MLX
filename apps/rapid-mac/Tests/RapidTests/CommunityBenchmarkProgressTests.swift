@@ -60,15 +60,28 @@ struct CommunityBenchmarkProgressTests {
         // One completion: no interval yet → no estimate (never "~0:00 left").
         #expect(
             CommunityBenchmarkRunStatus.eta(
-                stepsDone: 1, totalSteps: 12, firstStepAt: start,
+                stepsDone: 1, totalSteps: 12,
+                runStartedAt: start, firstStepAt: start,
                 lastStepAt: start, now: start
             ) == nil
+        )
+        // A two-step image run shows an estimate after its warmup; waiting
+        // for two completions would make the ETA first appear at completion.
+        #expect(
+            CommunityBenchmarkRunStatus.eta(
+                stepsDone: 1, totalSteps: 2,
+                runStartedAt: start,
+                firstStepAt: start.addingTimeInterval(20),
+                lastStepAt: start.addingTimeInterval(20),
+                now: start.addingTimeInterval(20)
+            ) == "~0:20 left"
         )
         // Two completions 10 s apart → 10 s/step × 10 remaining = 100 s, at
         // the instant of the second completion.
         #expect(
             CommunityBenchmarkRunStatus.eta(
                 stepsDone: 2, totalSteps: 12,
+                runStartedAt: start,
                 firstStepAt: start, lastStepAt: start.addingTimeInterval(10),
                 now: start.addingTimeInterval(10)
             ) == "~1:40 left"
@@ -78,6 +91,7 @@ struct CommunityBenchmarkProgressTests {
         #expect(
             CommunityBenchmarkRunStatus.eta(
                 stepsDone: 2, totalSteps: 12,
+                runStartedAt: start,
                 firstStepAt: start, lastStepAt: start.addingTimeInterval(10),
                 now: start.addingTimeInterval(14)
             ) == "~1:36 left"
@@ -87,6 +101,7 @@ struct CommunityBenchmarkProgressTests {
         #expect(
             CommunityBenchmarkRunStatus.eta(
                 stepsDone: 2, totalSteps: 12,
+                runStartedAt: start,
                 firstStepAt: start, lastStepAt: start.addingTimeInterval(10),
                 now: start.addingTimeInterval(200)
             ) == "wrapping up…"
@@ -95,6 +110,7 @@ struct CommunityBenchmarkProgressTests {
         #expect(
             CommunityBenchmarkRunStatus.eta(
                 stepsDone: 12, totalSteps: 12,
+                runStartedAt: start,
                 firstStepAt: start, lastStepAt: start.addingTimeInterval(60),
                 now: start.addingTimeInterval(60)
             ) == nil
