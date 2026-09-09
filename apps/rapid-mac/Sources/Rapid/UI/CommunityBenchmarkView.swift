@@ -1038,6 +1038,10 @@ struct CommunityBenchmarkView: View {
     @State private var stepsDone = 0
     @State private var firstStepAt: Date?
     @State private var errorMessage: String?
+    /// The result id of the run that just finished, so a prominent CTA can
+    /// invite the user to share it (instead of relying on the small per-row
+    /// link). Cleared when the row is shared, dismissed, or a new run starts.
+    @State private var pendingShareResultID: String?
     @State private var runTask: Task<Void, Never>?
     @State private var shareTask: Task<Void, Never>?
     @State private var shareCandidate: CommunityBenchmarkUploadPreview?
@@ -1071,6 +1075,7 @@ struct CommunityBenchmarkView: View {
             VStack(alignment: .leading, spacing: 24) {
                 header
                 setupCard
+                postRunShareCTA
                 recentResults
             }
             .frame(maxWidth: 760, alignment: .leading)
@@ -1096,6 +1101,20 @@ struct CommunityBenchmarkView: View {
             VStack(alignment: .leading, spacing: 16) {
                 Text("Share benchmark result?")
                     .font(.title2.weight(.semibold))
+                Label(
+                    "Every shared result makes the community leaderboard more "
+                        + "complete — helping everyone compare models across real "
+                        + "Macs and find faster local AI for their machine.",
+                    systemImage: "mappin.and.ellipse"
+                )
+                .font(.callout)
+                .foregroundStyle(RapidTheme.textSecondary)
+                .padding(12)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(
+                    RapidTheme.brandPrimaryDeep.opacity(0.08),
+                    in: RoundedRectangle(cornerRadius: 10)
+                )
                 Text("Everything in the JSON below will be sent to \(preview.target).")
                     .foregroundStyle(.secondary)
                 ScrollView {
@@ -1131,47 +1150,92 @@ struct CommunityBenchmarkView: View {
     }
 
     private func shareSuccessSheet(_ receipt: CommunityBenchmarkReceipt) -> some View {
-        VStack(spacing: 18) {
-            Image(systemName: "checkmark.circle.fill")
-                .font(.system(size: 44))
-                .foregroundStyle(.green)
-                .accessibilityHidden(true)
-            Text(receipt.alreadyExists ? "Already on the map" : "You added a point to the map")
-                .font(.title2.weight(.semibold))
-            if let contributor = receipt.contributor {
-                VStack(spacing: 6) {
-                    Text("Your Community Benchmark identity")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                    Text(contributor.displayName)
-                        .font(.system(.headline, design: .monospaced))
-                        .textSelection(.enabled)
-                        .accessibilityIdentifier("CommunityBenchmark.Share.Identity")
+        VStack(spacing: 0) {
+            VStack(spacing: 24) {
+                Image(systemName: "mappin.and.ellipse")
+                    .font(.system(size: 32, weight: .medium))
+                    .foregroundStyle(RapidTheme.brandPrimaryDeep)
+                    .frame(width: 72, height: 72)
+                    .background(RapidTheme.brandPrimaryDeep.opacity(0.10), in: Circle())
+                    .overlay(alignment: .bottomTrailing) {
+                        Image(systemName: "checkmark.circle.fill")
+                            .font(.system(size: 22, weight: .semibold))
+                            .foregroundStyle(RapidTheme.brandPrimaryDeep)
+                            .padding(3)
+                            .background(RapidTheme.surfaceRaised, in: Circle())
+                    }
+                    .accessibilityHidden(true)
+
+                VStack(spacing: 10) {
+                    Text(receipt.alreadyExists ? "Already on the map" : "You added a point to the map")
+                        .font(.title2.weight(.semibold))
+                        .foregroundStyle(RapidTheme.textPrimary)
+                    Text(receipt.alreadyExists
+                         ? "This result is already part of the community leaderboard. Thanks for contributing."
+                         : "Your model’s performance on this Mac now has a place on the community leaderboard.")
+                        .font(.body)
+                        .foregroundStyle(RapidTheme.textSecondary)
                 }
-                if let url = contributor.profileURL {
-                    Link("View my contributions", destination: url)
-                        .buttonStyle(.borderedProminent)
-                        .accessibilityIdentifier("CommunityBenchmark.Share.Profile")
+
+                if let contributor = receipt.contributor {
+                    VStack(spacing: 10) {
+                        Text("Your community identity")
+                            .font(.caption.weight(.medium))
+                            .foregroundStyle(RapidTheme.textSecondary)
+                        Text(contributor.displayName)
+                            .font(.system(.callout, design: .monospaced).weight(.medium))
+                            .foregroundStyle(RapidTheme.textPrimary)
+                            .textSelection(.enabled)
+                            .padding(.horizontal, 16)
+                            .padding(.vertical, 10)
+                            .background(RapidTheme.surfaceCanvas, in: Capsule())
+                            .overlay {
+                                Capsule().strokeBorder(RapidTheme.hairline, lineWidth: 1)
+                            }
+                            .accessibilityIdentifier("CommunityBenchmark.Share.Identity")
+                    }
                 }
-            } else {
-                Link(
-                    "View Community Benchmark",
-                    destination: communityBenchmarkLeaderboardURL
-                )
-                    .buttonStyle(.borderedProminent)
-                    .accessibilityIdentifier("CommunityBenchmark.Share.Leaderboard")
+
+                Text("Together, we’re building a clearer picture of local AI performance—so everyone can find faster models for their Mac.")
+                    .font(.callout)
+                    .foregroundStyle(RapidTheme.textSecondary)
             }
-            Text("Thanks for helping other Mac users choose models with real-world evidence.")
-                .font(.callout)
-                .foregroundStyle(.secondary)
-                .multilineTextAlignment(.center)
-            Button("Done") { shareSuccess = nil }
-                .keyboardShortcut(.defaultAction)
-                .accessibilityIdentifier("CommunityBenchmark.Share.Done")
+            .multilineTextAlignment(.center)
+            .fixedSize(horizontal: false, vertical: true)
+            .padding(32)
+
+            Rectangle()
+                .fill(RapidTheme.hairline)
+                .frame(height: 1)
+
+            HStack(spacing: 12) {
+                if let contributor = receipt.contributor {
+                    if let url = contributor.profileURL {
+                        Link("View my contributions", destination: url)
+                            .buttonStyle(.bordered)
+                            .accessibilityIdentifier("CommunityBenchmark.Share.Profile")
+                    }
+                } else {
+                    Link(
+                        "View Community Benchmark",
+                        destination: communityBenchmarkLeaderboardURL
+                    )
+                        .buttonStyle(.bordered)
+                        .accessibilityIdentifier("CommunityBenchmark.Share.Leaderboard")
+                }
+                Spacer(minLength: 0)
+                Button("Done") { shareSuccess = nil }
+                    .buttonStyle(.borderedProminent)
+                    .keyboardShortcut(.defaultAction)
+                    .accessibilityIdentifier("CommunityBenchmark.Share.Done")
+            }
+            .controlSize(.large)
+            .padding(.horizontal, 24)
+            .padding(.vertical, 18)
+            .background(RapidTheme.surfaceCanvas)
         }
-        .padding(32)
-        .frame(width: 440)
-        .frame(minHeight: 330)
+        .frame(width: 480)
+        .background(RapidTheme.surfaceRaised)
         .accessibilityIdentifier("CommunityBenchmark.Share.Success")
     }
 
@@ -1313,6 +1377,57 @@ struct CommunityBenchmarkView: View {
         }
     }
 
+    /// A prominent invitation to contribute the run that just finished — the
+    /// per-row "Share" link is easy to miss, and a result is only useful to
+    /// the community once it is shared. Hidden once the run is shared (a
+    /// receipt appears), dismissed, or superseded by a new run.
+    @ViewBuilder
+    private var postRunShareCTA: some View {
+        if let id = pendingShareResultID,
+           receipts[id] == nil,
+           !isRunning,
+           let result = results.first(where: { $0.id == id }) {
+            HStack(alignment: .top, spacing: 14) {
+                Image(systemName: "mappin.and.ellipse")
+                    .font(.title2)
+                    .foregroundStyle(RapidTheme.brandPrimaryDeep)
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("Put your Mac on the map").font(.headline)
+                    Text(
+                        "Share this \(alias(for: result.repoID)) result to help the "
+                            + "community compare models and find faster local AI."
+                    )
+                    .font(.callout)
+                    .foregroundStyle(RapidTheme.textSecondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                    HStack(spacing: 12) {
+                        Button(sharingRunID == result.id ? "Sharing…" : "Share benchmark result") {
+                            prepareShare(result)
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .disabled(sharingRunID != nil || binary == nil)
+                        .accessibilityIdentifier("CommunityBenchmark.ShareCTA.Confirm")
+                        Button("Not now") { pendingShareResultID = nil }
+                            .buttonStyle(.link)
+                            .accessibilityIdentifier("CommunityBenchmark.ShareCTA.Dismiss")
+                    }
+                    .padding(.top, 2)
+                }
+                Spacer(minLength: 0)
+            }
+            .padding(16)
+            .background(
+                RapidTheme.brandPrimaryDeep.opacity(0.06),
+                in: RoundedRectangle(cornerRadius: 14)
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 14)
+                    .strokeBorder(RapidTheme.brandPrimaryDeep.opacity(0.25))
+            )
+            .accessibilityIdentifier("CommunityBenchmark.ShareCTA")
+        }
+    }
+
     private var recentResults: some View {
         VStack(alignment: .leading, spacing: 12) {
             Text("Recent local results").font(.headline)
@@ -1420,6 +1535,7 @@ struct CommunityBenchmarkView: View {
         appliedProgressSequence = 0
         stepsDone = 0
         firstStepAt = nil
+        pendingShareResultID = nil
         let activeRunID = UUID()
         currentRunID = activeRunID
         let sequencer = ProgressSequencer()
@@ -1462,6 +1578,8 @@ struct CommunityBenchmarkView: View {
                 )
                 await refreshProductCatalog()
                 await refreshResults()
+                // Invite the user to contribute the run that just finished.
+                pendingShareResultID = results.first?.id
             } catch is CancellationError {
                 errorMessage = acquiredReservation
                     ? "Benchmark stopped. No incomplete result was shared."
