@@ -5277,6 +5277,7 @@ def test_progress_sink_never_aborts_the_benchmark(
 
     monkeypatch.setattr(sys, "stderr", BrokenStream())
     community_cli._progress_to_stderr("pp512-tg128      round 1/5")
+    community_cli._tagged_progress_to_stderr("pp512-tg128      round 1/5")
 
     class ClosedStream(io.StringIO):
         def write(self, text: str) -> int:
@@ -5284,6 +5285,7 @@ def test_progress_sink_never_aborts_the_benchmark(
 
     monkeypatch.setattr(sys, "stderr", ClosedStream())
     community_cli._progress_to_stderr("pp512-tg128      round 2/5")
+    community_cli._tagged_progress_to_stderr("pp512-tg128      round 2/5")
 
 
 # ---------------------------------------------------------------------------
