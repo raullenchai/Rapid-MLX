@@ -2515,6 +2515,7 @@ def load_model(
         )
         _engine = BatchedEngine(
             model_name=_engine_model_path,
+            profile_name=effective_model_alias,
             chat_template_id=(
                 _profile.chat_template_id if _profile is not None else None
             ),
@@ -2775,6 +2776,7 @@ async def _load_dynamic_resident_model(
 
         engine = BatchedEngine(
             model_name=load_path,
+            profile_name=model_name if model_name != load_path else None,
             chat_template_id=(
                 profile.chat_template_id if profile is not None else None
             ),

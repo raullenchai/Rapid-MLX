@@ -162,6 +162,10 @@ class EngineConfig:
     no_hybrid: bool = False
     force_spec_decode: bool = False
     no_spec_decode: bool = False
+    # Registry identity used only for operator-facing profile diagnostics.
+    # Keep this appended after every established field so positional callers
+    # retain their historical constructor semantics.
+    profile_name: str | None = None
 
 
 def _resolve_model_identity(engine_config: Any, configured: str | None) -> str | None:
@@ -410,7 +414,20 @@ class EngineCore:
         # Level 1 — always emit a one-line profile summary on engine init.
         # Level 2 — verbose ASCII capability table when explicitly requested
         # via env var ``RAPID_MLX_PROFILE_VERBOSE=1`` (or set on EngineConfig).
-        display_path = model_path or "(unknown)"
+        display_path = self.config.profile_name or model_path or "(unknown)"
+        display_model_config = self.model_config
+        if self.config.profile_name and self.config.profile_name != model_path:
+            # Alias-only facts (for example an external MTP sidecar) are lost
+            # after the loader resolves an alias to its snapshot path. Restore
+            # those facts for diagnostics only; scheduler policy continues to
+            # use ``self.model_config`` derived from the loaded checkpoint.
+            alias_cfg = detect_model_config(self.config.profile_name)
+            if alias_cfg is not None:
+                display_model_config = replace(
+                    alias_cfg,
+                    is_hybrid=self.model_config.is_hybrid,
+                    supports_spec_decode=self.model_config.supports_spec_decode,
+                )
         runtime_spec_decode = getattr(scheduler_config, "spec_decode", "none")
         # spec_decode == "none" is not proof of plain decode: the
         # SuffixDecoding lane leaves it "none" while decoding speculatively
@@ -432,7 +449,7 @@ class EngineCore:
         logger.info(
             format_profile_summary(
                 display_path,
-                self.model_config,
+                display_model_config,
                 runtime_spec_decode=lane_active,
             )
         )
@@ -459,7 +476,9 @@ class EngineCore:
             else:
                 table_runtime_spec = None
             for line in format_profile_table(
-                display_path, self.model_config, runtime_spec_decode=table_runtime_spec
+                display_path,
+                display_model_config,
+                runtime_spec_decode=table_runtime_spec,
             ).splitlines():
                 logger.info(line)
 

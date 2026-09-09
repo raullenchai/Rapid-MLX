@@ -874,6 +874,7 @@ class BatchedEngine(BaseEngine):
         enable_disk_stream: bool = False,
         disk_stream_cache_gb: float = 1.0,
         chat_template_id: str | None = None,
+        profile_name: str | None = None,
         serving_lane_reason: str | None = None,
     ):
         """
@@ -915,11 +916,15 @@ class BatchedEngine(BaseEngine):
             chat_template_id: Keyword-only model-profile prompt contract.
                 Control-plane callers pass this when ``model_name`` is a local
                 snapshot path whose originating profile is already known.
+            profile_name: Optional registry/alias identity retained for
+                operator-facing diagnostics after ``model_name`` resolves to a
+                local snapshot. It never changes model loading or cache keys.
             serving_lane_reason: Machine-readable reason from the shared
                 serving-lane decision. Kept on the live engine so model and
                 residency APIs report the decision that was actually loaded.
         """
         self._model_name = model_name
+        self._profile_name = profile_name or model_name
         if chat_template_id is None:
             from ..model_aliases import resolve_profile
 
@@ -1901,6 +1906,7 @@ class BatchedEngine(BaseEngine):
         scheduler_config = self._scheduler_config or SchedulerConfig()
         engine_config = EngineConfig(
             model_name=self._model_name,
+            profile_name=self._profile_name,
             scheduler_config=scheduler_config,
             stream_interval=self._stream_interval,
             gpu_memory_utilization=self._gpu_memory_utilization,
@@ -4445,6 +4451,7 @@ class BatchedEngine(BaseEngine):
         scheduler_config = self._scheduler_config or SchedulerConfig()
         engine_config = EngineConfig(
             model_name=self._model_name,
+            profile_name=self._profile_name,
             scheduler_config=scheduler_config,
             stream_interval=self._stream_interval,
             tool_logits_processor_factory=self._tool_logits_processor_factory,
