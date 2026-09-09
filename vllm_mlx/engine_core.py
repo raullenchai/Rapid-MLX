@@ -424,8 +424,20 @@ class EngineCore:
         if os.environ.get("RAPID_MLX_PROFILE_VERBOSE") == "1" or getattr(
             self.config, "verbose_profile", False
         ):
+            # Reconcile the table with the runtime (adversarial review
+            # round 1 on #3266): spec_decode == "none" alone is not proof
+            # of plain decode — the Suffix/DDTree lanes leave it "none" —
+            # so "off" is only claimed for the explicit --no-spec-decode
+            # override; otherwise an active method name, or None to keep
+            # the registry view.
+            if self.config.no_spec_decode:
+                table_runtime_spec = "off"
+            elif runtime_spec_decode != "none":
+                table_runtime_spec = runtime_spec_decode
+            else:
+                table_runtime_spec = None
             for line in format_profile_table(
-                display_path, self.model_config
+                display_path, self.model_config, runtime_spec_decode=table_runtime_spec
             ).splitlines():
                 logger.info(line)
 

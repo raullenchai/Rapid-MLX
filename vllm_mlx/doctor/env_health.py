@@ -836,16 +836,29 @@ for distribution, module_name in distributions.items():
         # matching needs an existing path, so fall back to the package
         # directory — otherwise a perfectly readable distribution
         # (mlx 0.32.2) was reported as "version metadata unavailable"
-        # (0.13.4 dogfood P2). The path-trust check is unchanged:
-        # ``_module_path_is_trusted`` already accepts
-        # ``submodule_search_locations``.
+        # (0.13.4 dogfood P2).
+        # Anchor on the first portion that is ITSELF trusted, not portion
+        # [0]: namespace portions merge across sys.path, context roots sit
+        # at sys.path[0], and ``_module_path_is_trusted`` is any-portion —
+        # so anchoring blindly on portion [0] let a shadow dist-info in an
+        # untrusted server-context directory claim a spoofed version while
+        # trusted_origin still reported True (adversarial security review
+        # #3266). No trusted portion → no anchor → version stays None
+        # (fail-closed), matching the pre-fallback behavior.
         probe_path = spec.origin if spec is not None else None
         if (
             probe_path is None
             and spec is not None
             and spec.submodule_search_locations
         ):
-            probe_path = next(iter(spec.submodule_search_locations), None)
+            probe_path = next(
+                (
+                    location
+                    for location in spec.submodule_search_locations
+                    if _path_is_trusted(location)
+                ),
+                None,
+            )
         version = None if spec is None else distribution_version(
             distribution,
             probe_path,
@@ -1814,8 +1827,19 @@ def _safe_version(
         )
         package = _probe_package(probe, dist) if probe else None
         if package is not None:
+            # Version consumers (repair-hint comparisons, supported-range
+            # checks) must only see probed metadata from trusted origins:
+            # a dist-info shadowing the module from a server-context path
+            # can claim any version (adversarial security review #3266 —
+            # previously only *importability* was gated on trusted_origin).
+            # The probe emits trusted_origin unconditionally; treat an
+            # ABSENT key as trusted (older fixture/probe formats) and gate
+            # only on an explicit False.
+            trusted = package.get("trusted_origin")
             version = package.get("version")
-            return str(version) if version else None
+            if trusted is not False and version:
+                return str(version)
+            return None
         return None
     try:
         return _im.version(dist)

@@ -2810,7 +2810,7 @@ def test_engine_core_profile_log_shows_explicit_mtp(monkeypatch, caplog):
     with caplog.at_level("INFO", logger="vllm_mlx.engine_core"):
         _make_engine_core_for_override_test(monkeypatch, cfg)
 
-    assert "spec decode MTP (explicit)" in caplog.text
+    assert "spec decode MTP (active)" in caplog.text
     assert "spec decode OFF" not in caplog.text
 
 

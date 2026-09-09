@@ -2347,8 +2347,11 @@ def _mtp_path_label(model_path: str, cfg: "ModelConfig") -> str:
     Derivation is from the resolved profile only (no ``config.json``
     read), keeping the ``rapid-mlx info`` path weight-free. The
     default-on vs opt-in split consults the same registry helpers serve
-    consults, so this label can never again report opt-in for a model
-    the server decodes with MTP by default (0.13.4 dogfood P1).
+    consults, so a flag-less serve never reports opt-in for a model it
+    decodes with MTP by default (0.13.4 dogfood P1). The registry view
+    is runtime-blind, though: callers that KNOW the runtime state pass
+    ``runtime_spec_decode`` (below) so the rows can't contradict what
+    the server is actually doing.
     """
     if getattr(cfg, "supports_native_mtp", False):
         # Method-specific capability metadata is authoritative here. A hybrid
@@ -2424,8 +2427,12 @@ def format_profile_summary(
     Empty/no-match models return a generic line so the log is consistent
     across known and unknown models.
     """
+    # "(active)" not "(explicit)": the engine can't tell a user-passed
+    # --speculative-config from the alias default-on path — cli normalizes
+    # both to the same scheduler spec_decode — so claiming provenance here
+    # would be wrong for default-on boots.
     runtime_status = (
-        f"spec decode {runtime_spec_decode.upper()} (explicit)"
+        f"spec decode {runtime_spec_decode.upper()} (active)"
         if runtime_spec_decode
         else None
     )
@@ -2447,9 +2454,23 @@ def format_profile_summary(
     return f"Model profile: {model_path} → " + ", ".join(parts)
 
 
-def format_profile_table(model_path: str, cfg: "ModelConfig | None") -> str:
+def format_profile_table(
+    model_path: str,
+    cfg: "ModelConfig | None",
+    *,
+    runtime_spec_decode: str | None = None,
+) -> str:
     """Multi-line ASCII capability table for verbose startup output and
     the ``rapid-mlx info`` CLI command (Level 2 + Level 3).
+
+    ``runtime_spec_decode`` reconciles the registry view with what the
+    server is actually doing (adversarial review round 1 on #3266): the
+    engine passes ``"off"`` when ``--no-spec-decode`` forced plain decode,
+    or the active method name (``"mtp"`` / ``"dflash"`` / ``"dspark"``);
+    ``None`` — the ``rapid-mlx info`` default — keeps the pure registry
+    view. Without this, ``serve … --no-spec-decode RAPID_MLX_PROFILE_VERBOSE=1``
+    rendered ``✓ default-on (MTP)`` next to ``Suffix tier: … spec decode
+    off`` in one box.
 
     Width is fixed at 64 cols so it renders cleanly in terminal logs.
     Note: Unicode check/cross marks count as 1 char each (no double-width).
@@ -2475,7 +2496,15 @@ def format_profile_table(model_path: str, cfg: "ModelConfig | None") -> str:
             ("Tool format", "(none)"),
             ("Reasoning parser", "(none)"),
             ("Architecture", "unknown"),
-            ("Spec decode", "✓ default-on"),
+            # Runtime reconciliation: an unmatched profile defaults to the
+            # generic "✓ default-on" line, but under an explicit
+            # --no-spec-decode the server runs plain decode regardless.
+            (
+                "Spec decode",
+                "✗ off (--no-spec-decode)"
+                if runtime_spec_decode == "off"
+                else "✓ default-on",
+            ),
             # Truth-in-labeling: no regex/alias matched, so the
             # architecture is genuinely UNKNOWN here — an opaquely named
             # Qwen3.5 or Gemma 4 checkpoint would land in this branch too.
@@ -2532,6 +2561,24 @@ def format_profile_table(model_path: str, cfg: "ModelConfig | None") -> str:
             # 0.9.0 dogfood: non-hybrid + spec-off was rendering
             # ``hybrid arch`` next to ``Architecture: pure attention``.
             spec = "✗ disabled (no MTP/drafter trained)"
+        # Runtime reconciliation (adversarial review round 1 on #3266).
+        # ``spec_decode == "none"`` at the scheduler is NOT proof of plain
+        # decode — the Suffix/DDTree lanes leave it "none" — so the engine
+        # passes "off" only for the explicit --no-spec-decode override and
+        # None otherwise. Only default-on claims are overridden: capability
+        # rows ("supported", "opt-in") stay truthful under plain decode.
+        if runtime_spec_decode == "off":
+            if spec == "✓ default-on (MTP)":
+                spec = "✗ off (--no-spec-decode)"
+                mtp_label = "off (--no-spec-decode)"
+        elif runtime_spec_decode and not (
+            runtime_spec_decode == "mtp" and spec == "✓ default-on (MTP)"
+        ):
+            # An active lane that disagrees with the registry copy:
+            # explicit --speculative-config mtp on a default-off alias,
+            # or dflash/dspark on any alias (including one whose MTP
+            # would be default-on — the server is doing DFlash, not MTP).
+            spec = f"✓ active ({runtime_spec_decode.upper()})"
         rows = [
             ("Tool format", cfg.tool_call_parser or "(none)"),
             ("Reasoning parser", cfg.reasoning_parser or "(none)"),

@@ -5260,3 +5260,106 @@ def test_probe_reports_namespace_package_version(tmp_path):
     entry = probe["packages"]["dogfoodns-stub"]
     assert entry["discoverable"] is True
     assert entry["version"] == "1.2.3"
+
+
+def test_probe_namespace_anchor_requires_trusted_portion(tmp_path):
+    """A shadow dist-info in an untrusted context path must not spoof the
+    version of a namespace-packaged distribution.
+
+    Namespace portions merge across sys.path and the server's cwd sits at
+    sys.path[0] (context root). Anchoring ownership on portion[0] let a
+    crafted same-named package dir + dist-info in the context path claim
+    any version while ``trusted_origin`` still reported True (adversarial
+    security review #3266). The anchor must be the first TRUSTED portion;
+    the spoof dist-info's RECORD only covers files under the context root,
+    so it fails ownership matching against the trusted anchor.
+    """
+    site = tmp_path / "sidecar" / "site-packages"
+    ns_pkg = site / "dogfoodns"
+    ns_pkg.mkdir(parents=True)
+    (ns_pkg / "bridge.py").write_text("x = 1\n")
+    real_dist = site / "dogfoodns-stub-1.2.3.dist-info"
+    real_dist.mkdir()
+    (real_dist / "METADATA").write_text(
+        "Metadata-Version: 2.1\nName: dogfoodns-stub\nVersion: 1.2.3\n"
+    )
+    (real_dist / "RECORD").write_text(
+        "dogfoodns/bridge.py,,\ndogfoodns-stub-1.2.3.dist-info/METADATA,,\n"
+    )
+
+    # Server-context shadow: unowned same-named namespace portion plus a
+    # spoof dist-info whose RECORD claims a file that exists in the shadow
+    # (Python 3.12+ drops nonexistent RECORD entries, so the file must be
+    # real for the spoof to even reach ownership matching).
+    ctx = tmp_path / "ctx"
+    shadow = ctx / "dogfoodns"
+    shadow.mkdir(parents=True)
+    (shadow / "shadow_impl.py").write_text("x = 2\n")
+    spoof_dist = ctx / "dogfoodns-stub-9.9.9.dist-info"
+    spoof_dist.mkdir()
+    (spoof_dist / "METADATA").write_text(
+        "Metadata-Version: 2.1\nName: dogfoodns-stub\nVersion: 9.9.9\n"
+    )
+    (spoof_dist / "RECORD").write_text(
+        "dogfoodns/shadow_impl.py,,\ndogfoodns-stub-9.9.9.dist-info/METADATA,,\n"
+    )
+
+    runtime = Path(sys.executable)
+    monkey_packages = {"dogfoodns-stub": "dogfoodns"}
+    saved_contexts = dict(eh._RUNTIME_CONTEXTS)
+    eh._RUNTIME_PROBE_CACHE.clear()
+    try:
+        eh._RUNTIME_CONTEXTS[runtime] = (ctx, {})
+        with mock.patch.object(eh, "_RUNTIME_PACKAGES", monkey_packages):
+            probe = eh._probe_runtime(runtime, tmp_path / "sidecar")
+    finally:
+        eh._RUNTIME_CONTEXTS.clear()
+        eh._RUNTIME_CONTEXTS.update(saved_contexts)
+        eh._RUNTIME_PROBE_CACHE.clear()
+
+    assert probe is not None
+    entry = probe["packages"]["dogfoodns-stub"]
+    assert entry["trusted_origin"] is True
+    assert entry["version"] == "1.2.3", entry
+
+
+def test_safe_version_gates_on_trusted_origin(monkeypatch):
+    """``_safe_version`` must not surface probe versions from untrusted
+    origins: version feeds supported-range checks and repair hints
+    (adversarial security review #3266 — previously only importability
+    was gated)."""
+    runtime = Path(sys.executable)
+    monkeypatch.setattr(eh, "_runtime_uses_context", lambda _rt: True)
+    monkeypatch.setattr(
+        eh,
+        "_probe_runtime",
+        lambda _rt, _root=None: {
+            "packages": {
+                "stub": {
+                    "version": "0.0.1",
+                    "trusted_origin": False,
+                    "discoverable": True,
+                    "module": "stub",
+                    "importable": None,
+                }
+            }
+        },
+    )
+    assert eh._safe_version("stub", runtime) is None
+
+    monkeypatch.setattr(
+        eh,
+        "_probe_runtime",
+        lambda _rt, _root=None: {
+            "packages": {
+                "stub": {
+                    "version": "1.2.3",
+                    "trusted_origin": True,
+                    "discoverable": True,
+                    "module": "stub",
+                    "importable": None,
+                }
+            }
+        },
+    )
+    assert eh._safe_version("stub", runtime) == "1.2.3"

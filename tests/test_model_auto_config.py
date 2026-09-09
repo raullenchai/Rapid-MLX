@@ -921,14 +921,14 @@ class TestVisibility:
         assert "throttle ON" in line
         assert "spec decode OFF" in line
 
-    def test_summary_shows_explicit_runtime_spec_decode(self):
+    def test_summary_shows_active_runtime_spec_decode(self):
         cfg = detect_model_config("mlx-community/Qwen3.5-35B-A3B-4bit")
         line = format_profile_summary(
             "mlx-community/Qwen3.5-35B-A3B-4bit",
             cfg,
             runtime_spec_decode="mtp",
         )
-        assert "spec decode MTP (explicit)" in line
+        assert "spec decode MTP (active)" in line
         assert "spec decode OFF" not in line
 
     def test_summary_for_unknown(self):
@@ -936,12 +936,12 @@ class TestVisibility:
         assert "unknown family" in line
         assert "brand-new-model" in line
 
-    def test_unknown_summary_shows_explicit_runtime_spec_decode(self):
+    def test_unknown_summary_shows_active_runtime_spec_decode(self):
         line = format_profile_summary(
             "brand-new-model", None, runtime_spec_decode="mtp"
         )
         assert "unknown family" in line
-        assert "spec decode MTP (explicit)" in line
+        assert "spec decode MTP (active)" in line
 
     # --- Level 2 / Level 3: ASCII table ---
 
@@ -1003,6 +1003,61 @@ class TestVisibility:
         table = format_profile_table("qwen3.5-4b-4bit", cfg)
         assert "sidecar (opt-in: --speculative-config)" in table
         assert "✓ default-on (MTP)" not in table
+
+    def test_table_no_spec_decode_runtime_overrides_default_on(self):
+        # Adversarial review round 1 (#3266): the registry view is
+        # runtime-blind. ``serve qwen3.8-27b-4bit --no-spec-decode`` with
+        # RAPID_MLX_PROFILE_VERBOSE=1 used to render ``✓ default-on
+        # (MTP)`` + ``sidecar (default; …)`` in the same box as
+        # ``Suffix tier: … spec decode off`` while the server ran plain
+        # decode. The engine now passes runtime_spec_decode="off" and the
+        # default-on claims must yield.
+        cfg = detect_model_config("qwen3.8-27b-4bit")
+        table = format_profile_table("qwen3.8-27b-4bit", cfg, runtime_spec_decode="off")
+        assert "✗ off (--no-spec-decode)" in table
+        assert "MTP path         : off (--no-spec-decode)" in table
+        assert "✓ default-on (MTP)" not in table
+        assert "sidecar (default; --no-spec-decode off)" not in table
+
+    def test_table_no_spec_decode_keeps_capability_rows(self):
+        # Only default-on ACTIVITY claims are overridden. A default-off
+        # alias under --no-spec-decode keeps its opt-in rows: the
+        # mechanism exists, it is simply not running — same truth the
+        # #3115 contract requires flag-less.
+        cfg = detect_model_config("qwen3.5-4b-4bit")
+        table = format_profile_table("qwen3.5-4b-4bit", cfg, runtime_spec_decode="off")
+        assert "✗ off (MTP opt-in: --speculative-config)" in table
+        assert "sidecar (opt-in: --speculative-config)" in table
+
+    def test_table_active_runtime_method_overrides_off_rows(self):
+        # Explicit opt-in boot on a default-off alias: the runtime IS
+        # decoding with MTP, so the registry's ``✗ off (MTP opt-in …)``
+        # row would deny reality. Same for non-MTP lanes (dflash) on a
+        # default-on alias.
+        cfg = detect_model_config("qwen3.5-4b-4bit")
+        table = format_profile_table("qwen3.5-4b-4bit", cfg, runtime_spec_decode="mtp")
+        assert "✓ active (MTP)" in table
+        assert "✗ off (MTP opt-in" not in table
+
+        hybrid = detect_model_config("qwen3.8-27b-4bit")
+        table = format_profile_table(
+            "qwen3.8-27b-4bit", hybrid, runtime_spec_decode="dflash"
+        )
+        assert "✓ active (DFLASH)" in table
+
+    def test_table_runtime_mtp_keeps_default_on_copy(self):
+        # Flag-less default-on boot: runtime method "mtp" agrees with the
+        # registry view, which is the more informative copy — keep it.
+        cfg = detect_model_config("qwen3.8-27b-4bit")
+        table = format_profile_table("qwen3.8-27b-4bit", cfg, runtime_spec_decode="mtp")
+        assert "✓ default-on (MTP)" in table
+
+    def test_table_unmatched_profile_runtime_off(self):
+        # The unmatched-profile branch hardcodes a generic ``✓
+        # default-on``; under --no-spec-decode that is false regardless
+        # of what loads.
+        table = format_profile_table("brand-new-model", None, runtime_spec_decode="off")
+        assert "✗ off (--no-spec-decode)" in table
 
     def test_table_fails_closed_when_registry_unavailable(self, monkeypatch):
         # Registry failure must not fabricate a default-on claim — the
