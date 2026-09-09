@@ -2491,20 +2491,21 @@ def format_profile_table(
         header = header[: inner - 1] + "…"
 
     if cfg is None:
+        # Runtime reconciliation for the unmatched-profile branch too:
+        # the generic "✓ default-on" line must yield to what the server
+        # is actually doing (round 2 on #3266).
+        if runtime_spec_decode == "off":
+            unknown_spec = "✗ off (--no-spec-decode)"
+        elif runtime_spec_decode:
+            unknown_spec = f"✓ active ({runtime_spec_decode.upper()})"
+        else:
+            unknown_spec = "✓ default-on"
         rows = [
             ("Profile", "(no pattern matched — using defaults)"),
             ("Tool format", "(none)"),
             ("Reasoning parser", "(none)"),
             ("Architecture", "unknown"),
-            # Runtime reconciliation: an unmatched profile defaults to the
-            # generic "✓ default-on" line, but under an explicit
-            # --no-spec-decode the server runs plain decode regardless.
-            (
-                "Spec decode",
-                "✗ off (--no-spec-decode)"
-                if runtime_spec_decode == "off"
-                else "✓ default-on",
-            ),
+            ("Spec decode", unknown_spec),
             # Truth-in-labeling: no regex/alias matched, so the
             # architecture is genuinely UNKNOWN here — an opaquely named
             # Qwen3.5 or Gemma 4 checkpoint would land in this branch too.
@@ -2576,9 +2577,14 @@ def format_profile_table(
         ):
             # An active lane that disagrees with the registry copy:
             # explicit --speculative-config mtp on a default-off alias,
-            # or dflash/dspark on any alias (including one whose MTP
-            # would be default-on — the server is doing DFlash, not MTP).
+            # or dflash/dspark/suffix on any alias (including one whose
+            # MTP would be default-on — the server is decoding via that
+            # lane, and MTP is not loaded; round 2 on #3266 caught the
+            # Suffix variant rendering "✓ default-on (MTP)" under an
+            # active SuffixDecoding boot).
             spec = f"✓ active ({runtime_spec_decode.upper()})"
+            if runtime_spec_decode != "mtp":
+                mtp_label = f"off (decoding via {runtime_spec_decode.upper()})"
         rows = [
             ("Tool format", cfg.tool_call_parser or "(none)"),
             ("Reasoning parser", cfg.reasoning_parser or "(none)"),

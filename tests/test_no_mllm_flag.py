@@ -2814,6 +2814,32 @@ def test_engine_core_profile_log_shows_explicit_mtp(monkeypatch, caplog):
     assert "spec decode OFF" not in caplog.text
 
 
+def test_engine_core_suffix_lane_reconciles_profile_log(monkeypatch, caplog):
+    """SuffixDecoding leaves scheduler ``spec_decode="none"`` while the
+    server decodes speculatively — summary AND verbose table must name
+    the active lane instead of the registry's default-on MTP claim
+    (adversarial review round 2, #3266)."""
+    try:
+        from vllm_mlx.engine_core import EngineConfig
+        from vllm_mlx.scheduler import SchedulerConfig
+    except (ImportError, RuntimeError) as exc:
+        pytest.skip(f"MLX runtime unavailable ({exc})")
+
+    cfg = EngineConfig(
+        model_name="fake/model",
+        scheduler_config=SchedulerConfig(
+            spec_decode="none", enable_suffix_decoding=True
+        ),
+    )
+    monkeypatch.setenv("RAPID_MLX_PROFILE_VERBOSE", "1")
+    with caplog.at_level("INFO", logger="vllm_mlx.engine_core"):
+        _make_engine_core_for_override_test(monkeypatch, cfg)
+
+    assert "spec decode SUFFIX (active)" in caplog.text
+    assert "✓ active (SUFFIX)" in caplog.text
+    assert "✓ default-on (MTP)" not in caplog.text
+
+
 def _engine_core_mutex_cases() -> list[dict[str, bool]]:
     """Build mutex-conflict parametrize cases from the registry. For
     every pair with ``model_config_field`` not None, generate one

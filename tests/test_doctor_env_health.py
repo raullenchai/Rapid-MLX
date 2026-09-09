@@ -5363,3 +5363,54 @@ def test_safe_version_gates_on_trusted_origin(monkeypatch):
         },
     )
     assert eh._safe_version("stub", runtime) == "1.2.3"
+
+
+@pytest.mark.parametrize("escape_shape", ["dotdot", "absolute"])
+def test_probe_record_escape_cannot_claim_trusted_anchor(
+    tmp_path, monkeypatch, escape_shape
+):
+    """A dist-info in an untrusted context root must not claim ownership
+    of the trusted sidecar's namespace portion via RECORD tricks.
+
+    ``Distribution.locate_file`` joins RECORD entries verbatim, so a
+    crafted dist-info can reference files OUTSIDE its own install root
+    (``..`` or absolute entries). Round 2 on #3266 verified both shapes
+    spoof the version whenever no trusted dist-info claims the anchor
+    first (the exact 'visible without metadata' residue this probe
+    diagnoses). Ownership entries must stay inside their own root."""
+    site = tmp_path / "sidecar" / "site-packages"
+    ns_pkg = site / "dogfoodns"
+    ns_pkg.mkdir(parents=True)
+    (ns_pkg / "bridge.py").write_text("x = 1\n")
+    # Deliberately NO dist-info in the trusted root: the anchor is the
+    # visible-but-unclaimed namespace portion.
+
+    ctx = tmp_path / "ctx"
+    spoof_dist = ctx / "dogfoodns-stub-9.9.9.dist-info"
+    spoof_dist.mkdir(parents=True)
+    (spoof_dist / "METADATA").write_text(
+        "Metadata-Version: 2.1\nName: dogfoodns-stub\nVersion: 9.9.9\n"
+    )
+    if escape_shape == "dotdot":
+        record_entry = "../sidecar/site-packages/dogfoodns/bridge.py,,\n"
+    else:
+        record_entry = f"{ns_pkg / 'bridge.py'},,\n"
+    (spoof_dist / "RECORD").write_text(record_entry)
+
+    runtime = Path(sys.executable)
+    monkey_packages = {"dogfoodns-stub": "dogfoodns"}
+    saved_contexts = dict(eh._RUNTIME_CONTEXTS)
+    eh._RUNTIME_PROBE_CACHE.clear()
+    try:
+        eh._RUNTIME_CONTEXTS[runtime] = (ctx, {})
+        with mock.patch.object(eh, "_RUNTIME_PACKAGES", monkey_packages):
+            probe = eh._probe_runtime(runtime, tmp_path / "sidecar")
+    finally:
+        eh._RUNTIME_CONTEXTS.clear()
+        eh._RUNTIME_CONTEXTS.update(saved_contexts)
+        eh._RUNTIME_PROBE_CACHE.clear()
+
+    assert probe is not None
+    entry = probe["packages"]["dogfoodns-stub"]
+    assert entry["trusted_origin"] is True
+    assert entry["version"] != "9.9.9", entry

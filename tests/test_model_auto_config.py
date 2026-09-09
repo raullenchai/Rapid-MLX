@@ -1052,6 +1052,40 @@ class TestVisibility:
         table = format_profile_table("qwen3.8-27b-4bit", cfg, runtime_spec_decode="mtp")
         assert "✓ default-on (MTP)" in table
 
+    def test_table_suffix_lane_overrides_default_on_mtp(self):
+        # Round 2 on #3266: the SuffixDecoding lane leaves scheduler
+        # spec_decode "none" while decoding speculatively. The table must
+        # not claim default-on MTP for a server that is actively decoding
+        # via Suffix — and the MTP-path row must stop advertising the
+        # "(default; --no-spec-decode off)" disposition that isn't loaded.
+        cfg = detect_model_config("qwen3.8-27b-4bit")
+        table = format_profile_table(
+            "qwen3.8-27b-4bit", cfg, runtime_spec_decode="suffix"
+        )
+        assert "✓ active (SUFFIX)" in table
+        assert "MTP path         : off (decoding via SUFFIX)" in table
+        assert "✓ default-on (MTP)" not in table
+        assert "sidecar (default; --no-spec-decode off)" not in table
+
+    def test_table_dflash_lane_marks_mtp_off(self):
+        # Same contract for DFlash (dedicated single-user engine): MTP is
+        # not loaded while DFlash decodes.
+        cfg = detect_model_config("qwen3.8-27b-4bit")
+        table = format_profile_table(
+            "qwen3.8-27b-4bit", cfg, runtime_spec_decode="dflash"
+        )
+        assert "✓ active (DFLASH)" in table
+        assert "MTP path         : off (decoding via DFLASH)" in table
+
+    def test_table_unmatched_profile_active_lane(self):
+        # The unmatched-profile branch must also reconcile an active lane,
+        # not just the --no-spec-decode override.
+        table = format_profile_table(
+            "brand-new-model", None, runtime_spec_decode="suffix"
+        )
+        assert "✓ active (SUFFIX)" in table
+        assert "✓ default-on" not in table
+
     def test_table_unmatched_profile_runtime_off(self):
         # The unmatched-profile branch hardcodes a generic ``✓
         # default-on``; under --no-spec-decode that is false regardless
@@ -3004,3 +3038,33 @@ class TestCheckpointMetadataFallback:
         monkeypatch.setattr(auto_config_mod, "read_model_metadata", lambda name: None)
 
         assert detect_model_config("publisher/unknown-model") is None
+
+
+def test_registry_invariant_default_on_implies_declared_mechanism():
+    """Pins the seam round-2 review on #3266 flagged: `_mtp_path_label`
+    only consults the serve-side default-on helpers when the DETECTED cfg
+    declares a mechanism (``supports_native_mtp`` or ``mtp_draft_model``).
+    If an alias ever ships ``mtp_continuous_batching_tier=verified`` +
+    ``mtp_default_enabled`` truthy WITHOUT declaring a mechanism, serve
+    would boot MTP by default while the info table claims opt-in/disabled
+    — the exact registry-vs-reality split this PR closes. Every shipped
+    alias must keep the two views consistent."""
+    from vllm_mlx.model_aliases import list_profiles
+    from vllm_mlx.model_auto_config import detect_model_config
+
+    offenders: list[str] = []
+    for alias, profile in list_profiles().items():
+        if profile.mtp_continuous_batching_tier != "verified":
+            continue
+        if not profile.mtp_default_enabled:
+            continue
+        cfg = detect_model_config(alias)
+        declares = bool(getattr(cfg, "supports_native_mtp", False)) or bool(
+            (getattr(cfg, "mtp_draft_model", None) or "").strip()
+        )
+        if not declares:
+            offenders.append(alias)
+    assert not offenders, (
+        "verified+default-on aliases must declare a native MTP head or a "
+        f"sidecar drafter so the info table can see it: {offenders}"
+    )

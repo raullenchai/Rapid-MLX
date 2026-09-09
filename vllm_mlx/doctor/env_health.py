@@ -812,9 +812,29 @@ def _distribution_owns_module(distribution, module_path):
     owned_paths = [module_path]
     if module_path.name == "__init__.py":
         owned_paths.append(module_path.parent)
+    # RECORD is attacker-controlled when the dist-info comes from an
+    # untrusted root: ``locate_file`` joins entries verbatim, so absolute
+    # entries (and "../" entries that escape the dist-info's install
+    # root) could otherwise claim a module in a DIFFERENT root — e.g. a
+    # context dist-info asserting ownership of the trusted sidecar's
+    # namespace portion (adversarial review round 2 on #3266). Entries
+    # that stay inside their own install root are matched as before;
+    # out-of-root entries (legitimately: console scripts like
+    # ../../../bin/foo) are simply not eligible for ownership.
+    try:
+        dist_root = Path(distribution.locate_file("")).resolve()
+    except (Exception, SystemExit):
+        dist_root = None
     for installed_file in distribution.files or []:
         try:
-            installed_path = Path(distribution.locate_file(installed_file)).resolve()
+            entry = Path(installed_file)
+            if entry.is_absolute():
+                continue
+            installed_path = Path(distribution.locate_file(entry)).resolve()
+            if dist_root is not None and not installed_path.is_relative_to(
+                dist_root
+            ):
+                continue
         except (Exception, SystemExit):
             continue
         for owned_path in owned_paths:
