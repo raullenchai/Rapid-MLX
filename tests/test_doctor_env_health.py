@@ -5213,6 +5213,35 @@ def test_install_location_reports_unresolved_venv_interpreter(tmp_path, monkeypa
     assert "base" not in path.parts
 
 
+@pytest.mark.parametrize(
+    ("resolved_parent", "expected_label"),
+    [
+        (Path("uv/tools/runtime/bin"), "uv tool"),
+        (Path("pipx/venvs/rapid-mlx/bin"), "pipx"),
+        (Path("Cellar/python@3.14/bin"), "Homebrew"),
+        (Path("usr/bin"), "system"),
+    ],
+)
+def test_install_location_classifies_resolved_runtime_layouts(
+    tmp_path, monkeypatch, resolved_parent, expected_label
+):
+    """Classification follows the resolved runtime while display stays raw."""
+    runtime = tmp_path / resolved_parent / "python3.14"
+    runtime.parent.mkdir(parents=True)
+    runtime.write_text("#!/bin/sh\n")
+    configured = tmp_path / "configured" / "python"
+    configured.parent.mkdir()
+    configured.symlink_to(runtime)
+
+    monkeypatch.delenv("VIRTUAL_ENV", raising=False)
+    monkeypatch.setattr(eh.sys, "prefix", str(tmp_path / "system"))
+    monkeypatch.setattr(eh.sys, "base_prefix", str(tmp_path / "system"))
+
+    label, path = eh._install_location(configured)
+    assert label == expected_label
+    assert path == configured
+
+
 def test_install_location_row_details_base_interpreter(tmp_path, monkeypatch):
     """The verbose detail carries the base interpreter prefix so venv
     users can still see which interpreter the venv was seeded from."""

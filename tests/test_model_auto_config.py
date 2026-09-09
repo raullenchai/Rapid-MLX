@@ -1,6 +1,7 @@
 """Tests for model auto-config detection."""
 
 import logging
+import sys
 from unittest import mock
 
 import pytest
@@ -1105,6 +1106,21 @@ class TestVisibility:
         table = format_profile_table("qwen3.8-27b-4bit", cfg)
         assert "✓ default-on (MTP)" not in table
         assert "sidecar (default" not in table
+
+    def test_mtp_default_probe_fails_closed_when_cli_import_is_unavailable(
+        self, monkeypatch
+    ):
+        monkeypatch.setitem(sys.modules, "vllm_mlx.cli", None)
+        assert auto_config_mod._serve_mtp_default_on("qwen3.8-27b-4bit") is False
+
+    def test_native_mtp_default_on_label(self, monkeypatch):
+        monkeypatch.setattr(
+            auto_config_mod, "_serve_mtp_default_on", lambda _name: True
+        )
+        cfg = ModelConfig(supports_native_mtp=True)
+        assert auto_config_mod._mtp_path_label("native-model", cfg) == (
+            "native (default; --no-spec-decode off)"
+        )
 
     def test_qwen4_exp_alias_surfaces_experimental_status(self):
         cfg = detect_model_config("qwen3.8-flash-next-4bit")

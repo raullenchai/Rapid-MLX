@@ -2874,6 +2874,31 @@ def test_engine_core_suffix_flag_without_install_gate_stays_honest(monkeypatch, 
     assert "spec decode OFF" in caplog.text
 
 
+def test_engine_core_verbose_plain_registry_view_uses_no_runtime_override(
+    monkeypatch, caplog
+):
+    """A normal boot leaves the verbose table on its registry capability view."""
+    try:
+        from vllm_mlx.engine_core import EngineConfig
+        from vllm_mlx.scheduler import SchedulerConfig
+    except (ImportError, RuntimeError) as exc:
+        pytest.skip(f"MLX runtime unavailable ({exc})")
+
+    cfg = EngineConfig(
+        model_name="fake/model",
+        scheduler_config=SchedulerConfig(
+            spec_decode="none", enable_suffix_decoding=False
+        ),
+    )
+    monkeypatch.setenv("RAPID_MLX_PROFILE_VERBOSE", "1")
+    with caplog.at_level("INFO", logger="vllm_mlx.engine_core"):
+        _make_engine_core_for_override_test(monkeypatch, cfg)
+
+    assert "Spec decode" in caplog.text
+    assert "spec decode MTP (active)" not in caplog.text
+    assert "spec decode SUFFIX (active)" not in caplog.text
+
+
 def _engine_core_mutex_cases() -> list[dict[str, bool]]:
     """Build mutex-conflict parametrize cases from the registry. For
     every pair with ``model_config_field`` not None, generate one
