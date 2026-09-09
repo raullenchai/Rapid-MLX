@@ -57,6 +57,11 @@ class SuffixAcceptCounter:
         "no_draft",
         "cooldown",
         "non_trimmable_cache",
+        # Hybrid path (#2561): a draft shorter than the hybrid minimum-match
+        # floor, or a bit-exactness-guard drift refusal, both take a plain
+        # forward. Additive buckets (no existing metric renamed).
+        "short_match",
+        "hybrid_drift",
         # Drafter or verify-forward raised; the step still took a plain
         # forward, so it must appear in the breakdown or verify +
         # fallthrough stops reconciling with actual decode steps exactly

@@ -188,6 +188,36 @@ class SuffixDecodingDrafter:
                 for key in stale_keys:
                     del bucket[key]
 
+    def snapshot_state(self):
+        """Capture a restorable snapshot of the mutable index state.
+
+        Used by the scheduler's post-commit exception path to roll the drafter
+        back before a vanilla re-generate. Captures ``_shift`` and a copy of
+        ``_tokens`` so ``restore_state`` can recover the EXACT pre-add history
+        even when appending crossed the ``max_history`` head-trim boundary
+        (which evicts the head and advances ``_shift`` — a length-only rewind
+        cannot restore that).
+        """
+        return (list(self._tokens), self._shift)
+
+    def restore_state(self, state) -> None:
+        """Restore ``_tokens``/``_shift`` to a captured snapshot and rebuild the
+        k-gram index from them. Correct after a head-trim: re-indexing from the
+        restored tokens reproduces exactly the pre-add index. O(len *
+        max_suffix_len) — only run on the exceptional rollback path."""
+        tokens, shift = state
+        self._tokens = list(tokens)
+        self._shift = shift
+        self._suffix_index = [defaultdict(list) for _ in range(self.max_suffix_len + 1)]
+        for i, tok in enumerate(self._tokens):
+            abs_pos = shift + i
+            for k in range(1, self.max_suffix_len + 1):
+                local = i + 1 - k
+                if local < 0:
+                    continue
+                kgram = tuple(self._tokens[local : local + k])
+                self._suffix_index[k][kgram].append(abs_pos)
+
     # --- Drafting ------------------------------------------------------
 
     def get_draft(self) -> list[int]:
