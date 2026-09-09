@@ -17,7 +17,40 @@ can actually understand.
 
 ## [Unreleased]
 
+## [0.14.0] — 2026-09-09
+
+Rapid-MLX 0.14.0 adds experimental local Computer Use and shared-compute
+workspaces, expands the model and image-generation catalog, makes Community
+Benchmark easier to understand and share, and improves long-running service
+operation and Desktop control.
+
+Measured on the documented M3 Ultra workloads, Qwen3.8 27B MTP GDN
+verification improves decode from 45.87 to 52.28 tok/s (+14.0%), the qualified
+Muse-Glimmer 30B 8-bit DFlash pairing reaches 1.83× chat and 2.00× code
+throughput, and the opt-in short-request policy lowers TTFT behind three long
+prompts from 3.067 s to 1.206 s. These paths retain their documented hardware
+and opt-in boundaries.
+
 ### Added
+- **Experimental Computer Use in Desktop.** Starter workflows can carry out a
+  bounded task across supported Mac apps, with local planning, scoped control,
+  visual recovery, and explicit review before consequential actions.
+- **Experimental Share Compute workspace.** A Mac can opt in to serve work from
+  a compatible compute pool, with fit checks, loopback-safe configuration, and
+  clearer diagnostics. It remains off until the user enables it.
+- **Broader model support.** This release adds NeoHorse 1 9B, MiniCPM5 2B,
+  G9v3-39A5B, Granite 4.2 30B/8B/3B, an experimental Qwen3.8 27B Abliterated
+  4-bit variant, and a Qwen3.8 27B MTP companion, alongside
+  new local image-generation choices including FLUX.1 schnell, Stable
+  Diffusion 3.5 Large, SDXL Base, Bonsai Image 4B 2-bit, HiDream O1 Dev, and
+  Qwen Image Edit.
+- **Measured compact-model choice.** MiniCPM5 2B used 78% less summed request
+  time (about 4.5× faster) than the 4B comparison on the same M3 Ultra 31-case
+  tool workload, scoring 24/31 versus 26/31. It remains a non-default option so
+  users can choose the documented speed/quality tradeoff.
+- **Always-on server operation.** `rapid-mlx start` and the headless macOS
+  service lifecycle provide a supported path for persistent local serving;
+  `doctor` now reports deeper lifecycle and configuration diagnostics.
 - `/metrics` now breaks MTP speculative decoding down per verify call: `rapid_mlx_spec_decode_verify_calls_total`, `..._correction_tokens_total`, `..._bonus_tokens_total`, and per-depth `..._drafted_by_depth_total{depth=}` / `..._accepted_by_depth_total{depth=}` alongside the existing attempts/accepts counters, so a workload that loses with MTP can be attributed to wrong drafts, verify cost, or rollback churn. The continuous-batching MTP route (the default for tier-verified aliases) now feeds these counters too; previously it bypassed them and every `rapid_mlx_spec_decode_*` series stayed at 0. (#3155)
 - **One-click model unload in Desktop.** The resident-memory footer now has an
   eject control that releases loaded models when the server is idle. It checks
@@ -25,6 +58,12 @@ can actually understand.
   itself during a visible active response.
 
 ### Changed
+- Community Benchmark now shows live progress and ETA, reports comparable
+  median throughput/latency values, groups models by recommendation and local
+  availability, and makes the local-versus-shared result boundary explicit.
+- Short requests see less time-to-first-token delay when long prompt work is
+  already contending for the scheduler. The opt-in policy measured 60.7% lower
+  median TTFT on the release workload; ordinary FCFS remains the default.
 - The Desktop app now honours the same `RAPID_MLX_TELEMETRY=0` kill switch as
   the engine: with it set, no telemetry leaves the process even if you opted
   in. Nothing changes for normal launches (the variable is not set, and a
@@ -38,7 +77,11 @@ can actually understand.
 - `qwen3.5-4b-4bit` no longer turns MTP speculative decoding on by default. Measured single-stream decode was 25–37% slower with the MTP drafter on M2 Pro and M3 Ultra, with no gain under concurrency. The preset stays available: `rapid-mlx serve qwen3.5-4b-4bit --speculative-config '{"method":"mtp"}'`, or the Speculative decoding toggle in Desktop Performance settings. New catalog field `mtp_default_enabled` carries the product default separately from the qualification tier. (#3115)
 
 ### Fixed
-
+- Desktop streaming text remains legible in dark mode, long Markdown updates
+  redraw less work, and draft-and-post can recover its composer in Safari and
+  Chrome.
+- Image models can start from complete offline snapshots more reliably and
+  surface memory/readiness problems before committing to a load.
 - Community Benchmark result rows now show median decode tok/s and TTFT for
   the short case (median wall seconds for image and video), with the long case
   underneath, instead of an average duration across cases. Decode tok/s uses
@@ -3727,7 +3770,8 @@ Older versions: see the
 [GitHub Releases page](https://github.com/machinefi/rapid-desktop/releases)
 for auto-generated notes against earlier tags.
 
-[Unreleased]: https://github.com/raullenchai/Rapid-MLX/compare/rapid-mac-v0.13.4...HEAD
+[Unreleased]: https://github.com/raullenchai/Rapid-MLX/compare/rapid-mac-v0.14.0...HEAD
+[0.14.0]: https://github.com/raullenchai/Rapid-MLX/compare/rapid-mac-v0.13.4...rapid-mac-v0.14.0
 [0.13.4]: https://github.com/raullenchai/Rapid-MLX/compare/rapid-mac-v0.13.3...rapid-mac-v0.13.4
 [0.13.3]: https://github.com/raullenchai/Rapid-MLX/compare/rapid-mac-v0.13.2...rapid-mac-v0.13.3
 [0.13.2]: https://github.com/raullenchai/Rapid-MLX/compare/rapid-mac-v0.13.2-rc1...rapid-mac-v0.13.2
