@@ -44,6 +44,7 @@ final class ShareComputeManager {
     private var expectedStop = false
     private var restoreAlias: String?
     private var shuttingDown = false
+    private var shutdownSignalledAt: Date?
     private var currentStatusURL: URL?
     /// Invalidates a join that is still waiting for the shared residency
     /// lease. Without this, disabling the experiment during preparation could
@@ -99,6 +100,7 @@ final class ShareComputeManager {
 
         state = .preparing
         activeModel = model
+        snapshot = nil
         restoreAlias = server.servingAlias
         let operation = UUID()
         operationID = operation
@@ -217,6 +219,7 @@ final class ShareComputeManager {
     }
 
     func beginShutdown() {
+        if shutdownSignalledAt == nil { shutdownSignalledAt = Date() }
         shuttingDown = true
         operationID = nil
         restoreAlias = nil
@@ -229,11 +232,26 @@ final class ShareComputeManager {
     func finishShutdown() {
         beginShutdown()
         guard let child else { return }
-        let deadline = Date().addingTimeInterval(5)
+        // The server and provider are signalled together, then reaped in
+        // sequence. Measure this grace from the signal so their shutdown
+        // windows overlap instead of making app termination take 10 seconds.
+        let deadline = (shutdownSignalledAt ?? Date()).addingTimeInterval(5)
         while Date() < deadline && child.isProcessGroupAlive {
             Thread.sleep(forTimeInterval: 0.1)
         }
-        if child.isProcessGroupAlive { child.signalProcessGroup(SIGKILL) }
+        if child.isProcessGroupAlive {
+            child.signalProcessGroup(SIGKILL)
+            let killDeadline = Date().addingTimeInterval(0.5)
+            while Date() < killDeadline && child.isProcessGroupAlive {
+                Thread.sleep(forTimeInterval: 0.05)
+            }
+        }
+        // Never advertise the unified-memory reservation as free while the
+        // kernel can still see this process group. App termination is already
+        // irreversible; retaining bookkeeping is safer than permitting a
+        // later in-process owner to overlap a pathological uninterruptible
+        // child.
+        guard !child.isProcessGroupAlive else { return }
         removeCurrentStatusFile()
         cleanupPipes()
         self.child = nil

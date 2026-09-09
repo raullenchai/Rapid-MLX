@@ -2416,7 +2416,10 @@ def test_provider_key_stdin_is_bounded_and_exclusive(monkeypatch):
         qs._resolve_provider_key(_make_args(provider_key_stdin=True))
 
 
-def test_desktop_status_is_private_atomic_whitelisted_and_secret_free():
+def test_desktop_status_is_private_atomic_whitelisted_and_secret_free(
+    monkeypatch, tmp_path
+):
+    monkeypatch.setattr(qs, "_cache_dir", lambda: tmp_path)
     session = "a" * 32
     status = qs._DesktopStatus(session)
     assert status.path.parent == qs._cache_dir()
