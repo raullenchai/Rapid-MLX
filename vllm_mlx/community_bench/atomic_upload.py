@@ -180,11 +180,17 @@ def upload_run(
     approved_payload_digest: str | None = None,
     approved_body_digest: str | None = None,
     approved_target: str | None = None,
+    attest: dict[str, str] | None = None,
 ) -> AtomicUploadAcceptance | None:
     """Upload one validated run, returning its server receipt.
 
     ``None`` means an interactive user declined. ``assume_yes`` exists for a
     caller such as Rapid Desktop that presents its own native confirmation.
+
+    ``attest`` optionally carries App Attest material (``key_id``,
+    ``assertion``, ``challenge``) that Rapid Desktop computes in-app over the
+    exact wire body; when present it is relayed as ``X-Rapid-Attest-*`` request
+    headers so the submission can rank on the leaderboard.
     """
 
     preview = preview_run(run, install_id=approved_install_id, url=url)
@@ -216,7 +222,14 @@ def upload_run(
         raise SubmitError(
             "the install id changed before upload; review the payload and try again"
         )
-    response = post_submission(wire, url=target)
+    attest_headers: dict[str, str] | None = None
+    if attest and attest.get("key_id") and attest.get("assertion") and attest.get("challenge"):
+        attest_headers = {
+            "X-Rapid-Attest-Key-Id": attest["key_id"],
+            "X-Rapid-Attest-Assertion": attest["assertion"],
+            "X-Rapid-Attest-Challenge": attest["challenge"],
+        }
+    response = post_submission(wire, url=target, attest_headers=attest_headers)
     receipt = _validated_receipt(response, run["run_id"], wire_digest)
     return AtomicUploadAcceptance(receipt, candidate, wire_digest)
 

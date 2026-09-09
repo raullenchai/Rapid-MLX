@@ -594,3 +594,38 @@ def test_transport_errors_do_not_claim_a_local_copy_exists(monkeypatch) -> None:
     with pytest.raises(upload.SubmitError) as exc:
         upload.post_submission({"a": 1}, url="https://x/api")
     assert "saved" not in str(exc.value).lower()
+
+
+def test_post_submission_relays_attest_headers(monkeypatch) -> None:
+    """App Attest headers computed in the signed app are relayed verbatim."""
+    seen = {}
+
+    def fake_open(req, timeout=None):
+        seen["headers"] = {k.lower(): v for k, v in req.header_items()}
+        return _Resp(b'{"ok":true,"submission_id":"abcdef012345"}')
+
+    monkeypatch.setattr(upload.urllib.request, "urlopen", fake_open)
+    upload.post_submission(
+        {"submission_id": "abcdef012345"},
+        url="https://x/api",
+        attest_headers={
+            "X-Rapid-Attest-Key-Id": "kid",
+            "X-Rapid-Attest-Assertion": "sig",
+            "X-Rapid-Attest-Challenge": "chal",
+        },
+    )
+    assert seen["headers"]["x-rapid-attest-key-id"] == "kid"
+    assert seen["headers"]["x-rapid-attest-assertion"] == "sig"
+    assert seen["headers"]["x-rapid-attest-challenge"] == "chal"
+
+
+def test_post_submission_omits_attest_headers_when_absent(monkeypatch) -> None:
+    seen = {}
+
+    def fake_open(req, timeout=None):
+        seen["headers"] = {k.lower(): v for k, v in req.header_items()}
+        return _Resp(b'{"ok":true,"submission_id":"abcdef012345"}')
+
+    monkeypatch.setattr(upload.urllib.request, "urlopen", fake_open)
+    upload.post_submission({"submission_id": "abcdef012345"}, url="https://x/api")
+    assert not any(k.startswith("x-rapid-attest") for k in seen["headers"])

@@ -353,6 +353,11 @@ def benchmark_command(args) -> int:
                     approved_payload_digest=getattr(args, "payload_digest", None),
                     approved_body_digest=getattr(args, "body_digest", None),
                     approved_target=getattr(args, "target", None),
+                    attest={
+                        "key_id": getattr(args, "attest_key_id", None),
+                        "assertion": getattr(args, "attest_assertion", None),
+                        "challenge": getattr(args, "attest_challenge", None),
+                    },
                 )
                 if acceptance is None:
                     value = {"schema_version": 1, "uploaded": False, "cancelled": True}

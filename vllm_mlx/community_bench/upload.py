@@ -241,16 +241,32 @@ def _sleep_before_retry(attempt: int, headers) -> None:
     time.sleep(min(delay, 10.0))
 
 
-def post_submission(payload: dict, *, url: str | None = None) -> dict:
+def post_submission(
+    payload: dict,
+    *,
+    url: str | None = None,
+    attest_headers: dict[str, str] | None = None,
+) -> dict:
     """POST one submission. Returns the decoded server response.
 
     Retries only on transport errors and 5xx — a 4xx means the payload is
     wrong and retrying would just replay the same rejection. ``429`` is not
     retried either: the caller is over a documented cap, and hammering it is
     the opposite of what the response is asking for.
+
+    ``attest_headers`` carries the App Attest ``X-Rapid-Attest-*`` values that
+    Rapid Desktop computes in-app (DCAppAttestService lives in the signed app,
+    not this bundled engine). The engine only relays them; ``body`` is the
+    exact bytes the app signed, so the assertion covers what is sent.
     """
     target = url or board_url()
     body = submission_body(payload)
+    headers = {
+        "content-type": "application/json",
+        "user-agent": "rapid-mlx-bench",
+    }
+    if attest_headers:
+        headers.update(attest_headers)
     last: Exception | None = None
 
     for attempt in range(1, _MAX_ATTEMPTS + 1):
@@ -258,10 +274,7 @@ def post_submission(payload: dict, *, url: str | None = None) -> dict:
             target,
             data=body,
             method="POST",
-            headers={
-                "content-type": "application/json",
-                "user-agent": "rapid-mlx-bench",
-            },
+            headers=headers,
         )
         try:
             with urllib.request.urlopen(req, timeout=_TIMEOUT_S) as resp:

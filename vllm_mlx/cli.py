@@ -12593,6 +12593,12 @@ Examples:
         "--target",
         help=argparse.SUPPRESS,
     )
+    # App Attest material computed in the signed app (Rapid Desktop), relayed
+    # as X-Rapid-Attest-* headers so the submission can rank. Not for CLI users
+    # — DCAppAttestService only runs inside the notarized app.
+    community_share.add_argument("--attest-key-id", help=argparse.SUPPRESS)
+    community_share.add_argument("--attest-assertion", help=argparse.SUPPRESS)
+    community_share.add_argument("--attest-challenge", help=argparse.SUPPRESS)
     community_share.add_argument(
         "--json",
         action="store_true",
