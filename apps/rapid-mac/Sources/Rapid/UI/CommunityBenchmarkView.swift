@@ -801,6 +801,26 @@ enum CommunityBenchmarkCommand {
         return try? JSONDecoder().decode(RunID.self, from: data).runID
     }
 
+    /// A human sentence for a failed run. Under `--json` the CLI prints a
+    /// `{"error": …, "run": {…}}` failure document; surface just its `error`
+    /// so the user sees one clear line instead of a wall of raw JSON. Falls
+    /// back to the raw text for any non-JSON failure (a crash, a traceback).
+    static func failureSummary(from detail: String) -> String {
+        struct Doc: Decodable { let error: String }
+        // The document is one JSON line, but tracebacks/warnings may precede
+        // it — try the whole string, then each line newest-first.
+        let candidates = [detail]
+            + detail.split(separator: "\n").reversed().map(String.init)
+        for candidate in candidates {
+            if let data = candidate.data(using: .utf8),
+               let doc = try? JSONDecoder().decode(Doc.self, from: data),
+               !doc.error.isEmpty {
+                return doc.error
+            }
+        }
+        return detail
+    }
+
     static func benchmarkSharePreviewArguments(runID: String) -> [String] {
         ["benchmark", "share", runID, "--preview", "--json"]
     }
@@ -907,7 +927,8 @@ enum CommunityBenchmarkCommand {
                             }
                             .joined(separator: "\n")
                             .trimmingCharacters(in: .whitespacesAndNewlines)
-                        let message = detail.flatMap { $0.isEmpty ? nil : $0 }
+                        let message = detail
+                            .flatMap { $0.isEmpty ? nil : Self.failureSummary(from: $0) }
                             ?? "Benchmark exited with code \(child.terminationStatus)."
                         throw Failure(message: message)
                     }

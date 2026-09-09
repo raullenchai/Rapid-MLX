@@ -107,4 +107,24 @@ struct CommunityBenchmarkProgressTests {
         #expect(CommunityBenchmarkCommand.runID(from: data) == "abc-123")
         #expect(CommunityBenchmarkCommand.runID(from: Data("not json".utf8)) == nil)
     }
+
+    @Test("A failed run shows the error line, not the raw JSON document")
+    func failureSummaryExtraction() {
+        // The CLI's --json failure document → just the human error line.
+        let doc = #"{"error":"image benchmark request failed with HTTP 500","run":{"run_id":"x"},"saved":true}"#
+        #expect(
+            CommunityBenchmarkCommand.failureSummary(from: doc)
+                == "image benchmark request failed with HTTP 500"
+        )
+        // A warning/traceback preceding the JSON still resolves to the error.
+        #expect(
+            CommunityBenchmarkCommand.failureSummary(from: "warning: noisy\n\(doc)")
+                == "image benchmark request failed with HTTP 500"
+        )
+        // Non-JSON failure (a crash) falls back to the raw text.
+        #expect(
+            CommunityBenchmarkCommand.failureSummary(from: "Segmentation fault: 11")
+                == "Segmentation fault: 11"
+        )
+    }
 }
