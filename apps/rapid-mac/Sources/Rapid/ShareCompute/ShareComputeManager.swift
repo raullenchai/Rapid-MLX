@@ -43,6 +43,8 @@ final class ShareComputeManager {
     private var stderrPipe: Pipe?
     private var expectedStop = false
     private var restoreAlias: String?
+    private var restoreTask: Task<Void, Never>?
+    private var restoreAttemptID: UUID?
     private var shuttingDown = false
     private var shutdownSignalledAt: Date?
     private var currentStatusURL: URL?
@@ -118,6 +120,13 @@ final class ShareComputeManager {
             return
         }
 
+        // A replacement join owns the pending restore alias. Cancel an
+        // in-flight restore attempt, but keep the alias so the last session in
+        // the chain can still restore it.
+        restoreAttemptID = nil
+        restoreTask?.cancel()
+        restoreTask = nil
+
         state = .preparing
         activeModel = model
         snapshot = nil
@@ -154,13 +163,13 @@ final class ShareComputeManager {
             return
         }
         guard operationID == operation, !shuttingDown else {
+            restoreIfPreparationHasNoSuccessor()
             server.finishCommunityBenchmark(lease)
             // This operation no longer owns manager state. A subsequent join
             // may already have replaced activeModel and restoreAlias, so only
             // release the lease acquired by this stale operation. The pending
             // restore is inherited by a successor, or performed now if the
             // user simply cancelled and no successor exists.
-            restoreIfPreparationHasNoSuccessor()
             return
         }
         reservation = lease
@@ -226,11 +235,11 @@ final class ShareComputeManager {
             inputPipe.fileHandleForWriting.closeFile()
             detachPipes(out, err)
             removeCurrentStatusFile()
-            releaseReservation()
             activeModel = nil
             state = .failed("Rapid couldn't start Share Compute.")
             operationID = nil
             restorePreviousModelIfNeeded()
+            releaseReservation()
         }
     }
 
@@ -253,6 +262,9 @@ final class ShareComputeManager {
         shuttingDown = true
         operationID = nil
         restoreAlias = nil
+        restoreAttemptID = nil
+        restoreTask?.cancel()
+        restoreTask = nil
         statusTask?.cancel()
         stopEscalationTask?.cancel()
         expectedStop = true
@@ -417,8 +429,8 @@ final class ShareComputeManager {
         child = nil
         activeModel = nil
         if expectedStop, !shuttingDown { state = .idle }
-        releaseReservation()
         restorePreviousModelIfNeeded()
+        releaseReservation()
     }
 
     private func scheduleStopEscalation(for child: ProcessGroupChild) {
@@ -449,8 +461,19 @@ final class ShareComputeManager {
             restoreAlias = nil
             return
         }
-        restoreAlias = nil
-        Task { await server.start(alias: alias) }
+        restoreTask?.cancel()
+        let attempt = UUID()
+        restoreAttemptID = attempt
+        restoreTask = Task { @MainActor [weak self, weak server] in
+            guard let server else { return }
+            await server.start(alias: alias)
+            guard let self, self.restoreAttemptID == attempt else { return }
+            self.restoreAttemptID = nil
+            self.restoreTask = nil
+            if self.operationID == nil, self.child == nil {
+                self.restoreAlias = nil
+            }
+        }
     }
 
     private func restoreIfPreparationHasNoSuccessor() {
