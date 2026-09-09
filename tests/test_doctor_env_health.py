@@ -5179,3 +5179,267 @@ def test_dflash_reports_supported_vlm_with_unverified_import(tmp_path, monkeypat
     assert row.status is eh.CheckStatus.WARN
     assert "cannot be verified safely" in row.label
     assert str(runtime) in row.detail
+
+
+# ---------------------------------------------------------------------------
+# 0.13.4 dogfood P2 fixes
+# ---------------------------------------------------------------------------
+
+
+def test_install_location_reports_unresolved_venv_interpreter(tmp_path, monkeypatch):
+    """A virtualenv must display its own interpreter, not the resolved base.
+
+    ``_install_location()`` used to ``.resolve()`` the venv python symlink
+    first, so the display path landed in Homebrew's Cellar / a uv-managed
+    CPython while the label read ``virtualenv`` — two semantics on one
+    line (0.13.4 dogfood). The label classification may keep inspecting
+    the resolved path; the displayed path must stay the configured one.
+    """
+    base_bin = tmp_path / "base" / "bin"
+    base_bin.mkdir(parents=True)
+    base_python = base_bin / "python3.14"
+    base_python.write_text("#!/bin/sh\n")
+    venv_bin = tmp_path / "venv" / "bin"
+    venv_bin.mkdir(parents=True)
+    venv_python = venv_bin / "python3.14"
+    venv_python.symlink_to(base_python)
+
+    monkeypatch.setattr(eh.sys, "prefix", str(tmp_path / "venv"))
+    monkeypatch.setattr(eh.sys, "base_prefix", str(tmp_path / "base"))
+
+    label, path = eh._install_location(venv_python)
+    assert label == "virtualenv"
+    assert path == venv_python
+    assert "base" not in path.parts
+
+
+@pytest.mark.parametrize(
+    ("resolved_parent", "expected_label"),
+    [
+        (Path("uv/tools/runtime/bin"), "uv tool"),
+        (Path("pipx/venvs/rapid-mlx/bin"), "pipx"),
+        (Path("Cellar/python@3.14/bin"), "Homebrew"),
+        (Path("usr/bin"), "system"),
+    ],
+)
+def test_install_location_classifies_resolved_runtime_layouts(
+    tmp_path, monkeypatch, resolved_parent, expected_label
+):
+    """Classification follows the resolved runtime while display stays raw."""
+    runtime = tmp_path / resolved_parent / "python3.14"
+    runtime.parent.mkdir(parents=True)
+    runtime.write_text("#!/bin/sh\n")
+    configured = tmp_path / "configured" / "python"
+    configured.parent.mkdir()
+    configured.symlink_to(runtime)
+
+    monkeypatch.delenv("VIRTUAL_ENV", raising=False)
+    monkeypatch.setattr(eh.sys, "prefix", str(tmp_path / "system"))
+    monkeypatch.setattr(eh.sys, "base_prefix", str(tmp_path / "system"))
+
+    label, path = eh._install_location(configured)
+    assert label == expected_label
+    assert path == configured
+
+
+def test_install_location_row_details_base_interpreter(tmp_path, monkeypatch):
+    """The verbose detail carries the base interpreter prefix so venv
+    users can still see which interpreter the venv was seeded from."""
+    monkeypatch.setattr(eh.sys, "prefix", str(tmp_path / "venv"))
+    monkeypatch.setattr(eh.sys, "base_prefix", str(tmp_path / "base"))
+
+    section = eh.section_python()
+    row = next(c for c in section.checks if "Install location" in c.label)
+    assert "base interpreter prefix=" in row.detail
+    assert str(tmp_path / "base") in row.detail
+
+
+def test_probe_reports_namespace_package_version(tmp_path):
+    """Namespace packages must not lose their distribution version.
+
+    ``mlx`` is a namespace package: ``find_spec("mlx").origin`` is None
+    while ``submodule_search_locations`` points at the real
+    ``site-packages/mlx`` directory. The probe used to pass the None
+    origin into distribution-ownership matching, which failed, and
+    doctor warned "version metadata is unavailable" for a perfectly
+    readable distribution (0.13.4 dogfood).
+    """
+    site = tmp_path / "sidecar" / "site-packages"
+    ns_pkg = site / "dogfoodns"
+    ns_pkg.mkdir(parents=True)
+    (ns_pkg / "bridge.py").write_text("x = 1\n")
+    dist_info = site / "dogfoodns-stub-1.2.3.dist-info"
+    dist_info.mkdir()
+    (dist_info / "METADATA").write_text(
+        "Metadata-Version: 2.1\nName: dogfoodns-stub\nVersion: 1.2.3\n"
+    )
+    (dist_info / "RECORD").write_text(
+        "dogfoodns/bridge.py,,\ndogfoodns-stub-1.2.3.dist-info/METADATA,,\n"
+    )
+
+    monkey_packages = {"dogfoodns-stub": "dogfoodns"}
+    eh._RUNTIME_PROBE_CACHE.clear()
+    try:
+        with mock.patch.object(eh, "_RUNTIME_PACKAGES", monkey_packages):
+            probe = eh._probe_runtime(Path(sys.executable), tmp_path / "sidecar")
+    finally:
+        eh._RUNTIME_PROBE_CACHE.clear()
+
+    assert probe is not None
+    entry = probe["packages"]["dogfoodns-stub"]
+    assert entry["discoverable"] is True
+    assert entry["version"] == "1.2.3"
+
+
+def test_probe_namespace_anchor_requires_trusted_portion(tmp_path):
+    """A shadow dist-info in an untrusted context path must not spoof the
+    version of a namespace-packaged distribution.
+
+    Namespace portions merge across sys.path and the server's cwd sits at
+    sys.path[0] (context root). Anchoring ownership on portion[0] let a
+    crafted same-named package dir + dist-info in the context path claim
+    any version while ``trusted_origin`` still reported True (adversarial
+    security review #3266). The anchor must be the first TRUSTED portion;
+    the spoof dist-info's RECORD only covers files under the context root,
+    so it fails ownership matching against the trusted anchor.
+    """
+    site = tmp_path / "sidecar" / "site-packages"
+    ns_pkg = site / "dogfoodns"
+    ns_pkg.mkdir(parents=True)
+    (ns_pkg / "bridge.py").write_text("x = 1\n")
+    real_dist = site / "dogfoodns-stub-1.2.3.dist-info"
+    real_dist.mkdir()
+    (real_dist / "METADATA").write_text(
+        "Metadata-Version: 2.1\nName: dogfoodns-stub\nVersion: 1.2.3\n"
+    )
+    (real_dist / "RECORD").write_text(
+        "dogfoodns/bridge.py,,\ndogfoodns-stub-1.2.3.dist-info/METADATA,,\n"
+    )
+
+    # Server-context shadow: unowned same-named namespace portion plus a
+    # spoof dist-info whose RECORD claims a file that exists in the shadow
+    # (Python 3.12+ drops nonexistent RECORD entries, so the file must be
+    # real for the spoof to even reach ownership matching).
+    ctx = tmp_path / "ctx"
+    shadow = ctx / "dogfoodns"
+    shadow.mkdir(parents=True)
+    (shadow / "shadow_impl.py").write_text("x = 2\n")
+    spoof_dist = ctx / "dogfoodns-stub-9.9.9.dist-info"
+    spoof_dist.mkdir()
+    (spoof_dist / "METADATA").write_text(
+        "Metadata-Version: 2.1\nName: dogfoodns-stub\nVersion: 9.9.9\n"
+    )
+    (spoof_dist / "RECORD").write_text(
+        "dogfoodns/shadow_impl.py,,\ndogfoodns-stub-9.9.9.dist-info/METADATA,,\n"
+    )
+
+    runtime = Path(sys.executable)
+    monkey_packages = {"dogfoodns-stub": "dogfoodns"}
+    saved_contexts = dict(eh._RUNTIME_CONTEXTS)
+    eh._RUNTIME_PROBE_CACHE.clear()
+    try:
+        eh._RUNTIME_CONTEXTS[runtime] = (ctx, {})
+        with mock.patch.object(eh, "_RUNTIME_PACKAGES", monkey_packages):
+            probe = eh._probe_runtime(runtime, tmp_path / "sidecar")
+    finally:
+        eh._RUNTIME_CONTEXTS.clear()
+        eh._RUNTIME_CONTEXTS.update(saved_contexts)
+        eh._RUNTIME_PROBE_CACHE.clear()
+
+    assert probe is not None
+    entry = probe["packages"]["dogfoodns-stub"]
+    assert entry["trusted_origin"] is True
+    assert entry["version"] == "1.2.3", entry
+
+
+def test_safe_version_gates_on_trusted_origin(monkeypatch):
+    """``_safe_version`` must not surface probe versions from untrusted
+    origins: version feeds supported-range checks and repair hints
+    (adversarial security review #3266 — previously only importability
+    was gated)."""
+    runtime = Path(sys.executable)
+    monkeypatch.setattr(eh, "_runtime_uses_context", lambda _rt: True)
+    monkeypatch.setattr(
+        eh,
+        "_probe_runtime",
+        lambda _rt, _root=None: {
+            "packages": {
+                "stub": {
+                    "version": "0.0.1",
+                    "trusted_origin": False,
+                    "discoverable": True,
+                    "module": "stub",
+                    "importable": None,
+                }
+            }
+        },
+    )
+    assert eh._safe_version("stub", runtime) is None
+
+    monkeypatch.setattr(
+        eh,
+        "_probe_runtime",
+        lambda _rt, _root=None: {
+            "packages": {
+                "stub": {
+                    "version": "1.2.3",
+                    "trusted_origin": True,
+                    "discoverable": True,
+                    "module": "stub",
+                    "importable": None,
+                }
+            }
+        },
+    )
+    assert eh._safe_version("stub", runtime) == "1.2.3"
+
+
+@pytest.mark.parametrize("escape_shape", ["dotdot", "absolute"])
+def test_probe_record_escape_cannot_claim_trusted_anchor(
+    tmp_path, monkeypatch, escape_shape
+):
+    """A dist-info in an untrusted context root must not claim ownership
+    of the trusted sidecar's namespace portion via RECORD tricks.
+
+    ``Distribution.locate_file`` joins RECORD entries verbatim, so a
+    crafted dist-info can reference files OUTSIDE its own install root
+    (``..`` or absolute entries). Round 2 on #3266 verified both shapes
+    spoof the version whenever no trusted dist-info claims the anchor
+    first (the exact 'visible without metadata' residue this probe
+    diagnoses). Ownership entries must stay inside their own root."""
+    site = tmp_path / "sidecar" / "site-packages"
+    ns_pkg = site / "dogfoodns"
+    ns_pkg.mkdir(parents=True)
+    (ns_pkg / "bridge.py").write_text("x = 1\n")
+    # Deliberately NO dist-info in the trusted root: the anchor is the
+    # visible-but-unclaimed namespace portion.
+
+    ctx = tmp_path / "ctx"
+    spoof_dist = ctx / "dogfoodns-stub-9.9.9.dist-info"
+    spoof_dist.mkdir(parents=True)
+    (spoof_dist / "METADATA").write_text(
+        "Metadata-Version: 2.1\nName: dogfoodns-stub\nVersion: 9.9.9\n"
+    )
+    if escape_shape == "dotdot":
+        record_entry = "../sidecar/site-packages/dogfoodns/bridge.py,,\n"
+    else:
+        record_entry = f"{ns_pkg / 'bridge.py'},,\n"
+    (spoof_dist / "RECORD").write_text(record_entry)
+
+    runtime = Path(sys.executable)
+    monkey_packages = {"dogfoodns-stub": "dogfoodns"}
+    saved_contexts = dict(eh._RUNTIME_CONTEXTS)
+    eh._RUNTIME_PROBE_CACHE.clear()
+    try:
+        eh._RUNTIME_CONTEXTS[runtime] = (ctx, {})
+        with mock.patch.object(eh, "_RUNTIME_PACKAGES", monkey_packages):
+            probe = eh._probe_runtime(runtime, tmp_path / "sidecar")
+    finally:
+        eh._RUNTIME_CONTEXTS.clear()
+        eh._RUNTIME_CONTEXTS.update(saved_contexts)
+        eh._RUNTIME_PROBE_CACHE.clear()
+
+    assert probe is not None
+    entry = probe["packages"]["dogfoodns-stub"]
+    assert entry["trusted_origin"] is True
+    assert entry["version"] != "9.9.9", entry

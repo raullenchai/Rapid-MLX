@@ -412,20 +412,54 @@ class EngineCore:
         # via env var ``RAPID_MLX_PROFILE_VERBOSE=1`` (or set on EngineConfig).
         display_path = model_path or "(unknown)"
         runtime_spec_decode = getattr(scheduler_config, "spec_decode", "none")
+        # spec_decode == "none" is not proof of plain decode: the
+        # SuffixDecoding lane leaves it "none" while decoding speculatively
+        # (adversarial review round 2 on #3266). DDTree/DFlash run dedicated
+        # single-user servers that never construct EngineCore, so Suffix is
+        # the only such lane reachable here. Keyed on supports_spec_decode
+        # too because that is the install gate (scheduler refuses to install
+        # suffix for profiles with it False — including the --no-spec-decode
+        # forced False above): claiming an active lane that nothing installs
+        # would be its own registry-vs-reality lie (round 3 on #3266).
+        suffix_active = bool(
+            getattr(scheduler_config, "enable_suffix_decoding", False)
+        ) and bool(self.model_config.supports_spec_decode)
+        lane_active = (
+            runtime_spec_decode
+            if runtime_spec_decode != "none"
+            else ("suffix" if suffix_active else None)
+        )
         logger.info(
             format_profile_summary(
                 display_path,
                 self.model_config,
-                runtime_spec_decode=(
-                    runtime_spec_decode if runtime_spec_decode != "none" else None
-                ),
+                runtime_spec_decode=lane_active,
             )
         )
         if os.environ.get("RAPID_MLX_PROFILE_VERBOSE") == "1" or getattr(
             self.config, "verbose_profile", False
         ):
+            # Reconcile the table with the runtime (adversarial review
+            # rounds 1-2 on #3266): "off" is only claimed for the explicit
+            # --no-spec-decode override with no other lane active;
+            # otherwise an active method/lane name, or None to keep the
+            # registry view.
+            if (
+                self.config.no_spec_decode
+                and runtime_spec_decode == "none"
+                and not suffix_active
+            ):
+                # Keyed on "no lane actually active" too: no_spec_decode
+                # coexisting with an active scheduler lane is only
+                # constructible programmatically (the CLI exits 2), and
+                # the active lane is the truth then (round 2, #3266).
+                table_runtime_spec = "off"
+            elif lane_active is not None:
+                table_runtime_spec = lane_active
+            else:
+                table_runtime_spec = None
             for line in format_profile_table(
-                display_path, self.model_config
+                display_path, self.model_config, runtime_spec_decode=table_runtime_spec
             ).splitlines():
                 logger.info(line)
 

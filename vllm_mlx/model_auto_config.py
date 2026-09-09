@@ -2095,7 +2095,11 @@ def _suffix_tier_cell(cfg: "ModelConfig", max_width: int | None = None) -> str:
         # pure-attention Qwen3.5/3.6 dense aliases, which contradicts the
         # ``Architecture: pure attention`` row two lines above.
         if cfg.is_hybrid:
-            text = "n/a (hybrid arch — spec decode off)"
+            # This row describes SuffixDecoding eligibility, not every
+            # speculative method. Hybrid aliases may still run MTP through a
+            # native head or sidecar, so saying "spec decode off" here can
+            # directly contradict the active/default-on MTP rows above.
+            text = "n/a (hybrid arch — suffix unsupported)"
         else:
             # Tight enough to fit the 41-char ``info`` value column
             # (``inner=60 − 17-char key − 2-char ": "``) so the row
@@ -2282,25 +2286,60 @@ def _resolve_family(model_path: str, cfg: "ModelConfig") -> str:
     return "other"
 
 
+def _serve_mtp_default_on(model_path: str) -> bool:
+    """Whether ``vllm_mlx serve`` enables MTP for this alias unasked.
+
+    Mirrors the serve-side decision (``cli._alias_continuous_mtp_tier``
+    + ``cli._alias_mtp_default_enabled``, the same helpers behind the
+    ``raw_config = '{"method":"mtp"}'`` default in
+    ``_normalize_speculative_config_or_exit``): verified-qualified
+    artifacts whose catalog entry ships ``mtp_default_enabled`` boot
+    with their declared MTP preset without any flag. The cli helpers
+    are imported lazily (cli already sits upstream of this module in
+    every real entry point) so the info path cannot drift from serve
+    again — one decision, one source. Registry or import failure fails
+    closed to *off*, same as serve.
+    """
+    try:
+        from .cli import (
+            _alias_continuous_mtp_tier,
+            _alias_mtp_default_enabled,
+        )
+    except Exception:  # noqa: BLE001 - degraded import must fail closed
+        return False
+    if _alias_continuous_mtp_tier(model_path) != "verified":
+        return False
+    return _alias_mtp_default_enabled(model_path)
+
+
 def _mtp_path_label(model_path: str, cfg: "ModelConfig") -> str:
     """Truth-in-labeling for the MTP spec-decode path of a model.
 
     Returns one of ``native`` /
-    ``native (opt-in: --speculative-config)`` / ``sidecar`` /
-    ``sidecar (opt-in: --speculative-config)`` / ``disabled``:
+    ``native (opt-in: --speculative-config)`` /
+    ``native (default; --no-spec-decode off)`` / ``sidecar`` /
+    ``sidecar (opt-in: --speculative-config)`` /
+    ``sidecar (default; --no-spec-decode off)`` / ``disabled``:
 
     * ``native``   — the family ships a native MTP head in the checkpoint
       (Qwen3.5 / Qwen3.6 / HY3) AND the resolved profile enables spec
       decode (``supports_spec_decode=True``). This is the path
       ``vllm_mlx.spec_decode.mtp`` drives directly.
     * ``native (opt-in: --speculative-config)`` — method-specific profile
-      metadata declares a validated native head while the generic speculative
-      lane remains disabled (for example, a coupled hybrid verifier).
+      metadata declares a validated native head while serve leaves MTP
+      off until the user opts in.
+    * ``native (default; --no-spec-decode off)`` — validated native head
+      whose alias is ``mtp_continuous_batching_tier=verified`` +
+      ``mtp_default_enabled=True``: serve enables it unasked, and
+      ``--no-spec-decode`` is the escape hatch.
     * ``sidecar``  — Gemma 4: MTP is provided by an assistant drafter
       loaded alongside the base weights (no head baked in), and the
       profile enables spec decode.
     * ``sidecar (opt-in: --speculative-config)`` — the alias declares an MTP
       sidecar, but Rapid leaves it disabled until the user explicitly opts in.
+    * ``sidecar (default; --no-spec-decode off)`` — the alias declares an
+      MTP sidecar AND serve enables it unasked (verified + default-on);
+      ``--no-spec-decode`` is the escape hatch.
     * ``disabled`` — no native/sidecar MTP capability is declared and spec
       decode is off for this profile
       (``supports_spec_decode=False`` — hybrid arch, or no MTP head /
@@ -2310,13 +2349,20 @@ def _mtp_path_label(model_path: str, cfg: "ModelConfig") -> str:
       (see ``_resolve_family``).
 
     Derivation is from the resolved profile only (no ``config.json``
-    read), keeping the ``rapid-mlx info`` path weight-free.
+    read), keeping the ``rapid-mlx info`` path weight-free. The
+    default-on vs opt-in split consults the same registry helpers serve
+    consults, so a flag-less serve never reports opt-in for a model it
+    decodes with MTP by default (0.13.4 dogfood P1). The registry view
+    is runtime-blind, though: callers that KNOW the runtime state pass
+    ``runtime_spec_decode`` (below) so the rows can't contradict what
+    the server is actually doing.
     """
     if getattr(cfg, "supports_native_mtp", False):
         # Method-specific capability metadata is authoritative here. A hybrid
         # checkpoint can disable the generic speculative lane while its
-        # native MTP injector remains verified. The feature is still
-        # explicit opt-in; this reports capability, never default-on state.
+        # native MTP injector remains verified.
+        if _serve_mtp_default_on(model_path):
+            return "native (default; --no-spec-decode off)"
         return "native (opt-in: --speculative-config)"
     if (getattr(cfg, "mtp_draft_model", None) or "").strip():
         # #1998: the alias DECLARES its own MTP sidecar, and that declaration
@@ -2326,7 +2372,10 @@ def _mtp_path_label(model_path: str, cfg: "ModelConfig") -> str:
         # it); the MTP sidecar lane is separate and was verified end-to-end on
         # Qwen3.8-27B. Checked BEFORE the flag, because reporting "disabled"
         # for a model that decodes with MTP is exactly the registry-vs-reality
-        # mismatch #1998 was about. Names the opt-in, mirroring the DFlash row.
+        # mismatch #1998 was about. Report default-on vs opt-in from the same
+        # helpers serve consults (0.13.4 dogfood P1), mirroring the DFlash row.
+        if _serve_mtp_default_on(model_path):
+            return "sidecar (default; --no-spec-decode off)"
         return "sidecar (opt-in: --speculative-config)"
     if not cfg.supports_spec_decode:
         # Honest: the profile has spec decode gated off (hybrid arch, or
@@ -2382,8 +2431,12 @@ def format_profile_summary(
     Empty/no-match models return a generic line so the log is consistent
     across known and unknown models.
     """
+    # "(active)" not "(explicit)": the engine can't tell a user-passed
+    # --speculative-config from the alias default-on path — cli normalizes
+    # both to the same scheduler spec_decode — so claiming provenance here
+    # would be wrong for default-on boots.
     runtime_status = (
-        f"spec decode {runtime_spec_decode.upper()} (explicit)"
+        f"spec decode {runtime_spec_decode.upper()} (active)"
         if runtime_spec_decode
         else None
     )
@@ -2405,9 +2458,23 @@ def format_profile_summary(
     return f"Model profile: {model_path} → " + ", ".join(parts)
 
 
-def format_profile_table(model_path: str, cfg: "ModelConfig | None") -> str:
+def format_profile_table(
+    model_path: str,
+    cfg: "ModelConfig | None",
+    *,
+    runtime_spec_decode: str | None = None,
+) -> str:
     """Multi-line ASCII capability table for verbose startup output and
     the ``rapid-mlx info`` CLI command (Level 2 + Level 3).
+
+    ``runtime_spec_decode`` reconciles the registry view with what the
+    server is actually doing (adversarial review round 1 on #3266): the
+    engine passes ``"off"`` when ``--no-spec-decode`` forced plain decode,
+    or the active method name (``"mtp"`` / ``"dflash"`` / ``"dspark"``);
+    ``None`` — the ``rapid-mlx info`` default — keeps the pure registry
+    view. Without this, ``serve … --no-spec-decode RAPID_MLX_PROFILE_VERBOSE=1``
+    rendered ``✓ default-on (MTP)`` next to ``Suffix tier: … spec decode
+    off`` in one box.
 
     Width is fixed at 64 cols so it renders cleanly in terminal logs.
     Note: Unicode check/cross marks count as 1 char each (no double-width).
@@ -2428,12 +2495,21 @@ def format_profile_table(model_path: str, cfg: "ModelConfig | None") -> str:
         header = header[: inner - 1] + "…"
 
     if cfg is None:
+        # Runtime reconciliation for the unmatched-profile branch too:
+        # the generic "✓ default-on" line must yield to what the server
+        # is actually doing (round 2 on #3266).
+        if runtime_spec_decode == "off":
+            unknown_spec = "✗ off (--no-spec-decode)"
+        elif runtime_spec_decode:
+            unknown_spec = f"✓ active ({runtime_spec_decode.upper()})"
+        else:
+            unknown_spec = "✓ default-on"
         rows = [
             ("Profile", "(no pattern matched — using defaults)"),
             ("Tool format", "(none)"),
             ("Reasoning parser", "(none)"),
             ("Architecture", "unknown"),
-            ("Spec decode", "✓ default-on"),
+            ("Spec decode", unknown_spec),
             # Truth-in-labeling: no regex/alias matched, so the
             # architecture is genuinely UNKNOWN here — an opaquely named
             # Qwen3.5 or Gemma 4 checkpoint would land in this branch too.
@@ -2456,7 +2532,17 @@ def format_profile_table(model_path: str, cfg: "ModelConfig | None") -> str:
             ),
         ]
     else:
-        if cfg.supports_spec_decode:
+        throttle = "✓ 200ms gap" if cfg.is_hybrid else "✗ not needed"
+        mtp_label = _mtp_path_label(model_path, cfg)
+        if mtp_label.endswith("(default; --no-spec-decode off)"):
+            # Serve enables MTP for this alias unasked (verified tier +
+            # catalog default-on) — say so instead of the generic
+            # ``supported``/``disabled (hybrid arch)`` copy, which read
+            # as the opposite of what the server does (0.13.4 dogfood
+            # P1). Derived FROM the MTP-path label so the two rows can
+            # never disagree.
+            spec = "✓ default-on (MTP)"
+        elif cfg.supports_spec_decode:
             spec = "✓ supported"
         elif cfg.is_hybrid:
             spec = "✗ disabled (hybrid arch)"
@@ -2469,11 +2555,40 @@ def format_profile_table(model_path: str, cfg: "ModelConfig | None") -> str:
             # misleading because the DFlash drafter IS registered.
             # Surface the actionable opt-in instead.
             spec = '✗ try --speculative-config {"method":"dflash"}'
+        elif mtp_label.startswith(("sidecar (opt-in", "native (opt-in")):
+            # Same row-vs-row honesty contract, default-off flavour
+            # (0.13.4 dogfood round 2): a declared MTP drafter/head with
+            # ``mtp_default_enabled=False`` (#3115) must not have the
+            # Spec decode row claim ``no MTP/drafter trained`` two lines
+            # above the ``MTP path: … (opt-in)`` row. Name the opt-in.
+            spec = "✗ off (MTP opt-in: --speculative-config)"
         else:
             # 0.9.0 dogfood: non-hybrid + spec-off was rendering
             # ``hybrid arch`` next to ``Architecture: pure attention``.
             spec = "✗ disabled (no MTP/drafter trained)"
-        throttle = "✓ 200ms gap" if cfg.is_hybrid else "✗ not needed"
+        # Runtime reconciliation (adversarial review round 1 on #3266).
+        # ``spec_decode == "none"`` at the scheduler is NOT proof of plain
+        # decode — the Suffix/DDTree lanes leave it "none" — so the engine
+        # passes "off" only for the explicit --no-spec-decode override and
+        # None otherwise. Only default-on claims are overridden: capability
+        # rows ("supported", "opt-in") stay truthful under plain decode.
+        if runtime_spec_decode == "off":
+            if spec == "✓ default-on (MTP)":
+                spec = "✗ off (--no-spec-decode)"
+                mtp_label = "off (--no-spec-decode)"
+        elif runtime_spec_decode and not (
+            runtime_spec_decode == "mtp" and spec == "✓ default-on (MTP)"
+        ):
+            # An active lane that disagrees with the registry copy:
+            # explicit --speculative-config mtp on a default-off alias,
+            # or dflash/dspark/suffix on any alias (including one whose
+            # MTP would be default-on — the server is decoding via that
+            # lane, and MTP is not loaded; round 2 on #3266 caught the
+            # Suffix variant rendering "✓ default-on (MTP)" under an
+            # active SuffixDecoding boot).
+            spec = f"✓ active ({runtime_spec_decode.upper()})"
+            if runtime_spec_decode != "mtp":
+                mtp_label = f"off (decoding via {runtime_spec_decode.upper()})"
         rows = [
             ("Tool format", cfg.tool_call_parser or "(none)"),
             ("Reasoning parser", cfg.reasoning_parser or "(none)"),
@@ -2487,7 +2602,7 @@ def format_profile_table(model_path: str, cfg: "ModelConfig | None") -> str:
             # Gemma 4 family default, not a per-checkpoint config.json
             # read). The unmatched-profile (``cfg is None``) branch above
             # reports ``unknown`` for both instead of a definite value.
-            ("MTP path", _mtp_path_label(model_path, cfg)),
+            ("MTP path", mtp_label),
             ("KV-share", _kv_share_label(model_path, cfg)),
             ("Throttle", throttle),
             ("Suffix tier", _suffix_tier_cell(cfg, max_width=value_width)),

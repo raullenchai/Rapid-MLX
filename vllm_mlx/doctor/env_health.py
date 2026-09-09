@@ -812,9 +812,29 @@ def _distribution_owns_module(distribution, module_path):
     owned_paths = [module_path]
     if module_path.name == "__init__.py":
         owned_paths.append(module_path.parent)
+    # RECORD is attacker-controlled when the dist-info comes from an
+    # untrusted root: ``locate_file`` joins entries verbatim, so absolute
+    # entries (and "../" entries that escape the dist-info's install
+    # root) could otherwise claim a module in a DIFFERENT root — e.g. a
+    # context dist-info asserting ownership of the trusted sidecar's
+    # namespace portion (adversarial review round 2 on #3266). Entries
+    # that stay inside their own install root are matched as before;
+    # out-of-root entries (legitimately: console scripts like
+    # ../../../bin/foo) are simply not eligible for ownership.
+    try:
+        dist_root = Path(distribution.locate_file("")).resolve()
+    except (Exception, SystemExit):
+        dist_root = None
     for installed_file in distribution.files or []:
         try:
-            installed_path = Path(distribution.locate_file(installed_file)).resolve()
+            entry = Path(installed_file)
+            if entry.is_absolute():
+                continue
+            installed_path = Path(distribution.locate_file(entry)).resolve()
+            if dist_root is not None and not installed_path.is_relative_to(
+                dist_root
+            ):
+                continue
         except (Exception, SystemExit):
             continue
         for owned_path in owned_paths:
@@ -831,9 +851,37 @@ for distribution, module_name in distributions.items():
     spec = None
     try:
         spec = importlib.util.find_spec(module_name)
+        # Namespace packages (mlx is one) have ``origin is None`` but a
+        # real ``submodule_search_locations`` directory. Ownership
+        # matching needs an existing path, so fall back to the package
+        # directory — otherwise a perfectly readable distribution
+        # (mlx 0.32.2) was reported as "version metadata unavailable"
+        # (0.13.4 dogfood P2).
+        # Anchor on the first portion that is ITSELF trusted, not portion
+        # [0]: namespace portions merge across sys.path, context roots sit
+        # at sys.path[0], and ``_module_path_is_trusted`` is any-portion —
+        # so anchoring blindly on portion [0] let a shadow dist-info in an
+        # untrusted server-context directory claim a spoofed version while
+        # trusted_origin still reported True (adversarial security review
+        # #3266). No trusted portion → no anchor → version stays None
+        # (fail-closed), matching the pre-fallback behavior.
+        probe_path = spec.origin if spec is not None else None
+        if (
+            probe_path is None
+            and spec is not None
+            and spec.submodule_search_locations
+        ):
+            probe_path = next(
+                (
+                    location
+                    for location in spec.submodule_search_locations
+                    if _path_is_trusted(location)
+                ),
+                None,
+            )
         version = None if spec is None else distribution_version(
             distribution,
-            spec.origin,
+            probe_path,
         )
     except importlib.metadata.PackageNotFoundError:
         version = None
@@ -1659,23 +1707,36 @@ def section_system() -> Section:
 def _install_location(exe: Path | None = None) -> tuple[str, Path]:
     """Classify where ``rapid-mlx`` is installed: ``uv tool``, ``pipx``,
     ``virtualenv``, ``system``. Returned label is for display; the path
-    is shown in --verbose."""
-    exe = (exe or Path(sys.executable)).resolve()
+    is shown in --verbose.
+
+    The returned path is the interpreter as configured — symlinks are
+    NOT dereferenced — so a virtualenv reports its own ``bin/python``
+    instead of the base interpreter its symlink points at. Resolving
+    first used to land the display path in Homebrew's Cellar (or a uv-
+    managed CPython) while the label read ``virtualenv``, mixing two
+    semantics on one line (0.13.4 dogfood P2). The label classification
+    below still inspects the resolved path, because uv/pipx layouts are
+    only recognizable through the real location; the base interpreter
+    remains reachable via ``sys.base_prefix`` for verbose detail.
+    """
+    raw = exe or Path(sys.executable)
+    exe = raw.resolve()
+    display = raw.absolute()
     parts = exe.parts
     lower = str(exe).lower()
     if "uv/tools" in lower or "/uv/tools/" in lower:
-        return "uv tool", exe
+        return "uv tool", display
     if "pipx" in lower:
-        return "pipx", exe
+        return "pipx", display
     # site-packages under a venv-style structure
     if (
         sys.prefix != getattr(sys, "base_prefix", sys.prefix)
         or "VIRTUAL_ENV" in os.environ
     ):
-        return "virtualenv", exe
+        return "virtualenv", display
     if "Cellar" in parts or "/homebrew/" in lower:
-        return "Homebrew", exe
-    return "system", exe
+        return "Homebrew", display
+    return "system", display
 
 
 def section_python() -> Section:
@@ -1760,7 +1821,8 @@ def section_python() -> Section:
         f"Install location: {install_label} ({path})",
         CheckStatus.OK,
         detail=(
-            f"sys.executable={path}; all package checks use this runtime's "
+            f"sys.executable={path}; base interpreter prefix="
+            f"{Path(sys.base_prefix)}; all package checks use this runtime's "
             "sys.path (or the running server's equivalent runtime)"
         ),
     )
@@ -1785,8 +1847,19 @@ def _safe_version(
         )
         package = _probe_package(probe, dist) if probe else None
         if package is not None:
+            # Version consumers (repair-hint comparisons, supported-range
+            # checks) must only see probed metadata from trusted origins:
+            # a dist-info shadowing the module from a server-context path
+            # can claim any version (adversarial security review #3266 —
+            # previously only *importability* was gated on trusted_origin).
+            # The probe emits trusted_origin unconditionally; treat an
+            # ABSENT key as trusted (older fixture/probe formats) and gate
+            # only on an explicit False.
+            trusted = package.get("trusted_origin")
             version = package.get("version")
-            return str(version) if version else None
+            if trusted is not False and version:
+                return str(version)
+            return None
         return None
     try:
         return _im.version(dist)

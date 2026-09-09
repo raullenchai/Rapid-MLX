@@ -211,7 +211,7 @@ class TestProfileTableCell:
         the truncator should be a no-op on the common case."""
         cfg = ModelConfig(supports_spec_decode=False, is_hybrid=True)
         cell = _suffix_tier_cell(cfg, max_width=41)
-        assert cell == "n/a (hybrid arch — spec decode off)"
+        assert cell == "n/a (hybrid arch — suffix unsupported)"
         assert "…" not in cell
 
     def test_dense_no_drafter_tier_cell_does_not_lie_about_hybrid(self):

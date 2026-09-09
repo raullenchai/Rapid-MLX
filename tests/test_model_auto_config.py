@@ -1,10 +1,12 @@
 """Tests for model auto-config detection."""
 
 import logging
+import sys
 from unittest import mock
 
 import pytest
 
+from vllm_mlx import model_aliases
 from vllm_mlx import model_auto_config as auto_config_mod
 from vllm_mlx.model_auto_config import (
     ModelConfig,
@@ -920,14 +922,14 @@ class TestVisibility:
         assert "throttle ON" in line
         assert "spec decode OFF" in line
 
-    def test_summary_shows_explicit_runtime_spec_decode(self):
+    def test_summary_shows_active_runtime_spec_decode(self):
         cfg = detect_model_config("mlx-community/Qwen3.5-35B-A3B-4bit")
         line = format_profile_summary(
             "mlx-community/Qwen3.5-35B-A3B-4bit",
             cfg,
             runtime_spec_decode="mtp",
         )
-        assert "spec decode MTP (explicit)" in line
+        assert "spec decode MTP (active)" in line
         assert "spec decode OFF" not in line
 
     def test_summary_for_unknown(self):
@@ -935,12 +937,12 @@ class TestVisibility:
         assert "unknown family" in line
         assert "brand-new-model" in line
 
-    def test_unknown_summary_shows_explicit_runtime_spec_decode(self):
+    def test_unknown_summary_shows_active_runtime_spec_decode(self):
         line = format_profile_summary(
             "brand-new-model", None, runtime_spec_decode="mtp"
         )
         assert "unknown family" in line
-        assert "spec decode MTP (explicit)" in line
+        assert "spec decode MTP (active)" in line
 
     # --- Level 2 / Level 3: ASCII table ---
 
@@ -959,10 +961,168 @@ class TestVisibility:
     def test_table_for_hybrid_shows_disabled_spec(self):
         # r6-A R6-C1: use the A3B MoE Qwen3.5 path — see
         # ``test_summary_for_hybrid`` for the dense-vs-MoE rationale.
+        # This alias is mtp_continuous_batching_tier=unknown, so serve
+        # does NOT default-enable MTP and the honest reason for the
+        # standard lane stays ``disabled (hybrid arch)``.
         cfg = detect_model_config("mlx-community/Qwen3.5-35B-A3B-4bit")
         table = format_profile_table("mlx-community/Qwen3.5-35B-A3B-4bit", cfg)
         assert "✗ disabled (hybrid arch)" in table
         assert "✓ 200ms gap" in table
+
+    def test_table_matches_serve_default_on_mtp_sidecar_hybrid(self):
+        # 0.13.4 dogfood P1: ``qwen3.8-27b-4bit`` is hybrid
+        # (``supports_spec_decode=False``) yet serve boots it with MTP
+        # by default — the alias is
+        # ``mtp_continuous_batching_tier=verified`` +
+        # ``mtp_default_enabled=True`` with a declared sidecar drafter.
+        # The info table used to claim ``✗ disabled (hybrid arch)`` +
+        # ``sidecar (opt-in: --speculative-config)``, the exact
+        # registry-vs-reality mismatch this row must never ship again.
+        cfg = detect_model_config("qwen3.8-27b-4bit")
+        assert cfg is not None and cfg.is_hybrid is True
+        table = format_profile_table("qwen3.8-27b-4bit", cfg)
+        assert "✓ default-on (MTP)" in table
+        assert "MTP path         : sidecar (default; --no-spec-decode off)" in table
+        assert "✗ disabled (hybrid arch)" not in table
+        assert "sidecar (opt-in: --speculative-config)" not in table
+        assert "Suffix tier      : n/a (hybrid arch — suffix unsupported)" in table
+        assert "spec decode off" not in table
+
+    def test_table_matches_serve_default_on_mtp_sidecar_dense(self):
+        # Same contract on a non-hybrid alias: ``qwen3.5-9b-4bit`` is
+        # verified + default-enabled with a declared sidecar, so the
+        # generic lane copy ``✓ supported`` understates what serve does.
+        cfg = detect_model_config("qwen3.5-9b-4bit")
+        table = format_profile_table("qwen3.5-9b-4bit", cfg)
+        assert "✓ default-on (MTP)" in table
+        assert "MTP path         : sidecar (default; --no-spec-decode off)" in table
+
+    def test_table_keeps_opt_in_label_for_default_off_alias(self):
+        # #3115 contract: ``qwen3.5-4b-4bit`` is verified but shipped
+        # ``mtp_default_enabled=False`` (measured regression on M2 Pro /
+        # M3 Ultra), so serve leaves it off unasked and the table must
+        # keep naming the explicit opt-in.
+        cfg = detect_model_config("qwen3.5-4b-4bit")
+        table = format_profile_table("qwen3.5-4b-4bit", cfg)
+        assert "sidecar (opt-in: --speculative-config)" in table
+        assert "✓ default-on (MTP)" not in table
+
+    def test_table_no_spec_decode_runtime_overrides_default_on(self):
+        # Adversarial review round 1 (#3266): the registry view is
+        # runtime-blind. ``serve qwen3.8-27b-4bit --no-spec-decode`` with
+        # RAPID_MLX_PROFILE_VERBOSE=1 used to render ``✓ default-on
+        # (MTP)`` + ``sidecar (default; …)`` in the same box as
+        # ``Suffix tier: … spec decode off`` while the server ran plain
+        # decode. The engine now passes runtime_spec_decode="off" and the
+        # default-on claims must yield.
+        cfg = detect_model_config("qwen3.8-27b-4bit")
+        table = format_profile_table("qwen3.8-27b-4bit", cfg, runtime_spec_decode="off")
+        assert "✗ off (--no-spec-decode)" in table
+        assert "MTP path         : off (--no-spec-decode)" in table
+        assert "✓ default-on (MTP)" not in table
+        assert "sidecar (default; --no-spec-decode off)" not in table
+
+    def test_table_no_spec_decode_keeps_capability_rows(self):
+        # Only default-on ACTIVITY claims are overridden. A default-off
+        # alias under --no-spec-decode keeps its opt-in rows: the
+        # mechanism exists, it is simply not running — same truth the
+        # #3115 contract requires flag-less.
+        cfg = detect_model_config("qwen3.5-4b-4bit")
+        table = format_profile_table("qwen3.5-4b-4bit", cfg, runtime_spec_decode="off")
+        assert "✗ off (MTP opt-in: --speculative-config)" in table
+        assert "sidecar (opt-in: --speculative-config)" in table
+
+    def test_table_active_runtime_method_overrides_off_rows(self):
+        # Explicit opt-in boot on a default-off alias: the runtime IS
+        # decoding with MTP, so the registry's ``✗ off (MTP opt-in …)``
+        # row would deny reality. Same for non-MTP lanes (dflash) on a
+        # default-on alias.
+        cfg = detect_model_config("qwen3.5-4b-4bit")
+        table = format_profile_table("qwen3.5-4b-4bit", cfg, runtime_spec_decode="mtp")
+        assert "✓ active (MTP)" in table
+        assert "✗ off (MTP opt-in" not in table
+
+        hybrid = detect_model_config("qwen3.8-27b-4bit")
+        table = format_profile_table(
+            "qwen3.8-27b-4bit", hybrid, runtime_spec_decode="dflash"
+        )
+        assert "✓ active (DFLASH)" in table
+
+    def test_table_runtime_mtp_keeps_default_on_copy(self):
+        # Flag-less default-on boot: runtime method "mtp" agrees with the
+        # registry view, which is the more informative copy — keep it.
+        cfg = detect_model_config("qwen3.8-27b-4bit")
+        table = format_profile_table("qwen3.8-27b-4bit", cfg, runtime_spec_decode="mtp")
+        assert "✓ default-on (MTP)" in table
+
+    def test_table_suffix_lane_overrides_default_on_mtp(self):
+        # Round 2 on #3266: the SuffixDecoding lane leaves scheduler
+        # spec_decode "none" while decoding speculatively. The table must
+        # not claim default-on MTP for a server that is actively decoding
+        # via Suffix — and the MTP-path row must stop advertising the
+        # "(default; --no-spec-decode off)" disposition that isn't loaded.
+        cfg = detect_model_config("qwen3.8-27b-4bit")
+        table = format_profile_table(
+            "qwen3.8-27b-4bit", cfg, runtime_spec_decode="suffix"
+        )
+        assert "✓ active (SUFFIX)" in table
+        assert "MTP path         : off (decoding via SUFFIX)" in table
+        assert "✓ default-on (MTP)" not in table
+        assert "sidecar (default; --no-spec-decode off)" not in table
+
+    def test_table_dflash_lane_marks_mtp_off(self):
+        # Same contract for DFlash (dedicated single-user engine): MTP is
+        # not loaded while DFlash decodes.
+        cfg = detect_model_config("qwen3.8-27b-4bit")
+        table = format_profile_table(
+            "qwen3.8-27b-4bit", cfg, runtime_spec_decode="dflash"
+        )
+        assert "✓ active (DFLASH)" in table
+        assert "MTP path         : off (decoding via DFLASH)" in table
+
+    def test_table_unmatched_profile_active_lane(self):
+        # The unmatched-profile branch must also reconcile an active lane,
+        # not just the --no-spec-decode override.
+        table = format_profile_table(
+            "brand-new-model", None, runtime_spec_decode="suffix"
+        )
+        assert "✓ active (SUFFIX)" in table
+        assert "✓ default-on" not in table
+
+    def test_table_unmatched_profile_runtime_off(self):
+        # The unmatched-profile branch hardcodes a generic ``✓
+        # default-on``; under --no-spec-decode that is false regardless
+        # of what loads.
+        table = format_profile_table("brand-new-model", None, runtime_spec_decode="off")
+        assert "✗ off (--no-spec-decode)" in table
+
+    def test_table_fails_closed_when_registry_unavailable(self, monkeypatch):
+        # Registry failure must not fabricate a default-on claim — the
+        # table degrades to the pre-existing capability copy, mirroring
+        # serve's fail-closed plain-decode path.
+        def _raise(_name: str):
+            raise RuntimeError("broken alias registry")
+
+        monkeypatch.setattr(model_aliases, "resolve_profile", _raise)
+        cfg = detect_model_config("qwen3.8-27b-4bit")
+        table = format_profile_table("qwen3.8-27b-4bit", cfg)
+        assert "✓ default-on (MTP)" not in table
+        assert "sidecar (default" not in table
+
+    def test_mtp_default_probe_fails_closed_when_cli_import_is_unavailable(
+        self, monkeypatch
+    ):
+        monkeypatch.setitem(sys.modules, "vllm_mlx.cli", None)
+        assert auto_config_mod._serve_mtp_default_on("qwen3.8-27b-4bit") is False
+
+    def test_native_mtp_default_on_label(self, monkeypatch):
+        monkeypatch.setattr(
+            auto_config_mod, "_serve_mtp_default_on", lambda _name: True
+        )
+        cfg = ModelConfig(supports_native_mtp=True)
+        assert auto_config_mod._mtp_path_label("native-model", cfg) == (
+            "native (default; --no-spec-decode off)"
+        )
 
     def test_qwen4_exp_alias_surfaces_experimental_status(self):
         cfg = detect_model_config("qwen3.8-flash-next-4bit")
@@ -982,22 +1142,33 @@ class TestVisibility:
         assert "✗ not needed" in table
 
     def test_table_for_dense_no_drafter_shows_honest_reason(self):
-        # 0.9.0 dogfood regression guard. ``qwen3.5-4b-4bit`` has
-        # ``supports_spec_decode=False`` (no MTP head trained) but is
-        # NOT hybrid. Before 0.9.1 the Spec-decode row claimed
-        # ``(hybrid arch)`` as the reason, contradicting the
-        # ``Architecture: pure attention`` row two lines above. Now we
-        # surface the actual reason — no MTP/drafter trained for this
-        # alias — so the user can act on it (or stop expecting a flag
-        # to flip).
-        cfg = detect_model_config("mlx-community/Qwen3.5-4B-MLX-4bit")
+        # 0.9.0 dogfood regression guard, re-pointed at a TRUE
+        # no-drafter alias (``qwen3.5-4b-4bit`` grew a declared MTP
+        # sidecar + default-off in #3115, so it now belongs to the
+        # opt-in test below). Non-hybrid + spec-off must render the
+        # actual reason — no MTP/drafter trained for this alias — not
+        # the ``(hybrid arch)`` misnomer pre-0.9.1 shipped.
+        cfg = detect_model_config("qwen3.5-27b-4bit")
         assert cfg is not None
         assert cfg.is_hybrid is False
         assert cfg.supports_spec_decode is False
-        table = format_profile_table("mlx-community/Qwen3.5-4B-MLX-4bit", cfg)
+        table = format_profile_table("qwen3.5-27b-4bit", cfg)
         assert "✗ disabled (no MTP/drafter trained)" in table
         assert "✗ disabled (hybrid arch)" not in table
         assert "pure attention" in table
+
+    def test_table_default_off_sidecar_names_opt_in_not_no_drafter(self):
+        # 0.13.4 dogfood round 2: ``qwen3.5-4b-4bit`` declares an MTP
+        # sidecar drafter but ships ``mtp_default_enabled=False``
+        # (#3115). The Spec decode row must not claim
+        # ``(no MTP/drafter trained)`` two lines above
+        # ``MTP path: sidecar (opt-in: …)`` — same row-vs-row honesty
+        # contract as the default-on fix.
+        cfg = detect_model_config("qwen3.5-4b-4bit")
+        table = format_profile_table("qwen3.5-4b-4bit", cfg)
+        assert "✗ off (MTP opt-in: --speculative-config)" in table
+        assert "MTP path         : sidecar (opt-in: --speculative-config)" in table
+        assert "✗ disabled (no MTP/drafter trained)" not in table
 
     def test_table_for_dflash_alias_surfaces_opt_in_flag(self):
         # 0.9.1 dogfood follow-up. ``qwen3.5-27b-8bit`` is the operator-
@@ -2885,3 +3056,43 @@ class TestCheckpointMetadataFallback:
         monkeypatch.setattr(auto_config_mod, "read_model_metadata", lambda name: None)
 
         assert detect_model_config("publisher/unknown-model") is None
+
+
+def test_registry_invariant_default_on_implies_declared_mechanism(
+    tmp_path, monkeypatch
+):
+    """Pins the seam round-2 review on #3266 flagged: `_mtp_path_label`
+    only consults the serve-side default-on helpers when the DETECTED cfg
+    declares a mechanism (``supports_native_mtp`` or ``mtp_draft_model``).
+    If an alias ever ships ``mtp_continuous_batching_tier=verified`` +
+    ``mtp_default_enabled`` truthy WITHOUT declaring a mechanism, serve
+    would boot MTP by default while the info table claims opt-in/disabled
+    — the exact registry-vs-reality split this PR closes. Every shipped
+    alias must keep the two views consistent."""
+    from vllm_mlx.model_aliases import list_profiles
+    from vllm_mlx.model_auto_config import detect_model_config
+
+    # Hermeticity (round-3 review on #3266): list_profiles() merges the
+    # host's user-alias file, which is outside the conftest env
+    # allowlist — point it at an empty tmp file so a corrupt/dev-machine
+    # alias config can't fail this suite.
+    empty_aliases = tmp_path / "user-aliases.json"
+    empty_aliases.write_text('{"version": 1, "aliases": {}}\n')
+    monkeypatch.setenv("RAPID_MLX_USER_ALIASES_FILE", str(empty_aliases))
+
+    offenders: list[str] = []
+    for alias, profile in list_profiles().items():
+        if profile.mtp_continuous_batching_tier != "verified":
+            continue
+        if not profile.mtp_default_enabled:
+            continue
+        cfg = detect_model_config(alias)
+        declares = bool(getattr(cfg, "supports_native_mtp", False)) or bool(
+            (getattr(cfg, "mtp_draft_model", None) or "").strip()
+        )
+        if not declares:
+            offenders.append(alias)
+    assert not offenders, (
+        "verified+default-on aliases must declare a native MTP head or a "
+        f"sidecar drafter so the info table can see it: {offenders}"
+    )
