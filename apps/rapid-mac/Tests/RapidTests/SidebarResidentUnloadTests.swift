@@ -164,22 +164,22 @@ struct SidebarResidentUnloadTests {
     func disabledState() {
         #expect(!SidebarView.residentUnloadDisabled(
             isOperating: false,
-            chatIsStreaming: false,
+            hasActiveModelWork: false,
             hasActiveRequests: false
         ))
         #expect(SidebarView.residentUnloadDisabled(
             isOperating: true,
-            chatIsStreaming: false,
+            hasActiveModelWork: false,
             hasActiveRequests: false
         ))
         #expect(SidebarView.residentUnloadDisabled(
             isOperating: false,
-            chatIsStreaming: true,
+            hasActiveModelWork: true,
             hasActiveRequests: false
         ))
         #expect(SidebarView.residentUnloadDisabled(
             isOperating: false,
-            chatIsStreaming: false,
+            hasActiveModelWork: false,
             hasActiveRequests: true
         ))
     }

@@ -10,7 +10,7 @@ AXApplication title="Rapid-MLX"
           AXButton id="Sidebar.Launch" desc="Launch" enabled=true
           AXStaticText id="Sidebar.Residency" value=text enabled=true
           AXProgressIndicator value=number enabled=true
-          AXButton id="Sidebar.Residency.Unload" desc="Unload model and free <size>" help="Unload model and free <size>" enabled=true
+          AXButton id="Sidebar.Residency.Unload" desc="Unload model and free <size>" help="Stop the active response before unloading models" enabled=false
           AXImage id="Sidebar.ResidentModel.<model>" desc="Lock" enabled=true
           AXStaticText id="Sidebar.ResidentModel.<model>" value=text enabled=true
           AXStaticText id="Sidebar.ResidentModel.<model>" value=text enabled=true

@@ -643,7 +643,8 @@ struct ContentView: View {
                     chat.selectConversation(id)
                     section = .chat
                 },
-                server: server
+                server: server,
+                hasActiveModelWork: hasActiveModelWork
             )
             // v1.0: the rail paints an explicit warm surface rather than
             // inheriting the system sidebar material. The material is a
@@ -722,22 +723,28 @@ struct ContentView: View {
         }
     }
 
-    private var starPromptPresentationContext: GitHubStarPromptCoordinator.PresentationContext {
+    private var hasActiveModelWork: Bool {
         let dictationIsBusy: Bool = switch dictation.phase {
         case .preparingModel, .starting, .recording, .transcribing: true
         case .off, .idle: false
         }
+
+        return chat.isStreaming
+            || imageGen.isGenerating
+            || audio.isBusy
+            || video.hasLiveActiveJobs
+            || video.isSubmitting
+            || video.isPreparing
+            || dictationIsBusy
+    }
+
+    private var starPromptPresentationContext: GitHubStarPromptCoordinator.PresentationContext {
         let campaignIsVisible = campaign.map {
             !UserDefaults.standard.bool(forKey: $0.dismissalKey)
         } ?? false
 
         return .init(
-            isBusy: chat.isStreaming
-                || imageGen.isGenerating
-                || video.hasLiveActiveJobs
-                || video.isSubmitting
-                || video.isPreparing
-                || dictationIsBusy,
+            isBusy: hasActiveModelWork,
             hasBlockingSurface: quickstartVisible
                 || deferredTelemetryConsent.isPresented
                 || campaignIsVisible

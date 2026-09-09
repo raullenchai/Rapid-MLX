@@ -61,6 +61,10 @@ struct SidebarView: View {
     /// Optional in isolated snapshot fixtures; the shipping ContentView passes
     /// it so residency and the enforced memory ceiling remain visible globally.
     var server: ServerManager? = nil
+    /// True while any model-backed surface is doing user-visible work. The
+    /// unload control must not offer to tear down the shared runtime merely
+    /// because the active work is outside Chat.
+    var hasActiveModelWork: Bool = false
     /// Test seam for driving the real accessibility control without spawning a
     /// sidecar. Production leaves this nil and uses ServerManager's guarded
     /// resident-pool unload path.
@@ -610,7 +614,7 @@ struct SidebarView: View {
         let hasActiveRequests = Self.hasActiveResidentRequests(snapshot)
         let disabled = Self.residentUnloadDisabled(
             isOperating: server.isOperating || isUnloadingResidentModels,
-            chatIsStreaming: chat.isStreaming,
+            hasActiveModelWork: hasActiveModelWork,
             hasActiveRequests: hasActiveRequests
         )
         let label = Self.residentUnloadLabel(
@@ -650,7 +654,7 @@ struct SidebarView: View {
         .help(
             Self.residentUnloadHelp(
                 isOperating: server.isOperating || isUnloadingResidentModels,
-                hasActiveResponse: chat.isStreaming || hasActiveRequests,
+                hasActiveResponse: hasActiveModelWork || hasActiveRequests,
                 enabledLabel: label
             )
         )
@@ -703,10 +707,10 @@ struct SidebarView: View {
 
     nonisolated static func residentUnloadDisabled(
         isOperating: Bool,
-        chatIsStreaming: Bool,
+        hasActiveModelWork: Bool,
         hasActiveRequests: Bool
     ) -> Bool {
-        isOperating || chatIsStreaming || hasActiveRequests
+        isOperating || hasActiveModelWork || hasActiveRequests
     }
 
     nonisolated static func residentUnloadHelp(
