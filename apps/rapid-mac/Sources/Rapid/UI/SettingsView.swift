@@ -30,6 +30,8 @@ struct SettingsView: View {
     /// new binary; the toggle copy already calls that out.
     @Environment(ServerManager.self) private var server
     @Environment(ShareComputeManager.self) private var shareCompute
+    @Environment(MCPConfigStore.self) private var mcpConfig
+    @Environment(MCPCatalog.self) private var mcpCatalog
     /// #191: Settings → App panel binds the desktop self-update
     /// poller. ``RapidApp`` injects it into the Settings scene's
     /// environment chain so the panel can render the same
@@ -84,12 +86,6 @@ struct SettingsView: View {
         /// Built-in tools the model can call: on/off per tool, the
         /// web-search backend + key, and the browse approval mode.
         case tools
-        /// Issue #1716 — MCP connectors: which servers the engine runs, the
-        /// tools they expose, and the per-tool consent record. Separate from
-        /// ``tools`` because the two are different in kind: built-in tools
-        /// ship with the app and are audited by us, connectors are programs
-        /// the user installs and points us at.
-        case connectors
         /// Issue #1717 — per-model engine performance: KV-cache precision,
         /// prefix caching, cache budget. Deliberately NOT folded into
         /// ``modelManagement``'s sampling controls: those shape what the model
@@ -121,7 +117,6 @@ struct SettingsView: View {
             case .instructions: return "System Prompt"
             case .memory: return "Memory"
             case .tools: return "Tools"
-            case .connectors: return "Connectors"
             case .performance: return "Performance"
             case .experimentalFeatures: return "Experimental"
             case .appearance: return "Appearance"
@@ -138,7 +133,6 @@ struct SettingsView: View {
             case .instructions: return "text.bubble.fill"
             case .memory: return "brain"
             case .tools: return "wrench.and.screwdriver.fill"
-            case .connectors: return "powerplug.fill"
             case .performance: return "speedometer"
             case .experimentalFeatures: return "flask.fill"
             case .appearance: return "paintpalette.fill"
@@ -503,8 +497,6 @@ struct SettingsView: View {
             SettingsMemoryPanel()
         case .tools:
             SettingsToolsPanel()
-        case .connectors:
-            SettingsConnectorsPanel()
         case .performance:
             SettingsPerformancePanel()
         case .experimentalFeatures:
@@ -523,7 +515,8 @@ struct SettingsView: View {
     }
 
     private var experimentalFeaturesPanel: some View {
-        VStack(alignment: .leading, spacing: RapidTheme.Space.xl) {
+        @Bindable var mcpConfig = mcpConfig
+        return VStack(alignment: .leading, spacing: RapidTheme.Space.xl) {
             SectionHeader(
                 "Experimental",
                 subtitle: "Opt in to features that are still being validated across supported Macs.",
@@ -568,9 +561,23 @@ struct SettingsView: View {
                 .onChange(of: shareComputeEnabled) { _, enabled in
                     if !enabled { shareCompute.leave() }
                 }
+                SettingsRowDivider()
+                Toggle(isOn: $mcpConfig.isEnabled) {
+                    SettingsRowLabel(
+                        title: "Enable MCP Connectors",
+                        description: "Adds tools and data from MCP servers you configure. Useful for tasks that need external context or actions; it does not improve the model itself and may add latency. Off by default—connector tools ask for approval unless you explicitly allow them."
+                    )
+                }
+                .toggleStyle(TrailingSettingsToggleStyle())
+                .accessibilityIdentifier("Settings.Connectors.MasterToggle")
+                .onChange(of: mcpConfig.isEnabled) { _, enabled in
+                    if !enabled { mcpCatalog.clear() }
+                }
+            }
+            if mcpConfig.isEnabled {
+                SettingsConnectorsPanel()
             }
         }
-        .accessibilityIdentifier("Settings.Experimental.Panel")
     }
 
     private var instructionsPanel: some View {

@@ -711,12 +711,11 @@ enum CacheAwareDefault {
         // bug — but keeping the exemption catalog-scoped makes the
         // invariant local and obvious.)
         let bucketedFits = bucketedEntry.map {
-            RAMBucketedDefault.isRecommendedPick(
+            ModelSizing.isAvailable(
                 alias: bucketedDefault,
-                physicalRAMGB: hardware.physicalRAMGB,
+                on: hardware,
                 catalogEntry: $0
             )
-                || isSafe($0, on: hardware)
         } ?? false
 
         // Step 1: bucketed default is on disk AND runnable. No

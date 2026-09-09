@@ -198,7 +198,7 @@ enum CommandPalette {
             case .launch: return "Open Launch"
             case .settings: return "Open Settings"
             case .modelManagement: return "Open Model Management"
-            case .connectors: return "Open Connectors"
+            case .connectors: return "Open MCP Connectors"
             case .serverLogs: return "Show or hide server logs"
             case .exportDiagnostics: return "Export diagnostics…"
             case .checkUpdates: return "Check for updates"
@@ -246,7 +246,7 @@ enum CommandPalette {
             case .launch: return String(localized: String.LocalizationValue("Open Launch"))
             case .settings: return String(localized: String.LocalizationValue("Open Settings"))
             case .modelManagement: return String(localized: String.LocalizationValue("Open Model Management"))
-            case .connectors: return String(localized: String.LocalizationValue("Open Connectors"))
+            case .connectors: return String(localized: String.LocalizationValue("Open MCP Connectors"))
             case .serverLogs: return String(localized: String.LocalizationValue("Show or hide server logs"))
             case .exportDiagnostics: return String(localized: String.LocalizationValue("Export diagnostics…"))
             case .checkUpdates: return String(localized: String.LocalizationValue("Check for updates"))

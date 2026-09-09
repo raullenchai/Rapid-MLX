@@ -100,7 +100,7 @@ final class MCPToolRegistry: ToolRegistry {
         guard connectorsEnabled else {
             return ToolCallResult(
                 toolCallID: call.id,
-                content: "Connectors are turned off in Settings → Connectors; '\(name)' was not run.",
+                content: "MCP Connectors are turned off in Settings → Experimental; '\(name)' was not run.",
                 isError: true,
                 failureKind: .userDeclined
             )
@@ -112,7 +112,7 @@ final class MCPToolRegistry: ToolRegistry {
         guard !disabledTools.contains(name) else {
             return ToolCallResult(
                 toolCallID: call.id,
-                content: "tool '\(name)' is turned off in Settings → Connectors and was not run.",
+                content: "tool '\(name)' is turned off in Settings → Experimental and was not run.",
                 isError: true,
                 failureKind: .userDeclined
             )

@@ -198,16 +198,15 @@ struct AccessibilityIdentifierInventoryTests {
         )
     }
 
-    // MARK: - Settings → Connectors (issue #1716)
+    // MARK: - Settings → Experimental → MCP Connectors (issue #1716)
 
     /// The connector surface is where a user authorises a program on their Mac
     /// to be driven by a model, so every control on it has to be reachable by
     /// the golden-flow harness — not just the happy-path ones.
-    @Test("Settings → Connectors names every control it offers")
+    @Test("Settings → Experimental → MCP Connectors names every control it offers")
     func settingsConnectorsPanelIdentifiers() throws {
         try assertDeclared(
             [
-                #""Settings.Connectors.MasterToggle""#,
                 #""Settings.Connectors.AddButton""#,
                 #""Settings.Connectors.SubsystemError""#,
                 #""Settings.Connectors.RestartButton""#,
@@ -226,7 +225,12 @@ struct AccessibilityIdentifierInventoryTests {
                 #""Settings.Connectors.ResetApprovals""#,
             ],
             in: "Sources/Rapid/UI/SettingsConnectorsPanel.swift",
-            surface: "Settings → Connectors"
+            surface: "Settings → Experimental → MCP Connectors"
+        )
+        try assertDeclared(
+            [#""Settings.Connectors.MasterToggle""#],
+            in: "Sources/Rapid/UI/SettingsView.swift",
+            surface: "Settings → Experimental → Enable MCP Connectors"
         )
     }
 
@@ -243,7 +247,7 @@ struct AccessibilityIdentifierInventoryTests {
                 #""Settings.Connectors.Editor.Cancel""#,
             ],
             in: "Sources/Rapid/UI/MCPServerEditorSheet.swift",
-            surface: "Settings → Connectors → editor"
+            surface: "Settings → Experimental → MCP Connectors → editor"
         )
         // The two code editors route their identifier through the shared
         // `codeEditor(text:height:axIdentifier:)` builder so the modifier
@@ -258,7 +262,7 @@ struct AccessibilityIdentifierInventoryTests {
             #expect(
                 sheet.contains(#"axIdentifier:"\#(id)""#),
                 """
-                Settings → Connectors → editor: MCPServerEditorSheet.swift no \
+                Settings → Experimental → MCP Connectors → editor: MCPServerEditorSheet.swift no \
                 longer passes \(id) into codeEditor(text:height:axIdentifier:). \
                 Golden flows address this field by AXIdentifier — update \
                 scripts/gui-golden-flows.sh and this inventory together.

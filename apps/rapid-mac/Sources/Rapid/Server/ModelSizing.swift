@@ -203,6 +203,24 @@ enum ModelSizing {
         return .tooBig
     }
 
+    /// One compatibility verdict shared by every model-selection surface.
+    /// The curated RAM-tier table may override the conservative estimator for
+    /// a measured recommendation; every other model must pass ``classify``.
+    static func isAvailable(
+        alias: String,
+        on hardware: MacHardware,
+        catalogEntry: ModelEntry? = nil
+    ) -> Bool {
+        if RAMBucketedDefault.isRecommendedPick(
+            alias: alias,
+            physicalRAMGB: hardware.physicalRAMGB,
+            catalogEntry: catalogEntry
+        ) {
+            return true
+        }
+        return classify(estimate(alias: alias), on: hardware) != .tooBig
+    }
+
     /// The largest total footprint that still classifies as something other
     /// than ``Fit/tooBig`` on this host — i.e. the actual ceiling ``classify``
     /// enforces, in GB.

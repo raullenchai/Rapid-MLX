@@ -794,7 +794,7 @@ struct ContentView: View {
                 openWindow(id: "settings")
             }
         case .connectors:
-            settingsRouter.route(to: .connectors) {
+            settingsRouter.route(to: .experimentalFeatures) {
                 openWindow(id: "settings")
             }
         case .serverLogs:
@@ -1843,12 +1843,11 @@ struct ContentView: View {
         // rejected here. Mirrors ModelPickerBar.handleStartTap, the switch
         // gate above, and CacheAwareDefault.bucketedFits.
         let rejectsAlias: (String) -> Bool = { candidate in
-            ModelSizing.classify(ModelSizing.estimate(alias: candidate), on: hardware) == .tooBig
-                && !RAMBucketedDefault.isRecommendedPick(
-                    alias: candidate,
-                    physicalRAMGB: hardware.physicalRAMGB,
-                    catalogEntry: catalogEntries.first { $0.alias == candidate }
-                )
+            !ModelSizing.isAvailable(
+                alias: candidate,
+                on: hardware,
+                catalogEntry: catalogEntries.first { $0.alias == candidate }
+            )
         }
         let decision = AutoStartDecision.decide(
             lastServedAlias: launchPlan.models.chatAlias,
@@ -2165,7 +2164,7 @@ private struct MCPToolApprovalSheet: View {
                 .foregroundStyle(.secondary)
 
             Text("Always allow applies to this tool only. You can review and "
-                + "revoke it in Settings → Connectors.")
+                + "revoke it in Settings → Experimental.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
 

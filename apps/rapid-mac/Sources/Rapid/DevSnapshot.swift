@@ -72,6 +72,13 @@ enum DevSnapshot {
             catalog: snapshotMCPCatalog,
             approval: snapshotMCPApproval
         )
+        let snapshotShareCompute = ShareComputeManager(server: server)
+        let snapshotMemoryDefaults = UserDefaults(suiteName: "rapid.dev-snapshot.memory")!
+        snapshotMemoryDefaults.removePersistentDomain(forName: "rapid.dev-snapshot.memory")
+        let snapshotMemory = MemoryStore(
+            fileURL: URL(fileURLWithPath: dir).appendingPathComponent("snapshot-memory.json"),
+            defaults: snapshotMemoryDefaults
+        )
         let snapshotSparkleUpdater = SparkleUpdateController(infoDictionary: [:])
         let snapshotWebSearch = WebSearchConfig()
         let snapshotPerfDefaults = UserDefaults(suiteName: "rapid.dev-snapshot.perf")!
@@ -259,6 +266,7 @@ enum DevSnapshot {
                     .environment(snapshotConsent)
                     .environment(snapshotStarPrompt)
                     .environment(dockPromptStore)
+                    .environment(snapshotShareCompute)
                     .environment(browseApproval)
                     .environment(imageGen)
                     .environment(audio)
@@ -299,6 +307,10 @@ enum DevSnapshot {
             AnyView(
                 ImagesView(viewModel: imageGen, server: server)
                     .tint(RapidTheme.brandAmber)
+                    // ``ReadinessBanner`` resolves the same manager through
+                    // the environment even though ``ImagesView`` also takes
+                    // it as an explicit argument.
+                    .environment(server)
                     // ``ImagesView`` deep-links to Settings → Model
                     // Management from its readiness banner, so it reads the
                     // router. Missing it trapped the harness here, one
@@ -836,9 +848,11 @@ enum DevSnapshot {
                     .environment(chat)
                     .environment(sampling)
                     .environment(chat.customInstructions)
+                    .environment(snapshotMemory)
                     .environment(appearance)
                     .environment(settingsRouter)
                     .environment(server)
+                    .environment(snapshotShareCompute)
                     // The capture loop walks Category.allCases, which in a
                     // debug build includes Developer — and that panel reads
                     // the coordinator.
@@ -897,6 +911,7 @@ enum DevSnapshot {
             AnyView(
                 SettingsToolsPanel(initiallyExpanded: expanded)
                     .environment(chat)
+                    .environment(server)
                     .environment(snapshotWebSearch)
                     .environment(browseApproval)
                     .frame(width: width, alignment: .top)
@@ -926,28 +941,18 @@ enum DevSnapshot {
         }
         snapshotWebSearch.provider = .duckduckgo
 
-        // Connectors with the master switch ON — the state that reveals
-        // the servers list, the empty hint and the approvals card.
+        // Experimental with MCP Connectors ON — the state that reveals the
+        // servers list, empty hint, and approvals card in its shipping home.
         snapshotMCPConfig.isEnabled = true
-        func connectorsPanel(width: CGFloat) -> AnyView {
-            AnyView(
-                SettingsConnectorsPanel()
-                    .environment(snapshotMCPConfig)
-                    .environment(snapshotMCPCatalog)
-                    .environment(snapshotMCPApproval)
-                    .environment(snapshotMCPTools)
-                    .environment(server)
-                    .frame(width: width, alignment: .top)
-                    .padding(RapidTheme.Space.xl)
-                    .background(RapidTheme.surfaceCanvas)
-                    .tint(RapidTheme.brandAmber)
-            )
-        }
         for (mode, name) in [("light", NSAppearance.Name.aqua),
                              ("dark", NSAppearance.Name.darkAqua)] {
-            renderHosted(connectorsPanel(width: 620),
-                         size: CGSize(width: 660, height: 900),
-                         appearance: name, to: "\(dir)/connectors-enabled-\(mode).png")
+            let size = CGSize(width: 900, height: 720)
+            renderHosted(
+                settingsShell(category: .experimentalFeatures, size: size),
+                size: size,
+                appearance: name,
+                to: "\(dir)/settings-experimental-connectors-enabled-\(mode).png"
+            )
         }
         snapshotMCPConfig.isEnabled = false
 

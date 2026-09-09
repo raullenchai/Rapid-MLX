@@ -4,6 +4,16 @@ import Testing
 
 @Suite("Share Compute")
 struct ShareComputeTests {
+    private static func hardware(memoryGB: Double) -> MacHardware {
+        MacHardware(
+            brandString: "Apple M3 Pro",
+            family: .m3,
+            tier: .pro,
+            physicalRAMBytes: UInt64(memoryGB * Double(1 << 30)),
+            memoryBandwidthGBs: 150
+        )
+    }
+
     @Test("Feature is opt-in")
     func featureGate() {
         let suite = "ShareComputeTests.\(UUID().uuidString)"
@@ -12,6 +22,20 @@ struct ShareComputeTests {
         #expect(!ShareComputeFeatureConfig.isEnabled(in: defaults))
         defaults.set(true, forKey: ShareComputeFeatureConfig.enabledKey)
         #expect(ShareComputeFeatureConfig.isEnabled(in: defaults))
+    }
+
+    @Test("All pool models are unavailable on an 18 GB Mac")
+    func poolModelMemoryTiers() {
+        let eighteenGB = Self.hardware(memoryGB: 18)
+
+        #expect(ShareComputeModel.supported.map(\.catalogID) == [
+            "qwen3.8-27b",
+            "qwen3.6-35b",
+            "nemotron-3.5-lightning",
+        ])
+        #expect(ShareComputeModel.supported.allSatisfy {
+            !ModelSizing.isAvailable(alias: $0.alias, on: eighteenGB)
+        })
     }
 
     @Test("Worker labels match the provider's safe grammar")

@@ -29,6 +29,14 @@ explicit stop or provider failure, Desktop releases the lease and restores the
 previous local model. Disabling the experimental gate invalidates an in-flight
 join as well as stopping an established session.
 
+Before download or join, each pool model consumes the same centralized
+`ModelSizing.isAvailable` verdict as local model selection and launch. That
+verdict combines the conservative footprint classifier with the verified
+RAM-tier recommendation override. Models that do not fit the current Mac stay
+visible for context but cannot be selected, downloaded, or joined from Share
+Compute; for example, all three current pool models are unavailable on an
+18 GB Mac.
+
 App termination signals Share Compute, the embedded server, and downloads
 before waiting on any of them. The pool supervisor has a bounded graceful exit
 followed by process-group SIGKILL, and its nested serve process also carries the

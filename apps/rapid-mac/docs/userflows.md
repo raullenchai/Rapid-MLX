@@ -333,13 +333,15 @@ auto-promotes the selection (`setAPIKey`, `WebSearchProvider.swift:272`).
 
 ## Flow 15 — Connectors (MCP)
 
-**Trigger.** Settings → Connectors.
+**Trigger.** Settings → Experimental → **Enable MCP Connectors**.
 
 **Expected.**
 
-1. A master **Enable connectors** toggle (`Settings.Connectors.MasterToggle`,
-   opt-in). The flag is read once at spawn, so toggling it raises a **Restart
-   to apply** banner (`…RestartButton`).
+1. A master **Enable MCP Connectors** toggle (`Settings.Connectors.MasterToggle`,
+   opt-in) explains that connectors add tools and data access rather than making
+   the model itself smarter or faster, and that calls can add latency. The flag
+   is read once at spawn, so toggling it raises a **Restart to apply** banner
+   (`…RestartButton`).
 2. **Add / edit** a server through `MCPServerEditorSheet` (name, transport,
    command/URL, env, enable — `Settings.Connectors.Editor.*`). Rows expose
    status, toggle, and an edit/remove menu (`…Row.{Status,Toggle,Menu,Edit,

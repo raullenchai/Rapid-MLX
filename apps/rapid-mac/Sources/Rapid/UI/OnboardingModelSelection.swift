@@ -280,9 +280,9 @@ enum OnboardingModelSelection {
 
     // MARK: - Availability
 
-    /// Whether this Mac can run the alias, using the classification the model
-    /// picker already disables on. Not a new compatibility claim — the same
-    /// ``ModelSizing`` estimate, read in one more place.
+    /// Whether this Mac can run the alias. Delegates to the shared
+    /// ``ModelSizing/isAvailable(alias:on:catalogEntry:)`` verdict used by
+    /// launch, picker, and Share Compute surfaces.
     ///
     /// A curated recommendation is trusted over ``ModelSizing``'s estimate,
     /// which over-states low-bit / MoE footprints (the 32 GB tier's
@@ -303,14 +303,7 @@ enum OnboardingModelSelection {
         hardware: MacHardware,
         catalogEntry: ModelEntry? = nil
     ) -> Bool {
-        if RAMBucketedDefault.isRecommendedPick(
-            alias: alias,
-            physicalRAMGB: hardware.physicalRAMGB,
-            catalogEntry: catalogEntry
-        ) {
-            return true
-        }
-        return ModelSizing.classify(ModelSizing.estimate(alias: alias), on: hardware) != .tooBig
+        ModelSizing.isAvailable(alias: alias, on: hardware, catalogEntry: catalogEntry)
     }
 
     /// Build the row set for a catalogue slice. Cached-ness comes from the
