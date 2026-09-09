@@ -985,6 +985,8 @@ class TestVisibility:
         assert "MTP path         : sidecar (default; --no-spec-decode off)" in table
         assert "✗ disabled (hybrid arch)" not in table
         assert "sidecar (opt-in: --speculative-config)" not in table
+        assert "Suffix tier      : n/a (hybrid arch — suffix unsupported)" in table
+        assert "spec decode off" not in table
 
     def test_table_matches_serve_default_on_mtp_sidecar_dense(self):
         # Same contract on a non-hybrid alias: ``qwen3.5-9b-4bit`` is

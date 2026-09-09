@@ -2095,7 +2095,11 @@ def _suffix_tier_cell(cfg: "ModelConfig", max_width: int | None = None) -> str:
         # pure-attention Qwen3.5/3.6 dense aliases, which contradicts the
         # ``Architecture: pure attention`` row two lines above.
         if cfg.is_hybrid:
-            text = "n/a (hybrid arch — spec decode off)"
+            # This row describes SuffixDecoding eligibility, not every
+            # speculative method. Hybrid aliases may still run MTP through a
+            # native head or sidecar, so saying "spec decode off" here can
+            # directly contradict the active/default-on MTP rows above.
+            text = "n/a (hybrid arch — suffix unsupported)"
         else:
             # Tight enough to fit the 41-char ``info`` value column
             # (``inner=60 − 17-char key − 2-char ": "``) so the row
