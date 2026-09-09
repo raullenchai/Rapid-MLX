@@ -923,8 +923,8 @@ def register(subparsers: argparse._SubParsersAction) -> None:
             "rapidmlx chat-frontend allowlist (rapid-pro.pages.dev, "
             "rapid-pro.quicksilverpro.io, rapidmlx.com, chat.rapidmlx.com) "
             "plus whatever ``--chat-frontend`` resolves to. Pass '*' to "
-            "relax for browser chat UIs you host elsewhere (e.g. local "
-            "Open WebUI). Example: --cors-origins http://localhost:3000."
+            "relax for browser chat UIs you host elsewhere. Example: "
+            "--cors-origins http://localhost:3000."
         ),
     )
     p.add_argument(

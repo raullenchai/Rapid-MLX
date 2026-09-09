@@ -1731,6 +1731,39 @@ APPLESCRIPT
     die "Settings window did not open"
 }
 
+open_about() {
+    osascript - "$APP_PID" > "$OUT/open-about.json" <<'APPLESCRIPT'
+on run argv
+    set targetPID to (item 1 of argv) as integer
+    tell application "System Events"
+        set targetProcess to first application process whose unix id is targetPID
+        set frontmost of targetProcess to true
+        tell targetProcess
+            repeat with menuBarItem in menu bar items of menu bar 1
+                try
+                    if exists menu item "About Rapid-MLX" of menu 1 of menuBarItem then
+                        click menu item "About Rapid-MLX" of menu 1 of menuBarItem
+                        return "{\"success\":true,\"method\":\"app-menu\"}"
+                    end if
+                end try
+            end repeat
+        end tell
+    end tell
+    error "About Rapid-MLX menu item not found"
+end run
+APPLESCRIPT
+
+    local probe=2
+    for _ in {1..40}; do
+        probe=0
+        ax_window_present "About Rapid-MLX" "$OUT/about-windows.json" || probe=$?
+        [[ "$probe" == 0 ]] && return
+        [[ "$probe" == 2 ]] && die "could not observe whether About opened"
+        sleep 0.25
+    done
+    die "About window did not open"
+}
+
 see_settings() {
     "$AX_DRIVER" dump "$APP_PID" > "$1"
 }
@@ -3156,12 +3189,6 @@ flow_no_dead_controls() {
     press "$OUT/dead-appearance-light.json" Settings.Category.privacy "$OUT/dead-open-privacy-actions.json" \
         || die "Privacy category is not pressable"
     see_main "$OUT/dead-privacy-before.json"
-    jq -e '.data.ui_elements[]?
-           | select(.identifier == "Settings.Privacy.Link.MTPLX")' \
-        "$OUT/dead-privacy-before.json" >/dev/null \
-        || die "MTPLX attribution link is missing from Settings → Privacy"
-    [[ "$(element_field "$OUT/dead-privacy-before.json" Settings.Privacy.Link.MTPLX enabled)" == "true" ]] \
-        || die "MTPLX attribution link is disabled"
     local telemetry_before telemetry_after
     telemetry_before="$(element_field "$OUT/dead-privacy-before.json" Settings.Privacy.TelemetryToggle value)"
     press "$OUT/dead-privacy-before.json" Settings.Privacy.TelemetryToggle "$OUT/dead-privacy-toggle.json" \
@@ -3172,6 +3199,18 @@ flow_no_dead_controls() {
         || die "Telemetry toggle accepted AXPress but its value did not change"
     press "$OUT/dead-privacy-after.json" Settings.Privacy.TelemetryToggle "$OUT/dead-privacy-restore.json" \
         || die "Telemetry toggle could not be restored"
+
+    # Attribution is product identity, not telemetry behavior. Exercise it in
+    # About so the exact legally required label remains visible and actionable
+    # without implying a data-sharing relationship in Settings → Privacy.
+    open_about
+    wait_identifier About.Link.MTPLX "$OUT/dead-about.json"
+    jq -e '.data.ui_elements[]?
+           | select(.identifier == "About.Link.MTPLX")
+           | select(.description == "Powered by MTPLX")
+           | select(.enabled == true)' \
+        "$OUT/dead-about.json" >/dev/null \
+        || die "About does not expose the enabled Powered by MTPLX attribution"
 
     local ax_contracts=(
         "dead-panel-tools.json|Settings.Tools.Toggle.web_search|Web search"

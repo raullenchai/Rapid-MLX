@@ -2782,7 +2782,7 @@ final class ServerManager {
             isOperating = false
             state = .crashed(
                 alias: trimmedAlias,
-                message: "Couldn't start the model — another app may already be using what Rapid needs to run. Quit other local AI apps (LM Studio, Ollama) or development servers, then click Restart."
+                message: "Couldn't start the model — another app may already be using what Rapid needs to run. Quit other local AI apps or development servers, then click Restart."
             )
             return
         }

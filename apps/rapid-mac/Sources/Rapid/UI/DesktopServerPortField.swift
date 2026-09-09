@@ -57,7 +57,7 @@ struct DesktopServerPortField: View {
                         .foregroundStyle(.secondary)
                 }
             }
-            Text("Default 7659 (R M L X on a phone). 8000 fallback still probed. Like MTPLX path + port, this lets your gateway keep 8000.")
+            Text("Default 7659 (R M L X on a phone). 8000 fallback still probed. A custom port lets your gateway keep 8000.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
