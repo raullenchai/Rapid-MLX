@@ -1533,7 +1533,7 @@ def test_run_share_first_run_registers_caches_and_prints_keyless_banner(capsys):
         ),
         patch.object(qs, "_Heartbeat", return_value=_fake_heartbeat_class()),
     )
-    args = _make_args(provider_key=PROVIDER_KEY)
+    args = _make_args(provider_key=PROVIDER_KEY, desktop_session="a" * 32)
     with _enter(*ctxs):
         qs.run_share(args)
 
@@ -1874,7 +1874,7 @@ def test_run_share_tunnel_drop_reconnects_then_dies_on_401():
         patch.object(qs, "_Heartbeat", return_value=_fake_heartbeat_class()),
     )
     with pytest.raises(SystemExit) as ei, _enter(*ctxs):
-        qs.run_share(_make_args())
+        qs.run_share(_make_args(desktop_session="b" * 32))
     assert ei.value.code == 1
     assert sleeps == [1.0]  # one backoff between attempts
 
@@ -1897,7 +1897,7 @@ def test_run_share_ws_1008_close_is_terminal_no_spin():
         patch.object(qs, "_Heartbeat", return_value=_fake_heartbeat_class()),
     )
     with pytest.raises(SystemExit) as ei, _enter(*ctxs):
-        qs.run_share(_make_args())
+        qs.run_share(_make_args(desktop_session="c" * 32))
     assert ei.value.code == 1
     assert len(made) == 1  # no retry spin on a post-upgrade rejection
 
@@ -1965,7 +1965,7 @@ def test_run_share_server_echoed_share_key_is_rejected_and_never_printed(capsys)
         patch.object(qs, "_open", lambda req, timeout=None: _FakeResp(leaky)),
         pytest.raises(SystemExit) as exc,
     ):
-        qs.run_share(_make_args(provider_key=PROVIDER_KEY))
+        qs.run_share(_make_args(provider_key=PROVIDER_KEY, desktop_session="d" * 32))
     assert exc.value.code == 2
     out = capsys.readouterr()
     combined = out.out + out.err
@@ -2022,7 +2022,7 @@ def test_run_share_heartbeat_fatal_exits_nonzero(capsys):
         patch.object(qs, "_Heartbeat", return_value=hb),
     )
     with pytest.raises(SystemExit) as ei, _enter(*ctxs):
-        qs.run_share(_make_args())
+        qs.run_share(_make_args(desktop_session="e" * 32))
     assert ei.value.code == 1
     assert "--reregister" in capsys.readouterr().err
 
@@ -2438,6 +2438,10 @@ def test_provider_key_stdin_is_bounded_and_exclusive(monkeypatch):
     with pytest.raises(qs.QuickSilverError, match="missing a newline"):
         qs._resolve_provider_key(_make_args(provider_key_stdin=True))
 
+    monkeypatch.setattr(qs.sys, "stdin", io.StringIO("   \n"))
+    with pytest.raises(qs.QuickSilverError, match="empty provider key"):
+        qs._resolve_provider_key(_make_args(provider_key_stdin=True))
+
 
 def test_desktop_status_is_private_atomic_whitelisted_and_secret_free(
     monkeypatch, tmp_path
@@ -2463,6 +2467,20 @@ def test_desktop_status_is_private_atomic_whitelisted_and_secret_free(
     assert payload["inflight"] == 1
     assert stat.S_IMODE(status.path.stat().st_mode) == 0o600
     assert not list(status.path.parent.glob(f"{status.path.name}.tmp-*"))
+    prior_mtime = status.path.stat().st_mtime_ns
+    status.publish(
+        "online",
+        catalog_id="qwen3.8-27b",
+        alias="qwen3.8-27b-4bit",
+        worker="studio",
+        node_id="node-1",
+        payout_account="acct-1",
+        inflight=1,
+    )
+    assert status.path.stat().st_mtime_ns == prior_mtime
+
+    with pytest.raises(qs.QuickSilverError, match="invalid Desktop provider phase"):
+        status.publish("invented")
 
     with pytest.raises(
         qs.QuickSilverError, match="invalid Desktop provider status field"
@@ -2472,6 +2490,36 @@ def test_desktop_status_is_private_atomic_whitelisted_and_secret_free(
     qs._register_secret(SHARE_KEY)
     with pytest.raises(qs.QuickSilverError, match="credential"):
         status.publish("error", message=f"bad {SHARE_KEY}")
+
+
+def test_desktop_status_write_failure_is_actionable_and_cleans_tmp():
+    status = qs._DesktopStatus("b" * 32)
+    with (
+        patch.object(qs.os, "replace", side_effect=OSError("disk full")),
+        pytest.raises(qs.QuickSilverError, match="could not publish"),
+    ):
+        status.publish("online")
+    assert not list(status.path.parent.glob(f"{status.path.name}.tmp-*"))
+
+
+def test_desktop_registration_write_failure_is_actionable_and_cleans_tmp():
+    with (
+        patch.object(qs.os, "replace", side_effect=OSError("disk full")),
+        pytest.raises(qs.QuickSilverError, match="registration marker"),
+    ):
+        qs._save_desktop_registration(
+            "qwen3.6-35b", alias="qwen3.6-35b", worker="test-worker"
+        )
+    assert not list(qs._cache_dir().glob("*.registration.json.tmp-*"))
+
+    with (
+        patch.object(qs.os, "replace", side_effect=OSError("disk full")),
+        patch.object(qs.os, "unlink", side_effect=OSError("cleanup failed")),
+        pytest.raises(qs.QuickSilverError, match="registration marker"),
+    ):
+        qs._save_desktop_registration(
+            "qwen3.6-35b", alias="qwen3.6-35b", worker="test-worker"
+        )
 
 
 @pytest.mark.parametrize("session", ["short", "g" * 32, "a" * 31 + "/"])
@@ -2725,7 +2773,7 @@ def test_run_share_port_health_and_auth_startup_failures(capsys):
         patch.object(share_cli, "_pick_port", side_effect=RuntimeError("no port")),
         pytest.raises(SystemExit) as exc,
     ):
-        qs.run_share(_make_args())
+        qs.run_share(_make_args(desktop_session="f" * 32))
     assert exc.value.code == 1 and "no port" in capsys.readouterr().err
 
     for failed, expected in (
@@ -2796,7 +2844,7 @@ def test_run_share_propagates_serve_exit_and_resets_after_healthy_connection():
         patch.object(qs, "_Heartbeat", return_value=_fake_heartbeat_class()),
     )
     with pytest.raises(SystemExit) as exc, _enter(*ctxs):
-        qs.run_share(_make_args())
+        qs.run_share(_make_args(desktop_session="1" * 32))
     assert exc.value.code == 7
 
     healthy_drop = _fake_tunnel(closed=True)
