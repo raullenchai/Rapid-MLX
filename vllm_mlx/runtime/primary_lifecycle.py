@@ -64,6 +64,11 @@ class PrimaryModelLifecycle:
         self._monitor_task: asyncio.Task | None = None
         self._last_activity = self._clock()
         self._last_error: str | None = None
+        self._load_total = 0
+        self._load_failures_total = 0
+        self._last_load_duration_seconds: float | None = None
+        self._unload_total_by_reason: dict[str, int] = {}
+        self._last_unload_reason: str | None = None
         self._detached = False
         self._closed = False
         self._resume_required = False
@@ -113,6 +118,12 @@ class PrimaryModelLifecycle:
             "lazy_load": self.lazy_load,
             "active_request_owners": len(self._request_tokens),
             "error": self._last_error,
+            "load_total": self._load_total,
+            "load_failures_total": self._load_failures_total,
+            "last_load_duration_seconds": self._last_load_duration_seconds,
+            "unload_total": sum(self._unload_total_by_reason.values()),
+            "unload_total_by_reason": dict(self._unload_total_by_reason),
+            "last_unload_reason": self._last_unload_reason,
         }
 
     async def start(self) -> None:
@@ -270,6 +281,8 @@ class PrimaryModelLifecycle:
                 return
             self._set_state("loading")
             self._last_error = None
+            self._load_total += 1
+            started_at = self._clock()
             try:
                 start = getattr(self.engine, "start", None)
                 if not callable(start):
@@ -281,6 +294,7 @@ class PrimaryModelLifecycle:
                     await self._resume_admission()
                 await _run_hook(self._on_loaded)
             except BaseException as exc:
+                self._load_failures_total += 1
                 self._set_state("error")
                 self._last_error = type(exc).__name__
                 if self._is_loaded():
@@ -290,7 +304,9 @@ class PrimaryModelLifecycle:
                         logger.exception(
                             "Failed to reset partially loaded primary engine"
                         )
+                self._last_load_duration_seconds = max(0.0, self._clock() - started_at)
                 raise
+            self._last_load_duration_seconds = max(0.0, self._clock() - started_at)
             self._set_state("ready")
             self.touch()
 
@@ -432,6 +448,10 @@ class PrimaryModelLifecycle:
 
             self._set_state("standby")
             self._last_error = None
+            self._last_unload_reason = "idle"
+            self._unload_total_by_reason["idle"] = (
+                self._unload_total_by_reason.get("idle", 0) + 1
+            )
             return True
 
     async def _monitor_idle(self) -> None:

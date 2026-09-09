@@ -208,6 +208,116 @@ def _coerce_number(value: Any, default: float = 0.0) -> float:
         return default
 
 
+def _render_primary_lifecycle(cfg: Any) -> list[str]:
+    """Render bounded-cardinality primary residency and transition metrics."""
+    lifecycle = getattr(cfg, "primary_model_lifecycle", None)
+    snapshot_available = True
+    if lifecycle is None:
+        snapshot: dict[str, Any] = {
+            "state": "ready" if getattr(cfg, "engine", None) is not None else "standby",
+            "model_loaded": getattr(cfg, "engine", None) is not None,
+            "load_total": 0,
+            "load_failures_total": 0,
+            "last_load_duration_seconds": 0.0,
+            "unload_total_by_reason": {},
+        }
+    else:
+        try:
+            snapshot = lifecycle.snapshot()
+        except Exception:
+            # Observability must never turn a healthy scrape into a 500.
+            snapshot_available = False
+            snapshot = {
+                "state": "unknown",
+            }
+
+    known_states = (
+        "standby",
+        "loading",
+        "ready",
+        "unloading",
+        "error",
+        "unknown",
+    )
+    state = str(snapshot.get("state") or "unknown")
+    if state not in known_states:
+        state = "unknown"
+    lines: list[str] = []
+    if snapshot_available:
+        model_loaded: float | int = int(bool(snapshot.get("model_loaded")))
+    else:
+        model_loaded = float("nan")
+    lines.extend(
+        _fmt_metric(
+            "rapid_mlx_model_loaded",
+            "gauge",
+            "Whether the configured primary model weights are resident.",
+            model_loaded,
+        )
+    )
+    lines.extend(
+        _fmt_metric_family(
+            "rapid_mlx_model_lifecycle_state",
+            "gauge",
+            "Current primary model lifecycle state as a one-hot gauge.",
+            [
+                (int(candidate == state), {"state": candidate})
+                for candidate in known_states
+            ],
+        )
+    )
+    unknown_value = float("nan")
+    lines.extend(
+        _fmt_metric(
+            "rapid_mlx_model_load_total",
+            "counter",
+            "Primary model load attempts since process start.",
+            (
+                int(_coerce_number(snapshot.get("load_total")))
+                if snapshot_available
+                else unknown_value
+            ),
+        )
+    )
+    lines.extend(
+        _fmt_metric(
+            "rapid_mlx_model_load_failures_total",
+            "counter",
+            "Primary model load attempts that failed since process start.",
+            (
+                int(_coerce_number(snapshot.get("load_failures_total")))
+                if snapshot_available
+                else unknown_value
+            ),
+        )
+    )
+    lines.extend(
+        _fmt_metric(
+            "rapid_mlx_model_load_duration_seconds",
+            "gauge",
+            "Duration of the most recently completed primary model load attempt.",
+            (
+                _coerce_number(snapshot.get("last_load_duration_seconds"))
+                if snapshot_available
+                and snapshot.get("last_load_duration_seconds") is not None
+                else unknown_value
+            ),
+        )
+    )
+    unloads = snapshot.get("unload_total_by_reason")
+    idle_unloads = unloads.get("idle", 0) if isinstance(unloads, dict) else 0
+    lines.extend(
+        _fmt_metric(
+            "rapid_mlx_model_unload_total",
+            "counter",
+            "Successful primary model unloads since process start by reason.",
+            int(_coerce_number(idle_unloads)) if snapshot_available else unknown_value,
+            labels={"reason": "idle"},
+        )
+    )
+    return lines
+
+
 def _render_model_performance(stats: dict[str, Any]) -> list[str]:
     """Render model-labelled request outcomes and latency distributions."""
     performance = stats.get("model_performance")
@@ -1370,6 +1480,10 @@ def _render_prometheus(cfg: Any) -> str:
             },
         )
     )
+
+    # Primary lifecycle metrics are process-owned and remain meaningful while
+    # the weights are in standby, so render them before engine-dependent stats.
+    lines.extend(_render_primary_lifecycle(cfg))
 
     # Embedding truncations (issue #1381). Non-silent signal: how many
     # inputs had their tail discarded for exceeding the effective max input

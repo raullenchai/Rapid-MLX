@@ -76,6 +76,67 @@ def test_metrics_engine_not_loaded_still_returns_200(metrics_client):
     # Engine-dependent metrics must be absent (no fake zeros that imply
     # a running engine).
     assert "rapid_mlx_requests_processed_total" not in body
+    assert "rapid_mlx_model_loaded 0" in body
+    assert 'rapid_mlx_model_lifecycle_state{state="standby"} 1' in body
+
+
+def test_metrics_exposes_primary_model_lifecycle(metrics_client):
+    metrics_client.cfg.primary_model_lifecycle = SimpleNamespace(
+        snapshot=lambda: {
+            "state": "ready",
+            "model_loaded": True,
+            "load_total": 3,
+            "load_failures_total": 1,
+            "last_load_duration_seconds": 8.4,
+            "unload_total_by_reason": {"idle": 2},
+        }
+    )
+
+    body = metrics_client.client.get("/metrics").text
+
+    assert "rapid_mlx_model_loaded 1" in body
+    assert 'rapid_mlx_model_lifecycle_state{state="ready"} 1' in body
+    assert 'rapid_mlx_model_lifecycle_state{state="standby"} 0' in body
+    assert "rapid_mlx_model_load_total 3" in body
+    assert "rapid_mlx_model_load_failures_total 1" in body
+    assert "rapid_mlx_model_load_duration_seconds 8.4" in body
+    assert 'rapid_mlx_model_unload_total{reason="idle"} 2' in body
+
+
+def test_metrics_lifecycle_snapshot_failure_and_unknown_state_are_safe(
+    metrics_client,
+):
+    def _explode():
+        raise RuntimeError("snapshot unavailable")
+
+    metrics_client.cfg.primary_model_lifecycle = SimpleNamespace(snapshot=_explode)
+    body = metrics_client.client.get("/metrics").text
+    assert 'rapid_mlx_model_lifecycle_state{state="unknown"} 1' in body
+    assert "rapid_mlx_model_loaded nan" in body
+    assert "rapid_mlx_model_load_total nan" in body
+    assert "rapid_mlx_model_load_failures_total nan" in body
+    assert "rapid_mlx_model_load_duration_seconds nan" in body
+    assert 'rapid_mlx_model_unload_total{reason="idle"} nan' in body
+
+    metrics_client.cfg.primary_model_lifecycle = SimpleNamespace(
+        snapshot=lambda: {"state": "future-state", "model_loaded": True}
+    )
+    body = metrics_client.client.get("/metrics").text
+    assert 'rapid_mlx_model_lifecycle_state{state="unknown"} 1' in body
+    assert "rapid_mlx_model_loaded 1" in body
+
+    metrics_client.cfg.primary_model_lifecycle = SimpleNamespace(
+        snapshot=lambda: {
+            "state": "standby",
+            "model_loaded": False,
+            "load_total": 0,
+            "load_failures_total": 0,
+            "last_load_duration_seconds": None,
+            "unload_total_by_reason": {},
+        }
+    )
+    body = metrics_client.client.get("/metrics").text
+    assert "rapid_mlx_model_load_duration_seconds nan" in body
 
 
 def test_metrics_engine_get_stats_raises_falls_back_to_build_info(metrics_client):

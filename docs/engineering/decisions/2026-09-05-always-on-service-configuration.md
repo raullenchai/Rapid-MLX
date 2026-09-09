@@ -61,6 +61,13 @@ only whether a credential exists.
 - The stable runtime supervises the server process and bounds stdout/stderr by
   size, backup count, and age. Release-directory upgrades remain separate
   operational work and should not be hidden inside this config transaction.
+- Availability and residency are separate operator signals. A lazy endpoint in
+  `standby` remains ready to accept and coalesce a demand load, so
+  `service status`, `/health`, and `/metrics` expose lifecycle state and
+  `model_loaded` independently. Process-local counters record load
+  attempts/failures, the latest load duration, and successful unload reasons.
+  Metrics use fixed low-cardinality state/reason labels; error messages are not
+  exported.
 
 ## Rollback
 

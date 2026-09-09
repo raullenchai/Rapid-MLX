@@ -146,6 +146,17 @@ are marked; multimodal and MCP surfaces link to their own guides.
 | `/livez` | GET | Process liveness only (does not check model readiness) |
 | `/metrics` | GET | Prometheus metrics |
 
+For lazy or idle-unload deployments, `/metrics` always exposes primary-model
+residency and lifecycle series even while the engine is in standby:
+`rapid_mlx_model_loaded`, the one-hot `rapid_mlx_model_lifecycle_state`, load
+attempt/failure counters, the most recent load duration, and successful unloads
+by reason. These process-local series make `ready but cold` distinguishable from
+`loaded and ready` without probing an inference route. See the
+[headless macOS service guide](headless-macos-service.md) for the complete metric
+names and status output contract. If the lifecycle snapshot itself is
+temporarily unavailable, the state is `unknown` and its numeric samples are
+`NaN` rather than false zeroes.
+
 The `/v1/audio/*` routes are mounted when the loaded model is audio-capable
 or `--enable-audio` is passed; on a plain text-only server they return 404.
 Image and video routes are always mounted and answer with a structured 409

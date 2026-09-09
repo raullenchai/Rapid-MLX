@@ -122,6 +122,37 @@ rapid-mlx service logs --follow          # stream, across KeepAlive restarts
 sudo rapid-mlx service restart           # kickstart + wait until healthy
 ```
 
+`service status` separates endpoint availability from model residency. A lazy
+service can correctly report `readyz=ok` while its model lifecycle is
+`state=standby loaded=no`. When lifecycle management is enabled, the human view
+also shows the idle-unload policy, most recent load duration, process-local load
+attempt/failure counts, the last successful unload reason, and the sanitized
+last error type. The same fields are available as stable keys in `--json` for
+automation; older running servers that do not expose lifecycle details leave
+those keys `null` rather than making status fail.
+
+Prometheus scrapes can distinguish a healthy cold endpoint from a resident
+model using:
+
+```text
+rapid_mlx_model_loaded
+rapid_mlx_model_lifecycle_state{state="STATE"}
+rapid_mlx_model_load_total
+rapid_mlx_model_load_failures_total
+rapid_mlx_model_load_duration_seconds
+rapid_mlx_model_unload_total{reason="idle"}
+```
+
+The lifecycle state family is a fixed one-hot gauge, and errors are never used
+as labels. `STATE` is one of `standby`, `loading`, `ready`, `unloading`,
+`error`, or `unknown`. Counters reset when the server process restarts,
+following standard Prometheus process semantics.
+If the lifecycle snapshot cannot be read, `unknown` is one and the numeric
+lifecycle samples are `NaN`; this preserves the series without claiming the
+model is unloaded or resetting counters.
+`model_load_duration_seconds` is the duration of the most recently completed
+load attempt, including its warmup hooks.
+
 The stable runtime captures server stdout and stderr through bounded rotating
 logs. Defaults are 100 MiB per active stream, five backups, and seven-day
 retention. Stage different limits with `service configure --log-max-mb`,
