@@ -117,6 +117,12 @@ enum ToolUseCapability {
     /// arbitrary size siblings by a family rule.
     static let exactKnownAliases: Set<String> = [
         "bonsai-1.7b-2bit",
+        // 2026-09-09 M3 Ultra qualification: official MLX 4-bit artifact
+        // passed 24/31 tool-call scenarios, including parallel calls,
+        // multi-step result continuation, error recovery, and valid JSON
+        // arguments. Keep this exact so future MiniCPM sizes do not inherit
+        // a capability verdict without their own product-path dogfood.
+        "minicpm5-2b-4bit",
         "ornith-1.5-9b-bf16",
         "ornith-1.5-35b-a3b-bf16",
     ]

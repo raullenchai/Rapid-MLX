@@ -19,11 +19,31 @@ Families with registered aliases (run `rapid-mlx models` for the full, current l
 | Granite 4 / 4.2 | tiny, h-micro (4.0-H); 3B, 8B, 30B dense (4.2) | 4/8-bit |
 | Nemotron 3 / 3.5 | Nano 30B, Lightning 30B | 4-bit |
 | LFM 2 / 2.5 | 1B, 2.6B, 8B-A1B, 24B-A2B | 4-bit |
+| MiniCPM 5 | 1B, 2B | 4-bit, OptiQ 4-bit |
 | GPT-OSS | 20B, 120B | 4/8-bit, mxfp4 |
 | Ternary Bonsai | 1.7B, 27B | 2-bit (ternary) |
 | Hunyuan 3 (Hy3) | 295B MoE (21B active) — **Ultra-only** | 4-bit |
 | NeoHorse 1 | 9B (experimental Chat candidate) | 4-bit |
 | G9v3 (AI9Stars) | 39B MoE (5B active) | 4-bit |
+
+### MiniCPM5 2B
+
+`minicpm5-2b-4bit` is the compact, tool-capable option for latency-sensitive
+local assistants. It uses the official Apple Silicon 4-bit checkpoint (about
+1.3 GiB), the native MiniCPM XML tool-call parser, and the Qwen-style reasoning
+parser. It is available in both the CLI and Desktop model picker, but it does
+not replace the RAM-tier Smart defaults.
+
+```bash
+rapid-mlx serve minicpm5-2b-4bit
+```
+
+The exact checkpoint passed 24 of 31 tool-calling scenarios in product-path
+qualification. It completed the same suite in 7.17 seconds of summed request
+time versus 32.54 seconds for the current 4B comparison model, while the 4B
+model passed 26 of 31. Treat MiniCPM5 2B as the faster, smaller trade-off rather
+than a blanket quality replacement. Speculative decoding remains disabled
+until its separately published draft architecture is supported and qualified.
 
 ### Recommended Models
 

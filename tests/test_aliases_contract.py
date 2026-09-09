@@ -234,15 +234,25 @@ def test_experimental_alias_flag_requires_a_boolean(bad_value) -> None:
 
 
 def test_minicpm5_aliases_pin_the_verified_native_xml_contract() -> None:
-    """The two #1139 artifacts share MiniCPM5's native tool-call wire format."""
+    """Every curated MiniCPM5 artifact shares its native XML wire format."""
     profiles = list_profiles()
-    for alias in ("minicpm5-1b-4bit", "minicpm5-1b-optiq-4bit"):
+    expected_paths = {
+        "minicpm5-1b-4bit": "openbmb/MiniCPM5-1B-MLX",
+        "minicpm5-1b-optiq-4bit": "mlx-community/MiniCPM5-1B-OptiQ-4bit",
+        "minicpm5-2b-4bit": "openbmb/MiniCPM5-2B-MLX",
+    }
+    for alias, expected_path in expected_paths.items():
         profile = profiles[alias]
+        assert profile.hf_path == expected_path
         assert profile.tool_call_parser == "minicpm"
         assert profile.reasoning_parser == "qwen3"
+        assert profile.is_hybrid is False
+        assert profile.is_moe is False
         assert profile.supports_spec_decode is False
         assert detect_model_config(alias) == profile
         assert detect_model_config(profile.hf_path) == profile
+
+    assert profiles["minicpm5-2b-4bit"].is_text_only is True
 
 
 # =============================================================================
