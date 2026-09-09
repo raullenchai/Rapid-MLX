@@ -135,6 +135,45 @@ _CACHE_REQUIRED_KEYS = _WIRE_REQUIRED_KEYS + ("heartbeat_interval_s", "alias")
 # cache).
 _CACHE_ALLOWED_KEYS = _CACHE_REQUIRED_KEYS + ("payout_account", "api_base", "worker")
 
+# Desktop provider-session bridge. The session id is an opaque capability for
+# locating one non-secret status snapshot; keeping the path under the existing
+# 0700 QuickSilver directory avoids accepting an arbitrary write target from
+# argv. Schema fields are deliberately enumerated so neither credential can
+# drift into the file through a future cache or exception refactor.
+_DESKTOP_SESSION_LENGTH = 32
+_DESKTOP_SESSION_CHARS = frozenset("0123456789abcdef")
+_DESKTOP_STATUS_ALLOWED_KEYS = frozenset(
+    {
+        "schema_version",
+        "session",
+        "phase",
+        "catalog_id",
+        "alias",
+        "worker",
+        "node_id",
+        "payout_account",
+        "heartbeat_interval_s",
+        "inflight",
+        "connected_at",
+        "message",
+        "updated_at",
+    }
+)
+_DESKTOP_STATUS_PHASES = frozenset(
+    {
+        "preparing",
+        "registering",
+        "starting",
+        "warming",
+        "connecting",
+        "online",
+        "reconnecting",
+        "stopped",
+        "error",
+    }
+)
+_PROVIDER_KEY_STDIN_MAX_BYTES = 4096
+
 # Socket timeout for one §3.3 beat. Bounded so ``_Heartbeat.stop()``
 # can join the thread faster than a hung heartbeat can block; the beat
 # is best-effort (a missed one never drops the node) so a short ceiling
@@ -146,6 +185,71 @@ class QuickSilverError(Exception):
     """Fatal, user-facing failure. Message must be redacted by the
     printer (:func:`run_share` catches and scrubs) — never trust an
     already-rendered string from deeper down."""
+
+
+class _DesktopStatus:
+    """Atomic, non-secret lifecycle snapshots consumed by Rapid Desktop."""
+
+    def __init__(self, session: str) -> None:
+        normalized = session.strip().lower()
+        if len(normalized) != _DESKTOP_SESSION_LENGTH or any(
+            ch not in _DESKTOP_SESSION_CHARS for ch in normalized
+        ):
+            raise QuickSilverError("invalid Desktop provider session id")
+        self.session = normalized
+        self.path = _cache_dir() / f"desktop-status-{normalized}.json"
+        self.phase: str | None = None
+        self._last_content: bytes | None = None
+
+    @classmethod
+    def from_args(cls, args: argparse.Namespace) -> _DesktopStatus | None:
+        session = getattr(args, "desktop_session", None)
+        return cls(str(session)) if session else None
+
+    def publish(self, phase: str, **values: Any) -> None:
+        if phase not in _DESKTOP_STATUS_PHASES:
+            raise QuickSilverError(f"invalid Desktop provider phase: {phase!r}")
+        payload: dict[str, Any] = {
+            "schema_version": 1,
+            "session": self.session,
+            "phase": phase,
+        }
+        for key, value in values.items():
+            if key not in _DESKTOP_STATUS_ALLOWED_KEYS:
+                raise QuickSilverError(f"invalid Desktop provider status field: {key}")
+            if value is not None:
+                payload[key] = value
+        # A caller may pass a server-controlled message only after _redact.
+        # Defense in depth: reject a snapshot containing either live secret
+        # even if a future call site forgets to scrub it first.
+        serialized_without_time = json.dumps(
+            payload, sort_keys=True, separators=(",", ":")
+        ).encode("utf-8")
+        if any(
+            secret.encode("utf-8") in serialized_without_time for secret in _SECRETS
+        ):
+            raise QuickSilverError("refusing to write a credential to Desktop status")
+        if serialized_without_time == self._last_content:
+            return
+        payload["updated_at"] = time.time()
+        data = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode(
+            "utf-8"
+        )
+        tmp = self.path.with_name(f"{self.path.name}.tmp-{secrets.token_hex(4)}")
+        try:
+            fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+            with os.fdopen(fd, "wb") as stream:
+                stream.write(data)
+            os.replace(tmp, self.path)
+            self.path.chmod(0o600)
+        except OSError as exc:
+            with contextlib.suppress(OSError):
+                os.unlink(tmp)
+            raise QuickSilverError(
+                f"could not publish Desktop provider status: {exc}"
+            ) from None
+        self.phase = phase
+        self._last_content = serialized_without_time
 
 
 # ───────────────────────────── redaction (§6) ─────────────────────────────
@@ -194,6 +298,40 @@ def _cache_path(catalog_id: str) -> Path:
     if not catalog_id.replace("-", "").replace(".", "").replace("_", "").isalnum():
         raise QuickSilverError(f"invalid model id for cache file: {catalog_id!r}")
     return _cache_dir() / f"{catalog_id}.json"
+
+
+def _desktop_registration_path(catalog_id: str) -> Path:
+    """Non-secret proof Desktop can inspect without reading the node cache."""
+    return _cache_path(catalog_id).with_suffix(".registration.json")
+
+
+def _save_desktop_registration(catalog_id: str, *, alias: str, worker: str) -> Path:
+    path = _desktop_registration_path(catalog_id)
+    tmp = path.with_name(f"{path.name}.tmp-{secrets.token_hex(4)}")
+    data = json.dumps(
+        {
+            "schema_version": 1,
+            "model": catalog_id,
+            "alias": alias,
+            "worker": worker,
+        },
+        sort_keys=True,
+    ).encode("utf-8")
+    try:
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        with os.fdopen(fd, "wb") as f:
+            f.write(data)
+        os.replace(tmp, path)
+        path.chmod(0o600)
+    except OSError as exc:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise QuickSilverError(
+            f"could not write Desktop registration marker for {catalog_id}: {exc}"
+        ) from None
+    return path
 
 
 def _load_cache(
@@ -254,12 +392,17 @@ def _load_cache(
 
 def _save_cache(catalog_id: str, payload: dict[str, Any]) -> Path:
     path = _cache_path(catalog_id)
+    registration_path = _desktop_registration_path(catalog_id)
     tmp = path.with_name(f"{path.name}.tmp-{secrets.token_hex(4)}")
     # Whitelist, not passthrough — a server response carrying an extra
     # "provider_key_echo"-style field must never survive to disk.
     allowed = {k: payload[k] for k in _CACHE_ALLOWED_KEYS if k in payload}
     data = json.dumps(allowed, indent=2, sort_keys=True).encode("utf-8")
     try:
+        # Any writer outside the Desktop flow (including a CLI registration
+        # for another worker) invalidates Desktop's non-secret proof first.
+        # A crash can therefore cause an extra key prompt, never false reuse.
+        registration_path.unlink(missing_ok=True)
         fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
         with os.fdopen(fd, "wb") as f:
             f.write(data)
@@ -568,6 +711,28 @@ def _resolve_provider_key(args: argparse.Namespace) -> str:
     # truthy, and the old order turned it into `Bearer ` — a remote 401
     # that reads like a bad key instead of the empty input it is.
     env_key = os.environ.pop(PROVIDER_KEY_ENV_VAR, "")
+    if getattr(args, "provider_key_stdin", False):
+        if getattr(args, "provider_key", None) or env_key:
+            raise QuickSilverError(
+                "--provider-key-stdin cannot be combined with another provider-key source"
+            )
+        # Bound the read itself, not only the post-read validation: stdin is a
+        # Desktop-owned pipe, but a malformed/injected writer must not pin an
+        # unbounded allocation in the long-lived provider supervisor.
+        value = sys.stdin.buffer.readline(_PROVIDER_KEY_STDIN_MAX_BYTES + 1)
+        if len(value) > _PROVIDER_KEY_STDIN_MAX_BYTES or not value.endswith(b"\n"):
+            raise QuickSilverError(
+                "provider key from stdin is missing a newline or too long"
+            )
+        try:
+            key = value.decode("utf-8").strip()
+        except UnicodeDecodeError:
+            raise QuickSilverError(
+                "provider key from stdin is not valid UTF-8"
+            ) from None
+        if not key:
+            raise QuickSilverError("empty provider key — nothing to register with.")
+        return key
     key = (getattr(args, "provider_key", None) or env_key or "").strip()
     if key:
         return key
@@ -1044,14 +1209,37 @@ def install_service(
 def run_share(args: argparse.Namespace) -> None:
     """The ``--quicksilver`` branch of ``share_command``. Owns the whole
     lifecycle so cli.py's plain-share path stays byte-identical (§8)."""
+    desktop_status: _DesktopStatus | None = None
     try:
-        _run_share(args)
+        desktop_status = _DesktopStatus.from_args(args)
+        if desktop_status is not None:
+            desktop_status.publish("preparing")
+        _run_share(args, desktop_status=desktop_status)
     except QuickSilverError as exc:
-        print(f"share --quicksilver: {_redact(str(exc))}", file=sys.stderr)
+        message = _redact(str(exc))
+        if desktop_status is not None:
+            with contextlib.suppress(QuickSilverError):
+                desktop_status.publish("error", message=message[:500])
+        print(f"share --quicksilver: {message}", file=sys.stderr)
         sys.exit(2)
+    except SystemExit as exc:
+        code = exc.code if isinstance(exc.code, int) else 1
+        if code and desktop_status is not None and desktop_status.phase != "error":
+            with contextlib.suppress(QuickSilverError):
+                desktop_status.publish(
+                    "error",
+                    message="The local provider process stopped unexpectedly.",
+                )
+        raise
+    else:
+        if desktop_status is not None:
+            with contextlib.suppress(QuickSilverError):
+                desktop_status.publish("stopped")
 
 
-def _run_share(args: argparse.Namespace) -> None:
+def _run_share(
+    args: argparse.Namespace, *, desktop_status: _DesktopStatus | None = None
+) -> None:
     catalog_id, serve_alias = resolve_catalog(args)
     if args.install_service:
         install_service(args, catalog_id=catalog_id, serve_alias=serve_alias)
@@ -1064,6 +1252,13 @@ def _run_share(args: argparse.Namespace) -> None:
     worker = _resolve_worker(args)
     cache = None if args.reregister else _load_cache(catalog_id, serve_alias, worker)
     if cache is None:
+        if desktop_status is not None:
+            desktop_status.publish(
+                "registering",
+                catalog_id=catalog_id,
+                alias=serve_alias,
+                worker=worker,
+            )
         provider_key = _resolve_provider_key(args)
         _register_secret(provider_key)
         print("Registering node with QuickSilver…", file=sys.stderr)
@@ -1084,6 +1279,12 @@ def _run_share(args: argparse.Namespace) -> None:
         _validate_wire_urls(cache, api_base, source="register response")
         interval = _resolve_heartbeat_interval(cache, source="register response")
         _save_cache(catalog_id, cache)
+        if desktop_status is not None:
+            _save_desktop_registration(
+                catalog_id,
+                alias=serve_alias,
+                worker=worker,
+            )
         print(
             _redact(
                 f"Node registered: {cache['node_id']} "
@@ -1128,6 +1329,16 @@ def _run_share(args: argparse.Namespace) -> None:
             raise QuickSilverError(f"{exc} — re-run with --reregister") from None
 
     relay_url = cache["relay_url"]
+    desktop_fields = {
+        "catalog_id": catalog_id,
+        "alias": serve_alias,
+        "worker": worker,
+        "node_id": cache["node_id"],
+        "payout_account": cache.get("payout_account"),
+        "heartbeat_interval_s": interval,
+    }
+    if desktop_status is not None:
+        desktop_status.publish("starting", **desktop_fields)
 
     # Lazy import: cli.py dispatches here from inside share_command, so
     # a top-level ``from . import cli`` here would deadlock on first
@@ -1243,6 +1454,8 @@ def _run_share(args: argparse.Namespace) -> None:
             sys.exit(1)
 
         display_model = _resolve_served_model_name(port, api_key) or serve_alias
+        if desktop_status is not None:
+            desktop_status.publish("warming", **desktop_fields)
         print("Warming up (pages weights into Metal)…", file=sys.stderr)
         _warmup(port, api_key, display_model)
 
@@ -1261,8 +1474,11 @@ def _run_share(args: argparse.Namespace) -> None:
         backoff = 1.0
         banner_printed = False
         served_at = 0.0
+        connected_at_epoch: float | None = None
         fast_reject_streak = 0
         while True:
+            if desktop_status is not None:
+                desktop_status.publish("connecting", **desktop_fields)
             tunnel = ws_tunnel.TunnelClient(
                 local_port=port,
                 tunnel_id=cache["node_id"],
@@ -1283,10 +1499,18 @@ def _run_share(args: argparse.Namespace) -> None:
             reconnect = False
             if connected:
                 served_at = time.monotonic()
+                connected_at_epoch = time.time()
                 heartbeat.enabled.set()
                 # §5.3: the first beat waits for tunnel-up AND warm-up
                 # (which already ran before the loop).
                 heartbeat.beat_now()
+                if desktop_status is not None:
+                    desktop_status.publish(
+                        "online",
+                        **desktop_fields,
+                        inflight=max(0, int(tunnel.inflight)),
+                        connected_at=connected_at_epoch,
+                    )
                 if not banner_printed:
                     payout = cache.get("payout_account")
                     print(
@@ -1304,9 +1528,22 @@ def _run_share(args: argparse.Namespace) -> None:
             # (§5.5: the key is revoked; spinning is worse than dying).
             while True:
                 assert serve_proc is not None and heartbeat is not None
+                if connected and desktop_status is not None:
+                    desktop_status.publish(
+                        "online",
+                        **desktop_fields,
+                        inflight=max(0, int(tunnel.inflight)),
+                        connected_at=connected_at_epoch,
+                    )
                 serve_rc = serve_proc.poll()
                 if serve_rc is not None:
                     exit_code = serve_rc if serve_rc != 0 else 1
+                    if desktop_status is not None:
+                        desktop_status.publish(
+                            "error",
+                            **desktop_fields,
+                            message="The local model server stopped unexpectedly.",
+                        )
                     print(
                         f"share: serve process exited — leaving the pool. "
                         f"See {serve_log}.",
@@ -1315,6 +1552,12 @@ def _run_share(args: argparse.Namespace) -> None:
                     break
                 if heartbeat.fatal.is_set():
                     exit_code = 1
+                    if desktop_status is not None:
+                        desktop_status.publish(
+                            "error",
+                            **desktop_fields,
+                            message="QuickSilver revoked this node credential. Register again.",
+                        )
                     print(
                         "share: QuickSilver revoked our node credential "
                         "(HTTP 401). Stop and re-run with --reregister to "
@@ -1338,6 +1581,12 @@ def _run_share(args: argparse.Namespace) -> None:
                     # built to avoid).
                     if tunnel.error_status == _WS_TERMINAL_STATUS:
                         exit_code = 1
+                        if desktop_status is not None:
+                            desktop_status.publish(
+                                "error",
+                                **desktop_fields,
+                                message="QuickSilver rejected this node credential. Register again.",
+                            )
                         print(
                             "share: QuickSilver relay rejected our share-key "
                             "(HTTP 401). Re-run with --reregister.",
@@ -1346,6 +1595,12 @@ def _run_share(args: argparse.Namespace) -> None:
                         break
                     if tunnel.close_code in _WS_TERMINAL_CLOSE_CODES:
                         exit_code = 1
+                        if desktop_status is not None:
+                            desktop_status.publish(
+                                "error",
+                                **desktop_fields,
+                                message="QuickSilver rejected this node credential. Register again.",
+                            )
                         print(
                             "share: QuickSilver relay rejected our share-key "
                             f"(WS close {tunnel.close_code}). Re-run with "
@@ -1393,6 +1648,8 @@ def _run_share(args: argparse.Namespace) -> None:
                 _supervisor_sleep(1)
             if not reconnect:
                 break
+            if desktop_status is not None:
+                desktop_status.publish("reconnecting", **desktop_fields, inflight=0)
             heartbeat.enabled.clear()
             tunnel.stop()
             tunnel_thread.join(timeout=5)

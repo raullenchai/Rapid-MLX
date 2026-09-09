@@ -26,7 +26,7 @@ import threading
 import urllib.error
 import urllib.parse
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, call, patch
 
 import pytest
 
@@ -64,6 +64,8 @@ def _make_args(**overrides) -> argparse.Namespace:
         chat_frontend=None,
         quicksilver=True,
         provider_key=None,
+        provider_key_stdin=False,
+        desktop_session=None,
         quicksilver_model=None,
         worker="test-worker",
         reregister=False,
@@ -809,6 +811,29 @@ def test_cache_save_never_persists_unexpected_response_fields(tmp_path):
     assert qs._load_cache("qwen3.6-35b", "qwen3.6-35b")["share_key"] == SHARE_KEY
 
 
+def test_desktop_registration_marker_is_nonsecret_worker_bound_and_invalidated():
+    payload = dict(_register_payload(), alias="qwen3.6-35b")
+    qs._save_cache("qwen3.6-35b", payload)
+    marker = qs._save_desktop_registration(
+        "qwen3.6-35b", alias="qwen3.6-35b", worker="test-worker"
+    )
+    raw = marker.read_text(encoding="utf-8")
+    assert json.loads(raw) == {
+        "schema_version": 1,
+        "model": "qwen3.6-35b",
+        "alias": "qwen3.6-35b",
+        "worker": "test-worker",
+    }
+    assert PROVIDER_KEY not in raw and SHARE_KEY not in raw
+    assert stat.S_IMODE(marker.stat().st_mode) == 0o600
+
+    qs._save_cache(
+        "qwen3.6-35b",
+        dict(payload, worker="different-worker"),
+    )
+    assert not marker.exists()
+
+
 def test_cache_alias_mismatch_is_not_reused(tmp_path):
     qs._save_cache("qwen3.6-35b", dict(_register_payload(), alias="alias-a"))
     assert qs._load_cache("qwen3.6-35b", "alias-b") is None
@@ -1508,7 +1533,7 @@ def test_run_share_first_run_registers_caches_and_prints_keyless_banner(capsys):
         ),
         patch.object(qs, "_Heartbeat", return_value=_fake_heartbeat_class()),
     )
-    args = _make_args(provider_key=PROVIDER_KEY)
+    args = _make_args(provider_key=PROVIDER_KEY, desktop_session="a" * 32)
     with _enter(*ctxs):
         qs.run_share(args)
 
@@ -1849,7 +1874,7 @@ def test_run_share_tunnel_drop_reconnects_then_dies_on_401():
         patch.object(qs, "_Heartbeat", return_value=_fake_heartbeat_class()),
     )
     with pytest.raises(SystemExit) as ei, _enter(*ctxs):
-        qs.run_share(_make_args())
+        qs.run_share(_make_args(desktop_session="b" * 32))
     assert ei.value.code == 1
     assert sleeps == [1.0]  # one backoff between attempts
 
@@ -1872,7 +1897,7 @@ def test_run_share_ws_1008_close_is_terminal_no_spin():
         patch.object(qs, "_Heartbeat", return_value=_fake_heartbeat_class()),
     )
     with pytest.raises(SystemExit) as ei, _enter(*ctxs):
-        qs.run_share(_make_args())
+        qs.run_share(_make_args(desktop_session="c" * 32))
     assert ei.value.code == 1
     assert len(made) == 1  # no retry spin on a post-upgrade rejection
 
@@ -1940,7 +1965,7 @@ def test_run_share_server_echoed_share_key_is_rejected_and_never_printed(capsys)
         patch.object(qs, "_open", lambda req, timeout=None: _FakeResp(leaky)),
         pytest.raises(SystemExit) as exc,
     ):
-        qs.run_share(_make_args(provider_key=PROVIDER_KEY))
+        qs.run_share(_make_args(provider_key=PROVIDER_KEY, desktop_session="d" * 32))
     assert exc.value.code == 2
     out = capsys.readouterr()
     combined = out.out + out.err
@@ -1997,7 +2022,7 @@ def test_run_share_heartbeat_fatal_exits_nonzero(capsys):
         patch.object(qs, "_Heartbeat", return_value=hb),
     )
     with pytest.raises(SystemExit) as ei, _enter(*ctxs):
-        qs.run_share(_make_args())
+        qs.run_share(_make_args(desktop_session="e" * 32))
     assert ei.value.code == 1
     assert "--reregister" in capsys.readouterr().err
 
@@ -2395,6 +2420,140 @@ def test_provider_key_interactive_prompt(monkeypatch):
         qs._resolve_provider_key(_make_args())
 
 
+def test_provider_key_stdin_is_bounded_and_exclusive(monkeypatch):
+    def stdin(value: bytes):
+        return io.TextIOWrapper(io.BytesIO(value), encoding="utf-8")
+
+    monkeypatch.setattr(qs.sys, "stdin", stdin(f" {PROVIDER_KEY} \n".encode()))
+    assert qs._resolve_provider_key(_make_args(provider_key_stdin=True)) == PROVIDER_KEY
+
+    monkeypatch.setattr(qs.sys, "stdin", stdin(f"{PROVIDER_KEY}\n".encode()))
+    with pytest.raises(qs.QuickSilverError, match="cannot be combined"):
+        qs._resolve_provider_key(
+            _make_args(provider_key_stdin=True, provider_key=PROVIDER_KEY)
+        )
+
+    monkeypatch.setattr(qs.sys, "stdin", stdin(("x" * 4097 + "\n").encode()))
+    with pytest.raises(qs.QuickSilverError, match="too long"):
+        qs._resolve_provider_key(_make_args(provider_key_stdin=True))
+
+    monkeypatch.setattr(qs.sys, "stdin", stdin(PROVIDER_KEY.encode()))
+    with pytest.raises(qs.QuickSilverError, match="missing a newline"):
+        qs._resolve_provider_key(_make_args(provider_key_stdin=True))
+
+    monkeypatch.setattr(qs.sys, "stdin", stdin(b"   \n"))
+    with pytest.raises(qs.QuickSilverError, match="empty provider key"):
+        qs._resolve_provider_key(_make_args(provider_key_stdin=True))
+
+    monkeypatch.setattr(qs.sys, "stdin", stdin(("🚀" * 1024 + "\n").encode()))
+    with pytest.raises(qs.QuickSilverError, match="too long"):
+        qs._resolve_provider_key(_make_args(provider_key_stdin=True))
+
+    monkeypatch.setattr(qs.sys, "stdin", stdin(b"\xff\n"))
+    with pytest.raises(qs.QuickSilverError, match="valid UTF-8"):
+        qs._resolve_provider_key(_make_args(provider_key_stdin=True))
+
+
+def test_desktop_status_is_private_atomic_whitelisted_and_secret_free(
+    monkeypatch, tmp_path
+):
+    monkeypatch.setattr(qs, "_cache_dir", lambda: tmp_path)
+    session = "a" * 32
+    status = qs._DesktopStatus(session)
+    assert status.path.parent == qs._cache_dir()
+
+    status.publish(
+        "online",
+        catalog_id="qwen3.8-27b",
+        alias="qwen3.8-27b-4bit",
+        worker="studio",
+        node_id="node-1",
+        payout_account="acct-1",
+        inflight=1,
+    )
+    payload = json.loads(status.path.read_text())
+    assert payload["schema_version"] == 1
+    assert payload["session"] == session
+    assert payload["phase"] == "online"
+    assert payload["inflight"] == 1
+    assert stat.S_IMODE(status.path.stat().st_mode) == 0o600
+    assert not list(status.path.parent.glob(f"{status.path.name}.tmp-*"))
+    prior_mtime = status.path.stat().st_mtime_ns
+    status.publish(
+        "online",
+        catalog_id="qwen3.8-27b",
+        alias="qwen3.8-27b-4bit",
+        worker="studio",
+        node_id="node-1",
+        payout_account="acct-1",
+        inflight=1,
+    )
+    assert status.path.stat().st_mtime_ns == prior_mtime
+
+    with pytest.raises(qs.QuickSilverError, match="invalid Desktop provider phase"):
+        status.publish("invented")
+
+    with pytest.raises(
+        qs.QuickSilverError, match="invalid Desktop provider status field"
+    ):
+        status.publish("online", share_key=SHARE_KEY)
+
+    qs._register_secret(SHARE_KEY)
+    with pytest.raises(qs.QuickSilverError, match="credential"):
+        status.publish("error", message=f"bad {SHARE_KEY}")
+
+
+def test_desktop_status_write_failure_is_actionable_and_cleans_tmp():
+    status = qs._DesktopStatus("b" * 32)
+    with (
+        patch.object(qs.os, "replace", side_effect=OSError("disk full")),
+        pytest.raises(qs.QuickSilverError, match="could not publish"),
+    ):
+        status.publish("online")
+    assert not list(status.path.parent.glob(f"{status.path.name}.tmp-*"))
+
+
+def test_desktop_registration_write_failure_is_actionable_and_cleans_tmp():
+    with (
+        patch.object(qs.os, "replace", side_effect=OSError("disk full")),
+        pytest.raises(qs.QuickSilverError, match="registration marker"),
+    ):
+        qs._save_desktop_registration(
+            "qwen3.6-35b", alias="qwen3.6-35b", worker="test-worker"
+        )
+    assert not list(qs._cache_dir().glob("*.registration.json.tmp-*"))
+
+    with (
+        patch.object(qs.os, "replace", side_effect=OSError("disk full")),
+        patch.object(qs.os, "unlink", side_effect=OSError("cleanup failed")),
+        pytest.raises(qs.QuickSilverError, match="registration marker"),
+    ):
+        qs._save_desktop_registration(
+            "qwen3.6-35b", alias="qwen3.6-35b", worker="test-worker"
+        )
+
+
+@pytest.mark.parametrize("session", ["short", "g" * 32, "a" * 31 + "/"])
+def test_desktop_status_rejects_path_shaped_session_ids(session):
+    with pytest.raises(qs.QuickSilverError, match="invalid Desktop provider session"):
+        qs._DesktopStatus(session)
+
+
+def test_clean_exit_ignores_final_desktop_status_write_failure():
+    status = MagicMock()
+    status.phase = "online"
+    status.publish.side_effect = [None, qs.QuickSilverError("disk full")]
+    with (
+        patch.object(qs._DesktopStatus, "from_args", return_value=status),
+        patch.object(qs, "_run_share"),
+    ):
+        qs.run_share(_make_args(desktop_session="a" * 32))
+    assert status.publish.call_args_list == [
+        call("preparing"),
+        call("stopped"),
+    ]
+
+
 def test_open_uses_the_no_redirect_opener():
     req = urllib.request.Request("https://pay.test")
     with patch.object(qs._URL_OPENER, "open", return_value="response") as opened:
@@ -2625,7 +2784,7 @@ def test_run_share_port_health_and_auth_startup_failures(capsys):
         patch.object(share_cli, "_pick_port", side_effect=RuntimeError("no port")),
         pytest.raises(SystemExit) as exc,
     ):
-        qs.run_share(_make_args())
+        qs.run_share(_make_args(desktop_session="f" * 32))
     assert exc.value.code == 1 and "no port" in capsys.readouterr().err
 
     for failed, expected in (
@@ -2696,7 +2855,7 @@ def test_run_share_propagates_serve_exit_and_resets_after_healthy_connection():
         patch.object(qs, "_Heartbeat", return_value=_fake_heartbeat_class()),
     )
     with pytest.raises(SystemExit) as exc, _enter(*ctxs):
-        qs.run_share(_make_args())
+        qs.run_share(_make_args(desktop_session="1" * 32))
     assert exc.value.code == 7
 
     healthy_drop = _fake_tunnel(closed=True)

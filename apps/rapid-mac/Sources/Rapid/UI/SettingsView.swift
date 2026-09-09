@@ -29,6 +29,7 @@ struct SettingsView: View {
     /// running child alone and let the explicit restart land the
     /// new binary; the toggle copy already calls that out.
     @Environment(ServerManager.self) private var server
+    @Environment(ShareComputeManager.self) private var shareCompute
     /// #191: Settings → App panel binds the desktop self-update
     /// poller. ``RapidApp`` injects it into the Settings scene's
     /// environment chain so the panel can render the same
@@ -51,6 +52,8 @@ struct SettingsView: View {
     private var computerUseEnabled = ComputerUseFeatureConfig.defaultEnabled
     @AppStorage(CommunityBenchmarkFeatureConfig.enabledKey)
     private var communityBenchmarkEnabled = CommunityBenchmarkFeatureConfig.defaultEnabled
+    @AppStorage(ShareComputeFeatureConfig.enabledKey)
+    private var shareComputeEnabled = ShareComputeFeatureConfig.defaultEnabled
 
     /// Stable reference shared by the sidebar and detail canvas. Keeping the
     /// frequently-mutated category outside this large view's value state means
@@ -553,6 +556,18 @@ struct SettingsView: View {
                 }
                 .toggleStyle(TrailingSettingsToggleStyle())
                 .accessibilityIdentifier("Settings.Experimental.BenchmarkToggle")
+                SettingsRowDivider()
+                Toggle(isOn: $shareComputeEnabled) {
+                    SettingsRowLabel(
+                        title: "Enable Share Compute",
+                        description: "Adds the Share Compute tab for contributing this Mac to QuickSilver. Nothing connects, downloads, or runs until you explicitly start sharing."
+                    )
+                }
+                .toggleStyle(TrailingSettingsToggleStyle())
+                .accessibilityIdentifier("Settings.Experimental.ShareComputeToggle")
+                .onChange(of: shareComputeEnabled) { _, enabled in
+                    if !enabled { shareCompute.leave() }
+                }
             }
         }
         .accessibilityIdentifier("Settings.Experimental.Panel")

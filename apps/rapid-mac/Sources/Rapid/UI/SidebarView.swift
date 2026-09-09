@@ -11,6 +11,7 @@ enum SidebarSection: Hashable {
     case computerUse
     case launch
     case benchmark
+    case shareCompute
 }
 
 /// The left sidebar — Ollama/ChatGPT layout: a "New Chat" action at the
@@ -43,6 +44,11 @@ struct SidebarView: View {
     /// The Benchmark tab is an opt-in experimental surface. Enabling
     /// discoverability does not start the server or run any measurement.
     var benchmarkEnabled: Bool = false
+    /// Compute sharing is an explicit experimental opt-in. Showing the row is
+    /// inert; the pool is joined only from its primary action.
+    var shareComputeEnabled: Bool = false
+    /// Keeps an active pool session visible after the user navigates away.
+    var shareComputeActive: Bool = false
     /// The chat model — source of the conversation history list + the
     /// active conversation id (for highlighting).
     @Bindable var chat: ChatViewModel
@@ -198,7 +204,7 @@ struct SidebarView: View {
             // the everyday tabs (rather than interleaved with them), so the
             // opt-in previews read as a distinct, still-being-validated set.
             // The header appears only when at least one is enabled.
-            if videoGenerationEnabled || computerUseEnabled || benchmarkEnabled {
+            if videoGenerationEnabled || computerUseEnabled || benchmarkEnabled || shareComputeEnabled {
                 SectionHeader("Experimental")
                     .padding(.horizontal, RapidTheme.Space.sm)
                     .padding(.top, RapidTheme.Space.lg)
@@ -230,6 +236,15 @@ struct SidebarView: View {
                         action: { selection = .benchmark }
                     )
                     .accessibilityIdentifier("Sidebar.CommunityBenchmark")
+                }
+                if shareComputeEnabled {
+                    row(
+                        title: shareComputeActive ? "Share Compute · On" : "Share Compute",
+                        systemImage: "bolt.horizontal.circle",
+                        isSelected: selection == .shareCompute,
+                        action: { selection = .shareCompute }
+                    )
+                    .accessibilityIdentifier("Sidebar.ShareCompute")
                 }
             }
 

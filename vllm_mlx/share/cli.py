@@ -985,6 +985,24 @@ def register(subparsers: argparse._SubParsersAction) -> None:
             "to other local users via ps. Never stored on disk."
         ),
     )
+    # Desktop's Share Compute surface must never put the account credential in
+    # argv (visible through ``ps``) or the child environment. The app writes one
+    # bounded line to stdin after spawn and closes the pipe. Hidden because it
+    # is an integration transport, not a second human-facing key workflow.
+    p.add_argument(
+        "--provider-key-stdin",
+        action="store_true",
+        help=argparse.SUPPRESS,
+    )
+    # Opaque 32-hex session selected by Desktop. QuickSilver derives the
+    # status-file path inside its private 0700 cache directory, so an argv
+    # value can never redirect atomic status writes onto an arbitrary path.
+    p.add_argument(
+        "--desktop-session",
+        type=str,
+        default=None,
+        help=argparse.SUPPRESS,
+    )
     p.add_argument(
         "--quicksilver-model",
         type=str,

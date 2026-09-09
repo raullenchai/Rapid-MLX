@@ -74,6 +74,7 @@ struct ContentView: View {
 
     @Environment(ServerManager.self) private var server
     @Environment(DownloadManager.self) private var downloads
+    @Environment(ShareComputeManager.self) private var shareCompute
     @Environment(ChatViewModel.self) private var chat
     @Environment(ImageGenViewModel.self) private var imageGen
     @Environment(AudioViewModel.self) private var audio
@@ -104,6 +105,8 @@ struct ContentView: View {
     private var computerUseEnabled = ComputerUseFeatureConfig.defaultEnabled
     @AppStorage(CommunityBenchmarkFeatureConfig.enabledKey)
     private var communityBenchmarkEnabled = CommunityBenchmarkFeatureConfig.defaultEnabled
+    @AppStorage(ShareComputeFeatureConfig.enabledKey)
+    private var shareComputeEnabled = ShareComputeFeatureConfig.defaultEnabled
     /// Window-level conversation search, opened from the toolbar.
     @State private var showConversationSearch = false
     // Was @SceneStorage. Moved to @AppStorage so the View menu command in
@@ -347,6 +350,11 @@ struct ContentView: View {
                 current: section,
                 enabled: state.benchmarkEnabled
             )
+            section = Self.sectionAfterShareComputeGateChange(
+                current: section,
+                enabled: state.shareComputeEnabled
+            )
+            if !state.shareComputeEnabled { shareCompute.leave() }
         }
         .onChange(of: server.state) { _, newState in
             // Sync the picker breadcrumb when the server lands in
@@ -621,6 +629,8 @@ struct ContentView: View {
                     videoGenerationEnabled: videoGenerationEnabled,
                     computerUseEnabled: computerUseEnabled,
                     benchmarkEnabled: communityBenchmarkEnabled,
+                    shareComputeEnabled: shareComputeEnabled,
+                    shareComputeActive: shareCompute.state.isActive,
                     chat: chat,
                 onNewChat: {
                     chat.newConversation()
@@ -1236,6 +1246,17 @@ struct ContentView: View {
                 // switches on `server.state`, not `section`.
                 mainArea
             }
+        case .shareCompute:
+            if shareComputeEnabled {
+                ShareComputeView(
+                    manager: shareCompute,
+                    downloads: downloads,
+                    catalog: catalogEntries,
+                    catalogLoaded: catalogLoaded
+                )
+            } else {
+                mainArea
+            }
         }
     }
 
@@ -1455,17 +1476,26 @@ struct ContentView: View {
         !enabled && current == .benchmark ? .chat : current
     }
 
+    static func sectionAfterShareComputeGateChange(
+        current: SidebarSection,
+        enabled: Bool
+    ) -> SidebarSection {
+        !enabled && current == .shareCompute ? .chat : current
+    }
+
     private struct ExperimentalDestinationState: Equatable {
         let videoEnabled: Bool
         let computerUseEnabled: Bool
         let benchmarkEnabled: Bool
+        let shareComputeEnabled: Bool
     }
 
     private var experimentalDestinationState: ExperimentalDestinationState {
         ExperimentalDestinationState(
             videoEnabled: videoGenerationEnabled,
             computerUseEnabled: computerUseEnabled,
-            benchmarkEnabled: communityBenchmarkEnabled
+            benchmarkEnabled: communityBenchmarkEnabled,
+            shareComputeEnabled: shareComputeEnabled
         )
     }
 
