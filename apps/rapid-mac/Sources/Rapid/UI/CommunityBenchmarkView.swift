@@ -1607,10 +1607,10 @@ struct CommunityBenchmarkView: View {
                 await refreshProductCatalog()
                 await refreshResults()
                 // Invite the user to contribute the run that just finished —
-                // by the exact run id the CLI reported, not "whatever sorts
-                // first" (guards against sort/ordering surprises).
+                // only when the CLI payload names it. No fallback to "whatever
+                // sorts first": a payload without a run_id (e.g. deferred reap)
+                // must not surface the CTA for an unrelated historical run.
                 pendingShareResultID = CommunityBenchmarkCommand.runID(from: runOutput)
-                    ?? results.first?.id
             } catch is CancellationError {
                 errorMessage = acquiredReservation
                     ? "Benchmark stopped. No incomplete result was shared."
