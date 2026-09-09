@@ -598,21 +598,26 @@ enum CommunityBenchmarkRunStatus {
         }
     }
 
-    /// A `~m:ss left` estimate from the average interval BETWEEN completed
-    /// steps. `firstStepAt` is the first step's completion, so the elapsed
-    /// span covers `stepsDone - 1` intervals — dividing by that (not by
-    /// `stepsDone`) is what keeps the estimate honest and excludes the
-    /// one-off model-load + first-step time. Suppressed until two steps have
+    /// A `~m:ss left` estimate. The average step time comes only from
+    /// COMPLETION timestamps — the span `lastStepAt - firstStepAt` over
+    /// `stepsDone - 1` intervals — so it is stable between steps (dividing by
+    /// intervals, not steps, excludes the one-off model-load + first-step
+    /// time). `now` is used only to count the projection DOWN as time passes,
+    /// never to inflate the per-step average. Suppressed until two steps have
     /// completed (one interval), and once none remain.
     static func eta(
         stepsDone: Int,
         totalSteps: Int,
-        since firstStepAt: Date,
+        firstStepAt: Date,
+        lastStepAt: Date,
         now: Date
     ) -> String? {
         guard stepsDone >= 2, stepsDone < totalSteps else { return nil }
-        let perStep = max(0, now.timeIntervalSince(firstStepAt)) / Double(stepsDone - 1)
-        let remaining = Int((perStep * Double(totalSteps - stepsDone)).rounded())
+        let perStep = max(0, lastStepAt.timeIntervalSince(firstStepAt))
+            / Double(stepsDone - 1)
+        let projected = perStep * Double(totalSteps - stepsDone)
+        let sinceLast = max(0, now.timeIntervalSince(lastStepAt))
+        let remaining = Int(max(0, projected - sinceLast).rounded())
         return String(format: "~%d:%02d left", remaining / 60, remaining % 60)
     }
 
@@ -1051,6 +1056,9 @@ struct CommunityBenchmarkView: View {
     /// the determinate progress bar and the live ETA.
     @State private var stepsDone = 0
     @State private var firstStepAt: Date?
+    /// The most recent step completion, so the ETA divides by real
+    /// inter-step time and stays stable between steps.
+    @State private var lastStepAt: Date?
     @State private var errorMessage: String?
     /// The result id of the run that just finished, so a prominent CTA can
     /// invite the user to share it (instead of relying on the small per-row
@@ -1362,11 +1370,12 @@ struct CommunityBenchmarkView: View {
                         HStack(spacing: 8) {
                             Text("Elapsed \(CommunityBenchmarkRunStatus.elapsed(from: runStartedAt, to: context.date))")
                                 .monospacedDigit()
-                            if let totalSteps, let firstStepAt,
+                            if let totalSteps, let firstStepAt, let lastStepAt,
                                let eta = CommunityBenchmarkRunStatus.eta(
                                    stepsDone: stepsDone,
                                    totalSteps: totalSteps,
-                                   since: firstStepAt,
+                                   firstStepAt: firstStepAt,
+                                   lastStepAt: lastStepAt,
                                    now: context.date
                                ) {
                                 Text(eta)
@@ -1549,6 +1558,7 @@ struct CommunityBenchmarkView: View {
         appliedProgressSequence = 0
         stepsDone = 0
         firstStepAt = nil
+        lastStepAt = nil
         pendingShareResultID = nil
         let activeRunID = UUID()
         currentRunID = activeRunID
@@ -1599,6 +1609,7 @@ struct CommunityBenchmarkView: View {
                             // timestamp (step 1) regardless of hop order.
                             if stepIndex > 0, let stepAt {
                                 firstStepAt = min(firstStepAt ?? stepAt, stepAt)
+                                lastStepAt = max(lastStepAt ?? stepAt, stepAt)
                                 stepsDone = max(stepsDone, stepIndex)
                             }
                         }
@@ -1624,6 +1635,7 @@ struct CommunityBenchmarkView: View {
             runProgressLine = nil
             stepsDone = 0
             firstStepAt = nil
+            lastStepAt = nil
             runTask = nil
         }
     }

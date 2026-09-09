@@ -42,30 +42,39 @@ struct CommunityBenchmarkProgressTests {
         #expect(CommunityBenchmarkRunStatus.totalSteps(for: .videoGeneration) == nil)
     }
 
-    @Test("ETA needs two completions and divides by intervals, not steps")
+    @Test("ETA divides by real inter-step time and counts down, not up")
     func etaBoundaries() {
         let start = Date(timeIntervalSince1970: 1_000)
         // One completion: no interval yet → no estimate (never "~0:00 left").
         #expect(
             CommunityBenchmarkRunStatus.eta(
-                stepsDone: 1, totalSteps: 12, since: start, now: start
+                stepsDone: 1, totalSteps: 12, firstStepAt: start,
+                lastStepAt: start, now: start
             ) == nil
         )
-        // Two completions, 10 s apart → 10 s/interval × 10 remaining = 100 s.
+        // Two completions 10 s apart → 10 s/step × 10 remaining = 100 s, at
+        // the instant of the second completion.
         #expect(
             CommunityBenchmarkRunStatus.eta(
-                stepsDone: 2,
-                totalSteps: 12,
-                since: start,
+                stepsDone: 2, totalSteps: 12,
+                firstStepAt: start, lastStepAt: start.addingTimeInterval(10),
                 now: start.addingTimeInterval(10)
             ) == "~1:40 left"
+        )
+        // 4 s later with no new step, the estimate COUNTS DOWN (100 - 4), it
+        // does not inflate — the per-step average is fixed by completions.
+        #expect(
+            CommunityBenchmarkRunStatus.eta(
+                stepsDone: 2, totalSteps: 12,
+                firstStepAt: start, lastStepAt: start.addingTimeInterval(10),
+                now: start.addingTimeInterval(14)
+            ) == "~1:36 left"
         )
         // All steps done → nothing left to estimate.
         #expect(
             CommunityBenchmarkRunStatus.eta(
-                stepsDone: 12,
-                totalSteps: 12,
-                since: start,
+                stepsDone: 12, totalSteps: 12,
+                firstStepAt: start, lastStepAt: start.addingTimeInterval(60),
                 now: start.addingTimeInterval(60)
             ) == nil
         )
