@@ -27,6 +27,8 @@ enum AboutPanel {
 
     private static let website = "https://rapidmlx.com"
     private static let repoURL = "https://github.com/raullenchai/Rapid-MLX"
+    static let mtplxAttribution = "Powered by MTPLX"
+    static let mtplxURL = "https://github.com/youssofal/mtplx"
     /// The policy in the repository, not `rapidmlx.com/privacy` — that page
     /// has never been published and 404s, so the About window's "Privacy"
     /// link opened nothing. `apps/rapid-mac/PRIVACY.md` is the real,
@@ -55,7 +57,8 @@ enum AboutPanel {
             engine: engineIdentity(resolution: server.binaryResolution),
             website: website,
             repoURL: repoURL,
-            privacyURL: privacyURL
+            privacyURL: privacyURL,
+            mtplxURL: mtplxURL
         )
         let host = NSHostingController(rootView: view)
         let win = NSWindow(contentViewController: host)
@@ -152,6 +155,7 @@ private struct AboutView: View {
     let website: String
     let repoURL: String
     let privacyURL: String
+    let mtplxURL: String
 
     private var versionLine: String {
         AboutPanel.versionLine(
@@ -212,6 +216,11 @@ private struct AboutView: View {
             }
             .font(.callout)
             .padding(.top, 2)
+
+            Link(AboutPanel.mtplxAttribution, destination: URL(string: mtplxURL)!)
+                .font(.caption)
+                .tint(RapidTheme.brand)
+                .accessibilityIdentifier("About.Link.MTPLX")
 
             Spacer(minLength: 0)
 

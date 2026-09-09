@@ -649,7 +649,8 @@ Rail.ThisMac,Step2.Kicker,Subject.{Bytes,Percent,Rail,Rate}}`.
 `Settings.App.{AutomaticUpdatesToggle,Checking,RecheckCTA,UpdateCTA,
 ExportDiagnostics,HideDockOnCloseToggle,ResetDockOnboardingCTA}`,
 `Settings.Appearance.ThemePicker`, `Settings.Privacy.TelemetryToggle`,
-`Settings.Privacy.Link.{PrivacyPolicy,License,Credits,MTPLX}`.
+`Settings.Privacy.Link.{PrivacyPolicy,License,Credits}`. Required engine
+attribution is available in About as `About.Link.MTPLX`.
 
 **Model Management — `UI/SettingsModelManagementPanel.swift`:**
 `Settings.ModelManagement.{Search,ClearSearch,Filter,SortMenu,Sort.<order>,

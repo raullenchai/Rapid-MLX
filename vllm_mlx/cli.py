@@ -12786,7 +12786,7 @@ Examples:
         help="Interactive chat REPL with a model",
         description=(
             "Interactive chat REPL with a model.\n\n"
-            "Note: 'rapid-mlx run' is an alias for 'chat' (Ollama compatibility)."
+            "Note: 'rapid-mlx run' is an alias for 'chat'."
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
         # See serve_parser for the rationale: ``--think``/``--no-think`` +

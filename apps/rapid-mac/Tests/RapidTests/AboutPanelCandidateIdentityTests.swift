@@ -3,6 +3,12 @@ import Testing
 
 @Suite("About candidate identity")
 struct AboutPanelCandidateIdentityTests {
+    @Test("required engine attribution is contextualized in About")
+    func engineAttribution() {
+        #expect(AboutPanel.mtplxAttribution == "Powered by MTPLX")
+        #expect(AboutPanel.mtplxURL == "https://github.com/youssofal/mtplx")
+    }
+
     @Test("release build keeps the stable version line")
     func releaseVersionLine() {
         #expect(
