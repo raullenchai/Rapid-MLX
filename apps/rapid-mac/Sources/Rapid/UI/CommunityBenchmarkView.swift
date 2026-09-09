@@ -580,11 +580,19 @@ enum CommunityBenchmarkRunStatus {
         return body.split(whereSeparator: \.isWhitespace).joined(separator: " ")
     }
 
-    /// True when a (stripped) progress line marks one completed unit of work
-    /// — a warmup pass or a measured round — so the view can count steps.
+    /// True when a (stripped) progress line marks one COMPLETED unit of work.
+    /// Completion lines are always `<case-id> warmup …` or
+    /// `<case-id> round N/M …`, i.e. the phase is the SECOND token. Matching
+    /// the token position (not a bare "warmup"/"round" substring) is what
+    /// keeps plan/status lines — "Benchmarking … 1 warmup + 5 measured
+    /// rounds", "Estimated time remaining … from the warmup rate" — from
+    /// wrongly advancing the bar.
     static func isStepLine(_ stripped: String) -> Bool {
-        stripped.range(of: #"\bround \d+/\d+\b"#, options: .regularExpression) != nil
-            || stripped.range(of: #"\bwarmup\b"#, options: .regularExpression) != nil
+        let tokens = stripped.split(separator: " ")
+        guard tokens.count >= 2 else { return false }
+        if tokens[1] == "warmup" { return true }
+        return tokens[1] == "round" && tokens.count >= 3
+            && tokens[2].range(of: #"^\d+/\d+$"#, options: .regularExpression) != nil
     }
 
     /// Total warmup + measured passes for a task, i.e. how many step lines to
@@ -616,9 +624,12 @@ enum CommunityBenchmarkRunStatus {
         let perStep = max(0, lastStepAt.timeIntervalSince(firstStepAt))
             / Double(stepsDone - 1)
         let projected = perStep * Double(totalSteps - stepsDone)
-        let sinceLast = max(0, now.timeIntervalSince(lastStepAt))
-        let remaining = Int(max(0, projected - sinceLast).rounded())
-        return String(format: "~%d:%02d left", remaining / 60, remaining % 60)
+        let remaining = projected - max(0, now.timeIntervalSince(lastStepAt))
+        // Past the projection with no new step: don't sit on a stale
+        // "~0:00 left" — say we're finishing the last pass(es).
+        guard remaining > 0 else { return "wrapping up…" }
+        let secs = Int(remaining.rounded())
+        return String(format: "~%d:%02d left", secs / 60, secs % 60)
     }
 
     /// `m:ss` elapsed clock, clamped at zero so a clock adjustment mid-run

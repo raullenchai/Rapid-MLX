@@ -26,10 +26,22 @@ struct CommunityBenchmarkProgressTests {
         #expect(CommunityBenchmarkRunStatus.strippedProgress(from: "Traceback…") == nil)
     }
 
-    @Test("A step line is a completed warmup or measured round")
+    @Test("Only a completion line (phase as 2nd token) counts as a step")
     func stepDetection() {
+        // Completions: "<case-id> warmup …" / "<case-id> round N/M …".
         #expect(CommunityBenchmarkRunStatus.isStepLine("pp512-tg128 round 3/5 46 tok/s"))
         #expect(CommunityBenchmarkRunStatus.isStepLine("pp512-tg128 warmup"))
+        #expect(CommunityBenchmarkRunStatus.isStepLine("t2i-1024-square warmup 12 s"))
+        // Plan / status lines that merely mention warmup/rounds must NOT count.
+        #expect(!CommunityBenchmarkRunStatus.isStepLine(
+            "Benchmarking gemma-4-e4b-4bit (text_generation): 2 warmup + 10 measured rounds in total"
+        ))
+        #expect(!CommunityBenchmarkRunStatus.isStepLine(
+            "Estimated time remaining: ~0:42 (from the warmup rate)"
+        ))
+        #expect(!CommunityBenchmarkRunStatus.isStepLine(
+            "pp512-tg128 512 prompt tokens -> 128 output tokens"
+        ))
         #expect(!CommunityBenchmarkRunStatus.isStepLine("Loading mlx-community/x (hf)..."))
         #expect(!CommunityBenchmarkRunStatus.isStepLine("Server ready in 4.2 s"))
     }
@@ -69,6 +81,15 @@ struct CommunityBenchmarkProgressTests {
                 firstStepAt: start, lastStepAt: start.addingTimeInterval(10),
                 now: start.addingTimeInterval(14)
             ) == "~1:36 left"
+        )
+        // Overdue (past the projection, no new step) → a finishing state, not
+        // a stale "~0:00 left".
+        #expect(
+            CommunityBenchmarkRunStatus.eta(
+                stepsDone: 2, totalSteps: 12,
+                firstStepAt: start, lastStepAt: start.addingTimeInterval(10),
+                now: start.addingTimeInterval(200)
+            ) == "wrapping up…"
         )
         // All steps done → nothing left to estimate.
         #expect(
