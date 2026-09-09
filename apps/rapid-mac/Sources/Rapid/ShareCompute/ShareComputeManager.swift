@@ -246,13 +246,7 @@ final class ShareComputeManager {
         state = .stopping
         statusTask?.cancel()
         child.signalProcessGroup(SIGTERM)
-        stopEscalationTask?.cancel()
-        stopEscalationTask = Task { [weak self, weak child] in
-            try? await Task.sleep(for: .seconds(5))
-            guard !Task.isCancelled, let self, let child,
-                  self.child === child, child.isProcessGroupAlive else { return }
-            child.signalProcessGroup(SIGKILL)
-        }
+        scheduleStopEscalation(for: child)
     }
 
     func beginShutdown() {
@@ -376,7 +370,6 @@ final class ShareComputeManager {
         let finalSnapshot = currentStatusURL.flatMap(Self.loadStatus(at:)) ?? snapshot
         if let finalSnapshot { snapshot = finalSnapshot }
         statusTask?.cancel()
-        stopEscalationTask?.cancel()
         removeCurrentStatusFile()
         cleanupPipes()
         if wasExpected || shuttingDown {
@@ -388,11 +381,18 @@ final class ShareComputeManager {
         } else {
             state = .failed(finalSnapshot?.message ?? "Share Compute stopped unexpectedly.")
         }
-        if groupIsAlive, !shuttingDown {
+        if groupIsAlive {
             // The supervisor may exit a beat before its nested serve child.
             // Keep exclusive residency until the kernel confirms the whole
             // group is gone; retain `child` too so leave/app shutdown can
             // still signal that surviving process group.
+            if !wasExpected, !shuttingDown {
+                // A model whose pool supervisor died cannot serve useful
+                // work. Give it the same bounded TERM→KILL teardown as an
+                // explicit Stop rather than monitoring an orphan forever.
+                process.signalProcessGroup(SIGTERM)
+                scheduleStopEscalation(for: process)
+            }
             ProcessGroupChild.monitorProcessGroupUntilExit(
                 processGroupID: process.processGroupID
             ) { [weak self] in
@@ -407,11 +407,23 @@ final class ShareComputeManager {
 
     private func finishDeferredExit(_ process: ProcessGroupChild) {
         guard child === process else { return }
+        stopEscalationTask?.cancel()
+        stopEscalationTask = nil
         child = nil
         activeModel = nil
         if expectedStop, !shuttingDown { state = .idle }
         releaseReservation()
         restorePreviousModelIfNeeded()
+    }
+
+    private func scheduleStopEscalation(for child: ProcessGroupChild) {
+        stopEscalationTask?.cancel()
+        stopEscalationTask = Task { [weak self, weak child] in
+            try? await Task.sleep(for: .seconds(5))
+            guard !Task.isCancelled, let self, let child,
+                  self.child === child, child.isProcessGroupAlive else { return }
+            child.signalProcessGroup(SIGKILL)
+        }
     }
 
     private func releaseReservation() {

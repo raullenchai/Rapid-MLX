@@ -95,6 +95,37 @@ struct ShareComputeTests {
         manager.finishShutdown()
     }
 
+    @Test("A surviving model child is reaped after its supervisor exits")
+    @MainActor
+    func orphanedProcessGroupIsReaped() async throws {
+        let executable = FileManager.default.temporaryDirectory
+            .appendingPathComponent("share-compute-orphan-\(UUID().uuidString).sh")
+        defer { try? FileManager.default.removeItem(at: executable) }
+        try Data("#!/bin/sh\nsleep 60 &\nexit 0\n".utf8).write(to: executable)
+        try FileManager.default.setAttributes(
+            [.posixPermissions: 0o700],
+            ofItemAtPath: executable.path
+        )
+
+        let server = ServerManager(testingState: .idle, binaryPath: executable)
+        let manager = ShareComputeManager(server: server)
+        await manager.join(
+            model: ShareComputeModel.supported[0],
+            worker: "orphan-test",
+            providerKey: "test-key"
+        )
+        for _ in 0..<200 {
+            if manager.activeModel == nil { break }
+            try? await Task.sleep(for: .milliseconds(10))
+        }
+        #expect(manager.activeModel == nil)
+        if manager.activeModel == nil {
+            let lease = try await server.prepareForCommunityBenchmark()
+            server.finishCommunityBenchmark(lease)
+        }
+        manager.finishShutdown()
+    }
+
     @Test("A replacement join inherits the original restore model")
     func replacementInheritsRestoreAlias() {
         #expect(ShareComputeManager.restoreAliasForJoin(
