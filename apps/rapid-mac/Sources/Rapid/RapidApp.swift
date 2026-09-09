@@ -111,6 +111,9 @@ struct RapidApp: App {
     @State private var githubStarPrompt: GitHubStarPromptCoordinator
     /// Side-car downloader — spawns ``rapid-mlx pull <alias>`` jobs.
     @State private var downloads: DownloadManager
+    /// Owns the opt-in QuickSilver provider process independently of the tab,
+    /// so window closure cannot orphan shared compute.
+    @State private var shareCompute: ShareComputeManager
     /// Detects the "Finder Replace into /Applications silently failed
     /// because Rapid-MLX was still running" footgun (issue #251).
     @State private var installTracker: InstallTracker
@@ -312,6 +315,7 @@ struct RapidApp: App {
             fixtureState: updateBusyFixture ? .busy : nil
         )
         let downloadsInstance = DownloadManager(binaryPath: manager.binaryPath)
+        let shareComputeManager = ShareComputeManager(server: manager)
         // TCC cannot be granted hermetically on an unattended runner. This
         // two-key fixture exercises the real model/server warmup lifecycle
         // while replacing only the OS permission and event-tap boundaries.
@@ -340,6 +344,7 @@ struct RapidApp: App {
         manager.attachDownloads(downloadsInstance)
         _server = State(initialValue: manager)
         _downloads = State(initialValue: downloadsInstance)
+        _shareCompute = State(initialValue: shareComputeManager)
         _installTracker = State(initialValue: InstallTracker())
         _quickstart = State(initialValue: QuickstartCoordinator())
         let dockPrompt = DockVisibilityPromptStore()
@@ -369,6 +374,7 @@ struct RapidApp: App {
         // the SwiftUI environment.
         AppDelegate.shared.server = manager
         AppDelegate.shared.downloads = downloadsInstance
+        AppDelegate.shared.shareCompute = shareComputeManager
         AppDelegate.shared.updater = updateChecker
         AppDelegate.shared.sparkleUpdater = sparkleUpdateController
         AppDelegate.shared.chat = chat
@@ -385,6 +391,7 @@ struct RapidApp: App {
                 .tint(RapidTheme.brandAmber)
                 .environment(server)
                 .environment(downloads)
+                .environment(shareCompute)
                 .environment(chatViewModel)
                 .environment(imageGen)
                 .environment(audio)
@@ -561,6 +568,7 @@ struct RapidApp: App {
                 .environment(appearance)
                 .environment(settingsRouter)
                 .environment(server)
+                .environment(shareCompute)
                 // Settings → Developer resets the wizard, and SwiftUI traps
                 // rather than warns when an @Environment observable is
                 // missing — so the Settings scene needs this even though the
@@ -614,6 +622,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     weak var server: ServerManager?
     weak var downloads: DownloadManager?
+    weak var shareCompute: ShareComputeManager?
     /// Hand from ``RapidApp.init`` so ``applicationWillTerminate`` can
     /// cancel the in-flight chat stream task before shutting the child
     /// down, and the menu-bar tray's "New Chat" can reach it.
@@ -1031,8 +1040,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     static func runTerminationSequence(
         stopDictation: () -> Void,
         stopStream: () -> Void,
+        signalShareCompute: () -> Void,
         signalServer: () -> Void,
         signalDownloads: () -> Void,
+        reapShareCompute: () -> Void,
         reapServer: () -> Void,
         reapDownloads: () -> Void,
         flushConversations: () -> Void,
@@ -1048,12 +1059,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         stopStream()
         // Signal phase — non-blocking. Both subsystems get their
         // SIGTERM before anyone waits, so the graces overlap.
+        signalShareCompute()
         signalServer()
         signalDownloads()
         // Reap phase — blocking. Server first: its grace is the long
         // one, and by the time it returns the download children have
         // had that entire window to exit.
         reapServer()
+        reapShareCompute()
         reapDownloads()
         // Drain any queued conversation-history write so the last turn /
         // edit / deletion isn't lost when the process exits before the
@@ -1083,8 +1096,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 AppDelegate.shared.dictation = nil
             },
             stopStream: { AppDelegate.shared.chat?.stopAndPersist() },
+            signalShareCompute: { AppDelegate.shared.shareCompute?.beginShutdown() },
             signalServer: { AppDelegate.shared.server?.beginShutdown() },
             signalDownloads: { AppDelegate.shared.downloads?.beginShutdown() },
+            reapShareCompute: { AppDelegate.shared.shareCompute?.finishShutdown() },
             reapServer: { AppDelegate.shared.server?.shutdownSync() },
             reapDownloads: { AppDelegate.shared.downloads?.finishShutdown() },
             flushConversations: { ConversationStore.flush() },

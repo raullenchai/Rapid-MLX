@@ -64,6 +64,8 @@ def _make_args(**overrides) -> argparse.Namespace:
         chat_frontend=None,
         quicksilver=True,
         provider_key=None,
+        provider_key_stdin=False,
+        desktop_session=None,
         quicksilver_model=None,
         worker="test-worker",
         reregister=False,
@@ -2393,6 +2395,63 @@ def test_provider_key_interactive_prompt(monkeypatch):
         pytest.raises(qs.QuickSilverError, match="empty provider key"),
     ):
         qs._resolve_provider_key(_make_args())
+
+
+def test_provider_key_stdin_is_bounded_and_exclusive(monkeypatch):
+    monkeypatch.setattr(qs.sys, "stdin", io.StringIO(f" {PROVIDER_KEY} \n"))
+    assert qs._resolve_provider_key(_make_args(provider_key_stdin=True)) == PROVIDER_KEY
+
+    monkeypatch.setattr(qs.sys, "stdin", io.StringIO(f"{PROVIDER_KEY}\n"))
+    with pytest.raises(qs.QuickSilverError, match="cannot be combined"):
+        qs._resolve_provider_key(
+            _make_args(provider_key_stdin=True, provider_key=PROVIDER_KEY)
+        )
+
+    monkeypatch.setattr(qs.sys, "stdin", io.StringIO("x" * 4097 + "\n"))
+    with pytest.raises(qs.QuickSilverError, match="too long"):
+        qs._resolve_provider_key(_make_args(provider_key_stdin=True))
+
+    monkeypatch.setattr(qs.sys, "stdin", io.StringIO(PROVIDER_KEY))
+    with pytest.raises(qs.QuickSilverError, match="missing a newline"):
+        qs._resolve_provider_key(_make_args(provider_key_stdin=True))
+
+
+def test_desktop_status_is_private_atomic_whitelisted_and_secret_free():
+    session = "a" * 32
+    status = qs._DesktopStatus(session)
+    assert status.path.parent == qs._cache_dir()
+
+    status.publish(
+        "online",
+        catalog_id="qwen3.8-27b",
+        alias="qwen3.8-27b-4bit",
+        worker="studio",
+        node_id="node-1",
+        payout_account="acct-1",
+        inflight=1,
+    )
+    payload = json.loads(status.path.read_text())
+    assert payload["schema_version"] == 1
+    assert payload["session"] == session
+    assert payload["phase"] == "online"
+    assert payload["inflight"] == 1
+    assert stat.S_IMODE(status.path.stat().st_mode) == 0o600
+    assert not list(status.path.parent.glob(f"{status.path.name}.tmp-*"))
+
+    with pytest.raises(
+        qs.QuickSilverError, match="invalid Desktop provider status field"
+    ):
+        status.publish("online", share_key=SHARE_KEY)
+
+    qs._register_secret(SHARE_KEY)
+    with pytest.raises(qs.QuickSilverError, match="credential"):
+        status.publish("error", message=f"bad {SHARE_KEY}")
+
+
+@pytest.mark.parametrize("session", ["short", "g" * 32, "a" * 31 + "/"])
+def test_desktop_status_rejects_path_shaped_session_ids(session):
+    with pytest.raises(qs.QuickSilverError, match="invalid Desktop provider session"):
+        qs._DesktopStatus(session)
 
 
 def test_open_uses_the_no_redirect_opener():
