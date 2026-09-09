@@ -4945,6 +4945,23 @@ def test_cli_run_streams_progress_to_stderr_only_in_text_mode(
     assert json.loads(captured.out) == {"run_id": "abc-123", "measurements": []}
     assert captured.err == ""
 
+    # --json --progress: the Desktop opts in, so progress DOES stream to
+    # stderr — but every line is RS-tagged so it can be told apart from the
+    # (untagged) failure document, and stdout stays exactly one JSON document.
+    args.progress = True
+    assert community_cli.benchmark_command(args) == 0
+    captured = capsys.readouterr()
+    assert callable(seen[-1])
+    tag = community_cli.PROGRESS_TAG
+    assert f"{tag}pp512-tg128      round 1/5    46.1 tok/s" in captured.err
+    # Untagged lines (the failure document) would have no RS prefix; here
+    # every emitted line carries one. Split on newline only — str.splitlines()
+    # would also break on the RS tag itself.
+    for line in captured.err.split("\n"):
+        if line:
+            assert line.startswith(tag), repr(line)
+    assert json.loads(captured.out) == {"run_id": "abc-123", "measurements": []}
+
 
 def test_run_local_announces_plan_and_forwards_progress(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
@@ -5260,6 +5277,7 @@ def test_progress_sink_never_aborts_the_benchmark(
 
     monkeypatch.setattr(sys, "stderr", BrokenStream())
     community_cli._progress_to_stderr("pp512-tg128      round 1/5")
+    community_cli._tagged_progress_to_stderr("pp512-tg128      round 1/5")
 
     class ClosedStream(io.StringIO):
         def write(self, text: str) -> int:
@@ -5267,6 +5285,7 @@ def test_progress_sink_never_aborts_the_benchmark(
 
     monkeypatch.setattr(sys, "stderr", ClosedStream())
     community_cli._progress_to_stderr("pp512-tg128      round 2/5")
+    community_cli._tagged_progress_to_stderr("pp512-tg128      round 2/5")
 
 
 # ---------------------------------------------------------------------------

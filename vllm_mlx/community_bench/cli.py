@@ -54,6 +54,25 @@ def _progress_to_stderr(line: str) -> None:
         pass
 
 
+#: Record-separator prefix for machine-readable progress lines under ``--json``.
+#: A caller that opts in with ``--progress`` (the Desktop app) can then tell
+#: progress from the failure document, which is emitted UNtagged on stderr and
+#: surfaced verbatim on a non-zero exit — so the plain ``--json`` contract
+#: (nothing on stderr) is preserved for callers that do not pass ``--progress``.
+PROGRESS_TAG = "\x1e"
+
+
+def _tagged_progress_to_stderr(line: str) -> None:
+    """Like :func:`_progress_to_stderr` but prefixes each line with
+    :data:`PROGRESS_TAG` so a ``--json`` consumer can separate live progress
+    from the untagged failure document."""
+
+    try:
+        print(f"{PROGRESS_TAG}{line}", file=sys.stderr, flush=True)
+    except (OSError, ValueError):
+        pass
+
+
 def _local_time(timestamp: Any) -> str:
     """Render an archived UTC timestamp in the user's local clock.
 
@@ -315,14 +334,22 @@ def benchmark_command(args) -> int:
                 check_cache=True,
             )
         elif action == "run":
+            # Progress is for a human watching a terminal. Under --json stderr
+            # stays reserved for the failure document the Desktop app surfaces
+            # verbatim on a non-zero exit — UNLESS the caller opts in with
+            # --progress, which streams RS-tagged progress the Desktop can tell
+            # apart from that document and render as a live bar + ETA.
+            if not args.json:
+                progress_sink = _progress_to_stderr
+            elif getattr(args, "progress", False):
+                progress_sink = _tagged_progress_to_stderr
+            else:
+                progress_sink = None
             value = run_local(
                 args.benchmark_model,
                 archive=archive,
                 inherit_process_group=getattr(args, "inherit_process_group", False),
-                # Progress is for a human watching a terminal. Under --json
-                # stderr stays reserved for the failure document the Desktop
-                # app surfaces verbatim on a non-zero exit.
-                progress=None if args.json else _progress_to_stderr,
+                progress=progress_sink,
             )
         elif action == "results":
             runs = archive.list(limit=getattr(args, "limit", None))

@@ -206,7 +206,7 @@ struct CommunityBenchmarkModelTests {
     func benchmarkRunTopologyFlag() {
         #expect(
             CommunityBenchmarkCommand.benchmarkRunArguments(alias: "flux2-klein-4b") == [
-                "benchmark", "run", "flux2-klein-4b", "--json",
+                "benchmark", "run", "flux2-klein-4b", "--json", "--progress",
                 "--inherit-process-group",
             ]
         )
@@ -725,7 +725,7 @@ struct CommunityBenchmarkModelTests {
         )
         #expect(
             CommunityBenchmarkRunStatus.description(for: image)
-                == "Measuring flux2-klein-4b · 1 warmup + 1 measured render · usually 1–3 minutes · plus the download"
+                == "Measuring flux2-klein-4b · 1 warmup + 1 measured render · usually 2–10 minutes · plus the download"
         )
         let start = Date(timeIntervalSince1970: 1_000)
         #expect(CommunityBenchmarkRunStatus.elapsed(from: start, to: start.addingTimeInterval(0)) == "0:00")

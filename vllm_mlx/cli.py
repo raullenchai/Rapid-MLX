@@ -12533,6 +12533,11 @@ Examples:
         help="Print machine-readable JSON instead of the text summary",
     )
     community_run.add_argument(
+        "--progress",
+        action="store_true",
+        help=argparse.SUPPRESS,  # emit machine-readable progress under --json
+    )
+    community_run.add_argument(
         "--inherit-process-group",
         action="store_true",
         help=argparse.SUPPRESS,

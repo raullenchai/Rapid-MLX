@@ -555,10 +555,89 @@ enum CommunityBenchmarkRunStatus {
 
     static func expectedDuration(for task: ModelTask) -> String {
         switch task {
-        case .imageGeneration: return "usually 1–3 minutes"
+        // Image time is dominated by the model: a small SD-class model lands
+        // in a couple of minutes, a flux-class one can take ten. Keep the
+        // up-front hint wide and honest; the live ETA below carries accuracy.
+        case .imageGeneration: return "usually 2–10 minutes"
         case .videoGeneration: return "usually 5–15 minutes"
         default: return "usually 2–5 minutes"
         }
+    }
+
+    /// Record-separator prefix the CLI puts on machine-readable progress
+    /// lines under `--json --progress`. Mirrors `PROGRESS_TAG` in
+    /// `vllm_mlx/community_bench/cli.py`.
+    static let progressTag = "\u{1e}"
+
+    /// A tagged progress line with its marker removed and whitespace
+    /// collapsed, or nil for any other stderr (the untagged failure
+    /// document, warnings, tracebacks) so the view never mirrors it.
+    static func strippedProgress(from line: String) -> String? {
+        guard line.hasPrefix(progressTag) else { return nil }
+        let body = line.dropFirst(progressTag.count)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !body.isEmpty, body.count <= 200 else { return nil }
+        return body.split(whereSeparator: \.isWhitespace).joined(separator: " ")
+    }
+
+    /// True when a (stripped) progress line marks one COMPLETED unit of work.
+    /// Completion lines are always `<case-id> warmup …` or
+    /// `<case-id> round N/M …`, i.e. the phase is the SECOND token. Matching
+    /// the token position (not a bare "warmup"/"round" substring) is what
+    /// keeps plan/status lines — "Benchmarking … 1 warmup + 5 measured
+    /// rounds", "Estimated time remaining … from the warmup rate" — from
+    /// wrongly advancing the bar.
+    static func isStepLine(_ stripped: String) -> Bool {
+        let tokens = stripped.split(separator: " ")
+        guard tokens.count >= 2 else { return false }
+        if tokens[1] == "warmup" { return true }
+        return tokens[1] == "round" && tokens.count >= 3
+            && tokens[2].range(of: #"^\d+/\d+$"#, options: .regularExpression) != nil
+    }
+
+    /// Total warmup + measured passes for a task, i.e. how many step lines to
+    /// expect. Returns nil for shapes too coarse for a determinate bar (a
+    /// single measured pass), where the spinner + elapsed clock read better.
+    static func totalSteps(for task: ModelTask) -> Int? {
+        switch task {
+        case .imageGeneration: return 2   // 1 warmup + 1 measured
+        case .videoGeneration: return nil // 1 measured render — no useful bar
+        default: return 12                // 2 buckets × (1 warmup + 5 measured)
+        }
+    }
+
+    /// A `~m:ss left` estimate. The average step time comes only from
+    /// COMPLETION timestamps — the span `lastStepAt - firstStepAt` over
+    /// `stepsDone - 1` intervals — so it is stable between steps (dividing by
+    /// intervals, not steps, excludes the one-off model-load + first-step
+    /// time). `now` is used only to count the projection DOWN as time passes,
+    /// never to inflate the per-step average. Text estimates wait for two
+    /// completions. A two-step image run uses its warmup duration from run
+    /// start; otherwise its ETA would first become available at completion.
+    static func eta(
+        stepsDone: Int,
+        totalSteps: Int,
+        runStartedAt: Date,
+        firstStepAt: Date,
+        lastStepAt: Date,
+        now: Date
+    ) -> String? {
+        guard stepsDone >= 1, stepsDone < totalSteps else { return nil }
+        let perStep: TimeInterval
+        if stepsDone == 1, totalSteps == 2 {
+            perStep = max(0, lastStepAt.timeIntervalSince(runStartedAt))
+        } else {
+            guard stepsDone >= 2 else { return nil }
+            perStep = max(0, lastStepAt.timeIntervalSince(firstStepAt))
+                / Double(stepsDone - 1)
+        }
+        let projected = perStep * Double(totalSteps - stepsDone)
+        let remaining = projected - max(0, now.timeIntervalSince(lastStepAt))
+        // Past the projection with no new step: don't sit on a stale
+        // "~0:00 left" — say we're finishing the last pass(es).
+        guard remaining > 0 else { return "wrapping up…" }
+        let secs = Int(remaining.rounded())
+        return String(format: "~%d:%02d left", secs / 60, secs % 60)
     }
 
     /// `m:ss` elapsed clock, clamped at zero so a clock adjustment mid-run
@@ -708,12 +787,46 @@ enum CommunityBenchmarkCommand {
     static func benchmarkRunArguments(alias: String) -> [String] {
         [
             "benchmark", "run", alias, "--json",
+            // Stream RS-tagged live progress so the run shows a determinate
+            // bar + ETA; the untagged failure document stays clean.
+            "--progress",
             "--inherit-process-group",
         ]
     }
 
     static func benchmarkResultsArguments(limit: Int = 8) -> [String] {
         ["benchmark", "results", "--limit", String(limit), "--json"]
+    }
+
+    /// The `run_id` from a `benchmark run --json` payload, so the caller can
+    /// act on the exact run that finished rather than inferring it from list
+    /// order. nil for any payload without one (e.g. a deferred-reap result).
+    static func runID(from data: Data) -> String? {
+        struct RunID: Decodable {
+            let runID: String
+            enum CodingKeys: String, CodingKey { case runID = "run_id" }
+        }
+        return try? JSONDecoder().decode(RunID.self, from: data).runID
+    }
+
+    /// A human sentence for a failed run. Under `--json` the CLI prints a
+    /// `{"error": …, "run": {…}}` failure document; surface just its `error`
+    /// so the user sees one clear line instead of a wall of raw JSON. Falls
+    /// back to the raw text for any non-JSON failure (a crash, a traceback).
+    static func failureSummary(from detail: String) -> String {
+        struct Doc: Decodable { let error: String }
+        // The document is one JSON line, but tracebacks/warnings may precede
+        // it — try the whole string, then each line newest-first.
+        let candidates = [detail]
+            + detail.split(separator: "\n").reversed().map(String.init)
+        for candidate in candidates {
+            if let data = candidate.data(using: .utf8),
+               let doc = try? JSONDecoder().decode(Doc.self, from: data),
+               !doc.error.isEmpty {
+                return doc.error
+            }
+        }
+        return detail
     }
 
     static func benchmarkSharePreviewArguments(runID: String) -> [String] {
@@ -813,9 +926,17 @@ enum CommunityBenchmarkCommand {
                     let output = await outputTask.value
                     let errorCapture = await errorTask.value
                     guard child.terminationStatus == 0 else {
+                        // Drop RS-tagged live-progress lines so the failure
+                        // document the user sees stays clean.
                         let detail = String(data: errorCapture.data, encoding: .utf8)?
+                            .split(separator: "\n", omittingEmptySubsequences: false)
+                            .filter {
+                                !$0.hasPrefix(CommunityBenchmarkRunStatus.progressTag)
+                            }
+                            .joined(separator: "\n")
                             .trimmingCharacters(in: .whitespacesAndNewlines)
-                        let message = detail.flatMap { $0.isEmpty ? nil : $0 }
+                        let message = detail
+                            .flatMap { $0.isEmpty ? nil : Self.failureSummary(from: $0) }
                             ?? "Benchmark exited with code \(child.terminationStatus)."
                         throw Failure(message: message)
                     }
@@ -971,7 +1092,18 @@ struct CommunityBenchmarkView: View {
     /// arrival order off the main actor and applied only if newer, so the
     /// unordered main-actor hops can never show an older round.
     @State private var appliedProgressSequence = 0
+    /// Completed warmup + measured passes, and when the first one landed, for
+    /// the determinate progress bar and the live ETA.
+    @State private var stepsDone = 0
+    @State private var firstStepAt: Date?
+    /// The most recent step completion, so the ETA divides by real
+    /// inter-step time and stays stable between steps.
+    @State private var lastStepAt: Date?
     @State private var errorMessage: String?
+    /// The result id of the run that just finished, so a prominent CTA can
+    /// invite the user to share it (instead of relying on the small per-row
+    /// link). Cleared when the row is shared, dismissed, or a new run starts.
+    @State private var pendingShareResultID: String?
     @State private var runTask: Task<Void, Never>?
     @State private var shareTask: Task<Void, Never>?
     @State private var shareCandidate: CommunityBenchmarkUploadPreview?
@@ -1005,6 +1137,7 @@ struct CommunityBenchmarkView: View {
             VStack(alignment: .leading, spacing: 24) {
                 header
                 setupCard
+                postRunShareCTA
                 recentResults
             }
             .frame(maxWidth: 760, alignment: .leading)
@@ -1030,6 +1163,20 @@ struct CommunityBenchmarkView: View {
             VStack(alignment: .leading, spacing: 16) {
                 Text("Share benchmark result?")
                     .font(.title2.weight(.semibold))
+                Label(
+                    "Every shared result makes the community leaderboard more "
+                        + "complete — helping everyone compare models across real "
+                        + "Macs and find faster local AI for their machine.",
+                    systemImage: "mappin.and.ellipse"
+                )
+                .font(.callout)
+                .foregroundStyle(RapidTheme.textSecondary)
+                .padding(12)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(
+                    RapidTheme.brandPrimaryDeep.opacity(0.08),
+                    in: RoundedRectangle(cornerRadius: 10)
+                )
                 Text("Everything in the JSON below will be sent to \(preview.target).")
                     .foregroundStyle(.secondary)
                 ScrollView {
@@ -1065,56 +1212,102 @@ struct CommunityBenchmarkView: View {
     }
 
     private func shareSuccessSheet(_ receipt: CommunityBenchmarkReceipt) -> some View {
-        VStack(spacing: 18) {
-            Image(systemName: "checkmark.circle.fill")
-                .font(.system(size: 44))
-                .foregroundStyle(.green)
-                .accessibilityHidden(true)
-            Text(receipt.alreadyExists ? "Already on the map" : "You added a point to the map")
-                .font(.title2.weight(.semibold))
-            if let contributor = receipt.contributor {
-                VStack(spacing: 6) {
-                    Text("Your Community Benchmark identity")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                    Text(contributor.displayName)
-                        .font(.system(.headline, design: .monospaced))
-                        .textSelection(.enabled)
-                        .accessibilityIdentifier("CommunityBenchmark.Share.Identity")
+        VStack(spacing: 0) {
+            VStack(spacing: 24) {
+                Image(systemName: "mappin.and.ellipse")
+                    .font(.system(size: 32, weight: .medium))
+                    .foregroundStyle(RapidTheme.brandPrimaryDeep)
+                    .frame(width: 72, height: 72)
+                    .background(RapidTheme.brandPrimaryDeep.opacity(0.10), in: Circle())
+                    .overlay(alignment: .bottomTrailing) {
+                        Image(systemName: "checkmark.circle.fill")
+                            .font(.system(size: 22, weight: .semibold))
+                            .foregroundStyle(RapidTheme.brandPrimaryDeep)
+                            .padding(3)
+                            .background(RapidTheme.surfaceRaised, in: Circle())
+                    }
+                    .accessibilityHidden(true)
+
+                VStack(spacing: 10) {
+                    Text(receipt.alreadyExists ? "Already on the map" : "You added a point to the map")
+                        .font(.title2.weight(.semibold))
+                        .foregroundStyle(RapidTheme.textPrimary)
+                    Text(receipt.alreadyExists
+                         ? "This result is already part of the community leaderboard. Thanks for contributing."
+                         : "Your model’s performance on this Mac now has a place on the community leaderboard.")
+                        .font(.body)
+                        .foregroundStyle(RapidTheme.textSecondary)
                 }
-                if let url = contributor.profileURL {
-                    Link("View my contributions", destination: url)
-                        .buttonStyle(.borderedProminent)
-                        .accessibilityIdentifier("CommunityBenchmark.Share.Profile")
+
+                if let contributor = receipt.contributor {
+                    VStack(spacing: 10) {
+                        Text("Your community identity")
+                            .font(.caption.weight(.medium))
+                            .foregroundStyle(RapidTheme.textSecondary)
+                        Text(contributor.displayName)
+                            .font(.system(.callout, design: .monospaced).weight(.medium))
+                            .foregroundStyle(RapidTheme.textPrimary)
+                            .textSelection(.enabled)
+                            .padding(.horizontal, 16)
+                            .padding(.vertical, 10)
+                            .background(RapidTheme.surfaceCanvas, in: Capsule())
+                            .overlay {
+                                Capsule().strokeBorder(RapidTheme.hairline, lineWidth: 1)
+                            }
+                            .accessibilityIdentifier("CommunityBenchmark.Share.Identity")
+                    }
                 }
-            } else {
-                Link(
-                    "View Community Benchmark",
-                    destination: communityBenchmarkLeaderboardURL
-                )
-                    .buttonStyle(.borderedProminent)
-                    .accessibilityIdentifier("CommunityBenchmark.Share.Leaderboard")
+
+                Text("Together, we’re building a clearer picture of local AI performance—so everyone can find faster models for their Mac.")
+                    .font(.callout)
+                    .foregroundStyle(RapidTheme.textSecondary)
             }
-            Text("Thanks for helping other Mac users choose models with real-world evidence.")
-                .font(.callout)
-                .foregroundStyle(.secondary)
-                .multilineTextAlignment(.center)
-            Button("Done") { shareSuccess = nil }
-                .keyboardShortcut(.defaultAction)
-                .accessibilityIdentifier("CommunityBenchmark.Share.Done")
+            .multilineTextAlignment(.center)
+            .fixedSize(horizontal: false, vertical: true)
+            .padding(32)
+
+            Rectangle()
+                .fill(RapidTheme.hairline)
+                .frame(height: 1)
+
+            HStack(spacing: 12) {
+                if let contributor = receipt.contributor {
+                    if let url = contributor.profileURL {
+                        Link("View my contributions", destination: url)
+                            .buttonStyle(.bordered)
+                            .accessibilityIdentifier("CommunityBenchmark.Share.Profile")
+                    }
+                } else {
+                    Link(
+                        "View Community Benchmark",
+                        destination: communityBenchmarkLeaderboardURL
+                    )
+                        .buttonStyle(.bordered)
+                        .accessibilityIdentifier("CommunityBenchmark.Share.Leaderboard")
+                }
+                Spacer(minLength: 0)
+                Button("Done") { shareSuccess = nil }
+                    .buttonStyle(.borderedProminent)
+                    .keyboardShortcut(.defaultAction)
+                    .accessibilityIdentifier("CommunityBenchmark.Share.Done")
+            }
+            .controlSize(.large)
+            .padding(.horizontal, 24)
+            .padding(.vertical, 18)
+            .background(RapidTheme.surfaceCanvas)
         }
-        .padding(32)
-        .frame(width: 440)
-        .frame(minHeight: 330)
+        .frame(width: 480)
+        .background(RapidTheme.surfaceRaised)
         .accessibilityIdentifier("CommunityBenchmark.Share.Success")
     }
 
     private var header: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text("Community Benchmark")
+            Text("Benchmark")
                 .font(.system(size: 28, weight: .semibold))
-            Text("Measure any supported model on this Mac. Results stay local unless you choose to share them later.")
+            Text("How fast is local AI on this Mac? Find out in minutes — then share your result to help build an open leaderboard of real models on real Macs, so everyone can pick the fastest local AI for their machine.")
                 .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
         }
     }
 
@@ -1192,17 +1385,46 @@ struct CommunityBenchmarkView: View {
     /// live elapsed clock — the only feedback the user gets for several
     /// minutes while the CLI owns the machine.
     private var runningStatus: some View {
-        VStack(alignment: .leading, spacing: 3) {
+        // A determinate bar is only honest when we know how many passes to
+        // expect (text, image); other shapes keep the spinner + clock.
+        let totalSteps = runningModel.flatMap {
+            CommunityBenchmarkRunStatus.totalSteps(for: $0.task)
+        }
+        return VStack(alignment: .leading, spacing: 6) {
             if let runningModel {
                 Text(CommunityBenchmarkRunStatus.description(for: runningModel))
                     .font(.callout)
                     .accessibilityIdentifier("CommunityBenchmark.RunStatus")
             }
+            if let totalSteps {
+                ProgressView(
+                    value: Double(min(stepsDone, totalSteps)),
+                    total: Double(totalSteps)
+                )
+                .progressViewStyle(.linear)
+                .frame(maxWidth: 360)
+                .accessibilityIdentifier("CommunityBenchmark.RunProgressBar")
+            }
             HStack(spacing: 8) {
                 if let runStartedAt {
                     TimelineView(.periodic(from: runStartedAt, by: 1)) { context in
-                        Text("Elapsed \(CommunityBenchmarkRunStatus.elapsed(from: runStartedAt, to: context.date))")
-                            .monospacedDigit()
+                        HStack(spacing: 8) {
+                            Text("Elapsed \(CommunityBenchmarkRunStatus.elapsed(from: runStartedAt, to: context.date))")
+                                .monospacedDigit()
+                            if let totalSteps, let firstStepAt, let lastStepAt,
+                               let eta = CommunityBenchmarkRunStatus.eta(
+                                   stepsDone: stepsDone,
+                                   totalSteps: totalSteps,
+                                   runStartedAt: runStartedAt,
+                                   firstStepAt: firstStepAt,
+                                   lastStepAt: lastStepAt,
+                                   now: context.date
+                               ) {
+                                Text(eta)
+                                    .monospacedDigit()
+                                    .accessibilityIdentifier("CommunityBenchmark.RunETA")
+                            }
+                        }
                     }
                     .accessibilityIdentifier("CommunityBenchmark.RunElapsed")
                 }
@@ -1217,6 +1439,57 @@ struct CommunityBenchmarkView: View {
             .foregroundStyle(.secondary)
             Text("The active server will stop while this model is measured.")
                 .font(.caption).foregroundStyle(.secondary)
+        }
+    }
+
+    /// A prominent invitation to contribute the run that just finished — the
+    /// per-row "Share" link is easy to miss, and a result is only useful to
+    /// the community once it is shared. Hidden once the run is shared (a
+    /// receipt appears), dismissed, or superseded by a new run.
+    @ViewBuilder
+    private var postRunShareCTA: some View {
+        if let id = pendingShareResultID,
+           receipts[id] == nil,
+           !isRunning,
+           let result = results.first(where: { $0.id == id }) {
+            HStack(alignment: .top, spacing: 14) {
+                Image(systemName: "mappin.and.ellipse")
+                    .font(.title2)
+                    .foregroundStyle(RapidTheme.brandPrimaryDeep)
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("Put your Mac on the map").font(.headline)
+                    Text(
+                        "Share this \(alias(for: result.repoID)) result to help the "
+                            + "community compare models and find faster local AI."
+                    )
+                    .font(.callout)
+                    .foregroundStyle(RapidTheme.textSecondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                    HStack(spacing: 12) {
+                        Button(sharingRunID == result.id ? "Sharing…" : "Share benchmark result") {
+                            prepareShare(result)
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .disabled(sharingRunID != nil || binary == nil)
+                        .accessibilityIdentifier("CommunityBenchmark.ShareCTA.Confirm")
+                        Button("Not now") { pendingShareResultID = nil }
+                            .buttonStyle(.link)
+                            .accessibilityIdentifier("CommunityBenchmark.ShareCTA.Dismiss")
+                    }
+                    .padding(.top, 2)
+                }
+                Spacer(minLength: 0)
+            }
+            .padding(16)
+            .background(
+                RapidTheme.brandPrimaryDeep.opacity(0.06),
+                in: RoundedRectangle(cornerRadius: 14)
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 14)
+                    .strokeBorder(RapidTheme.brandPrimaryDeep.opacity(0.25))
+            )
+            .accessibilityIdentifier("CommunityBenchmark.ShareCTA")
         }
     }
 
@@ -1325,9 +1598,17 @@ struct CommunityBenchmarkView: View {
         runStartedAt = Date()
         runProgressLine = nil
         appliedProgressSequence = 0
+        stepsDone = 0
+        firstStepAt = nil
+        lastStepAt = nil
+        pendingShareResultID = nil
         let activeRunID = UUID()
         currentRunID = activeRunID
         let sequencer = ProgressSequencer()
+        // Cumulative step index, stamped off the main actor in arrival order
+        // (LineSplitter delivers lines sequentially). The view applies it as
+        // a monotonic max, so a late/out-of-order hop can never drop a step.
+        let stepCounter = ProgressSequencer()
         runTask = Task {
             var acquiredReservation = false
             do {
@@ -1335,33 +1616,54 @@ struct CommunityBenchmarkView: View {
                 acquiredReservation = true
                 defer { releaseServer(reservation) }
                 try Task.checkCancellation()
-                _ = try await CommunityBenchmarkCommand.run(
+                let runOutput = try await CommunityBenchmarkCommand.run(
                     binary: binary,
                     arguments: CommunityBenchmarkCommand.benchmarkRunArguments(
                         alias: selected.entry.alias
                     ),
                     onDeferredReap: retainServerDuringDeferredReap,
                     onStandardErrorLine: { line in
-                        guard let progress = CommunityBenchmarkRunStatus.progressLine(
+                        guard let progress = CommunityBenchmarkRunStatus.strippedProgress(
                             from: line
                         ) else { return }
                         let sequence = sequencer.next()
+                        // Cumulative step index (0 for non-step lines), assigned
+                        // in arrival order so the count survives unordered hops.
+                        let isStep = CommunityBenchmarkRunStatus.isStepLine(progress)
+                        let stepIndex = isStep ? stepCounter.next() : 0
+                        // Timestamp the step at emission (arrival order), not
+                        // when its main-actor hop lands, so the ETA baseline is
+                        // the first step's real completion time.
+                        let stepAt = isStep ? Date() : nil
                         Task { @MainActor in
-                            // A line that arrives after Stop / a new run must
-                            // not resurrect stale progress, and an older line
-                            // whose hop landed late must not overwrite a
-                            // newer one.
                             guard isRunning, runStartedAt != nil,
-                                  currentRunID == activeRunID,
-                                  sequence > appliedProgressSequence
+                                  currentRunID == activeRunID
                             else { return }
-                            appliedProgressSequence = sequence
-                            runProgressLine = progress
+                            // Display: show only the newest line — a hop that
+                            // lands late must not overwrite a newer status.
+                            if sequence > appliedProgressSequence {
+                                appliedProgressSequence = sequence
+                                runProgressLine = progress
+                            }
+                            // Count: monotonic max, so an out-of-order hop can
+                            // never discard a completed step (undercounting the
+                            // bar/ETA). The baseline keeps the earliest step
+                            // timestamp (step 1) regardless of hop order.
+                            if stepIndex > 0, let stepAt {
+                                firstStepAt = min(firstStepAt ?? stepAt, stepAt)
+                                lastStepAt = max(lastStepAt ?? stepAt, stepAt)
+                                stepsDone = max(stepsDone, stepIndex)
+                            }
                         }
                     }
                 )
                 await refreshProductCatalog()
                 await refreshResults()
+                // Invite the user to contribute the run that just finished —
+                // only when the CLI payload names it. No fallback to "whatever
+                // sorts first": a payload without a run_id (e.g. deferred reap)
+                // must not surface the CTA for an unrelated historical run.
+                pendingShareResultID = CommunityBenchmarkCommand.runID(from: runOutput)
             } catch is CancellationError {
                 errorMessage = acquiredReservation
                     ? "Benchmark stopped. No incomplete result was shared."
@@ -1373,6 +1675,9 @@ struct CommunityBenchmarkView: View {
             runningModel = nil
             runStartedAt = nil
             runProgressLine = nil
+            stepsDone = 0
+            firstStepAt = nil
+            lastStepAt = nil
             runTask = nil
         }
     }
