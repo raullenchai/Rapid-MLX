@@ -4,6 +4,12 @@ import Observation
 @MainActor
 @Observable
 final class ShareComputeManager {
+    struct SpawnRequest: Equatable {
+        let arguments: [String]
+        let environment: [String: String]
+        let standardInput: Data
+    }
+
     enum State: Equatable {
         case idle
         case preparing
@@ -100,10 +106,12 @@ final class ShareComputeManager {
         do {
             lease = try await server.prepareForCommunityBenchmark()
         } catch is CancellationError {
+            guard operationID == operation else { return }
             operationID = nil
             resetToIdle()
             return
         } catch {
+            guard operationID == operation else { return }
             operationID = nil
             state = .failed("Rapid couldn't pause the current model safely.")
             activeModel = nil
@@ -112,8 +120,9 @@ final class ShareComputeManager {
         }
         guard operationID == operation, !shuttingDown else {
             server.finishCommunityBenchmark(lease)
-            resetToIdle()
-            restorePreviousModelIfNeeded()
+            // This operation no longer owns manager state. A subsequent join
+            // may already have replaced activeModel and restoreAlias, so only
+            // release the lease acquired by this stale operation.
             return
         }
         reservation = lease
@@ -122,13 +131,6 @@ final class ShareComputeManager {
         let statusURL = Self.statusURL(session: session)
         currentStatusURL = statusURL
         try? FileManager.default.removeItem(at: statusURL)
-        let arguments = Self.arguments(
-            model: model,
-            worker: worker,
-            session: session,
-            hasProviderKey: trimmedKey?.isEmpty == false
-        )
-
         let inputPipe = Pipe()
         let out = Pipe()
         let err = Pipe()
@@ -142,21 +144,28 @@ final class ShareComputeManager {
             supervisorPID: ProcessInfo.processInfo.processIdentifier,
             modelsFolderOverride: ModelsFolderPreference.validatedOverrideURL()?.path
         )
+        let request = Self.spawnRequest(
+            model: model,
+            worker: worker,
+            session: session,
+            providerKey: trimmedKey,
+            environment: environment
+        )
 
         do {
             // Fill the bounded pipe while its read end is unquestionably open.
             // Writing after spawn creates a narrow SIGPIPE race if the child
             // fails before Swift gets scheduled again.
-            if let trimmedKey, !trimmedKey.isEmpty {
-                inputPipe.fileHandleForWriting.write(Data((trimmedKey + "\n").utf8))
+            if !request.standardInput.isEmpty {
+                inputPipe.fileHandleForWriting.write(request.standardInput)
             }
             let spawned = try ProcessGroupChild.spawn(
                 executableURL: binary,
-                arguments: arguments,
+                arguments: request.arguments,
                 standardInput: inputPipe.fileHandleForReading,
                 standardOutput: out,
                 standardError: err,
-                environmentAdditions: environment,
+                environmentAdditions: request.environment,
                 replaceEnvironment: true,
                 startMonitorImmediately: false
             ) { [weak self] process in
@@ -265,25 +274,33 @@ final class ShareComputeManager {
         }
     }
 
-    /// Pure spawn contract. The provider key is represented only by the
-    /// transport flag; its bytes must never be interpolated into argv.
-    nonisolated static func arguments(
+    /// Pure representation of every caller-controlled value handed to the
+    /// process boundary. Keeping stdin beside argv and environment makes the
+    /// credential transport invariant directly testable.
+    nonisolated static func spawnRequest(
         model: ShareComputeModel,
         worker: String,
         session: String,
-        hasProviderKey: Bool
-    ) -> [String] {
-        var result = [
+        providerKey: String?,
+        environment: [String: String]
+    ) -> SpawnRequest {
+        var arguments = [
             "share", model.alias,
             "--quicksilver",
             "--quicksilver-model", model.catalogID,
             "--worker", ShareComputeModel.sanitizedWorker(worker),
             "--desktop-session", session,
         ]
-        if hasProviderKey {
-            result += ["--provider-key-stdin", "--reregister"]
+        var standardInput = Data()
+        if let providerKey, !providerKey.isEmpty {
+            arguments += ["--provider-key-stdin", "--reregister"]
+            standardInput = Data((providerKey + "\n").utf8)
         }
-        return result
+        return SpawnRequest(
+            arguments: arguments,
+            environment: environment,
+            standardInput: standardInput
+        )
     }
 
     private func childExited(_ process: ProcessGroupChild) {

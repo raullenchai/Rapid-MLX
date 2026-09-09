@@ -40,16 +40,59 @@ struct ShareComputeTests {
     @Test("Provider key uses stdin and never argv")
     func providerKeyTransport() {
         let secret = "qsppk-never-in-argv"
-        let arguments = ShareComputeManager.arguments(
+        let request = ShareComputeManager.spawnRequest(
             model: ShareComputeModel.supported[0],
             worker: "Mini / west",
             session: String(repeating: "a", count: 32),
-            hasProviderKey: true
+            providerKey: secret,
+            environment: ["PATH": "/usr/bin"]
         )
-        #expect(arguments.contains("--provider-key-stdin"))
-        #expect(arguments.contains("--reregister"))
-        #expect(!arguments.contains(where: { $0.contains(secret) }))
-        #expect(!arguments.contains("--provider-key"))
+        #expect(request.arguments.contains("--provider-key-stdin"))
+        #expect(request.arguments.contains("--reregister"))
+        #expect(!request.arguments.contains(where: { $0.contains(secret) }))
+        #expect(!request.arguments.contains("--provider-key"))
+        #expect(!request.environment.contains(where: { key, value in
+            key.contains(secret) || value.contains(secret)
+        }))
+        #expect(request.standardInput == Data((secret + "\n").utf8))
+    }
+
+    @Test("A stale join cannot erase the next join's state")
+    @MainActor
+    func staleJoinOwnership() async throws {
+        let executable = FileManager.default.temporaryDirectory
+            .appendingPathComponent("share-compute-runner-\(UUID().uuidString).sh")
+        defer { try? FileManager.default.removeItem(at: executable) }
+        try Data("#!/bin/sh\ntrap 'exit 0' TERM INT\nwhile :; do sleep 60; done\n".utf8)
+            .write(to: executable)
+        try FileManager.default.setAttributes(
+            [.posixPermissions: 0o700],
+            ofItemAtPath: executable.path
+        )
+
+        let server = ServerManager(testingState: .idle, binaryPath: executable)
+        let blocker = try await server.prepareForCommunityBenchmark()
+        let manager = ShareComputeManager(server: server)
+        let firstModel = ShareComputeModel.supported[0]
+        let secondModel = ShareComputeModel.supported[1]
+
+        let staleJoin = Task { @MainActor in
+            await manager.join(model: firstModel, worker: "first", providerKey: "first-key")
+        }
+        for _ in 0..<10 { await Task.yield() }
+        manager.leave()
+
+        let currentJoin = Task { @MainActor in
+            await manager.join(model: secondModel, worker: "second", providerKey: "second-key")
+        }
+        for _ in 0..<10 { await Task.yield() }
+        server.finishCommunityBenchmark(blocker)
+
+        await staleJoin.value
+        await currentJoin.value
+        #expect(manager.activeModel == secondModel)
+        #expect(manager.state == .starting)
+        manager.finishShutdown()
     }
 
     @Test("Cache paths follow the HOME inherited by the provider child")
