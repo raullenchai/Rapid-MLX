@@ -985,7 +985,7 @@ class TestVisibility:
         assert "MTP path         : sidecar (default; --no-spec-decode off)" in table
         assert "✗ disabled (hybrid arch)" not in table
         assert "sidecar (opt-in: --speculative-config)" not in table
-        assert "Suffix tier      : n/a (hybrid arch — suffix unsupported)" in table
+        assert "Suffix tier      : n/a (hybrid; sidecar lane is MTP-only)" in table
         assert "spec decode off" not in table
 
     def test_table_matches_serve_default_on_mtp_sidecar_dense(self):
@@ -1142,19 +1142,90 @@ class TestVisibility:
         assert "✗ not needed" in table
 
     def test_table_for_dense_no_drafter_shows_honest_reason(self):
-        # 0.9.0 dogfood regression guard, re-pointed at a TRUE
-        # no-drafter alias (``qwen3.5-4b-4bit`` grew a declared MTP
-        # sidecar + default-off in #3115, so it now belongs to the
-        # opt-in test below). Non-hybrid + spec-off must render the
-        # actual reason — no MTP/drafter trained for this alias — not
-        # the ``(hybrid arch)`` misnomer pre-0.9.1 shipped.
-        cfg = detect_model_config("qwen3.5-27b-4bit")
+        # 0.9.0 dogfood regression guard, kept for the genuinely
+        # drafter-less case. A dense alias with
+        # ``supports_spec_decode=False``, no hybrid arch, no DFlash
+        # drafter, and no MTP sidecar gets the honest ``(no MTP/drafter
+        # trained)`` reason. (0.13.5 note: ``qwen3.5-4b-4bit`` no longer
+        # belongs here — it DECLARES an MTP sidecar, covered by
+        # ``test_table_sidecar_alias_spec_row_names_the_opt_in``.)
+        cfg = detect_model_config("mlx-community/embeddinggemma-300m-6bit")
         assert cfg is not None
         assert cfg.is_hybrid is False
         assert cfg.supports_spec_decode is False
-        table = format_profile_table("qwen3.5-27b-4bit", cfg)
+        assert not (cfg.mtp_draft_model or "").strip()
+        table = format_profile_table("mlx-community/embeddinggemma-300m-6bit", cfg)
         assert "✗ disabled (no MTP/drafter trained)" in table
         assert "✗ disabled (hybrid arch)" not in table
+
+    def test_table_sidecar_alias_spec_row_names_the_opt_in(self):
+        # 0.13.5 dogfood. ``qwen3.5-4b-4bit`` (resolved as an ALIAS) now
+        # declares ``mtp_draft_model`` — a trained drafter the serve path
+        # honors behind ``--speculative-config`` (#1998). The Spec decode
+        # row therefore must not claim ``(no MTP/drafter trained)`` while
+        # the very next row reads ``MTP path: sidecar (opt-in)`` — the
+        # same registry-vs-reality mismatch the 0.9.1 DFlash row fixed,
+        # one branch over.
+        cfg = detect_model_config("qwen3.5-4b-4bit")
+        assert cfg is not None
+        assert cfg.is_hybrid is False
+        assert cfg.supports_spec_decode is False
+        assert (cfg.mtp_draft_model or "").strip()
+        table = format_profile_table("qwen3.5-4b-4bit", cfg)
+        assert "✗ off (MTP opt-in: --speculative-config)" in table
+        assert "no MTP/drafter trained" not in table
+        assert "✗ disabled" not in table
+        assert "MTP path         : sidecar (opt-in: --speculative-config)" in table
+        # The Suffix-tier note must not claim the drafter is missing
+        # either — same table, same honesty rule.
+        assert "n/a (suffix uses the standard spec lane)" in table
+        assert "no MTP/drafter" not in table
+
+    def test_table_hybrid_sidecar_alias_spec_row_keeps_lane_split(self):
+        # Same contradiction, hybrid opt-in variant: ``qwen3.6-35b-4bit`` has a
+        # registered sidecar AND a hybrid arch. ``disabled (hybrid
+        # arch)`` is true of the STANDARD lane only — the row must say
+        # so, because the MTP sidecar lane is available.
+        cfg = detect_model_config("qwen3.6-35b-4bit")
+        assert cfg is not None
+        assert cfg.is_hybrid is True
+        assert (cfg.mtp_draft_model or "").strip()
+        table = format_profile_table("qwen3.6-35b-4bit", cfg)
+        assert "✗ off (MTP opt-in: --speculative-config)" in table
+        assert "✗ disabled (hybrid arch)" not in table
+        assert "MTP path         : sidecar (opt-in: --speculative-config)" in table
+        # codex r1: the Suffix-tier note must be sidecar-aware on the
+        # hybrid branch too — bare "hybrid arch" would re-deny the lane
+        # the Spec-decode row just acknowledged.
+        assert "n/a (hybrid; sidecar lane is MTP-only)" in table
+
+    def test_table_dense_gated_deltanet_arch_label_is_honest(self):
+        # 0.13.5 dogfood. Dense Qwen3.5/Qwen3.6/Ornith checkpoints ship
+        # GatedDeltaNet linear-attention layers (r6-A R6-C1 routes them
+        # through the STANDARD scheduler because the hybrid scheduler
+        # wedges on Metal) — but the Architecture row rendered
+        # ``pure attention``, which the serve log's own ``Hybrid model:
+        # running full request warmup`` line contradicts. Raw HF path
+        # and alias entry must agree.
+        for target in ("mlx-community/Qwen3.5-4B-MLX-4bit", "qwen3.5-4b-4bit"):
+            cfg = detect_model_config(target)
+            assert cfg is not None and cfg.is_hybrid is False
+            table = format_profile_table(target, cfg)
+            assert "dense GatedDeltaNet (standard scheduler)" in table, target
+            assert "pure attention" not in table, target
+        cfg = detect_model_config("ornith-1.5-9b-bf16")
+        table = format_profile_table("ornith-1.5-9b-bf16", cfg)
+        assert "dense GatedDeltaNet (standard scheduler)" in table
+
+    def test_table_gemma4_and_true_hybrid_keep_arch_labels(self):
+        # The dense-GatedDeltaNet label must not leak onto families the
+        # engine treats differently: a genuine hybrid keeps the Mamba
+        # wording and a genuinely pure-attention family stays as-is.
+        cfg = detect_model_config("mlx-community/Qwen3.5-35B-A3B-4bit")
+        table = format_profile_table("mlx-community/Qwen3.5-35B-A3B-4bit", cfg)
+        assert "hybrid (linear-attention/Mamba)" in table
+        cfg = detect_model_config("mlx-community/Qwen3-0.6B-8bit")
+        table = format_profile_table("mlx-community/Qwen3-0.6B-8bit", cfg)
         assert "pure attention" in table
 
     def test_table_default_off_sidecar_names_opt_in_not_no_drafter(self):
@@ -1169,6 +1240,13 @@ class TestVisibility:
         assert "✗ off (MTP opt-in: --speculative-config)" in table
         assert "MTP path         : sidecar (opt-in: --speculative-config)" in table
         assert "✗ disabled (no MTP/drafter trained)" not in table
+
+    def test_summary_dense_gated_deltanet_arch_label(self):
+        # Level 1 summary carries the same honesty requirement.
+        cfg = detect_model_config("mlx-community/Qwen3.5-4B-MLX-4bit")
+        line = format_profile_summary("mlx-community/Qwen3.5-4B-MLX-4bit", cfg)
+        assert "dense GatedDeltaNet" in line
+        assert "pure attention" not in line
 
     def test_table_for_dflash_alias_surfaces_opt_in_flag(self):
         # 0.9.1 dogfood follow-up. ``qwen3.5-27b-8bit`` is the operator-

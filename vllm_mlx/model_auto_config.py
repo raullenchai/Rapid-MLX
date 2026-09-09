@@ -2063,10 +2063,24 @@ def suffix_decoding_hint(cfg: "ModelConfig | None") -> str | None:
     return None
 
 
-def _arch_label(cfg: "ModelConfig") -> str:
-    """One-word architecture label for human display."""
+def _arch_label(model_path: str, cfg: "ModelConfig") -> str:
+    """Architecture label for human display.
+
+    Truth-in-labeling (0.13.5 dogfood): the dense Qwen3.5 / Qwen3.6 /
+    Ornith-1.5 checkpoints SHIP GatedDeltaNet linear-attention layers,
+    but r6-A R6-C1 routes them through the standard scheduler (the
+    hybrid scheduler wedges on Metal at those sizes), so their profiles
+    carry ``is_hybrid=False``. Rendering that routing fact as ``pure
+    attention`` denies layers the checkpoint actually has — and the
+    serve log's own ``Hybrid model: running full request warmup``
+    line contradicts it. Name the family instead; ``(standard
+    scheduler)`` keeps the routing fact the user actually needs.
+    """
     if cfg.is_hybrid:
         return "hybrid (linear-attention/Mamba)"
+    name_seg = _extract_model_name_segment((cfg.hf_path or model_path).lower())
+    if _DENSE_GATED_DELTANET_NAME_RE.search(name_seg):
+        return "dense GatedDeltaNet (standard scheduler)"
     return "pure attention"
 
 
@@ -2095,11 +2109,19 @@ def _suffix_tier_cell(cfg: "ModelConfig", max_width: int | None = None) -> str:
         # pure-attention Qwen3.5/3.6 dense aliases, which contradicts the
         # ``Architecture: pure attention`` row two lines above.
         if cfg.is_hybrid:
-            # This row describes SuffixDecoding eligibility, not every
-            # speculative method. Hybrid aliases may still run MTP through a
-            # native head or sidecar, so saying "spec decode off" here can
-            # directly contradict the active/default-on MTP rows above.
-            text = "n/a (hybrid arch — suffix unsupported)"
+            if (getattr(cfg, "mtp_draft_model", None) or "").strip():
+                # Suffix uses the standard lane; a registered sidecar remains
+                # available through the separate MTP lane.
+                text = "n/a (hybrid; sidecar lane is MTP-only)"
+            else:
+                text = "n/a (hybrid arch — suffix unsupported)"
+        elif (getattr(cfg, "mtp_draft_model", None) or "").strip():
+            # 0.13.5: a dense alias with a registered MTP sidecar does
+            # have a drafter — the ``no MTP/drafter`` claim would repeat
+            # the contradiction this same table just fixed in the
+            # Spec-decode row. Suffix needs the standard lane, not the
+            # sidecar lane, hence the different reason.
+            text = "n/a (suffix uses the standard spec lane)"
         else:
             # Tight enough to fit the 41-char ``info`` value column
             # (``inner=60 − 17-char key − 2-char ": "``) so the row
@@ -2234,6 +2256,16 @@ _NATIVE_MTP_NAME_RE = re.compile(
 # the same reason as the native-MTP regex above.
 _GEMMA4_NAME_RE = re.compile(
     r"^" + _NAME_PREFIX + r"gemma[-_]?4(?=$|[^0-9a-z])", re.IGNORECASE
+)
+
+# Dense GatedDeltaNet families (0.13.5): non-hybrid profiles whose
+# checkpoints still ship linear-attention layers. qwen3.5/qwen3.6 are
+# the documented dense GatedDeltaNet siblings (r6-A R6-C1); ornith-1.5
+# is the same arch family per its profile-table comment. HY3 is
+# deliberately NOT listed — its dense-layer composition is unverified.
+_DENSE_GATED_DELTANET_NAME_RE = re.compile(
+    r"^" + _NAME_PREFIX + r"(?:qwen3[._-]?[56]|ornith[-_.]?1[._-]?5)(?=$|[^0-9a-z])",
+    re.IGNORECASE,
 )
 
 
@@ -2443,7 +2475,7 @@ def format_profile_summary(
     if cfg is None:
         summary = f"Model profile: {model_path} (unknown family — using defaults)"
         return f"{summary}, {runtime_status}" if runtime_status else summary
-    parts = [_arch_label(cfg)]
+    parts = [_arch_label(model_path, cfg)]
     if cfg.experimental:
         parts.append("experimental")
     parts.append(f"throttle {'ON' if cfg.is_hybrid else 'OFF'}")
@@ -2544,6 +2576,11 @@ def format_profile_table(
             spec = "✓ default-on (MTP)"
         elif cfg.supports_spec_decode:
             spec = "✓ supported"
+        elif mtp_label.startswith(("sidecar (opt-in", "native (opt-in")):
+            # Derive the capability copy from the same path label used in the
+            # next row so native/sidecar and registry-default changes cannot
+            # make the table contradict itself.
+            spec = "✗ off (MTP opt-in: --speculative-config)"
         elif cfg.is_hybrid:
             spec = "✗ disabled (hybrid arch)"
         elif cfg.supports_dflash:
@@ -2555,13 +2592,6 @@ def format_profile_table(
             # misleading because the DFlash drafter IS registered.
             # Surface the actionable opt-in instead.
             spec = '✗ try --speculative-config {"method":"dflash"}'
-        elif mtp_label.startswith(("sidecar (opt-in", "native (opt-in")):
-            # Same row-vs-row honesty contract, default-off flavour
-            # (0.13.4 dogfood round 2): a declared MTP drafter/head with
-            # ``mtp_default_enabled=False`` (#3115) must not have the
-            # Spec decode row claim ``no MTP/drafter trained`` two lines
-            # above the ``MTP path: … (opt-in)`` row. Name the opt-in.
-            spec = "✗ off (MTP opt-in: --speculative-config)"
         else:
             # 0.9.0 dogfood: non-hybrid + spec-off was rendering
             # ``hybrid arch`` next to ``Architecture: pure attention``.
@@ -2592,7 +2622,7 @@ def format_profile_table(
         rows = [
             ("Tool format", cfg.tool_call_parser or "(none)"),
             ("Reasoning parser", cfg.reasoning_parser or "(none)"),
-            ("Architecture", _arch_label(cfg)),
+            ("Architecture", _arch_label(model_path, cfg)),
             ("Spec decode", spec),
             # Truth-in-labeling for the MTP spec-decode path and Gemma 4
             # cross-layer KV-share, derived from the resolved profile (no
