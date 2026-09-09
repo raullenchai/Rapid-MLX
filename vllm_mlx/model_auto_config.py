@@ -2078,9 +2078,7 @@ def _arch_label(model_path: str, cfg: "ModelConfig") -> str:
     """
     if cfg.is_hybrid:
         return "hybrid (linear-attention/Mamba)"
-    name_seg = _extract_model_name_segment(
-        (cfg.hf_path or model_path).lower()
-    )
+    name_seg = _extract_model_name_segment((cfg.hf_path or model_path).lower())
     if _DENSE_GATED_DELTANET_NAME_RE.search(name_seg):
         return "dense GatedDeltaNet (standard scheduler)"
     return "pure attention"
@@ -2266,9 +2264,7 @@ _GEMMA4_NAME_RE = re.compile(
 # is the same arch family per its profile-table comment. HY3 is
 # deliberately NOT listed — its dense-layer composition is unverified.
 _DENSE_GATED_DELTANET_NAME_RE = re.compile(
-    r"^"
-    + _NAME_PREFIX
-    + r"(?:qwen3[._-]?[56]|ornith[-_.]?1[._-]?5)(?=$|[^0-9a-z])",
+    r"^" + _NAME_PREFIX + r"(?:qwen3[._-]?[56]|ornith[-_.]?1[._-]?5)(?=$|[^0-9a-z])",
     re.IGNORECASE,
 )
 
