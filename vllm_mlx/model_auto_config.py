@@ -2498,7 +2498,17 @@ def format_profile_table(model_path: str, cfg: "ModelConfig | None") -> str:
             ),
         ]
     else:
-        if cfg.supports_spec_decode:
+        throttle = "✓ 200ms gap" if cfg.is_hybrid else "✗ not needed"
+        mtp_label = _mtp_path_label(model_path, cfg)
+        if mtp_label.endswith("(default; --no-spec-decode off)"):
+            # Serve enables MTP for this alias unasked (verified tier +
+            # catalog default-on) — say so instead of the generic
+            # ``supported``/``disabled (hybrid arch)`` copy, which read
+            # as the opposite of what the server does (0.13.4 dogfood
+            # P1). Derived FROM the MTP-path label so the two rows can
+            # never disagree.
+            spec = "✓ default-on (MTP)"
+        elif cfg.supports_spec_decode:
             spec = "✓ supported"
         elif cfg.is_hybrid:
             spec = "✗ disabled (hybrid arch)"
@@ -2511,20 +2521,17 @@ def format_profile_table(model_path: str, cfg: "ModelConfig | None") -> str:
             # misleading because the DFlash drafter IS registered.
             # Surface the actionable opt-in instead.
             spec = '✗ try --speculative-config {"method":"dflash"}'
+        elif mtp_label.startswith(("sidecar (opt-in", "native (opt-in")):
+            # Same row-vs-row honesty contract, default-off flavour
+            # (0.13.4 dogfood round 2): a declared MTP drafter/head with
+            # ``mtp_default_enabled=False`` (#3115) must not have the
+            # Spec decode row claim ``no MTP/drafter trained`` two lines
+            # above the ``MTP path: … (opt-in)`` row. Name the opt-in.
+            spec = "✗ off (MTP opt-in: --speculative-config)"
         else:
             # 0.9.0 dogfood: non-hybrid + spec-off was rendering
             # ``hybrid arch`` next to ``Architecture: pure attention``.
             spec = "✗ disabled (no MTP/drafter trained)"
-        throttle = "✓ 200ms gap" if cfg.is_hybrid else "✗ not needed"
-        mtp_label = _mtp_path_label(model_path, cfg)
-        if mtp_label.endswith("(default; --no-spec-decode off)"):
-            # Serve enables MTP for this alias unasked (verified tier +
-            # catalog default-on) — say so instead of the generic
-            # ``supported``/``disabled (hybrid arch)`` copy, which read
-            # as the opposite of what the server does (0.13.4 dogfood
-            # P1). Derived FROM the MTP-path label so the two rows can
-            # never disagree.
-            spec = "✓ default-on (MTP)"
         rows = [
             ("Tool format", cfg.tool_call_parser or "(none)"),
             ("Reasoning parser", cfg.reasoning_parser or "(none)"),

@@ -1035,22 +1035,33 @@ class TestVisibility:
         assert "✗ not needed" in table
 
     def test_table_for_dense_no_drafter_shows_honest_reason(self):
-        # 0.9.0 dogfood regression guard. ``qwen3.5-4b-4bit`` has
-        # ``supports_spec_decode=False`` (no MTP head trained) but is
-        # NOT hybrid. Before 0.9.1 the Spec-decode row claimed
-        # ``(hybrid arch)`` as the reason, contradicting the
-        # ``Architecture: pure attention`` row two lines above. Now we
-        # surface the actual reason — no MTP/drafter trained for this
-        # alias — so the user can act on it (or stop expecting a flag
-        # to flip).
-        cfg = detect_model_config("mlx-community/Qwen3.5-4B-MLX-4bit")
+        # 0.9.0 dogfood regression guard, re-pointed at a TRUE
+        # no-drafter alias (``qwen3.5-4b-4bit`` grew a declared MTP
+        # sidecar + default-off in #3115, so it now belongs to the
+        # opt-in test below). Non-hybrid + spec-off must render the
+        # actual reason — no MTP/drafter trained for this alias — not
+        # the ``(hybrid arch)`` misnomer pre-0.9.1 shipped.
+        cfg = detect_model_config("qwen3.5-27b-4bit")
         assert cfg is not None
         assert cfg.is_hybrid is False
         assert cfg.supports_spec_decode is False
-        table = format_profile_table("mlx-community/Qwen3.5-4B-MLX-4bit", cfg)
+        table = format_profile_table("qwen3.5-27b-4bit", cfg)
         assert "✗ disabled (no MTP/drafter trained)" in table
         assert "✗ disabled (hybrid arch)" not in table
         assert "pure attention" in table
+
+    def test_table_default_off_sidecar_names_opt_in_not_no_drafter(self):
+        # 0.13.4 dogfood round 2: ``qwen3.5-4b-4bit`` declares an MTP
+        # sidecar drafter but ships ``mtp_default_enabled=False``
+        # (#3115). The Spec decode row must not claim
+        # ``(no MTP/drafter trained)`` two lines above
+        # ``MTP path: sidecar (opt-in: …)`` — same row-vs-row honesty
+        # contract as the default-on fix.
+        cfg = detect_model_config("qwen3.5-4b-4bit")
+        table = format_profile_table("qwen3.5-4b-4bit", cfg)
+        assert "✗ off (MTP opt-in: --speculative-config)" in table
+        assert "MTP path         : sidecar (opt-in: --speculative-config)" in table
+        assert "✗ disabled (no MTP/drafter trained)" not in table
 
     def test_table_for_dflash_alias_surfaces_opt_in_flag(self):
         # 0.9.1 dogfood follow-up. ``qwen3.5-27b-8bit`` is the operator-
