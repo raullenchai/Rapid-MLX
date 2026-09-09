@@ -5186,9 +5186,7 @@ def test_dflash_reports_supported_vlm_with_unverified_import(tmp_path, monkeypat
 # ---------------------------------------------------------------------------
 
 
-def test_install_location_reports_unresolved_venv_interpreter(
-    tmp_path, monkeypatch
-):
+def test_install_location_reports_unresolved_venv_interpreter(tmp_path, monkeypatch):
     """A virtualenv must display its own interpreter, not the resolved base.
 
     ``_install_location()`` used to ``.resolve()`` the venv python symlink

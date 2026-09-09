@@ -5,7 +5,8 @@ from unittest import mock
 
 import pytest
 
-from vllm_mlx import model_aliases, model_auto_config as auto_config_mod
+from vllm_mlx import model_aliases
+from vllm_mlx import model_auto_config as auto_config_mod
 from vllm_mlx.model_auto_config import (
     ModelConfig,
     _deepseek_template_family,
