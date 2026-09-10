@@ -138,6 +138,21 @@ enum DevSnapshot {
                     .tint(RapidTheme.brandAmber)
                 )
             }
+            func chatSurface(width: CGFloat) -> AnyView {
+                AnyView(
+                    ChatView(
+                        viewModel: chat,
+                        server: previewServer,
+                        alias: .constant(model.id),
+                        readiness: .ready(alias: model.id)
+                    )
+                    .environment(downloads)
+                    .environment(quickstart)
+                    .frame(width: width, height: 560)
+                    .background(RapidTheme.surfaceCanvas)
+                    .tint(RapidTheme.brandAmber)
+                )
+            }
             let size = CGSize(width: SidebarView.columnIdealWidth, height: 640)
             renderHosted(
                 sidebar(), size: size, appearance: .aqua,
@@ -146,6 +161,28 @@ enum DevSnapshot {
             renderHosted(
                 sidebar(), size: size, appearance: .darkAqua,
                 to: "\(dir)/resident-unload-sidebar-dark.png"
+            )
+            let chatSize = CGSize(width: 720, height: 560)
+            renderHosted(
+                chatSurface(width: chatSize.width), size: chatSize, appearance: .aqua,
+                to: "\(dir)/resident-unload-composer-light.png"
+            )
+            renderHosted(
+                chatSurface(width: chatSize.width), size: chatSize, appearance: .darkAqua,
+                to: "\(dir)/resident-unload-composer-dark.png"
+            )
+            let compactChatSize = CGSize(width: 440, height: 560)
+            renderHosted(
+                chatSurface(width: compactChatSize.width),
+                size: compactChatSize,
+                appearance: .aqua,
+                to: "\(dir)/resident-unload-composer-compact-light.png"
+            )
+            renderHosted(
+                chatSurface(width: compactChatSize.width),
+                size: compactChatSize,
+                appearance: .darkAqua,
+                to: "\(dir)/resident-unload-composer-compact-dark.png"
             )
             NSApp.terminate(nil)
             return

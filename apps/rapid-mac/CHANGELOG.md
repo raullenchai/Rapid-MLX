@@ -17,6 +17,12 @@ can actually understand.
 
 ## [Unreleased]
 
+### Changed
+- Model unload is now a prominent labelled action beside the active model in
+  the chat composer, while the resident-memory footer remains available as a
+  secondary entry point. Multi-model pools say `Unload all`, and active work
+  retains the existing guarded/disabled behaviour.
+
 ## [0.14.0] — 2026-09-09
 
 Rapid-MLX 0.14.0 adds experimental local Computer Use and shared-compute

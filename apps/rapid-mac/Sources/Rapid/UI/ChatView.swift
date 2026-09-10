@@ -253,6 +253,9 @@ struct ChatView: View {
     /// "never asked" value; ``ComposeTextEditor`` ignores it, so a plain
     /// mount does not steal focus from whatever the user was doing.
     var composerFocusRequest: Int = 0
+    /// Test seam for the composer-adjacent resident unload action. Production
+    /// leaves this nil and uses ``ServerManager``'s guarded whole-pool unload.
+    var onUnloadResidentModels: (() async -> Void)? = nil
 
     /// Backing state for the composer's inline model picker (Ollama-style).
     /// The picker lives in the compose box now, not a top control bar.
@@ -273,6 +276,10 @@ struct ChatView: View {
     @State private var blockedSendAttempts: Int = 0
     @State private var showsAttachmentMenu = false
     @State private var showsConversationInstructions = false
+    /// Keeps the new composer action visibly busy during the fresh residency
+    /// check, before ``ServerManager`` enters its own operating state.
+    @State private var isUnloadingResidentModels = false
+    @State private var residentUnloadNotice: String?
     /// Refreshed from the active conversation every time the popover opens.
     /// SwiftUI may otherwise reuse the popover's old local `@State` when the
     /// same conversation closes and reopens it.
@@ -984,8 +991,112 @@ struct ChatView: View {
                 composerStyle: true,
                 onUserSelection: onUserModelSelection
             )
+            // Require the live residency snapshot, not merely a ready process:
+            // legacy engines and the brief pre-refresh window can expose a
+            // serving alias without confirming anything this control can free.
+            if server.residency.contains(alias) {
+                composerResidentUnloadButton(snapshot: server.residency)
+            }
             sendOrStopButton
         }
+    }
+
+    /// A discoverable release valve beside the model it affects. The engine's
+    /// primary is pinned, so the action still unloads the whole resident pool;
+    /// when more than one workload is present the visible copy says so rather
+    /// than pretending this is a per-model eviction.
+    private func composerResidentUnloadButton(
+        snapshot: ModelResidencySnapshot
+    ) -> some View {
+        let modelCount = SidebarView.residentWorkloadCount(snapshot)
+        let hasActiveRequests = SidebarView.hasActiveResidentRequests(snapshot)
+        let disabled = SidebarView.residentUnloadDisabled(
+            isOperating: server.isOperating || isUnloadingResidentModels,
+            hasActiveModelWork: viewModel.isStreaming,
+            hasActiveRequests: hasActiveRequests
+        )
+        let accessibleLabel = SidebarView.residentUnloadLabel(
+            modelCount: modelCount,
+            memoryUsedBytes: snapshot.memoryUsedBytes
+        )
+
+        return Button {
+            Task {
+                guard !isUnloadingResidentModels else { return }
+                isUnloadingResidentModels = true
+                defer { isUnloadingResidentModels = false }
+                if let onUnloadResidentModels {
+                    await onUnloadResidentModels()
+                } else {
+                    residentUnloadNotice = SidebarView.residentUnloadMessage(
+                        for: await server.unloadResidentModelsIfIdle()
+                    )
+                }
+            }
+        } label: {
+            HStack(spacing: 5) {
+                if server.isOperating || isUnloadingResidentModels {
+                    ProgressView()
+                        .controlSize(.mini)
+                } else {
+                    Image(systemName: "eject.fill")
+                        .font(.system(size: 10, weight: .semibold))
+                }
+                Text(Self.composerResidentUnloadTitle(modelCount: modelCount))
+                    .font(.system(size: 11, weight: .semibold))
+                    .lineLimit(1)
+                    // The composer still has flexible space at its 440pt
+                    // detail-width floor. Spend that before abbreviating the
+                    // action back into the undiscoverable glyph we replaced.
+                    .fixedSize(horizontal: true, vertical: false)
+            }
+            .foregroundStyle(disabled ? Color.secondary : RapidTheme.brandAmber)
+            .padding(.horizontal, 9)
+            .frame(height: RapidTheme.ControlHeight.small)
+            .background(
+                RoundedRectangle(cornerRadius: RapidTheme.Radius.row, style: .continuous)
+                    .fill(RapidTheme.brandAmber.opacity(disabled ? 0.04 : 0.12))
+            )
+            .overlay {
+                RoundedRectangle(cornerRadius: RapidTheme.Radius.row, style: .continuous)
+                    .strokeBorder(
+                        RapidTheme.brandAmber.opacity(disabled ? 0.12 : 0.42),
+                        lineWidth: 1
+                    )
+            }
+            .contentShape(
+                RoundedRectangle(cornerRadius: RapidTheme.Radius.row, style: .continuous)
+            )
+        }
+        .buttonStyle(.pressable)
+        .disabled(disabled)
+        .help(
+            SidebarView.residentUnloadHelp(
+                isOperating: server.isOperating || isUnloadingResidentModels,
+                hasActiveResponse: viewModel.isStreaming || hasActiveRequests,
+                enabledLabel: accessibleLabel
+            )
+        )
+        .accessibilityLabel(accessibleLabel)
+        .accessibilityIdentifier("ChatView.Residency.Unload")
+        .alert(
+            "Models are still loaded",
+            isPresented: Binding(
+                get: { residentUnloadNotice != nil },
+                set: { if !$0 { residentUnloadNotice = nil } }
+            )
+        ) {
+            Button("OK") {
+                residentUnloadNotice = nil
+            }
+            .accessibilityIdentifier("ChatView.Residency.UnloadNotice.OK")
+        } message: {
+            Text(residentUnloadNotice ?? "")
+        }
+    }
+
+    nonisolated static func composerResidentUnloadTitle(modelCount: Int) -> String {
+        modelCount > 1 ? "Unload all" : "Unload"
     }
 
     /// Resolve status from the engine's live policy and the exact tool list the
