@@ -172,7 +172,13 @@ final class BuiltinToolsTests {
         let enabled = makeRegistry().definitions
         #expect(ChatViewModel.wireDefinitions(forAlias: "hermes3-8b-4bit", enabled: enabled).isEmpty)
         #expect(ChatViewModel.wireDefinitions(forAlias: "bonsai-8b-2bit", enabled: enabled).isEmpty)
-        #expect(ChatViewModel.wireDefinitions(forAlias: "qwen3.5-4b-4bit", enabled: enabled).count == 3)
+        // An alias outside the broken list passes every enabled tool through,
+        // whatever the registry's size (read_document joined the three web
+        // tools in this PR).
+        #expect(
+            ChatViewModel.wireDefinitions(forAlias: "qwen3.5-4b-4bit", enabled: enabled).count
+                == enabled.count
+        )
     }
 
     // MARK: - Ambient guidance

@@ -52,7 +52,12 @@ enum PDFTextRecognizer {
             if Task.isCancelled { return snapshot(reachedEnd: false) }
             if remaining <= 0 { return snapshot(reachedEnd: false) }
             defer { onPageComplete?() }
-            guard let page = document.page(at: index) else { continue }
+            guard let page = document.page(at: index) else {
+                // A nil page below the document's own count is malformed and
+                // lost; an index past the count is just the end of the range.
+                if index < document.pageCount { recognitionFailed = true }
+                continue
+            }
 
             let bounded = boundedText(of: page, limit: remaining)
             if bounded.clamped, bounded.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {

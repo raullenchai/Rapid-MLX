@@ -199,6 +199,146 @@ struct ChatFileAttachmentTests {
         #expect(entry.text.contains("[Page 2]"))
     }
 
+    /// `pages` image-only pages; only `readablePage` carries recognizable text.
+    private func imageOnlyPDF(pages: Int, readablePage: Int) throws -> URL {
+        let document = PDFDocument()
+        let size = NSSize(width: 612, height: 300)
+        for index in 0..<pages {
+            let image = NSImage(size: size)
+            image.lockFocus()
+            NSColor.white.setFill()
+            NSRect(origin: .zero, size: size).fill()
+            if index == readablePage {
+                ("READABLE PAGE \(index + 1) REVENUE 2026" as NSString).draw(
+                    in: NSRect(x: 35, y: 90, width: size.width - 70, height: 100),
+                    withAttributes: [
+                        .font: NSFont.systemFont(ofSize: 32, weight: .bold),
+                        .foregroundColor: NSColor.black,
+                    ]
+                )
+            }
+            image.unlockFocus()
+            if let page = PDFPage(image: image) {
+                document.insert(page, at: document.pageCount)
+            }
+        }
+        let url = temporaryURL(extension: "pdf")
+        try #require(document.dataRepresentation()).write(to: url)
+        return url
+    }
+
+    @Test(
+        "Blank opening pages beyond the probe window are not rejected",
+        .timeLimit(.minutes(2))
+    )
+    func blankProbeBeyondProbeWindowStillExtracts() async throws {
+        // The synchronous OCR probe covers only the first 8 pages. A scanned
+        // document whose opening pages are blank but whose later pages carry
+        // text must be attached as pending — not rejected as noExtractableText
+        // — and the background pass must surface the readable page.
+        let url = try imageOnlyPDF(pages: 10, readablePage: 9)
+        defer { try? FileManager.default.removeItem(at: url) }
+        let cache = DocumentContentCache(diskDirectory: nil)
+
+        let attachment = try ChatFileAttachment(contentsOf: url, cache: cache)
+        #expect(attachment.pageCount == 10)
+        #expect(attachment.extractedText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+        #expect(cache.hasRegisteredExtraction(attachment.id))
+
+        var completed: DocumentContentCache.Entry?
+        for _ in 0..<240 {
+            let status = cache.getAwaitingCompletionStatus(attachment.id, stallTimeout: 0.25)
+            if let entry = status?.entry, status?.extractionPending == false,
+               entry.text.contains("READABLE PAGE 10") {
+                completed = entry
+                break
+            }
+        }
+        let entry = try #require(completed, "background extraction never found page 10")
+        #expect(entry.isComplete)
+        #expect(entry.text.contains("[Page 10]"))
+    }
+
+    @Test(
+        "A probe page whose recognition failed stops the attachment from claiming complete",
+        .timeLimit(.minutes(2))
+    )
+    func scanProbeFailureDoesNotClaimComplete() async throws {
+        // Page 1 cannot be rendered (extreme media box), page 2 OCRs fine. The
+        // probe's per-page reachedEnd must be aggregated: without it, a
+        // short document where every index was inspected reports .complete
+        // even though a page was silently lost.
+        let document = PDFDocument()
+        let broken = PDFPage()
+        broken.setBounds(
+            CGRect(
+                x: 0,
+                y: 0,
+                width: CGFloat.greatestFiniteMagnitude,
+                height: CGFloat.greatestFiniteMagnitude
+            ),
+            for: .mediaBox
+        )
+        document.insert(broken, at: 0)
+        let size = NSSize(width: 612, height: 300)
+        let image = NSImage(size: size)
+        image.lockFocus()
+        NSColor.white.setFill()
+        NSRect(origin: .zero, size: size).fill()
+        ("IMAGE PAGE TWO REVENUE 2026" as NSString).draw(
+            in: NSRect(x: 35, y: 90, width: size.width - 70, height: 100),
+            withAttributes: [
+                .font: NSFont.systemFont(ofSize: 32, weight: .bold),
+                .foregroundColor: NSColor.black,
+            ]
+        )
+        image.unlockFocus()
+        if let imagePage = PDFPage(image: image) {
+            document.insert(imagePage, at: document.pageCount)
+        }
+        let url = temporaryURL(extension: "pdf")
+        defer { try? FileManager.default.removeItem(at: url) }
+        try #require(document.dataRepresentation()).write(to: url)
+
+        // Sanity: the broken page must actually fail recognition, or this
+        // test is not exercising the failure path at all.
+        let serialized = try #require(PDFDocument(url: url))
+        #expect(PDFTextRecognizer.recognize(page: serialized.page(at: 0)!) == nil)
+
+        let cache = DocumentContentCache(diskDirectory: nil)
+        let attachment = try ChatFileAttachment(contentsOf: url, cache: cache)
+        #expect(attachment.pageCount == 2)
+        #expect(attachment.extractedText.contains("PAGE TWO"))
+        // The lost page means the attachment can never claim completeness.
+        #expect(attachment.totalCharacterCount == nil)
+
+        // Give the background pass a moment; it must not publish a
+        // complete entry over the lost page.
+        for _ in 0..<8 {
+            let status = cache.getAwaitingCompletionStatus(attachment.id, stallTimeout: 0.25)
+            if let entry = status?.entry, entry.isComplete {
+                Issue.record("complete entry published over a failed probe page")
+                return
+            }
+        }
+    }
+
+    @Test("A page range overhanging the document still reads to the end")
+    func overhangingRangeIsNotARecognitionFailure() throws {
+        // page(at:) returning nil past the document's own count is the end
+        // of the document, not a lost page — only a nil below the count
+        // forces reachedEnd false.
+        let url = try textPDF(pages: 2, charactersPerPage: 100)
+        defer { try? FileManager.default.removeItem(at: url) }
+        let document = try #require(PDFDocument(url: url))
+        #expect(document.pageCount == 2)
+
+        let whole = PDFTextRecognizer.recognizePages(of: document, range: 0..<5)
+        #expect(whole.text.contains("[Page 1]"))
+        #expect(whole.text.contains("[Page 2]"))
+        #expect(whole.reachedEnd)
+    }
+
     @Test("Document text is sent to the model but stays out of visible prose")
     func wireEncoding() throws {
         let attachment = try ChatFileAttachment(

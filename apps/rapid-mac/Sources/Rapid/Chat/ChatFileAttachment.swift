@@ -77,10 +77,14 @@ struct ChatFileAttachment: Codable, Equatable, Hashable, Identifiable, Sendable 
         columnCount: Int? = nil,
         wasTruncated: Bool = false,
         totalCharacterCount: Int? = nil,
-        totalIsPending: Bool = false
+        totalIsPending: Bool = false,
+        allowsEmptyText: Bool = false
     ) throws {
         let cleaned = extractedText.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !cleaned.isEmpty else { throw ValidationError.noExtractableText(kind) }
+        // Mirrors the full-text init: empty text is only legitimate when a
+        // pending background pass will resolve it later.
+        guard !cleaned.isEmpty || allowsEmptyText
+        else { throw ValidationError.noExtractableText(kind) }
         guard sourceByteCount <= Self.maxSourceBytes else { throw ValidationError.tooLarge }
 
         let limited = String(cleaned.prefix(Self.maxExtractedCharacters))
@@ -157,10 +161,15 @@ struct ChatFileAttachment: Codable, Equatable, Hashable, Identifiable, Sendable 
         columnCount: Int? = nil,
         cache: DocumentContentCache = .shared,
         state: ExtractionState = .complete,
-        outline: [DocumentContentCache.OutlineNode] = []
+        outline: [DocumentContentCache.OutlineNode] = [],
+        allowsEmptyText: Bool = false
     ) throws {
         let cleaned = fullText.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !cleaned.isEmpty else { throw ValidationError.noExtractableText(kind) }
+        // An empty preview is only legitimate when a pending background pass
+        // will resolve the text later (a scanned PDF whose opening pages are
+        // blank) — otherwise there is genuinely nothing to attach.
+        guard !cleaned.isEmpty || allowsEmptyText
+        else { throw ValidationError.noExtractableText(kind) }
         let complete = String(cleaned.prefix(Self.maxExtractedCharacters))
         let withinCeiling = complete.count == cleaned.count
         let id = UUID()
@@ -175,7 +184,8 @@ struct ChatFileAttachment: Codable, Equatable, Hashable, Identifiable, Sendable 
             columnCount: columnCount,
             wasTruncated: !withinCeiling || state == .truncated,
             totalCharacterCount: complete.count,
-            totalIsPending: state == .pending
+            totalIsPending: state == .pending,
+            allowsEmptyText: allowsEmptyText
         )
         cache.put(
             id,
@@ -289,7 +299,12 @@ struct ChatFileAttachment: Codable, Equatable, Hashable, Identifiable, Sendable 
             let full = Self.collapsingLayoutNoise(extracted.text)
                 .trimmingCharacters(in: .whitespacesAndNewlines)
             let bounded = String(full.prefix(Self.maxExtractedCharacters))
-            guard !bounded.isEmpty else { return }
+            // The full pass OCRs pages the text-layer preview could not
+            // read; publish whatever it could read. A pass that did not
+            // reach the end produces an incomplete entry — the honest
+            // state — while a cancelled pass publishes nothing.
+            guard !Task.isCancelled else { return }
+            guard !bounded.isEmpty || !extracted.reachedEnd else { return }
             cache.publish(
                 id,
                 entry: DocumentContentCache.Entry(
@@ -320,12 +335,18 @@ struct ChatFileAttachment: Codable, Equatable, Hashable, Identifiable, Sendable 
         let probeLimit = min(Self.maxEagerOCRProbePages, document.pageCount)
         var recognizedPages: [String] = []
         var pagesInspected = 0
+        // Every probed page must have been read without a recognition
+        // failure before completeness may be claimed; a failed page falls
+        // back to the background pass, whose reachedEnd accounting is honest.
+        var probeHealthy = true
         for pageIndex in 0..<probeLimit {
-            let recognized = PDFTextRecognizer.recognizePages(
+            let probed = PDFTextRecognizer.recognizePages(
                 of: document,
                 range: pageIndex..<(pageIndex + 1)
-            ).text
+            )
             pagesInspected = pageIndex + 1
+            if !probed.reachedEnd { probeHealthy = false }
+            let recognized = probed.text
             guard !recognized.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
                 continue
             }
@@ -333,11 +354,15 @@ struct ChatFileAttachment: Codable, Equatable, Hashable, Identifiable, Sendable 
             if recognizedPages.count == Self.eagerOCRPageCount { break }
         }
         let head = recognizedPages.joined(separator: "\n\n")
-        guard !head.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+        // An empty probe is only fatal when there is nothing beyond it: if
+        // the document continues past the probe window, the background pass
+        // still gets its chance (its opening pages may simply be blank).
+        guard !head.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            || document.pageCount > probeLimit else {
             throw ValidationError.noExtractableText(.pdf)
         }
 
-        let state: ExtractionState = pagesInspected == document.pageCount
+        let state: ExtractionState = pagesInspected == document.pageCount && probeHealthy
             ? .complete
             : .pending
         try self.init(
@@ -348,7 +373,8 @@ struct ChatFileAttachment: Codable, Equatable, Hashable, Identifiable, Sendable 
             pageCount: document.pageCount,
             cache: cache,
             state: state,
-            outline: outline
+            outline: outline,
+            allowsEmptyText: head.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         )
         guard state == .pending else { return }
 
@@ -371,11 +397,20 @@ struct ChatFileAttachment: Codable, Equatable, Hashable, Identifiable, Sendable 
             let full = Self.collapsingLayoutNoise(extracted.text)
                 .trimmingCharacters(in: .whitespacesAndNewlines)
             let bounded = String(full.prefix(Self.maxExtractedCharacters))
-            // A completed pass publishes even when normalization shrank the
-            // full text to the preview's length — otherwise the entry would
-            // stay "incomplete" forever and the tool would tell the user to
-            // reattach a file whose extraction already succeeded.
-            guard bounded.count > previewLength || extracted.reachedEnd else { return }
+            guard !Task.isCancelled else { return }
+            // Publish rules:
+            // - A completed pass publishes even when normalization shrank
+            //   the full text to the preview's length — otherwise the entry
+            //   would stay "incomplete" forever and the tool would tell the
+            //   user to reattach a file whose extraction already succeeded.
+            // - An empty probe (blank opening pages) always resolves,
+            //   whatever the pass found — including nothing — so the
+            //   attachment cannot wait on a pending marker forever.
+            // - A failed pass with nothing beyond the preview stays
+            //   unpublished: the pending state is the honest one.
+            guard bounded.count > previewLength || extracted.reachedEnd || previewLength == 0
+            else { return }
+            guard !bounded.isEmpty || previewLength == 0 else { return }
             cache.publish(
                 id,
                 entry: DocumentContentCache.Entry(

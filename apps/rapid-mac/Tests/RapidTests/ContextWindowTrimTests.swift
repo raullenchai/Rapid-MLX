@@ -461,6 +461,40 @@ struct ContextWindowTrimTests {
         #expect(TokenEstimate.tokens(in: shortened) <= 1_000)
     }
 
+    @Test("Truncating a field other than content leaves the cursor fields alone")
+    func truncatingOtherFieldPreservesCursor() throws {
+        // The largest string here is `note`, not `content`. Rewriting
+        // next_offset from `offset + note-head` would hand the model a
+        // cursor that points nowhere in the retained document text.
+        let payload = ReadDocumentTool.jsonString([
+            "document_id": "5B1D8F3E-0000-0000-0000-000000000000",
+            "filename": "report.pdf",
+            "content": "short body",
+            "note": String(repeating: "reviewer note ", count: 2_000),
+            "offset": 12_000,
+            "total_chars": 400_000,
+            "has_more": true,
+            "next_offset": 24_000,
+        ])
+
+        let shortened = try #require(ChatViewModel.truncatingToolResultBody(
+            payload,
+            withinTokens: 2_000,
+            cost: { TokenEstimate.tokens(in: $0) }
+        ))
+
+        let data = try #require(shortened.data(using: .utf8))
+        let object = try #require(
+            (try JSONSerialization.jsonObject(with: data)) as? [String: Any]
+        )
+        #expect(object["note_truncated"] as? Bool == true)
+        #expect(object["content"] as? String == "short body")
+        // Untouched: the truncation never touched `content`.
+        #expect(object["next_offset"] as? Int == 24_000)
+        #expect(object["has_more"] as? Bool == true)
+        #expect(object["offset"] as? Int == 12_000)
+    }
+
     @Test("Too small an allowance falls back to elision rather than a stub")
     func tinyAllowanceStillElides() throws {
         var toolCall = ChatMessage(role: .assistant)

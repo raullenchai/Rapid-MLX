@@ -1883,8 +1883,11 @@ final class ChatViewModel {
             guard !head.isEmpty else { return nil }
             var truncated = envelope
             truncated[field.0] = head
-            // Advance from retained content, not the original full slice.
-            if let offset = payload["offset"] as? Int, payload["content"] != nil {
+            // Advance from retained content, not the original full slice —
+            // and only when `content` is the field that was truncated.
+            // Rewriting the cursor because some other long string (a note)
+            // was cut would desynchronize it from the retained text.
+            if field.0 == "content", let offset = payload["offset"] as? Int {
                 truncated["next_offset"] = offset + head.count
                 truncated["has_more"] = true
             }
@@ -2480,7 +2483,16 @@ final class ChatViewModel {
             let wireAlias = alias
             var offered = enabledDefinitions
             if toolExecutionsLeft == 0 {
-                offered = offered.filter { Self.documentToolNames.contains($0.function.name) }
+                // Document reads may outlive the external tool budget — but
+                // only for a model that actually reads. Without this gate a
+                // runaway caller of external tools just spins on
+                // budget-exhausted error rows instead of reaching the bounded
+                // synthesis (golden journey: tool-loop-budget).
+                if documentReadsLeft < maxDocumentReads {
+                    offered = offered.filter { Self.documentToolNames.contains($0.function.name) }
+                } else {
+                    offered = []
+                }
             }
             if documentReadsLeft == 0 {
                 offered = offered.filter { !Self.documentToolNames.contains($0.function.name) }
