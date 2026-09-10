@@ -352,11 +352,13 @@ def test_mtp_nongreedy_real_sampled_smoke(loaded_model, max_k):
     actually exercised. Both settings are ordinary generator kwargs;
     nothing about the sampling math changes.
 
-    Observed at the time of writing (Qwen3.5-9B-4bit + sidecar, 120
-    tokens): K=2 accepted 60/118 draft positions (51%) with a longest
-    run of 2; K=3 accepted 74/138 (54%) with a longest run of 3. Both
-    produced coherent prose. The thresholds below sit well under those
-    numbers so ordinary sampling variance does not flake the test.
+    Observed on main @ 0.14.0 (Qwen3.5-9B-4bit + sidecar, 120 tokens,
+    M3 Ultra) across seeds 1234/7/99/2024: K=2 accepted 61-66 of
+    106-116 draft positions (0.53-0.62) and K=3 accepted 65-70 of
+    147-165 (0.39-0.48). The longest consecutive draft-sourced run came
+    out exactly equal to max_k in all eight runs, and every run produced
+    coherent prose. The thresholds below sit well under the measured
+    accept rates so ordinary sampling variance does not flake the test.
     """
     import mlx.core as _mx
 
@@ -410,13 +412,17 @@ def test_mtp_nongreedy_real_sampled_smoke(loaded_model, max_k):
         f"or the accept arithmetic is rejecting valid proposals."
     )
 
-    # The point of the test: prove a chain of depth >= 2 was verified
-    # and accepted, i.e. the multi-position accept path really ran.
+    # The point of the test: prove a chain of depth ``max_k`` was
+    # verified and accepted, i.e. the multi-position accept path really
+    # ran to the pinned depth. Asserting a fixed >= 2 instead would let
+    # the max_k=3 case pass on a run that never accepted a third
+    # position, making that parametrization prove nothing K=2 did not.
     longest = _longest_draft_run(from_draft)
-    assert longest >= 2, (
+    assert longest >= max_k, (
         f"Longest consecutive draft-sourced run was {longest} at "
-        f"max_k={max_k}; expected >= 2. The K>=2 accept path was never "
-        f"exercised, so this run proves nothing about it."
+        f"max_k={max_k}; expected >= {max_k}. The full depth-{max_k} "
+        f"accept path was never exercised, so this run proves nothing "
+        f"about it."
     )
 
     text = tokenizer.decode(tokens)
