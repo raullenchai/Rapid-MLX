@@ -113,6 +113,8 @@ def _poll_chip_label() -> str | None:
     except Exception:
         return None
     return brand if isinstance(brand, str) and brand.startswith("Apple ") else None
+
+
 GITHUB_RELEASES_ENDPOINT = (
     "https://api.github.com/repos/raullenchai/Rapid-MLX/releases?per_page=100"
 )

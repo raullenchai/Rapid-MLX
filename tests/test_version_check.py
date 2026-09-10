@@ -11,9 +11,9 @@ break the CLI on an offline laptop.
 from __future__ import annotations
 
 import json
+import os
 import re
 import sys
-import os
 import urllib.parse
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -1299,7 +1299,9 @@ def test_poll_os_label_is_none_off_darwin(monkeypatch):
 def test_poll_os_label_rejects_a_malformed_release(monkeypatch):
     monkeypatch.setattr(vc.platform, "system", lambda: "Darwin")
     for bogus in ("", "not-a-version", "..", "x.y"):
-        monkeypatch.setattr(vc.platform, "mac_ver", lambda b=bogus: (b, ("", "", ""), ""))
+        monkeypatch.setattr(
+            vc.platform, "mac_ver", lambda b=bogus: (b, ("", "", ""), "")
+        )
         assert vc._poll_os_label() is None, bogus
 
 
