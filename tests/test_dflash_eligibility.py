@@ -51,6 +51,7 @@ def _good_profile() -> AliasProfile:
         ("user/Qwen3.5-9B-4-bit", True),
         ("user/Qwen3.5-9B_4bit", True),
         ("user/model-4bit-instruct", True),
+        ("oQ4e", True),
         # 8-bit + higher should NOT match
         ("mlx-community/Qwen3.5-27B-8bit", False),
         ("mlx-community/Qwen3.6-35B-A3B-8bit", False),
@@ -306,6 +307,22 @@ def test_qwen3_8_27b_dflash2_pair_remains_explicit_after_negative_bench() -> Non
     assert explicit_result.reasons == ()
     assert explicit_result.recommendation == "experimental"
     assert "performance-validated" in " ".join(explicit_result.warnings)
+
+
+def test_abliterated_oq4e_subfolder_is_reported_as_four_bit() -> None:
+    """Precision lives in the selected build, not this multi-quant repo name."""
+
+    from vllm_mlx.model_aliases import resolve_profile
+
+    alias = "qwen3.8-27b-abliterated-4bit"
+    profile = resolve_profile(alias)
+    assert profile is not None
+
+    # Deliberately omit the alias: its own ``-4bit`` suffix must not hide a
+    # regression where the neutral repository ignores its selected subfolder.
+    result = report(profile)
+    assert result.is_4bit is True
+    assert "4-bit quantized" in " ".join(result.warnings)
 
 
 def test_default_qwen3_5_27b_alias_fails_check_with_4bit_reason() -> None:

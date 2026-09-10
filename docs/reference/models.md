@@ -75,6 +75,39 @@ evidence. See the
 [reproducible qualification note](../engineering/performance/2026-09-08-neohorse-9b-chat-qualification.md)
 for the current evidence and limitations.
 
+### Experimental research model: Qwen3.8 27B Abliterated
+
+`qwen3.8-27b-abliterated-4bit` serves the `oQ4e/` Apple-Silicon build of
+[`windowsxp811203/Qwen3.8-27B-Abliterated-MLX-MTP`](https://huggingface.co/windowsxp811203/Qwen3.8-27B-Abliterated-MLX-MTP).
+The alias downloads only that 16.99 GB checkpoint rather than every build in
+the multi-quant repository. It supports text and image input and is deliberately
+not a Smart/Fast default.
+
+```bash
+# Text-only (does not require the optional vision runtime).
+rapid-mlx serve qwen3.8-27b-abliterated-4bit --no-mllm
+
+# Image input requires the exact optional vision stack shipped with Rapid-MLX.
+rapid-mlx serve qwen3.8-27b-abliterated-4bit --mllm
+```
+
+The publisher reports 81.75% on its seeded 400-question MMLU sample for this
+quantization, versus 82.50% for its bf16 conversion, and 0/80 AdvBench plus
+0/119 HarmBench-safety refusals. Those are checkpoint-author measurements, not
+Rapid-MLX qualification results. Abliteration removes refusal behavior; it does
+not make answers more accurate or safe.
+
+The repository also carries an MTP head, but Rapid-MLX keeps speculative
+decoding off for this alias until the exact abliterated target/drafter pair is
+qualified on our runtime. Do not pair it with the curated base-Qwen DFlash2
+drafter: the publisher modified both the trunk and MTP head, so a draft trained
+for the original target is not an equivalent artifact.
+
+See the
+[reproducible qualification note](../engineering/performance/2026-09-09-qwen38-27b-abliterated-qualification.md)
+for the pinned artifact, product-path smoke results, measured throughput, and
+the remaining speculative-decoding gate.
+
 ### Ultra-only: Hunyuan 3 (Hy3)
 
 > ⚠️ **Validated only on an M3 Ultra with 256 GB unified memory.** The

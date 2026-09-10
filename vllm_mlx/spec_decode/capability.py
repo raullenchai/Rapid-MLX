@@ -13,18 +13,33 @@ from dataclasses import asdict, dataclass
 from vllm_mlx.model_profile import ModelProfile
 
 
-def looks_like_4bit(hf_path: str) -> bool:
-    """Detect delimiter-bounded 4-bit quantization tags in repo names."""
+def looks_like_4bit(identity: str) -> bool:
+    """Detect delimiter-bounded 4-bit tags in a repo, alias, or subfolder."""
     return bool(
         re.search(
-            r"(?<![a-z0-9])(?:4[-_]?bit|mxfp4|nvfp4)(?![a-z0-9])",
-            hf_path.lower(),
+            r"(?<![a-z0-9])(?:4[-_]?bit|mxfp4|nvfp4|oq4e)(?![a-z0-9])",
+            identity.lower(),
         )
     )
 
 
+def profile_looks_like_4bit(profile: ModelProfile) -> bool:
+    """Detect quantization from both a repository and its selected build.
+
+    Multi-quant repositories often have a neutral root name and put the only
+    precision signal in ``subfolder``. Looking only at ``hf_path`` would then
+    present a four-bit target as eight-bit-or-higher in diagnostics and relax
+    speculative-decoding qualification incorrectly.
+    """
+
+    return any(
+        looks_like_4bit(identity)
+        for identity in (profile.hf_path, profile.subfolder or "")
+    )
+
+
 def _is_experimental_quantization(profile: ModelProfile) -> bool:
-    return looks_like_4bit(profile.hf_path)
+    return profile_looks_like_4bit(profile)
 
 
 @dataclass(frozen=True)

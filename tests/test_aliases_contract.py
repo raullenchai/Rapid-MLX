@@ -176,6 +176,33 @@ def test_qwen38_27b_aliases_pin_the_native_named_xml_tool_contract() -> None:
         assert detect_model_config(profile.hf_path) == profile
 
 
+def test_qwen38_27b_abliterated_alias_is_scoped_and_conservative() -> None:
+    """The research checkpoint loads one build and borrows no base drafter."""
+
+    alias = "qwen3.8-27b-abliterated-4bit"
+    profile = list_profiles()[alias]
+
+    assert profile.hf_path == ("windowsxp811203/Qwen3.8-27B-Abliterated-MLX-MTP")
+    assert profile.subfolder == "oQ4e"
+    assert profile.supports_image_input is True
+    assert profile.experimental is True
+    assert profile.tool_call_parser == "qwen3_coder_xml"
+    assert profile.reasoning_parser == "qwen3"
+    assert profile.is_hybrid is True
+    assert profile.is_moe is False
+    assert profile.supports_spec_decode is False
+    assert profile.supports_native_mtp is False
+    assert profile.mtp_draft_model is None
+    assert profile.dflash_draft_model is None
+    assert profile.ddtree_draft_model is None
+    assert profile.mtp_default_enabled is False
+    assert profile.pflash_tier == "unknown"
+    assert profile.turboquant_tier == "unknown"
+    assert detect_model_config(alias) == profile
+    assert detect_model_config(profile.hf_path) == profile
+    assert alias not in POPULAR_ALIASES
+
+
 def test_native_mtp_alias_metadata_is_strict_and_unambiguous() -> None:
     from vllm_mlx.model_aliases import _coerce
 

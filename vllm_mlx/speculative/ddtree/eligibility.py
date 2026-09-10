@@ -13,7 +13,7 @@ import logging
 from dataclasses import dataclass
 
 from vllm_mlx.model_aliases import AliasProfile
-from vllm_mlx.speculative.dflash.eligibility import _looks_like_4bit
+from vllm_mlx.spec_decode.capability import profile_looks_like_4bit
 
 logger = logging.getLogger(__name__)
 _runtime_probe_error: str | None = None
@@ -58,7 +58,7 @@ def report(
             "alias is MoE (is_moe=true) — DDTree verifier support is only "
             "validated for dense Qwen3.5/Qwen3-family targets in the MVP"
         )
-    is_4bit = _looks_like_4bit(profile.hf_path)
+    is_4bit = profile_looks_like_4bit(profile)
     if is_4bit:
         warnings.append(
             f"main model hf_path={profile.hf_path!r} is 4-bit quantized; "

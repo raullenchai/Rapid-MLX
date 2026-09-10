@@ -10150,9 +10150,8 @@ def _print_dflash_status(alias: str, profile) -> None:
     Shows qualification, target precision, declared pairing, and runtime
     identity so an explicit experiment cannot be mistaken for a recommendation.
     """
-    from vllm_mlx.spec_decode.capability import assess_method
+    from vllm_mlx.spec_decode.capability import assess_method, profile_looks_like_4bit
     from vllm_mlx.speculative.dflash.eligibility import (
-        _looks_like_4bit,
         have_runtime,
     )
 
@@ -10165,7 +10164,7 @@ def _print_dflash_status(alias: str, profile) -> None:
     def _yes(ok: bool, msg_ok: str, msg_no: str) -> str:
         return ("✓ " + msg_ok) if ok else ("✗ " + msg_no)
 
-    quantized_target = _looks_like_4bit(profile.hf_path)
+    quantized_target = profile_looks_like_4bit(profile)
     if not quantized_target:
         precision_status = "✓ 8-bit or higher"
     elif (
@@ -10250,9 +10249,8 @@ def _print_dflash_status(alias: str, profile) -> None:
 
 def _print_ddtree_status(alias: str, profile) -> None:
     """Render DDTree status for ``rapid-mlx info <alias>``."""
-    from vllm_mlx.spec_decode.capability import assess_method
+    from vllm_mlx.spec_decode.capability import assess_method, profile_looks_like_4bit
     from vllm_mlx.speculative.ddtree.eligibility import have_runtime
-    from vllm_mlx.speculative.dflash.eligibility import _looks_like_4bit
 
     inner = 60
     sep = "─" * inner
@@ -10272,7 +10270,7 @@ def _print_ddtree_status(alias: str, profile) -> None:
         (
             "Precision ≥8-bit",
             _yes(
-                not _looks_like_4bit(profile.hf_path),
+                not profile_looks_like_4bit(profile),
                 "yes",
                 "no (4-bit/mxfp4/nvfp4)",
             ),

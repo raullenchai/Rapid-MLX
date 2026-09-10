@@ -25,6 +25,18 @@ def test_4bit_is_recommendation_evidence_not_capability_ban():
         assert assessment.capable is not False
 
 
+def test_ddtree_report_recognizes_quantized_subfolder_without_mlx():
+    """Linux coverage must exercise the real gate, not only the macOS suite."""
+
+    from vllm_mlx.speculative.ddtree.eligibility import report
+
+    profile = AliasProfile(hf_path="user/multi-quant", subfolder="oQ4e")
+    result = report(profile)
+
+    assert result.is_4bit is True
+    assert "4-bit quantized" in " ".join(result.warnings)
+
+
 def test_true_verifier_incompatibility_remains_hard_failure():
     hybrid = AliasProfile(hf_path="user/hybrid", is_hybrid=True)
     suffix = assess_method(hybrid, "suffix")

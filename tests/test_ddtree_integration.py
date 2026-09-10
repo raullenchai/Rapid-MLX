@@ -177,6 +177,20 @@ def test_info_ddtree_marks_4bit_alias_experimental(capsys) -> None:
     assert "4-bit" in captured.out
 
 
+def test_ddtree_report_recognizes_four_bit_subfolder() -> None:
+    """A neutral multi-quant repo must not bypass the 4-bit runtime gate."""
+
+    from vllm_mlx.model_aliases import resolve_profile
+    from vllm_mlx.speculative.ddtree.eligibility import report
+
+    profile = resolve_profile("qwen3.8-27b-abliterated-4bit")
+    assert profile is not None
+
+    result = report(profile, alias="qwen3.8-27b-abliterated-4bit")
+    assert result.is_4bit is True
+    assert "4-bit quantized" in " ".join(result.warnings)
+
+
 def test_models_listing_renders_ddtree_column(capsys) -> None:
     from vllm_mlx.cli import models_command
 
