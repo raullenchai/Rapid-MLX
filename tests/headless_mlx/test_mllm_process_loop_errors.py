@@ -11,7 +11,147 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from vllm_mlx.mllm_scheduler import MLLMRequest, MLLMScheduler  # noqa: E402
+from vllm_mlx.mllm_batch_generator import MLLMBatchResponse  # noqa: E402
+from vllm_mlx.mllm_scheduler import (  # noqa: E402
+    MLLMRequest,
+    MLLMScheduler,
+    MLLMSchedulerConfig,
+)
+from vllm_mlx.request import (  # noqa: E402
+    ClientRequestError,
+    InferenceAbortedError,
+    RequestOutput,
+    RequestStatus,
+    SamplingParams,
+)
+
+
+def _repetition_scheduler() -> MLLMScheduler:
+    tokenizer = MagicMock()
+    tokenizer.decode = lambda tokens, **_kwargs: " ".join(map(str, tokens))
+    tokenizer.eos_token_id = 0
+    processor = MagicMock()
+    processor.tokenizer = tokenizer
+    scheduler = MLLMScheduler(
+        MagicMock(),
+        processor,
+        MLLMSchedulerConfig(enable_vision_cache=False),
+        model_name="headless-mllm-repetition-test",
+    )
+    scheduler.batch_generator = MagicMock()
+    return scheduler
+
+
+def _repeating_mllm_request(scheduler: MLLMScheduler) -> MLLMRequest:
+    pattern = list(range(61))
+    request = MLLMRequest(
+        request_id="vision-repeat",
+        prompt="extract the table",
+        images=["statement.png"],
+        sampling_params=SamplingParams(max_tokens=32_768),
+    )
+    request.status = RequestStatus.RUNNING
+    request.output_tokens = pattern * 3
+    request.num_output_tokens = len(request.output_tokens)
+    scheduler.running[request.request_id] = request
+    scheduler.uid_to_request_id[7] = request.request_id
+    return request
+
+
+def test_mllm_repetition_stop_retires_live_row_without_mlx() -> None:
+    scheduler = _repetition_scheduler()
+    request = _repeating_mllm_request(scheduler)
+    response = MLLMBatchResponse(
+        uid=7,
+        request_id=request.request_id,
+        token=0,
+        logprobs=None,
+        finish_reason=None,
+    )
+
+    outputs, finished = scheduler._process_batch_responses([response])
+
+    assert finished == {request.request_id}
+    assert request.status == RequestStatus.FINISHED_ABORTED
+    assert outputs[0].finish_reason == "abort"
+    assert outputs[0].error_kind == "repetition"
+    assert "period_tokens=61" in (outputs[0].error or "")
+    scheduler.batch_generator.remove.assert_called_once_with([7])
+    assert scheduler.num_repetition_loop_stops == 1
+
+
+def test_mllm_repetition_stop_refuses_unowned_batch_row() -> None:
+    scheduler = _repetition_scheduler()
+    request = _repeating_mllm_request(scheduler)
+    scheduler.batch_generator = None
+    response = MLLMBatchResponse(
+        uid=7,
+        request_id=request.request_id,
+        token=0,
+        logprobs=None,
+        finish_reason=None,
+    )
+
+    with pytest.raises(RuntimeError, match="without a batch generator"):
+        scheduler._process_batch_responses([response])
+
+
+@pytest.mark.asyncio
+async def test_mllm_repetition_stop_streams_valid_partial_response() -> None:
+    scheduler = MLLMScheduler.__new__(MLLMScheduler)
+    scheduler.output_queues = {"vision-repeat": asyncio.Queue()}
+    scheduler.abort_request = MagicMock()
+    await scheduler.output_queues["vision-repeat"].put(
+        RequestOutput(
+            request_id="vision-repeat",
+            output_text="partial valid answer",
+            finished=True,
+            finish_reason="abort",
+            error="Model generation aborted: exact repetition loop detected",
+            error_kind="repetition",
+        )
+    )
+
+    outputs = [output async for output in scheduler.stream_outputs("vision-repeat")]
+
+    assert len(outputs) == 1
+    assert outputs[0].output_text == "partial valid answer"
+    assert outputs[0].finish_reason == "length"
+    assert outputs[0].error is None
+    scheduler.abort_request.assert_not_called()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("error_kind", "expected_error"),
+    [
+        ("lifecycle", InferenceAbortedError),
+        ("invalid_request", ClientRequestError),
+        (None, ValueError),
+    ],
+)
+async def test_mllm_non_repetition_errors_keep_existing_exception_contract(
+    error_kind: str | None,
+    expected_error: type[Exception],
+) -> None:
+    """The repetition exception must not soften unrelated error classes."""
+    scheduler = MLLMScheduler.__new__(MLLMScheduler)
+    scheduler.output_queues = {"failed": asyncio.Queue()}
+    scheduler.abort_request = MagicMock()
+    await scheduler.output_queues["failed"].put(
+        RequestOutput(
+            request_id="failed",
+            finished=True,
+            finish_reason="abort",
+            error="terminal failure",
+            error_kind=error_kind,
+        )
+    )
+
+    with pytest.raises(expected_error, match="terminal failure"):
+        _ = [output async for output in scheduler.stream_outputs("failed")]
+
+    scheduler.abort_request.assert_not_called()
 
 
 def test_batch_generator_uses_worker_default_stream(monkeypatch) -> None:
