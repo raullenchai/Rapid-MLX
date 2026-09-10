@@ -48,6 +48,7 @@ from .mllm_batch_generator import (  # noqa: E402
 )
 from .mllm_cache import MLLMCacheManager  # noqa: E402
 from .multimodal_processor import MultimodalProcessor  # noqa: E402
+from .repetition_guard import detect_repeated_token_suffix  # noqa: E402
 from .request import (  # noqa: E402
     ClientRequestError,
     RequestOutput,
@@ -389,6 +390,14 @@ class MLLMScheduler:
         # rationale. Observability only — abort semantics unchanged.
         self.num_requests_cancelled = 0
         self.num_requests_cancelled_via_disconnect = 0
+        # Exact-token repetition protection is a scheduler lifecycle policy,
+        # not a tool-calling feature. Keep the same terminal counter as the
+        # text scheduler so metrics remain lane-independent.
+        self.num_repetition_loop_stops = 0
+        # The MLLM lane currently has no preventative logits intervention;
+        # publish the common zero-valued series rather than making metrics
+        # consumers infer lane support from a missing key.
+        self.num_repetition_loop_breaks = 0
         self.performance = get_model_performance_ledger(model_name)
 
     def _request_timings(
@@ -1039,6 +1048,36 @@ class MLLMScheduler:
                 request.first_token_time = time.time()
 
             finish_reason = response.finish_reason
+            repetition_error: str | None = None
+            if finish_reason is None and request.num_output_tokens % 8 == 0:
+                repetition_match = detect_repeated_token_suffix(request.output_tokens)
+                if repetition_match is not None:
+                    finish_reason = "abort"
+                    repetition_error = (
+                        "Model generation aborted: exact repetition loop "
+                        "detected "
+                        f"(period_tokens={repetition_match.period_tokens}, "
+                        f"repeats={repetition_match.repeats})"
+                    )
+                    self.num_repetition_loop_stops += 1
+                    # The batch generator only retires rows for its own EOS or
+                    # length finishes. This stop is scheduler-generated, so
+                    # remove the row now; otherwise it keeps decoding after the
+                    # public request has finished and recreates the Metal-handle
+                    # exhaustion this guard is meant to prevent.
+                    if self.batch_generator is None:
+                        raise RuntimeError(
+                            "MLLM repetition stop without a batch generator"
+                        )
+                    self.batch_generator.remove([response.uid])
+                    logger.warning(
+                        "Stopping multimodal request %s after exact token loop "
+                        "(period_tokens=%d repeats=%d completion_tokens=%d)",
+                        request_id,
+                        repetition_match.period_tokens,
+                        repetition_match.repeats,
+                        request.num_output_tokens,
+                    )
 
             # Decode the new token using streaming detokenizer (UTF-8 safe).
             # Backend EOS/control stop tokens are not decoded. Backend
@@ -1222,6 +1261,8 @@ class MLLMScheduler:
                     request.status = RequestStatus.FINISHED_STOPPED
                 elif finish_reason == "length":
                     request.status = RequestStatus.FINISHED_LENGTH_CAPPED
+                elif finish_reason == "abort":
+                    request.status = RequestStatus.FINISHED_ABORTED
 
                 output_finished = True
                 output_finish_reason = finish_reason
@@ -1283,6 +1324,8 @@ class MLLMScheduler:
                     cached_tokens=request.cached_tokens,
                     logprobs=getattr(response, "logprobs", None),
                     matched_stop=output_matched_stop,
+                    error=repetition_error,
+                    error_kind="repetition" if repetition_error is not None else None,
                 )
             )
 
@@ -2058,16 +2101,25 @@ class MLLMScheduler:
                     # Mark finished BEFORE raising so the finally block
                     # doesn't double-abort what's already cleaned up.
                     finished_normally = True
-                    if output.error_kind == "lifecycle":
+                    if output.error_kind == "repetition":
+                        logger.warning(
+                            "MLLM repetition-guard stop for %s; returning "
+                            "partial output with finish_reason=length",
+                            request_id,
+                        )
+                        output.finish_reason = "length"
+                        output.error = None
+                    elif output.error_kind == "lifecycle":
                         from .request import InferenceAbortedError
 
                         raise InferenceAbortedError(
                             output.error,
                             error_kind=output.error_kind,
                         )
-                    if output.error_kind == "invalid_request":
+                    elif output.error_kind == "invalid_request":
                         raise ClientRequestError(output.error)
-                    raise ValueError(output.error)
+                    else:
+                        raise ValueError(output.error)
                 # Mark terminal output before yielding it. A consumer of an
                 # async generator may stop immediately after receiving the
                 # final item, so code after ``yield`` is not guaranteed to
@@ -2155,6 +2207,13 @@ class MLLMScheduler:
             "num_requests_cancelled": self.num_requests_cancelled,
             "num_requests_cancelled_via_disconnect": (
                 self.num_requests_cancelled_via_disconnect
+            ),
+            # A few lifecycle/error tests construct a scheduler with
+            # ``__new__`` to exercise cleanup without loading a model. Keep
+            # stats readable for that defensive partial-construction shape.
+            "num_repetition_loop_stops": getattr(self, "num_repetition_loop_stops", 0),
+            "num_repetition_loop_breaks": getattr(
+                self, "num_repetition_loop_breaks", 0
             ),
             "model_performance": self.performance.snapshot().__dict__,
         }

@@ -3907,6 +3907,8 @@ class BatchedEngine(BaseEngine):
                 "total_completion_tokens",
                 "num_requests_cancelled",
                 "num_requests_cancelled_via_disconnect",
+                "num_repetition_loop_stops",
+                "num_repetition_loop_breaks",
                 "metal_active_memory_gb",
                 "metal_peak_memory_gb",
                 "metal_cache_memory_gb",
