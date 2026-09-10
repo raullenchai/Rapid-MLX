@@ -385,7 +385,7 @@ class RequestOutput:
     # raises InferenceAbortedError (→ HTTP 503) for genuine mid-flight failures
     # (Metal runtime errors, engine-loop crashes) where the partial output may
     # be corrupt. A repetition-guard hard-stop is different: the scheduler
-    # deliberately terminated a runaway exact-token loop on a has_tools request,
+    # deliberately terminated a runaway exact-token loop on a guarded request,
     # and the partial output up to that point is VALID. Those set
     # ``error_kind="repetition"`` so the engine returns 200 + partial (with
     # ``finish_reason`` remapped to a spec-valid value) instead of raising 503 —
