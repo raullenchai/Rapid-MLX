@@ -2118,7 +2118,7 @@ class MLLMScheduler:
                         )
                     elif output.error_kind == "invalid_request":
                         raise ClientRequestError(output.error)
-                    elif output.error:
+                    else:
                         raise ValueError(output.error)
                 # Mark terminal output before yielding it. A consumer of an
                 # async generator may stop immediately after receiving the
