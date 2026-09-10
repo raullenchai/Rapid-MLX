@@ -42,6 +42,8 @@ JSON_BENCH_SCRIPTS = frozenset(
     {
         "bench_attention.py",
         "bench_decode_tps.py",
+        "bench_deepseek_v41_moe.py",
+        "bench_deepseek_v41_runtime.py",
         "bench_deepseek_restart_cache.py",
         "bench_dflash.py",
         "bench_diffusion_gemma.py",

@@ -8,3 +8,9 @@ end-to-end serving benchmarks use `rapid-mlx bench`).
 - `bench_spec_decode_mtp.py` — MTP speculative-decode bench (#302): decode
   tok/s of `--spec-decode mtp` vs `none` on a Qwen3.5/3.6 MTP checkpoint,
   interleaved runs to avoid thermal drift.
+
+Model-specific exploratory benchmarks live under `scripts/`; for example,
+`scripts/bench_deepseek_v41_moe.py` isolates the synthetic DeepSeek V4.1 Flash
+decode-time MoE dispatch path without requiring the full checkpoint.
+`scripts/bench_deepseek_v41_runtime.py` records the corresponding real-weight
+runtime baseline once a complete local checkpoint is already available.
