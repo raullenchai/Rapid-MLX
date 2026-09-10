@@ -64,6 +64,16 @@ enum ReadDocumentTool {
             let echo = rawID.count > 120 ? String(rawID.prefix(120)) + "…" : rawID
             return err(tool, "'\(echo)' is not a valid document id — use the id from the document's BEGIN RAPID ATTACHMENT header")
         }
+        // Validate the mode before spending any budget: an unsupported mode
+        // silently falling through to sequential reading would consume a
+        // document read on malformed model output.
+        let mode = args.mode?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        switch mode {
+        case nil, "", "read", "outline":
+            break
+        default:
+            return err(tool, "unsupported mode '\(args.mode!)' — use \"read\" (default), \"outline\", or pass the separate \"grep\" argument")
+        }
         guard let awaited = cache.getAwaitingCompletionStatus(
             id,
             stallTimeout: stallTimeout
@@ -72,7 +82,7 @@ enum ReadDocumentTool {
         }
         let entry = awaited.entry
 
-        if args.mode?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == "outline" {
+        if mode == "outline" {
             return outlineResult(
                 id: rawID,
                 entry: entry,
@@ -353,6 +363,117 @@ enum ReadDocumentTool {
             return err(tool, "invalid regular expression '\(pattern)': \(error.localizedDescription)")
         }
 
+        // The enumeration's deadline is checked only between matches, so a
+        // catastrophically-backtracking pattern can block inside ONE match
+        // attempt and never reach the check. Run the whole search on a
+        // worker queue under a hard outer timeout: if it does not finish,
+        // return an honest error and abandon the worker instead of
+        // monopolizing execution over a 20-million-character document.
+        let worker = GrepWorker(
+            tool: tool,
+            id: id,
+            entry: entry,
+            pattern: pattern,
+            regex: regex,
+            extractionPending: extractionPending
+        )
+        let semaphore = DispatchSemaphore(value: 0)
+        DispatchQueue.global(qos: .userInitiated).async {
+            let outcome = worker.execute()
+            worker.store(outcome)
+            semaphore.signal()
+        }
+        let waitResult = semaphore.wait(
+            timeout: .now() + grepTimeBudget + grepOuterTimeoutMargin
+        )
+        if waitResult == .success, let outcome = worker.take() {
+            return outcome
+        }
+        worker.abandon()
+        return err(
+            tool,
+            "grep exceeded its \(Int(grepTimeBudget))s time budget — the pattern is too expensive to run over this document (likely pathological backtracking). Search for a plain phrase instead of nested quantifiers like '(a+)+'."
+        )
+    }
+
+    /// Bounds how long an abandoned worker may keep the result slot reserved.
+    static let grepOuterTimeoutMargin: TimeInterval = 0.5
+
+    /// Carries the non-Sendable regex across to the worker queue and lets a
+    /// late-finishing abandoned worker signal the semaphore without racing
+    /// the drained result.
+    private final class GrepWorker: @unchecked Sendable {
+        private let tool: String
+        private let id: String
+        private let entry: DocumentContentCache.Entry
+        private let pattern: String
+        private let regex: NSRegularExpression
+        private let extractionPending: Bool
+
+        private let lock = NSLock()
+        private var abandoned = false
+        private var outcome: ToolCallResult?
+
+        init(
+            tool: String,
+            id: String,
+            entry: DocumentContentCache.Entry,
+            pattern: String,
+            regex: NSRegularExpression,
+            extractionPending: Bool
+        ) {
+            self.tool = tool
+            self.id = id
+            self.entry = entry
+            self.pattern = pattern
+            self.regex = regex
+            self.extractionPending = extractionPending
+        }
+
+        func abandon() {
+            lock.lock(); defer { lock.unlock() }
+            abandoned = true
+        }
+
+        private var isAbandoned: Bool {
+            lock.lock(); defer { lock.unlock() }
+            return abandoned
+        }
+
+        /// Called on the worker queue exactly once.
+        func execute() -> ToolCallResult {
+            ReadDocumentTool.executingGrep(
+                tool: tool,
+                id: id,
+                entry: entry,
+                pattern: pattern,
+                regex: regex,
+                extractionPending: extractionPending,
+                isAbandoned: { [weak self] in self?.isAbandoned ?? true }
+            )
+        }
+
+        func store(_ result: ToolCallResult) {
+            lock.lock(); defer { lock.unlock() }
+            outcome = result
+        }
+
+        func take() -> ToolCallResult? {
+            lock.lock(); defer { lock.unlock() }
+            return outcome
+        }
+    }
+
+    /// Runs one grep enumeration to completion. Called on a worker queue.
+    private static func executingGrep(
+        tool: String,
+        id: String,
+        entry: DocumentContentCache.Entry,
+        pattern: String,
+        regex: NSRegularExpression,
+        extractionPending: Bool,
+        isAbandoned: @escaping () -> Bool
+    ) -> ToolCallResult {
         // Convert UTF-16 regex ranges through String so returned cursors are reusable.
         let text = entry.text
         let ns = text as NSString
@@ -366,6 +487,10 @@ enum ReadDocumentTool {
             options: [.reportProgress],
             range: NSRange(location: 0, length: ns.length)
         ) { match, _, stop in
+            if isAbandoned() {
+                stop.pointee = true
+                return
+            }
             if Date() >= deadline {
                 searchComplete = false
                 stop.pointee = true

@@ -92,6 +92,43 @@ struct DocumentCacheLifecycleTests {
         #expect(!FileManager.default.fileExists(atPath: diskFile(dir, id).path))
     }
 
+    @Test("A failed disk write is reported instead of silently swallowed")
+    func failedPersistenceIsReported() throws {
+        // The documented 90-day retention is a promise about the disk tier.
+        // If persistence fails (disk full, permissions), the memory tier still
+        // serves this session — but publish must stop claiming success, so a
+        // caller that cares can react to the across-restart loss.
+        let dir = temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+
+        // A regular FILE where the disk tier's directory should live makes
+        // ensureDiskDirectory fail deterministically.
+        let blocker = dir.appendingPathComponent("blocker", isDirectory: false)
+        try Data("x".utf8).write(to: blocker)
+        let cache = diskCache(in: blocker)
+
+        let id = UUID()
+        let published = cache.publish(
+            id,
+            entry: DocumentContentCache.Entry(filename: "payslip.pdf", text: "body"),
+            ifGenerationIs: cache.generation(for: id)
+        )
+        #expect(!published)
+        // The session is not broken — the memory tier still serves the text.
+        #expect(cache.get(id)?.text == "body")
+
+        // Positive control: a real directory persists and reports success.
+        let good = diskCache(in: dir.appendingPathComponent("good", isDirectory: true))
+        let okID = UUID()
+        #expect(good.publish(
+            okID,
+            entry: DocumentContentCache.Entry(filename: "payslip.pdf", text: "body"),
+            ifGenerationIs: good.generation(for: okID)
+        ))
+        #expect(FileManager.default.fileExists(atPath: diskFile(dir.appendingPathComponent("good", isDirectory: true), okID).path))
+    }
+
     @Test("A removed document's text is not recoverable from the cache directory")
     func removedTextIsGoneFromDisk() throws {
         // The assertion the user actually cares about: not "the API returns

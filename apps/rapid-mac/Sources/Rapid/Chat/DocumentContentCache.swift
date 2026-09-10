@@ -353,8 +353,7 @@ final class DocumentContentCache: @unchecked Sendable {
         let stillValid = (removalGeneration[k] ?? 0) == expected
         memoryLock.unlock()
         guard stillValid else { return false }
-        writeToDiskLocked(k, entry: entry, accessedAt: accessDate)
-        return true
+        return writeToDiskLocked(k, entry: entry, accessedAt: accessDate)
     }
 
     /// Removes memory, disk and in-flight work without waiting for cancellation.
@@ -463,17 +462,22 @@ final class DocumentContentCache: @unchecked Sendable {
     }
 
     /// Requires `diskLock`; failures leave the in-memory entry usable.
-    private func writeToDiskLocked(_ key: String, entry: Entry, accessedAt: Date) {
-        guard let dir = diskDirectory else { return }
+    /// Persists one entry. Returns false when the disk tier could not take
+    /// the text — the memory tier still serves it for this session, but the
+    /// documented across-restart retention did not happen, so callers get a
+    /// truthful answer instead of a silent no-op.
+    @discardableResult
+    private func writeToDiskLocked(_ key: String, entry: Entry, accessedAt: Date) -> Bool {
+        guard let dir = diskDirectory else { return false }
 
         let fm = FileManager.default
-        guard ensureDiskDirectory(dir, fileManager: fm) else { return }
-        guard let data = try? JSONEncoder().encode(entry) else { return }
+        guard ensureDiskDirectory(dir, fileManager: fm) else { return false }
+        guard let data = try? JSONEncoder().encode(entry) else { return false }
         let url = dir.appendingPathComponent(Self.diskFileName(for: key), isDirectory: false)
         do {
             try data.write(to: url, options: [.atomic])
         } catch {
-            return
+            return false
         }
         do {
             try fm.setAttributes(
@@ -483,9 +487,10 @@ final class DocumentContentCache: @unchecked Sendable {
         } catch {
             // Never retain document text with permissive file access.
             try? fm.removeItem(at: url)
-            return
+            return false
         }
         sweepDiskLocked(dir)
+        return true
     }
 
     private func ensureDiskDirectory(_ dir: URL, fileManager fm: FileManager) -> Bool {

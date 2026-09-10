@@ -203,6 +203,55 @@ struct ReadDocumentToolTests {
         #expect(result.content.contains("invalid regular expression"))
     }
 
+    @Test(
+        "A catastrophically-backtracking pattern stays inside the time budget",
+        .timeLimit(.minutes(1))
+    )
+    func catastrophicGrepPatternIsBounded() async throws {
+        // "(a+)+$" over 26 a's is ~7s of raw ICU backtracking (measured on
+        // this host). Two layers bound it: the per-match deadline checked
+        // between .reportProgress callbacks, and the worker-queue outer
+        // timeout that fires even if a single match attempt never reaches a
+        // callback. Either way the tool must return promptly with an honest
+        // "search did not complete" answer instead of monopolizing execution
+        // over the model-supplied pattern.
+        let cache = freshCache()
+        let id = store(String(repeating: "a", count: 26) + "X", in: cache)
+
+        let start = Date()
+        let result = await run(["document_id": id.uuidString, "grep": "(a+)+$"], cache: cache)
+        let elapsed = Date().timeIntervalSince(start)
+        #expect(elapsed < 8, "grep monopolized execution for \(elapsed)s")
+        #expect(
+            result.isError
+                || result.content.contains("too expensive")
+                || result.content.contains("time budget"),
+            "catastrophic pattern returned a normal-looking result"
+        )
+    }
+
+    @Test("An unsupported mode is a recoverable error, not a silent sequential read")
+    func unsupportedModeIsRejected() async throws {
+        // Malformed model output must not spend a document-read budget on a
+        // mode the tool does not implement.
+        let cache = freshCache()
+        let id = store("alpha beta gamma", in: cache)
+
+        let result = await run(
+            ["document_id": id.uuidString, "mode": "summarize"], cache: cache
+        )
+        #expect(result.isError)
+        #expect(result.content.contains("unsupported mode"))
+
+        // The accepted spellings still work — including case-insensitively.
+        let ok = try payload(await run(["document_id": id.uuidString, "mode": "READ"], cache: cache))
+        #expect(ok["content"] != nil)
+        let outline = try payload(
+            await run(["document_id": id.uuidString, "mode": "Outline"], cache: cache)
+        )
+        #expect(outline["outline"] != nil)
+    }
+
     @Test("A pattern matching everywhere stays within the character budget")
     func grepIsBudgeted() async throws {
         let cache = freshCache()
