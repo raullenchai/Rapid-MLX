@@ -10,16 +10,16 @@ disk → real-forward** chain — exactly the chain whose absence shipped
 PR #918 with an inject pipeline that built a random-init MTP module
 and never loaded weights.
 
-This file fills the gap with one end-to-end probe:
+This file fills the gap with end-to-end probes:
 
 * Load ``mlx-community/Qwen3.5-9B-4bit`` via ``mlx_lm.load``.
 * Call :func:`inject_mtp_support` with the cached sidecar repo
   ``mlx-community/Qwen3.5-9B-MTP-4bit``.
 * Verify the four contract surfaces land
   (:func:`validate_mtp_support`).
-* Run a single 20-token MTP-spec-decode pass and a single 20-token
-  baseline pass, then compare them byte-equally — the lossless
-  contract at temp=0 says they MUST match.
+* Compare fixed-depth greedy MTP with the same Rapid generator parked at
+  K=0. Byte equality with stock single-token AR is not the contract: the
+  batched verify forward can flip a near-tied argmax under quantized weights.
 
 Heavy by default (5 GB base + 131 MB sidecar download on cold cache,
 ~15 s wall on warm cache). Gated on ``RAPID_MLX_RUN_HEAVY_TESTS=1``
@@ -35,6 +35,8 @@ from __future__ import annotations
 import os
 
 import pytest
+
+from bench.bench_spec_decode_mtp import _BENCH_PROMPTS
 
 mx = pytest.importorskip("mlx.core")
 
@@ -56,61 +58,12 @@ _BASE_MODEL = "mlx-community/Qwen3.5-9B-4bit"
 _MTP_SIDECAR = "mlx-community/Qwen3.5-9B-MTP-4bit"
 
 
-_BASELINE_PROMPTS = (
-    "Write a short Python Fibonacci function with type hints.",
-    "Explain how a Bloom filter works.",
-    "Two trains travel toward each other at 60 and 80 km/h, 350 km "
-    "apart. When do they meet?",
-)
-_BASELINE_N_TOKENS = 20
+_CONSISTENCY_N_TOKENS = 128
 
 
 @pytest.fixture(scope="module")
-def baseline_tokens():
-    """Capture baseline (no MTP) tokens BEFORE any inject runs.
-
-    Codex flagged on PR #954 that running ``stream_generate`` after
-    ``inject_mtp_support`` compares MTP against the *patched* model,
-    not the original Qwen3.5 forward — which silently weakens the
-    lossless guard. Fix: load a separate, un-injected model in this
-    fixture and tear it down before the MTP fixture loads. This
-    guarantees the baseline tokens were produced by the pristine
-    upstream code path.
-    """
-    import gc
-
-    from mlx_lm import load
-    from mlx_lm.generate import stream_generate
-
-    model, tokenizer = load(_BASE_MODEL)
-    baselines: dict[str, list[int]] = {}
-    for prompt in _BASELINE_PROMPTS:
-        toks: list[int] = []
-        for resp in stream_generate(
-            model, tokenizer, prompt, max_tokens=_BASELINE_N_TOKENS
-        ):
-            toks.append(int(resp.token))
-            if len(toks) >= _BASELINE_N_TOKENS:
-                break
-        baselines[prompt] = toks
-
-    # Release the un-injected model before the patched fixture loads
-    # the second copy. Two 9B-4bit copies briefly coexist; cleanup is
-    # explicit to keep peak GPU mem bounded.
-    del model
-    del tokenizer
-    gc.collect()
-    return baselines
-
-
-@pytest.fixture(scope="module")
-def loaded_model(baseline_tokens):
-    """Load the base + inject MTP exactly once for all tests in the file.
-
-    Depends on ``baseline_tokens`` so the un-injected baseline pass
-    completes (and releases its model) before this fixture mutates a
-    fresh copy via ``inject_mtp_support``.
-    """
+def loaded_model():
+    """Load the base + inject MTP exactly once for all tests in the file."""
     from mlx_lm import load
 
     from vllm_mlx.spec_decode.mtp.qwen3_5_inject import (
@@ -247,26 +200,20 @@ def test_inject_loads_real_sidecar_weights(loaded_model):
         )
 
 
-def test_mtp_lossless_byte_equal_against_baseline(loaded_model, baseline_tokens):
-    """At temp=0, MTP spec decode must be byte-equal to non-spec decode.
+def test_mtp_greedy_fixed_depth_consistency_against_k0(loaded_model):
+    """Greedy divergence from K=0 must not move with fixed draft depth.
 
-    The ``baseline_tokens`` fixture captured ground-truth tokens
-    against a *fresh, un-injected* Qwen3.5-9B-4bit model BEFORE the
-    ``loaded_model`` fixture mutated a separate copy with
-    ``inject_mtp_support``. This test then runs the MTP generator on
-    the patched copy and asserts the decoded token sequences match
-    byte-equally.
+    K=0 through the same generator is the reference for the current
+    batched-consistency contract. Fixed-K verification is allowed to differ
+    because its ``q_len>=2`` target forward can flip a near-tied argmax versus
+    K=0's ``q_len=1`` forward under quantized weights. That shape-driven first
+    divergence should be identical at K=1/2/3. A depth-dependent first
+    divergence would instead point back toward chained accept or rollback
+    behavior and fail this guard.
 
-    Any divergence indicates either:
-
-    * The MTP head is producing wrong drafts AND the verify accepts
-      them anyway (probabilistic-accept arithmetic broken at temp=0).
-    * The cache rollback on draft rejection is failing to restore
-      linear-attention SSM state — output then drifts from the
-      baseline after the first rejected draft.
-
-    Both failure modes would invalidate the lossless contract; this
-    test is the canonical guard for it on a real checkpoint.
+    The full eight-prompt benchmark set and 128-token horizon deliberately
+    include the near ties that the old three-prompt, 20-token byte-equality
+    assertion missed. See #3295.
     """
     import mlx.core as _mx
 
@@ -276,33 +223,58 @@ def test_mtp_lossless_byte_equal_against_baseline(loaded_model, baseline_tokens)
     model, tokenizer = loaded_model
     inner = model.language_model
 
-    for prompt in _BASELINE_PROMPTS:
-        base_tokens = baseline_tokens[prompt]
-        assert len(base_tokens) == _BASELINE_N_TOKENS, (
-            f"baseline_tokens fixture returned {len(base_tokens)} tokens for "
-            f"prompt {prompt[:40]!r}; expected {_BASELINE_N_TOKENS}."
-        )
-
-        # MTP on the patched model.
-        counter = MTPAcceptCounter()
+    def run(prompt: str, max_k: int):
         prompt_ids = _mx.array(tokenizer.encode(prompt), _mx.uint32)
-        mtp_tokens: list[int] = []
-        for tok, _, _ in mtp_generate_step(
+        counter = MTPAcceptCounter()
+        timing: dict[str, float] = {}
+        tokens: list[int] = []
+        for tok, _logprobs, _from_draft in mtp_generate_step(
             prompt_ids,
             inner,
-            max_tokens=_BASELINE_N_TOKENS,
+            max_tokens=_CONSISTENCY_N_TOKENS,
             temp=0.0,
             accept_counter=counter,
+            disable_auto_k=True,
+            max_k=max_k,
+            timing_stats=timing,
         ):
-            mtp_tokens.append(int(tok))
-            if len(mtp_tokens) >= _BASELINE_N_TOKENS:
+            tokens.append(int(tok))
+            if len(tokens) >= _CONSISTENCY_N_TOKENS:
                 break
+        return tokens, counter.snapshot(), timing
 
-        # Lossless contract: byte-equal at temp=0.
-        assert mtp_tokens == base_tokens, (
-            f"MTP-vs-baseline divergence on prompt {prompt[:40]!r}: "
-            f"baseline {base_tokens} vs mtp {mtp_tokens}. "
-            f"Accept rate this run: {counter.snapshot()}."
+    def first_divergence(control: list[int], candidate: list[int]):
+        return next(
+            (
+                (index, control_token, candidate_token)
+                for index, (control_token, candidate_token) in enumerate(
+                    zip(control, candidate, strict=True)
+                )
+                if control_token != candidate_token
+            ),
+            None,
+        )
+
+    for prompt in _BENCH_PROMPTS:
+        k0_tokens, k0_counter, k0_timing = run(prompt, 0)
+        assert k0_counter.attempts == 0
+        assert int(k0_timing.get("verify_calls", 0.0)) == 0
+        assert len(k0_tokens) == _CONSISTENCY_N_TOKENS
+
+        by_depth = {}
+        for max_k in (1, 2, 3):
+            mtp_tokens, mtp_counter, mtp_timing = run(prompt, max_k)
+            assert mtp_counter.attempts > 0, (
+                f"Fixed K={max_k} did not attempt speculation for {prompt[:40]!r}"
+            )
+            assert int(mtp_timing.get("verify_calls", 0.0)) > 0
+            assert len(mtp_tokens) == _CONSISTENCY_N_TOKENS
+            by_depth[max_k] = first_divergence(k0_tokens, mtp_tokens)
+
+        assert len(set(by_depth.values())) == 1, (
+            f"First K=0 divergence changed with fixed draft depth for "
+            f"{prompt[:40]!r}: {by_depth}. This is not explained by the "
+            f"depth-independent q_len=1 versus q_len>=2 numerical fork."
         )
 
 
@@ -336,7 +308,7 @@ def _longest_draft_run(from_draft_flags: list[bool]) -> int:
 def test_mtp_nongreedy_real_sampled_smoke(loaded_model, max_k):
     """Sampled (temp>0) MTP decode on real weights must reach depth K and accept.
 
-    Why this exists alongside the temp=0 lossless test: at temp=0 the
+    Why this exists alongside the temp=0 consistency test: at temp=0 the
     verify path never consults its random draw, so the entire
     probabilistic accept / residual-resample branch — the branch every
     non-greedy chat request now takes — is untested on real weights by

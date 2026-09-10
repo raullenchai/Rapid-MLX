@@ -1,15 +1,15 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Lossless contract integration test for MTP spec decode (R15-P1 #302).
+"""Shape-stable arithmetic tests for greedy MTP spec decode (R15-P1 #302).
 
-The lossless contract says: for the SAME prompt + seed at temp=0,
-``--spec-decode mtp`` must emit byte-identical decoded tokens to
-``--spec-decode none``. Accept rate is a *speedup* signal; lossless-
-ness is a *correctness* contract that holds at every accept rate
-between 0% (every draft rejected) and 100% (every draft accepted).
+For a fixed target-logit sequence at temp=0, both the accept and reject paths
+must emit the target argmax. These mocked tests pin that arithmetic and cache
+rollback behavior. They do not assert byte equality between real batched
+verification (`q_len>=2`) and stock single-token AR (`q_len=1`), whose logits
+can differ at quantized near ties; see #3295.
 
-The standard way to test this is to load a real Qwen3.5 / 3.6
-checkpoint with MTP weights and run both paths back-to-back. That
-requires:
+The complementary real-weight consistency probe loads a Qwen3.5 / 3.6
+checkpoint with MTP weights and compares fixed K against the same generator
+parked at K=0. That requires:
 
 * A 4-50 GB model download (Qwen3.5-9B-w4 is ~5 GB).
 * GPU time on M-series silicon.
@@ -39,12 +39,12 @@ We then run TWO full sequences through ``mtp_generate_step``:
    token the standard ``generate_step`` would have decoded. So the
    emitted sequence STILL matches the reference, just slower.
 
-A passing test pins the contract: at temp=0, BOTH accept and reject
-branches emit the same tokens the non-spec-decode path would have
-emitted. Tests do NOT pin the per-step latency.
+A passing test pins the shape-stable arithmetic: at temp=0, BOTH accept and
+reject branches emit the scripted target token. Tests do NOT pin real-weight
+cross-shape byte parity or per-step latency.
 
-Why this is a meaningful lossless test
---------------------------------------
+Why this is a meaningful arithmetic test
+-----------------------------------------
 
 The two scripts above are the only two arithmetic paths through
 ``mtp_generate_step`` at temp=0:
@@ -56,7 +56,7 @@ The two scripts above are the only two arithmetic paths through
 Both paths therefore emit ``verify_pred`` — which is exactly what
 ``generate_step`` emits (it argmax's the same backbone logits).
 
-If the lossless contract ever breaks at temp=0, it breaks here:
+If the greedy accept/reject arithmetic breaks, it breaks here:
 
 * If the accept comparison were wrong (e.g. ``!=`` instead of
   ``==``), the accept-path token would not match.
@@ -68,9 +68,8 @@ If the lossless contract ever breaks at temp=0, it breaks here:
   the next backbone call's logits would change shape and the
   scripted token would not match.
 
-The bench script (``bench/bench_spec_decode_mtp.py``) covers the
-end-to-end correctness check against a real Qwen3.5 checkpoint when
-the GPU is free — see PR body for the follow-up plan.
+The real-weight test and ``bench/repro_mtp_forced_k_parity.py`` cover the
+same-generator K=0 comparison on a real Qwen3.5 checkpoint.
 """
 
 from __future__ import annotations
