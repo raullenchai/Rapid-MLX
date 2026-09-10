@@ -233,6 +233,7 @@
     "unsloth/Qwen3.6-27B-UD-MLX-3bit": 24071897617,
     "unsloth/Qwen3.6-27B-UD-MLX-4bit": 26210992727,
     "unsloth/Qwen3.6-27B-UD-MLX-6bit": 30522606211,
-    "unsloth/Qwen3.6-35B-A3B-UD-MLX-4bit": 21655301364
+    "unsloth/Qwen3.6-35B-A3B-UD-MLX-4bit": 21655301364,
+    "windowsxp811203/Qwen3.8-27B-Abliterated-MLX-MTP": 16998733375
   }
 }

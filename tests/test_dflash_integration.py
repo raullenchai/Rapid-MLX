@@ -371,6 +371,19 @@ def test_info_dflash_marks_4bit_alias_experimental(capsys) -> None:
     assert "experimental" in captured.out
 
 
+def test_info_recognizes_four_bit_subfolder_in_neutral_repo(capsys) -> None:
+    """The oQ4e build must not be presented as an 8-bit-or-higher target."""
+
+    from vllm_mlx.cli import info_command
+
+    args = type("Args", (), {"model": "qwen3.8-27b-abliterated-4bit"})()
+    info_command(args)
+    output = capsys.readouterr().out
+
+    assert "Target precision  : ⚠ 4-bit (experimental pair)" in output
+    assert "Precision ≥8-bit  : ✗ no (4-bit/mxfp4/nvfp4)" in output
+
+
 def test_info_dflash_marks_pinned_4bit_dflash2_pair_qualified(capsys) -> None:
     from vllm_mlx.cli import _print_dflash_status
     from vllm_mlx.model_aliases import AliasProfile

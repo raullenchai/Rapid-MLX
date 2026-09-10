@@ -452,6 +452,17 @@
     "mtp_speculative_tokens": 3,
     "mtp_continuous_batching_tier": "verified"
   },
+  "qwen3.8-27b-abliterated-4bit": {
+    "supports_image_input": true,
+    "hf_path": "windowsxp811203/Qwen3.8-27B-Abliterated-MLX-MTP",
+    "subfolder": "oQ4e",
+    "tool_call_parser": "qwen3_coder_xml",
+    "reasoning_parser": "qwen3",
+    "is_hybrid": true,
+    "supports_spec_decode": false,
+    "mtp_default_enabled": false,
+    "experimental": true
+  },
   "qwen3.8-27b-mixed-3.5bpw": {
     "supports_image_input": true,
     "hf_path": "rapid-mlx/Qwen3.8-27B-mixed-3.5bpw-MLX",

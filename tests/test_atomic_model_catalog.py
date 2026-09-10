@@ -114,6 +114,19 @@ def test_legacy_projection_is_complete_deduplicated_and_schema_valid() -> None:
         "image_understanding",
     ]
     assert aliases["qwen3.8-27b-4bit"]["capabilities"]["is_text_only"] is False
+    abliterated = aliases["qwen3.8-27b-abliterated-4bit"]
+    abliterated_model = models[abliterated["target"]["registry_model_id"]]
+    assert abliterated["capabilities"]["experimental"] is True
+    assert abliterated["capabilities"]["task_types"] == [
+        "text_generation",
+        "vision_language",
+    ]
+    assert abliterated_model["source"] == {
+        "provider": "huggingface",
+        "repo_id": "windowsxp811203/Qwen3.8-27B-Abliterated-MLX-MTP",
+        "subfolder": "oQ4e",
+    }
+    assert abliterated_model["estimated_download_size_bytes"] == 16_998_733_375
     assert aliases["flux2-klein-4b"]["capabilities"]["operation_modes"] == [
         "text_to_image",
         "image_to_image",

@@ -20,7 +20,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from vllm_mlx.model_aliases import AliasProfile
-from vllm_mlx.spec_decode.capability import looks_like_4bit
+from vllm_mlx.spec_decode.capability import looks_like_4bit, profile_looks_like_4bit
 
 
 class DFlashUnavailable(RuntimeError):  # noqa: N818 — domain-specific error name
@@ -79,7 +79,9 @@ def report(
             "~1.5 tokens/round on expert-routing churn; regression "
             "measured on Qwen3.6-35B-A3B"
         )
-    is_4bit = _looks_like_4bit(profile.hf_path)
+    is_4bit = profile_looks_like_4bit(profile) or bool(
+        alias and _looks_like_4bit(alias)
+    )
     curated_pair = (
         profile.supports_dflash
         and bool(profile.dflash_algorithm)
