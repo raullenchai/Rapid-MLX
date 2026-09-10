@@ -1,0 +1,6 @@
+DeepSeek V4.1 native MLX runtime
+
+This directory contains code derived from PipeNetwork/deepseek-v41-mlx,
+revision 8bdd543c7160800f3451d9595c996129b7abecdf, licensed under the
+Apache License 2.0. Rapid-MLX modifications include quantized group-aware
+output projection support and qualification tooling.
