@@ -477,6 +477,7 @@ jobs:
             tests/test_g9v3_model.py \
             tests/test_bailing_hybrid_model.py \
             tests/test_mtp_spec_decode.py \
+            tests/test_mtp_nongreedy_distribution.py \
             tests/test_speculative_request_policy.py \
             tests/test_deepseek_v4_vendored.py \
             tests/test_dspark_scheduler.py \

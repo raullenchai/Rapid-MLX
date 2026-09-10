@@ -331,6 +331,7 @@ def _longest_draft_run(from_draft_flags: list[bool]) -> int:
     return best
 
 
+@pytest.mark.real_hf_cache
 @pytest.mark.parametrize("max_k", [2, 3])
 def test_mtp_nongreedy_real_sampled_smoke(loaded_model, max_k):
     """Sampled (temp>0) MTP decode on real weights must reach depth K and accept.
