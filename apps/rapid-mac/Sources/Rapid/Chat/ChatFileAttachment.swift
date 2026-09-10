@@ -283,8 +283,18 @@ struct ChatFileAttachment: Codable, Equatable, Hashable, Identifiable, Sendable 
         cache.beginPending(id)
         // A removal during extraction invalidates this generation.
         let generation = cache.generation(for: id)
+        // The detached task is eager: gate its first statement on
+        // registration so remove() can never race it into an unregistered
+        // orphan that OCRs a deleted document for minutes.
+        let (registrationGate, gateOpen) = AsyncStream.makeStream(of: Void.self)
         let extraction = Task.detached(priority: .utility) {
+            // Blocks until registration below — an eager task must never
+            // start work before it is cancellable via the registry.
+            for await _ in registrationGate {}
             defer { cache.finishPending(id) }
+            // A removal that raced the registration invalidated this
+            // generation — the document is gone; do not read it.
+            guard cache.generation(for: id) == generation, !Task.isCancelled else { return }
             // PDFDocument is not Sendable: reparse the bytes on the worker
             // instead of carrying the instance across isolation (the scanned
             // path below does the same).
@@ -322,6 +332,7 @@ struct ChatFileAttachment: Codable, Equatable, Hashable, Identifiable, Sendable 
             )
         }
         cache.registerExtraction(id, task: extraction)
+        gateOpen.finish()
     }
 
     /// Recognizes enough opening pages for a scan preview, then continues async.
@@ -383,8 +394,15 @@ struct ChatFileAttachment: Codable, Equatable, Hashable, Identifiable, Sendable 
         let previewLength = head.count
         cache.beginPending(id)
         let generation = cache.generation(for: id)
+        // Same registration gate as the selectable path: the eager task must
+        // not OCR an orphaned document that raced its registration.
+        let (registrationGate, gateOpen) = AsyncStream.makeStream(of: Void.self)
         let extraction = Task.detached(priority: .utility) {
+            // Blocks until registration below — an eager task must never
+            // start work before it is cancellable via the registry.
+            for await _ in registrationGate {}
             defer { cache.finishPending(id) }
+            guard cache.generation(for: id) == generation, !Task.isCancelled else { return }
             // Avoid carrying a non-Sendable PDFDocument into the worker.
             guard let workerDocument = PDFDocument(data: data),
                   workerDocument.pageCount == pageCount else { return }
@@ -428,6 +446,7 @@ struct ChatFileAttachment: Codable, Equatable, Hashable, Identifiable, Sendable 
             )
         }
         cache.registerExtraction(id, task: extraction)
+        gateOpen.finish()
     }
 
     /// Flattens the bookmark tree without recursion on untrusted nesting.
