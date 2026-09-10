@@ -11,6 +11,7 @@ import math
 import statistics
 import sys
 import time
+import types
 from collections import defaultdict
 from pathlib import Path
 
@@ -29,6 +30,8 @@ PLAN = {
         "existing mx.eval barrier wait time by Python call site",
         "runtime disk-read and Engram-cache counters",
         "MLX active, cache, and peak memory",
+        "optional fused mHC mixing with V4.1 pipelined-pre semantics",
+        "optional expert-local fused gate/up quantized matmul execution",
     ],
     "guardrails": [
         "never downloads or relocates model files",
@@ -47,6 +50,16 @@ def parse_args():
     parser.add_argument("--resident-backbone", action="store_true")
     parser.add_argument("--engram-cache-rows", type=int, default=16384)
     parser.add_argument("--execution-mode", choices=("reference", "deferred", "compiled"), default="compiled")
+    parser.add_argument(
+        "--optimized-hc",
+        action="store_true",
+        help="benchmark-only fused mHC path; not quality validated",
+    )
+    parser.add_argument(
+        "--optimized-moe",
+        action="store_true",
+        help="fuse resident routed-expert gate/up projections before profiling",
+    )
     parser.add_argument("--prompt", default="Explain why local inference latency matters.")
     parser.add_argument("--context-tokens", type=int, default=0)
     parser.add_argument("--warmup-tokens", type=int, default=16)
@@ -159,6 +172,271 @@ def _memory_snapshot(mx):
     }
 
 
+def _make_v41_hc_mix_kernel(mx):
+    """Build a V4.1 mixing kernel without collapsing the current residual.
+
+    V4.1 pipelines the ``pre`` weights across the intervening attention or FFN
+    update.  The existing V4 kernel cannot be reused directly because it also
+    collapses the residual supplied to the mixer.  This bounded benchmark
+    kernel fuses only sigmoid + Sinkhorn and returns ``pre/post/comb`` so the
+    checkpoint runtime can apply ``pre`` at its original, later point.
+    """
+
+    if mx.default_device() != mx.gpu or not mx.metal.is_available():
+        raise RuntimeError("--optimized-hc requires the MLX Metal GPU backend")
+
+    source = r"""
+        uint row  = threadgroup_position_in_grid.x;
+        uint lane = thread_position_in_threadgroup.x;
+
+        constexpr int MIX      = (2 + HC) * HC;
+        constexpr int BASE_OFF = 2 * HC;
+        constexpr float EPS = EPS_INT * 1e-9;
+
+        const device float* mix = (const device float*)mixes + row * MIX;
+        device float* pre_out = (device float*)pre + row * HC;
+        device float* post_out = (device float*)post + row * HC;
+        device float* comb_out = (device float*)comb + row * HC * HC;
+
+        const float active = (lane < (uint)HC) ? 1.0f : 0.0f;
+        const uint llane = metal::min(lane, (uint)(HC - 1));
+        const float pre_scale = scale[0];
+        const float post_scale = scale[1];
+        const float comb_scale = scale[2];
+
+        float pre_z = mix[llane] * pre_scale + base[llane];
+        float post_z = mix[HC + llane] * post_scale + base[HC + llane];
+        float pre_v = 1.0f / (1.0f + metal::fast::exp(-pre_z)) + EPS;
+        float post_v = 2.0f / (1.0f + metal::fast::exp(-post_z));
+        if (lane < (uint)HC) {
+            pre_out[lane] = pre_v;
+            post_out[lane] = post_v;
+        }
+
+        float4 v = (*(const device float4*)(mix + BASE_OFF + llane * HC)
+                        * comb_scale
+                    + *(const device float4*)(base + BASE_OFF + llane * HC))
+                    * active;
+        float row_max = metal::max(metal::max(v.x, v.y),
+                                   metal::max(v.z, v.w));
+        float4 e = metal::fast::exp(v - row_max) * active;
+        float4 result = e * (1.0f / (e.x + e.y + e.z + e.w + EPS))
+                      + EPS * active;
+        result *= 1.0f / (float4(
+            simd_sum(result.x), simd_sum(result.y),
+            simd_sum(result.z), simd_sum(result.w)) + EPS);
+
+        for (int iter = 1; iter < ITERS; ++iter) {
+            result *= (1.0f / (result.x + result.y + result.z
+                               + result.w + EPS)) * active;
+            result *= 1.0f / (float4(
+                simd_sum(result.x), simd_sum(result.y),
+                simd_sum(result.z), simd_sum(result.w)) + EPS);
+        }
+        if (lane < (uint)HC) {
+            *(device float4*)(comb_out + lane * HC) = result;
+        }
+    """
+    return mx.fast.metal_kernel(
+        name="deepseek_v41_hc_mix",
+        input_names=["mixes", "scale", "base"],
+        output_names=["pre", "post", "comb"],
+        source=source,
+        ensure_row_contiguous=True,
+    )
+
+
+def _install_optimized_hc(runtime, mx):
+    """Replace only checkpoint mHC mixing while preserving V4.1 timing."""
+
+    if runtime.c.get("hc_mult") != 4:
+        raise RuntimeError("--optimized-hc currently requires hc_mult=4")
+    kernel = _make_v41_hc_mix_kernel(mx)
+
+    @mx.compile
+    def project(x, weight, norm_eps):
+        flat = x.reshape(*x.shape[:-2], -1).astype(mx.float32)
+        projected = flat @ weight.T
+        return projected * mx.rsqrt(
+            mx.mean(flat * flat, axis=-1, keepdims=True) + norm_eps
+        )
+
+    def mixes(self, base, kind, x):
+        config = self.c
+        weight = self.w.read(base + ".hc_" + kind + "_fn")
+        scale = self.w.read(base + ".hc_" + kind + "_scale").astype(mx.float32)
+        bias = self.w.read(base + ".hc_" + kind + "_base").astype(mx.float32)
+        projected = project(x, weight, config["rms_norm_eps"])
+        rows = math.prod(projected.shape[:-1])
+        return kernel(
+            inputs=[projected, scale, bias],
+            template=[
+                ("HC", config["hc_mult"]),
+                ("ITERS", config["hc_sinkhorn_iters"]),
+                ("EPS_INT", round(config["hc_eps"] / 1e-9)),
+            ],
+            grid=(rows * 32, 1, 1),
+            threadgroup=(32, 1, 1),
+            output_shapes=[
+                (*projected.shape[:-1], config["hc_mult"]),
+                (*projected.shape[:-1], config["hc_mult"]),
+                (
+                    *projected.shape[:-1],
+                    config["hc_mult"],
+                    config["hc_mult"],
+                ),
+            ],
+            output_dtypes=[mx.float32, mx.float32, mx.float32],
+        )
+
+    runtime.mixes = types.MethodType(mixes, runtime)
+    return {
+        "name": "v41_fused_hc_mix",
+        "preserves_pipelined_pre": True,
+        "quality_validated": False,
+        "warning": "40-layer numerical amplification failed teacher-forced parity",
+    }
+
+
+def _install_optimized_moe(runtime, mx):
+    """Fuse each expert's gate/up projections without giant expert buffers."""
+
+    if not runtime.w.resident:
+        raise RuntimeError("--optimized-moe requires --resident-backbone")
+    config = runtime.c
+    num_experts = config["n_routed_experts"]
+    quantization = runtime.w.q
+    if (
+        quantization.get("bits"),
+        quantization.get("group_size"),
+        quantization.get("mode"),
+    ) != (2, 64, "affine"):
+        raise RuntimeError(
+            "--optimized-moe currently accepts only affine 2-bit/group-64 weights"
+        )
+
+    started = time.perf_counter()
+    packed = {}
+    components = ("weight", "scales", "biases")
+    required = [
+        f"layers.{layer}.ffn.experts.{expert}.{projection}.{component}"
+        for layer in range(config["num_hidden_layers"])
+        for expert in range(num_experts)
+        for projection in ("w1", "w3")
+        for component in components
+    ]
+    missing = [key for key in required if key not in runtime.w.resident]
+    if missing:
+        raise RuntimeError(
+            "--optimized-moe requires a fully resident backbone; missing "
+            + missing[0]
+        )
+    for layer in range(config["num_hidden_layers"]):
+        base = f"layers.{layer}.ffn"
+        layer_pack = []
+        original_keys = []
+        fused_arrays = []
+        for expert in range(num_experts):
+            expert_pack = {}
+            for component in components:
+                w1_key = f"{base}.experts.{expert}.w1.{component}"
+                w3_key = f"{base}.experts.{expert}.w3.{component}"
+                fused = mx.concatenate(
+                    [runtime.w.resident[w1_key], runtime.w.resident[w3_key]],
+                    axis=0,
+                )
+                expert_pack[component] = fused
+                fused_arrays.append(fused)
+                original_keys.extend((w1_key, w3_key))
+            layer_pack.append(expert_pack)
+        mx.eval(fused_arrays)
+        for key in original_keys:
+            del runtime.w.resident[key]
+        packed[base] = layer_pack
+        mx.clear_cache()
+        if (layer + 1) % 5 == 0 or layer + 1 == config["num_hidden_layers"]:
+            print(
+                json.dumps(
+                    {
+                        "phase": "expert_pack",
+                        "completed_layers": layer + 1,
+                        "total_layers": config["num_hidden_layers"],
+                        "active_bytes": int(mx.get_active_memory()),
+                        "seconds": time.perf_counter() - started,
+                    }
+                ),
+                flush=True,
+            )
+
+    def moe(self, base, x):
+        layer_pack = packed[base]
+        logits = (
+            x.astype(mx.float32)
+            @ self.w.read(base + ".gate.weight").astype(mx.float32).T
+        )
+        scores = mx.sqrt(mx.logaddexp(logits, mx.zeros_like(logits)))
+        top_k = self.c["num_experts_per_tok"]
+        picks = mx.argsort(
+            scores + self.w.read(base + ".gate.bias"), axis=-1
+        )[..., -top_k:]
+        selected = mx.take_along_axis(scores, picks, axis=-1)
+        if self.c["norm_topk_prob"] and top_k > 1:
+            selected = selected / (
+                mx.sum(selected, axis=-1, keepdims=True) + 1e-20
+            )
+        selected = selected * self.c["routed_scaling_factor"]
+        mx.eval(picks, selected)
+
+        routed = mx.zeros_like(x).astype(mx.float32)
+        for expert, routing in zip(picks.tolist()[0], selected.tolist()[0]):
+            expert_pack = layer_pack[expert]
+            gate_up = mx.quantized_matmul(
+                x,
+                expert_pack["weight"],
+                expert_pack["scales"],
+                expert_pack["biases"],
+                transpose=True,
+                group_size=64,
+                bits=2,
+                mode="affine",
+            )
+            gate, up = mx.split(gate_up, 2, axis=-1)
+            limit = self.c["swiglu_limit"]
+            if limit > 0:
+                gate = mx.minimum(gate.astype(mx.float32), limit)
+                up = mx.clip(up.astype(mx.float32), -limit, limit)
+            else:
+                gate = gate.astype(mx.float32)
+                up = up.astype(mx.float32)
+            hidden = (gate * mx.sigmoid(gate) * up * routing).astype(x.dtype)
+            down = self.w.linear(
+                base + f".experts.{expert}.w2", hidden
+            ).astype(mx.float32)
+            routed = routed + down
+            if self.execution_mode == "reference":
+                mx.eval(routed)
+        shared = self.expert(base + ".shared_experts", x).astype(mx.float32)
+        return (routed + shared).astype(x.dtype)
+
+    runtime._rapid_packed_experts = packed
+    runtime.moe = types.MethodType(moe, runtime)
+    packed_bytes = sum(
+        value.nbytes
+        for layer_pack in packed.values()
+        for expert_pack in layer_pack
+        for value in expert_pack.values()
+    )
+    runtime.w.resident_bytes = sum(
+        value.nbytes for value in runtime.w.resident.values()
+    ) + packed_bytes
+    return {
+        "name": "expert_local_fused_gate_up_quantized_matmul",
+        "layers": len(packed),
+        "packed_bytes": packed_bytes,
+        "seconds": time.perf_counter() - started,
+    }
+
+
 def _run_tokens(
     runtime,
     count,
@@ -246,6 +524,12 @@ def run(args):
         execution_mode=args.execution_mode,
     )
     runtime.w.engram_cache_rows = args.engram_cache_rows
+    optimized_hc = None
+    if getattr(args, "optimized_hc", False):
+        optimized_hc = _install_optimized_hc(runtime, mx)
+    optimized_moe = None
+    if getattr(args, "optimized_moe", False):
+        optimized_moe = _install_optimized_moe(runtime, mx)
     load_seconds = time.perf_counter() - started
     encoded = runtime.tokenizer.encode(args.prompt).ids
     if not encoded:
@@ -307,6 +591,12 @@ def run(args):
             "warmup_tokens": args.warmup_tokens,
             "measure_tokens": args.measure_tokens,
             "diagnostic_tokens": args.diagnostic_tokens,
+            "optimized_hc": bool(getattr(args, "optimized_hc", False)),
+            "optimized_moe": bool(getattr(args, "optimized_moe", False)),
+        },
+        "runtime_overrides": {
+            "hyper_connection": optimized_hc,
+            "routed_moe": optimized_moe,
         },
         "device": mx.device_info(),
         "load": {"seconds": load_seconds, "memory": load_memory},

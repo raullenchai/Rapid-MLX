@@ -5,6 +5,8 @@ import pytest
 from scripts.bench_deepseek_v41_runtime import (
     _checkpoint_total_size,
     _counter_delta,
+    _install_optimized_moe,
+    _make_v41_hc_mix_kernel,
     _percentile,
     _resolve_runtime,
     _run_tokens,
@@ -172,3 +174,130 @@ class TextRuntime:
     assert result["measurement"]["tokens"] == 2
     assert result["measurement"]["eval_barriers"] is None
     assert result["barrier_diagnostic"]["eval_barriers"]["calls"] == 1
+
+
+def test_expert_local_gate_up_fusion_matches_separate_quantized_matmuls():
+    mx = pytest.importorskip("mlx.core")
+
+    class Weights:
+        q = {"bits": 2, "group_size": 64, "mode": "affine"}
+
+        def __init__(self):
+            self.resident = {}
+            self.resident_bytes = 0
+
+        def read(self, key):
+            return self.resident[key]
+
+        def linear(self, base, x):
+            return mx.quantized_matmul(
+                x,
+                self.resident[base + ".weight"],
+                self.resident[base + ".scales"],
+                self.resident[base + ".biases"],
+                transpose=True,
+                group_size=64,
+                bits=2,
+                mode="affine",
+            )
+
+    class Runtime:
+        execution_mode = "compiled"
+        c = {
+            "n_routed_experts": 2,
+            "num_hidden_layers": 1,
+            "num_experts_per_tok": 1,
+            "norm_topk_prob": True,
+            "routed_scaling_factor": 1.0,
+            "swiglu_limit": 0.0,
+        }
+
+        def __init__(self):
+            self.w = Weights()
+
+        def expert(self, base, x, routing=None):
+            if base.endswith("shared_experts"):
+                return mx.zeros_like(x)
+            gate = self.w.linear(base + ".w1", x).astype(mx.float32)
+            up = self.w.linear(base + ".w3", x).astype(mx.float32)
+            hidden = gate * mx.sigmoid(gate) * up
+            if routing is not None:
+                hidden = hidden * routing
+            return self.w.linear(base + ".w2", hidden.astype(x.dtype))
+
+    runtime = Runtime()
+    mx.random.seed(19)
+    base = "layers.0.ffn"
+    for expert in range(2):
+        for projection in ("w1", "w2", "w3"):
+            dense = mx.random.normal((64, 64)).astype(mx.float32)
+            weight, scales, biases = mx.quantize(
+                dense, group_size=64, bits=2, mode="affine"
+            )
+            prefix = f"{base}.experts.{expert}.{projection}"
+            runtime.w.resident[prefix + ".weight"] = weight
+            runtime.w.resident[prefix + ".scales"] = scales
+            runtime.w.resident[prefix + ".biases"] = biases
+    runtime.w.resident[base + ".gate.weight"] = mx.zeros((2, 64))
+    runtime.w.resident[base + ".gate.bias"] = mx.array([1.0, 0.0])
+
+    x = mx.random.normal((1, 64)).astype(mx.bfloat16)
+    routing = mx.sqrt(mx.logaddexp(mx.array(0.0), mx.array(0.0)))
+    expected = runtime.expert(
+        base + ".experts.0", x, routing
+    ).astype(x.dtype)
+    metadata = _install_optimized_moe(runtime, mx)
+    actual = runtime.moe(base, x)
+    mx.eval(expected, actual)
+
+    assert mx.array_equal(actual, expected).item()
+    assert metadata["name"] == "expert_local_fused_gate_up_quantized_matmul"
+    assert base + ".experts.0.w1.weight" not in runtime.w.resident
+    assert base + ".experts.0.w3.weight" not in runtime.w.resident
+    assert base + ".experts.0.w2.weight" in runtime.w.resident
+
+
+def test_fused_hc_kernel_stays_close_to_reference_sinkhorn():
+    mx = pytest.importorskip("mlx.core")
+    if mx.default_device() != mx.gpu or not mx.metal.is_available():
+        pytest.skip("Metal GPU required")
+
+    mx.random.seed(23)
+    hc_mult = 4
+    sinkhorn_iters = 20
+    epsilon = 1e-6
+    mixes = mx.random.normal((2, (2 + hc_mult) * hc_mult)).astype(mx.float32)
+    scale = mx.random.normal((3,)).astype(mx.float32)
+    base = mx.random.normal(((2 + hc_mult) * hc_mult,)).astype(mx.float32)
+
+    pre = mx.sigmoid(mixes[..., :hc_mult] * scale[0] + base[:hc_mult]) + epsilon
+    post = 2 * mx.sigmoid(
+        mixes[..., hc_mult : 2 * hc_mult] * scale[1]
+        + base[hc_mult : 2 * hc_mult]
+    )
+    comb = (
+        mixes[..., 2 * hc_mult :] * scale[2] + base[2 * hc_mult :]
+    ).reshape(2, hc_mult, hc_mult)
+    comb = mx.softmax(comb, axis=-1) + epsilon
+    comb = comb / (mx.sum(comb, axis=-2, keepdims=True) + epsilon)
+    for _ in range(sinkhorn_iters - 1):
+        comb = comb / (mx.sum(comb, axis=-1, keepdims=True) + epsilon)
+        comb = comb / (mx.sum(comb, axis=-2, keepdims=True) + epsilon)
+
+    kernel = _make_v41_hc_mix_kernel(mx)
+    actual = kernel(
+        inputs=[mixes, scale, base],
+        template=[
+            ("HC", hc_mult),
+            ("ITERS", sinkhorn_iters),
+            ("EPS_INT", round(epsilon / 1e-9)),
+        ],
+        grid=(2 * 32, 1, 1),
+        threadgroup=(32, 1, 1),
+        output_shapes=[(2, 4), (2, 4), (2, 4, 4)],
+        output_dtypes=[mx.float32, mx.float32, mx.float32],
+    )
+    mx.eval(pre, post, comb, *actual)
+
+    for expected, observed in zip((pre, post, comb), actual):
+        assert mx.allclose(expected, observed, rtol=1e-6, atol=1e-6).item()

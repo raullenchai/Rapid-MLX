@@ -4,27 +4,30 @@ Date: 2026-09-10
 
 ## Decision
 
-Do not add DeepSeek V4.1 Flash to the Rapid model catalog yet. A synthetic
-Metal experiment shows that the decode-time MoE path has worthwhile scheduling
-headroom, but a real-weight end-to-end run is blocked on this host and the
-20+ tok/s target is not yet demonstrated.
+Do not add DeepSeek V4.1 Flash to the Rapid model catalog yet. The complete
+2-bit checkpoint fits on this 256 GiB host and generates correct text, but the
+unchanged warm runtime reaches only 6.055 tok/s. The fastest experimental
+runtime reaches 8.030 tok/s but fails the numerical/quality gate, while the
+safe expert-local optimization reaches 6.216 tok/s. The 20+ tok/s target is not
+demonstrated.
 
-The next prototype should combine an expert-major packed checkpoint layout
-with batched active-expert quantized matmuls and fewer layer-boundary host
-synchronizations. Converting only the runtime while retaining separately stored
-expert tensors recovers little of the potential gain.
+The next material prototype is parallel target block verification for the
+three native MTP stages. The checkpoint's current verifier advances target
+tokens serially and is slower than non-MTP decoding. Ordinary quantization,
+expert packing, and launch reduction do not supply the missing 3.3x by
+themselves.
 
-## Storage gate
+## Artifact acquisition
 
-The candidate baseline is
-`Vontra/DeepSeek-V4.1-Flash-MLX-2bit-MTP`. Its indexed checkpoint size is
-238,796,133,496 bytes (222.4 GiB). It was not present in the Hugging Face cache,
-which had about 80 GiB free before this experiment. The studio storage policy
-forbids deleting other cached models or redirecting the download, so no model
-shards were downloaded.
+The candidate baseline is `Vontra/DeepSeek-V4.1-Flash-MLX-2bit-MTP`. Its indexed
+checkpoint size is 238,796,133,496 bytes (222.4 GiB). It was initially blocked
+by cache capacity. After the administrator explicitly approved removal of
+named, unused model caches, the checkpoint was downloaded into the standard
+Hugging Face cache. No cache path was overridden or redirected.
 
-Consequently, this note makes no quality, memory-residency, vision, long-context,
-tool-use, or end-to-end throughput claim.
+All 143,982 indexed tensors across 48 shards were present, no incomplete files
+remained, and `hf cache verify` checked all 64 repository files successfully.
+This note still makes no vision, long-context, or tool-use quality claim.
 
 ## Method
 
@@ -137,21 +140,19 @@ changes alone therefore cannot deliver the earlier 165--185 GB target. That
 target still needs structured pruning, sub-2-bit packing, special Engram
 compression, or a combination, followed by quality evaluation.
 
-## Next real-weight gate
+## Next engineering gate
 
-When a policy-compliant host has at least 223 GiB of cache capacity available:
-
-1. run the community checkpoint unchanged with the prepared profiler and record
-   per-token, existing-barrier, Engram-cache, disk-read, and peak-memory
-   measurements;
-2. convert one layer to expert-major packed storage and compare numerics and
-   latency against the original separately keyed tensors;
-3. prototype a 2-bit/group-64 batched active-expert path;
-4. remove only correctness-safe synchronization boundaries and validate
-   cancellation plus memory growth;
-5. run at least 128 warm decode tokens at 8K context before making a throughput
-   claim;
-6. evaluate quantization quality before considering REAP or group size 128.
+1. implement a bounded multi-token target forward that verifies one DSpark
+   block without serially mutating target KV state;
+2. preserve rejection semantics by committing only the accepted KV prefix;
+3. measure proposal cost, accepted tokens per block, target block cost, and net
+   tok/s separately;
+4. adapt mHC fusion to reproduce the checkpoint graph's numerical order, or
+   pass a representative quality eval before accepting different numerics;
+5. combine only individually qualified optimizations and run at least 128 warm
+   decode tokens at 8K context;
+6. evaluate quantization quality before considering REAP, pruning, or larger
+   affine group sizes.
 
 Only after those gates pass should Rapid model loading, catalog metadata,
 server routing, GUI exposure, or a downloadable quantization artifact enter
@@ -199,25 +200,54 @@ barriers per token. Existing barrier wait averaged about 130.6 ms/token:
 Barrier attribution identifies where queued work is observed, rather than the
 exclusive cost of the Python caller.
 
-Two real-weight candidate experiments then bounded straightforward runtime
+Real-weight candidate experiments then bounded straightforward runtime
 headroom:
 
 1. Removing the redundant layer-boundary `mx.eval` and per-layer finite-value
    diagnostic preserved the exact generated text and improved alternating warm
    runs from 6.16--6.22 tok/s to 7.57--7.63 tok/s, a 22--24% gain.
-2. Packing all 384 routed experts for one real layer into an expert-major
-   4,246,732,800-byte tensor set kept routing and top-6 selection on GPU. Output
-   remained numerically close (`max_abs=0.0001221`, `rtol=atol=1e-3`) and layer
-   latency improved from 1.111 ms to 0.918 ms, or 1.21x. Compiling the batched
-   path improved a separate run from 1.164 ms to 1.007 ms, another 13.5%, but
-   was not sufficient to change the end-to-end conclusion.
+2. Reusing Rapid's fused gate/up `gather_qmm` path for one real layer improved
+   routed MoE latency from 1.276 ms to 0.714 ms (1.79x). The maximum absolute
+   BF16 difference was 0.0001221. A smaller fixed-route reproduction of the
+   same math was bit-identical and improved 0.815 ms to 0.404 ms (2.02x).
+3. Scaling the expert-major layout to all 40 layers failed badly. It packed
+   169,869,312,000 bytes in 10.94 seconds without a memory spike, but the large
+   Metal buffers were consistent with a severe full-model VM/page-locality
+   penalty: throughput fell to 0.436 tok/s and median latency rose to 2.306
+   seconds. This layout is rejected even though its isolated one-layer
+   benchmark is fast.
+4. Fusing gate/up inside each existing small expert buffer retained locality
+   and produced bit-identical quantized-matmul output in the focused test. It
+   packed 113,246,208,000 bytes in 4.76 seconds, reduced active memory slightly,
+   preserved the greedy token chain, and improved 64-token decode from the
+   6.055 tok/s control to 6.216 tok/s (+2.65%). Median latency fell from 165.96
+   ms to 160.55 ms (-3.26%). This is safe but not material enough alone.
+5. A V4.1-specific fused mHC mixing kernel preserved the architecture's
+   pipelined `pre` timing and reduced a real mixing/collapse microbenchmark from
+   951 microseconds to 315 microseconds (3.02x). In the full model it improved
+   throughput from 6.055 to 8.030 tok/s (+32.6%) and median latency from 165.96
+   to 123.95 ms (-25.3%). It did not pass the quality gate: tiny per-layer
+   differences were amplified across 40 hyper-connected layers, producing only
+   43.75% top-1 agreement across a 16-token teacher-forced comparison and up to
+   15.80 absolute logit error. This kernel remains an explicit experimental
+   upper bound and must not be enabled in a product runtime.
 
-Even optimistically combining these changes predicts only about 9 tok/s on
-this machine. Reaching 20 tok/s therefore requires large improvements outside
-ordinary tensor layout and graph compilation: attention/indexer/mHC fusion, a
-specialized fused expert kernel, effective parallel MTP verification, or a
-post-trained reduction in active computation. Quantization or REAP that only
-reduces stored bytes does not close the throughput gap.
+The resident backbone is 172,741,563,840 bytes. The minimum per-token text
+weight traffic is about 5.34 GB: 2.69 GB of dense text weights plus 2.65 GB for
+six active routed experts across 40 layers. At 20 tok/s this is about 107 GB/s,
+so nominal memory bandwidth is not the physical blocker. The reference path
+instead performs about 840 routed expert quantized matmuls per token and
+observes 80 host barriers. Launch count, reduction scheduling, and target
+verification are the useful levers.
+
+The bundled three-stage DSpark implementation does not provide the missing
+multiplier. Its verifier is deliberately serial: each proposed token advances
+the target model one token at a time. The checkpoint report also records it as
+slower than non-MTP decoding, with only about 1.00--1.33 accepted draft tokens
+per block on its short diagnostics. A credible 20+ tok/s path therefore needs
+multi-token target block verification, plus the correctness-safe synchronization
+and kernel work above. Quantization or REAP that only reduces stored bytes does
+not close the throughput gap.
 
 The real-weight profiler is plan-only unless both execution flags are supplied.
 It never downloads a model and requires explicit consent before importing the
