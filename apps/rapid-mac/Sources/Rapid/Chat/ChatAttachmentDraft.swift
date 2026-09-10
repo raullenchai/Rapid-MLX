@@ -274,7 +274,21 @@ struct ChatAttachmentDraftStore: Equatable {
 
     /// Releases attachment data for deleted conversations while retaining the
     /// unsaved active conversation, which is not present in history yet.
-    mutating func retainDrafts(for conversationIDs: Set<UUID>) {
+    ///
+    /// Returns the file-attachment ids of every dropped draft so the caller can
+    /// delete their cached plaintext. Dropping the draft alone is a leak: a
+    /// successful import registers the document's FULL text in
+    /// ``DocumentContentCache`` the moment it parses, and once the draft that
+    /// held the chip is gone nothing on screen references those documents —
+    /// no chip to click, no conversation for ``deleteConversation`` to walk.
+    /// The extract would sit in Application Support until the 90-day sweep.
+    @discardableResult
+    mutating func retainDrafts(for conversationIDs: Set<UUID>) -> [UUID] {
+        var discarded: [UUID] = []
+        for (conversationID, draft) in drafts where !conversationIDs.contains(conversationID) {
+            discarded.append(contentsOf: draft.files.map(\.id))
+        }
         drafts = drafts.filter { conversationIDs.contains($0.key) }
+        return discarded
     }
 }
