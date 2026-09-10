@@ -304,3 +304,145 @@ def test_mtp_lossless_byte_equal_against_baseline(loaded_model, baseline_tokens)
             f"baseline {base_tokens} vs mtp {mtp_tokens}. "
             f"Accept rate this run: {counter.snapshot()}."
         )
+
+
+# Sampled-smoke settings. temp>0 with a top_p filter is what ordinary
+# chat traffic uses; the temp=0 test above cannot reach the
+# probabilistic accept/residual arithmetic at all, because at temp=0
+# the verify accepts iff the argmaxes match and the random draw is
+# ignored outright.
+_SAMPLED_TEMP = 0.8
+_SAMPLED_TOP_P = 0.95
+_SAMPLED_N_TOKENS = 120
+_SAMPLED_PROMPT = "Explain how a Bloom filter works, in three sentences."
+
+
+def _longest_draft_run(from_draft_flags: list[bool]) -> int:
+    """Longest run of consecutive draft-sourced tokens.
+
+    A run of length N means some round had N draft positions accepted
+    back-to-back, which is direct evidence that a chain of depth >= N
+    was verified — the property the K>=2 accept arithmetic depends on.
+    """
+    best = current = 0
+    for flag in from_draft_flags:
+        current = current + 1 if flag else 0
+        best = max(best, current)
+    return best
+
+
+@pytest.mark.real_hf_cache
+@pytest.mark.parametrize("max_k", [2, 3])
+def test_mtp_nongreedy_real_sampled_smoke(loaded_model, max_k):
+    """Sampled (temp>0) MTP decode on real weights must reach depth K and accept.
+
+    Why this exists alongside the temp=0 lossless test: at temp=0 the
+    verify path never consults its random draw, so the entire
+    probabilistic accept / residual-resample branch — the branch every
+    non-greedy chat request now takes — is untested on real weights by
+    that test. This one drives it.
+
+    Why the depth is pinned rather than left to the EV controller:
+    measured on this checkpoint, the controller settles on K=1 for this
+    prompt, giving a longest-consecutive-draft-run of exactly 1. A
+    K=1 chain has no cross-position accept arithmetic to get wrong, so
+    an auto-K run would report a healthy acceptance rate while never
+    executing the K>=2 code path at all. ``disable_auto_k=True`` with
+    ``max_k=K`` fixes the chain depth at K every round so the path is
+    actually exercised. Both settings are ordinary generator kwargs;
+    nothing about the sampling math changes.
+
+    Observed on main @ 0.14.0 (Qwen3.5-9B-4bit + sidecar, 120 tokens,
+    M3 Ultra) across seeds 1234/7/99/2024: K=2 accepted 61-66 of
+    106-116 draft positions (0.53-0.62) and K=3 accepted 65-70 of
+    147-165 (0.39-0.48). The longest consecutive draft-sourced run came
+    out exactly equal to max_k in all eight runs, and every run produced
+    coherent prose. The thresholds below sit well under the measured
+    accept rates so ordinary sampling variance does not flake the test.
+    """
+    import mlx.core as _mx
+
+    from vllm_mlx.spec_decode.mtp import MTPAcceptCounter
+    from vllm_mlx.spec_decode.mtp.generator import mtp_generate_step
+
+    model, tokenizer = loaded_model
+    inner = model.language_model
+
+    _mx.random.seed(1234)
+    counter = MTPAcceptCounter()
+    prompt_ids = _mx.array(tokenizer.encode(_SAMPLED_PROMPT), _mx.uint32)
+
+    tokens: list[int] = []
+    from_draft: list[bool] = []
+    for tok, _lp, fd in mtp_generate_step(
+        prompt_ids,
+        inner,
+        max_tokens=_SAMPLED_N_TOKENS,
+        temp=_SAMPLED_TEMP,
+        top_p=_SAMPLED_TOP_P,
+        accept_counter=counter,
+        disable_auto_k=True,
+        max_k=max_k,
+    ):
+        tokens.append(int(tok))
+        from_draft.append(bool(fd))
+        if len(tokens) >= _SAMPLED_N_TOKENS:
+            break
+
+    snap = counter.snapshot()
+
+    assert len(tokens) == _SAMPLED_N_TOKENS, (
+        f"Sampled MTP run produced {len(tokens)} tokens, expected "
+        f"{_SAMPLED_N_TOKENS}. The generator terminated early."
+    )
+
+    # The spec path must actually have run. A zero here means MTP
+    # silently degraded to plain autoregressive decode and every other
+    # assertion in this test would pass vacuously.
+    assert snap.attempts > 0, (
+        f"No draft positions were attempted at max_k={max_k}: {snap}. "
+        f"MTP spec decode did not engage."
+    )
+
+    accept_rate = snap.accepts / snap.attempts
+    assert accept_rate > 0.15, (
+        f"Sampled accept rate {accept_rate:.3f} ({snap.accepts}/"
+        f"{snap.attempts}) at max_k={max_k} is far below the ~0.5 "
+        f"measured on this checkpoint. Either the draft head regressed "
+        f"or the accept arithmetic is rejecting valid proposals."
+    )
+
+    # The accept rate needs a ceiling as well as a floor. A verifier
+    # that accepted every proposal would satisfy every other assertion
+    # in this test while never entering the reject-and-resample-from-
+    # residual branch — which is half of what the sampled path does and
+    # the more delicate half. Measured rejections on this checkpoint are
+    # 41-55 at K=2 and 77-93 at K=3 across four seeds, so requiring 10
+    # keeps four-fold margin over the smallest observed run.
+    rejections = snap.attempts - snap.accepts
+    assert rejections >= 10, (
+        f"Only {rejections} of {snap.attempts} draft positions were "
+        f"rejected at max_k={max_k} (accept rate {accept_rate:.3f}). "
+        f"The residual-resample branch is essentially unexercised, so "
+        f"this run does not cover it. A verifier that accepts "
+        f"everything reaches this line."
+    )
+
+    # The point of the test: prove a chain of depth ``max_k`` was
+    # verified and accepted, i.e. the multi-position accept path really
+    # ran to the pinned depth. Asserting a fixed >= 2 instead would let
+    # the max_k=3 case pass on a run that never accepted a third
+    # position, making that parametrization prove nothing K=2 did not.
+    longest = _longest_draft_run(from_draft)
+    assert longest >= max_k, (
+        f"Longest consecutive draft-sourced run was {longest} at "
+        f"max_k={max_k}; expected >= {max_k}. The full depth-{max_k} "
+        f"accept path was never exercised, so this run proves nothing "
+        f"about it."
+    )
+
+    text = tokenizer.decode(tokens)
+    assert text.strip(), (
+        f"Sampled MTP decode at max_k={max_k} produced no printable text "
+        f"from {len(tokens)} tokens."
+    )
