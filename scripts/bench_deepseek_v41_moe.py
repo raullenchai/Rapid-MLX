@@ -68,9 +68,7 @@ def _quantize_experts(mx, count, shape, *, bits, group_size, seed):
 
 
 def _stack_experts(mx, experts):
-    stacked = tuple(
-        mx.stack([expert[part] for expert in experts]) for part in range(3)
-    )
+    stacked = tuple(mx.stack([expert[part] for expert in experts]) for part in range(3))
     mx.eval(*stacked)
     return stacked
 
@@ -294,6 +292,7 @@ def run(args):
 
     token_modes = {}
     for graph_name, graph in (("serial", serial_graph), ("batched", batched_graph)):
+
         def layer_sync(graph=graph):
             state = x
             for _ in range(PLAN["model_shape"]["layers"]):

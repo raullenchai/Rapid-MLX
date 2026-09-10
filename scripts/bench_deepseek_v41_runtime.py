@@ -49,7 +49,11 @@ def parse_args():
     parser.add_argument("--trust-checkpoint-runtime", action="store_true")
     parser.add_argument("--resident-backbone", action="store_true")
     parser.add_argument("--engram-cache-rows", type=int, default=16384)
-    parser.add_argument("--execution-mode", choices=("reference", "deferred", "compiled"), default="compiled")
+    parser.add_argument(
+        "--execution-mode",
+        choices=("reference", "deferred", "compiled"),
+        default="compiled",
+    )
     parser.add_argument(
         "--optimized-hc",
         action="store_true",
@@ -60,7 +64,9 @@ def parse_args():
         action="store_true",
         help="fuse resident routed-expert gate/up projections before profiling",
     )
-    parser.add_argument("--prompt", default="Explain why local inference latency matters.")
+    parser.add_argument(
+        "--prompt", default="Explain why local inference latency matters."
+    )
     parser.add_argument("--context-tokens", type=int, default=0)
     parser.add_argument("--warmup-tokens", type=int, default=16)
     parser.add_argument("--measure-tokens", type=int, default=128)
@@ -328,8 +334,7 @@ def _install_optimized_moe(runtime, mx):
     missing = [key for key in required if key not in runtime.w.resident]
     if missing:
         raise RuntimeError(
-            "--optimized-moe requires a fully resident backbone; missing "
-            + missing[0]
+            "--optimized-moe requires a fully resident backbone; missing " + missing[0]
         )
     for layer in range(config["num_hidden_layers"]):
         base = f"layers.{layer}.ffn"
@@ -376,14 +381,12 @@ def _install_optimized_moe(runtime, mx):
         )
         scores = mx.sqrt(mx.logaddexp(logits, mx.zeros_like(logits)))
         top_k = self.c["num_experts_per_tok"]
-        picks = mx.argsort(
-            scores + self.w.read(base + ".gate.bias"), axis=-1
-        )[..., -top_k:]
+        picks = mx.argsort(scores + self.w.read(base + ".gate.bias"), axis=-1)[
+            ..., -top_k:
+        ]
         selected = mx.take_along_axis(scores, picks, axis=-1)
         if self.c["norm_topk_prob"] and top_k > 1:
-            selected = selected / (
-                mx.sum(selected, axis=-1, keepdims=True) + 1e-20
-            )
+            selected = selected / (mx.sum(selected, axis=-1, keepdims=True) + 1e-20)
         selected = selected * self.c["routed_scaling_factor"]
         mx.eval(picks, selected)
 
@@ -409,9 +412,9 @@ def _install_optimized_moe(runtime, mx):
                 gate = gate.astype(mx.float32)
                 up = up.astype(mx.float32)
             hidden = (gate * mx.sigmoid(gate) * up * routing).astype(x.dtype)
-            down = self.w.linear(
-                base + f".experts.{expert}.w2", hidden
-            ).astype(mx.float32)
+            down = self.w.linear(base + f".experts.{expert}.w2", hidden).astype(
+                mx.float32
+            )
             routed = routed + down
             if self.execution_mode == "reference":
                 mx.eval(routed)
@@ -426,9 +429,9 @@ def _install_optimized_moe(runtime, mx):
         for expert_pack in layer_pack
         for value in expert_pack.values()
     )
-    runtime.w.resident_bytes = sum(
-        value.nbytes for value in runtime.w.resident.values()
-    ) + packed_bytes
+    runtime.w.resident_bytes = (
+        sum(value.nbytes for value in runtime.w.resident.values()) + packed_bytes
+    )
     return {
         "name": "expert_local_fused_gate_up_quantized_matmul",
         "layers": len(packed),
@@ -484,12 +487,15 @@ def _validate_args(args):
             "refusing to execute checkpoint-bundled Python without "
             "--trust-checkpoint-runtime"
         )
-    if min(
-        args.context_tokens,
-        args.warmup_tokens,
-        args.measure_tokens,
-        args.diagnostic_tokens,
-    ) < 0:
+    if (
+        min(
+            args.context_tokens,
+            args.warmup_tokens,
+            args.measure_tokens,
+            args.diagnostic_tokens,
+        )
+        < 0
+    ):
         raise SystemExit("token counts may not be negative")
     if args.measure_tokens < 1:
         raise SystemExit("--measure-tokens must be at least 1")

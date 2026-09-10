@@ -117,6 +117,7 @@ def test_run_tokens_can_teacher_force_context():
     assert result["last_token_id"] == 7
 
 
+@pytest.mark.requires_mlx
 def test_real_weight_harness_with_tiny_local_runtime(tmp_path):
     runtime_dir = tmp_path / "runtime"
     runtime_dir.mkdir()
@@ -176,6 +177,7 @@ class TextRuntime:
     assert result["barrier_diagnostic"]["eval_barriers"]["calls"] == 1
 
 
+@pytest.mark.requires_mlx
 def test_expert_local_gate_up_fusion_matches_separate_quantized_matmuls():
     mx = pytest.importorskip("mlx.core")
 
@@ -243,9 +245,7 @@ def test_expert_local_gate_up_fusion_matches_separate_quantized_matmuls():
 
     x = mx.random.normal((1, 64)).astype(mx.bfloat16)
     routing = mx.sqrt(mx.logaddexp(mx.array(0.0), mx.array(0.0)))
-    expected = runtime.expert(
-        base + ".experts.0", x, routing
-    ).astype(x.dtype)
+    expected = runtime.expert(base + ".experts.0", x, routing).astype(x.dtype)
     metadata = _install_optimized_moe(runtime, mx)
     actual = runtime.moe(base, x)
     mx.eval(expected, actual)
@@ -257,6 +257,7 @@ def test_expert_local_gate_up_fusion_matches_separate_quantized_matmuls():
     assert base + ".experts.0.w2.weight" in runtime.w.resident
 
 
+@pytest.mark.requires_mlx
 def test_fused_hc_kernel_stays_close_to_reference_sinkhorn():
     mx = pytest.importorskip("mlx.core")
     if mx.default_device() != mx.gpu or not mx.metal.is_available():
@@ -272,12 +273,11 @@ def test_fused_hc_kernel_stays_close_to_reference_sinkhorn():
 
     pre = mx.sigmoid(mixes[..., :hc_mult] * scale[0] + base[:hc_mult]) + epsilon
     post = 2 * mx.sigmoid(
-        mixes[..., hc_mult : 2 * hc_mult] * scale[1]
-        + base[hc_mult : 2 * hc_mult]
+        mixes[..., hc_mult : 2 * hc_mult] * scale[1] + base[hc_mult : 2 * hc_mult]
     )
-    comb = (
-        mixes[..., 2 * hc_mult :] * scale[2] + base[2 * hc_mult :]
-    ).reshape(2, hc_mult, hc_mult)
+    comb = (mixes[..., 2 * hc_mult :] * scale[2] + base[2 * hc_mult :]).reshape(
+        2, hc_mult, hc_mult
+    )
     comb = mx.softmax(comb, axis=-1) + epsilon
     comb = comb / (mx.sum(comb, axis=-2, keepdims=True) + epsilon)
     for _ in range(sinkhorn_iters - 1):
