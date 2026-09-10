@@ -5,6 +5,9 @@ enum TokenEstimate {
     static let cjkTokensPerCharacter = 0.65
     static let hangulTokensPerCharacter = 0.45
     static let defaultTokensPerCharacter = 0.42
+    /// Worst-case per-scalar charge for emoji and symbols, which encode to
+    /// several tokens each and must not ride the prose rate.
+    static let symbolTokensPerScalar = 2.0
 
     static func tokens(in text: String) -> Int {
         guard !text.isEmpty else { return 0 }
@@ -37,7 +40,27 @@ enum TokenEstimate {
     private static func tokenCost(of scalar: Unicode.Scalar) -> Double {
         if isCJK(scalar) { return cjkTokensPerCharacter }
         if isHangul(scalar) { return hangulTokensPerCharacter }
+        // Astral-plane scalars are emoji and symbols, which routinely cost
+        // several tokens each (ZWJ sequences more). Charging the Latin prose
+        // rate on them would let an emoji-heavy attachment preview or trimmed
+        // request sail past the window it was budgeted for.
+        if scalar.value >= 0x1F000 { return symbolTokensPerScalar }
+        if isSurrogatePairSymbol(scalar) { return symbolTokensPerScalar }
         return defaultTokensPerCharacter
+    }
+
+    /// Non-astral pictographs and symbols worth worst-case pricing.
+    private static func isSurrogatePairSymbol(_ scalar: Unicode.Scalar) -> Bool {
+        switch scalar.value {
+        case 0x2600...0x26FF,      // Misc symbols (☀ ☂ ♻ …)
+             0x2700...0x27BF,      // Dingbats (✂ ✅ …)
+             0x2B00...0x2BFF,      // Misc symbols and arrows (⭐ …)
+             0x2190...0x21FF,      // Arrows
+             0xFE00...0xFE0F:      // Variation selectors
+            return true
+        default:
+            return false
+        }
     }
 
     private static func isCJK(_ scalar: Unicode.Scalar) -> Bool {

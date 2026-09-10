@@ -137,4 +137,18 @@ struct TokenEstimateTests {
         // The padding is the overwhelming majority of this page's cost.
         #expect(after < before / 2)
     }
+
+    @Test("Emoji and symbols are charged a worst-case rate, not the prose rate")
+    func symbolScalarsAreChargedWorstCase() {
+        // An emoji encodes to several tokens; charging 0.42/char would let an
+        // emoji-heavy preview sail past the budget it was sized under.
+        #expect(TokenEstimate.tokens(in: "👍") == 2)
+        #expect(TokenEstimate.tokens(in: "a👍b") == 3)
+        // Non-astral pictographs and variation selectors are charged too.
+        #expect(TokenEstimate.tokens(in: "♻️") >= 4)
+        #expect(TokenEstimate.tokens(in: "→") >= 2)
+        // The prose rate is untouched for plain scripts.
+        #expect(TokenEstimate.tokens(in: "ab") == 1)
+        #expect(TokenEstimate.tokens(in: "中文") == 2)
+    }
 }

@@ -377,9 +377,21 @@ enum ReadDocumentTool {
             regex: regex,
             extractionPending: extractionPending
         )
+        // Admission control: an abandoned backtracking worker cannot be
+        // cancelled, so cap how many may exist at once and run them SERIALLY —
+        // a model that keeps supplying pathological patterns gets honest
+        // "busy" errors instead of unbounded threads burning CPU and holding
+        // document text.
+        guard GrepWorker.admit() else {
+            return err(
+                tool,
+                "grep is still busy with earlier expensive searches. Wait a moment, or read sequentially with offset=0 instead."
+            )
+        }
         let semaphore = DispatchSemaphore(value: 0)
-        DispatchQueue.global(qos: .userInitiated).async {
+        Self.grepQueue.async {
             let outcome = worker.execute()
+            worker.retire()
             worker.store(outcome)
             semaphore.signal()
         }
@@ -399,10 +411,35 @@ enum ReadDocumentTool {
     /// Bounds how long an abandoned worker may keep the result slot reserved.
     static let grepOuterTimeoutMargin: TimeInterval = 0.5
 
+    /// Serial: at most one abandoned backtracking regex burns CPU at a time.
+    private static let grepQueue = DispatchQueue(
+        label: "app.rapid.read-document-grep", qos: .userInitiated
+    )
+
     /// Carries the non-Sendable regex across to the worker queue and lets a
     /// late-finishing abandoned worker signal the semaphore without racing
     /// the drained result.
     private final class GrepWorker: @unchecked Sendable {
+        /// Live-worker accounting for admission control. The cap bounds the
+        /// total cost of abandoned (uncancellable) backtracking searches;
+        /// the serial queue bounds how many burn CPU simultaneously.
+        private static let accountingLock = NSLock()
+        // Guarded by accountingLock.
+        nonisolated(unsafe) private static var liveWorkers = 0
+        static let maxLiveWorkers = 8
+
+        static func admit() -> Bool {
+            accountingLock.lock(); defer { accountingLock.unlock() }
+            guard liveWorkers < maxLiveWorkers else { return false }
+            liveWorkers += 1
+            return true
+        }
+
+        func retire() {
+            GrepWorker.accountingLock.lock(); defer { GrepWorker.accountingLock.unlock() }
+            GrepWorker.liveWorkers -= 1
+        }
+
         private let tool: String
         private let id: String
         private let entry: DocumentContentCache.Entry
