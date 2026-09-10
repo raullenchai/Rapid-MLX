@@ -138,6 +138,67 @@ struct ChatFileAttachmentTests {
         #expect(attachment.extractedText.contains("[Page 5]"))
     }
 
+    /// Page 1 carries a selectable text layer; page 2 is image-only.
+    private func mixedSelectableAndScannedPDF() throws -> URL {
+        let document = PDFDocument()
+        let textView = NSTextView(frame: NSRect(x: 0, y: 0, width: 612, height: 400))
+        textView.string = "SELECTABLE COVER PAGE ONE"
+        if let textPage = PDFDocument(data: textView.dataWithPDF(inside: textView.bounds))?
+            .page(at: 0) {
+            document.insert(textPage, at: document.pageCount)
+        }
+        let size = NSSize(width: 612, height: 400)
+        let image = NSImage(size: size)
+        image.lockFocus()
+        NSColor.white.setFill()
+        NSRect(origin: .zero, size: size).fill()
+        ("IMAGE PAGE TWO REVENUE 2026" as NSString).draw(
+            in: NSRect(x: 35, y: 150, width: size.width - 70, height: 100),
+            withAttributes: [
+                .font: NSFont.systemFont(ofSize: 32, weight: .bold),
+                .foregroundColor: NSColor.black,
+            ]
+        )
+        image.unlockFocus()
+        if let imagePage = PDFPage(image: image) {
+            document.insert(imagePage, at: document.pageCount)
+        }
+        let url = temporaryURL(extension: "pdf")
+        try #require(document.dataRepresentation()).write(to: url)
+        return url
+    }
+
+    @Test("A mixed PDF keeps its scanned pages behind a pending extraction", .timeLimit(.minutes(2)))
+    func mixedPDFDoesNotDropScannedPages() async throws {
+        // The eager preview reads only text layers. Page 2 has none, so the
+        // document must NOT be treated as complete just because page 1 gave
+        // the preview text — the old behavior silently lost the scanned page.
+        let url = try mixedSelectableAndScannedPDF()
+        defer { try? FileManager.default.removeItem(at: url) }
+        let cache = DocumentContentCache(diskDirectory: nil)
+
+        let attachment = try ChatFileAttachment(contentsOf: url, cache: cache)
+        #expect(attachment.pageCount == 2)
+        #expect(attachment.extractedText.contains("PAGE ONE"))
+        // Pending marker: the full extract is still being recognized.
+        #expect(attachment.totalCharacterCount == nil)
+        #expect(cache.hasRegisteredExtraction(attachment.id))
+
+        // The background pass OCRs page 2 and publishes the complete entry.
+        var completed: DocumentContentCache.Entry?
+        for _ in 0..<120 {
+            let status = cache.getAwaitingCompletionStatus(attachment.id, stallTimeout: 0.25)
+            if let entry = status?.entry, status?.extractionPending == false,
+               entry.text.contains("PAGE TWO") {
+                completed = entry
+                break
+            }
+        }
+        let entry = try #require(completed, "background extraction never published page 2")
+        #expect(entry.isComplete)
+        #expect(entry.text.contains("[Page 2]"))
+    }
+
     @Test("Document text is sent to the model but stays out of visible prose")
     func wireEncoding() throws {
         let attachment = try ChatFileAttachment(
@@ -496,8 +557,9 @@ struct ChatFileAttachmentTests {
 
         // The old renderer converted these PDF-controlled dimensions to Int
         // before validating them, which trapped the process instead of
-        // treating the malformed page as unreadable.
-        #expect(PDFTextRecognizer.recognize(page: page).isEmpty)
+        // treating the malformed page as unreadable. nil marks the failure —
+        // distinct from an empty string, which is a legitimately blank page.
+        #expect(PDFTextRecognizer.recognize(page: page) == nil)
     }
 
     @Test("A budget of zero stops before any page is read")

@@ -244,22 +244,21 @@ final class DocumentContentCache: @unchecked Sendable {
         return pending.contains(k)
     }
 
-    /// Waits until completion or until progress stalls for `stallTimeout`.
+    /// Waits at most `stallTimeout` in total for the extraction to finish.
+    /// The cap is absolute — per-page progress does NOT extend it — because
+    /// `read_document` blocks its calling thread here and a 500-page scan
+    /// (whose per-page progress would otherwise keep resetting a stall
+    /// deadline) must never hold a model request for minutes. Cancellation
+    /// of the enclosing task is honored between waits.
     private func waitForPending(_ id: UUID, stallTimeout: TimeInterval) {
         let k = Self.key(for: id)
         pendingSignal.lock(); defer { pendingSignal.unlock() }
-        var observedGeneration = progressGenerations[k] ?? 0
-        var deadline = Date().addingTimeInterval(stallTimeout)
+        let deadline = Date().addingTimeInterval(stallTimeout)
         while pending.contains(k) {
+            if Task.isCancelled { return }
             pendingSignal.wait(until: deadline)
             guard pending.contains(k) else { return }
-            let currentGeneration = progressGenerations[k] ?? 0
-            if currentGeneration != observedGeneration {
-                observedGeneration = currentGeneration
-                deadline = Date().addingTimeInterval(stallTimeout)
-            } else if Date() >= deadline {
-                return
-            }
+            if Task.isCancelled || Date() >= deadline { return }
         }
     }
 

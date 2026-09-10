@@ -249,9 +249,13 @@ struct ChatFileAttachment: Codable, Equatable, Hashable, Identifiable, Sendable 
         }
 
         let sawEveryPage = eagerLimit == document.pageCount
+        // A page with an empty text layer inside the eager range means this
+        // "selectable" PDF is at least partly scanned: the full pass must
+        // re-run with OCR even though the preview has text, or those pages
+        // are silently lost in a document short enough to look complete.
         let state: ExtractionState = !head.reachedEnd
             ? .truncated
-            : (sawEveryPage ? .complete : .pending)
+            : (sawEveryPage && head.emptyTextPages == 0 ? .complete : .pending)
         try self.init(
             fullText: Self.collapsingLayoutNoise(head.text),
             filename: filename,
@@ -271,8 +275,13 @@ struct ChatFileAttachment: Codable, Equatable, Hashable, Identifiable, Sendable 
         let generation = cache.generation(for: id)
         let extraction = Task.detached(priority: .utility) {
             defer { cache.finishPending(id) }
+            // PDFDocument is not Sendable: reparse the bytes on the worker
+            // instead of carrying the instance across isolation (the scanned
+            // path below does the same).
+            guard let workerDocument = PDFDocument(data: data),
+                  workerDocument.pageCount == pageCount else { return }
             let extracted = PDFTextRecognizer.recognizePages(
-                of: document,
+                of: workerDocument,
                 range: 0..<pageCount,
                 characterBudget: Self.maxExtractedCharacters,
                 onPageComplete: { cache.reportProgress(id) }
@@ -362,7 +371,11 @@ struct ChatFileAttachment: Codable, Equatable, Hashable, Identifiable, Sendable 
             let full = Self.collapsingLayoutNoise(extracted.text)
                 .trimmingCharacters(in: .whitespacesAndNewlines)
             let bounded = String(full.prefix(Self.maxExtractedCharacters))
-            guard bounded.count > previewLength else { return }
+            // A completed pass publishes even when normalization shrank the
+            // full text to the preview's length — otherwise the entry would
+            // stay "incomplete" forever and the tool would tell the user to
+            // reattach a file whose extraction already succeeded.
+            guard bounded.count > previewLength || extracted.reachedEnd else { return }
             cache.publish(
                 id,
                 entry: DocumentContentCache.Entry(

@@ -2435,6 +2435,13 @@ final class ChatViewModel {
         }
         var toolExecutionsLeft = maxToolExecutions
         var documentReadsLeft = maxDocumentReads
+        // Over-budget calls append an error row and consume NEITHER counter,
+        // so a model that keeps naming an exhausted tool could otherwise loop
+        // forever: the while condition stays satisfiable through the other
+        // counter and synthesis requires both at zero. This round cap is the
+        // termination backstop independent of both budgets.
+        let maxToolRounds = maxToolExecutions + maxDocumentReads + 2
+        var toolRounds = 0
         let toolExecutor = NativeToolCallExecutor(registry: tools)
         var appGroundingSources: [GroundingSource] = []
         var isFinalSynthesisRound = false
@@ -2450,6 +2457,8 @@ final class ChatViewModel {
         var draftBeforeCorrection: String?
 
         while toolExecutionsLeft > 0 || documentReadsLeft > 0 || isFinalSynthesisRound {
+            toolRounds += 1
+            if toolRounds > maxToolRounds { isFinalSynthesisRound = true }
             // History for this request: everything BEFORE the streaming
             // placeholder. The placeholder itself is excluded because the
             // assistant hasn't said anything yet.

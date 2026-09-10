@@ -25,7 +25,7 @@ enum ReadDocumentTool {
                 "mode": .object([
                     "type": .string("string"),
                     "enum": .array([.string("outline"), .string("read")]),
-                    "description": .string("'outline' returns the section map of the whole document in one call — best for summarizing or working out what the document covers. 'read' (the default) returns document text at 'offset'.")
+                    "description": .string("'outline' returns the section map of the whole document in one call — best for summarizing or working out what the document covers. 'read' (the default) returns document text at 'offset'. Regex search is NOT this parameter — pass the separate 'grep' argument for it.")
                 ]),
                 "offset": .object([
                     "type": .string("integer"),
@@ -50,7 +50,7 @@ enum ReadDocumentTool {
     static func run(
         arguments: String,
         cache: DocumentContentCache = .shared,
-        stallTimeout: TimeInterval = 30
+        stallTimeout: TimeInterval = 5
     ) async -> ToolCallResult {
         let tool = "read_document"
         guard let data = arguments.data(using: .utf8),
@@ -60,7 +60,9 @@ enum ReadDocumentTool {
 
         let rawID = args.document_id.trimmingCharacters(in: .whitespacesAndNewlines)
         guard let id = UUID(uuidString: rawID) else {
-            return err(tool, "'\(rawID)' is not a valid document id — use the id from the document's BEGIN RAPID ATTACHMENT header")
+            // Bound the echo: the id is model-supplied and unbounded.
+            let echo = rawID.count > 120 ? String(rawID.prefix(120)) + "…" : rawID
+            return err(tool, "'\(echo)' is not a valid document id — use the id from the document's BEGIN RAPID ATTACHMENT header")
         }
         guard let awaited = cache.getAwaitingCompletionStatus(
             id,
@@ -141,10 +143,10 @@ enum ReadDocumentTool {
         var note = "Each entry's 'offset' can be passed back as read_document's 'offset' to read that section."
         if trimmed.count < rows.count {
             payload["entries_omitted"] = rows.count - trimmed.count
-            if let depth = keptDepth {
+            if let depth = keptDepth, depth > 0 {
                 note += " Showing the top \(depth + 1) level(s) of \(rows.count) total entries; deeper subsections are omitted."
             } else {
-                note += " Showing \(trimmed.count) of \(rows.count) entries."
+                note += " Showing the first \(trimmed.count) top-level entries of \(rows.count) total; the later sections are omitted."
             }
         }
         if source == "inferred" {

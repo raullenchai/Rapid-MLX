@@ -706,31 +706,38 @@ struct ReadDocumentToolTests {
         #expect(entry?.text == "page one")
     }
 
-    @Test("Progress extends the wait past the stall timeout")
-    func progressExtendsTheWait() async throws {
-        // The live case: work that keeps reporting outlives a stall timeout
-        // far shorter than its total runtime, which is what lets a nine-minute
-        // recognition finish under a thirty-second stall bound.
+    @Test("Progress does not extend the wait past the stall timeout")
+    func progressDoesNotExtendTheWait() async throws {
+        // read_document blocks its calling thread while it waits, so the
+        // stall timeout is a HARD cap: per-page progress from a minutes-long
+        // scan must never keep a model request waiting. The waiter returns
+        // the captured preview with extractionPending set, and the tool's
+        // result tells the model to retry rather than blocking.
         let cache = freshCache()
         let id = UUID()
         cache.put(id, entry: DocumentContentCache.Entry(filename: "scan.pdf", text: "partial"))
         cache.beginPending(id)
+        defer { cache.finishPending(id) }
 
-        // Report progress well past the stall timeout, then publish. Timing is
-        // one-sided: the test only fails if the waiter gives up EARLY, and the
-        // stall bound is an order of magnitude under the total, so a loaded
-        // machine makes this more forgiving rather than flaky.
-        Task.detached {
-            for _ in 0..<5 {
-                try? await Task.sleep(for: .milliseconds(60))
+        // Keep reporting progress for far longer than the stall timeout
+        // without ever completing the extraction.
+        let stop = Date().addingTimeInterval(2.0)
+        let reporter = Task.detached {
+            while Date() < stop {
+                try? await Task.sleep(for: .milliseconds(30))
                 cache.reportProgress(id)
             }
-            cache.put(id, entry: DocumentContentCache.Entry(filename: "scan.pdf", text: "complete text"))
-            cache.finishPending(id)
         }
+        defer { reporter.cancel() }
 
-        let entry = cache.getAwaitingCompletion(id, stallTimeout: 5.0)
-        #expect(entry?.text == "complete text")
+        let started = Date()
+        let status = cache.getAwaitingCompletionStatus(id, stallTimeout: 0.4)
+        let elapsed = Date().timeIntervalSince(started)
+        #expect(status?.entry.text == "partial")
+        #expect(status?.extractionPending == true)
+        // Generous upper bound: the 0.4 s cap with slack for a loaded CI
+        // machine, but far under the reporter's 2 s lifetime.
+        #expect(elapsed < 1.5)
     }
 
     // MARK: - An extraction that never finished

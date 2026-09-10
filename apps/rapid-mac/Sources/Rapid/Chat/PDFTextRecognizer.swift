@@ -14,8 +14,18 @@ enum PDFTextRecognizer {
 
     struct Extraction {
         let text: String
-        /// False when the character budget or cancellation stopped the pass.
+        /// False when the character budget, cancellation, or a failed
+        /// recognition stopped the pass.
         let reachedEnd: Bool
+        /// Pages whose text layer was empty — scan candidates for a caller
+        /// deciding whether a background OCR pass is still needed.
+        let emptyTextPages: Int
+
+        init(text: String, reachedEnd: Bool, emptyTextPages: Int = 0) {
+            self.text = text
+            self.reachedEnd = reachedEnd
+            self.emptyTextPages = emptyTextPages
+        }
     }
 
     /// Extracts page-tagged text without accumulating beyond `characterBudget`.
@@ -29,20 +39,40 @@ enum PDFTextRecognizer {
     ) -> Extraction {
         var pages: [String] = []
         var remaining = characterBudget
+        var emptyTextPages = 0
+        var recognitionFailed = false
+        func snapshot(reachedEnd: Bool) -> Extraction {
+            Extraction(
+                text: pages.joined(separator: "\n\n"),
+                reachedEnd: reachedEnd && !recognitionFailed,
+                emptyTextPages: emptyTextPages
+            )
+        }
         for index in range {
-            if Task.isCancelled { return Extraction(text: pages.joined(separator: "\n\n"), reachedEnd: false) }
-            if remaining <= 0 { return Extraction(text: pages.joined(separator: "\n\n"), reachedEnd: false) }
+            if Task.isCancelled { return snapshot(reachedEnd: false) }
+            if remaining <= 0 { return snapshot(reachedEnd: false) }
             defer { onPageComplete?() }
             guard let page = document.page(at: index) else { continue }
 
             let bounded = boundedText(of: page, limit: remaining)
             if bounded.clamped, bounded.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                return Extraction(text: pages.joined(separator: "\n\n"), reachedEnd: false)
+                return snapshot(reachedEnd: false)
             }
             let existing = bounded.text.trimmingCharacters(in: .whitespacesAndNewlines)
-            let text = existing.isEmpty && recognizeScans
-                ? recognize(page: page, characterBudget: remaining)
-                : existing
+            var text = existing
+            if existing.isEmpty {
+                emptyTextPages += 1
+                if recognizeScans {
+                    // nil means recognition itself failed (render or Vision
+                    // error) — distinct from a page that is genuinely blank.
+                    // The pass must not report completion over a lost page.
+                    if let recognized = recognize(page: page, characterBudget: remaining) {
+                        text = recognized
+                    } else {
+                        recognitionFailed = true
+                    }
+                }
+            }
             guard !text.isEmpty else { continue }
             let tagged = "[Page \(index + 1)]\n\(text)"
             let cost = tagged.count + (pages.isEmpty ? 0 : 2)
@@ -53,10 +83,10 @@ enum PDFTextRecognizer {
             remaining -= cost
             pages.append(tagged)
             if bounded.clamped {
-                return Extraction(text: pages.joined(separator: "\n\n"), reachedEnd: false)
+                return snapshot(reachedEnd: false)
             }
         }
-        return Extraction(text: pages.joined(separator: "\n\n"), reachedEnd: true)
+        return snapshot(reachedEnd: true)
     }
 
     /// Uses PDFKit selection so an oversized page is bounded before allocation.
@@ -72,9 +102,11 @@ enum PDFTextRecognizer {
         return (String(text.prefix(limit)), true)
     }
 
-    /// Returns an empty string when rendering or recognition yields no text.
-    static func recognize(page: PDFPage, characterBudget: Int = .max) -> String {
-        guard let image = render(page) else { return "" }
+    /// OCRs one page. Returns nil when rendering or the Vision request itself
+    /// failed — distinct from an empty string, which means the page is
+    /// genuinely blank or contains no recognizable text.
+    static func recognize(page: PDFPage, characterBudget: Int = .max) -> String? {
+        guard let image = render(page) else { return nil }
 
         let request = VNRecognizeTextRequest()
         request.recognitionLevel = .accurate
@@ -84,7 +116,7 @@ enum PDFTextRecognizer {
         do {
             try VNImageRequestHandler(cgImage: image, options: [:]).perform([request])
         } catch {
-            return ""
+            return nil
         }
         var lines: [String] = []
         var remaining = characterBudget
