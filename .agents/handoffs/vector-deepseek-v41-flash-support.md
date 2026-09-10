@@ -43,9 +43,12 @@ Echo, and ds0731.
   metadata tests passed; diff check passed.
 - Prepared gate: `scripts/bench_deepseek_v41_runtime.py` can run the unchanged
   local checkpoint, capture continuous warm decode latency, existing eval-barrier
-  waits, Engram/disk counters, memory, and an optional Metal trace. It refuses
+  waits, Engram/disk counters, and memory. It refuses
   downloads and checkpoint Python execution is explicit opt-in. Its focused and
   metadata suites pass 42 tests, including a tiny local-runtime end-to-end run.
+- Safety finding: whole-process Metal capture is forbidden for this model. A
+  one-token capture grew to about 112 GiB before it was terminated and removed;
+  system free space recovered fully. Use isolated layer/kernel benchmarks.
 - Next owner/action: Vector, when at least 223 GiB of policy-compliant cache
   capacity exists, run the unchanged real checkpoint with per-layer profiling,
   then validate a one-layer expert-major conversion and batched kernel.

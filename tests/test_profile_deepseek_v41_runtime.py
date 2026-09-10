@@ -53,14 +53,10 @@ class _Scalar:
         return self.value
 
 
-class _FakeMetal:
+class _FakeMx:
     get_active_memory = staticmethod(lambda: 1)
     get_cache_memory = staticmethod(lambda: 2)
     get_peak_memory = staticmethod(lambda: 3)
-
-
-class _FakeMx:
-    metal = _FakeMetal()
     argmax = staticmethod(lambda logits: logits)
 
 
@@ -159,13 +155,13 @@ class TextRuntime:
         model=tmp_path,
         trust_checkpoint_runtime=True,
         resident_backbone=False,
+        engram_cache_rows=16,
         execution_mode="compiled",
         prompt="test",
         context_tokens=2,
         warmup_tokens=1,
         measure_tokens=2,
-        trace=None,
-        trace_tokens=4,
+        diagnostic_tokens=1,
     )
 
     result = run(args)
@@ -174,5 +170,5 @@ class TextRuntime:
     assert result["context_build"]["tokens"] == 2
     assert result["warmup"]["tokens"] == 1
     assert result["measurement"]["tokens"] == 2
-    assert result["measurement"]["eval_barriers"]["calls"] == 2
-    assert result["trace_probe"] is None
+    assert result["measurement"]["eval_barriers"] is None
+    assert result["barrier_diagnostic"]["eval_barriers"]["calls"] == 1

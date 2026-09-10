@@ -157,6 +157,68 @@ Only after those gates pass should Rapid model loading, catalog metadata,
 server routing, GUI exposure, or a downloadable quantization artifact enter
 scope.
 
+## Real-weight baseline on the 60-core M3 Ultra
+
+After policy-compliant cache cleanup, the 238,796,133,496-byte checkpoint was
+downloaded into the standard Hugging Face cache. All 143,982 indexed tensors
+across 48 shards were present, no incomplete files remained, and `hf cache
+verify` checked all 64 repository files successfully. The HF volume retained
+107 GiB free after download.
+
+Environment:
+
+- Apple M3 Ultra, 60 GPU cores, 256 GB unified memory
+- MLX 0.32.2
+- checkpoint revision `802f1a00982705d81b79ad1c83aa0ccc0b863ebc`
+- checkpoint runtime SHA-256
+  `55ab20f116a663d79fc6980fbb4613bb60d6cba7ab64dfa4d580d65eeba60645`
+- compiled execution mode and resident text backbone
+
+The checkpoint author's exact arithmetic command was reproduced with its
+default 16,384-row Engram cache. It generated the expected
+`2 plus 2 equals 4.` text, but achieved 5.29 tok/s on the first run and 6.05
+tok/s on the repeated warm-cache run. The published 9.46 tok/s short result was
+not reproduced on this 60-core GPU configuration.
+
+A separate 32-token warmup followed by 128 continuous decode tokens measured:
+
+- 6.018 tok/s
+- 165.95 ms median token latency
+- 173.96 ms p95 and 208.94 ms maximum
+- 173,505,743,338 active MLX bytes and 173,589,483,108 peak bytes
+- 491,520 Engram-related disk bytes across 18,432 small read calls
+
+An instrumented 16-token phase observed 40 router barriers and 40 layer
+barriers per token. Existing barrier wait averaged about 130.6 ms/token:
+
+- router selection barrier: 75.6 ms/token
+- layer boundary barrier: 53.7 ms/token
+- final logits barrier: 1.1 ms/token
+- small indexed reads: 0.2 ms/token
+
+Barrier attribution identifies where queued work is observed, rather than the
+exclusive cost of the Python caller.
+
+Two real-weight candidate experiments then bounded straightforward runtime
+headroom:
+
+1. Removing the redundant layer-boundary `mx.eval` and per-layer finite-value
+   diagnostic preserved the exact generated text and improved alternating warm
+   runs from 6.16--6.22 tok/s to 7.57--7.63 tok/s, a 22--24% gain.
+2. Packing all 384 routed experts for one real layer into an expert-major
+   4,246,732,800-byte tensor set kept routing and top-6 selection on GPU. Output
+   remained numerically close (`max_abs=0.0001221`, `rtol=atol=1e-3`) and layer
+   latency improved from 1.111 ms to 0.918 ms, or 1.21x. Compiling the batched
+   path improved a separate run from 1.164 ms to 1.007 ms, another 13.5%, but
+   was not sufficient to change the end-to-end conclusion.
+
+Even optimistically combining these changes predicts only about 9 tok/s on
+this machine. Reaching 20 tok/s therefore requires large improvements outside
+ordinary tensor layout and graph compilation: attention/indexer/mHC fusion, a
+specialized fused expert kernel, effective parallel MTP verification, or a
+post-trained reduction in active computation. Quantization or REAP that only
+reduces stored bytes does not close the throughput gap.
+
 The real-weight profiler is plan-only unless both execution flags are supplied.
 It never downloads a model and requires explicit consent before importing the
 checkpoint-bundled Python runtime:
@@ -166,14 +228,19 @@ uv run python scripts/bench_deepseek_v41_runtime.py \
   --model ~/.cache/huggingface/hub/models--Vontra--DeepSeek-V4.1-Flash-MLX-2bit-MTP/snapshots/<revision> \
   --execute-real-weights --trust-checkpoint-runtime \
   --resident-backbone --execution-mode compiled \
+  --engram-cache-rows 16384 \
   --context-tokens 8192 --warmup-tokens 16 --measure-tokens 128 \
-  --trace /private/tmp/deepseek-v41-flash-8k.gputrace --trace-tokens 4 \
+  --diagnostic-tokens 8 \
   --output /private/tmp/deepseek-v41-flash-8k.json
 ```
 
 The JSON attributes wait time to existing `mx.eval` call sites without adding
 new synchronization points. This identifies where queued work is observed, not
-exclusive kernel time; the optional Metal trace is required for kernel-level
-attribution. To bound scratch growth, tracing is a separate post-measurement
-probe capped at eight tokens and is refused when `/private/tmp` has less than
-20 GiB free.
+exclusive kernel time.
+
+Do not enable whole-process Metal capture for this model. A one-token capture
+grew to approximately 112 GiB before termination, reducing system-volume free
+space to 14 GiB. The capture process was stopped, the single generated scratch
+artifact was removed, and free space returned to 126 GiB. Kernel experiments
+must isolate a bounded layer or operation instead of capturing the resident
+whole-model process.

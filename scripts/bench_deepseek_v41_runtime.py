@@ -8,7 +8,6 @@ import hashlib
 import importlib.util
 import json
 import math
-import shutil
 import statistics
 import sys
 import time
@@ -30,7 +29,6 @@ PLAN = {
         "existing mx.eval barrier wait time by Python call site",
         "runtime disk-read and Engram-cache counters",
         "MLX active, cache, and peak memory",
-        "optional Metal GPU trace",
     ],
     "guardrails": [
         "never downloads or relocates model files",
@@ -47,13 +45,13 @@ def parse_args():
     parser.add_argument("--execute-real-weights", action="store_true")
     parser.add_argument("--trust-checkpoint-runtime", action="store_true")
     parser.add_argument("--resident-backbone", action="store_true")
+    parser.add_argument("--engram-cache-rows", type=int, default=16384)
     parser.add_argument("--execution-mode", choices=("reference", "deferred", "compiled"), default="compiled")
     parser.add_argument("--prompt", default="Explain why local inference latency matters.")
     parser.add_argument("--context-tokens", type=int, default=0)
     parser.add_argument("--warmup-tokens", type=int, default=16)
     parser.add_argument("--measure-tokens", type=int, default=128)
-    parser.add_argument("--trace", type=Path)
-    parser.add_argument("--trace-tokens", type=int, default=4)
+    parser.add_argument("--diagnostic-tokens", type=int, default=8)
     parser.add_argument("--output", type=Path)
     return parser.parse_args()
 
@@ -155,9 +153,9 @@ def _counter_delta(after, before):
 
 def _memory_snapshot(mx):
     return {
-        "active_bytes": int(mx.metal.get_active_memory()),
-        "cache_bytes": int(mx.metal.get_cache_memory()),
-        "peak_bytes": int(mx.metal.get_peak_memory()),
+        "active_bytes": int(mx.get_active_memory()),
+        "cache_bytes": int(mx.get_cache_memory()),
+        "peak_bytes": int(mx.get_peak_memory()),
     }
 
 
@@ -172,7 +170,8 @@ def _run_tokens(
 ):
     latencies = []
     counters_before = _weight_counters(runtime)
-    barrier.reset()
+    if barrier is not None:
+        barrier.reset()
     next_token = int(initial_token)
     started = time.perf_counter()
     for index in range(count):
@@ -192,7 +191,7 @@ def _run_tokens(
             "max": max(latencies) if latencies else None,
             "raw": latencies,
         },
-        "eval_barriers": barrier.snapshot(),
+        "eval_barriers": barrier.snapshot() if barrier is not None else None,
         "weight_counters": _counter_delta(_weight_counters(runtime), counters_before),
         "memory": _memory_snapshot(mx),
         "last_token_id": next_token,
@@ -207,17 +206,19 @@ def _validate_args(args):
             "refusing to execute checkpoint-bundled Python without "
             "--trust-checkpoint-runtime"
         )
-    if min(args.context_tokens, args.warmup_tokens, args.measure_tokens) < 0:
+    if min(
+        args.context_tokens,
+        args.warmup_tokens,
+        args.measure_tokens,
+        args.diagnostic_tokens,
+    ) < 0:
         raise SystemExit("token counts may not be negative")
     if args.measure_tokens < 1:
         raise SystemExit("--measure-tokens must be at least 1")
-    if args.trace is not None:
-        trace = args.trace.expanduser().resolve()
-        scratch = Path("/private/tmp").resolve()
-        if trace.suffix != ".gputrace" or scratch not in trace.parents:
-            raise SystemExit("--trace must be a .gputrace path under /private/tmp")
-        if not 1 <= args.trace_tokens <= 8:
-            raise SystemExit("--trace-tokens must be between 1 and 8")
+    if args.diagnostic_tokens < 1:
+        raise SystemExit("--diagnostic-tokens must be at least 1")
+    if not 0 <= args.engram_cache_rows <= 16384:
+        raise SystemExit("--engram-cache-rows must be between 0 and 16384")
 
 
 def run(args):
@@ -225,38 +226,41 @@ def run(args):
     model_path = args.model.expanduser().resolve()
     runtime_path = _resolve_runtime(model_path)
     total_size = _checkpoint_total_size(model_path)
-    trace_path = args.trace.expanduser().resolve() if args.trace else None
 
     started = time.perf_counter()
     module = _load_runtime(runtime_path)
     import mlx.core as mx
 
     mx.set_default_device(mx.gpu)
-    mx.metal.reset_peak_memory()
+    mx.reset_peak_memory()
     runtime = module.TextRuntime(
         model_path,
-        max_tokens=args.context_tokens + args.warmup_tokens + args.measure_tokens + 8,
+        max_tokens=(
+            args.context_tokens
+            + args.warmup_tokens
+            + args.measure_tokens
+            + args.diagnostic_tokens
+            + 8
+        ),
         resident_backbone=args.resident_backbone,
         execution_mode=args.execution_mode,
     )
+    runtime.w.engram_cache_rows = args.engram_cache_rows
     load_seconds = time.perf_counter() - started
     encoded = runtime.tokenizer.encode(args.prompt).ids
     if not encoded:
         raise RuntimeError("prompt encoded to zero tokens")
     original_eval = module.mx.eval
     barrier = EvalBarrierProfiler(original_eval)
-    module.mx.eval = barrier
     load_memory = _memory_snapshot(mx)
-    mx.metal.reset_peak_memory()
+    mx.reset_peak_memory()
 
     context = [encoded[index % len(encoded)] for index in range(args.context_tokens)]
-    trace_started = False
-    trace_result = None
     try:
         context_result = _run_tokens(
             runtime,
             len(context),
-            barrier,
+            None,
             mx,
             initial_token=encoded[-1],
             teacher_tokens=context,
@@ -264,40 +268,27 @@ def run(args):
         warmup_result = _run_tokens(
             runtime,
             args.warmup_tokens,
-            barrier,
+            None,
             mx,
             initial_token=context_result["last_token_id"],
         )
         measured = _run_tokens(
             runtime,
             args.measure_tokens,
-            barrier,
+            None,
             mx,
             initial_token=warmup_result["last_token_id"],
         )
-        if trace_path is not None:
-            if trace_path.exists():
-                raise FileExistsError(f"refusing to overwrite Metal trace: {trace_path}")
-            trace_path.parent.mkdir(parents=True, exist_ok=True)
-            free_bytes = shutil.disk_usage(trace_path.parent).free
-            if free_bytes < 20 * 1024**3:
-                raise RuntimeError(
-                    "refusing Metal capture with less than 20 GiB scratch free"
-                )
-            mx.metal.start_capture(str(trace_path))
-            trace_started = True
-            trace_result = _run_tokens(
-                runtime,
-                args.trace_tokens,
-                barrier,
-                mx,
-                initial_token=measured["last_token_id"],
-            )
-            mx.metal.stop_capture()
-            trace_started = False
+        module.mx.eval = barrier
+        diagnostic = _run_tokens(
+            runtime,
+            args.diagnostic_tokens,
+            barrier,
+            mx,
+            initial_token=measured["last_token_id"],
+        )
+        module.mx.eval = original_eval
     finally:
-        if trace_started:
-            mx.metal.stop_capture()
         module.mx.eval = original_eval
 
     return {
@@ -311,18 +302,18 @@ def run(args):
         "parameters": {
             "execution_mode": args.execution_mode,
             "resident_backbone": args.resident_backbone,
+            "engram_cache_rows": args.engram_cache_rows,
             "context_tokens": args.context_tokens,
             "warmup_tokens": args.warmup_tokens,
             "measure_tokens": args.measure_tokens,
-            "trace": str(trace_path) if trace_path else None,
-            "trace_tokens": args.trace_tokens if args.trace else 0,
+            "diagnostic_tokens": args.diagnostic_tokens,
         },
         "device": mx.device_info(),
         "load": {"seconds": load_seconds, "memory": load_memory},
         "context_build": context_result,
         "warmup": warmup_result,
         "measurement": measured,
-        "trace_probe": trace_result,
+        "barrier_diagnostic": diagnostic,
     }
 
 
