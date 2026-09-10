@@ -412,6 +412,22 @@ def test_mtp_nongreedy_real_sampled_smoke(loaded_model, max_k):
         f"or the accept arithmetic is rejecting valid proposals."
     )
 
+    # The accept rate needs a ceiling as well as a floor. A verifier
+    # that accepted every proposal would satisfy every other assertion
+    # in this test while never entering the reject-and-resample-from-
+    # residual branch — which is half of what the sampled path does and
+    # the more delicate half. Measured rejections on this checkpoint are
+    # 41-55 at K=2 and 77-93 at K=3 across four seeds, so requiring 10
+    # keeps four-fold margin over the smallest observed run.
+    rejections = snap.attempts - snap.accepts
+    assert rejections >= 10, (
+        f"Only {rejections} of {snap.attempts} draft positions were "
+        f"rejected at max_k={max_k} (accept rate {accept_rate:.3f}). "
+        f"The residual-resample branch is essentially unexercised, so "
+        f"this run does not cover it. A verifier that accepts "
+        f"everything reaches this line."
+    )
+
     # The point of the test: prove a chain of depth ``max_k`` was
     # verified and accepted, i.e. the multi-position accept path really
     # ran to the pinned depth. Asserting a fixed >= 2 instead would let
