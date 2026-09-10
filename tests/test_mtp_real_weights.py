@@ -304,3 +304,122 @@ def test_mtp_lossless_byte_equal_against_baseline(loaded_model, baseline_tokens)
             f"baseline {base_tokens} vs mtp {mtp_tokens}. "
             f"Accept rate this run: {counter.snapshot()}."
         )
+
+
+# Sampled-smoke settings. temp>0 with a top_p filter is what ordinary
+# chat traffic uses; the temp=0 test above cannot reach the
+# probabilistic accept/residual arithmetic at all, because at temp=0
+# the verify accepts iff the argmaxes match and the random draw is
+# ignored outright.
+_SAMPLED_TEMP = 0.8
+_SAMPLED_TOP_P = 0.95
+_SAMPLED_N_TOKENS = 120
+_SAMPLED_PROMPT = "Explain how a Bloom filter works, in three sentences."
+
+
+def _longest_draft_run(from_draft_flags: list[bool]) -> int:
+    """Longest run of consecutive draft-sourced tokens.
+
+    A run of length N means some round had N draft positions accepted
+    back-to-back, which is direct evidence that a chain of depth >= N
+    was verified — the property the K>=2 accept arithmetic depends on.
+    """
+    best = current = 0
+    for flag in from_draft_flags:
+        current = current + 1 if flag else 0
+        best = max(best, current)
+    return best
+
+
+@pytest.mark.parametrize("max_k", [2, 3])
+def test_mtp_nongreedy_real_sampled_smoke(loaded_model, max_k):
+    """Sampled (temp>0) MTP decode on real weights must reach depth K and accept.
+
+    Why this exists alongside the temp=0 lossless test: at temp=0 the
+    verify path never consults its random draw, so the entire
+    probabilistic accept / residual-resample branch — the branch every
+    non-greedy chat request now takes — is untested on real weights by
+    that test. This one drives it.
+
+    Why the depth is pinned rather than left to the EV controller:
+    measured on this checkpoint, the controller settles on K=1 for this
+    prompt, giving a longest-consecutive-draft-run of exactly 1. A
+    K=1 chain has no cross-position accept arithmetic to get wrong, so
+    an auto-K run would report a healthy acceptance rate while never
+    executing the K>=2 code path at all. ``disable_auto_k=True`` with
+    ``max_k=K`` fixes the chain depth at K every round so the path is
+    actually exercised. Both settings are ordinary generator kwargs;
+    nothing about the sampling math changes.
+
+    Observed at the time of writing (Qwen3.5-9B-4bit + sidecar, 120
+    tokens): K=2 accepted 60/118 draft positions (51%) with a longest
+    run of 2; K=3 accepted 74/138 (54%) with a longest run of 3. Both
+    produced coherent prose. The thresholds below sit well under those
+    numbers so ordinary sampling variance does not flake the test.
+    """
+    import mlx.core as _mx
+
+    from vllm_mlx.spec_decode.mtp import MTPAcceptCounter
+    from vllm_mlx.spec_decode.mtp.generator import mtp_generate_step
+
+    model, tokenizer = loaded_model
+    inner = model.language_model
+
+    _mx.random.seed(1234)
+    counter = MTPAcceptCounter()
+    prompt_ids = _mx.array(tokenizer.encode(_SAMPLED_PROMPT), _mx.uint32)
+
+    tokens: list[int] = []
+    from_draft: list[bool] = []
+    for tok, _lp, fd in mtp_generate_step(
+        prompt_ids,
+        inner,
+        max_tokens=_SAMPLED_N_TOKENS,
+        temp=_SAMPLED_TEMP,
+        top_p=_SAMPLED_TOP_P,
+        accept_counter=counter,
+        disable_auto_k=True,
+        max_k=max_k,
+    ):
+        tokens.append(int(tok))
+        from_draft.append(bool(fd))
+        if len(tokens) >= _SAMPLED_N_TOKENS:
+            break
+
+    snap = counter.snapshot()
+
+    assert len(tokens) == _SAMPLED_N_TOKENS, (
+        f"Sampled MTP run produced {len(tokens)} tokens, expected "
+        f"{_SAMPLED_N_TOKENS}. The generator terminated early."
+    )
+
+    # The spec path must actually have run. A zero here means MTP
+    # silently degraded to plain autoregressive decode and every other
+    # assertion in this test would pass vacuously.
+    assert snap.attempts > 0, (
+        f"No draft positions were attempted at max_k={max_k}: {snap}. "
+        f"MTP spec decode did not engage."
+    )
+
+    accept_rate = snap.accepts / snap.attempts
+    assert accept_rate > 0.15, (
+        f"Sampled accept rate {accept_rate:.3f} ({snap.accepts}/"
+        f"{snap.attempts}) at max_k={max_k} is far below the ~0.5 "
+        f"measured on this checkpoint. Either the draft head regressed "
+        f"or the accept arithmetic is rejecting valid proposals."
+    )
+
+    # The point of the test: prove a chain of depth >= 2 was verified
+    # and accepted, i.e. the multi-position accept path really ran.
+    longest = _longest_draft_run(from_draft)
+    assert longest >= 2, (
+        f"Longest consecutive draft-sourced run was {longest} at "
+        f"max_k={max_k}; expected >= 2. The K>=2 accept path was never "
+        f"exercised, so this run proves nothing about it."
+    )
+
+    text = tokenizer.decode(tokens)
+    assert text.strip(), (
+        f"Sampled MTP decode at max_k={max_k} produced no printable text "
+        f"from {len(tokens)} tokens."
+    )
