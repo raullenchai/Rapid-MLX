@@ -536,6 +536,53 @@ struct UpdateCheckerTests {
         #expect(UpdateChecker.endpoint == "https://rapidmlx.com/api/desktop-update")
     }
 
+    @Test("endpointURL carries optional os + chip labels when supplied")
+    func endpointCarriesOSAndChip() throws {
+        let url = try #require(
+            UpdateChecker.endpointURL(forVersion: "0.14.0", os: "26.1", chip: "Apple M4 Pro")
+        )
+        let comps = try #require(URLComponents(url: url, resolvingAgainstBaseURL: false))
+        let items = try #require(comps.queryItems)
+        #expect(items.count == 3)
+        #expect(items.first(where: { $0.name == "v" })?.value == "0.14.0")
+        #expect(items.first(where: { $0.name == "os" })?.value == "26.1")
+        #expect(items.first(where: { $0.name == "chip" })?.value == "Apple M4 Pro")
+    }
+
+    @Test("endpointURL omits a label it could not read")
+    func endpointOmitsUnknownLabels() throws {
+        // An unreadable value is left off the wire rather than sent as a
+        // placeholder, which would mint a bucket meaning "we did not know".
+        let url = try #require(UpdateChecker.endpointURL(forVersion: "0.14.0", os: "26.1"))
+        let comps = try #require(URLComponents(url: url, resolvingAgainstBaseURL: false))
+        let items = try #require(comps.queryItems)
+        #expect(items.count == 2)
+        #expect(items.contains { $0.name == "os" })
+        #expect(!items.contains { $0.name == "chip" })
+    }
+
+    @Test("pollOSLabel keeps major.minor and drops the patch level")
+    func pollOSLabelIsCoarse() {
+        // Dropped at the client, not the endpoint: the poll is on by default,
+        // so it should never carry what the server does not keep.
+        #expect(UpdateChecker.pollOSLabel(
+            OperatingSystemVersion(majorVersion: 26, minorVersion: 1, patchVersion: 3)
+        ) == "26.1")
+        #expect(UpdateChecker.pollOSLabel(
+            OperatingSystemVersion(majorVersion: 15, minorVersion: 0, patchVersion: 0)
+        ) == "15.0")
+    }
+
+    @Test("pollChipLabel reports Apple silicon only")
+    func pollChipLabelRejectsIntel() {
+        #expect(UpdateChecker.pollChipLabel("Apple M4 Max") == "Apple M4 Max")
+        // Intel brand strings carry the exact SKU and clock — more identifying
+        // than the tier this is meant to report.
+        #expect(UpdateChecker.pollChipLabel("Intel") == nil)
+        #expect(UpdateChecker.pollChipLabel("Intel(R) Core(TM) i9-9880H @ 2.30GHz") == nil)
+        #expect(UpdateChecker.pollChipLabel(nil) == nil)
+    }
+
     @Test("endpointURL defensively encodes a malformed version string")
     func endpointEncodesMalformedVersion() throws {
         // A hostile/garbled CFBundleShortVersionString must not be able

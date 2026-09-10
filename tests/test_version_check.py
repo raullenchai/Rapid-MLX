@@ -11,6 +11,8 @@ break the CLI on an offline laptop.
 from __future__ import annotations
 
 import json
+import re
+import sys
 import os
 import urllib.parse
 from pathlib import Path
@@ -119,7 +121,16 @@ def test_fetch_latest_targets_cli_update_endpoint_with_version(monkeypatch):
     assert parsed.scheme == "https"
     assert parsed.netloc == "rapidmlx.com"  # never api.github.com
     assert parsed.path == "/api/cli-update"  # exact path, no suffix
-    assert urllib.parse.parse_qs(parsed.query) == {"v": ["0.6.61"]}
+    qs = urllib.parse.parse_qs(parsed.query)
+    assert qs["v"] == ["0.6.61"]
+    # ``os``/``chip`` are coarse fleet labels and are omitted when unreadable,
+    # so assert their SHAPE rather than pinning the whole query string — this
+    # test broke once already by encoding the exact URL.
+    assert set(qs) <= {"v", "os", "chip"}, qs
+    for value in qs.get("os", []):
+        assert re.fullmatch(r"\d{1,2}(\.\d{1,2})?", value), value
+    for value in qs.get("chip", []):
+        assert value.startswith("Apple "), value
     # Timeout guard preserved.
     assert captured["timeout"] == vc.NETWORK_TIMEOUT_SECONDS
 
@@ -290,10 +301,14 @@ def test_fetch_latest_ignores_desktop_release_and_selects_engine_tag(monkeypatch
     monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
 
     assert vc._fetch_latest() == "0.12.7"
-    assert urls == [
-        "https://rapidmlx.com/api/cli-update?v=0.12.7",
-        f"{vc.GITHUB_RELEASES_ENDPOINT}&page=1",
-    ]
+    # The poll URL carries optional os/chip labels, so match the endpoint and
+    # the version rather than the whole string.
+    assert len(urls) == 2
+    poll = urllib.parse.urlparse(urls[0])
+    assert poll.netloc == "rapidmlx.com"
+    assert poll.path == "/api/cli-update"
+    assert urllib.parse.parse_qs(poll.query)["v"] == ["0.12.7"]
+    assert urls[1] == f"{vc.GITHUB_RELEASES_ENDPOINT}&page=1"
 
 
 def test_desktop_fallback_paginates_until_engine_release(monkeypatch):
@@ -1260,3 +1275,94 @@ def test_prompt_returns_false_on_keyboard_interrupt(monkeypatch, interactive):
     ):
         assert vc.prompt_upgrade_if_available() is False
         run.assert_not_called()
+
+
+def test_poll_os_label_is_major_minor_only(monkeypatch):
+    """The patch level is dropped at the client, not at the endpoint.
+
+    The update poll is on by default — updates depend on it — so anything it
+    carries is carried about people who never opted into analytics. Sending a
+    value the server discards would be collecting it for no reason.
+    """
+    monkeypatch.setattr(vc.platform, "system", lambda: "Darwin")
+    monkeypatch.setattr(vc.platform, "mac_ver", lambda: ("26.1.3", ("", "", ""), ""))
+    assert vc._poll_os_label() == "26.1"
+    monkeypatch.setattr(vc.platform, "mac_ver", lambda: ("26", ("", "", ""), ""))
+    assert vc._poll_os_label() == "26"
+
+
+def test_poll_os_label_is_none_off_darwin(monkeypatch):
+    monkeypatch.setattr(vc.platform, "system", lambda: "Linux")
+    assert vc._poll_os_label() is None
+
+
+def test_poll_os_label_rejects_a_malformed_release(monkeypatch):
+    monkeypatch.setattr(vc.platform, "system", lambda: "Darwin")
+    for bogus in ("", "not-a-version", "..", "x.y"):
+        monkeypatch.setattr(vc.platform, "mac_ver", lambda b=bogus: (b, ("", "", ""), ""))
+        assert vc._poll_os_label() is None, bogus
+
+
+def test_poll_chip_label_only_reports_apple_silicon(monkeypatch):
+    """Intel brand strings carry the exact SKU and clock — more identifying
+    than the tier this is meant to report, and MLX is Apple-silicon only."""
+    monkeypatch.setattr(vc.platform, "system", lambda: "Darwin")
+    import vllm_mlx.telemetry.redact as redact
+
+    monkeypatch.setattr(redact, "_read_chip_brand", lambda: "Apple M3 Ultra")
+    assert vc._poll_chip_label() == "Apple M3 Ultra"
+    monkeypatch.setattr(
+        redact, "_read_chip_brand", lambda: "Intel(R) Core(TM) i9-9880H CPU @ 2.30GHz"
+    )
+    assert vc._poll_chip_label() is None
+
+
+def test_poll_chip_label_survives_an_unreadable_brand(monkeypatch):
+    """Fail-open: a version check must never break because a sysctl did."""
+    monkeypatch.setattr(vc.platform, "system", lambda: "Darwin")
+    import vllm_mlx.telemetry.redact as redact
+
+    def boom():
+        raise OSError("sysctl unavailable")
+
+    monkeypatch.setattr(redact, "_read_chip_brand", boom)
+    assert vc._poll_chip_label() is None
+
+
+def test_poll_omits_labels_it_cannot_read(monkeypatch):
+    """An unreadable value is left off the wire rather than sent as a
+    placeholder, which would invent a bucket meaning 'we did not know'."""
+    monkeypatch.setattr(vc, "_installed_version", lambda: "0.14.0")
+    monkeypatch.setattr(vc, "_poll_os_label", lambda: None)
+    monkeypatch.setattr(vc, "_poll_chip_label", lambda: None)
+    captured = {}
+
+    def fake_urlopen(req, timeout=None):
+        captured["url"] = req.full_url
+        return _FakeResp(json.dumps({"tag_name": "v0.14.0"}).encode())
+
+    monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+    vc._fetch_latest()
+    qs = urllib.parse.parse_qs(urllib.parse.urlparse(captured["url"]).query)
+    assert qs == {"v": ["0.14.0"]}
+
+
+def test_poll_never_sends_an_identifier(monkeypatch):
+    """The endpoint's standing promise is that it stores a country code and
+    never the raw IP. The client half of that is: carry no client id, no
+    interpreter version, no arch."""
+    monkeypatch.setattr(vc, "_installed_version", lambda: "0.14.0")
+    captured = {}
+
+    def fake_urlopen(req, timeout=None):
+        captured["url"] = req.full_url
+        captured["headers"] = dict(req.headers)
+        return _FakeResp(json.dumps({"tag_name": "v0.14.0"}).encode())
+
+    monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+    vc._fetch_latest()
+    qs = urllib.parse.parse_qs(urllib.parse.urlparse(captured["url"]).query)
+    assert set(qs) <= {"v", "os", "chip"}, qs
+    joined = captured["url"] + json.dumps(captured["headers"])
+    assert sys.version.split()[0] not in joined
+    assert "arm64" not in joined and "x86_64" not in joined

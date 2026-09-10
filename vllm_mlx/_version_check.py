@@ -43,6 +43,7 @@ from __future__ import annotations
 import http.client
 import json
 import os
+import platform
 import re
 import sys
 import time
@@ -67,8 +68,51 @@ from pathlib import Path
 # ``Python-urllib/<x.y.z>``, exposing the interpreter patch version). This
 # is the SAME network exposure the previous direct ``api.github.com`` call
 # already had — the only change is the recipient is now our own endpoint.
-# Never sent: client id, os/arch, flag values, prompt or generated content.
+# Sent: the installed version, plus a coarse ``os`` (macOS major.minor) and
+# ``chip`` (Apple silicon tier) so the endpoint can describe the installed base
+# it is already counting. Never sent: client id, arch, flag values, interpreter
+# version, prompt or generated content.
 CLI_UPDATE_ENDPOINT = "https://rapidmlx.com/api/cli-update"
+
+
+def _poll_os_label() -> str | None:
+    """macOS version as ``major.minor``, or None off Darwin.
+
+    The patch level is dropped here rather than at the endpoint. The endpoint
+    discards it either way, and the update poll is on by default — it has to
+    be, updates depend on it — so the honest thing is to never send what is
+    not kept.
+    """
+    if platform.system() != "Darwin":
+        return None
+    try:
+        release = platform.mac_ver()[0]
+    except Exception:  # pragma: no cover - mac_ver is not documented to raise
+        return None
+    parts = release.split(".")
+    if not parts or not parts[0].isdigit():
+        return None
+    return ".".join(parts[:2]) if len(parts) > 1 and parts[1].isdigit() else parts[0]
+
+
+def _poll_chip_label() -> str | None:
+    """Apple silicon tier, e.g. ``"Apple M3 Ultra"``. None when not applicable.
+
+    Reuses the telemetry module's cached reader rather than forking a second
+    ``sysctl``; the import is deferred so a version check never pulls telemetry
+    in at import time. Only ``Apple ...`` brands are returned: an Intel brand
+    string carries the exact SKU and clock, which is more identifying than the
+    tier this is meant to report, and MLX is Apple-silicon only anyway.
+    """
+    if platform.system() != "Darwin":
+        return None
+    try:
+        from vllm_mlx.telemetry.redact import _read_chip_brand
+
+        brand = _read_chip_brand()
+    except Exception:
+        return None
+    return brand if isinstance(brand, str) and brand.startswith("Apple ") else None
 GITHUB_RELEASES_ENDPOINT = (
     "https://api.github.com/repos/raullenchai/Rapid-MLX/releases?per_page=100"
 )
@@ -198,16 +242,26 @@ def _fetch_latest() -> str | None:
     URL-encoded as the ``v`` query param (empty string when running from
     an uninstalled source tree). Like any HTTP request it also exposes the
     client IP and a User-Agent — we pin the fixed, non-identifying
-    ``USER_AGENT`` so nothing beyond the version + unavoidable transport
-    metadata leaves the machine (no client id, no os/arch, no interpreter
-    version, no headers that identify the host). Same network exposure as
+    ``USER_AGENT`` so nothing beyond the version, the coarse ``os``/``chip``
+    labels and unavoidable transport metadata leaves the machine (no client
+    id, no arch, no interpreter version, no headers that identify the host).
+    The two labels are deliberately blunt: macOS keeps ``major.minor`` and the
+    chip keeps its tier, which describes a fleet without identifying a
+    machine. Same network exposure as
     the prior direct GitHub call; only the recipient changed. Fail-open:
     any network / parse / sandbox error returns None silently, exactly as
     before.
     """
     try:
         installed = _installed_version() or ""
-        query = urllib.parse.urlencode({"v": installed})
+        params = {"v": installed}
+        os_label = _poll_os_label()
+        if os_label:
+            params["os"] = os_label
+        chip_label = _poll_chip_label()
+        if chip_label:
+            params["chip"] = chip_label
+        query = urllib.parse.urlencode(params)
         url = f"{CLI_UPDATE_ENDPOINT}?{query}"
         req = urllib.request.Request(
             url,

@@ -13,6 +13,13 @@ import Observation
 /// PAT, no GH API rate-limit:
 ///
 ///   GET https://rapidmlx.com/api/desktop-update?v=<app-version>
+///       &os=<major.minor>&chip=<apple-silicon-tier>
+///
+/// `os` and `chip` describe the installed base in aggregate — which macOS
+/// versions and which chips are actually running Rapid. Both are coarse and
+/// optional, and no identifier accompanies them: the endpoint stores the CF
+/// country code and never the raw IP, which is what rapidmlx.com/docs/telemetry
+/// tells users.
 ///
 /// If that Worker fetch fails for any reason (down, non-2xx, or a
 /// manifest that fails decode/validation) the check falls back to the
@@ -309,7 +316,11 @@ final class UpdateChecker {
     /// state instead of doubling the request.
     private static let defaultFetch: Fetcher = {
         try await fetchWithFallback(
-            primary: endpointURL(forVersion: bundleVersion()),
+            primary: endpointURL(
+                forVersion: bundleVersion(),
+                os: pollOSLabel(),
+                chip: pollChipLabel()
+            ),
             fallback: URL(string: fallbackEndpoint),
             using: { try await fetchManifest(from: $0) }
         )
@@ -459,10 +470,49 @@ final class UpdateChecker {
     /// compile-time-constant base fails to parse (never in practice),
     /// in which case ``defaultFetch`` throws ``invalidURL`` and the
     /// fail-open path keeps the app on its current version.
-    nonisolated static func endpointURL(forVersion version: String) -> URL? {
+    nonisolated static func endpointURL(
+        forVersion version: String,
+        os osLabel: String? = nil,
+        chip chipLabel: String? = nil
+    ) -> URL? {
         guard var components = URLComponents(string: endpoint) else { return nil }
-        components.queryItems = [URLQueryItem(name: "v", value: version)]
+        var items = [URLQueryItem(name: "v", value: version)]
+        // Both are optional on the wire: an unreadable value is omitted rather
+        // than sent as a placeholder, which would pollute the breakdown with a
+        // bucket that means "we did not know".
+        if let osLabel { items.append(URLQueryItem(name: "os", value: osLabel)) }
+        if let chipLabel { items.append(URLQueryItem(name: "chip", value: chipLabel)) }
+        components.queryItems = items
         return components.url
+    }
+
+    /// macOS version for the poll, as `major.minor`.
+    ///
+    /// The patch level is dropped HERE rather than at the endpoint. The
+    /// endpoint discards it either way, and this is a channel the user cannot
+    /// meaningfully decline — it is on by default because updates depend on
+    /// it — so the honest thing is to never send what we do not keep.
+    nonisolated static func pollOSLabel(
+        _ version: OperatingSystemVersion =
+            ProcessInfo.processInfo.operatingSystemVersion
+    ) -> String {
+        "\(version.majorVersion).\(version.minorVersion)"
+    }
+
+    /// Apple silicon tier for the poll, e.g. `"Apple M4 Pro"`.
+    ///
+    /// Reuses ``TelemetryClient/chipBrand()``: it is a pure `sysctl` read with
+    /// no consent semantics attached, and duplicating its careful buffer
+    /// handling to avoid importing a name would be worse than the coupling.
+    ///
+    /// Returns nil on Intel. MLX is Apple-silicon only, so an Intel machine is
+    /// not a bucket anyone will act on, and its brand string carries the exact
+    /// SKU and clock — more identifying than the tier this is meant to report.
+    nonisolated static func pollChipLabel(
+        _ brand: String? = TelemetryClient.chipBrand()
+    ) -> String? {
+        guard let brand, brand.hasPrefix("Apple ") else { return nil }
+        return brand
     }
 
     /// UserDefaults key for the update-check opt-out toggle. Default is
