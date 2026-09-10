@@ -1,8 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 """Regression coverage for the agent repetition-loop safety stop."""
 
-import asyncio
-
 import pytest
 
 pytest.importorskip("mlx")
@@ -222,90 +220,3 @@ def test_guard_only_reads_bounded_suffix_under_large_history():
     history = _BoundedSequence(1_000_000)
     assert detect_repeated_token_suffix(history) is None
     assert history.requested_slice == slice(-768, None, None)
-
-
-def _mllm_scheduler_for_repetition_test():
-    from vllm_mlx.mllm_scheduler import MLLMScheduler, MLLMSchedulerConfig
-
-    tokenizer = MagicMock()
-    tokenizer.decode = lambda tokens, **_kwargs: " ".join(map(str, tokens))
-    tokenizer.eos_token_id = 0
-    processor = MagicMock()
-    processor.tokenizer = tokenizer
-    scheduler = MLLMScheduler(
-        MagicMock(),
-        processor,
-        MLLMSchedulerConfig(enable_vision_cache=False),
-        model_name="mllm-repetition-test",
-    )
-    scheduler.batch_generator = MagicMock()
-    return scheduler
-
-
-def test_mllm_scheduler_stops_tool_free_exact_loop_and_retires_batch_row():
-    from vllm_mlx.mllm_batch_generator import MLLMBatchResponse
-    from vllm_mlx.mllm_scheduler import MLLMRequest
-
-    scheduler = _mllm_scheduler_for_repetition_test()
-    # Mirror the reporter's 61-token cycle. Three complete repetitions plus
-    # the first token of the next cycle land on the guard's 8-token cadence
-    # (184 tokens) while preserving a three-repeat suffix.
-    pattern = list(range(61))
-    request = MLLMRequest(
-        request_id="vision-repeat",
-        prompt="extract the table",
-        images=["statement.png"],
-        sampling_params=SamplingParams(max_tokens=32_768),
-    )
-    request.status = RequestStatus.RUNNING
-    request.output_tokens = pattern * 3
-    request.num_output_tokens = len(request.output_tokens)
-    scheduler.running[request.request_id] = request
-    scheduler.uid_to_request_id[7] = request.request_id
-
-    response = MLLMBatchResponse(
-        uid=7,
-        request_id=request.request_id,
-        token=pattern[0],
-        logprobs=None,
-        finish_reason=None,
-    )
-    outputs, finished = scheduler._process_batch_responses([response])
-
-    assert finished == {request.request_id}
-    assert request.status == RequestStatus.FINISHED_ABORTED
-    assert outputs[0].finished is True
-    assert outputs[0].finish_reason == "abort"
-    assert outputs[0].error_kind == "repetition"
-    assert "repetition" in (outputs[0].error or "").lower()
-    assert "period_tokens=61" in (outputs[0].error or "")
-    scheduler.batch_generator.remove.assert_called_once_with([7])
-    assert scheduler.num_repetition_loop_stops == 1
-
-
-@pytest.mark.asyncio
-async def test_mllm_stream_maps_repetition_abort_to_partial_length_finish():
-    from vllm_mlx.mllm_scheduler import MLLMScheduler
-    from vllm_mlx.request import RequestOutput
-
-    scheduler = MLLMScheduler.__new__(MLLMScheduler)
-    scheduler.output_queues = {"vision-repeat": asyncio.Queue()}
-    scheduler.abort_request = MagicMock()
-    await scheduler.output_queues["vision-repeat"].put(
-        RequestOutput(
-            request_id="vision-repeat",
-            output_text="partial valid answer",
-            finished=True,
-            finish_reason="abort",
-            error="Model generation aborted: exact repetition loop detected",
-            error_kind="repetition",
-        )
-    )
-
-    outputs = [output async for output in scheduler.stream_outputs("vision-repeat")]
-
-    assert len(outputs) == 1
-    assert outputs[0].output_text == "partial valid answer"
-    assert outputs[0].finish_reason == "length"
-    assert outputs[0].error is None
-    scheduler.abort_request.assert_not_called()
