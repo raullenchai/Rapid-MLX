@@ -12,3 +12,5 @@ end-to-end serving benchmarks use `rapid-mlx bench`).
 Model-specific exploratory benchmarks live under `scripts/`; for example,
 `scripts/bench_deepseek_v41_moe.py` isolates the synthetic DeepSeek V4.1 Flash
 decode-time MoE dispatch path without requiring the full checkpoint.
+`scripts/bench_deepseek_v41_runtime.py` records the corresponding real-weight
+runtime baseline once a complete local checkpoint is already available.

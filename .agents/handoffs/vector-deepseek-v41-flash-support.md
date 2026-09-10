@@ -41,6 +41,11 @@ Echo, and ds0731.
   `docs/engineering/performance/2026-09-10-deepseek-v41-flash-moe-experiment.md`.
 - Verification: benchmark outputs matched bit-for-bit; Ruff passed; 33 benchmark
   metadata tests passed; diff check passed.
+- Prepared gate: `scripts/bench_deepseek_v41_runtime.py` can run the unchanged
+  local checkpoint, capture continuous warm decode latency, existing eval-barrier
+  waits, Engram/disk counters, memory, and an optional Metal trace. It refuses
+  downloads and checkpoint Python execution is explicit opt-in. Its focused and
+  metadata suites pass 42 tests, including a tiny local-runtime end-to-end run.
 - Next owner/action: Vector, when at least 223 GiB of policy-compliant cache
   capacity exists, run the unchanged real checkpoint with per-layer profiling,
   then validate a one-layer expert-major conversion and batched kernel.

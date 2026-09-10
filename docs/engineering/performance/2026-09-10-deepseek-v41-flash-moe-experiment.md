@@ -141,8 +141,9 @@ compression, or a combination, followed by quality evaluation.
 
 When a policy-compliant host has at least 223 GiB of cache capacity available:
 
-1. run the community checkpoint unchanged and record per-token, per-layer,
-   Engram-cache, disk-read, and peak-memory measurements;
+1. run the community checkpoint unchanged with the prepared profiler and record
+   per-token, existing-barrier, Engram-cache, disk-read, and peak-memory
+   measurements;
 2. convert one layer to expert-major packed storage and compare numerics and
    latency against the original separately keyed tensors;
 3. prototype a 2-bit/group-64 batched active-expert path;
@@ -155,3 +156,24 @@ When a policy-compliant host has at least 223 GiB of cache capacity available:
 Only after those gates pass should Rapid model loading, catalog metadata,
 server routing, GUI exposure, or a downloadable quantization artifact enter
 scope.
+
+The real-weight profiler is plan-only unless both execution flags are supplied.
+It never downloads a model and requires explicit consent before importing the
+checkpoint-bundled Python runtime:
+
+```shell
+uv run python scripts/bench_deepseek_v41_runtime.py \
+  --model ~/.cache/huggingface/hub/models--Vontra--DeepSeek-V4.1-Flash-MLX-2bit-MTP/snapshots/<revision> \
+  --execute-real-weights --trust-checkpoint-runtime \
+  --resident-backbone --execution-mode compiled \
+  --context-tokens 8192 --warmup-tokens 16 --measure-tokens 128 \
+  --trace /private/tmp/deepseek-v41-flash-8k.gputrace --trace-tokens 4 \
+  --output /private/tmp/deepseek-v41-flash-8k.json
+```
+
+The JSON attributes wait time to existing `mx.eval` call sites without adding
+new synchronization points. This identifies where queued work is observed, not
+exclusive kernel time; the optional Metal trace is required for kernel-level
+attribution. To bound scratch growth, tracing is a separate post-measurement
+probe capped at eight tokens and is refused when `/private/tmp` has less than
+20 GiB free.
