@@ -43,6 +43,8 @@
 
 ## 2026-09-11 — experiment complete, publication gated
 
+- Draft PR: https://github.com/raullenchai/Rapid-MLX/pull/3328 at commit
+  `0e9b2abf2` (dependent on #3325).
 - Extracted the revision-pinned official DSpark tensors to affine 4-bit, then
   composed a 4-bit-dense/2-bit-routed-expert candidate. The mixed artifact is
   4,617,792,648 bytes, 157,710,560 bytes larger than the current 2-bit head.
