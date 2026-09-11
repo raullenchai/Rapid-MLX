@@ -654,6 +654,28 @@ struct ToolCallArtifactSuppressionTests {
         #expect(ChatMessage.trailingToolCallArtifactProse(in: content) == nil)
     }
 
+    @Test("A parsed tool call is never suppressed, however it was written")
+    func parsedCallIsNeverSuppressed() {
+        // The standing answer to "what about a complete unfenced example?"
+        // (raised in adversarial review rounds 5 and 8): gates 1-3 ARE the
+        // parser-rejected evidence. An envelope the engine could read comes
+        // back as a real `tool_calls` entry, and gate 2 then declines to
+        // suppress anything — whatever the content looks like.
+        let content = """
+        Hermes models emit this:
+
+        <tool_call>{"name":"search","arguments":{"q":"x"}}</tool_call>
+        """
+        let call = ToolCall(id: "call_1", name: "search", arguments: "{\"q\":\"x\"}")
+        #expect(!ChatMessage.shouldSuppressToolCallArtifact(
+            content: content, toolCalls: [call], finishReason: "tool_calls",
+            toolsRequested: true))
+        // And a turn that never advertised tools is out of scope entirely.
+        #expect(!ChatMessage.shouldSuppressToolCallArtifact(
+            content: content, toolCalls: [], finishReason: "stop",
+            toolsRequested: false))
+    }
+
     @Test("A whole-turn artifact still renders the caption alone")
     func wholeTurnArtifactHasNoProse() {
         let content = "<tool_call>{\"name\": \"search\", \"arguments\": {\"q\": \"x\"}}</tool_call>"

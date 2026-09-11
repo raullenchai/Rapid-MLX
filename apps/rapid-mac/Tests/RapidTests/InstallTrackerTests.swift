@@ -500,4 +500,30 @@ struct InstallTrackerTests {
         // stacking — see `WhatsNewBanner.body`.
     }
 
+    @Test("A rollback cancels an owed notice even from further back")
+    func rollbackCancelsAPendingNotice() {
+        // Adversarial review round 8 (codex, blocking): the pending notice was
+        // kept whenever the current version beat the version it was ABOUT, so
+        // 0.13.1 -> 0.15.0 -> rollback to 0.14.0 announced "Updated to
+        // v0.14.0" over a rollback.
+        let defaults = freshDefaults()
+        let mtime = Date(timeIntervalSince1970: 2_000_000)
+        defaults.set(mtime, forKey: InstallTracker.lastSeenMtimeKey)
+        defaults.set("0.13.1", forKey: InstallTracker.lastSeenVersionKey)
+
+        // Upgrade to 0.15.0; the notice is owed and never read.
+        let upgraded = InstallTracker(
+            currentVersion: "0.15.0", currentInfoPlistMtime: mtime.addingTimeInterval(60),
+            currentBundleURL: installedBundleURL, defaults: defaults)
+        #expect(upgraded.upgradedFrom == "0.13.1")
+
+        // Roll back to 0.14.0: still ahead of 0.13.1, but this launch went
+        // backwards, so there is nothing to celebrate.
+        let rolledBack = InstallTracker(
+            currentVersion: "0.14.0", currentInfoPlistMtime: mtime.addingTimeInterval(120),
+            currentBundleURL: installedBundleURL, defaults: defaults)
+        #expect(rolledBack.upgradedFrom == nil)
+        #expect(defaults.string(forKey: InstallTracker.pendingUpgradeNoticeFromKey) == nil)
+    }
+
 }

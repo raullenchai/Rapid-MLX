@@ -1141,6 +1141,20 @@ struct ChatMessage: Identifiable, Codable, Equatable, Hashable {
         // leading-only check below cannot see it, because the artifact is
         // the TAIL of an otherwise real answer.
         if trailingToolCallArtifactProse(in: content) != nil { return true }
+        // Not a gate, but the question every reviewer asks here: what about a
+        // COMPLETE, well-formed, unfenced example that legitimately ends an
+        // answer? Two things cover it. Gates 1-3 are themselves the
+        // "parser-rejected" evidence — tools were advertised and the turn came
+        // back with no tool call at all, so an envelope the engine's parser
+        // could read would have been dispatched and never reached this line.
+        // And #513 documents the remainder as an accepted residual: a turn
+        // that IS only a raw call shape cannot be told apart from a leak by
+        // content, suppression is non-destructive (the raw text stays on the
+        // message; copy and export reproduce it verbatim, and since this PR
+        // the prose above it renders), and in the target population — a local
+        // model whose call the parser lost — a leak is far likelier than a
+        // deliberately-requested example. A fenced example, which is how a
+        // model actually answers "show me one", is never touched.
         // Gate 4: the content must actually look like a raw tool-call
         // artifact, not a genuine answer that merely embeds JSON.
         //

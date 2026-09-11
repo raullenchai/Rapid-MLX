@@ -133,9 +133,17 @@ final class InstallTracker {
         // nobody has this key yet, and the alternative — seeding it to the
         // current version — would swallow the notice on exactly the upgrade
         // that ships the feature.
+        // A launch that went BACKWARDS cancels an owed notice even when the
+        // version is still ahead of the one the notice is about: 0.13.1 →
+        // 0.15.0 → rollback to 0.14.0 is a rollback, and "Updated to v0.14.0"
+        // over one reads as a bug — the same reason a plain downgrade is not
+        // celebrated.
+        let downgradeLaunch = prevVersion.map {
+            UpdateChecker.isNewer($0, than: currentVersion)
+        } ?? false
         let pending = defaults.string(forKey: Self.pendingUpgradeNoticeFromKey)
         if let pending {
-            if UpdateChecker.isNewer(currentVersion, than: pending) {
+            if !downgradeLaunch, UpdateChecker.isNewer(currentVersion, than: pending) {
                 self.upgradedFrom = pending
             } else {
                 defaults.removeObject(forKey: Self.pendingUpgradeNoticeFromKey)
