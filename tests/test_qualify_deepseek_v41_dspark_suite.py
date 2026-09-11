@@ -73,6 +73,17 @@ def test_tokens_must_be_positive() -> None:
         module._positive_int("0")
 
 
+def test_suite_exposes_bounded_fixed_k_for_precision_experiments(monkeypatch) -> None:
+    module = _load_script()
+    monkeypatch.setattr(
+        module.sys,
+        "argv",
+        ["suite", "--target", ".", "--overlay", ".", "--verify-k", "5"],
+    )
+
+    assert module.parse_args().verify_k == 5
+
+
 def test_stability_qualification_requires_two_repeats() -> None:
     module = _load_script()
 

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run the exact K4 V4.1 DSpark candidate across a fixed prompt suite."""
+"""Run one fixed-K V4.1 DSpark candidate across a fixed prompt suite."""
 
 from __future__ import annotations
 
@@ -95,6 +95,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--overlay", type=Path, required=True)
     parser.add_argument("--tokens", type=_positive_int, default=128)
     parser.add_argument("--repeats", type=_at_least_two, default=2)
+    parser.add_argument(
+        "--verify-k", type=_positive_int, choices=range(2, 7), default=4
+    )
     parser.add_argument("--eval-interval", type=_positive_int, default=40)
     parser.add_argument("--collect-target-margins", action="store_true")
     parser.add_argument("--skip-ar", action="store_true")
@@ -177,13 +180,13 @@ def main() -> None:
                     1,
                     rapid_dspark.Weights,
                     rapid_dspark.DSpark,
-                    verify_k=4,
+                    verify_k=args.verify_k,
                     packed_mtp=True,
                     collect_target_margins=args.collect_target_margins,
                 )
             reference = references.get(prompt_id)
             row = {
-                "event": "suite_k4",
+                "event": f"suite_k{args.verify_k}",
                 "repeat": repeat,
                 "prompt_id": prompt_id,
                 **metrics,
@@ -219,6 +222,7 @@ def main() -> None:
         json.dumps(
             {
                 "event": "suite_summary",
+                "verify_k": args.verify_k,
                 "repeats": args.repeats,
                 "repeat_stable_prompts": len(stable_prompts),
                 "replaced_layers": replaced,
@@ -232,7 +236,7 @@ def main() -> None:
     )
     if len(stable_prompts) != len(encoded):
         raise SystemExit(
-            "K4 repeat-stability gate failed: "
+            f"K{args.verify_k} repeat-stability gate failed: "
             f"{len(stable_prompts)}/{len(encoded)} prompts were stable"
         )
 
