@@ -144,7 +144,9 @@ def main() -> int:
     args = _parse_args()
     if args.max_tokens <= 0:
         raise SystemExit("--max-tokens must be greater than zero")
-    if args.prompts <= 0 or args.prompts > len(_BENCH_PROMPTS):
+    if args.prompt_text is None and (
+        args.prompts <= 0 or args.prompts > len(_BENCH_PROMPTS)
+    ):
         raise SystemExit(f"--prompts must be between 1 and {len(_BENCH_PROMPTS)}")
 
     sidecar = _resolve_mtp_sidecar(args.model, args.mtp_sidecar)
@@ -153,7 +155,9 @@ def main() -> int:
             "No MTP sidecar is known for this model; pass --mtp-sidecar explicitly"
         )
     prompts = (
-        (args.prompt_text,) if args.prompt_text else _BENCH_PROMPTS[: args.prompts]
+        (args.prompt_text,)
+        if args.prompt_text is not None
+        else _BENCH_PROMPTS[: args.prompts]
     )
 
     import mlx.core as mx

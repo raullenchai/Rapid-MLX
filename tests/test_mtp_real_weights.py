@@ -205,7 +205,8 @@ def test_mtp_greedy_fixed_depth_real_weight_activity(loaded_model):
 
     K=0 proves that the parked control does not draft. K=1/2/3 prove that every
     supported fixed depth performs real draft attempts and target verification
-    over the full eight-prompt, 128-token horizon.
+    over the full eight-prompt, 128-token horizon. Every emitted greedy token
+    must also equal the argmax of the corresponding target log-probabilities.
 
     This is an integration/activity smoke, not a token-equality correctness
     gate. K=0 and K>0 use different target-forward shapes, and K=1/2/3 use
@@ -229,7 +230,7 @@ def test_mtp_greedy_fixed_depth_real_weight_activity(loaded_model):
         counter = MTPAcceptCounter()
         timing: dict[str, float] = {}
         tokens: list[int] = []
-        for tok, _logprobs, _from_draft in mtp_generate_step(
+        for tok, logprobs, _from_draft in mtp_generate_step(
             prompt_ids,
             inner,
             max_tokens=_CONSISTENCY_N_TOKENS,
@@ -239,7 +240,13 @@ def test_mtp_greedy_fixed_depth_real_weight_activity(loaded_model):
             max_k=max_k,
             timing_stats=timing,
         ):
-            tokens.append(int(tok))
+            token_id = int(tok)
+            target_argmax = int(_mx.argmax(logprobs, axis=-1).item())
+            assert token_id == target_argmax, (
+                "Greedy MTP emitted a token that is not the target argmax "
+                f"for K={max_k}: emitted={token_id}, target={target_argmax}"
+            )
+            tokens.append(token_id)
             if len(tokens) >= _CONSISTENCY_N_TOKENS:
                 break
         return tokens, counter.snapshot(), timing
