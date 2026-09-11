@@ -103,6 +103,32 @@ def test_serve_9b_without_flags_still_auto_selects_mtp() -> None:
     assert args.mtp_continuous_batching is True
 
 
+def test_explicit_mllm_suppresses_only_alias_auto_mtp_default() -> None:
+    args = _args("qwen3.5-9b-4bit", mllm=True)
+
+    cli._normalize_speculative_config_or_exit(args)
+
+    assert args._speculative_config is None
+    assert args.spec_decode == "none"
+    assert args.enable_mtp is False
+
+
+def test_explicit_mllm_rejects_explicit_speculative_config(capsys) -> None:
+    args = _args(
+        "qwen3.5-9b-4bit",
+        json.dumps({"method": "mtp"}),
+        mllm=True,
+    )
+
+    with pytest.raises(SystemExit) as exc_info:
+        cli._normalize_speculative_config_or_exit(args)
+
+    assert exc_info.value.code == 2
+    error = capsys.readouterr().err
+    assert "--mllm is mutually exclusive" in error
+    assert "vision lane cannot honour speculative decoding" in error
+
+
 def test_explicit_opt_in_runs_qualified_continuous_route() -> None:
     args = _args("qwen3.5-4b-4bit", json.dumps({"method": "mtp"}))
     cli._normalize_speculative_config_or_exit(args)

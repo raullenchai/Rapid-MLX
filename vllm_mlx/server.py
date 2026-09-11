@@ -2178,6 +2178,17 @@ def load_model(
                 1, int(getattr(scheduler_config, "mtp_num_draft_tokens", 1))
             )
 
+    requested_spec_decode = (
+        getattr(scheduler_config, "spec_decode", "none")
+        if scheduler_config is not None
+        else "none"
+    )
+    if force_mllm and requested_spec_decode not in (None, "none"):
+        raise ValueError(
+            "force_mllm is mutually exclusive with speculative decoding "
+            "because the vision lane cannot honour the requested decoder"
+        )
+
     if prefill_step_size is not None:
         import warnings
 
@@ -2353,11 +2364,7 @@ def load_model(
             effective_model_alias or model_name,
             force_mllm=force_mllm,
             force_text=force_text,
-            requested_spec_decode=(
-                getattr(scheduler_config, "spec_decode", "none")
-                if scheduler_config is not None
-                else "none"
-            ),
+            requested_spec_decode=requested_spec_decode,
         )
         _engine_model_path = _serving_checkpoint.load_path
         _auto_text_fallback = _serving_checkpoint.auto_text_fallback
@@ -3318,7 +3325,7 @@ Examples:
     parser.add_argument(
         "--mllm",
         action="store_true",
-        help="Force loading as MLLM (multimodal language model). Also disables the automatic text-only fallback: a vision-config checkpoint with no usable vision tower normally auto-degrades to text-only serving (#1187), but with --mllm it hard-fails instead.",
+        help="Force loading as MLLM (multimodal language model). Also disables automatic text-only fallbacks and alias-owned speculative-decoding defaults; an explicitly requested speculative decoder conflicts and is rejected. A vision-config checkpoint with no usable vision tower hard-fails instead (#1187).",
     )
     parser.add_argument(
         "--no-mllm",
