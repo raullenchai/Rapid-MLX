@@ -249,7 +249,7 @@ def test_implicit_download_tolerates_profile_resolution_failure(monkeypatch):
         cli._ensure_model_downloaded("owner/model")
 
 
-def test_product_alias_pulls_pinned_target_and_three_shard_sidecar(monkeypatch):
+def test_product_alias_pulls_pinned_target_and_mixed_sidecar(monkeypatch):
     calls = []
     disk_checks = []
     monkeypatch.setattr(
@@ -281,6 +281,16 @@ def test_product_alias_pulls_pinned_target_and_three_shard_sidecar(monkeypatch):
 
     cli.pull_command(args)
 
+    assert artifacts.MTP_REPO == ("rapid-mlx/DeepSeek-V4.1-Flash-DSpark-4d2e-MLX")
+    assert artifacts.MTP_REVISION == "9530d6d2bf59e0d05177bd538095d5704ded1488"
+    assert [file.name for file in artifacts.MTP_FILES] == [
+        "config.json",
+        "dspark-mixed-stage-0.safetensors",
+        "dspark-mixed-stage-1.safetensors",
+        "dspark-mixed-stage-2.safetensors",
+        "model.safetensors.index.json",
+        "rapid-dspark-manifest.json",
+    ]
     assert calls[0] == (
         artifacts.TARGET_REPO,
         {"revision_override": artifacts.TARGET_REVISION},

@@ -3,8 +3,9 @@
 Date: 2026-09-11
 
 Status: the 4-bit-dense/2-bit-expert head passes the performance and memory
-experiment. It is not yet a published or default artifact; output-quality
-qualification and artifact publication remain separate product gates.
+experiment and is published as a revision-pinned experimental sidecar. It is
+not an unconditional default; broader output-quality qualification remains a
+separate product gate.
 
 ## Question and boundary
 
@@ -143,5 +144,7 @@ mixed head, current head, and AR outputs before productization.
 Mixed precision is the right head direction for this 256 GiB target: it raises
 the conservative multi-domain DSpark result from about 10.72 to 19.39 tok/s and
 stays within the existing memory envelope. Full 4-bit and fixed K5 are rejected.
-The next scoped work is quality qualification and, only if it passes, immutable
-artifact publication plus a separately reviewed product pin.
+The sidecar is published at revision
+`rapid-mlx/DeepSeek-V4.1-Flash-DSpark-4d2e-MLX@9530d6d2bf59e0d05177bd538095d5704ded1488`.
+Rapid pins and verifies that byte set. Broader quality qualification remains
+required before removing the experimental label or widening admission.

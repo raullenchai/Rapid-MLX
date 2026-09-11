@@ -31,8 +31,9 @@ Families with registered aliases (run `rapid-mlx models` for the full, current l
 `deepseek-v41-flash-reap-2bit` serves the pinned Rapid-MLX REAP 2-bit
 checkpoint with its pinned DSpark K4 sidecar. The target contains about 199 GiB
 of tensors; the sidecar download is narrowed to the three required MTP shards
-plus its data index and config (4.47 GB), rather than fetching the full source
-repository.
+plus its manifest, data index, and config (4.62 GB). It is published separately
+at [DeepSeek V4.1 Flash DSpark 4d2e MLX](https://huggingface.co/rapid-mlx/DeepSeek-V4.1-Flash-DSpark-4d2e-MLX),
+so users who do not enable this path do not download it.
 
 ```bash
 rapid-mlx pull deepseek-v41-flash-reap-2bit
@@ -49,9 +50,10 @@ This is a deliberately narrow product lane:
   output tokens. Sampling, images, tools, MCP, and structured output are not
   yet qualified.
 - The four-workload 128-token suite was deterministic across two repeats. It
-  measured 10.72 tok/s overall; the isolated stable K4 run measured 11.76
-  tok/s. The product wrapper loaded in 300.81 seconds and peaked at 217.97 GB
-  on the qualification Studio.
+  measured 19.39 tok/s overall at K4 versus 9.58 tok/s autoregressive (2.02x).
+  This is approximately 20 tok/s for the measured configuration, not a
+  per-prompt guarantee. Peak MLX memory was 218.23 GB on the qualification
+  Studio.
 
 The runtime verifies immutable revisions, expected file sizes, SHA-256 values
 for every sidecar data file, and the complete tensor/config contract before it

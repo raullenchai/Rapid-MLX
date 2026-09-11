@@ -41,7 +41,7 @@
   records the required fallback; implementation continues because the FYI is
   non-blocking.
 
-## 2026-09-11 — experiment complete, publication gated
+## 2026-09-11 — experiment complete and experimental sidecar published
 
 - Draft PR: https://github.com/raullenchai/Rapid-MLX/pull/3328 at commit
   `0e9b2abf2` (dependent on #3325).
@@ -75,10 +75,20 @@
   filenames, enforced the qualified 2-bit/4-bit pair, added config/index hashes,
   kept target-shared embed/head explicitly 2-bit, and removed the K4-hardcoded
   stability error.
+- The owner explicitly expanded scope after reviewing the evidence. Published
+  the head-only public repository
+  `rapid-mlx/DeepSeek-V4.1-Flash-DSpark-4d2e-MLX` at immutable revision
+  `9530d6d2bf59e0d05177bd538095d5704ded1488`; it contains no target weights.
+  The Model Card states the required target/revision, K4 recommendation,
+  measured approximately-20-tok/s boundary, memory floor, non-standalone
+  behavior, deterministic target-authoritative contract, and quality caveat.
+- Rapid's artifact contract now pins that repo/revision plus the exact sizes
+  and SHA-256 values for config, index, manifest, and all three stage shards.
+  User documentation now reports the mixed-head result instead of the replaced
+  2-bit head result.
 - Next concrete action: compare mixed/current/AR task correctness on a larger,
-  scored prompt set. If it passes, publish the immutable mixed artifact and open
-  a separate product pin. Do not publish or make it default from throughput
-  evidence alone.
+  scored prompt set before removing the experimental label or widening
+  admission. Publication does not make this an unconditional default.
 - Completion FYI is recorded here because Orca messaging remains unavailable
   from this shell. Receiving roles: Atlas (publication decision), Harbor
   (artifact/rollout integrity), Echo (dependent PR tracking), Pixel (awareness;

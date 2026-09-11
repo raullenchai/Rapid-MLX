@@ -8,8 +8,8 @@ from pathlib import Path
 
 TARGET_REPO = "rapid-mlx/DeepSeek-V4.1-Flash-REAP-2bit-MLX"
 TARGET_REVISION = "a25fec277b9e7cedc0e9f3f15da874a5cf9d491b"
-MTP_REPO = "Vontra/DeepSeek-V4.1-Flash-MLX-2bit-MTP"
-MTP_REVISION = "802f1a00982705d81b79ad1c83aa0ccc0b863ebc"
+MTP_REPO = "rapid-mlx/DeepSeek-V4.1-Flash-DSpark-4d2e-MLX"
+MTP_REVISION = "9530d6d2bf59e0d05177bd538095d5704ded1488"
 
 
 @dataclass(frozen=True)
@@ -22,28 +22,33 @@ class ArtifactFile:
 MTP_FILES = (
     ArtifactFile(
         "config.json",
-        23_617,
-        "c615d9c9469bc66273306b08c5a92670abdbefd7edc31de7e01dd7d9719f489e",
+        138_476,
+        "3518b608fd8b90bc518c7d4533c751367fe3c2416aa3a4f7fde40bc6e498f012",
     ),
     ArtifactFile(
-        "model-00044-of-00048.safetensors",
-        1_496_184_720,
-        "772bdc5044bc8acfdb38e38749d784d50019b1846ed2b85337993a5fba530663",
+        "dspark-mixed-stage-0.safetensors",
+        1_556_346_856,
+        "381a7fbc8758cd86baab55e8f1ae3020e49e2977f067d4269416889c1aee8118",
     ),
     ArtifactFile(
-        "model-00045-of-00048.safetensors",
-        1_471_598_024,
-        "b200f6ce5e726e38a684a04f941e1321fc58a1c0ba6a2b7ab747f7ddb753ff3e",
+        "dspark-mixed-stage-1.safetensors",
+        1_512_099_424,
+        "2ca7dc77528ebe3220e6e1633733925ca3420e346b4475163e1639541333876e",
     ),
     ArtifactFile(
-        "model-00046-of-00048.safetensors",
-        1_492_295_832,
-        "6890e30fcb9b6fa759f43ab21424cd748242a734f263b469b148da0834449352",
+        "dspark-mixed-stage-2.safetensors",
+        1_549_346_368,
+        "1ed4663f0487e13372e753b2a5e8b760ae8fd43ba661fae891dfdff62384e64b",
     ),
     ArtifactFile(
         "model.safetensors.index.json",
-        11_268_410,
-        "796eb8ceeeec2cba865fa1986238aa5214d9479d8225151b8b79b04126b33d62",
+        265_016,
+        "70cbf70324c1b8d7d7c3d5f7f522f38d0be6cba673e90430a0f9a1d8b1ab8cff",
+    ),
+    ArtifactFile(
+        "rapid-dspark-manifest.json",
+        1_261,
+        "5b50b23fa1d30f445eab71de601075a3dab1f4463b5a4930c1d7ac4451f70b9e",
     ),
 )
 MTP_ALLOW_PATTERNS = tuple(file.name for file in MTP_FILES)
@@ -114,7 +119,7 @@ def verify_mtp_snapshot(snapshot: str | Path) -> Path:
 
 
 def download_mtp_snapshot() -> Path:
-    """Resolve only the 4.47 GB data subset needed by the owned runtime."""
+    """Resolve only the 4.62 GB data subset needed by the owned runtime."""
     from huggingface_hub import snapshot_download
 
     path = snapshot_download(

@@ -468,7 +468,8 @@ complete `rapid-mlx serve` process tree on an M2 Pro 32 GB Mac mini (the 32 GB+ 
 
 The experimental `deepseek-v41-flash-reap-2bit` alias is a separate
 256 GB Mac Studio lane, not a recommendation for the table above. It pins the
-199 GiB REAP checkpoint and its 4.47 GB DSpark sidecar, refuses to start below
+199 GiB REAP checkpoint and its separate 4.62 GB mixed-precision DSpark
+sidecar, refuses to start below
 224 GiB unified memory, and serves deterministic greedy K4 decoding through a
 serial OpenAI-compatible endpoint:
 
@@ -477,10 +478,13 @@ rapid-mlx pull deepseek-v41-flash-reap-2bit
 rapid-mlx serve deepseek-v41-flash-reap-2bit
 ```
 
-Sustained four-workload qualification measured 10.72 tok/s overall; the
-isolated stable K4 run measured 11.76 tok/s, with a 217.97 GB product-path peak.
-This first lane is text-only, caps input at 8,192 tokens and output at 4,096,
-and does not claim sampling, tool calling, MCP, or continuous batching.
+The mixed head keeps routed experts at 2-bit and raises the smaller dense paths
+to 4-bit. Sustained four-workload qualification measured **19.39 tok/s** overall
+at K4 versus 9.58 tok/s autoregressive (**2.02x**), with a 218.23 GB peak. This
+is approximately 20 tok/s for the measured configuration, not a per-prompt
+guarantee. This lane remains experimental and text-only, caps input at 8,192
+tokens and output at 4,096, and does not claim sampling, tool calling, MCP, or
+continuous batching.
 
 Every Mac from 32 GB up gets the same pick, and that is the point: Qwen3.8-27B
 scores 52 on the Artificial Analysis Intelligence Index (2026-08-18) —
