@@ -6,8 +6,12 @@ import sys
 from pathlib import Path
 from types import ModuleType
 
-import mlx.core as mx
 import pytest
+
+pytest.importorskip("mlx")
+pytestmark = pytest.mark.requires_mlx
+
+import mlx.core as mx
 
 
 def _load_script():
