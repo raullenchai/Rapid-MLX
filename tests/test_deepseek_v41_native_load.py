@@ -146,6 +146,38 @@ def test_native_model_captures_configured_dspark_inputs() -> None:
     assert hidden.shape == (1, 2, args.dim)
 
 
+def test_native_model_captures_dspark_inputs_in_configured_order() -> None:
+    args = ModelArgs(
+        dim=64,
+        vocab_size=32,
+        n_layers=0,
+        n_heads=1,
+        head_dim=64,
+        rope_head_dim=32,
+        hc_mult=1,
+        compress_ratios=(),
+        dspark_target_layer_ids=(1, 0),
+    )
+    model = Model(args)
+
+    class AddBlock:
+        engram = None
+
+        def __init__(self, value):
+            self.value = value
+
+        def __call__(self, h, pre_mix, *_args):
+            return h + self.value, pre_mix
+
+    model.layers = [AddBlock(1), AddBlock(2)]
+    cache = model.make_cache(max_seq_len=8)
+
+    _, hidden = model(mx.array([[1]]), cache, return_dspark_hidden=True)
+    first, second = mx.split(hidden, 2, axis=-1)
+
+    assert mx.array_equal(first, second + 1).item()
+
+
 def test_speculative_cache_rollback_restores_partial_compressor_group() -> None:
     args = ModelArgs(
         dim=64,
@@ -189,3 +221,17 @@ def test_compressor_rollback_to_group_boundary_clears_partial_state() -> None:
 
     assert mx.array_equal(state.kv_state, mx.zeros_like(state.kv_state)).item()
     assert mx.all(mx.isneginf(state.score_state)).item()
+
+
+def test_compressor_rollback_to_forward_start_restores_carried_partial() -> None:
+    state = CompressorState(bsz=1, ratio=2, head_dim=4)
+    state.kv_state[:, :1] = 3
+    state.score_state[:, :1] = 5
+    state.begin_forward(3)
+    state.kv_state[:] = 9
+    state.score_state[:] = 11
+
+    state.rollback(3)
+
+    assert mx.all(state.kv_state[:, :1] == 3).item()
+    assert mx.all(state.score_state[:, :1] == 5).item()

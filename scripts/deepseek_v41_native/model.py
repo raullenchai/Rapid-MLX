@@ -147,7 +147,7 @@ class Model(nn.Module):
     ) -> mx.array | tuple[mx.array, mx.array]:
         """input_ids [b, n] continue the sequence at cache.offset. Advances the cache."""
         start_pos = cache.offset
-        cache.rollback_start = start_pos
+        cache.begin_forward()
         b, n = input_ids.shape
 
         hashes = None
@@ -166,13 +166,13 @@ class Model(nn.Module):
 
         pre_mix = make_identity_pre_mix(b, n, self.hc_mult)
         shared = SharedState()
-        dspark_hiddens = []
+        dspark_hiddens = {}
         for layer_index, layer in enumerate(self.layers):
             if (
                 return_dspark_hidden
                 and layer_index in self.args.dspark_target_layer_ids
             ):
-                dspark_hiddens.append(mx.mean(h, axis=2))
+                dspark_hiddens[layer_index] = mx.mean(h, axis=2)
             if layer.engram is not None:
                 assert hashes is not None
                 h = layer.engram(h, hashes[:, :, layer.engram.layer_hash_index])
@@ -199,7 +199,16 @@ class Model(nn.Module):
         logits = self.head(h.astype(mx.float32))  # fp32 logits, as the reference
         cache.offset = start_pos + n
         if return_dspark_hidden:
-            if len(dspark_hiddens) != len(self.args.dspark_target_layer_ids):
+            missing = [
+                layer_id
+                for layer_id in self.args.dspark_target_layer_ids
+                if layer_id not in dspark_hiddens
+            ]
+            if missing:
                 raise RuntimeError("DSpark target hidden-state capture is incomplete")
-            return logits, mx.concatenate(dspark_hiddens, axis=-1)
+            ordered = [
+                dspark_hiddens[layer_id]
+                for layer_id in self.args.dspark_target_layer_ids
+            ]
+            return logits, mx.concatenate(ordered, axis=-1)
         return logits

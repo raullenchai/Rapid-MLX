@@ -167,9 +167,15 @@ def build_overlay(source: Path, target: Path, destination: Path) -> dict:
             f"- Added DSpark tensor bytes: {mtp_bytes:,}\n"
             f"- Target artifact: `{target.name}`\n"
         )
-        if destination.exists():
-            raise FileExistsError(f"destination appeared during build: {destination}")
-        staging.rename(destination)
+        # mkdir is the portable atomic no-replace reservation for a directory.
+        # A marker keeps an interrupted publication visibly incomplete.
+        destination.mkdir()
+        incomplete = destination / ".rapid-overlay-incomplete"
+        incomplete.touch(exist_ok=False)
+        for child in staging.iterdir():
+            child.rename(destination / child.name)
+        staging.rmdir()
+        incomplete.unlink()
     except BaseException:
         shutil.rmtree(staging)
         raise

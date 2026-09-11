@@ -99,9 +99,25 @@ class CompressorState:
         self.pending_start: int | None = None
         self.pending_kv: mx.array | None = None
         self.pending_score: mx.array | None = None
+        self.snapshot_offset: int | None = None
+        self.snapshot_kv: mx.array | None = None
+        self.snapshot_score: mx.array | None = None
+
+    def begin_forward(self, offset: int) -> None:
+        """Snapshot the carried partial group for latest-forward rollback."""
+        self.snapshot_offset = offset
+        self.snapshot_kv = self.kv_state + mx.zeros_like(self.kv_state)
+        self.snapshot_score = self.score_state + mx.zeros_like(self.score_state)
 
     def rollback(self, offset: int) -> None:
         """Restore the open compression group at ``offset`` after chunk verify."""
+        if offset == self.snapshot_offset:
+            if self.snapshot_kv is None or self.snapshot_score is None:
+                raise RuntimeError("compression rollback has no forward snapshot")
+            self.kv_state[:] = self.snapshot_kv
+            self.score_state[:] = self.snapshot_score
+            mx.eval(self.kv_state, self.score_state)
+            return
         remainder = offset % self.kv_state.shape[1]
         if remainder == 0:
             self.kv_state[:] = 0

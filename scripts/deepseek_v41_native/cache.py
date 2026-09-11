@@ -105,3 +105,16 @@ class ModelCache:
             if layer.comp_state is not None:
                 layer.comp_state.rollback(offset)
         self.offset = offset
+
+    def begin_forward(self) -> None:
+        """Open the only rollback window supported by this cache."""
+        self.rollback_start = self.offset
+        snapshots = []
+        for layer in self.layers:
+            if layer.comp_state is not None:
+                layer.comp_state.begin_forward(self.offset)
+                snapshots.extend(
+                    (layer.comp_state.snapshot_kv, layer.comp_state.snapshot_score)
+                )
+        if snapshots:
+            mx.eval(*snapshots)
