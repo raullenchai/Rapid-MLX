@@ -455,7 +455,20 @@ def _trusted_sys_path_roots() -> set[Path]:
         if entry:
             unsafe_roots.add(Path(entry).expanduser().resolve())
     unsafe_roots.add(Path.cwd().resolve())
-    unsafe_roots.add(Path(__file__).resolve().parents[2])
+
+    # A source checkout is intentionally untrusted: importing dependencies
+    # from beside the checkout would let a shadow module make ``doctor``
+    # report a healthy runtime.  In an installed wheel, however,
+    # ``parents[2]`` is the virtualenv's *site-packages* directory itself.
+    # Treat that directory as a source root only when it has the repository
+    # shape, otherwise every legitimate wheel dependency is rejected before
+    # the isolated import probe can verify it (#3320).
+    package_root = Path(__file__).resolve().parents[1]
+    source_root = package_root.parent
+    if (source_root / "pyproject.toml").is_file() and (
+        source_root / "vllm_mlx"
+    ).resolve() == package_root:
+        unsafe_roots.add(source_root)
 
     trusted_roots: set[Path] = set()
     for entry in sys.path:
