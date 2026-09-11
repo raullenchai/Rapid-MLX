@@ -11,6 +11,16 @@ enum ReadDocumentTool {
     static let grepTimeBudget: TimeInterval = 2.0
     static let outlineTokenBudget = 2_000
     static let maxOutlineRows = 400
+    /// Hard cap on a single outline row's title, in characters.
+    ///
+    /// A row's title comes from the document — a PDF bookmark or an inferred
+    /// heading line — so its length is attacker- or accident-controlled. The
+    /// budget trimmer must always return at least one row (an empty outline
+    /// reads as "this document has no structure"), and without a per-title
+    /// cap that one row could be a 200 KB bookmark title that blows through
+    /// ``outlineTokenBudget`` and eats the model's context. Clamping every
+    /// title before the budget math also keeps that math honest.
+    static let maxOutlineTitleLength = 160
 
     static let definition = ToolDefinition(
         name: "read_document",
@@ -215,8 +225,19 @@ enum ReadDocumentTool {
     /// list (0.14.1 mini dogfood). Inference now normalizes depth, and this
     /// trims relative to the shallowest level present either way.
     static func budgeted(
-        _ rows: [DocumentContentCache.OutlineNode]
+        _ unclamped: [DocumentContentCache.OutlineNode]
     ) -> (rows: [DocumentContentCache.OutlineNode], trim: OutlineTrim) {
+        // Clamp titles FIRST, so every row is bounded before any budget
+        // decision is made — including the one row the prefix branch is
+        // required to return. The offset is what the model actually needs
+        // from a row; a truncated title still names the section.
+        let rows = unclamped.map { node -> DocumentContentCache.OutlineNode in
+            guard node.title.count > maxOutlineTitleLength else { return node }
+            return DocumentContentCache.OutlineNode(
+                title: String(node.title.prefix(maxOutlineTitleLength - 1)) + "…",
+                depth: node.depth, page: node.page, offset: node.offset
+            )
+        }
         func cost(_ rows: [DocumentContentCache.OutlineNode]) -> Int {
             TokenEstimate.tokens(in: rows.map(\.title).joined(separator: "\n"))
                 + rows.count * 12

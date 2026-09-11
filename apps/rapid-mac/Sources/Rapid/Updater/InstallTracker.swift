@@ -42,8 +42,15 @@ final class InstallTracker {
     /// didn't move. Banner-driving flag for the chat surface.
     private(set) var failedReplaceDetected: Bool = false
 
-    /// The version this launch upgraded FROM, or nil when the version did
-    /// not move forward since the last launch. Drives ``WhatsNewBanner``.
+    /// The version this launch upgraded FROM, or nil when there is nothing
+    /// left to announce. Drives ``WhatsNewBanner``.
+    ///
+    /// Compared against the ACKNOWLEDGED version, not the last-seen one. The
+    /// two differ on purpose: last-seen rolls forward on every launch because
+    /// the failed-Replace detector needs a per-launch baseline, but the notice
+    /// is sticky — quitting or crashing before reading it must not consume it.
+    /// Acknowledged only advances when the user dismisses the banner or opens
+    /// the notes.
     ///
     /// Sparkle installs on quit and relaunches into the new build with no
     /// prompt of any kind, so a user who crossed two feature releases (the
@@ -65,6 +72,10 @@ final class InstallTracker {
     /// other ``rapid.*`` keys in the same suite.
     static let lastSeenMtimeKey = "rapid.install.lastSeenInfoPlistMtime"
     static let lastSeenVersionKey = "rapid.install.lastSeenVersion"
+    /// The newest version whose "what's new" notice the user actually saw.
+    /// Separate from ``lastSeenVersionKey`` because that one is the
+    /// failed-Replace baseline and has to advance every launch.
+    static let acknowledgedVersionKey = "rapid.install.acknowledgedVersion"
 
     /// Production init — reads the running bundle's Info.plist mtime
     /// and ``CFBundleShortVersionString``, compares against the
@@ -106,8 +117,15 @@ final class InstallTracker {
         // Forward moves only. A downgrade (a rollback, or a dev build run
         // over a newer release) is not something to celebrate, and "Updated
         // to v0.13.1" over an intentional rollback reads as a bug.
-        if let prevVersion, UpdateChecker.isNewer(currentVersion, than: prevVersion) {
-            self.upgradedFrom = prevVersion
+        let acknowledged = defaults.string(forKey: Self.acknowledgedVersionKey)
+        if let acknowledged, UpdateChecker.isNewer(currentVersion, than: acknowledged) {
+            self.upgradedFrom = acknowledged
+        } else if acknowledged == nil {
+            // First launch under this key: there is nothing to announce (a
+            // fresh install, or the launch that introduced the key), so seed
+            // the baseline. Without the seed the NEXT upgrade would compare
+            // against nil and stay silent.
+            defaults.set(currentVersion, forKey: Self.acknowledgedVersionKey)
         }
 
         self.failedReplaceDetected = Self.detect(
@@ -193,11 +211,13 @@ final class InstallTracker {
         failedReplaceDetected = false
     }
 
-    /// User dismissed the "what's new" banner. Only the in-process flag is
-    /// cleared: ``lastSeenVersionKey`` was already advanced on construction,
-    /// so the next launch computes ``upgradedFrom == nil`` on its own and the
-    /// banner cannot come back for a version the user has already seen.
+    /// User dismissed the "what's new" banner, or opened the release notes
+    /// from it. Records the acknowledgement so the notice does not come back
+    /// for a version the user has already seen — and, because this is the ONLY
+    /// writer of that key, so that quitting or crashing before reading the
+    /// notice leaves it pending for the next launch.
     func dismissUpgradeNotice() {
         upgradedFrom = nil
+        defaults.set(currentVersion, forKey: Self.acknowledgedVersionKey)
     }
 }

@@ -1189,6 +1189,9 @@ struct ChatMessage: Identifiable, Codable, Equatable, Hashable {
     ///   * There must be real prose before it. With none, the leading check
     ///     owns the turn and this returns nil, so the caption-only render
     ///     stays exactly as it was.
+    ///   * The envelope must be the turn's TAIL — inside the terminal run of
+    ///     machine syntax (``terminalMachineSyntaxRunStart``). An answer that
+    ///     shows a raw call and then explains it keeps its explanation.
     static func trailingToolCallArtifactProse(in content: String) -> String? {
         // Candidate openers for the machine-syntax tail.
         //
@@ -1229,7 +1232,20 @@ struct ChatMessage: Identifiable, Codable, Equatable, Hashable {
             "[<\u{FF5C}]*tool\u{2581}calls\u{2581}begin",
         ]
 
-        // Fences first: one line pass, reused by every pattern below.
+        // The turn must END in machine syntax, and only the terminal run of
+        // it is a candidate tail.
+        //
+        // This is what "tail" means, and without it a genuine answer that
+        // shows a raw (unfenced) call on its own line and then EXPLAINS it
+        // lost the explanation: suppression ran from the marker to the end of
+        // the turn, so the closing sentences went with the example. Confining
+        // the search to the terminal machine-syntax run also fixes the general
+        // case — example, prose, then a real envelope — because the earlier
+        // example is no longer even a candidate.
+        guard let runStart = terminalMachineSyntaxRunStart(in: content) else { return nil }
+        let searchRange = runStart..<content.endIndex
+
+        // Fences next: one line pass, reused by every pattern below.
         let fenced = fencedRanges(in: content)
 
         // The earliest UNFENCED candidate across every pattern.
@@ -1244,7 +1260,7 @@ struct ChatMessage: Identifiable, Codable, Equatable, Hashable {
         // fence holding a thousand examples costs one step, not a thousand.
         var earliest: String.Index?
         for pattern in patterns {
-            var from = content.startIndex
+            var from = runStart
             // `fenced` is ascending and disjoint and a pattern's matches only
             // move forward, so one cursor walks the fence list ONCE per
             // pattern. Asking `fenced.first { … }` per match instead rescans
@@ -1254,7 +1270,7 @@ struct ChatMessage: Identifiable, Codable, Equatable, Hashable {
             while from < content.endIndex,
                   let found = content.range(
                       of: pattern, options: [.regularExpression],
-                      range: from..<content.endIndex
+                      range: from..<searchRange.upperBound
                   ) {
                 while block < fenced.count, fenced[block].upperBound <= found.lowerBound {
                     block += 1
@@ -1293,6 +1309,46 @@ struct ChatMessage: Identifiable, Codable, Equatable, Hashable {
         // turn, so a prose answer that trailed off into one used to lose the
         // prose as well as the tail).
         trailingToolCallArtifactProse(in: content)
+    }
+
+    /// Where the turn's terminal run of machine syntax begins, or nil when
+    /// the turn does not end in machine syntax at all.
+    ///
+    /// Walks lines from the end: a blank line or a line whose first non-space
+    /// character opens machine syntax (`<`, `{`, `[`, `}`, `]`, `"`, `,`)
+    /// belongs to the run; the first line that reads as prose stops it. That
+    /// one character is enough because the run only has to distinguish an
+    /// envelope dump — which is what a model emits when the parser lost its
+    /// call and generation simply stopped — from a sentence. A closing ```` ```
+    /// ```` also stops the run, which is correct: a turn that ENDS with a
+    /// fenced example is showing the example, not leaking a call.
+    private static func terminalMachineSyntaxRunStart(in content: String) -> String.Index? {
+        let openers: Set<Character> = ["<", "{", "[", "}", "]", "\"", ","]
+        var runStart: String.Index?
+        var sawContent = false
+        var lineStart = content.startIndex
+        var index = content.startIndex
+        // Forward pass recording the last prose line's successor, which is the
+        // same answer as walking backwards and cheaper on String.Index.
+        while true {
+            let lineEnd = content[index...].firstIndex(of: "\n") ?? content.endIndex
+            let trimmed = content[lineStart..<lineEnd]
+                .trimmingCharacters(in: .whitespaces)
+            if !trimmed.isEmpty {
+                if let first = trimmed.first, openers.contains(first) {
+                    if runStart == nil { runStart = lineStart }
+                    sawContent = true
+                } else {
+                    // Prose: everything up to and including this line is the
+                    // answer, so any run starts after it.
+                    runStart = nil
+                }
+            }
+            guard lineEnd < content.endIndex else { break }
+            index = content.index(after: lineEnd)
+            lineStart = index
+        }
+        return sawContent ? runStart : nil
     }
 
     /// The character ranges of ``content`` that sit inside a fenced code

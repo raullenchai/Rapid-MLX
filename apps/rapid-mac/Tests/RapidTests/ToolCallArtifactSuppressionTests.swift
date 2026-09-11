@@ -561,6 +561,57 @@ struct ToolCallArtifactSuppressionTests {
         ) == "Running it:")
     }
 
+    @Test("A raw example the answer goes on to EXPLAIN keeps its explanation")
+    func trailingExampleFollowedByProseIsNotAnArtifact() {
+        // Adversarial review round 5 (codex, blocking): suppression ran from
+        // the marker to the end of the turn without checking that only machine
+        // syntax followed, so an answer that showed an unfenced call and then
+        // explained it lost the explanation. The envelope has to be the TAIL.
+        let content = """
+        Here is the call, unfenced:
+
+        <tool_call>{"name":"search","arguments":{"q":"x"}}</tool_call>
+
+        As you can see, the name field picks the tool and arguments carries
+        the payload.
+        """
+        #expect(ChatMessage.trailingToolCallArtifactProse(in: content) == nil)
+        #expect(!ChatMessage.shouldSuppressToolCallArtifact(
+            content: content, toolCalls: [], finishReason: "stop", toolsRequested: true))
+    }
+
+    @Test("Example, prose, then a real envelope keeps everything but the tail")
+    func trailingRealEnvelopeAfterRawExampleKeepsTheProse() {
+        let content = """
+        The shape is:
+
+        <tool_call>{"name":"search","arguments":{"q":"x"}}</tool_call>
+
+        Now running it for real:
+
+        <tool_call> {"name":"search","arguments":{"q":"Statement
+        """
+        let prose = ChatMessage.trailingToolCallArtifactProse(in: content)
+        // The earlier raw example is part of the answer, not the tail.
+        #expect(prose?.contains("The shape is:") == true)
+        #expect(prose?.hasSuffix("Now running it for real:") == true)
+    }
+
+    @Test("A turn ending in a fenced example is never a tail")
+    func trailingFenceCloserEndsTheRun() {
+        // The closing ``` is not machine syntax for this purpose, so the run
+        // never starts and the answer is left alone — which is the same
+        // verdict the fence check gives, reached one step earlier.
+        let content = """
+        Example:
+
+        ```json
+        {"name":"search","arguments":{"q":"x"}}
+        ```
+        """
+        #expect(ChatMessage.trailingToolCallArtifactProse(in: content) == nil)
+    }
+
     @Test("A whole-turn artifact still renders the caption alone")
     func wholeTurnArtifactHasNoProse() {
         let content = "<tool_call>{\"name\": \"search\", \"arguments\": {\"q\": \"x\"}}</tool_call>"

@@ -1239,14 +1239,40 @@ struct ReadDocumentToolTests {
         #expect(!note.contains("top-level entries"))
     }
 
-    @Test("budgeted() keeps one row even when a single title blows the budget")
-    func budgetedAlwaysKeepsARow() {
+    @Test("budgeted() clamps titles so no single row can defeat the budget")
+    func budgetedClampsGiantTitles() {
+        // Adversarial review round 5 (codex, blocking): the trimmer has to
+        // return at least one row, so an arbitrarily long bookmark title —
+        // document-controlled — used to walk straight through
+        // `outlineTokenBudget` and into the model's context. Titles are
+        // clamped before any budget decision now.
         let giant = String(repeating: "very long heading word ", count: 400)
         let rows = (0..<3).map {
             DocumentContentCache.OutlineNode(title: "\($0) \(giant)", depth: 0, offset: $0)
         }
+        let (kept, _) = ReadDocumentTool.budgeted(rows)
+        #expect(!kept.isEmpty)
+        #expect(kept.allSatisfy { $0.title.count <= ReadDocumentTool.maxOutlineTitleLength })
+        #expect(kept.allSatisfy { $0.title.hasSuffix("…") })
+        // The offset — what the model actually needs from a row — survives.
+        #expect(kept.map(\.offset) == Array(0..<kept.count))
+        let cost = TokenEstimate.tokens(in: kept.map(\.title).joined(separator: "\n"))
+            + kept.count * 12
+        #expect(cost <= ReadDocumentTool.outlineTokenBudget)
+    }
+
+    @Test("budgeted() never returns an empty outline")
+    func budgetedAlwaysKeepsARow() {
+        // 900 rows at one depth, each within the title clamp: over both caps,
+        // so the prefix branch runs — and must still hand back a usable offset
+        // rather than an empty list that reads as "no structure here".
+        let title = String(repeating: "heading ", count: 18)
+        let rows = (0..<900).map {
+            DocumentContentCache.OutlineNode(title: "\($0) \(title)", depth: 0, offset: $0)
+        }
         let (kept, trim) = ReadDocumentTool.budgeted(rows)
-        #expect(kept.count == 1)
+        #expect(!kept.isEmpty)
+        #expect(kept.count <= ReadDocumentTool.maxOutlineRows)
         #expect(trim == .prefix)
     }
 }
