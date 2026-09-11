@@ -5,7 +5,7 @@
 - Branch: `vector/deepseek-v41-moe-megakernel`
 - Base: `vector/deepseek-v41-speed-20tps` / PR #3307
 - Worktree: `/private/tmp/rapid-mlx-deepseek-v41-moe-megakernel`
-- Status: exact target optimization qualified; combined DSpark rerun pending
+- Status: combined K4 performance gate passed; broader qualification pending
 
 ## Intention and boundary
 
@@ -23,14 +23,16 @@ the 12 tok/s product floor.
   24, 30, and 36 routes.
 - Layer speedups are 2.65x at six routes, 1.94x at 24, 1.82x at 30, and 1.72x
   at 36.
-- Two real 32-token target-only runs reach 9.66--9.83 tok/s from 7.90--7.92
-  tok/s (+22.2% to +24.0%), preserve the exact token sequence, and leave peak
+- Three real 32-token target-only runs reach 9.49--9.83 tok/s from 7.81--7.92
+  tok/s (+21.5% to +24.0%), preserve the exact token sequence, and leave peak
   MLX memory unchanged at 213.5387 GB.
 - Target oracle throughput reaches 17.91--18.13/25.38--25.49/32.39--33.86/
   34.49--36.32 rows/s at K2--K5.
-- The prior trusted checkpoint runtime was ephemeral and is no longer present.
-  Based on its earlier timing split, K4 is estimated at 14--15 tok/s with this
-  kernel, but the combined result is not measured and must not be advertised.
+- The trusted checkpoint runtime was recovered from the existing Hugging Face
+  cache; no model data was downloaded or copied.
+- Combined K4 reaches 12.70 tok/s (+62.5% over the same-run 7.81 AR), preserves
+  the exact 32-token greedy stream, and peaks at 218.00 GB. K5 reaches 13.96
+  tok/s but remains non-equivalent and is not a product candidate.
 
 ## Reference check (internal only)
 
@@ -47,7 +49,6 @@ the 12 tok/s product floor.
 
 ## Next concrete action
 
-Recover or reconstruct a trusted DSpark adapter without copying the target
-artifact, then rerun K4 end to end with `--direct-down-qmv`. Product integration
-requires measured throughput of at least 12 tok/s plus multi-domain 128-token
-quality and long-context cache qualification.
+Run exact K4 across a multi-domain 128-token suite and long-context cache
+qualification. The single-prompt performance floor is now met; product
+integration remains blocked on those broader correctness and stability gates.

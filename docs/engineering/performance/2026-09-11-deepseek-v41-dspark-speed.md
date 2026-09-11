@@ -2,7 +2,8 @@
 
 Date: 2026-09-10/11
 
-Status: experimental; the 12 tok/s product gate was not met.
+Status: experimental; the single-prompt K4 performance gate is met, while the
+broader quality and long-context gates remain open.
 
 ## Goal and boundary
 
@@ -106,8 +107,8 @@ Real layer 20 measurements, using the same target and six routes per token:
 | 5 | 30 | 1.82x | 0 |
 | 6 | 36 | 1.72x | 0 |
 
-Across two full target-only 32-token runs, the specialization reached
-**9.66–9.83 tok/s** from 7.90–7.92 tok/s (+22.2% to +24.0%). The complete
+Across three full target-only 32-token runs, the specialization reached
+**9.49–9.83 tok/s** from 7.81–7.92 tok/s (+21.5% to +24.0%). The complete
 generated token sequence was identical and peak MLX memory remained 213.5387
 GB. Oracle target throughput was 17.91–18.13, 25.38–25.49, 32.39–33.86, and
 34.49–36.32 rows/s at K2 through K5 respectively. K4 is 30–36% faster than the
@@ -123,11 +124,20 @@ python scripts/benchmark_deepseek_v41_dspark.py \
   --tokens 32
 ```
 
-The original trusted checkpoint runtime was ephemeral and no longer available,
-so the combined DSpark run has not yet been remeasured. Applying the measured
-verification reduction to the previous K4 timing predicts roughly 14–15 tok/s,
-but that is an estimate, not a product claim. Server/catalog integration remains
-blocked on a reproduced end-to-end run and the existing quality qualification.
+The trusted checkpoint runtime was recovered from the already-present model
+cache and the combined path was remeasured without downloading or copying model
+weights:
+
+| Candidate | tok/s | Change vs same-run 7.81 AR | Greedy equivalent | Peak MLX memory |
+| --- | ---: | ---: | --- | ---: |
+| K4 packed DSpark + direct down QMV | **12.70** | **+62.5%** | **yes** | 218.00 GB |
+| K5 packed DSpark + direct down QMV | 13.96 | +78.8% | no | 218.00 GB |
+
+K4 accepted exactly one additional draft token per block. Its 2.442-second
+decode spent 0.297 seconds in the draft, 2.096 seconds in target verification,
+and 0.006 seconds in rollback. This is the first exact-greedy configuration to
+cross the 12 tok/s performance floor, but it is still one 32-token prompt rather
+than the multi-domain, long-context qualification required for product exposure.
 
 ## Rejected paths
 
@@ -155,14 +165,16 @@ blocked on a reproduced end-to-end run and the existing quality qualification.
 
 ## Product decision and next experiments
 
-Do not enable DSpark for DeepSeek V4.1 Flash yet. The best exact-greedy result is
-10.55 tok/s, below the explicit 12 tok/s floor; the fastest result is 11.53
-tok/s and still needs broader numerical/quality qualification.
+Do not enable DSpark for DeepSeek V4.1 Flash by default yet. K4 now reaches
+12.70 tok/s with an exact greedy stream on the qualification prompt, clearing
+the performance floor. It still needs multi-domain 128-token and long-context
+cache qualification. K5 reaches 13.96 tok/s but remains excluded because its
+batched target numerics change the greedy stream.
 
 Reaching 20 tok/s requires a new capability rather than threshold tuning:
 
-1. Combine the exact route-direct down QMV with the checkpoint DSpark runtime
-   and measure the complete K4 path; do not substitute the 14–15 tok/s estimate.
+1. Run K4 on a multi-domain 128-token prompt suite and verify exact target
+   authority, sustained throughput, and cache rollback at longer contexts.
 2. A model-trained MHC-aligned block drafter with materially higher accepted
    length. No compatible V4.1 checkpoint was available during this experiment.
 3. After either exists, re-run a multi-domain, 128-token suite and long-context
