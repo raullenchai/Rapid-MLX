@@ -13,6 +13,7 @@ LLM engine), so text-only requests must also be routed through it.
 
 import asyncio
 import contextvars
+import copy
 import functools
 import json
 import logging
@@ -39,6 +40,30 @@ from .base import BaseEngine, GenerationOutput
 ADMISSION_ORPHAN_GRACE_SECONDS = 2.0
 
 logger = logging.getLogger(__name__)
+
+
+def _clone_mllm_worker_processor(processor: Any) -> Any:
+    """Give the MLLM worker an independently mutable tokenizer backend.
+
+    Hugging Face fast-tokenizer calls temporarily mutate padding/truncation
+    state. The request/event-loop side renders chat templates while the MLLM
+    worker calls ``mlx_vlm.prepare_inputs``; sharing one Rust backend across
+    those execution domains can therefore raise ``RuntimeError: Already
+    borrowed`` under concurrent requests.
+
+    Keep the usually stateless media processor shared by shallow-copying the
+    wrapper, but deep-copy its tokenizer. Tokenizer-less processors are
+    themselves tokenizer-like, so copy the whole object in that case. This is
+    a one-time model-start cost, not a per-request copy.
+    """
+
+    tokenizer = getattr(processor, "tokenizer", None)
+    if tokenizer is None:
+        return copy.deepcopy(processor)
+
+    worker_processor = copy.copy(processor)
+    worker_processor.tokenizer = copy.deepcopy(tokenizer)
+    return worker_processor
 
 
 @dataclass(frozen=True, slots=True)
@@ -1720,11 +1745,21 @@ class BatchedEngine(BaseEngine):
             vision_max_pixels=vision_max_pixels,
         )
 
+        # The event loop renders request chat templates while the model worker
+        # tokenizes prepared MLLM inputs. Both operations temporarily mutate a
+        # fast tokenizer's padding/truncation state, so they must not share the
+        # same Rust backend (#3303). Give the worker its own tokenizer-bearing
+        # processor before handing it to the scheduler. This follows the
+        # established execution-domain ownership pattern already used for the
+        # model's MLX stream and avoids serializing unrelated request
+        # preparation behind a global lock.
+        worker_processor = _clone_mllm_worker_processor(self._processor)
+
         # Create and start MLLM scheduler — pass the model-owning executor so
         # _step_no_queue runs on the same thread as model load.
         self._mllm_scheduler = MLLMScheduler(
             model=self._model,
-            processor=self._processor,
+            processor=worker_processor,
             config=mllm_config,
             step_executor=self._model_load_executor,
             model_name=self._model_name,
