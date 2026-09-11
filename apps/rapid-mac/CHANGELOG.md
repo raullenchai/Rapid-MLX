@@ -17,6 +17,37 @@ can actually understand.
 
 ## [Unreleased]
 
+## [0.14.1] — 2026-09-10
+
+Rapid-MLX 0.14.1 is a focused reliability update for document analysis,
+multimodal chat, and sampled speculative decoding.
+
+### Added
+- **Large and scanned PDF analysis.** Desktop can analyze long selectable PDFs,
+  image-only scans, and documents that mix both forms. Extraction continues in
+  a bounded background cache, document reads have hard deadlines, and follow-up
+  questions can retrieve the relevant page ranges instead of placing an entire
+  large document in one prompt.
+- **Stronger sampled-MTP regression coverage.** Distribution-level and
+  real-weight checks now protect independent acceptance draws and rejection-
+  residual sampling, including bugs that the prior 246-test MTP suite could
+  miss.
+
+### Fixed
+- **Multimodal repetition no longer exhausts Metal.** Exact token loops are
+  stopped at the scheduler boundary, the completed row is retired immediately,
+  and the valid partial response finishes normally instead of ending in a
+  delayed empty HTTP 500.
+- PDF extraction now reports incomplete OCR honestly, respects cancellation and
+  removal races, bounds malformed document identifiers, and forces synthesis
+  when a model repeatedly exceeds the document/tool budget.
+
+### Qualification
+- A 199 GiB experimental DeepSeek V4.1 Flash REAP 2-bit checkpoint loaded in
+  239.44 seconds with 213.51 GB peak MLX memory on a 256 GiB M3 Ultra, but
+  decoded at only 7.31–7.92 tok/s. It remains outside the model catalog,
+  Server, and Desktop because it missed the 12 tok/s product floor.
+
 ## [0.14.0] — 2026-09-09
 
 Rapid-MLX 0.14.0 adds experimental local Computer Use and shared-compute
@@ -3770,7 +3801,8 @@ Older versions: see the
 [GitHub Releases page](https://github.com/machinefi/rapid-desktop/releases)
 for auto-generated notes against earlier tags.
 
-[Unreleased]: https://github.com/raullenchai/Rapid-MLX/compare/rapid-mac-v0.14.0...HEAD
+[Unreleased]: https://github.com/raullenchai/Rapid-MLX/compare/rapid-mac-v0.14.1...HEAD
+[0.14.1]: https://github.com/raullenchai/Rapid-MLX/compare/rapid-mac-v0.14.0...rapid-mac-v0.14.1
 [0.14.0]: https://github.com/raullenchai/Rapid-MLX/compare/rapid-mac-v0.13.4...rapid-mac-v0.14.0
 [0.13.4]: https://github.com/raullenchai/Rapid-MLX/compare/rapid-mac-v0.13.3...rapid-mac-v0.13.4
 [0.13.3]: https://github.com/raullenchai/Rapid-MLX/compare/rapid-mac-v0.13.2...rapid-mac-v0.13.3
