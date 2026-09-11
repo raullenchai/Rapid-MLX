@@ -1176,11 +1176,13 @@ struct ChatMessage: Identifiable, Codable, Equatable, Hashable {
     ///     ``leadingEnvelopeLeak`` gate, applied to the tail — so an answer
     ///     that ENDS by explaining `<tool_call>` in prose is left alone.
     ///   * A marker inside a fenced code block is never a leak. An answer to
-    ///     "show me what a tool call looks like" puts its example in a
-    ///     ```` ``` ```` fence, and that fence is the whole point of asking.
-    ///     A fenced marker is SKIPPED, not a verdict: the scan carries on to
-    ///     the next candidate, so an answer that shows a fenced example and
-    ///     then trails off into a real envelope is still caught.
+    ///     "show me what a tool call looks like" puts its example in a fence,
+    ///     and that fence is the whole point of asking. Fences are parsed
+    ///     (``fencedRanges``), not counted: backticks and tildes, three or
+    ///     more, closer matching the opener. A fenced marker is SKIPPED, not
+    ///     a verdict: the scan carries on to the next candidate, so an answer
+    ///     that shows a fenced example and then trails off into a real
+    ///     envelope is still caught.
     ///   * There must be real prose before it. With none, the leading check
     ///     owns the turn and this returns nil, so the caption-only render
     ///     stays exactly as it was.
@@ -1222,13 +1224,19 @@ struct ChatMessage: Identifiable, Codable, Equatable, Hashable {
         var starts: [String.Index] = []
         for pattern in patterns {
             var from = content.startIndex
-            while starts.count < maxTrailingArtifactCandidates,
+            var matched = 0
+            // The cap is PER PATTERN, not shared. A shared budget spent by
+            // 64 fenced `<tool_call>` examples would stop the scan before
+            // the `[TOOL_CALLS]` / DeepSeek patterns ran at all, hiding a
+            // genuine trailing envelope in one of those formats.
+            while matched < maxTrailingArtifactCandidates,
                   from < content.endIndex,
                   let found = content.range(
                       of: pattern, options: [.regularExpression],
                       range: from..<content.endIndex
                   ) {
                 starts.append(found.lowerBound)
+                matched += 1
                 from = found.upperBound > found.lowerBound
                     ? found.upperBound
                     : content.index(after: found.lowerBound)
@@ -1242,18 +1250,82 @@ struct ChatMessage: Identifiable, Codable, Equatable, Hashable {
         let ordered = starts.sorted()
         guard let earliest = ordered.first, earliest > content.startIndex else { return nil }
 
+        let fenced = fencedRanges(in: content)
         for start in ordered {
-            // An ODD number of ``` fences before the marker means the marker
-            // sits inside an open code block — the example the user asked to
+            // A marker inside a code fence is the example the user asked to
             // see, not a leak. Skip it; a later unfenced candidate still counts.
+            if fenced.contains(where: { $0.contains(start) }) { continue }
             let before = content[content.startIndex..<start]
-            if before.components(separatedBy: "```").count % 2 == 0 { continue }
             let prose = String(before).trimmingCharacters(in: .whitespacesAndNewlines)
             // Whitespace only: the artifact is effectively the whole turn, so
             // the leading check owns it and the caption stands alone.
             return prose.isEmpty ? nil : prose
         }
         return nil
+    }
+
+    /// The character ranges of ``content`` that sit inside a fenced code
+    /// block, opening fence line included.
+    ///
+    /// CommonMark's actual rule, not a count of literal ```` ``` ````
+    /// sequences: a fence opens on a line whose first non-space content is a
+    /// run of three or more backticks OR tildes, and closes on a later line
+    /// whose run uses the SAME character and is at least as long. Counting
+    /// triple-backtick occurrences — the shape this check started as —
+    /// misreads a ```` ~~~ ```` fence (no backticks at all) and a
+    /// four-backtick fence (the standard way to show a nested example) as
+    /// unfenced, which turns the example the user asked for into a "leak"
+    /// and truncates the answer at it. Same fence vocabulary the release-notes
+    /// renderer already accepts.
+    static func fencedRanges(in content: String) -> [Range<String.Index>] {
+        var ranges: [Range<String.Index>] = []
+        var openStart: String.Index?
+        var openMarker: (marker: Character, run: Int)?
+        var index = content.startIndex
+        while index < content.endIndex {
+            let lineEnd = content[index...].firstIndex(of: "\n") ?? content.endIndex
+            let next = lineEnd < content.endIndex ? content.index(after: lineEnd) : content.endIndex
+            if let found = fenceMarker(in: content[index..<lineEnd]) {
+                if let open = openMarker, let start = openStart {
+                    // A closer must use the opener's character and be at least
+                    // as long; a shorter or different run is fence CONTENT
+                    // (that is how a ```` fence shows a ``` example).
+                    if found.marker == open.marker, found.run >= open.run {
+                        ranges.append(start..<next)
+                        openMarker = nil
+                        openStart = nil
+                    }
+                } else {
+                    openMarker = found
+                    openStart = index
+                }
+            }
+            index = next
+        }
+        // An unterminated fence runs to the end of the turn: a streamed answer
+        // cut off mid-example is still an example, not a leak.
+        if let start = openStart { ranges.append(start..<content.endIndex) }
+        return ranges
+    }
+
+    /// The fence run a line opens or closes with — its character and length —
+    /// or nil when the line is not a fence line. Up to three leading spaces
+    /// are allowed (CommonMark); a backtick fence's info string may not
+    /// contain a backtick, which is what keeps inline `` `code` `` off this
+    /// path.
+    private static func fenceMarker(in line: Substring) -> (marker: Character, run: Int)? {
+        var rest = line
+        var leading = 0
+        while let first = rest.first, first == " " || first == "\t" {
+            leading += 1
+            if leading > 3 { return nil }
+            rest = rest.dropFirst()
+        }
+        guard let marker = rest.first, marker == "`" || marker == "~" else { return nil }
+        let run = rest.prefix { $0 == marker }.count
+        guard run >= 3 else { return nil }
+        if marker == "`", rest.dropFirst(run).contains("`") { return nil }
+        return (marker, run)
     }
 
     /// Upper bound on candidate tail openers scanned per message. Each

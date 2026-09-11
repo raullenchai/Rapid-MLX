@@ -69,8 +69,18 @@ struct WhatsNewBanner: View {
                     HStack(spacing: 8) {
                         if let url = Self.releaseNotesURL(for: current) {
                             Button("See what's new") {
-                                openURL(url)
-                                installTracker.dismissUpgradeNotice()
+                                // Dismiss only once the browser actually took
+                                // the URL. `openURL` can be declined (no
+                                // handler, a policy block), and dismissing
+                                // regardless would retire the only route to the
+                                // notes for a click that opened nothing — the
+                                // banner cannot come back, because
+                                // `lastSeenVersion` already rolled forward.
+                                // Same shape as `GitHubStarPrompt`.
+                                openURL(url) { accepted in
+                                    guard accepted else { return }
+                                    installTracker.dismissUpgradeNotice()
+                                }
                             }
                             .buttonStyle(.borderedProminent)
                             .controlSize(.small)

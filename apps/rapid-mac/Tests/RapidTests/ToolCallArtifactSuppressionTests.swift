@@ -406,6 +406,85 @@ struct ToolCallArtifactSuppressionTests {
         #expect(ChatMessage.trailingToolCallArtifactProse(in: content) == nil)
     }
 
+    @Test("Tilde and four-backtick fences hide their examples too")
+    func trailingNonBacktickFencesAreRespected() {
+        // Adversarial review round 2 (codex, blocking): the fence check
+        // counted literal ``` runs, so a `~~~` fence (no backticks at all)
+        // and a ```` fence (the standard way to show a ``` example nested
+        // inside one) both read as UNFENCED — and the example the user asked
+        // for was truncated as a leak. Fences are parsed now.
+        let tilde = """
+        Here is the shape:
+
+        ~~~
+        <tool_call>{"name": "search", "arguments": {"q": "x"}}</tool_call>
+        ~~~
+        """
+        #expect(ChatMessage.trailingToolCallArtifactProse(in: tilde) == nil)
+
+        let nested = """
+        Here is the shape:
+
+        ````markdown
+        ```xml
+        <tool_call>{"name": "search", "arguments": {"q": "x"}}</tool_call>
+        ```
+        ````
+        """
+        // The inner ``` is shorter than the ```` opener, so it is fence
+        // CONTENT and does not close the block — the marker stays covered.
+        #expect(ChatMessage.trailingToolCallArtifactProse(in: nested) == nil)
+        #expect(!ChatMessage.shouldSuppressToolCallArtifact(
+            content: nested, toolCalls: [], finishReason: "stop", toolsRequested: true))
+    }
+
+    @Test("A tilde-fenced example does not hide a real envelope after it")
+    func trailingEnvelopeAfterTildeFenceIsStillCaught() {
+        let content = """
+        The shape is:
+
+        ~~~xml
+        <tool_call>{"name": "search"}</tool_call>
+        ~~~
+
+        Running it now:
+
+        <tool_call> {"name":"search","arguments":{"q":"Statement
+        """
+        #expect(ChatMessage.trailingToolCallArtifactProse(in: content)?
+            .hasSuffix("Running it now:") == true)
+    }
+
+    @Test("Fence ranges follow the opener's delimiter and length")
+    func fenceRangeParsing() {
+        // A closer must match the opener's character AND be at least as long.
+        #expect(ChatMessage.fencedRanges(in: "```\nx\n```\nafter").count == 1)
+        #expect(ChatMessage.fencedRanges(in: "~~~\nx\n~~~\nafter").count == 1)
+        // `~~~` cannot close a ``` fence, so the block runs to the end.
+        let mismatched = ChatMessage.fencedRanges(in: "```\nx\n~~~\nafter")
+        #expect(mismatched.count == 1)
+        #expect(mismatched.first?.upperBound == "```\nx\n~~~\nafter".endIndex)
+        // Inline code is not a fence, and neither is a two-character run.
+        #expect(ChatMessage.fencedRanges(in: "use `tool_call` here").isEmpty)
+        #expect(ChatMessage.fencedRanges(in: "``\nx\n``").isEmpty)
+        // Four leading spaces is an indented code block, not a fence opener.
+        #expect(ChatMessage.fencedRanges(in: "    ```\nx\n    ```").isEmpty)
+    }
+
+    @Test("An earlier format's fenced examples do not exhaust the scan budget")
+    func perPatternCandidateBudget() {
+        // Adversarial review round 2 (codex, nit): the candidate cap used to
+        // be shared, so a wall of fenced `<tool_call>` examples spent it
+        // before the `[TOOL_CALLS]` pattern ran and a genuine Mistral tail
+        // went unnoticed.
+        let example = "```xml\n<tool_call>{\"name\": \"s\"}</tool_call>\n```\n"
+        let content = "Examples:\n\n"
+            + String(repeating: example, count: 80)
+            + "\nNow running it:\n\n[TOOL_CALLS] [{\"name\":\"search\"}]"
+        #expect(ChatMessage.trailingToolCallArtifactProse(in: content)?
+            .hasSuffix("Now running it:") == true)
+    }
+
     @Test("A whole-turn artifact still renders the caption alone")
     func wholeTurnArtifactHasNoProse() {
         let content = "<tool_call>{\"name\": \"search\", \"arguments\": {\"q\": \"x\"}}</tool_call>"
