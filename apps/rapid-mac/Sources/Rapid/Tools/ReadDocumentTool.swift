@@ -17,6 +17,7 @@ enum ReadDocumentTool {
         description: "Read a document the user attached to this conversation. Attachments show only a short preview inline; use this to see the rest. THREE modes: (1) mode='outline' returns the document's table of contents — section titles with their page and character offset. Start here for any question about the document AS A WHOLE, such as summarizing it or asking what it covers, then read the sections that matter. (2) 'grep' with a regular expression jumps straight to matching passages — use when you already know the term you want. (3) 'offset' reads sequentially from a character position; the result carries 'next_offset' and 'has_more' to continue. Sequential reading is the slowest way to cover a long document, so prefer outline or grep first.",
         parameters: .object([
             "type": .string("object"),
+            "additionalProperties": .bool(false),
             "properties": .object([
                 "document_id": .object([
                     "type": .string("string"),
@@ -54,8 +55,16 @@ enum ReadDocumentTool {
     ) async -> ToolCallResult {
         let tool = "read_document"
         guard let data = arguments.data(using: .utf8),
+              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               let args = try? JSONDecoder().decode(Args.self, from: data) else {
             return err(tool, "could not parse arguments JSON")
+        }
+        let allowedKeys: Set<String> = ["document_id", "mode", "offset", "grep"]
+        let unknownKeys = object.keys.filter { !allowedKeys.contains($0) }.sorted()
+        guard unknownKeys.isEmpty else {
+            let names = unknownKeys.prefix(5).map { String($0.prefix(80)) }.joined(separator: ", ")
+            let suffix = unknownKeys.count > 5 ? ", …" : ""
+            return err(tool, "unknown argument(s): \(names)\(suffix) — use only document_id, mode, offset, or grep; use offset (not offset_len) to read from an outline position")
         }
 
         let rawID = args.document_id.trimmingCharacters(in: .whitespacesAndNewlines)

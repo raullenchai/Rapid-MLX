@@ -17,6 +17,10 @@ can actually understand.
 
 ## [Unreleased]
 
+### Fixed
+- Document follow-ups now reject malformed retrieval cursors instead of
+  silently reading from the beginning and returning a plausible wrong page.
+
 ## [0.14.1] — 2026-09-10
 
 Rapid-MLX 0.14.1 is a focused reliability update for document analysis,

@@ -219,8 +219,9 @@ protocol ToolRegistry: AnyObject, Sendable {
 ///
 /// The model chooses a tool from the definitions advertised on this round.
 /// This executor then applies the same policy to every built-in and connector:
-/// refuse tools that were not advertised, require an arguments object, remove
-/// top-level fields outside the tool's JSON schema, and only then dispatch.
+/// refuse tools that were not advertised, require an arguments object, enforce
+/// strict schemas (or remove unknown top-level fields for permissive schemas),
+/// and only then dispatch.
 /// Tool-specific intent parsing does not belong here or in the view model.
 @MainActor
 struct NativeToolCallExecutor {
@@ -285,6 +286,10 @@ struct NativeToolCallExecutor {
         if case .object(let schema) = definition.function.parameters,
            case .object(let properties)? = schema["properties"]
         {
+            if schema["additionalProperties"] == .bool(false),
+               object.keys.contains(where: { !properties.keys.contains($0) }) {
+                return nil
+            }
             object = object.filter { properties.keys.contains($0.key) }
         }
         guard JSONSerialization.isValidJSONObject(object),
