@@ -1390,25 +1390,33 @@ class MLLMScheduler:
                 err_msg = str(e)
                 error_ids = set(self.running.keys())
                 failed_requests = [self.running[rid] for rid in error_ids]
+                is_client_error = isinstance(e, ClientRequestError)
                 # Do not collapse the only actionable copy of a backend
                 # failure into the bounded client message below. Request IDs
                 # are safe to log and let an operator correlate the traceback
                 # with access logs without exposing prompts or local model
                 # paths to API clients.
-                logger.exception(
-                    "MLLM batch generation failed "
-                    "(exception=%s requests=%s active_rows=%d waiting=%d)",
-                    type(e).__name__,
-                    sorted(error_ids),
-                    len(
-                        getattr(
-                            getattr(self.batch_generator, "active_batch", None),
-                            "uids",
-                            (),
-                        )
-                    ),
-                    len(self.waiting),
-                )
+                if is_client_error:
+                    logger.warning(
+                        "MLLM batch rejected client input (requests=%s error=%s)",
+                        sorted(error_ids),
+                        err_msg,
+                    )
+                else:
+                    logger.exception(
+                        "MLLM batch generation failed "
+                        "(exception=%s requests=%s active_rows=%d waiting=%d)",
+                        type(e).__name__,
+                        sorted(error_ids),
+                        len(
+                            getattr(
+                                getattr(self.batch_generator, "active_batch", None),
+                                "uids",
+                                (),
+                            )
+                        ),
+                        len(self.waiting),
+                    )
 
                 # Remove from batch generator BEFORE scheduler cleanup so
                 # stale requests don't poison subsequent batches.
@@ -1436,7 +1444,6 @@ class MLLMScheduler:
                 # An explicit type owns the public-message trust boundary.
                 # Arbitrary RuntimeError/ValueError text may include caller
                 # data or local paths that happen to match the old markers.
-                is_client_error = isinstance(e, ClientRequestError)
                 public_error = (
                     err_msg
                     if is_client_error
