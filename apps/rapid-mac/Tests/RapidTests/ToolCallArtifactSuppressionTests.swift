@@ -676,6 +676,56 @@ struct ToolCallArtifactSuppressionTests {
             toolsRequested: false))
     }
 
+    @Test("Punctuation-led prose after an example stops the terminal run")
+    func punctuationLedProseIsNotMachineSyntax() {
+        // Adversarial review round 10 (codex, blocking): the run test was
+        // "the first character is punctuation", and prose opens with
+        // punctuation often enough for that to eat real content — a Markdown
+        // link, a reference definition, a quoted sentence. Each opener is
+        // matched structurally now.
+        let shapes = [
+            "[That syntax](https://example.com) is invalid, by the way.",
+            "[1]: https://example.com/tool-calling",
+            "\"That syntax\" is invalid, by the way.",
+            "<- that is what a leaked call looks like.",
+        ]
+        for tail in shapes {
+            let content = """
+            Here is the call:
+
+            <tool_call>{"name":"search","arguments":{"q":"x"}}</tool_call>
+
+            \(tail)
+            """
+            #expect(ChatMessage.trailingToolCallArtifactProse(in: content) == nil)
+            #expect(!ChatMessage.shouldSuppressToolCallArtifact(
+                content: content, toolCalls: [], finishReason: "stop", toolsRequested: true))
+        }
+    }
+
+    @Test("Real JSON continuation lines still count as machine syntax")
+    func jsonContinuationLinesStayInTheRun() {
+        // The other half of round 10: tightening the openers must not drop the
+        // shapes an envelope dump actually produces.
+        let content = """
+        Let me search those records:
+
+        <tool_call>
+        {
+          "name": "search",
+          "arguments": {
+            "queries": [
+              "first",
+              "second"
+            ],
+            "limit": 10
+          }
+        }
+        """
+        #expect(ChatMessage.trailingToolCallArtifactProse(in: content)
+            == "Let me search those records:")
+    }
+
     @Test("A whole-turn artifact still renders the caption alone")
     func wholeTurnArtifactHasNoProse() {
         let content = "<tool_call>{\"name\": \"search\", \"arguments\": {\"q\": \"x\"}}</tool_call>"

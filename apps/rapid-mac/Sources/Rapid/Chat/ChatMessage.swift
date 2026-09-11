@@ -1328,22 +1328,19 @@ struct ChatMessage: Identifiable, Codable, Equatable, Hashable {
     /// Where the turn's terminal run of machine syntax begins, or nil when
     /// the turn does not end in machine syntax at all.
     ///
-    /// Walks lines from the end: a blank line, a line whose first non-space
-    /// character opens machine syntax (`<`, `{`, `[`, `}`, `]`, `"`, `,`), or
-    /// a bare JSON scalar (a pretty-printed array element — `10,`, `true`,
-    /// `null`) belongs to the run; the first line that reads as prose stops
-    /// it. Deliberately a line-shape test rather than a JSON/XML parse: the
-    /// run only has to tell an envelope dump — what a model emits when the
-    /// parser lost its call and generation simply stopped — from a sentence,
-    /// and the input is by definition syntax no parser could read. The scalar
-    /// test is kept strict (a number, `true`, `false`, `null`, optional
-    /// trailing comma — never "ends with a colon", which is how the dogfood
-    /// repro's last prose line reads) because widening it moves the boundary
-    /// EARLIER, and an over-early boundary eats real prose. A closing
-    /// ```` ``` ```` stops the run too, which is correct: a turn that ENDS
-    /// with a fenced example is showing the example, not leaking a call.
+    /// Walks lines from the end: a blank line or a machine-syntax line
+    /// (``isMachineSyntaxLine``) belongs to the run, and the first line that
+    /// reads as prose stops it.
+    ///
+    /// Deliberately a line-shape test rather than a JSON/XML parse: the run
+    /// only has to tell an envelope dump — what a model emits when the parser
+    /// lost its call and generation simply stopped — from a sentence, and the
+    /// input is by definition syntax no parser could read. Every test is kept
+    /// strict, because widening one moves the boundary EARLIER, and an
+    /// over-early boundary eats real prose. A closing ```` ``` ```` stops the
+    /// run too, which is correct: a turn that ENDS with a fenced example is
+    /// showing the example, not leaking a call.
     private static func terminalMachineSyntaxRunStart(in content: String) -> String.Index? {
-        let openers: Set<Character> = ["<", "{", "[", "}", "]", "\"", ","]
         var runStart: String.Index?
         var sawContent = false
         var lineStart = content.startIndex
@@ -1355,8 +1352,7 @@ struct ChatMessage: Identifiable, Codable, Equatable, Hashable {
             let trimmed = content[lineStart..<lineEnd]
                 .trimmingCharacters(in: .whitespaces)
             if !trimmed.isEmpty {
-                if let first = trimmed.first,
-                   openers.contains(first) || isJSONScalarLine(trimmed) {
+                if isMachineSyntaxLine(trimmed) {
                     if runStart == nil { runStart = lineStart }
                     sawContent = true
                 } else {
@@ -1370,6 +1366,50 @@ struct ChatMessage: Identifiable, Codable, Equatable, Hashable {
             lineStart = index
         }
         return sawContent ? runStart : nil
+    }
+
+    /// True when a line is a piece of an envelope dump rather than a sentence.
+    ///
+    /// Structural per opener, not "the first character is punctuation". Prose
+    /// opens with punctuation often enough that the loose form ate real
+    /// content: a Markdown link (`[That syntax](…) is invalid`), a reference
+    /// definition (`[1]: …`), a quoted sentence. Each case below accepts the
+    /// shape an envelope actually produces and nothing wider.
+    private static func isMachineSyntaxLine(_ trimmed: String) -> Bool {
+        // Never in prose, wherever it appears.
+        if trimmed.contains("tool\u{2581}calls\u{2581}") { return true }
+        guard let first = trimmed.first else { return false }
+        switch first {
+        case "{", "}", "]", ",":
+            // None of these open a sentence.
+            return true
+        case "[":
+            // Reject Markdown first: a link (`[label](url)`) or a reference
+            // definition (`[1]: url`). The digit branch below has to accept
+            // `[1, 2]`, so `[1]: url` would otherwise read as an array.
+            if trimmed.range(
+                of: #"^\[[^\]\n]*\]\s*[:(]"#,
+                options: .regularExpression) != nil {
+                return false
+            }
+            // A JSON array opening, or the Mistral marker.
+            return trimmed.range(
+                of: #"^\[(\s*$|\s*[\{\[\]"'\-0-9]|TOOL_CALLS\])"#,
+                options: .regularExpression) != nil
+        case "\"":
+            // A JSON key or a bare string element, not a quoted sentence.
+            return trimmed.range(
+                of: #"^"(\\.|[^"\\])*"\s*(:|,?$)"#,
+                options: .regularExpression) != nil
+        case "<":
+            // A tag, not prose that happens to open with a less-than sign.
+            return trimmed.contains(">")
+                && trimmed.range(
+                    of: #"^</?[A-Za-z\uFF5C|]"#,
+                    options: .regularExpression) != nil
+        default:
+            return isJSONScalarLine(trimmed)
+        }
     }
 
     /// True for a line that is nothing but a JSON scalar with an optional
