@@ -410,8 +410,7 @@ def test_scheduler_step_marks_internal_failure_retryable_without_leaking_details
     assert terminal.finished is True
     assert terminal.finish_reason == "length"
     assert terminal.error == (
-        "MLLM inference was interrupted by a transient engine error; "
-        "retry the request"
+        "MLLM inference was interrupted by a transient engine error; retry the request"
     )
     assert terminal.error_kind == "lifecycle"
     assert "/Users/example" not in terminal.error
