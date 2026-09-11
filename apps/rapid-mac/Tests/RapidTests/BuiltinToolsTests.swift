@@ -97,6 +97,48 @@ final class BuiltinToolsTests {
         ) == nil)
     }
 
+    /// A rejection the model cannot read is a rejection it repeats. The
+    /// executor used to answer every schema violation with "arguments must be
+    /// a JSON object matching the advertised schema", which names neither the
+    /// offending key nor the accepted ones — so a 4B model re-sent the same
+    /// `offset_len` call. Fail closed, but say what closed it.
+    @Test("A strict-schema rejection names the unknown key and the allowed ones")
+    func strictSchemaRejectionNamesKeys() throws {
+        switch NativeToolCallExecutor.normalize(
+            ToolCall(
+                id: "document_1",
+                name: "read_document",
+                arguments: #"{"document_id":"00000000-0000-0000-0000-000000000000","offset_len":117524}"#
+            ),
+            for: ReadDocumentTool.definition
+        ) {
+        case .success:
+            Issue.record("an unknown key must not normalize")
+        case .failure(let rejection):
+            #expect(rejection.reason.contains("offset_len"))
+            #expect(rejection.reason.contains("document_id, grep, mode, offset"))
+        }
+    }
+
+    @Test("An unbounded key list is truncated in the rejection text")
+    func strictSchemaRejectionBoundsItsEcho() throws {
+        let junk = (0..<9).map { "\"k\($0)\": 1" }.joined(separator: ",")
+        switch NativeToolCallExecutor.normalize(
+            ToolCall(
+                id: "document_2",
+                name: "read_document",
+                arguments: #"{"document_id":"x",\#(junk)}"#
+            ),
+            for: ReadDocumentTool.definition
+        ) {
+        case .success:
+            Issue.record("unknown keys must not normalize")
+        case .failure(let rejection):
+            #expect(rejection.reason.contains("…"))
+            #expect(!rejection.reason.contains("k8"))
+        }
+    }
+
     @Test("Native executor rejects non-object or malformed arguments generically")
     func nativeExecutorRejectsMalformedArguments() {
         #expect(NativeToolCallExecutor.normalized(

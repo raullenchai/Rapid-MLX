@@ -42,6 +42,18 @@ final class InstallTracker {
     /// didn't move. Banner-driving flag for the chat surface.
     private(set) var failedReplaceDetected: Bool = false
 
+    /// The version this launch upgraded FROM, or nil when the version did
+    /// not move forward since the last launch. Drives ``WhatsNewBanner``.
+    ///
+    /// Sparkle installs on quit and relaunches into the new build with no
+    /// prompt of any kind, so a user who crossed two feature releases (the
+    /// 0.13.1 → 0.14.1 dogfood: Computer Use, Share Compute, PDF analysis,
+    /// model unload, six image models) saw an identical window with a
+    /// different number in the version pill and nothing else. This is the
+    /// one signal the app already had and never used — ``lastSeenVersion``
+    /// is read on every launch for the failed-Replace check.
+    private(set) var upgradedFrom: String?
+
     /// The version string the app booted with. Cached so the banner
     /// copy can echo what the user is currently running (matches what
     /// the About panel + status bar already show).
@@ -90,6 +102,13 @@ final class InstallTracker {
 
         let prevMtime = defaults.object(forKey: Self.lastSeenMtimeKey) as? Date
         let prevVersion = defaults.string(forKey: Self.lastSeenVersionKey)
+
+        // Forward moves only. A downgrade (a rollback, or a dev build run
+        // over a newer release) is not something to celebrate, and "Updated
+        // to v0.13.1" over an intentional rollback reads as a bug.
+        if let prevVersion, UpdateChecker.isNewer(currentVersion, than: prevVersion) {
+            self.upgradedFrom = prevVersion
+        }
 
         self.failedReplaceDetected = Self.detect(
             previousMtime: prevMtime,
@@ -172,5 +191,13 @@ final class InstallTracker {
     /// Finder Replace happens between now and then.
     func dismiss() {
         failedReplaceDetected = false
+    }
+
+    /// User dismissed the "what's new" banner. Only the in-process flag is
+    /// cleared: ``lastSeenVersionKey`` was already advanced on construction,
+    /// so the next launch computes ``upgradedFrom == nil`` on its own and the
+    /// banner cannot come back for a version the user has already seen.
+    func dismissUpgradeNotice() {
+        upgradedFrom = nil
     }
 }

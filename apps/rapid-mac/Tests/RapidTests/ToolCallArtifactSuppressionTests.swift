@@ -278,6 +278,132 @@ struct ToolCallArtifactSuppressionTests {
         #expect(!decoded.toolCallArtifactSuppressed)
     }
 
+    // MARK: - Trailing artifact: prose answered, then the tail broke
+
+    /// The 0.14.1 dogfood repro, abbreviated: a real answer that ends by
+    /// promising an action, then an envelope nothing claimed. No tool round
+    /// fired, so the promise was never kept and the user saw only the
+    /// promise — for six minutes.
+    @Test("Prose followed by a <tool_call> envelope keeps the prose and flags the tail")
+    func trailingEnvelopeKeepsProse() {
+        let content = """
+        Let me read the first page more carefully with a higher offset:
+
+        <tool_call> {"name":"read_document","arguments":{"document_id":"abc","greP":"Statement
+        """
+        let prose = ChatMessage.trailingToolCallArtifactProse(in: content)
+        #expect(prose == "Let me read the first page more carefully with a higher offset:")
+        // Whole-turn detection does NOT fire — the artifact is the tail.
+        #expect(!ChatMessage.contentLooksLikeToolCallArtifact(content))
+        // …but the gate does, so the row gets the caption.
+        #expect(ChatMessage.shouldSuppressToolCallArtifact(
+            content: content, toolCalls: [], finishReason: "stop", toolsRequested: true))
+        #expect(ChatMessage.proseAboveSuppressedToolCallArtifact(content: content) == prose)
+    }
+
+    @Test("A trailing [TOOL_CALLS] / DeepSeek marker is caught the same way")
+    func trailingOtherFormats() {
+        #expect(ChatMessage.trailingToolCallArtifactProse(
+            in: "Sure, let me look that up.\n\n[TOOL_CALLS] [{\"name\":\"search\"}]"
+        ) == "Sure, let me look that up.")
+        #expect(ChatMessage.trailingToolCallArtifactProse(
+            in: "I will check.\n<function=get_weather>{\"city\":\"NYC\"}"
+        ) == "I will check.")
+    }
+
+    @Test("A trailing tag the answer only TALKS about is not an artifact")
+    func trailingProseMentionIsNotAnArtifact() {
+        // No payload after the marker → the `leadingEnvelopeLeak` gate holds.
+        #expect(ChatMessage.trailingToolCallArtifactProse(
+            in: "Hermes-style models wrap their calls in <tool_call> tags."
+        ) == nil)
+        #expect(ChatMessage.trailingToolCallArtifactProse(
+            in: "The prefix Mistral uses is [TOOL_CALLS] and nothing else."
+        ) == nil)
+    }
+
+    @Test("A fenced example ending the answer is not an artifact")
+    func trailingFencedExampleIsNotAnArtifact() {
+        let content = """
+        Here is what a Hermes call looks like:
+
+        ```xml
+        <tool_call>{"name": "search", "arguments": {"q": "x"}}</tool_call>
+        ```
+        """
+        #expect(ChatMessage.trailingToolCallArtifactProse(in: content) == nil)
+        #expect(!ChatMessage.shouldSuppressToolCallArtifact(
+            content: content, toolCalls: [], finishReason: "stop", toolsRequested: true))
+    }
+
+    @Test("An unclosed fence still counts as inside a fence")
+    func trailingUnclosedFenceIsNotAnArtifact() {
+        let content = "Example:\n\n```xml\n<tool_call>{\"name\": \"search\"}"
+        #expect(ChatMessage.trailingToolCallArtifactProse(in: content) == nil)
+    }
+
+    @Test("A whole-turn artifact still renders the caption alone")
+    func wholeTurnArtifactHasNoProse() {
+        let content = "<tool_call>{\"name\": \"search\", \"arguments\": {\"q\": \"x\"}}</tool_call>"
+        #expect(ChatMessage.trailingToolCallArtifactProse(in: content) == nil)
+        #expect(ChatMessage.proseAboveSuppressedToolCallArtifact(content: content) == nil)
+        #expect(ChatMessage.contentLooksLikeToolCallArtifact(content))
+    }
+
+    @Test("A trailing artifact is still gated on tools + zero calls")
+    func trailingArtifactRespectsTheGates() {
+        let content = "Let me look.\n\n<tool_call> {\"name\":\"search\",\"arguments\":{"
+        #expect(!ChatMessage.shouldSuppressToolCallArtifact(
+            content: content, toolCalls: [], finishReason: "stop", toolsRequested: false))
+        #expect(!ChatMessage.shouldSuppressToolCallArtifact(
+            content: content,
+            toolCalls: [ToolCall(id: "1", name: "search", arguments: "{}")],
+            finishReason: "stop",
+            toolsRequested: true))
+        #expect(!ChatMessage.shouldSuppressToolCallArtifact(
+            content: content, toolCalls: [], finishReason: "tool_calls", toolsRequested: true))
+    }
+
+    /// The dangerous false positive the strict payload gate exists for: an
+    /// answer that names the tag in a sentence and shows the example in a
+    /// fence further down. A loose "carries a closing tag somewhere" gate
+    /// would start the tail at the sentence and delete the explanation.
+    @Test("An answer that names the tag then fences an example keeps all of it")
+    func mentionThenFencedExampleIsNotAnArtifact() {
+        let content = """
+        Hermes models wrap their calls in <tool_call> tags. For example:
+
+        ```xml
+        <tool_call>{"name": "search", "arguments": {"q": "x"}}</tool_call>
+        ```
+
+        The engine strips them before you see the result.
+        """
+        #expect(ChatMessage.trailingToolCallArtifactProse(in: content) == nil)
+        #expect(!ChatMessage.shouldSuppressToolCallArtifact(
+            content: content, toolCalls: [], finishReason: "stop", toolsRequested: true))
+    }
+
+    /// A prose turn that trailed off into the DeepSeek marker used to be
+    /// suppressed WHOLE (the marker matches anywhere), taking the answer
+    /// with it.
+    @Test("A trailing DeepSeek marker keeps the prose above it")
+    func trailingDeepSeekMarkerKeepsProse() {
+        let content = "I will look that up for you.\n<\u{FF5C}tool\u{2581}calls\u{2581}begin\u{FF5C}>"
+        #expect(ChatMessage.contentLooksLikeToolCallArtifact(content))
+        #expect(
+            ChatMessage.proseAboveSuppressedToolCallArtifact(content: content)
+                == "I will look that up for you."
+        )
+    }
+
+    @Test("An ordinary long answer is untouched")
+    func ordinaryAnswerHasNoTrailingArtifact() {
+        #expect(ChatMessage.trailingToolCallArtifactProse(
+            in: "The purchase order number is PO-5592-KX and the total is 14,208.55."
+        ) == nil)
+    }
+
     @Test("The suppressed-body caption carries no machine jargon")
     func captionHasNoJargon() {
         let copy = ChatMessage.toolCallArtifactSuppressedCaptionCopy.lowercased()

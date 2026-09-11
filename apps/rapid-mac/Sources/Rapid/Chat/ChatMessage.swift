@@ -1131,6 +1131,16 @@ struct ChatMessage: Identifiable, Codable, Equatable, Hashable {
         // the last moment even if the captured array reads empty — be
         // conservative and leave it alone.
         if finishReason == "tool_calls" { return false }
+        // Gate 4b: a turn that answered in prose and THEN emitted an
+        // envelope. The 0.14.1 dogfood repro: 5,413 characters of
+        // "Let me read the first page more carefully…" followed by
+        // `<tool_call> {"name":"read_document","arguments":{…,"greP":…`,
+        // which no parser claimed — so no tool round fired, the model kept
+        // generating for six more minutes, and the user watched a sentence
+        // that promised an action be followed by nothing at all. The
+        // leading-only check below cannot see it, because the artifact is
+        // the TAIL of an otherwise real answer.
+        if trailingToolCallArtifactProse(in: content) != nil { return true }
         // Gate 4: the content must actually look like a raw tool-call
         // artifact, not a genuine answer that merely embeds JSON.
         //
@@ -1150,6 +1160,75 @@ struct ChatMessage: Identifiable, Codable, Equatable, Hashable {
         // deliberately-requested example. Prose-FRAMED examples ("here's a
         // JSON example: …") are NOT suppressed — see the detector.
         return contentLooksLikeToolCallArtifact(content)
+    }
+
+    /// The prose an assistant turn actually said, when its content is real
+    /// text followed by a malformed tool-call envelope — or nil when there
+    /// is no such tail.
+    ///
+    /// Companion to ``contentLooksLikeToolCallArtifact``, which only fires
+    /// when the artifact IS the whole turn. Here the answer is genuine and
+    /// only its tail is machine syntax, so the prose is kept and the tail is
+    /// replaced by ``toolCallArtifactSuppressedCaptionCopy``.
+    ///
+    /// Conservative in the same three ways as the leading check:
+    ///   * The marker must be followed by that format's payload — the same
+    ///     ``leadingEnvelopeLeak`` gate, applied to the tail — so an answer
+    ///     that ENDS by explaining `<tool_call>` in prose is left alone.
+    ///   * A marker inside a fenced code block is never a leak. An answer to
+    ///     "show me what a tool call looks like" puts its example in a
+    ///     ```` ``` ```` fence, and that fence is the whole point of asking.
+    ///   * There must be real prose before it. With none, the leading check
+    ///     owns the turn and this returns nil, so the caption-only render
+    ///     stays exactly as it was.
+    static func trailingToolCallArtifactProse(in content: String) -> String? {
+        // The tail starts at the FIRST place machine syntax opens a payload.
+        //
+        // Strict on purpose: each pattern requires the payload to follow the
+        // marker immediately (whitespace only in between). The leading check
+        // can afford its looser "carries a closing tag somewhere" fallback,
+        // because it has already established that the envelope IS the whole
+        // turn; a tail cannot. An answer that mentions `<tool_call>` in a
+        // sentence and shows a fenced example further down would match from
+        // the sentence onward under the loose gate, and eat the explanation
+        // along with the example.
+        let patterns = [
+            #"</?(tool_call|function_call)[^>]*>\s*[\{\[<]"#,
+            #"<(function|parameter)="#,
+            #"\[TOOL_CALLS\]\s*[\{\[]"#,
+            // The `<\u{FF5C}` opener is folded into the match so the prose
+            // above it does not keep a dangling half-tag.
+            "[<\u{FF5C}]*tool\u{2581}calls\u{2581}begin",
+        ]
+        var start: String.Index?
+        for pattern in patterns {
+            guard let found = content.range(
+                of: pattern, options: [.regularExpression]
+            ) else { continue }
+            if start == nil || found.lowerBound < start! { start = found.lowerBound }
+        }
+        guard let start, start > content.startIndex else { return nil }
+
+        // Inside a fence? An odd number of ``` before the marker means the
+        // marker sits in an open code block — i.e. the example the user
+        // asked to see, not a leak.
+        let before = content[content.startIndex..<start]
+        if before.components(separatedBy: "```").count % 2 == 0 { return nil }
+
+        let prose = String(before).trimmingCharacters(in: .whitespacesAndNewlines)
+        return prose.isEmpty ? nil : prose
+    }
+
+    /// What to render above the suppression caption: the prose of a turn
+    /// whose tail was machine syntax, or nil when the artifact was the whole
+    /// turn and the caption stands alone.
+    static func proseAboveSuppressedToolCallArtifact(content: String) -> String? {
+        // Trailing wins when it fires: its own gates already establish that
+        // there is real prose before the machine syntax, which the leading
+        // check cannot tell (it matches the DeepSeek marker ANYWHERE in the
+        // turn, so a prose answer that trailed off into one used to lose the
+        // prose as well as the tail).
+        trailingToolCallArtifactProse(in: content)
     }
 
     /// True when ``content`` is *essentially just* a malformed tool-call

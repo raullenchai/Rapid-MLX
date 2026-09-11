@@ -17,9 +17,32 @@ can actually understand.
 
 ## [Unreleased]
 
+### Added
+- **What changed after an update.** The first launch on a new version shows a
+  one-line "Updated to vX.Y.Z" notice with a link to that release's notes.
+  Updates install silently in the background, so until now the only sign that
+  anything had changed was the version number in the status bar.
+
 ### Fixed
 - Document follow-ups now reject malformed retrieval cursors instead of
   silently reading from the beginning and returning a plausible wrong page.
+- **Searching a document no longer reports a false "nothing found".** Asking
+  for a document's outline and a search term in the same request ran the
+  outline and dropped the search without saying so, and the answer came back
+  as if the term were absent. The search now wins and the result says the
+  outline was skipped.
+- **A document's section list is no longer returned empty.** A long report
+  whose headings are numbered several levels deep ("118.14 …") produced no
+  sections at all alongside the note "showing the first 0 entries of 800".
+- **An answer that breaks off mid-way keeps its text.** When a model garbles
+  its own request for a tool, the part it had already written stays on screen
+  above the explanation, instead of the whole turn being replaced by a caption
+  or the raw machine syntax being dumped into the transcript.
+- A tool call the model gets wrong now tells the model which argument was
+  wrong, so it can correct itself instead of repeating the same call.
+- A failed tool no longer asks the user to "check its input" — the input is
+  written by the model, not by them — and the arguments shown on an expanded
+  failure are now labelled as the model's request.
 
 ## [0.14.1] — 2026-09-10
 

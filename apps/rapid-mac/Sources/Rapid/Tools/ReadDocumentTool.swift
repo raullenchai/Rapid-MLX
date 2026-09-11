@@ -26,7 +26,7 @@ enum ReadDocumentTool {
                 "mode": .object([
                     "type": .string("string"),
                     "enum": .array([.string("outline"), .string("read")]),
-                    "description": .string("'outline' returns the section map of the whole document in one call — best for summarizing or working out what the document covers. 'read' (the default) returns document text at 'offset'. Regex search is NOT this parameter — pass the separate 'grep' argument for it.")
+                    "description": .string("'outline' returns the section map of the whole document in one call — best for summarizing or working out what the document covers. 'read' (the default) returns document text at 'offset'. Regex search is NOT this parameter — pass the separate 'grep' argument for it. When 'grep' is set it wins and 'mode' is ignored.")
                 ]),
                 "offset": .object([
                     "type": .string("integer"),
@@ -91,19 +91,27 @@ enum ReadDocumentTool {
         }
         let entry = awaited.entry
 
-        if mode == "outline" {
-            return outlineResult(
-                id: rawID,
-                entry: entry,
-                extractionPending: awaited.extractionPending
-            )
-        }
+        // `grep` outranks `mode`. A model that sends BOTH means "search":
+        // the pattern is the specific intent, the outline the generic one.
+        // The outline branch used to run first and drop the pattern without
+        // echoing it anywhere in the payload, so the model read a table of
+        // contents back as "the search found nothing" — a false negative it
+        // had no way to detect. The `mode` copy itself ("pass the separate
+        // 'grep' argument") invites exactly that call shape.
         if let pattern = args.grep?.trimmingCharacters(in: .whitespacesAndNewlines), !pattern.isEmpty {
             return grepResult(
                 tool: tool,
                 id: rawID,
                 entry: entry,
                 pattern: pattern,
+                ignoredMode: mode == "outline" ? "outline" : nil,
+                extractionPending: awaited.extractionPending
+            )
+        }
+        if mode == "outline" {
+            return outlineResult(
+                id: rawID,
+                entry: entry,
                 extractionPending: awaited.extractionPending
             )
         }
@@ -144,7 +152,7 @@ enum ReadDocumentTool {
             )
         }
 
-        let (trimmed, keptDepth) = budgeted(rows)
+        let (trimmed, trim) = budgeted(rows)
         var payload: [String: Any] = [
             "document_id": id,
             "filename": entry.filename,
@@ -162,10 +170,15 @@ enum ReadDocumentTool {
         var note = "Each entry's 'offset' can be passed back as read_document's 'offset' to read that section."
         if trimmed.count < rows.count {
             payload["entries_omitted"] = rows.count - trimmed.count
-            if let depth = keptDepth, depth > 0 {
-                note += " Showing the top \(depth + 1) level(s) of \(rows.count) total entries; deeper subsections are omitted."
-            } else {
-                note += " Showing the first \(trimmed.count) top-level entries of \(rows.count) total; the later sections are omitted."
+            switch trim {
+            case .complete:
+                break
+            case .levels(let maxDepth, let shallowest):
+                // "top N levels", counted from the outline's own shallowest
+                // level — an inferred outline need not start at depth 0.
+                note += " Showing the top \(maxDepth - shallowest + 1) level(s) of \(rows.count) total entries; deeper subsections are omitted."
+            case .prefix:
+                note += " Showing the first \(trimmed.count) of \(rows.count) entries; the later sections are omitted."
             }
         }
         if source == "inferred" {
@@ -180,33 +193,60 @@ enum ReadDocumentTool {
         )
     }
 
+    /// How ``budgeted(_:)`` had to cut an over-budget outline, so the note
+    /// can describe the actual cut instead of guessing from a depth number.
+    enum OutlineTrim: Equatable {
+        case complete
+        /// Every row at depth ≤ ``maxDepth`` survived; deeper ones went.
+        case levels(maxDepth: Int, shallowest: Int)
+        /// Even the shallowest level alone was over budget, so a leading
+        /// prefix of it is all that fits.
+        case prefix
+    }
+
     /// Drops deepest levels first to preserve the outline's overall shape.
+    ///
+    /// Never returns an empty outline for a non-empty one. The old loop
+    /// trimmed down to depth 0 and kept `rows.filter { $0.depth == 0 }`,
+    /// which is empty for any outline with no depth-0 row — every heading in
+    /// a `118.14 Foo`-style report infers to depth 1. It then reported
+    /// `keptDepth: 0`, and the caller rendered the self-contradictory
+    /// "Showing the first 0 top-level entries of 800 total" over an empty
+    /// list (0.14.1 mini dogfood). Inference now normalizes depth, and this
+    /// trims relative to the shallowest level present either way.
     static func budgeted(
         _ rows: [DocumentContentCache.OutlineNode]
-    ) -> (rows: [DocumentContentCache.OutlineNode], keptDepth: Int?) {
+    ) -> (rows: [DocumentContentCache.OutlineNode], trim: OutlineTrim) {
         func cost(_ rows: [DocumentContentCache.OutlineNode]) -> Int {
             TokenEstimate.tokens(in: rows.map(\.title).joined(separator: "\n"))
                 + rows.count * 12
         }
 
         if rows.count <= maxOutlineRows, cost(rows) <= outlineTokenBudget {
-            return (rows, nil)
+            return (rows, .complete)
         }
+        let shallowest = rows.map(\.depth).min() ?? 0
         var depth = rows.map(\.depth).max() ?? 0
-        while depth > 0 {
+        while depth > shallowest {
             depth -= 1
             let kept = rows.filter { $0.depth <= depth }
             if kept.count <= maxOutlineRows, cost(kept) <= outlineTokenBudget {
-                return (kept, depth)
+                return (kept, .levels(maxDepth: depth, shallowest: shallowest))
             }
         }
         var kept: [DocumentContentCache.OutlineNode] = []
-        for row in rows where row.depth == 0 {
+        for row in rows where row.depth == shallowest {
             let next = kept + [row]
-            if next.count > maxOutlineRows || cost(next) > outlineTokenBudget { break }
+            // Always keep one row: a single usable offset beats an empty
+            // outline that reads as "this document has no structure".
+            if !kept.isEmpty,
+               next.count > maxOutlineRows || cost(next) > outlineTokenBudget {
+                break
+            }
             kept = next
         }
-        return (kept, kept.isEmpty ? nil : 0)
+        if kept.isEmpty { kept = Array(rows.prefix(1)) }
+        return (kept, .prefix)
     }
 
     /// Infers a conservative outline from numbered or explicit chapter headings.
@@ -260,6 +300,20 @@ enum ReadDocumentTool {
                 }
             }
             if lineEnd == text.endIndex { break }
+        }
+        // Normalize to a 0-based depth. Inferred depth is the number of dots
+        // in the leading numeric run, so a report whose headings all read
+        // `118.14 Foo` yields nothing at depth 0 — an outline with no top
+        // level is one the budget trimmer cannot shape.
+        if let shallowest = nodes.map(\.depth).min(), shallowest > 0 {
+            nodes = nodes.map {
+                DocumentContentCache.OutlineNode(
+                    title: $0.title,
+                    depth: $0.depth - shallowest,
+                    page: $0.page,
+                    offset: $0.offset
+                )
+            }
         }
         return nodes
     }
@@ -357,6 +411,7 @@ enum ReadDocumentTool {
         id: String,
         entry: DocumentContentCache.Entry,
         pattern: String,
+        ignoredMode: String? = nil,
         extractionPending: Bool = false
     ) -> ToolCallResult {
         guard pattern.count <= maxGrepPatternLength else {
@@ -384,6 +439,7 @@ enum ReadDocumentTool {
             entry: entry,
             pattern: pattern,
             regex: regex,
+            ignoredMode: ignoredMode,
             extractionPending: extractionPending
         )
         // Admission control: an abandoned backtracking worker cannot be
@@ -454,6 +510,7 @@ enum ReadDocumentTool {
         private let entry: DocumentContentCache.Entry
         private let pattern: String
         private let regex: NSRegularExpression
+        private let ignoredMode: String?
         private let extractionPending: Bool
 
         private let lock = NSLock()
@@ -466,6 +523,7 @@ enum ReadDocumentTool {
             entry: DocumentContentCache.Entry,
             pattern: String,
             regex: NSRegularExpression,
+            ignoredMode: String?,
             extractionPending: Bool
         ) {
             self.tool = tool
@@ -473,6 +531,7 @@ enum ReadDocumentTool {
             self.entry = entry
             self.pattern = pattern
             self.regex = regex
+            self.ignoredMode = ignoredMode
             self.extractionPending = extractionPending
         }
 
@@ -494,6 +553,7 @@ enum ReadDocumentTool {
                 entry: entry,
                 pattern: pattern,
                 regex: regex,
+                ignoredMode: ignoredMode,
                 extractionPending: extractionPending,
                 isAbandoned: { [weak self] in self?.isAbandoned ?? true }
             )
@@ -517,9 +577,15 @@ enum ReadDocumentTool {
         entry: DocumentContentCache.Entry,
         pattern: String,
         regex: NSRegularExpression,
+        ignoredMode: String?,
         extractionPending: Bool,
         isAbandoned: @escaping () -> Bool
     ) -> ToolCallResult {
+        // Stated in the payload, not swallowed: a dropped argument the model
+        // cannot see is how a search turns into a silent false negative.
+        let modeNotice = ignoredMode.map {
+            " A 'grep' pattern was supplied, so mode='\($0)' was ignored — search wins over the section map. Call read_document again without 'grep' if you want the outline."
+        } ?? ""
         // Convert UTF-16 regex ranges through String so returned cursors are reusable.
         let text = entry.text
         let ns = text as NSString
@@ -588,9 +654,10 @@ enum ReadDocumentTool {
                 "search_complete": searchComplete,
                 "total_chars": entry.count,
             ]
-            payload["note"] = searchComplete
+            if let ignoredMode { payload["mode_ignored"] = ignoredMode }
+            payload["note"] = (searchComplete
                 ? "No match for '\(pattern)' in this document. Try a broader pattern, or read sequentially with offset=0."
-                : "Search for '\(pattern)' was stopped after \(Int(grepTimeBudget))s without finding a match — the pattern is too expensive to run over this document. Try a plain phrase instead of an elaborate expression."
+                : "Search for '\(pattern)' was stopped after \(Int(grepTimeBudget))s without finding a match — the pattern is too expensive to run over this document. Try a plain phrase instead of an elaborate expression.") + modeNotice
             return result(
                 payload,
                 entry: entry,
@@ -609,10 +676,11 @@ enum ReadDocumentTool {
             "total_chars": entry.count,
         ]
         if let pages = entry.pageCount { payload["total_pages"] = pages }
+        if let ignoredMode { payload["mode_ignored"] = ignoredMode }
         if searchComplete {
-            payload["note"] = "Each passage includes surrounding context. Use a passage 'offset' with read_document to read forward from there."
+            payload["note"] = "Each passage includes surrounding context. Use a passage 'offset' with read_document to read forward from there." + modeNotice
         } else {
-            payload["note"] = "Showing the first \(passages.count) matches; the document contains at least that many and the search stopped before reaching the end. Narrow the pattern, or use the 'offset' of a passage to read around it sequentially."
+            payload["note"] = "Showing the first \(passages.count) matches; the document contains at least that many and the search stopped before reaching the end. Narrow the pattern, or use the 'offset' of a passage to read around it sequentially." + modeNotice
         }
         return result(
             payload,

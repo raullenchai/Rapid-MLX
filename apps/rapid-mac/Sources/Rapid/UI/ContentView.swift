@@ -611,6 +611,9 @@ struct ContentView: View {
             // but was never mounted, so a failed Finder replacement was
             // detected and then silently discarded.
             FailedReplaceBanner()
+            // Mutually exclusive with the banner above by construction: that
+            // one fires when the version did NOT move, this one when it did.
+            WhatsNewBanner()
             if deferredTelemetryConsent.isPresented {
                 DeferredTelemetryConsentBanner()
             }

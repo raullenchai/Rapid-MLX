@@ -1795,6 +1795,16 @@ private struct MessageRow: View {
                 // The model tried to call a tool and the parser couldn't read
                 // the request. Show the quiet explainer instead of dumping the
                 // raw envelope syntax at the user.
+                //
+                // When the turn ANSWERED and then trailed off into an
+                // envelope, the answer is kept and only the tail is replaced:
+                // dropping 5 kB of real prose to show a one-line caption
+                // would be a worse outcome than the raw syntax was.
+                if let prose = ChatMessage.proseAboveSuppressedToolCallArtifact(
+                    content: message.content
+                ) {
+                    TextKitMarkdownView(content: prose)
+                }
                 Text(ChatMessage.toolCallArtifactSuppressedCaptionCopy)
                     .font(.footnote)
                     .foregroundStyle(.secondary)
@@ -2323,6 +2333,15 @@ private struct ToolCallChip: View {
             if expanded {
                 VStack(alignment: .leading, spacing: 6) {
                     Divider()
+                    // Captioned, because an expanded failure chip shows the
+                    // model's own arguments — sometimes invented keys the app
+                    // has never heard of. Unlabelled monospaced JSON under a
+                    // red error reads as Rapid's output and sends the user
+                    // hunting for a setting to fix (0.14.1 mini dogfood).
+                    Text("Requested by the model")
+                        .font(.system(size: 10, weight: .medium))
+                        .foregroundStyle(.tertiary)
+                        .textCase(.uppercase)
                     Text(prettyArguments)
                         .font(.system(size: 11, design: .monospaced))
                         .foregroundStyle(.secondary)
