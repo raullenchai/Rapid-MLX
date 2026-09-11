@@ -336,6 +336,70 @@ struct ToolCallArtifactSuppressionTests {
             content: content, toolCalls: [], finishReason: "stop", toolsRequested: true))
     }
 
+    @Test("A CLOSED fenced example does not hide a real envelope after it")
+    func trailingEnvelopeAfterFencedExampleIsStillCaught() {
+        // Adversarial review round 1 (codex, blocking): the detector used to
+        // take the FIRST match of each pattern and then decide on it alone,
+        // so a legitimate fenced example earlier in the turn made the whole
+        // function answer nil — and the genuine unfenced envelope after it
+        // rendered raw. The scan now skips the fenced candidate and keeps
+        // going.
+        let content = """
+        A Hermes call looks like this:
+
+        ```xml
+        <tool_call>{"name": "search", "arguments": {"q": "x"}}</tool_call>
+        ```
+
+        Now let me actually run it:
+
+        <tool_call> {"name":"search","arguments":{"q":"Statement
+        """
+        let prose = ChatMessage.trailingToolCallArtifactProse(in: content)
+        // Everything up to the real envelope is kept — the fenced example
+        // included, because that example IS part of the answer.
+        #expect(prose?.hasPrefix("A Hermes call looks like this:") == true)
+        #expect(prose?.hasSuffix("Now let me actually run it:") == true)
+        #expect(prose?.contains("```xml") == true)
+        #expect(ChatMessage.shouldSuppressToolCallArtifact(
+            content: content, toolCalls: [], finishReason: "stop", toolsRequested: true))
+    }
+
+    @Test("Prose that documents <parameter=…> inline is not an artifact")
+    func trailingParameterMentionIsNotAnArtifact() {
+        // Adversarial review round 1 (codex, blocking): `<(function|parameter)=`
+        // carried no payload requirement, so an answer EXPLAINING the syntax
+        // was truncated at the tag. `<function=` now needs a payload and
+        // `<parameter=` needs both its own line and a closing tag.
+        for content in [
+            "Use <parameter=name> to identify the field, then send the call.",
+            "The fragment shape is <function=get_weather> with no arguments at all.",
+            "Qwen writes <parameter=query> inline and closes it later; that is the format.",
+        ] {
+            #expect(ChatMessage.trailingToolCallArtifactProse(in: content) == nil)
+            #expect(!ChatMessage.shouldSuppressToolCallArtifact(
+                content: content, toolCalls: [], finishReason: "stop", toolsRequested: true))
+        }
+    }
+
+    @Test("A real <function=…><parameter=…> args block IS an artifact")
+    func trailingParameterBlockIsAnArtifact() {
+        let content = """
+        I will look up the weather for you.
+
+        <function=get_weather>
+        <parameter=city>NYC</parameter>
+        </function>
+        """
+        #expect(ChatMessage.trailingToolCallArtifactProse(in: content)
+            == "I will look up the weather for you.")
+        // …and the `<parameter=` block alone (no `<function=` opener) too,
+        // as long as it stands on its own line and closes.
+        #expect(ChatMessage.trailingToolCallArtifactProse(
+            in: "Checking now.\n<parameter=city>NYC</parameter>"
+        ) == "Checking now.")
+    }
+
     @Test("An unclosed fence still counts as inside a fence")
     func trailingUnclosedFenceIsNotAnArtifact() {
         let content = "Example:\n\n```xml\n<tool_call>{\"name\": \"search\"}"

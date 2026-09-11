@@ -1178,14 +1178,17 @@ struct ChatMessage: Identifiable, Codable, Equatable, Hashable {
     ///   * A marker inside a fenced code block is never a leak. An answer to
     ///     "show me what a tool call looks like" puts its example in a
     ///     ```` ``` ```` fence, and that fence is the whole point of asking.
+    ///     A fenced marker is SKIPPED, not a verdict: the scan carries on to
+    ///     the next candidate, so an answer that shows a fenced example and
+    ///     then trails off into a real envelope is still caught.
     ///   * There must be real prose before it. With none, the leading check
     ///     owns the turn and this returns nil, so the caption-only render
     ///     stays exactly as it was.
     static func trailingToolCallArtifactProse(in content: String) -> String? {
-        // The tail starts at the FIRST place machine syntax opens a payload.
+        // Candidate openers for the machine-syntax tail.
         //
-        // Strict on purpose: each pattern requires the payload to follow the
-        // marker immediately (whitespace only in between). The leading check
+        // Strict on purpose: each pattern requires that format's payload to
+        // follow the marker (whitespace only in between). The leading check
         // can afford its looser "carries a closing tag somewhere" fallback,
         // because it has already established that the envelope IS the whole
         // turn; a tail cannot. An answer that mentions `<tool_call>` in a
@@ -1194,30 +1197,71 @@ struct ChatMessage: Identifiable, Codable, Equatable, Hashable {
         // along with the example.
         let patterns = [
             #"</?(tool_call|function_call)[^>]*>\s*[\{\[<]"#,
-            #"<(function|parameter)="#,
+            // `<function=NAME>` must OPEN a payload: JSON, or the nested
+            // `<parameter=` block the llama/qwen fragment shape uses. The
+            // bare tag is not enough — `Use <parameter=name> to identify the
+            // field` is ordinary prose ABOUT the syntax, and truncating an
+            // answer there is exactly the false positive this detector must
+            // not have. (The leading check can keep accepting the bare
+            // prefix: prose never OPENS with `<function=`.)
+            #"<function=[^<>\s]+>\s*(?:[\{\[]|<parameter=)"#,
+            // A `<parameter=…>` block that stands on its own line AND is
+            // closed by `</parameter>`. Both halves are required for the
+            // same reason: inline inside a sentence it is documentation.
+            #"(?m)^[ \t]*<parameter=[^<>\s]+>[\s\S]{0,4096}?</parameter>"#,
             #"\[TOOL_CALLS\]\s*[\{\[]"#,
             // The `<\u{FF5C}` opener is folded into the match so the prose
             // above it does not keep a dangling half-tag.
             "[<\u{FF5C}]*tool\u{2581}calls\u{2581}begin",
         ]
-        var start: String.Index?
+
+        // Collect EVERY candidate, not just the first match of each pattern.
+        // A fenced example earlier in the turn must not hide a genuine
+        // unfenced envelope after it: the fence check below skips the fenced
+        // candidate and the scan continues with the next one.
+        var starts: [String.Index] = []
         for pattern in patterns {
-            guard let found = content.range(
-                of: pattern, options: [.regularExpression]
-            ) else { continue }
-            if start == nil || found.lowerBound < start! { start = found.lowerBound }
+            var from = content.startIndex
+            while starts.count < maxTrailingArtifactCandidates,
+                  from < content.endIndex,
+                  let found = content.range(
+                      of: pattern, options: [.regularExpression],
+                      range: from..<content.endIndex
+                  ) {
+                starts.append(found.lowerBound)
+                from = found.upperBound > found.lowerBound
+                    ? found.upperBound
+                    : content.index(after: found.lowerBound)
+            }
         }
-        guard let start, start > content.startIndex else { return nil }
 
-        // Inside a fence? An odd number of ``` before the marker means the
-        // marker sits in an open code block — i.e. the example the user
-        // asked to see, not a leak.
-        let before = content[content.startIndex..<start]
-        if before.components(separatedBy: "```").count % 2 == 0 { return nil }
+        // The turn OPENS with machine syntax: the leading check owns it and
+        // the caption stands alone. Bailing here rather than scanning on also
+        // keeps a SECOND envelope later in the turn from being reported as
+        // the "prose" of the first.
+        let ordered = starts.sorted()
+        guard let earliest = ordered.first, earliest > content.startIndex else { return nil }
 
-        let prose = String(before).trimmingCharacters(in: .whitespacesAndNewlines)
-        return prose.isEmpty ? nil : prose
+        for start in ordered {
+            // An ODD number of ``` fences before the marker means the marker
+            // sits inside an open code block — the example the user asked to
+            // see, not a leak. Skip it; a later unfenced candidate still counts.
+            let before = content[content.startIndex..<start]
+            if before.components(separatedBy: "```").count % 2 == 0 { continue }
+            let prose = String(before).trimmingCharacters(in: .whitespacesAndNewlines)
+            // Whitespace only: the artifact is effectively the whole turn, so
+            // the leading check owns it and the caption stands alone.
+            return prose.isEmpty ? nil : prose
+        }
+        return nil
     }
+
+    /// Upper bound on candidate tail openers scanned per message. Each
+    /// pattern is re-run from the previous match, so a pathological message
+    /// (thousands of `<parameter=…>` pairs) would otherwise scan the tail
+    /// repeatedly on the main actor during render. The first unfenced
+    /// candidate is all the caller needs; 64 is far past any real turn.
+    private static let maxTrailingArtifactCandidates = 64
 
     /// What to render above the suppression caption: the prose of a turn
     /// whose tail was machine syntax, or nil when the artifact was the whole
