@@ -1082,4 +1082,213 @@ struct ReadDocumentToolTests {
 
         #expect(ReadDocumentTool.inferredOutline(in: entry).map(\.title) == ["3 Conclusion"])
     }
+
+    // MARK: - grep outranks mode
+
+    /// The 0.14.1 regression this pins: the model asked for a scanned
+    /// statement's purchase-order number with BOTH `mode: "outline"` and a
+    /// `grep` pattern, the outline branch ran first, the pattern was dropped
+    /// without appearing anywhere in the payload, and the model reported that
+    /// the search had found nothing. A dropped argument the caller cannot see
+    /// is indistinguishable from a genuine miss.
+    @Test("grep wins over mode='outline' instead of being silently dropped")
+    func grepOutranksOutlineMode() async throws {
+        let cache = freshCache()
+        let body = "[Page 1]\n1 Preamble\n" + String(repeating: "filler line\n", count: 40)
+            + "PO-5592-KX is the purchase order\n"
+        let id = store(
+            body,
+            outline: [.init(title: "Preamble", depth: 0, page: 1, offset: 9)],
+            in: cache
+        )
+
+        let json = try payload(await run(
+            ["document_id": id.uuidString, "mode": "outline", "grep": "PO-[0-9]+-[A-Z]+"],
+            cache: cache
+        ))
+
+        // Searched, not outlined.
+        #expect(json["grep"] as? String == "PO-[0-9]+-[A-Z]+")
+        #expect(json["match_count"] as? Int == 1)
+        #expect(json["outline"] == nil)
+        let passages = try #require(json["passages"] as? [[String: Any]])
+        #expect((passages[0]["match"] as? String) == "PO-5592-KX")
+        // And it SAYS the mode was overridden, so a model that wanted the
+        // outline knows how to get it.
+        #expect(json["mode_ignored"] as? String == "outline")
+        let note = try #require(json["note"] as? String)
+        #expect(note.contains("mode='outline' was ignored"))
+    }
+
+    @Test("A no-match search still reports that mode was overridden")
+    func grepMissStillReportsIgnoredMode() async throws {
+        let cache = freshCache()
+        let id = store("[Page 1]\n1 Preamble\nnothing to find here\n", in: cache)
+
+        let json = try payload(await run(
+            ["document_id": id.uuidString, "mode": "outline", "grep": "PO-[0-9]+"],
+            cache: cache
+        ))
+
+        #expect(json["match_count"] as? Int == 0)
+        #expect(json["mode_ignored"] as? String == "outline")
+        // The distinction that matters: "searched and found nothing" must not
+        // be reachable by "never searched at all".
+        #expect(json["search_complete"] as? Bool == true)
+    }
+
+    @Test("mode='outline' alone still outlines, and reports no override")
+    func outlineModeAloneIsUnchanged() async throws {
+        let cache = freshCache()
+        let id = store(
+            "[Page 1]\nbody",
+            outline: [.init(title: "Preamble", depth: 0, page: 1, offset: 9)],
+            in: cache
+        )
+
+        let json = try payload(await run(
+            ["document_id": id.uuidString, "mode": "outline"],
+            cache: cache
+        ))
+        #expect((json["outline"] as? [[String: Any]])?.count == 1)
+        #expect(json["mode_ignored"] == nil)
+    }
+
+    @Test("An all-whitespace grep falls through to the requested mode")
+    func blankGrepDoesNotOverrideMode() async throws {
+        let cache = freshCache()
+        let id = store(
+            "[Page 1]\nbody",
+            outline: [.init(title: "Preamble", depth: 0, page: 1, offset: 9)],
+            in: cache
+        )
+
+        let json = try payload(await run(
+            ["document_id": id.uuidString, "mode": "outline", "grep": "   "],
+            cache: cache
+        ))
+        #expect((json["outline"] as? [[String: Any]])?.count == 1)
+        #expect(json["mode_ignored"] == nil)
+    }
+
+    // MARK: - Outline budget
+
+    /// The other half of the same dogfood turn: a 140-page report whose
+    /// headings all read `118.14 …` produced `"outline": []` alongside
+    /// `"entries_omitted": 800` and the note "Showing the first 0 top-level
+    /// entries of 800 total". Every heading inferred to depth 1, the budget
+    /// loop trimmed to depth 0, and `rows.filter { $0.depth == 0 }` is empty.
+    @Test("An outline whose headings all infer to depth 1 is not returned empty")
+    func deepOnlyInferredOutlineIsNeverEmpty() async throws {
+        let cache = freshCache()
+        var body = "[Page 1]\n"
+        for i in 1...600 {
+            body += "\(i).14 Section heading number \(i) of this long report\n"
+            body += "Body text for that section, long enough not to look like a heading.\n"
+        }
+        let id = store(body, pageCount: 140, in: cache)
+
+        let json = try payload(await run(
+            ["document_id": id.uuidString, "mode": "outline"],
+            cache: cache
+        ))
+        let rows = try #require(json["outline"] as? [[String: Any]])
+        #expect(!rows.isEmpty)
+        // Normalized: the shallowest inferred level is the top level.
+        #expect(rows.allSatisfy { ($0["depth"] as? Int) == 0 })
+        // Every returned row carries a usable cursor.
+        for row in rows { #expect(row["offset"] as? Int != nil) }
+        let note = try #require(json["note"] as? String)
+        #expect(!note.contains("first 0"))
+        #expect(note.contains("Showing the first \(rows.count) of"))
+    }
+
+    @Test("Inferred depth is normalized so an outline always has a top level")
+    func inferredOutlineDepthIsNormalized() throws {
+        let entry = DocumentContentCache.Entry(
+            filename: "report.pdf",
+            text: "[Page 1]\n118.14 Deep heading one\n"
+                + "prose that is long enough to not be mistaken for a heading here.\n"
+                + "118.15.2 Deeper heading two\n"
+        )
+
+        let rows = ReadDocumentTool.inferredOutline(in: entry)
+        #expect(rows.map(\.title) == ["118.14 Deep heading one", "118.15.2 Deeper heading two"])
+        // Raw dot-counts are 1 and 2; normalized they are 0 and 1.
+        #expect(rows.map(\.depth) == [0, 1])
+    }
+
+    @Test("A depth-trimmed outline reports the levels it kept, not a row count")
+    func depthTrimNoteCountsLevels() async throws {
+        let cache = freshCache()
+        var nodes: [DocumentContentCache.OutlineNode] = []
+        for chapter in 0..<40 {
+            nodes.append(.init(title: "Chapter \(chapter) of the document", depth: 0, page: chapter + 1, offset: chapter * 100))
+            for section in 0..<20 {
+                nodes.append(.init(title: "Section \(chapter).\(section) with a reasonably long heading", depth: 1, page: chapter + 1, offset: chapter * 100 + section))
+            }
+        }
+        let id = store("body", outline: nodes, in: cache)
+
+        let json = try payload(await run(["document_id": id.uuidString, "mode": "outline"], cache: cache))
+        let note = try #require(json["note"] as? String)
+        // All 40 chapters survived, so the honest note is "the top 1 level" —
+        // the old copy read "the first 40 top-level entries … the later
+        // sections are omitted", which claims chapters were dropped.
+        #expect(note.contains("Showing the top 1 level(s) of 840 total entries"))
+        #expect(!note.contains("top-level entries"))
+    }
+
+    @Test("budgeted() clamps titles so no single row can defeat the budget")
+    func budgetedClampsGiantTitles() {
+        // Adversarial review round 5 (codex, blocking): the trimmer has to
+        // return at least one row, so an arbitrarily long bookmark title —
+        // document-controlled — used to walk straight through
+        // `outlineTokenBudget` and into the model's context. Titles are
+        // clamped before any budget decision now.
+        let giant = String(repeating: "very long heading word ", count: 400)
+        let rows = (0..<3).map {
+            DocumentContentCache.OutlineNode(title: "\($0) \(giant)", depth: 0, offset: $0)
+        }
+        let (kept, _) = ReadDocumentTool.budgeted(rows)
+        #expect(!kept.isEmpty)
+        #expect(kept.allSatisfy {
+            $0.title.unicodeScalars.count <= ReadDocumentTool.maxOutlineTitleLength
+        })
+        #expect(kept.allSatisfy { $0.title.hasSuffix("…") })
+        // The offset — what the model actually needs from a row — survives.
+        #expect(kept.map(\.offset) == Array(0..<kept.count))
+        let cost = TokenEstimate.tokens(in: kept.map(\.title).joined(separator: "\n"))
+            + kept.count * 12
+        #expect(cost <= ReadDocumentTool.outlineTokenBudget)
+    }
+
+    @Test("budgeted() clamps by scalars, so combining marks cannot escape it")
+    func budgetedClampsCombiningMarks() {
+        // Adversarial review round 9 (codex, blocking): `String.count` measures
+        // grapheme clusters, so ONE cluster carrying thousands of combining
+        // marks read as one character and walked through a character cap.
+        let zalgo = "A" + String(repeating: "\u{0301}", count: 20_000)
+        #expect(zalgo.count == 1)   // one grapheme cluster, 20_001 scalars
+        let rows = [DocumentContentCache.OutlineNode(title: zalgo, depth: 0, offset: 0)]
+        let (kept, _) = ReadDocumentTool.budgeted(rows)
+        #expect(kept.count == 1)
+        #expect(kept[0].title.unicodeScalars.count <= ReadDocumentTool.maxOutlineTitleLength)
+        #expect(kept[0].offset == 0)
+    }
+
+    @Test("budgeted() never returns an empty outline")
+    func budgetedAlwaysKeepsARow() {
+        // 900 rows at one depth, each within the title clamp: over both caps,
+        // so the prefix branch runs — and must still hand back a usable offset
+        // rather than an empty list that reads as "no structure here".
+        let title = String(repeating: "heading ", count: 18)
+        let rows = (0..<900).map {
+            DocumentContentCache.OutlineNode(title: "\($0) \(title)", depth: 0, offset: $0)
+        }
+        let (kept, trim) = ReadDocumentTool.budgeted(rows)
+        #expect(!kept.isEmpty)
+        #expect(kept.count <= ReadDocumentTool.maxOutlineRows)
+        #expect(trim == .prefix)
+    }
 }

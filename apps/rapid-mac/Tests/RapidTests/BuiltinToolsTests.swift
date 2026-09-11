@@ -97,6 +97,48 @@ final class BuiltinToolsTests {
         ) == nil)
     }
 
+    /// A rejection the model cannot read is a rejection it repeats. The
+    /// executor used to answer every schema violation with "arguments must be
+    /// a JSON object matching the advertised schema", which names neither the
+    /// offending key nor the accepted ones — so a 4B model re-sent the same
+    /// `offset_len` call. Fail closed, but say what closed it.
+    @Test("A strict-schema rejection names the unknown key and the allowed ones")
+    func strictSchemaRejectionNamesKeys() throws {
+        switch NativeToolCallExecutor.normalize(
+            ToolCall(
+                id: "document_1",
+                name: "read_document",
+                arguments: #"{"document_id":"00000000-0000-0000-0000-000000000000","offset_len":117524}"#
+            ),
+            for: ReadDocumentTool.definition
+        ) {
+        case .success:
+            Issue.record("an unknown key must not normalize")
+        case .failure(let rejection):
+            #expect(rejection.reason.contains("offset_len"))
+            #expect(rejection.reason.contains("document_id, grep, mode, offset"))
+        }
+    }
+
+    @Test("An unbounded key list is truncated in the rejection text")
+    func strictSchemaRejectionBoundsItsEcho() throws {
+        let junk = (0..<9).map { "\"k\($0)\": 1" }.joined(separator: ",")
+        switch NativeToolCallExecutor.normalize(
+            ToolCall(
+                id: "document_2",
+                name: "read_document",
+                arguments: #"{"document_id":"x",\#(junk)}"#
+            ),
+            for: ReadDocumentTool.definition
+        ) {
+        case .success:
+            Issue.record("unknown keys must not normalize")
+        case .failure(let rejection):
+            #expect(rejection.reason.contains("…"))
+            #expect(!rejection.reason.contains("k8"))
+        }
+    }
+
     @Test("Native executor rejects non-object or malformed arguments generically")
     func nativeExecutorRejectsMalformedArguments() {
         #expect(NativeToolCallExecutor.normalized(
@@ -304,4 +346,28 @@ private final class InMemoryKeychain: KeychainStoring, @unchecked Sendable {
         store.removeValue(forKey: account)
         return true
     }
+    @Test("The rejected-key echo is bounded by scalars, not characters")
+    func rejectionEchoBoundsCombiningMarks() throws {
+        // Adversarial review round 11 (codex, blocking): `prefix(80)` counts
+        // grapheme clusters, so one cluster carrying thousands of combining
+        // marks was not bounded at all.
+        let zalgo = "k" + String(repeating: "\u{0301}", count: 20_000)
+        #expect(zalgo.count == 1)   // one grapheme cluster, 20_001 scalars
+        switch NativeToolCallExecutor.normalize(
+            ToolCall(
+                id: "document_1",
+                name: "read_document",
+                arguments: "{\"document_id\":\"00000000-0000-0000-0000-000000000000\",\"\(zalgo)\":1}"
+            ),
+            for: ReadDocumentTool.definition
+        ) {
+        case .success:
+            Issue.record("an unknown key must not normalize")
+        case .failure(let rejection):
+            // 80 scalars of key plus the surrounding copy — not 20 001.
+            #expect(rejection.reason.unicodeScalars.count < 400)
+            #expect(rejection.reason.contains("unknown argument(s)"))
+        }
+    }
+
 }

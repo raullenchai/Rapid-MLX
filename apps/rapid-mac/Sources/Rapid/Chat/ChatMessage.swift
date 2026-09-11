@@ -1131,6 +1131,30 @@ struct ChatMessage: Identifiable, Codable, Equatable, Hashable {
         // the last moment even if the captured array reads empty — be
         // conservative and leave it alone.
         if finishReason == "tool_calls" { return false }
+        // Gate 4b: a turn that answered in prose and THEN emitted an
+        // envelope. The 0.14.1 dogfood repro: 5,413 characters of
+        // "Let me read the first page more carefully…" followed by
+        // `<tool_call> {"name":"read_document","arguments":{…,"greP":…`,
+        // which no parser claimed — so no tool round fired, the model kept
+        // generating for six more minutes, and the user watched a sentence
+        // that promised an action be followed by nothing at all. The
+        // leading-only check below cannot see it, because the artifact is
+        // the TAIL of an otherwise real answer.
+        if trailingToolCallArtifactProse(in: content) != nil { return true }
+        // Not a gate, but the question every reviewer asks here: what about a
+        // COMPLETE, well-formed, unfenced example that legitimately ends an
+        // answer? Two things cover it. Gates 1-3 are themselves the
+        // "parser-rejected" evidence — tools were advertised and the turn came
+        // back with no tool call at all, so an envelope the engine's parser
+        // could read would have been dispatched and never reached this line.
+        // And #513 documents the remainder as an accepted residual: a turn
+        // that IS only a raw call shape cannot be told apart from a leak by
+        // content, suppression is non-destructive (the raw text stays on the
+        // message; copy and export reproduce it verbatim, and since this PR
+        // the prose above it renders), and in the target population — a local
+        // model whose call the parser lost — a leak is far likelier than a
+        // deliberately-requested example. A fenced example, which is how a
+        // model actually answers "show me one", is never touched.
         // Gate 4: the content must actually look like a raw tool-call
         // artifact, not a genuine answer that merely embeds JSON.
         //
@@ -1150,6 +1174,375 @@ struct ChatMessage: Identifiable, Codable, Equatable, Hashable {
         // deliberately-requested example. Prose-FRAMED examples ("here's a
         // JSON example: …") are NOT suppressed — see the detector.
         return contentLooksLikeToolCallArtifact(content)
+    }
+
+    /// The prose an assistant turn actually said, when its content is real
+    /// text followed by a malformed tool-call envelope — or nil when there
+    /// is no such tail.
+    ///
+    /// Companion to ``contentLooksLikeToolCallArtifact``, which only fires
+    /// when the artifact IS the whole turn. Here the answer is genuine and
+    /// only its tail is machine syntax, so the prose is kept and the tail is
+    /// replaced by ``toolCallArtifactSuppressedCaptionCopy``.
+    ///
+    /// Conservative in the same three ways as the leading check:
+    ///   * The marker must OPEN A LINE and be followed by that format's
+    ///     payload — the ``leadingEnvelopeLeak`` gate, applied to the tail,
+    ///     plus a block anchor — so an answer that explains `<tool_call>` in
+    ///     a sentence is left alone whether or not it fences the example.
+    ///     (The DeepSeek U+2581 token is exempt from the anchor: it never
+    ///     appears in prose, so there is no inline shape to protect.)
+    ///   * A marker inside a fenced code block is never a leak. An answer to
+    ///     "show me what a tool call looks like" puts its example in a fence,
+    ///     and that fence is the whole point of asking. Fences are parsed
+    ///     (``fencedRanges``), not counted: backticks and tildes, three or
+    ///     more, closer matching the opener. A fenced marker is SKIPPED, not
+    ///     a verdict: the scan carries on to the next candidate, so an answer
+    ///     that shows a fenced example and then trails off into a real
+    ///     envelope is still caught.
+    ///   * There must be real prose before it. With none, the leading check
+    ///     owns the turn and this returns nil, so the caption-only render
+    ///     stays exactly as it was.
+    ///   * The envelope must be the turn's TAIL — inside the terminal run of
+    ///     machine syntax (``terminalMachineSyntaxRunStart``). An answer that
+    ///     shows a raw call and then explains it keeps its explanation.
+    static func trailingToolCallArtifactProse(in content: String) -> String? {
+        // Candidate openers for the machine-syntax tail.
+        //
+        // Strict on purpose: each pattern requires that format's payload to
+        // follow the marker (whitespace only in between). The leading check
+        // can afford its looser "carries a closing tag somewhere" fallback,
+        // because it has already established that the envelope IS the whole
+        // turn; a tail cannot. An answer that mentions `<tool_call>` in a
+        // sentence and shows a fenced example further down would match from
+        // the sentence onward under the loose gate, and eat the explanation
+        // along with the example.
+        let patterns = [
+            // Every XML/bracket envelope must OPEN A LINE (leading whitespace
+            // allowed). A leaked call is emitted as its own block after the
+            // model stops writing prose; an answer that documents the syntax
+            // does it mid-sentence — `Use <tool_call>{"name":"search"}` — and
+            // truncating that sentence at the tag is the false positive this
+            // detector must not have. The dogfood repro and every other real
+            // leak shape put the envelope on its own line.
+            #"(?m)^[ \t]*</?(tool_call|function_call)[^>]*>\s*[\{\[<]"#,
+            // `<function=NAME>` must also OPEN a payload: JSON, or the nested
+            // `<parameter=` block the llama/qwen fragment shape uses. The bare
+            // tag is not enough — prose about the syntax carries it too. (The
+            // leading check can keep accepting the bare prefix: prose never
+            // OPENS a turn with `<function=`.)
+            #"(?m)^[ \t]*<function=[^<>\s]+>\s*(?:[\{\[]|<parameter=)"#,
+            // A `<parameter=…>` block on its own line AND closed by
+            // `</parameter>`. Both halves are required for the same reason:
+            // inline inside a sentence it is documentation.
+            #"(?m)^[ \t]*<parameter=[^<>\s]+>[\s\S]{0,4096}?</parameter>"#,
+            #"(?m)^[ \t]*\[TOOL_CALLS\]\s*[\{\[]"#,
+            // The DeepSeek marker is deliberately NOT line-anchored: its
+            // U+2581 separators never occur in human prose, so there is no
+            // inline-documentation shape to protect and a real emit can follow
+            // the last prose character directly. The `<\u{FF5C}` opener is folded
+            // into the match so the prose above it does not keep a dangling
+            // half-tag.
+            "[<\u{FF5C}]*tool\u{2581}calls\u{2581}begin",
+        ]
+
+        // The turn must END in machine syntax, and only the terminal run of
+        // it is a candidate tail.
+        //
+        // This is what "tail" means, and without it a genuine answer that
+        // shows a raw (unfenced) call on its own line and then EXPLAINS it
+        // lost the explanation: suppression ran from the marker to the end of
+        // the turn, so the closing sentences went with the example. Confining
+        // the search to the terminal machine-syntax run also fixes the general
+        // case — example, prose, then a real envelope — because the earlier
+        // example is no longer even a candidate.
+        guard let runStart = terminalMachineSyntaxRunStart(in: content) else { return nil }
+        let searchRange = runStart..<content.endIndex
+
+        // Fences next: one line pass, reused by every pattern below.
+        let fenced = fencedRanges(in: content)
+
+        // The earliest UNFENCED candidate across every pattern.
+        //
+        // Two things this must not do. It must not stop at the first match of
+        // a pattern and decide on it alone — a legitimate fenced example
+        // earlier in the turn would then hide the genuine unfenced envelope
+        // after it, and that envelope renders raw. And it must not cap the
+        // number of candidates it will look at — a cap is spent by the
+        // examples and loses the real tail that follows them. Instead a match
+        // inside a fence advances the cursor past the WHOLE fenced block, so a
+        // fence holding a thousand examples costs one step, not a thousand.
+        var earliest: String.Index?
+        for pattern in patterns {
+            var from = runStart
+            // `fenced` is ascending and disjoint and a pattern's matches only
+            // move forward, so one cursor walks the fence list ONCE per
+            // pattern. Asking `fenced.first { … }` per match instead rescans
+            // every range from the start, which is quadratic in the number of
+            // fenced examples — on the transcript render path.
+            var block = 0
+            while from < content.endIndex,
+                  let found = content.range(
+                      of: pattern, options: [.regularExpression],
+                      range: from..<searchRange.upperBound
+                  ) {
+                while block < fenced.count, fenced[block].upperBound <= found.lowerBound {
+                    block += 1
+                }
+                if block < fenced.count, fenced[block].contains(found.lowerBound) {
+                    from = max(fenced[block].upperBound, content.index(after: found.lowerBound))
+                    continue
+                }
+                // Matches arrive in increasing order, so the first unfenced
+                // one is this pattern's earliest; no need to scan its tail.
+                if earliest == nil || found.lowerBound < earliest! { earliest = found.lowerBound }
+                break
+            }
+        }
+
+        // Nothing unfenced, or the turn OPENS with machine syntax: either way
+        // this returns nil — in the second case the leading check owns the
+        // turn and the caption stands alone. Testing the first UNFENCED
+        // candidate (rather than the first candidate of any kind) is what
+        // keeps a turn that opens with a fenced example from bailing here.
+        guard let start = earliest, start > content.startIndex else { return nil }
+        let prose = String(content[content.startIndex..<start])
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        // Whitespace only: the artifact is effectively the whole turn, so the
+        // leading check owns it and the caption stands alone.
+        return prose.isEmpty ? nil : prose
+    }
+
+    /// What to render above the suppression caption: the prose of a turn
+    /// whose tail was machine syntax, or nil when the artifact was the whole
+    /// turn and the caption stands alone.
+    static func proseAboveSuppressedToolCallArtifact(content: String) -> String? {
+        // Trailing wins when it fires: its own gates already establish that
+        // there is real prose before the machine syntax, which the leading
+        // check cannot tell (it matches the DeepSeek marker ANYWHERE in the
+        // turn, so a prose answer that trailed off into one used to lose the
+        // prose as well as the tail).
+        trailingToolCallArtifactProse(in: content)
+    }
+
+    /// Where the turn's terminal run of machine syntax begins, or nil when
+    /// the turn does not end in machine syntax at all.
+    ///
+    /// Walks lines from the end: a blank line or a machine-syntax line
+    /// (``isMachineSyntaxLine``) belongs to the run, and the first line that
+    /// reads as prose stops it.
+    ///
+    /// Deliberately a line-shape test rather than a JSON/XML parse: the run
+    /// only has to tell an envelope dump — what a model emits when the parser
+    /// lost its call and generation simply stopped — from a sentence, and the
+    /// input is by definition syntax no parser could read. Every test is kept
+    /// strict, because widening one moves the boundary EARLIER, and an
+    /// over-early boundary eats real prose. A closing ```` ``` ```` stops the
+    /// run too, which is correct: a turn that ENDS with a fenced example is
+    /// showing the example, not leaking a call.
+    private static func terminalMachineSyntaxRunStart(in content: String) -> String.Index? {
+        var runStart: String.Index?
+        var sawContent = false
+        var lineStart = content.startIndex
+        var index = content.startIndex
+        // Forward pass recording the last prose line's successor, which is the
+        // same answer as walking backwards and cheaper on String.Index.
+        while true {
+            let lineEnd = content[index...].firstIndex(of: "\n") ?? content.endIndex
+            let trimmed = content[lineStart..<lineEnd]
+                .trimmingCharacters(in: .whitespaces)
+            if !trimmed.isEmpty {
+                if isMachineSyntaxLine(trimmed) {
+                    if runStart == nil { runStart = lineStart }
+                    sawContent = true
+                } else {
+                    // Prose: everything up to and including this line is the
+                    // answer, so any run starts after it.
+                    runStart = nil
+                }
+            }
+            guard lineEnd < content.endIndex else { break }
+            index = content.index(after: lineEnd)
+            lineStart = index
+        }
+        return sawContent ? runStart : nil
+    }
+
+    /// True when a line is a piece of an envelope dump rather than a sentence.
+    ///
+    /// Structural per opener, not "the first character is punctuation". Prose
+    /// opens with punctuation often enough that the loose form ate real
+    /// content: a Markdown link (`[That syntax](…) is invalid`), a reference
+    /// definition (`[1]: …`), a quoted sentence. Each case below accepts the
+    /// shape an envelope actually produces and nothing wider.
+    private static func isMachineSyntaxLine(_ trimmed: String) -> Bool {
+        // Never in prose, wherever it appears.
+        if trimmed.contains("tool\u{2581}calls\u{2581}") { return true }
+        guard let first = trimmed.first else { return false }
+        switch first {
+        case "{", "}", "]", ",":
+            // These open no sentence BY THEMSELVES, but prose can open with
+            // one: "} closes the object; this is why …". A JSON fragment — `}`,
+            // `},`, `},{"name":"x"}`, `{"limit": 10,` — carries no unquoted
+            // word; a sentence does.
+            return hasNoUnquotedWord(trimmed)
+        case "[":
+            // Reject Markdown first: a link (`[label](url)`) or a reference
+            // definition (`[1]: url`). The digit branch below has to accept
+            // `[1, 2]`, so `[1]: url` would otherwise read as an array.
+            if trimmed.range(
+                of: #"^\[[^\]\n]*\]\s*[:(]"#,
+                options: .regularExpression) != nil {
+                return false
+            }
+            // A JSON array opening, or the Mistral marker.
+            return trimmed.range(
+                of: #"^\[(\s*$|\s*[\{\[\]"'\-0-9]|TOOL_CALLS\])"#,
+                options: .regularExpression) != nil
+        case "\"":
+            // A JSON key or a bare string element, not a quoted sentence.
+            return trimmed.range(
+                of: #"^"(\\.|[^"\\])*"\s*(:|,?$)"#,
+                options: .regularExpression) != nil
+        case "<":
+            // A tag, not prose that happens to open with a less-than sign.
+            return trimmed.contains(">")
+                && trimmed.range(
+                    of: #"^</?[A-Za-z\uFF5C|]"#,
+                    options: .regularExpression) != nil
+        default:
+            return isJSONScalarLine(trimmed)
+        }
+    }
+
+    /// True when a line carries no word outside a string literal.
+    ///
+    /// This is what separates a JSON fragment from a sentence that merely
+    /// OPENS with a brace or bracket. Words inside string literals do not
+    /// count — they are data, and a leaked call is full of them. The JSON
+    /// keywords are allowed through unquoted, since `{"ok": true}` is a
+    /// fragment; a run that stops matching one of them (`"trus"`) is a word.
+    private static func hasNoUnquotedWord(_ line: String) -> Bool {
+        let keywords = ["true", "false", "null"]
+        var inString = false
+        var escaped = false
+        var run = ""
+        for character in line {
+            if escaped { escaped = false; continue }
+            if inString, character == "\\" { escaped = true; continue }
+            if character == "\"" {
+                inString.toggle()
+                run = ""
+                continue
+            }
+            if inString { continue }
+            guard character.isLetter else { run = ""; continue }
+            run.append(character)
+            // One letter is never a word here — `1e5` and a bare `n` in a
+            // truncated `null` both have to pass.
+            guard run.count >= 2 else { continue }
+            let lowered = run.lowercased()
+            if !keywords.contains(where: { $0.hasPrefix(lowered) }) { return false }
+        }
+        return true
+    }
+
+    /// True for a line that is nothing but a JSON scalar with an optional
+    /// trailing comma — the continuation lines of a pretty-printed array
+    /// (`10,`, `true`, `null`). Quoted strings and the bracket/brace forms are
+    /// already covered by the first-character test.
+    private static func isJSONScalarLine(_ trimmed: String) -> Bool {
+        var body = Substring(trimmed)
+        if body.hasSuffix(",") { body = body.dropLast() }
+        body = Substring(body.trimmingCharacters(in: .whitespaces))
+        if body == "true" || body == "false" || body == "null" { return true }
+        return body.range(
+            of: #"^-?(0|[1-9][0-9]*)(\.[0-9]+)?([eE][-+]?[0-9]+)?$"#,
+            options: .regularExpression
+        ) != nil
+    }
+
+    /// The character ranges of ``content`` that sit inside a fenced code
+    /// block, opening fence line included.
+    ///
+    /// CommonMark's actual rule, not a count of literal ```` ``` ````
+    /// sequences: a fence opens on a line whose first non-space content is a
+    /// run of three or more backticks OR tildes, and closes on a later line
+    /// whose run uses the SAME character, is at least as long, and carries
+    /// nothing but whitespace after it. Counting
+    /// triple-backtick occurrences — the shape this check started as —
+    /// misreads a ```` ~~~ ```` fence (no backticks at all) and a
+    /// four-backtick fence (the standard way to show a nested example) as
+    /// unfenced, which turns the example the user asked for into a "leak"
+    /// and truncates the answer at it. Same fence vocabulary the release-notes
+    /// renderer already accepts.
+    static func fencedRanges(in content: String) -> [Range<String.Index>] {
+        var ranges: [Range<String.Index>] = []
+        var openStart: String.Index?
+        var openMarker: FenceRun?
+        var index = content.startIndex
+        while index < content.endIndex {
+            let lineEnd = content[index...].firstIndex(of: "\n") ?? content.endIndex
+            let next = lineEnd < content.endIndex ? content.index(after: lineEnd) : content.endIndex
+            if let found = fenceRun(in: content[index..<lineEnd]) {
+                if let open = openMarker, let start = openStart {
+                    // A closer must use the opener's character, be at least as
+                    // long, and carry NOTHING but whitespace after the run.
+                    // CommonMark gives a closing fence no info string, so a
+                    // ```` ```swift ```` line inside a ``` block is content —
+                    // treating it as a closer would leave the rest of the
+                    // example unfenced and truncate the answer there.
+                    if found.marker == open.marker, found.run >= open.run, found.isBare {
+                        ranges.append(start..<next)
+                        openMarker = nil
+                        openStart = nil
+                    }
+                } else {
+                    openMarker = found
+                    openStart = index
+                }
+            }
+            index = next
+        }
+        // An unterminated fence runs to the end of the turn: a streamed answer
+        // cut off mid-example is still an example, not a leak.
+        if let start = openStart { ranges.append(start..<content.endIndex) }
+        return ranges
+    }
+
+    /// A fence line's delimiter run: which character, how long, and whether
+    /// anything follows it (an info string, which only an OPENER may have).
+    private struct FenceRun {
+        let marker: Character
+        let run: Int
+        let isBare: Bool
+    }
+
+    /// The fence run a line carries, or nil when the line is not a fence line.
+    ///
+    /// Indentation is measured in COLUMNS with tabs expanded to the next
+    /// four-column stop, because that is what decides the CommonMark cutoff:
+    /// four columns in is an indented code block, not a fence opener, and a
+    /// single leading tab already reaches four. A backtick fence's info string
+    /// may not contain a backtick, which is what keeps inline `` `code` ``
+    /// spans off this path.
+    private static func fenceRun(in line: Substring) -> FenceRun? {
+        var rest = line
+        var column = 0
+        while let first = rest.first, first == " " || first == "\t" {
+            column = first == "\t" ? (column / 4 + 1) * 4 : column + 1
+            if column > 3 { return nil }
+            rest = rest.dropFirst()
+        }
+        guard let marker = rest.first, marker == "`" || marker == "~" else { return nil }
+        let run = rest.prefix { $0 == marker }.count
+        guard run >= 3 else { return nil }
+        let info = rest.dropFirst(run)
+        if marker == "`", info.contains("`") { return nil }
+        return FenceRun(
+            marker: marker, run: run,
+            isBare: info.allSatisfy { $0 == " " || $0 == "\t" }
+        )
     }
 
     /// True when ``content`` is *essentially just* a malformed tool-call

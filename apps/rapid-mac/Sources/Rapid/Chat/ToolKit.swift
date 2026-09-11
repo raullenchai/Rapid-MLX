@@ -247,10 +247,19 @@ struct NativeToolCallExecutor {
             )
         }
 
-        guard let normalized = Self.normalized(call, for: definition) else {
+        let normalized: ToolCall
+        switch Self.normalize(call, for: definition) {
+        case .success(let value):
+            normalized = value
+        case .failure(let rejection):
+            // Name what was wrong. A generic "arguments must match the
+            // advertised schema" leaves a small model guessing which key it
+            // got wrong, and it re-emits the same call — the strict-schema
+            // path (#3314) makes that retry loop reachable often enough to
+            // matter.
             return ToolCallResult(
                 toolCallID: call.id,
-                content: "tool '\(call.function.name)' error: arguments must be a JSON object matching the advertised schema",
+                content: "tool '\(call.function.name)' error: \(rejection.reason)",
                 isError: true,
                 failureKind: .toolFailed
             )
@@ -278,25 +287,66 @@ struct NativeToolCallExecutor {
         _ call: ToolCall,
         for definition: ToolDefinition
     ) -> ToolCall? {
+        try? normalize(call, for: definition).get()
+    }
+
+    /// Why a tool call's arguments were rejected, in wording meant for the
+    /// model that wrote them.
+    struct ArgumentRejection: Error {
+        let reason: String
+    }
+
+    /// Same filtering as ``normalized(_:for:)``, but carries WHY a call was
+    /// rejected so the model gets a message it can act on.
+    nonisolated static func normalize(
+        _ call: ToolCall,
+        for definition: ToolDefinition
+    ) -> Result<ToolCall, ArgumentRejection> {
         let raw = call.function.arguments.trimmingCharacters(in: .whitespacesAndNewlines)
         let data = Data((raw.isEmpty ? "{}" : raw).utf8)
         guard var object = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
-        else { return nil }
+        else {
+            return .failure(ArgumentRejection(
+                reason: "arguments must be a single JSON object, e.g. {\"key\": \"value\"}"
+            ))
+        }
 
         if case .object(let schema) = definition.function.parameters,
            case .object(let properties)? = schema["properties"]
         {
-            if schema["additionalProperties"] == .bool(false),
-               object.keys.contains(where: { !properties.keys.contains($0) }) {
-                return nil
+            let allowed = properties.keys.sorted()
+            if schema["additionalProperties"] == .bool(false) {
+                let unknown = object.keys.filter { !properties.keys.contains($0) }.sorted()
+                if !unknown.isEmpty {
+                    // Bound the echo: keys are model-supplied and unbounded.
+                    // By SCALARS, not characters — `String.prefix` counts
+                    // grapheme clusters, and one cluster can carry thousands
+                    // of combining marks, so a character bound is not a bound
+                    // at all.
+                    let names = unknown.prefix(5)
+                        .map { key -> String in
+                            let scalars = key.unicodeScalars
+                            guard scalars.count > 80 else { return key }
+                            return String(String.UnicodeScalarView(scalars.prefix(80)))
+                        }
+                        .joined(separator: ", ")
+                    let suffix = unknown.count > 5 ? ", …" : ""
+                    return .failure(ArgumentRejection(
+                        reason: "unknown argument(s): \(names)\(suffix) — this tool accepts only: \(allowed.joined(separator: ", "))"
+                    ))
+                }
             }
             object = object.filter { properties.keys.contains($0.key) }
         }
         guard JSONSerialization.isValidJSONObject(object),
               let normalized = try? JSONSerialization.data(withJSONObject: object, options: [.sortedKeys]),
               let arguments = String(data: normalized, encoding: .utf8)
-        else { return nil }
-        return ToolCall(id: call.id, name: call.function.name, arguments: arguments)
+        else {
+            return .failure(ArgumentRejection(
+                reason: "arguments could not be re-encoded as JSON — re-send them as a plain JSON object"
+            ))
+        }
+        return .success(ToolCall(id: call.id, name: call.function.name, arguments: arguments))
     }
 }
 

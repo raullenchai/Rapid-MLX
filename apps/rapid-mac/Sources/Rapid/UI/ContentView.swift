@@ -611,6 +611,11 @@ struct ContentView: View {
             // but was never mounted, so a failed Finder replacement was
             // detected and then silently discarded.
             FailedReplaceBanner()
+            // Suppresses itself while the banner above is showing — see the
+            // note in `WhatsNewBanner.body`. They are NOT mutually exclusive
+            // by construction any more: the upgrade notice is sticky until the
+            // user acknowledges it.
+            WhatsNewBanner()
             if deferredTelemetryConsent.isPresented {
                 DeferredTelemetryConsentBanner()
             }

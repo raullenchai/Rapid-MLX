@@ -278,6 +278,555 @@ struct ToolCallArtifactSuppressionTests {
         #expect(!decoded.toolCallArtifactSuppressed)
     }
 
+    // MARK: - Trailing artifact: prose answered, then the tail broke
+
+    /// The 0.14.1 dogfood repro, abbreviated: a real answer that ends by
+    /// promising an action, then an envelope nothing claimed. No tool round
+    /// fired, so the promise was never kept and the user saw only the
+    /// promise — for six minutes.
+    @Test("Prose followed by a <tool_call> envelope keeps the prose and flags the tail")
+    func trailingEnvelopeKeepsProse() {
+        let content = """
+        Let me read the first page more carefully with a higher offset:
+
+        <tool_call> {"name":"read_document","arguments":{"document_id":"abc","greP":"Statement
+        """
+        let prose = ChatMessage.trailingToolCallArtifactProse(in: content)
+        #expect(prose == "Let me read the first page more carefully with a higher offset:")
+        // Whole-turn detection does NOT fire — the artifact is the tail.
+        #expect(!ChatMessage.contentLooksLikeToolCallArtifact(content))
+        // …but the gate does, so the row gets the caption.
+        #expect(ChatMessage.shouldSuppressToolCallArtifact(
+            content: content, toolCalls: [], finishReason: "stop", toolsRequested: true))
+        #expect(ChatMessage.proseAboveSuppressedToolCallArtifact(content: content) == prose)
+    }
+
+    @Test("A trailing [TOOL_CALLS] / DeepSeek marker is caught the same way")
+    func trailingOtherFormats() {
+        #expect(ChatMessage.trailingToolCallArtifactProse(
+            in: "Sure, let me look that up.\n\n[TOOL_CALLS] [{\"name\":\"search\"}]"
+        ) == "Sure, let me look that up.")
+        #expect(ChatMessage.trailingToolCallArtifactProse(
+            in: "I will check.\n<function=get_weather>{\"city\":\"NYC\"}"
+        ) == "I will check.")
+    }
+
+    @Test("A trailing tag the answer only TALKS about is not an artifact")
+    func trailingProseMentionIsNotAnArtifact() {
+        // No payload after the marker → the `leadingEnvelopeLeak` gate holds.
+        #expect(ChatMessage.trailingToolCallArtifactProse(
+            in: "Hermes-style models wrap their calls in <tool_call> tags."
+        ) == nil)
+        #expect(ChatMessage.trailingToolCallArtifactProse(
+            in: "The prefix Mistral uses is [TOOL_CALLS] and nothing else."
+        ) == nil)
+    }
+
+    @Test("A fenced example ending the answer is not an artifact")
+    func trailingFencedExampleIsNotAnArtifact() {
+        let content = """
+        Here is what a Hermes call looks like:
+
+        ```xml
+        <tool_call>{"name": "search", "arguments": {"q": "x"}}</tool_call>
+        ```
+        """
+        #expect(ChatMessage.trailingToolCallArtifactProse(in: content) == nil)
+        #expect(!ChatMessage.shouldSuppressToolCallArtifact(
+            content: content, toolCalls: [], finishReason: "stop", toolsRequested: true))
+    }
+
+    @Test("A CLOSED fenced example does not hide a real envelope after it")
+    func trailingEnvelopeAfterFencedExampleIsStillCaught() {
+        // Adversarial review round 1 (codex, blocking): the detector used to
+        // take the FIRST match of each pattern and then decide on it alone,
+        // so a legitimate fenced example earlier in the turn made the whole
+        // function answer nil — and the genuine unfenced envelope after it
+        // rendered raw. The scan now skips the fenced candidate and keeps
+        // going.
+        let content = """
+        A Hermes call looks like this:
+
+        ```xml
+        <tool_call>{"name": "search", "arguments": {"q": "x"}}</tool_call>
+        ```
+
+        Now let me actually run it:
+
+        <tool_call> {"name":"search","arguments":{"q":"Statement
+        """
+        let prose = ChatMessage.trailingToolCallArtifactProse(in: content)
+        // Everything up to the real envelope is kept — the fenced example
+        // included, because that example IS part of the answer.
+        #expect(prose?.hasPrefix("A Hermes call looks like this:") == true)
+        #expect(prose?.hasSuffix("Now let me actually run it:") == true)
+        #expect(prose?.contains("```xml") == true)
+        #expect(ChatMessage.shouldSuppressToolCallArtifact(
+            content: content, toolCalls: [], finishReason: "stop", toolsRequested: true))
+    }
+
+    @Test("Prose that documents <parameter=…> inline is not an artifact")
+    func trailingParameterMentionIsNotAnArtifact() {
+        // Adversarial review round 1 (codex, blocking): `<(function|parameter)=`
+        // carried no payload requirement, so an answer EXPLAINING the syntax
+        // was truncated at the tag. `<function=` now needs a payload and
+        // `<parameter=` needs both its own line and a closing tag.
+        for content in [
+            "Use <parameter=name> to identify the field, then send the call.",
+            "The fragment shape is <function=get_weather> with no arguments at all.",
+            "Qwen writes <parameter=query> inline and closes it later; that is the format.",
+        ] {
+            #expect(ChatMessage.trailingToolCallArtifactProse(in: content) == nil)
+            #expect(!ChatMessage.shouldSuppressToolCallArtifact(
+                content: content, toolCalls: [], finishReason: "stop", toolsRequested: true))
+        }
+    }
+
+    @Test("A real <function=…><parameter=…> args block IS an artifact")
+    func trailingParameterBlockIsAnArtifact() {
+        let content = """
+        I will look up the weather for you.
+
+        <function=get_weather>
+        <parameter=city>NYC</parameter>
+        </function>
+        """
+        #expect(ChatMessage.trailingToolCallArtifactProse(in: content)
+            == "I will look up the weather for you.")
+        // …and the `<parameter=` block alone (no `<function=` opener) too,
+        // as long as it stands on its own line and closes.
+        #expect(ChatMessage.trailingToolCallArtifactProse(
+            in: "Checking now.\n<parameter=city>NYC</parameter>"
+        ) == "Checking now.")
+    }
+
+    @Test("An unclosed fence still counts as inside a fence")
+    func trailingUnclosedFenceIsNotAnArtifact() {
+        let content = "Example:\n\n```xml\n<tool_call>{\"name\": \"search\"}"
+        #expect(ChatMessage.trailingToolCallArtifactProse(in: content) == nil)
+    }
+
+    @Test("Tilde and four-backtick fences hide their examples too")
+    func trailingNonBacktickFencesAreRespected() {
+        // Adversarial review round 2 (codex, blocking): the fence check
+        // counted literal ``` runs, so a `~~~` fence (no backticks at all)
+        // and a ```` fence (the standard way to show a ``` example nested
+        // inside one) both read as UNFENCED — and the example the user asked
+        // for was truncated as a leak. Fences are parsed now.
+        let tilde = """
+        Here is the shape:
+
+        ~~~
+        <tool_call>{"name": "search", "arguments": {"q": "x"}}</tool_call>
+        ~~~
+        """
+        #expect(ChatMessage.trailingToolCallArtifactProse(in: tilde) == nil)
+
+        let nested = """
+        Here is the shape:
+
+        ````markdown
+        ```xml
+        <tool_call>{"name": "search", "arguments": {"q": "x"}}</tool_call>
+        ```
+        ````
+        """
+        // The inner ``` is shorter than the ```` opener, so it is fence
+        // CONTENT and does not close the block — the marker stays covered.
+        #expect(ChatMessage.trailingToolCallArtifactProse(in: nested) == nil)
+        #expect(!ChatMessage.shouldSuppressToolCallArtifact(
+            content: nested, toolCalls: [], finishReason: "stop", toolsRequested: true))
+    }
+
+    @Test("A tilde-fenced example does not hide a real envelope after it")
+    func trailingEnvelopeAfterTildeFenceIsStillCaught() {
+        let content = """
+        The shape is:
+
+        ~~~xml
+        <tool_call>{"name": "search"}</tool_call>
+        ~~~
+
+        Running it now:
+
+        <tool_call> {"name":"search","arguments":{"q":"Statement
+        """
+        #expect(ChatMessage.trailingToolCallArtifactProse(in: content)?
+            .hasSuffix("Running it now:") == true)
+    }
+
+    @Test("Fence ranges follow the opener's delimiter and length")
+    func fenceRangeParsing() {
+        // A closer must match the opener's character AND be at least as long.
+        #expect(ChatMessage.fencedRanges(in: "```\nx\n```\nafter").count == 1)
+        #expect(ChatMessage.fencedRanges(in: "~~~\nx\n~~~\nafter").count == 1)
+        // `~~~` cannot close a ``` fence, so the block runs to the end.
+        let mismatched = ChatMessage.fencedRanges(in: "```\nx\n~~~\nafter")
+        #expect(mismatched.count == 1)
+        #expect(mismatched.first?.upperBound == "```\nx\n~~~\nafter".endIndex)
+        // Inline code is not a fence, and neither is a two-character run.
+        #expect(ChatMessage.fencedRanges(in: "use `tool_call` here").isEmpty)
+        #expect(ChatMessage.fencedRanges(in: "``\nx\n``").isEmpty)
+        // Four leading spaces is an indented code block, not a fence opener.
+        #expect(ChatMessage.fencedRanges(in: "    ```\nx\n    ```").isEmpty)
+    }
+
+    @Test("Any number of fenced examples still cannot hide a real tail")
+    func fencedExamplesNeverHideTheTail() {
+        // Adversarial review rounds 2-3 (codex): a candidate CAP — shared or
+        // per pattern — is spent by the examples and loses the real envelope
+        // after them. There is no cap now: a match inside a fence advances
+        // the cursor past the whole fenced block, so 200 examples cost 200
+        // cheap steps and the tail is still found. Same syntax as the tail on
+        // purpose: that is the case a per-pattern cap still got wrong.
+        let example = "```xml\n<tool_call>{\"name\": \"s\"}</tool_call>\n```\n"
+        let content = "Examples:\n\n"
+            + String(repeating: example, count: 200)
+            + "\nNow running it:\n\n<tool_call> {\"name\":\"search\",\"arguments\":{\"q\":\"x\"\n"
+        #expect(ChatMessage.trailingToolCallArtifactProse(in: content)?
+            .hasSuffix("Now running it:") == true)
+    }
+
+    @Test("A turn that OPENS with a fenced example is still scanned on")
+    func leadingFencedExampleDoesNotEndTheScan() {
+        // Adversarial review round 3 (codex, blocking): the start-index guard
+        // ran before the fence check, so the leading detector could be handed
+        // a turn whose first candidate was merely a fenced example — and the
+        // genuine envelope further down rendered raw. The guard now applies to
+        // the first UNFENCED candidate.
+        let content = """
+        ```xml
+        <tool_call>{"name": "search", "arguments": {"q": "x"}}</tool_call>
+        ```
+
+        That is the shape. Running it:
+
+        <tool_call> {"name":"search","arguments":{"q":"Statement
+        """
+        #expect(ChatMessage.trailingToolCallArtifactProse(in: content)?
+            .hasSuffix("That is the shape. Running it:") == true)
+        #expect(ChatMessage.shouldSuppressToolCallArtifact(
+            content: content, toolCalls: [], finishReason: "stop", toolsRequested: true))
+    }
+
+    @Test("A fence line with an info string never closes a fence")
+    func infoStringLineIsFenceContent() {
+        // Adversarial review round 3 (codex, blocking): CommonMark gives a
+        // CLOSING fence no info string, so a ```` ```swift ```` line inside a
+        // ``` block is content. Closing on it left the rest of the example
+        // unfenced, and the answer was truncated mid-example.
+        let content = """
+        Two examples, one block:
+
+        ```
+        ```swift
+        <tool_call>{"name": "search"}</tool_call>
+        ```
+        """
+        #expect(ChatMessage.trailingToolCallArtifactProse(in: content) == nil)
+        let ranges = ChatMessage.fencedRanges(in: content)
+        #expect(ranges.count == 1)
+        // Trailing whitespace after the run is still a valid closer.
+        #expect(ChatMessage.fencedRanges(in: "```\nx\n```   \nafter").count == 1)
+    }
+
+    @Test("A leading tab is four columns, not one")
+    func tabIndentIsNotAFenceOpener() {
+        // Adversarial review round 3 (codex, nit): indentation decides the
+        // CommonMark cutoff, and a single tab already reaches column four —
+        // an indented code block, not a fence opener.
+        #expect(ChatMessage.fencedRanges(in: "\t```\nx\n\t```").isEmpty)
+        #expect(ChatMessage.fencedRanges(in: "   ```\nx\n   ```").count == 1)
+    }
+
+    @Test("An UNFENCED inline example mid-sentence is not an artifact")
+    func trailingInlineExampleIsNotAnArtifact() {
+        // Adversarial review round 4 (codex, blocking): the payload gate alone
+        // still matched an answer that documents a call inline without a
+        // fence, and truncated the sentence at the tag. Envelopes must open a
+        // line now — which every real leak shape does, the dogfood repro
+        // included.
+        for content in [
+            "Use <tool_call>{\"name\":\"search\"}</tool_call> to run a search.",
+            "Mistral writes [TOOL_CALLS] [{\"name\":\"search\"}] on one line.",
+            "The fragment is <function=get_weather>{\"city\":\"NYC\"} in that dialect.",
+        ] {
+            #expect(ChatMessage.trailingToolCallArtifactProse(in: content) == nil)
+            #expect(!ChatMessage.shouldSuppressToolCallArtifact(
+                content: content, toolCalls: [], finishReason: "stop", toolsRequested: true))
+        }
+        // Indented is still "opening a line" — a leak inside a list item.
+        #expect(ChatMessage.trailingToolCallArtifactProse(
+            in: "Running it:\n  <tool_call> {\"name\":\"search\",\"arguments\":{"
+        ) == "Running it:")
+    }
+
+    @Test("A raw example the answer goes on to EXPLAIN keeps its explanation")
+    func trailingExampleFollowedByProseIsNotAnArtifact() {
+        // Adversarial review round 5 (codex, blocking): suppression ran from
+        // the marker to the end of the turn without checking that only machine
+        // syntax followed, so an answer that showed an unfenced call and then
+        // explained it lost the explanation. The envelope has to be the TAIL.
+        let content = """
+        Here is the call, unfenced:
+
+        <tool_call>{"name":"search","arguments":{"q":"x"}}</tool_call>
+
+        As you can see, the name field picks the tool and arguments carries
+        the payload.
+        """
+        #expect(ChatMessage.trailingToolCallArtifactProse(in: content) == nil)
+        #expect(!ChatMessage.shouldSuppressToolCallArtifact(
+            content: content, toolCalls: [], finishReason: "stop", toolsRequested: true))
+    }
+
+    @Test("Example, prose, then a real envelope keeps everything but the tail")
+    func trailingRealEnvelopeAfterRawExampleKeepsTheProse() {
+        let content = """
+        The shape is:
+
+        <tool_call>{"name":"search","arguments":{"q":"x"}}</tool_call>
+
+        Now running it for real:
+
+        <tool_call> {"name":"search","arguments":{"q":"Statement
+        """
+        let prose = ChatMessage.trailingToolCallArtifactProse(in: content)
+        // The earlier raw example is part of the answer, not the tail.
+        #expect(prose?.contains("The shape is:") == true)
+        #expect(prose?.hasSuffix("Now running it for real:") == true)
+    }
+
+    @Test("A turn ending in a fenced example is never a tail")
+    func trailingFenceCloserEndsTheRun() {
+        // The closing ``` is not machine syntax for this purpose, so the run
+        // never starts and the answer is left alone — which is the same
+        // verdict the fence check gives, reached one step earlier.
+        let content = """
+        Example:
+
+        ```json
+        {"name":"search","arguments":{"q":"x"}}
+        ```
+        """
+        #expect(ChatMessage.trailingToolCallArtifactProse(in: content) == nil)
+    }
+
+    @Test("A pretty-printed envelope with array values is still a tail")
+    func trailingPrettyPrintedEnvelopeIsAnArtifact() {
+        // Adversarial review round 6 (codex, blocking): a pretty-printed call
+        // puts bare scalars on their own lines, and those reset the terminal
+        // run, so the raw envelope stayed visible.
+        let content = """
+        Let me search for those records:
+
+        <tool_call>
+        {
+          "name": "search",
+          "arguments": {
+            "ids": [
+              10,
+              -2.5,
+              true,
+              null
+            ]
+          }
+        """
+        #expect(ChatMessage.trailingToolCallArtifactProse(in: content)
+            == "Let me search for those records:")
+        #expect(ChatMessage.shouldSuppressToolCallArtifact(
+            content: content, toolCalls: [], finishReason: "stop", toolsRequested: true))
+    }
+
+    @Test("Prose that merely ends in a comma or colon is not machine syntax")
+    func proseLinesEndingInPunctuationStopTheRun() {
+        // The scalar test must stay strict: a looser one moves the boundary
+        // EARLIER, and an over-early boundary eats real prose. Here the run
+        // has to stop at the last sentence, so the example above it survives.
+        let content = """
+        The shape is:
+
+        <tool_call>{"name":"search","arguments":{}}</tool_call>
+
+        First, note the name field,
+        and second, the arguments object.
+        """
+        #expect(ChatMessage.trailingToolCallArtifactProse(in: content) == nil)
+    }
+
+    @Test("A parsed tool call is never suppressed, however it was written")
+    func parsedCallIsNeverSuppressed() {
+        // The standing answer to "what about a complete unfenced example?"
+        // (raised in adversarial review rounds 5 and 8): gates 1-3 ARE the
+        // parser-rejected evidence. An envelope the engine could read comes
+        // back as a real `tool_calls` entry, and gate 2 then declines to
+        // suppress anything — whatever the content looks like.
+        let content = """
+        Hermes models emit this:
+
+        <tool_call>{"name":"search","arguments":{"q":"x"}}</tool_call>
+        """
+        let call = ToolCall(id: "call_1", name: "search", arguments: "{\"q\":\"x\"}")
+        #expect(!ChatMessage.shouldSuppressToolCallArtifact(
+            content: content, toolCalls: [call], finishReason: "tool_calls",
+            toolsRequested: true))
+        // And a turn that never advertised tools is out of scope entirely.
+        #expect(!ChatMessage.shouldSuppressToolCallArtifact(
+            content: content, toolCalls: [], finishReason: "stop",
+            toolsRequested: false))
+    }
+
+    @Test("Punctuation-led prose after an example stops the terminal run")
+    func punctuationLedProseIsNotMachineSyntax() {
+        // Adversarial review round 10 (codex, blocking): the run test was
+        // "the first character is punctuation", and prose opens with
+        // punctuation often enough for that to eat real content — a Markdown
+        // link, a reference definition, a quoted sentence. Each opener is
+        // matched structurally now.
+        let shapes = [
+            "[That syntax](https://example.com) is invalid, by the way.",
+            "[1]: https://example.com/tool-calling",
+            "\"That syntax\" is invalid, by the way.",
+            "<- that is what a leaked call looks like.",
+        ]
+        for tail in shapes {
+            let content = """
+            Here is the call:
+
+            <tool_call>{"name":"search","arguments":{"q":"x"}}</tool_call>
+
+            \(tail)
+            """
+            #expect(ChatMessage.trailingToolCallArtifactProse(in: content) == nil)
+            #expect(!ChatMessage.shouldSuppressToolCallArtifact(
+                content: content, toolCalls: [], finishReason: "stop", toolsRequested: true))
+        }
+    }
+
+    @Test("Real JSON continuation lines still count as machine syntax")
+    func jsonContinuationLinesStayInTheRun() {
+        // The other half of round 10: tightening the openers must not drop the
+        // shapes an envelope dump actually produces.
+        let content = """
+        Let me search those records:
+
+        <tool_call>
+        {
+          "name": "search",
+          "arguments": {
+            "queries": [
+              "first",
+              "second"
+            ],
+            "limit": 10
+          }
+        }
+        """
+        #expect(ChatMessage.trailingToolCallArtifactProse(in: content)
+            == "Let me search those records:")
+    }
+
+    @Test("Prose that opens with a brace or bracket stops the run")
+    func braceLedProseIsNotMachineSyntax() {
+        // Adversarial review round 11 (codex, blocking): `{ } ] ,` passed
+        // unconditionally, so a sentence opening with one — "} closes the
+        // object; this is why …" — extended the run and was hidden along with
+        // the example above it.
+        let shapes = [
+            "} closes the object; this is why the call is complete.",
+            "] ends the array, and the rest is up to the tool.",
+            ", separating the two arguments, is easy to miss.",
+            "{ opens it, in case that was not obvious.",
+        ]
+        for tail in shapes {
+            let content = """
+            Here is the call:
+
+            <tool_call>{"name":"search","arguments":{"q":"x"}}</tool_call>
+
+            \(tail)
+            """
+            #expect(ChatMessage.trailingToolCallArtifactProse(in: content) == nil)
+        }
+    }
+
+    @Test("Multi-call and keyword-valued fragments stay in the run")
+    func jsonFragmentLinesStayInTheRun() {
+        // The other half of round 11: an unquoted JSON keyword and a
+        // `},{`-style multi-call boundary are fragments, not sentences.
+        let content = """
+        Searching both indexes:
+
+        <tool_call>
+        [{"name":"search","arguments":{"q":"x","exact": true}},
+        {"name":"search","arguments":{"q":"y","exact": false}}]
+        """
+        #expect(ChatMessage.trailingToolCallArtifactProse(in: content)
+            == "Searching both indexes:")
+    }
+
+    @Test("A whole-turn artifact still renders the caption alone")
+    func wholeTurnArtifactHasNoProse() {
+        let content = "<tool_call>{\"name\": \"search\", \"arguments\": {\"q\": \"x\"}}</tool_call>"
+        #expect(ChatMessage.trailingToolCallArtifactProse(in: content) == nil)
+        #expect(ChatMessage.proseAboveSuppressedToolCallArtifact(content: content) == nil)
+        #expect(ChatMessage.contentLooksLikeToolCallArtifact(content))
+    }
+
+    @Test("A trailing artifact is still gated on tools + zero calls")
+    func trailingArtifactRespectsTheGates() {
+        let content = "Let me look.\n\n<tool_call> {\"name\":\"search\",\"arguments\":{"
+        #expect(!ChatMessage.shouldSuppressToolCallArtifact(
+            content: content, toolCalls: [], finishReason: "stop", toolsRequested: false))
+        #expect(!ChatMessage.shouldSuppressToolCallArtifact(
+            content: content,
+            toolCalls: [ToolCall(id: "1", name: "search", arguments: "{}")],
+            finishReason: "stop",
+            toolsRequested: true))
+        #expect(!ChatMessage.shouldSuppressToolCallArtifact(
+            content: content, toolCalls: [], finishReason: "tool_calls", toolsRequested: true))
+    }
+
+    /// The dangerous false positive the strict payload gate exists for: an
+    /// answer that names the tag in a sentence and shows the example in a
+    /// fence further down. A loose "carries a closing tag somewhere" gate
+    /// would start the tail at the sentence and delete the explanation.
+    @Test("An answer that names the tag then fences an example keeps all of it")
+    func mentionThenFencedExampleIsNotAnArtifact() {
+        let content = """
+        Hermes models wrap their calls in <tool_call> tags. For example:
+
+        ```xml
+        <tool_call>{"name": "search", "arguments": {"q": "x"}}</tool_call>
+        ```
+
+        The engine strips them before you see the result.
+        """
+        #expect(ChatMessage.trailingToolCallArtifactProse(in: content) == nil)
+        #expect(!ChatMessage.shouldSuppressToolCallArtifact(
+            content: content, toolCalls: [], finishReason: "stop", toolsRequested: true))
+    }
+
+    /// A prose turn that trailed off into the DeepSeek marker used to be
+    /// suppressed WHOLE (the marker matches anywhere), taking the answer
+    /// with it.
+    @Test("A trailing DeepSeek marker keeps the prose above it")
+    func trailingDeepSeekMarkerKeepsProse() {
+        let content = "I will look that up for you.\n<\u{FF5C}tool\u{2581}calls\u{2581}begin\u{FF5C}>"
+        #expect(ChatMessage.contentLooksLikeToolCallArtifact(content))
+        #expect(
+            ChatMessage.proseAboveSuppressedToolCallArtifact(content: content)
+                == "I will look that up for you."
+        )
+    }
+
+    @Test("An ordinary long answer is untouched")
+    func ordinaryAnswerHasNoTrailingArtifact() {
+        #expect(ChatMessage.trailingToolCallArtifactProse(
+            in: "The purchase order number is PO-5592-KX and the total is 14,208.55."
+        ) == nil)
+    }
+
     @Test("The suppressed-body caption carries no machine jargon")
     func captionHasNoJargon() {
         let copy = ChatMessage.toolCallArtifactSuppressedCaptionCopy.lowercased()

@@ -6,9 +6,10 @@ import Testing
 ///
 /// The regression these lock down: a declined `browse` approval used to fall
 /// through to ``FailureDiagnosis/Kind/toolFailed``, so clicking **Don't allow**
-/// painted a red tool card reading *"The tool couldn't finish. Check its input,
-/// then try again."* — the app reporting a fault, blaming the user's own input
-/// for it, and offering to retry the very thing they had just refused.
+/// painted a red tool card reading *"The tool couldn't finish. Check its
+/// input, then try again."* (the ``.toolFailed`` copy of the day) — the app
+/// reporting a fault, blaming the user's own input for it, and offering to
+/// retry the very thing they had just refused.
 ///
 /// Four properties are pinned here, and all four matter:
 ///   1. A decline classifies as ``FailureDiagnosis/Kind/userDeclined`` and

@@ -314,7 +314,12 @@ enum FailureDiagnoser {
             message = "Rapid doesn't have access to that file."
             action = nil
         case .toolFailed:
-            message = "The tool couldn't finish. Check its input, then try again."
+            // "Check its input" pointed the user at the one thing they do not
+            // control: the arguments are written by the model, and a user
+            // reading "check its input" over an invented `{"url": ""}` has
+            // nothing to check (0.14.1 mini dogfood). State whose step failed
+            // and leave the recovery — asking again — on the button.
+            message = "A tool step didn't go through. The model can usually recover if you ask again."
             action = .retry
         case .userDeclined:
             // Nothing went wrong, so the copy states the outcome and stops.
