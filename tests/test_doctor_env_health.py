@@ -1772,6 +1772,31 @@ def test_trusted_sys_path_roots_exclude_dynamic_paths(
     assert source_root not in trusted_roots
 
 
+def test_trusted_sys_path_roots_keep_wheel_site_packages(
+    tmp_path,
+    monkeypatch,
+):
+    site_root = tmp_path / "venv" / "lib" / "python3.12" / "site-packages"
+    module_file = site_root / "vllm_mlx" / "doctor" / "env_health.py"
+    module_file.parent.mkdir(parents=True)
+    module_file.write_text("# installed wheel layout\n")
+    probe_module = site_root / "wheel_dependency_probe.py"
+    probe_module.write_text("installed = True\n")
+    workdir = tmp_path / "workdir"
+    workdir.mkdir()
+
+    monkeypatch.setattr(eh, "__file__", str(module_file))
+    monkeypatch.setattr(eh.sys, "path", [str(site_root)])
+    monkeypatch.chdir(workdir)
+    monkeypatch.delenv("PYTHONPATH", raising=False)
+
+    trusted_roots = eh._trusted_sys_path_roots()
+
+    assert trusted_roots == {site_root.resolve()}
+    monkeypatch.setattr(eh, "_TRUSTED_SYS_PATH_ROOTS", tuple(trusted_roots))
+    assert eh._module_origin_is_trusted("wheel_dependency_probe")
+
+
 def test_local_pillow_probe_rejects_source_tree_shadow_module(
     tmp_path,
     monkeypatch,
