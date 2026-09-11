@@ -1388,9 +1388,27 @@ class MLLMScheduler:
                 # Oversized prompt or other unrecoverable error — fail all
                 # running requests instead of retrying forever.
                 err_msg = str(e)
-                logger.error(f"Batch generation failed: {err_msg}")
                 error_ids = set(self.running.keys())
                 failed_requests = [self.running[rid] for rid in error_ids]
+                # Do not collapse the only actionable copy of a backend
+                # failure into the bounded client message below. Request IDs
+                # are safe to log and let an operator correlate the traceback
+                # with access logs without exposing prompts or local model
+                # paths to API clients.
+                logger.exception(
+                    "MLLM batch generation failed "
+                    "(exception=%s requests=%s active_rows=%d waiting=%d)",
+                    type(e).__name__,
+                    sorted(error_ids),
+                    len(
+                        getattr(
+                            getattr(self.batch_generator, "active_batch", None),
+                            "uids",
+                            (),
+                        )
+                    ),
+                    len(self.waiting),
+                )
 
                 # Remove from batch generator BEFORE scheduler cleanup so
                 # stale requests don't poison subsequent batches.
@@ -1422,7 +1440,10 @@ class MLLMScheduler:
                 public_error = (
                     err_msg
                     if is_client_error
-                    else "MLLM inference failed due to an internal engine error"
+                    else (
+                        "MLLM inference was interrupted by a transient engine "
+                        "error; retry the request"
+                    )
                 )
                 # Create error outputs (queue delivery deferred to caller).
                 for request_id in error_ids:
@@ -1432,7 +1453,9 @@ class MLLMScheduler:
                             output_text="",
                             finished=True,
                             error=public_error,
-                            error_kind=("invalid_request" if is_client_error else None),
+                            error_kind=(
+                                "invalid_request" if is_client_error else "lifecycle"
+                            ),
                             # Preserve the established terminal reason for
                             # internal aborts; the non-None error is what
                             # prevents routes from serializing fake success.
@@ -1570,8 +1593,11 @@ class MLLMScheduler:
         request_ids.update(self._pending_abort_ids)
         # Third-party exceptions can contain paths, prompt fragments, or model
         # internals. The detailed traceback is logged by the caller; clients
-        # receive only this stable 500-class message.
-        err_text = "MLLM inference failed due to an internal engine error"
+        # receive only this stable retryable (HTTP 503) message.
+        err_text = (
+            "MLLM inference was interrupted by a transient engine error; "
+            "retry the request"
+        )
 
         output = MLLMSchedulerOutput(
             finished_request_ids=request_ids,
@@ -1586,6 +1612,7 @@ class MLLMScheduler:
                     # this compatibility literal for a successful truncation.
                     finish_reason="length",
                     error=err_text,
+                    error_kind="lifecycle",
                 )
                 for request_id in request_ids
             ],
