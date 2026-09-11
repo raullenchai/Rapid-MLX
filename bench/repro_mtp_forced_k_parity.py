@@ -110,9 +110,9 @@ def _render_markdown(report: dict[str, Any]) -> None:
     print("- reference: same Rapid generator with speculation parked at K=0\n")
     print(
         "| Prompt | stock/K=0 | K | attempts | accepts | verify calls | "
-        "K=0 parity | first divergence | source |"
+        "complete | K=0 parity | first divergence | source |"
     )
-    print("|---:|---|---:|---:|---:|---:|---|---|---|")
+    print("|---:|---|---:|---:|---:|---:|---|---|---|---|")
     for prompt in report["prompts"]:
         stock_matches = prompt["stock_vs_k0_first_divergence"] is None
         for row in prompt["rows"]:
@@ -129,6 +129,7 @@ def _render_markdown(report: dict[str, Any]) -> None:
                 f"| {prompt['index']} | {'yes' if stock_matches else 'no'} | "
                 f"{row['k']} | {row['attempts']} | {row['accepts']} | "
                 f"{row['verify_calls']} | "
+                f"{'yes' if row['complete'] else 'no'} | "
                 f"{'yes' if row['matches_k0'] else 'no'} | {divergence_text} | "
                 f"{row['candidate_source_at_divergence'] or '—'} |"
             )
@@ -200,7 +201,7 @@ def main() -> int:
     activity_valid = True
     for index, prompt in enumerate(prompts):
         prompt_ids = mx.array(tokenizer.encode(prompt), mx.uint32)
-        runs: dict[int, tuple[tuple[int, ...], tuple[bool, ...], Any, int]] = {}
+        runs: dict[int, tuple[tuple[int, ...], tuple[bool, ...], Any, int, str]] = {}
         for k in args.k_values:
             print(f"[fixed-k-consistency] prompt {index + 1} K={k}", file=sys.stderr)
             mx.random.seed(args.seed)
@@ -229,12 +230,17 @@ def main() -> int:
                 tuple(from_draft),
                 counter.snapshot(),
                 int(timing.get("verify_calls", 0.0)),
+                "stop_token"
+                if tokens and tokens[-1] in stop_tokens
+                else "max_tokens"
+                if len(tokens) == args.max_tokens
+                else "early_termination",
             )
 
         control = runs[0][0]
         rows = []
         for k in args.k_values:
-            tokens, sources, counter, verify_calls = runs[k]
+            tokens, sources, counter, verify_calls, termination = runs[k]
             divergence = _first_divergence(control, tokens)
             divergence_index = divergence["index"] if divergence else None
             source = None
@@ -245,11 +251,14 @@ def main() -> int:
                 if k == 0
                 else counter.attempts > 0 and verify_calls > 0
             )
-            activity_valid = activity_valid and arm_active
+            complete = termination != "early_termination"
+            activity_valid = activity_valid and arm_active and complete
             rows.append(
                 {
                     "k": k,
                     "active": arm_active,
+                    "complete": complete,
+                    "termination": termination,
                     "attempts": counter.attempts,
                     "accepts": counter.accepts,
                     "verify_calls": verify_calls,
@@ -289,7 +298,7 @@ def main() -> int:
 
     if not activity_valid:
         print(
-            "[fixed-k-consistency] INVALID: K=0 drafted or a K>0 arm did not engage",
+            "[fixed-k-consistency] INVALID: an arm did not engage or complete",
             file=sys.stderr,
         )
         return 2

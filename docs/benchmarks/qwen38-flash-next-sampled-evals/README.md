@@ -39,8 +39,10 @@ Read: on this sample the 4-bit Flash-Next matches or edges the 4-bit dense 27B o
 2. Non-thinking mode, temperature 0, single run, greedy — upstream's published numbers are bf16 with thinking ON and are NOT comparable.
 3. Two harness adaptations, applied identically to both models: chat-safe HumanEval variant; GSM8K bold-aware re-score reported beside (never instead of) the harness number.
 4. The 27B reference ran without speculative decoding. MTP preserves the
-   verified target distribution, but greedy output is not guaranteed to be
-   byte-equal to stock single-token AR under quantized near ties (#3295).
+   batched verifier's target distribution, but that distribution can differ
+   numerically from non-speculative single-token decoding at quantized near
+   ties, so greedy output is not guaranteed to be byte-equal to stock AR
+   (#3295).
    Keeping speculation off makes this model-quality comparison independent of
    that batched-forward numerical fork.
 5. Both models are 4-bit; there is no bf16 baseline here (Flash bf16 = 335 GiB does not fit the 256 GB box). Quantization fidelity vs bf16 remains unmeasured — the comparison isolates "Flash-Next-4bit vs dense-27B-4bit", not "4bit vs bf16".

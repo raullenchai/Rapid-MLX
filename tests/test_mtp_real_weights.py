@@ -17,6 +17,8 @@ This file fills the gap with end-to-end probes:
   ``mlx-community/Qwen3.5-9B-MTP-4bit``.
 * Verify the four contract surfaces land
   (:func:`validate_mtp_support`).
+* Retain an independent pristine-model byte-regression oracle on three short,
+  known-stable prompt prefixes without claiming that parity is universal.
 * Exercise the same Rapid generator parked at K=0 and at fixed greedy MTP
   depths K=1/2/3. Byte equality across those shapes is not the contract: a
   batched verify forward can flip a near-tied argmax under quantized weights.
@@ -58,12 +60,53 @@ _BASE_MODEL = "mlx-community/Qwen3.5-9B-4bit"
 _MTP_SIDECAR = "mlx-community/Qwen3.5-9B-MTP-4bit"
 
 
+_BASELINE_PROMPTS = (
+    "Write a short Python Fibonacci function with type hints.",
+    "Explain how a Bloom filter works.",
+    "Two trains travel toward each other at 60 and 80 km/h, 350 km "
+    "apart. When do they meet?",
+)
+_BASELINE_N_TOKENS = 20
 _CONSISTENCY_N_TOKENS = 128
 
 
 @pytest.fixture(scope="module")
-def loaded_model():
-    """Load the base + inject MTP exactly once for all tests in the file."""
+def baseline_tokens():
+    """Capture a small known-stable pristine-model regression baseline.
+
+    These prompts are not evidence of universal byte parity: wider prompts can
+    hit quantized near ties where single-token and batched forwards differ.
+    They remain useful independent sentinels for cache/rollback drift because
+    this checkpoint is known to preserve exact output on these short cases.
+    """
+    import gc
+
+    from mlx_lm import load
+    from mlx_lm.generate import stream_generate
+
+    model, tokenizer = load(_BASE_MODEL)
+    baselines: dict[str, list[int]] = {}
+    for prompt in _BASELINE_PROMPTS:
+        tokens = [
+            int(response.token)
+            for response in stream_generate(
+                model,
+                tokenizer,
+                prompt,
+                max_tokens=_BASELINE_N_TOKENS,
+            )
+        ]
+        baselines[prompt] = tokens[:_BASELINE_N_TOKENS]
+
+    del model
+    del tokenizer
+    gc.collect()
+    return baselines
+
+
+@pytest.fixture(scope="module")
+def loaded_model(baseline_tokens):
+    """Load the base + inject MTP after the pristine baseline is released."""
     from mlx_lm import load
 
     from vllm_mlx.spec_decode.mtp.qwen3_5_inject import (
@@ -197,6 +240,43 @@ def test_inject_loads_real_sidecar_weights(loaded_model):
             f"MTP module's parameter tree. Either the upstream layout drifted "
             f"or the inject failed to wire the sub-module. expected_keys "
             f"sample: {sorted(expected_keys)[:8]}"
+        )
+
+
+def test_mtp_known_stable_prompts_match_pristine_baseline(
+    loaded_model, baseline_tokens
+):
+    """Catch real cache/rollback drift on known byte-stable prompt prefixes.
+
+    This deliberately narrow regression signature complements, rather than
+    defines, the general MTP contract. It retains an independently advanced
+    pristine target-model oracle without claiming byte parity for prompts that
+    encounter cross-shape quantized near ties.
+    """
+    import mlx.core as _mx
+
+    from vllm_mlx.spec_decode.mtp import MTPAcceptCounter
+    from vllm_mlx.spec_decode.mtp.generator import mtp_generate_step
+
+    model, tokenizer = loaded_model
+    inner = model.language_model
+    for prompt in _BASELINE_PROMPTS:
+        counter = MTPAcceptCounter()
+        prompt_ids = _mx.array(tokenizer.encode(prompt), _mx.uint32)
+        tokens = [
+            int(token)
+            for token, _logprobs, _from_draft in mtp_generate_step(
+                prompt_ids,
+                inner,
+                max_tokens=_BASELINE_N_TOKENS,
+                temp=0.0,
+                accept_counter=counter,
+            )
+        ][:_BASELINE_N_TOKENS]
+        assert tokens == baseline_tokens[prompt], (
+            f"Known-stable MTP regression on {prompt[:40]!r}: "
+            f"baseline={baseline_tokens[prompt]}, mtp={tokens}, "
+            f"counter={counter.snapshot()}"
         )
 
 
