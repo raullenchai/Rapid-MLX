@@ -1867,7 +1867,7 @@ class TestPrefillErrorCleanup:
 
         from vllm_mlx.mllm_batch_generator import MLLMBatchRequest
         from vllm_mlx.mllm_scheduler import MLLMScheduler, MLLMSchedulerConfig
-        from vllm_mlx.request import RequestStatus
+        from vllm_mlx.request import ClientRequestError, RequestStatus
 
         mock_model = MagicMock()
         mock_processor = MagicMock()
@@ -1906,8 +1906,11 @@ class TestPrefillErrorCleanup:
         scheduler.request_id_to_uid[req_id] = 42
         scheduler.uid_to_request_id[42] = req_id
 
-        # Make next() raise to simulate prefill error
-        bg.next = MagicMock(side_effect=ValueError("prompt too large"))
+        # Make next() raise the typed client-error shape used by prompt/media
+        # validation. This branch must stay distinct from runtime failures:
+        # bounded input diagnostics are logged without a crash traceback and
+        # retain their HTTP 400 classification.
+        bg.next = MagicMock(side_effect=ClientRequestError("prompt too large"))
 
         scheduler.step()
 
@@ -1916,12 +1919,12 @@ class TestPrefillErrorCleanup:
         # Scheduler bookkeeping should be clean
         assert req_id not in scheduler.running
         assert req_id not in scheduler.request_id_to_uid
-        # Error output should have been queued. finish_reason is "length"
-        # (OpenAI-spec-compliant abort signal), not the legacy "error"
-        # literal — see scheduler.py rationale.
+        # Error output should have been queued with the client-owned type.
         queued = scheduler.output_queues[req_id].get_nowait()
         assert queued.finished is True
-        assert queued.finish_reason == "length"
+        assert queued.finish_reason == "error"
+        assert queued.error == "prompt too large"
+        assert queued.error_kind == "invalid_request"
         performance = scheduler.performance.snapshot()
         assert performance.requests_failed == 1
         assert performance.prompt_tokens == 7

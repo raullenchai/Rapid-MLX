@@ -38,7 +38,7 @@ from fastapi.testclient import TestClient
 
 from vllm_mlx.config import reset_config
 from vllm_mlx.engine.base import GenerationOutput
-from vllm_mlx.request import ClientRequestError
+from vllm_mlx.request import ClientRequestError, InferenceAbortedError
 from vllm_mlx.routes.chat import router as chat_router
 
 
@@ -106,6 +106,15 @@ class _StubMLLMEngine:
 class _StubTextFallbackEngine(_StubMLLMEngine):
     is_mllm = False
     serving_lane_reason = "vision_hybrid_runtime_unsupported"
+
+
+class _StubRetryableFailureEngine(_StubMLLMEngine):
+    async def chat(self, *, messages, **kwargs):
+        raise InferenceAbortedError(
+            "MLLM inference was interrupted by a transient engine error; "
+            "retry the request",
+            error_kind="lifecycle",
+        )
 
 
 def _make_client(engine: _StubMLLMEngine) -> TestClient:
@@ -233,6 +242,26 @@ def test_chat_route_forwards_image_url_content_to_mllm_engine():
     assert stream_resp.text.count('"content":"A blue background."') == 1
     assert stream_resp.text.rstrip().endswith("data: [DONE]")
     assert len(engine.stream_calls) == 1
+
+
+def test_chat_route_returns_503_for_retryable_mllm_batch_failure():
+    """A scheduler lifecycle interruption must reach HTTP clients as 503."""
+    client = _make_client(_StubRetryableFailureEngine())
+
+    response = client.post(
+        "/v1/chat/completions",
+        json={
+            "model": "qwen3-vl-8b-4bit",
+            "messages": [{"role": "user", "content": "hello"}],
+            "max_tokens": 8,
+            "stream": False,
+        },
+    )
+
+    assert response.status_code == 503, response.text
+    assert response.json()["detail"] == (
+        "MLLM inference was interrupted by a transient engine error; retry the request"
+    )
 
 
 @pytest.mark.parametrize(

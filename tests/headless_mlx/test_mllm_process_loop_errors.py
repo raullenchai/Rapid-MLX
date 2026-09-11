@@ -361,7 +361,11 @@ async def test_process_loop_failure_unblocks_every_inflight_request() -> None:
     for output in outputs[:-1]:
         assert output.finished is True
         assert output.finish_reason == "length"
-        assert output.error == "MLLM inference failed due to an internal engine error"
+        assert output.error == (
+            "MLLM inference was interrupted by a transient engine error; "
+            "retry the request"
+        )
+        assert output.error_kind == "lifecycle"
         assert "mask" not in output.error
     assert scheduler._step_no_queue.call_count == 1
     batch_generator.close.assert_called_once_with()
@@ -376,8 +380,10 @@ async def test_process_loop_failure_unblocks_every_inflight_request() -> None:
     assert not scheduler._aborted_queue_ids
 
 
-def test_scheduler_step_does_not_turn_internal_failure_into_fake_success() -> None:
-    """A model/runtime error must terminate as an error without leaking details."""
+def test_scheduler_step_marks_internal_failure_retryable_without_leaking_details(
+    caplog,
+) -> None:
+    """A runtime batch failure is an observable, retryable lifecycle error."""
     scheduler = MLLMScheduler.__new__(MLLMScheduler)
     request = MLLMRequest(request_id="runtime-failure", prompt="hello")
     scheduler.requests = {request.request_id: request}
@@ -403,6 +409,37 @@ def test_scheduler_step_does_not_turn_internal_failure_into_fake_success() -> No
     terminal = output.outputs[0]
     assert terminal.finished is True
     assert terminal.finish_reason == "length"
-    assert terminal.error == "MLLM inference failed due to an internal engine error"
+    assert terminal.error == (
+        "MLLM inference was interrupted by a transient engine error; retry the request"
+    )
+    assert terminal.error_kind == "lifecycle"
     assert "/Users/example" not in terminal.error
+    assert "RuntimeError" in caplog.text
+    assert request.request_id in caplog.text
+    assert "private runtime detail" in caplog.text
     scheduler.batch_generator.remove.assert_called_once_with([42])
+
+
+@pytest.mark.asyncio
+async def test_scheduler_internal_failure_streams_as_retryable_503_class() -> None:
+    """The scheduler-to-route boundary preserves the retryable error type."""
+    scheduler = MLLMScheduler.__new__(MLLMScheduler)
+    scheduler.output_queues = {"failed": asyncio.Queue()}
+    scheduler.abort_request = MagicMock()
+    await scheduler.output_queues["failed"].put(
+        RequestOutput(
+            request_id="failed",
+            finished=True,
+            finish_reason="abort",
+            error=(
+                "MLLM inference was interrupted by a transient engine error; "
+                "retry the request"
+            ),
+            error_kind="lifecycle",
+        )
+    )
+
+    with pytest.raises(InferenceAbortedError, match="retry the request"):
+        _ = [output async for output in scheduler.stream_outputs("failed")]
+
+    scheduler.abort_request.assert_not_called()
