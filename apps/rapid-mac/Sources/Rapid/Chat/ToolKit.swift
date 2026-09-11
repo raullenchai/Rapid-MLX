@@ -319,8 +319,16 @@ struct NativeToolCallExecutor {
                 let unknown = object.keys.filter { !properties.keys.contains($0) }.sorted()
                 if !unknown.isEmpty {
                     // Bound the echo: keys are model-supplied and unbounded.
+                    // By SCALARS, not characters — `String.prefix` counts
+                    // grapheme clusters, and one cluster can carry thousands
+                    // of combining marks, so a character bound is not a bound
+                    // at all.
                     let names = unknown.prefix(5)
-                        .map { String($0.prefix(80)) }
+                        .map { key -> String in
+                            let scalars = key.unicodeScalars
+                            guard scalars.count > 80 else { return key }
+                            return String(String.UnicodeScalarView(scalars.prefix(80)))
+                        }
                         .joined(separator: ", ")
                     let suffix = unknown.count > 5 ? ", …" : ""
                     return .failure(ArgumentRejection(

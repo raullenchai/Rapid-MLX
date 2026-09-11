@@ -1381,8 +1381,11 @@ struct ChatMessage: Identifiable, Codable, Equatable, Hashable {
         guard let first = trimmed.first else { return false }
         switch first {
         case "{", "}", "]", ",":
-            // None of these open a sentence.
-            return true
+            // These open no sentence BY THEMSELVES, but prose can open with
+            // one: "} closes the object; this is why …". A JSON fragment — `}`,
+            // `},`, `},{"name":"x"}`, `{"limit": 10,` — carries no unquoted
+            // word; a sentence does.
+            return hasNoUnquotedWord(trimmed)
         case "[":
             // Reject Markdown first: a link (`[label](url)`) or a reference
             // definition (`[1]: url`). The digit branch below has to accept
@@ -1410,6 +1413,38 @@ struct ChatMessage: Identifiable, Codable, Equatable, Hashable {
         default:
             return isJSONScalarLine(trimmed)
         }
+    }
+
+    /// True when a line carries no word outside a string literal.
+    ///
+    /// This is what separates a JSON fragment from a sentence that merely
+    /// OPENS with a brace or bracket. Words inside string literals do not
+    /// count — they are data, and a leaked call is full of them. The JSON
+    /// keywords are allowed through unquoted, since `{"ok": true}` is a
+    /// fragment; a run that stops matching one of them (`"trus"`) is a word.
+    private static func hasNoUnquotedWord(_ line: String) -> Bool {
+        let keywords = ["true", "false", "null"]
+        var inString = false
+        var escaped = false
+        var run = ""
+        for character in line {
+            if escaped { escaped = false; continue }
+            if inString, character == "\\" { escaped = true; continue }
+            if character == "\"" {
+                inString.toggle()
+                run = ""
+                continue
+            }
+            if inString { continue }
+            guard character.isLetter else { run = ""; continue }
+            run.append(character)
+            // One letter is never a word here — `1e5` and a bare `n` in a
+            // truncated `null` both have to pass.
+            guard run.count >= 2 else { continue }
+            let lowered = run.lowercased()
+            if !keywords.contains(where: { $0.hasPrefix(lowered) }) { return false }
+        }
+        return true
     }
 
     /// True for a line that is nothing but a JSON scalar with an optional

@@ -346,4 +346,28 @@ private final class InMemoryKeychain: KeychainStoring, @unchecked Sendable {
         store.removeValue(forKey: account)
         return true
     }
+    @Test("The rejected-key echo is bounded by scalars, not characters")
+    func rejectionEchoBoundsCombiningMarks() throws {
+        // Adversarial review round 11 (codex, blocking): `prefix(80)` counts
+        // grapheme clusters, so one cluster carrying thousands of combining
+        // marks was not bounded at all.
+        let zalgo = "k" + String(repeating: "\u{0301}", count: 20_000)
+        #expect(zalgo.count == 1)   // one grapheme cluster, 20_001 scalars
+        switch NativeToolCallExecutor.normalize(
+            ToolCall(
+                id: "document_1",
+                name: "read_document",
+                arguments: "{\"document_id\":\"00000000-0000-0000-0000-000000000000\",\"\(zalgo)\":1}"
+            ),
+            for: ReadDocumentTool.definition
+        ) {
+        case .success:
+            Issue.record("an unknown key must not normalize")
+        case .failure(let rejection):
+            // 80 scalars of key plus the surrounding copy — not 20 001.
+            #expect(rejection.reason.unicodeScalars.count < 400)
+            #expect(rejection.reason.contains("unknown argument(s)"))
+        }
+    }
+
 }

@@ -726,6 +726,45 @@ struct ToolCallArtifactSuppressionTests {
             == "Let me search those records:")
     }
 
+    @Test("Prose that opens with a brace or bracket stops the run")
+    func braceLedProseIsNotMachineSyntax() {
+        // Adversarial review round 11 (codex, blocking): `{ } ] ,` passed
+        // unconditionally, so a sentence opening with one — "} closes the
+        // object; this is why …" — extended the run and was hidden along with
+        // the example above it.
+        let shapes = [
+            "} closes the object; this is why the call is complete.",
+            "] ends the array, and the rest is up to the tool.",
+            ", separating the two arguments, is easy to miss.",
+            "{ opens it, in case that was not obvious.",
+        ]
+        for tail in shapes {
+            let content = """
+            Here is the call:
+
+            <tool_call>{"name":"search","arguments":{"q":"x"}}</tool_call>
+
+            \(tail)
+            """
+            #expect(ChatMessage.trailingToolCallArtifactProse(in: content) == nil)
+        }
+    }
+
+    @Test("Multi-call and keyword-valued fragments stay in the run")
+    func jsonFragmentLinesStayInTheRun() {
+        // The other half of round 11: an unquoted JSON keyword and a
+        // `},{`-style multi-call boundary are fragments, not sentences.
+        let content = """
+        Searching both indexes:
+
+        <tool_call>
+        [{"name":"search","arguments":{"q":"x","exact": true}},
+        {"name":"search","arguments":{"q":"y","exact": false}}]
+        """
+        #expect(ChatMessage.trailingToolCallArtifactProse(in: content)
+            == "Searching both indexes:")
+    }
+
     @Test("A whole-turn artifact still renders the caption alone")
     func wholeTurnArtifactHasNoProse() {
         let content = "<tool_call>{\"name\": \"search\", \"arguments\": {\"q\": \"x\"}}</tool_call>"
