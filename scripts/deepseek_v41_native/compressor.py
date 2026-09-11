@@ -63,6 +63,12 @@ class Compressor(nn.Module):
         # features. The module call is identical for dense public builds.
         kv = self.wkv(xf)
         score = self.wgate(xf)
+        # Retain this call's unpooled source rows so speculative verification
+        # can restore the one-token partial group after rolling back a chunk.
+        # The arrays are tiny (three source layers x at most six rows x 512).
+        comp_state.pending_start = start_pos
+        comp_state.pending_kv = kv
+        comp_state.pending_score = score
 
         m = start_pos % ratio  # carried tokens of the open group
         if m:
@@ -90,3 +96,27 @@ class CompressorState:
     def __init__(self, bsz: int, ratio: int, head_dim: int):
         self.kv_state = mx.zeros((bsz, ratio, head_dim), dtype=mx.float32)
         self.score_state = mx.full((bsz, ratio, head_dim), NEG_INF, dtype=mx.float32)
+        self.pending_start: int | None = None
+        self.pending_kv: mx.array | None = None
+        self.pending_score: mx.array | None = None
+
+    def rollback(self, offset: int) -> None:
+        """Restore the open compression group at ``offset`` after chunk verify."""
+        remainder = offset % self.kv_state.shape[1]
+        if remainder == 0:
+            return
+        if (
+            self.pending_start is None
+            or self.pending_kv is None
+            or self.pending_score is None
+        ):
+            raise RuntimeError("compression rollback has no pending chunk")
+        first = offset - remainder
+        start = first - self.pending_start
+        if start < 0 or start + remainder > self.pending_kv.shape[1]:
+            raise RuntimeError("compression rollback precedes the pending chunk")
+        self.kv_state[:, :remainder] = self.pending_kv[:, start : start + remainder]
+        self.score_state[:, :remainder] = self.pending_score[
+            :, start : start + remainder
+        ]
+        mx.eval(self.kv_state, self.score_state)

@@ -14,6 +14,7 @@ import mlx.core as mx
 sys.path.insert(0, str(Path(__file__).parents[1] / "scripts"))
 
 from deepseek_v41_native.attention import Attention, GroupedOutputLinear  # noqa: E402
+from deepseek_v41_native.cache import ModelCache  # noqa: E402
 from deepseek_v41_native.compressor import Compressor, CompressorState  # noqa: E402
 from deepseek_v41_native.config import ModelArgs  # noqa: E402
 from deepseek_v41_native.load import reshape_grouped_wo_a  # noqa: E402
@@ -113,3 +114,60 @@ def test_native_model_defaults_to_watchdog_safe_layer_boundaries() -> None:
     )
 
     assert Model(args).eval_interval == 1
+
+
+def test_native_model_captures_configured_dspark_inputs() -> None:
+    args = ModelArgs(
+        dim=64,
+        vocab_size=32,
+        n_layers=0,
+        n_heads=1,
+        head_dim=64,
+        rope_head_dim=32,
+        hc_mult=1,
+        compress_ratios=(),
+        dspark_target_layer_ids=(0,),
+    )
+    model = Model(args)
+
+    class IdentityBlock:
+        engram = None
+
+        def __call__(self, h, pre_mix, *_args):
+            return h, pre_mix
+
+    model.layers = [IdentityBlock()]
+    cache = model.make_cache(max_seq_len=8)
+
+    logits, hidden = model(
+        mx.array([[1, 2]]), cache, return_dspark_hidden=True
+    )
+    mx.eval(logits, hidden)
+
+    assert logits.shape == (1, 2, args.vocab_size)
+    assert hidden.shape == (1, 2, args.dim)
+
+
+def test_speculative_cache_rollback_restores_partial_compressor_group() -> None:
+    args = ModelArgs(
+        dim=64,
+        n_layers=1,
+        head_dim=32,
+        compress_ratios=(2,),
+        kv_source_layers=(0,),
+    )
+    cache = ModelCache(args, max_seq_len=16)
+    state = cache.layers[0].comp_state
+    assert state is not None
+    state.pending_start = 4
+    state.pending_kv = mx.arange(3 * 32).reshape(1, 3, 32).astype(mx.float32)
+    state.pending_score = state.pending_kv + 100
+    cache.offset = 7
+
+    cache.rollback(5)
+
+    assert cache.offset == 5
+    assert mx.array_equal(state.kv_state[:, :1], state.pending_kv[:, :1]).item()
+    assert mx.array_equal(
+        state.score_state[:, :1], state.pending_score[:, :1]
+    ).item()

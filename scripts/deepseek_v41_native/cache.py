@@ -92,3 +92,12 @@ class ModelCache:
             if args.engram_layer_ids
             else None
         )
+
+    def rollback(self, offset: int) -> None:
+        """Discard a speculative suffix while retaining its correct prefix."""
+        if not 0 <= offset <= self.offset:
+            raise ValueError(f"rollback offset {offset} outside [0, {self.offset}]")
+        for layer in self.layers:
+            if layer.comp_state is not None:
+                layer.comp_state.rollback(offset)
+        self.offset = offset
