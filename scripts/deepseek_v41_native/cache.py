@@ -83,7 +83,7 @@ class ModelCache:
     ):
         self.max_seq_len = max_seq_len or min(args.max_seq_len, 4096)
         self.offset = 0
-        self.rollback_start = 0
+        self.rollback_start: int | None = None
         self.layers = [
             LayerCache(bsz, args, i, self.max_seq_len, dtype)
             for i in range(args.n_layers)
@@ -96,7 +96,10 @@ class ModelCache:
 
     def rollback(self, offset: int) -> None:
         """Discard a suffix from the most recent speculative target call."""
-        if not self.rollback_start <= offset <= self.offset:
+        if (
+            self.rollback_start is None
+            or not self.rollback_start <= offset <= self.offset
+        ):
             raise ValueError(
                 f"rollback offset {offset} outside latest forward "
                 f"[{self.rollback_start}, {self.offset}]"
@@ -105,6 +108,7 @@ class ModelCache:
             if layer.comp_state is not None:
                 layer.comp_state.rollback(offset)
         self.offset = offset
+        self.disable_rollback()
 
     def begin_forward(self) -> None:
         """Open the only rollback window supported by this cache."""
@@ -118,3 +122,10 @@ class ModelCache:
                 )
         if snapshots:
             mx.eval(*snapshots)
+
+    def disable_rollback(self) -> None:
+        """Close any prior rollback window without synchronizing device work."""
+        self.rollback_start = None
+        for layer in self.layers:
+            if layer.comp_state is not None:
+                layer.comp_state.disable_rollback()

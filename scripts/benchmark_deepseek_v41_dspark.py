@@ -468,6 +468,7 @@ def _run_batched_dspark(
             cache,
             last_logit_only=False,
             return_dspark_hidden=True,
+            enable_rollback=True,
         )
         mx.eval(target_logits, target_hidden)
         target_seconds += time.perf_counter() - started

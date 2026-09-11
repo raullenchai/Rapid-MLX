@@ -134,6 +134,32 @@ def test_overlay_rejects_reserved_mtp_shard_collision(tmp_path):
     assert not (tmp_path / "output").exists()
 
 
+def test_overlay_rejects_existing_mtp_tensor_mapping(tmp_path, monkeypatch):
+    module = _load_script()
+    source, target = _write_overlay_inputs(tmp_path, "model-1.safetensors")
+    (target / "model.safetensors.index.json").write_text(
+        json.dumps(
+            {
+                "weight_map": {
+                    "head.weight": "model-1.safetensors",
+                    "mtp.test": "model-1.safetensors",
+                }
+            }
+        )
+    )
+    monkeypatch.setattr(module, "CheckpointIndex", lambda _path: object())
+    monkeypatch.setattr(
+        module,
+        "_mtp_plans",
+        lambda _index: [SimpleNamespace(name="mtp.test", nbytes=1)],
+    )
+
+    with pytest.raises(ValueError, match="already contains MTP tensors"):
+        module.build_overlay(source, target, tmp_path / "output")
+
+    assert not (tmp_path / "output").exists()
+
+
 def test_overlay_failure_does_not_delete_destination_created_during_build(
     tmp_path, monkeypatch
 ):
@@ -159,4 +185,39 @@ def test_overlay_failure_does_not_delete_destination_created_during_build(
         module.build_overlay(source, target, destination)
 
     assert (destination / "other-owner.txt").read_text() == "keep"
+    assert not list(tmp_path.glob(".output.staging-*"))
+
+
+def test_overlay_publish_failure_removes_owned_destination(tmp_path, monkeypatch):
+    module = _load_script()
+    source, target = _write_overlay_inputs(tmp_path, "model-1.safetensors")
+    (target / "model-1.safetensors").write_bytes(b"target")
+    destination = tmp_path / "output"
+    monkeypatch.setattr(module, "CheckpointIndex", lambda _path: object())
+    monkeypatch.setattr(
+        module,
+        "_mtp_plans",
+        lambda _index: [SimpleNamespace(name="mtp.test", nbytes=1)],
+    )
+    monkeypatch.setattr(module, "write_safetensors", lambda path, _plans: path.touch())
+    monkeypatch.setattr(module, "_dspark_config", lambda _target, _source: {})
+    monkeypatch.setattr(module, "_inference_config", lambda _config: {})
+
+    original_rename = Path.rename
+    moves = 0
+
+    def fail_second_move(path, target_path):
+        nonlocal moves
+        if path.parent.name.startswith(".output.staging-"):
+            moves += 1
+            if moves == 2:
+                raise RuntimeError("synthetic publish failure")
+        return original_rename(path, target_path)
+
+    monkeypatch.setattr(Path, "rename", fail_second_move)
+
+    with pytest.raises(RuntimeError, match="synthetic publish failure"):
+        module.build_overlay(source, target, destination)
+
+    assert not destination.exists()
     assert not list(tmp_path.glob(".output.staging-*"))

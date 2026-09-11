@@ -144,10 +144,14 @@ class Model(nn.Module):
         cache: ModelCache,
         last_logit_only: bool = False,
         return_dspark_hidden: bool = False,
+        enable_rollback: bool = False,
     ) -> mx.array | tuple[mx.array, mx.array]:
         """input_ids [b, n] continue the sequence at cache.offset. Advances the cache."""
         start_pos = cache.offset
-        cache.begin_forward()
+        if enable_rollback:
+            cache.begin_forward()
+        elif cache.rollback_start is not None:
+            cache.disable_rollback()
         b, n = input_ids.shape
 
         hashes = None

@@ -123,11 +123,18 @@ def build_overlay(source: Path, target: Path, destination: Path) -> dict:
         raise ValueError(f"target checkpoint already uses reserved shard {mtp_shard}")
 
     plans = _mtp_plans(CheckpointIndex(source))
+    target_names = set(target_weights)
+    generated_names = {plan.name for plan in plans}
+    collisions = sorted(target_names & generated_names)
+    if collisions:
+        preview = ", ".join(collisions[:3])
+        raise ValueError(f"target checkpoint already contains MTP tensors: {preview}")
     mtp_bytes = sum(plan.nbytes for plan in plans)
     destination.parent.mkdir(parents=True, exist_ok=True)
     staging = Path(
         tempfile.mkdtemp(prefix=f".{destination.name}.staging-", dir=destination.parent)
     )
+    owns_destination = False
     try:
         for shard in sorted(target_shards):
             source_shard = target / shard
@@ -168,8 +175,10 @@ def build_overlay(source: Path, target: Path, destination: Path) -> dict:
             f"- Target artifact: `{target.name}`\n"
         )
         # mkdir is the portable atomic no-replace reservation for a directory.
-        # A marker keeps an interrupted publication visibly incomplete.
+        # Once it succeeds this invocation owns the directory, so a failed
+        # publication can safely remove only that directory and be retried.
         destination.mkdir()
+        owns_destination = True
         incomplete = destination / ".rapid-overlay-incomplete"
         incomplete.touch(exist_ok=False)
         for child in staging.iterdir():
@@ -177,7 +186,9 @@ def build_overlay(source: Path, target: Path, destination: Path) -> dict:
         staging.rmdir()
         incomplete.unlink()
     except BaseException:
-        shutil.rmtree(staging)
+        shutil.rmtree(staging, ignore_errors=True)
+        if owns_destination and destination.exists():
+            shutil.rmtree(destination)
         raise
     return {
         "destination": str(destination),

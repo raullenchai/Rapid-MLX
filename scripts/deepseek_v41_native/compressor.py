@@ -66,9 +66,10 @@ class Compressor(nn.Module):
         # Retain this call's unpooled source rows so speculative verification
         # can restore the one-token partial group after rolling back a chunk.
         # The arrays are tiny (three source layers x at most six rows x 512).
-        comp_state.pending_start = start_pos
-        comp_state.pending_kv = kv
-        comp_state.pending_score = score
+        if comp_state.rollback_enabled:
+            comp_state.pending_start = start_pos
+            comp_state.pending_kv = kv
+            comp_state.pending_score = score
 
         m = start_pos % ratio  # carried tokens of the open group
         if m:
@@ -102,15 +103,19 @@ class CompressorState:
         self.snapshot_offset: int | None = None
         self.snapshot_kv: mx.array | None = None
         self.snapshot_score: mx.array | None = None
+        self.rollback_enabled = False
 
     def begin_forward(self, offset: int) -> None:
         """Snapshot the carried partial group for latest-forward rollback."""
+        self.rollback_enabled = True
         self.snapshot_offset = offset
         self.snapshot_kv = self.kv_state + mx.zeros_like(self.kv_state)
         self.snapshot_score = self.score_state + mx.zeros_like(self.score_state)
 
     def rollback(self, offset: int) -> None:
         """Restore the open compression group at ``offset`` after chunk verify."""
+        if not self.rollback_enabled:
+            raise RuntimeError("compression rollback was not enabled for this forward")
         if offset == self.snapshot_offset:
             if self.snapshot_kv is None or self.snapshot_score is None:
                 raise RuntimeError("compression rollback has no forward snapshot")
@@ -139,3 +144,12 @@ class CompressorState:
             :, start : start + remainder
         ]
         mx.eval(self.kv_state, self.score_state)
+
+    def disable_rollback(self) -> None:
+        self.rollback_enabled = False
+        self.pending_start = None
+        self.pending_kv = None
+        self.pending_score = None
+        self.snapshot_offset = None
+        self.snapshot_kv = None
+        self.snapshot_score = None

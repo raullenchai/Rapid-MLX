@@ -189,17 +189,20 @@ def test_speculative_cache_rollback_restores_partial_compressor_group() -> None:
     cache = ModelCache(args, max_seq_len=16)
     state = cache.layers[0].comp_state
     assert state is not None
+    cache.offset = 4
+    cache.begin_forward()
     state.pending_start = 4
     state.pending_kv = mx.arange(3 * 32).reshape(1, 3, 32).astype(mx.float32)
     state.pending_score = state.pending_kv + 100
-    cache.rollback_start = 4
+    expected_kv = state.pending_kv[:, :1]
+    expected_score = state.pending_score[:, :1]
     cache.offset = 7
 
     cache.rollback(5)
 
     assert cache.offset == 5
-    assert mx.array_equal(state.kv_state[:, :1], state.pending_kv[:, :1]).item()
-    assert mx.array_equal(state.score_state[:, :1], state.pending_score[:, :1]).item()
+    assert mx.array_equal(state.kv_state[:, :1], expected_kv).item()
+    assert mx.array_equal(state.score_state[:, :1], expected_score).item()
 
 
 def test_speculative_cache_rollback_rejects_older_forward() -> None:
@@ -214,6 +217,7 @@ def test_speculative_cache_rollback_rejects_older_forward() -> None:
 
 def test_compressor_rollback_to_group_boundary_clears_partial_state() -> None:
     state = CompressorState(bsz=1, ratio=2, head_dim=4)
+    state.begin_forward(3)
     state.kv_state[:] = 7
     state.score_state[:] = 9
 
@@ -235,3 +239,24 @@ def test_compressor_rollback_to_forward_start_restores_carried_partial() -> None
 
     assert mx.all(state.kv_state[:, :1] == 3).item()
     assert mx.all(state.score_state[:, :1] == 5).item()
+
+
+def test_model_only_snapshots_cache_when_rollback_is_enabled(monkeypatch) -> None:
+    args = ModelArgs(dim=64, n_layers=0, head_dim=32, compress_ratios=())
+    model = Model(args)
+    cache = model.make_cache(max_seq_len=8)
+    calls = 0
+    original = cache.begin_forward
+
+    def record_begin_forward():
+        nonlocal calls
+        calls += 1
+        original()
+
+    monkeypatch.setattr(cache, "begin_forward", record_begin_forward)
+
+    model(mx.array([[1]]), cache)
+    assert calls == 0
+
+    model(mx.array([[1]]), cache, enable_rollback=True)
+    assert calls == 1
