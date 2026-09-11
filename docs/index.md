@@ -61,6 +61,7 @@ GPU acceleration to local AI workloads by integrating:
 
 ### Benchmarks
 - [LLM Benchmarks](benchmarks/llm.md)
+- [M4 Pro 48 GB Community Benchmark](benchmarks/m4-pro-48gb-community.md)
 - [Image Benchmarks](benchmarks/image.md)
 - [Video Benchmarks](benchmarks/video.md)
 - [Audio Benchmarks](benchmarks/audio.md)
