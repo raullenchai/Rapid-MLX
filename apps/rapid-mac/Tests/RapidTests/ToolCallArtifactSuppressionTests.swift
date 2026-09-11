@@ -539,6 +539,28 @@ struct ToolCallArtifactSuppressionTests {
         #expect(ChatMessage.fencedRanges(in: "   ```\nx\n   ```").count == 1)
     }
 
+    @Test("An UNFENCED inline example mid-sentence is not an artifact")
+    func trailingInlineExampleIsNotAnArtifact() {
+        // Adversarial review round 4 (codex, blocking): the payload gate alone
+        // still matched an answer that documents a call inline without a
+        // fence, and truncated the sentence at the tag. Envelopes must open a
+        // line now — which every real leak shape does, the dogfood repro
+        // included.
+        for content in [
+            "Use <tool_call>{\"name\":\"search\"}</tool_call> to run a search.",
+            "Mistral writes [TOOL_CALLS] [{\"name\":\"search\"}] on one line.",
+            "The fragment is <function=get_weather>{\"city\":\"NYC\"} in that dialect.",
+        ] {
+            #expect(ChatMessage.trailingToolCallArtifactProse(in: content) == nil)
+            #expect(!ChatMessage.shouldSuppressToolCallArtifact(
+                content: content, toolCalls: [], finishReason: "stop", toolsRequested: true))
+        }
+        // Indented is still "opening a line" — a leak inside a list item.
+        #expect(ChatMessage.trailingToolCallArtifactProse(
+            in: "Running it:\n  <tool_call> {\"name\":\"search\",\"arguments\":{"
+        ) == "Running it:")
+    }
+
     @Test("A whole-turn artifact still renders the caption alone")
     func wholeTurnArtifactHasNoProse() {
         let content = "<tool_call>{\"name\": \"search\", \"arguments\": {\"q\": \"x\"}}</tool_call>"

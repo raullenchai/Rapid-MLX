@@ -1172,9 +1172,12 @@ struct ChatMessage: Identifiable, Codable, Equatable, Hashable {
     /// replaced by ``toolCallArtifactSuppressedCaptionCopy``.
     ///
     /// Conservative in the same three ways as the leading check:
-    ///   * The marker must be followed by that format's payload — the same
-    ///     ``leadingEnvelopeLeak`` gate, applied to the tail — so an answer
-    ///     that ENDS by explaining `<tool_call>` in prose is left alone.
+    ///   * The marker must OPEN A LINE and be followed by that format's
+    ///     payload — the ``leadingEnvelopeLeak`` gate, applied to the tail,
+    ///     plus a block anchor — so an answer that explains `<tool_call>` in
+    ///     a sentence is left alone whether or not it fences the example.
+    ///     (The DeepSeek U+2581 token is exempt from the anchor: it never
+    ///     appears in prose, so there is no inline shape to protect.)
     ///   * A marker inside a fenced code block is never a leak. An answer to
     ///     "show me what a tool call looks like" puts its example in a fence,
     ///     and that fence is the whole point of asking. Fences are parsed
@@ -1198,30 +1201,36 @@ struct ChatMessage: Identifiable, Codable, Equatable, Hashable {
         // the sentence onward under the loose gate, and eat the explanation
         // along with the example.
         let patterns = [
-            #"</?(tool_call|function_call)[^>]*>\s*[\{\[<]"#,
-            // `<function=NAME>` must OPEN a payload: JSON, or the nested
-            // `<parameter=` block the llama/qwen fragment shape uses. The
-            // bare tag is not enough — `Use <parameter=name> to identify the
-            // field` is ordinary prose ABOUT the syntax, and truncating an
-            // answer there is exactly the false positive this detector must
-            // not have. (The leading check can keep accepting the bare
-            // prefix: prose never OPENS with `<function=`.)
-            #"<function=[^<>\s]+>\s*(?:[\{\[]|<parameter=)"#,
-            // A `<parameter=…>` block that stands on its own line AND is
-            // closed by `</parameter>`. Both halves are required for the
-            // same reason: inline inside a sentence it is documentation.
+            // Every XML/bracket envelope must OPEN A LINE (leading whitespace
+            // allowed). A leaked call is emitted as its own block after the
+            // model stops writing prose; an answer that documents the syntax
+            // does it mid-sentence — `Use <tool_call>{"name":"search"}` — and
+            // truncating that sentence at the tag is the false positive this
+            // detector must not have. The dogfood repro and every other real
+            // leak shape put the envelope on its own line.
+            #"(?m)^[ \t]*</?(tool_call|function_call)[^>]*>\s*[\{\[<]"#,
+            // `<function=NAME>` must also OPEN a payload: JSON, or the nested
+            // `<parameter=` block the llama/qwen fragment shape uses. The bare
+            // tag is not enough — prose about the syntax carries it too. (The
+            // leading check can keep accepting the bare prefix: prose never
+            // OPENS a turn with `<function=`.)
+            #"(?m)^[ \t]*<function=[^<>\s]+>\s*(?:[\{\[]|<parameter=)"#,
+            // A `<parameter=…>` block on its own line AND closed by
+            // `</parameter>`. Both halves are required for the same reason:
+            // inline inside a sentence it is documentation.
             #"(?m)^[ \t]*<parameter=[^<>\s]+>[\s\S]{0,4096}?</parameter>"#,
-            #"\[TOOL_CALLS\]\s*[\{\[]"#,
-            // The `<\u{FF5C}` opener is folded into the match so the prose
-            // above it does not keep a dangling half-tag.
+            #"(?m)^[ \t]*\[TOOL_CALLS\]\s*[\{\[]"#,
+            // The DeepSeek marker is deliberately NOT line-anchored: its
+            // U+2581 separators never occur in human prose, so there is no
+            // inline-documentation shape to protect and a real emit can follow
+            // the last prose character directly. The `<\u{FF5C}` opener is folded
+            // into the match so the prose above it does not keep a dangling
+            // half-tag.
             "[<\u{FF5C}]*tool\u{2581}calls\u{2581}begin",
         ]
 
         // Fences first: one line pass, reused by every pattern below.
         let fenced = fencedRanges(in: content)
-        func fence(containing index: String.Index) -> Range<String.Index>? {
-            fenced.first { $0.contains(index) }
-        }
 
         // The earliest UNFENCED candidate across every pattern.
         //
@@ -1236,13 +1245,22 @@ struct ChatMessage: Identifiable, Codable, Equatable, Hashable {
         var earliest: String.Index?
         for pattern in patterns {
             var from = content.startIndex
+            // `fenced` is ascending and disjoint and a pattern's matches only
+            // move forward, so one cursor walks the fence list ONCE per
+            // pattern. Asking `fenced.first { … }` per match instead rescans
+            // every range from the start, which is quadratic in the number of
+            // fenced examples — on the transcript render path.
+            var block = 0
             while from < content.endIndex,
                   let found = content.range(
                       of: pattern, options: [.regularExpression],
                       range: from..<content.endIndex
                   ) {
-                if let block = fence(containing: found.lowerBound) {
-                    from = max(block.upperBound, content.index(after: found.lowerBound))
+                while block < fenced.count, fenced[block].upperBound <= found.lowerBound {
+                    block += 1
+                }
+                if block < fenced.count, fenced[block].contains(found.lowerBound) {
+                    from = max(fenced[block].upperBound, content.index(after: found.lowerBound))
                     continue
                 }
                 // Matches arrive in increasing order, so the first unfenced
