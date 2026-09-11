@@ -11,7 +11,7 @@ enum ReadDocumentTool {
     static let grepTimeBudget: TimeInterval = 2.0
     static let outlineTokenBudget = 2_000
     static let maxOutlineRows = 400
-    /// Hard cap on a single outline row's title, in characters.
+    /// Hard cap on a single outline row's title, in Unicode SCALARS.
     ///
     /// A row's title comes from the document — a PDF bookmark or an inferred
     /// heading line — so its length is attacker- or accident-controlled. The
@@ -20,6 +20,12 @@ enum ReadDocumentTool {
     /// cap that one row could be a 200 KB bookmark title that blows through
     /// ``outlineTokenBudget`` and eats the model's context. Clamping every
     /// title before the budget math also keeps that math honest.
+    ///
+    /// Scalars, not characters: `String.count` measures grapheme clusters, so
+    /// a single cluster carrying thousands of combining marks — one
+    /// "character" — walks straight through a character cap. A scalar cap
+    /// bounds the payload for any input, and for ordinary titles (Latin, CJK,
+    /// one scalar per character) the two measures agree.
     static let maxOutlineTitleLength = 160
 
     static let definition = ToolDefinition(
@@ -232,9 +238,12 @@ enum ReadDocumentTool {
         // required to return. The offset is what the model actually needs
         // from a row; a truncated title still names the section.
         let rows = unclamped.map { node -> DocumentContentCache.OutlineNode in
-            guard node.title.count > maxOutlineTitleLength else { return node }
+            let scalars = node.title.unicodeScalars
+            guard scalars.count > maxOutlineTitleLength else { return node }
+            let head = String(String.UnicodeScalarView(
+                scalars.prefix(maxOutlineTitleLength - 1)))
             return DocumentContentCache.OutlineNode(
-                title: String(node.title.prefix(maxOutlineTitleLength - 1)) + "…",
+                title: head + "…",
                 depth: node.depth, page: node.page, offset: node.offset
             )
         }

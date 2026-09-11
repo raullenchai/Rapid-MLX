@@ -1252,13 +1252,29 @@ struct ReadDocumentToolTests {
         }
         let (kept, _) = ReadDocumentTool.budgeted(rows)
         #expect(!kept.isEmpty)
-        #expect(kept.allSatisfy { $0.title.count <= ReadDocumentTool.maxOutlineTitleLength })
+        #expect(kept.allSatisfy {
+            $0.title.unicodeScalars.count <= ReadDocumentTool.maxOutlineTitleLength
+        })
         #expect(kept.allSatisfy { $0.title.hasSuffix("…") })
         // The offset — what the model actually needs from a row — survives.
         #expect(kept.map(\.offset) == Array(0..<kept.count))
         let cost = TokenEstimate.tokens(in: kept.map(\.title).joined(separator: "\n"))
             + kept.count * 12
         #expect(cost <= ReadDocumentTool.outlineTokenBudget)
+    }
+
+    @Test("budgeted() clamps by scalars, so combining marks cannot escape it")
+    func budgetedClampsCombiningMarks() {
+        // Adversarial review round 9 (codex, blocking): `String.count` measures
+        // grapheme clusters, so ONE cluster carrying thousands of combining
+        // marks read as one character and walked through a character cap.
+        let zalgo = "A" + String(repeating: "\u{0301}", count: 20_000)
+        #expect(zalgo.count == 1)   // one grapheme cluster, 20_001 scalars
+        let rows = [DocumentContentCache.OutlineNode(title: zalgo, depth: 0, offset: 0)]
+        let (kept, _) = ReadDocumentTool.budgeted(rows)
+        #expect(kept.count == 1)
+        #expect(kept[0].title.unicodeScalars.count <= ReadDocumentTool.maxOutlineTitleLength)
+        #expect(kept[0].offset == 0)
     }
 
     @Test("budgeted() never returns an empty outline")
