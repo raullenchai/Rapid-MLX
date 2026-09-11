@@ -201,15 +201,15 @@ def test_inject_loads_real_sidecar_weights(loaded_model):
 
 
 def test_mtp_greedy_fixed_depth_consistency_against_k0(loaded_model):
-    """Greedy divergence from K=0 must not move with fixed draft depth.
+    """Greedy output must be identical across fixed speculative depths.
 
     K=0 through the same generator is the reference for the current
     batched-consistency contract. Fixed-K verification is allowed to differ
     because its ``q_len>=2`` target forward can flip a near-tied argmax versus
-    K=0's ``q_len=1`` forward under quantized weights. That shape-driven first
-    divergence should be identical at K=1/2/3. A depth-dependent first
-    divergence would instead point back toward chained accept or rollback
-    behavior and fail this guard.
+    K=0's ``q_len=1`` forward under quantized weights. The K=1/2/3 arms must
+    nevertheless produce the same complete token sequence: a shared first
+    divergence followed by depth-dependent drift would point back toward
+    chained accept or rollback behavior and fail this guard.
 
     The full eight-prompt benchmark set and 128-token horizon deliberately
     include the near ties that the old three-prompt, 20-token byte-equality
@@ -261,7 +261,8 @@ def test_mtp_greedy_fixed_depth_consistency_against_k0(loaded_model):
         assert int(k0_timing.get("verify_calls", 0.0)) == 0
         assert len(k0_tokens) == _CONSISTENCY_N_TOKENS
 
-        by_depth = {}
+        tokens_by_depth: dict[int, list[int]] = {}
+        divergence_by_depth = {}
         for max_k in (1, 2, 3):
             mtp_tokens, mtp_counter, mtp_timing = run(prompt, max_k)
             assert mtp_counter.attempts > 0, (
@@ -269,12 +270,17 @@ def test_mtp_greedy_fixed_depth_consistency_against_k0(loaded_model):
             )
             assert int(mtp_timing.get("verify_calls", 0.0)) > 0
             assert len(mtp_tokens) == _CONSISTENCY_N_TOKENS
-            by_depth[max_k] = first_divergence(k0_tokens, mtp_tokens)
+            tokens_by_depth[max_k] = mtp_tokens
+            divergence_by_depth[max_k] = first_divergence(k0_tokens, mtp_tokens)
 
-        assert len(set(by_depth.values())) == 1, (
-            f"First K=0 divergence changed with fixed draft depth for "
-            f"{prompt[:40]!r}: {by_depth}. This is not explained by the "
-            f"depth-independent q_len=1 versus q_len>=2 numerical fork."
+        reference_tokens = tokens_by_depth[1]
+        assert all(
+            tokens == reference_tokens for tokens in tokens_by_depth.values()
+        ), (
+            f"Greedy output changed with fixed draft depth for {prompt[:40]!r}; "
+            f"first K=0 divergences: {divergence_by_depth}. This is not "
+            f"explained by the depth-independent q_len=1 versus q_len>=2 "
+            f"numerical fork."
         )
 
 
