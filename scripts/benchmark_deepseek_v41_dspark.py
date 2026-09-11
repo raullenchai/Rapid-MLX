@@ -11,6 +11,7 @@ from __future__ import annotations
 import argparse
 import contextlib
 import importlib
+import importlib.util
 import json
 import os
 import sys
@@ -31,6 +32,43 @@ BOS = "<｜begin▁of▁sentence｜>"
 USER = "<｜User｜>"
 ASSISTANT = "<｜Assistant｜>"
 CHAT_START = "</think>"
+
+
+def _load_module_file(name: str, path: Path):
+    path = path.absolute()
+    if not path.is_file():
+        raise FileNotFoundError(path)
+    spec = importlib.util.spec_from_file_location(name, path)
+    if spec is None or spec.loader is None:
+        raise ImportError(f"cannot load checkpoint runtime module: {path}")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[name] = module
+    spec.loader.exec_module(module)
+    if Path(module.__file__).absolute() != path:
+        raise ImportError(f"checkpoint runtime resolved outside requested file: {path}")
+    return module
+
+
+def _load_checkpoint_runtime(root: Path):
+    """Load the two trusted files exactly, without ambient module fallback."""
+    root = root.absolute()
+    if not root.is_dir():
+        raise NotADirectoryError(root)
+    previous_runtime = sys.modules.get("runtime")
+    previous_dspark = sys.modules.get("_rapid_checkpoint_dspark")
+    try:
+        runtime = _load_module_file("runtime", root / "runtime.py")
+        dspark = _load_module_file("_rapid_checkpoint_dspark", root / "dspark.py")
+    finally:
+        if previous_runtime is None:
+            sys.modules.pop("runtime", None)
+        else:
+            sys.modules["runtime"] = previous_runtime
+        if previous_dspark is None:
+            sys.modules.pop("_rapid_checkpoint_dspark", None)
+        else:
+            sys.modules["_rapid_checkpoint_dspark"] = previous_dspark
+    return runtime, dspark
 
 
 def _prompt(text: str) -> str:
@@ -149,6 +187,10 @@ def _pin_mtp_with_headroom(weights, reserve_gb: float = 8.0) -> int:
     return total
 
 
+def _dspark_topk(config: dict) -> int:
+    return int(config["dspark_num_experts_per_tok"])
+
+
 def _install_packed_mtp_moe(adapter) -> int:
     """Pack per-expert DSpark tensors and replace its serial Python MoE loop."""
     weights = adapter.w
@@ -191,7 +233,7 @@ def _install_packed_mtp_moe(adapter) -> int:
             @ self.w.read(base + ".gate.weight").astype(mx.float32).T
         )
         scores = mx.sqrt(mx.logaddexp(logits, mx.zeros_like(logits)))
-        topk = config["num_experts_per_tok"]
+        topk = _dspark_topk(config)
         picks = mx.argsort(scores + self.w.read(base + ".gate.bias"), axis=-1)[
             ..., -topk:
         ]
@@ -591,9 +633,9 @@ def main() -> None:
             "refusing to execute checkpoint-bundled Python without "
             "--trust-checkpoint-runtime"
         )
-    sys.path.insert(0, str(args.checkpoint_runtime.resolve()))
-    checkpoint_runtime = importlib.import_module("runtime")
-    dspark_module = importlib.import_module("dspark")
+    checkpoint_runtime, dspark_module = _load_checkpoint_runtime(
+        args.checkpoint_runtime
+    )
 
     started = time.perf_counter()
     model, _ = load(

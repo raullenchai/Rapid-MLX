@@ -4,6 +4,7 @@ import importlib.util
 import subprocess
 import sys
 from pathlib import Path
+from types import ModuleType
 
 import mlx.core as mx
 
@@ -11,6 +12,19 @@ import mlx.core as mx
 def _load_script():
     path = Path(__file__).parents[1] / "scripts" / "benchmark_deepseek_v41_dspark.py"
     spec = importlib.util.spec_from_file_location("benchmark_deepseek_v41_dspark", path)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def _load_moe_script():
+    path = (
+        Path(__file__).parents[1] / "scripts" / "benchmark_deepseek_v41_moe_kernel.py"
+    )
+    spec = importlib.util.spec_from_file_location(
+        "benchmark_deepseek_v41_moe_kernel", path
+    )
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
@@ -70,3 +84,57 @@ def test_zero_depth_deferred_seed_advances_without_duplicate_output() -> None:
     assert mismatch is None
     assert hit_eos is False
     assert accepted == 0
+
+
+def test_checkpoint_runtime_loads_exact_files_and_restores_ambient_module(
+    tmp_path,
+) -> None:
+    module = _load_script()
+    (tmp_path / "runtime.py").write_text("MARKER = 'requested'\n")
+    (tmp_path / "dspark.py").write_text(
+        "from runtime import MARKER\nclass DSpark: pass\n"
+    )
+    ambient = ModuleType("runtime")
+    ambient.MARKER = "ambient"
+    previous = sys.modules.get("runtime")
+    sys.modules["runtime"] = ambient
+    try:
+        runtime, dspark = module._load_checkpoint_runtime(tmp_path)
+        assert runtime.MARKER == "requested"
+        assert dspark.MARKER == "requested"
+        assert sys.modules["runtime"] is ambient
+    finally:
+        if previous is None:
+            sys.modules.pop("runtime", None)
+        else:
+            sys.modules["runtime"] = previous
+
+
+def test_packed_mtp_uses_dspark_specific_topk() -> None:
+    module = _load_script()
+    config = {"num_experts_per_tok": 6, "dspark_num_experts_per_tok": 3}
+
+    assert module._dspark_topk(config) == 3
+
+
+def test_moe_layer_loader_merges_indexed_shards(tmp_path, monkeypatch) -> None:
+    module = _load_moe_script()
+    prefix = "layers.20.ffn."
+    index = {
+        prefix + "gate.weight": "model-1.safetensors",
+        prefix + "experts.weight": "model-2.safetensors",
+    }
+    contents = {
+        "model-1.safetensors": {prefix + "gate.weight": "gate"},
+        "model-2.safetensors": {prefix + "experts.weight": "experts"},
+    }
+    monkeypatch.setattr(
+        module.mx,
+        "load",
+        lambda path: contents[Path(path).name],
+    )
+
+    assert module._load_prefix_items(tmp_path, index, prefix) == [
+        ("experts.weight", "experts"),
+        ("gate.weight", "gate"),
+    ]

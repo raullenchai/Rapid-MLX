@@ -138,6 +138,8 @@ def build_overlay(source: Path, target: Path, destination: Path) -> dict:
     try:
         for shard in sorted(target_shards):
             source_shard = target / shard
+            if source_shard.is_symlink():
+                raise ValueError(f"target shard must not be a symlink: {source_shard}")
             if not source_shard.is_file():
                 raise FileNotFoundError(source_shard)
             relative_target = os.path.relpath(source_shard, staging)

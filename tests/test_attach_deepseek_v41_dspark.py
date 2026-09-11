@@ -134,6 +134,25 @@ def test_overlay_rejects_reserved_mtp_shard_collision(tmp_path):
     assert not (tmp_path / "output").exists()
 
 
+def test_overlay_rejects_symlinked_target_shard(tmp_path, monkeypatch):
+    module = _load_script()
+    source, target = _write_overlay_inputs(tmp_path, "model-1.safetensors")
+    outside = tmp_path / "outside.safetensors"
+    outside.write_bytes(b"outside")
+    (target / "model-1.safetensors").symlink_to(outside)
+    monkeypatch.setattr(module, "CheckpointIndex", lambda _path: object())
+    monkeypatch.setattr(
+        module,
+        "_mtp_plans",
+        lambda _index: [SimpleNamespace(name="mtp.test", nbytes=1)],
+    )
+
+    with pytest.raises(ValueError, match="must not be a symlink"):
+        module.build_overlay(source, target, tmp_path / "output")
+
+    assert not (tmp_path / "output").exists()
+
+
 def test_overlay_rejects_existing_mtp_tensor_mapping(tmp_path, monkeypatch):
     module = _load_script()
     source, target = _write_overlay_inputs(tmp_path, "model-1.safetensors")

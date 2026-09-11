@@ -22,6 +22,23 @@ from deepseek_v41_native.config import ModelArgs  # noqa: E402
 from deepseek_v41_native.moe import MoE  # noqa: E402
 
 
+def _load_prefix_items(model_path: Path, index: dict, prefix: str):
+    shards = sorted({shard for key, shard in index.items() if key.startswith(prefix)})
+    if not shards:
+        raise ValueError(f"no checkpoint tensors found for {prefix}")
+    items = {}
+    for shard in shards:
+        weights = mx.load(str(model_path / shard))
+        for key, value in weights.items():
+            if not key.startswith(prefix):
+                continue
+            name = key.removeprefix(prefix)
+            if name in items:
+                raise ValueError(f"duplicate tensor across checkpoint shards: {key}")
+            items[name] = value
+    return sorted(items.items())
+
+
 class HybridPairSwitch(nn.Module):
     """Native affine gate+up pair, stock gather_qmm down projection."""
 
@@ -80,15 +97,7 @@ def _load_layer(model_path: Path, layer_id: int):
         "weight_map"
     ]
     prefix = f"layers.{layer_id}.ffn."
-    shards = sorted({shard for key, shard in index.items() if key.startswith(prefix)})
-    if len(shards) != 1:
-        raise ValueError(f"expected one MoE shard, got {shards}")
-    weights = mx.load(str(model_path / shards[0]))
-    items = [
-        (key.removeprefix(prefix), value)
-        for key, value in weights.items()
-        if key.startswith(prefix)
-    ]
+    items = _load_prefix_items(model_path, index, prefix)
 
     moe = MoE(args)
     quantized = {
