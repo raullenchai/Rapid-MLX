@@ -104,6 +104,9 @@ class CompressorState:
         """Restore the open compression group at ``offset`` after chunk verify."""
         remainder = offset % self.kv_state.shape[1]
         if remainder == 0:
+            self.kv_state[:] = 0
+            self.score_state[:] = NEG_INF
+            mx.eval(self.kv_state, self.score_state)
             return
         if (
             self.pending_start is None

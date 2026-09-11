@@ -178,3 +178,14 @@ def test_speculative_cache_rollback_rejects_older_forward() -> None:
 
     with pytest.raises(ValueError, match="outside latest forward"):
         cache.rollback(3)
+
+
+def test_compressor_rollback_to_group_boundary_clears_partial_state() -> None:
+    state = CompressorState(bsz=1, ratio=2, head_dim=4)
+    state.kv_state[:] = 7
+    state.score_state[:] = 9
+
+    state.rollback(4)
+
+    assert mx.array_equal(state.kv_state, mx.zeros_like(state.kv_state)).item()
+    assert mx.all(mx.isneginf(state.score_state)).item()

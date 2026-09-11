@@ -4,6 +4,7 @@ import importlib.util
 import json
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -50,6 +51,8 @@ def test_dspark_config_flattens_target_and_preserves_separate_experts():
     assert config["num_experts_per_tok"] == 6
     assert config["dspark_n_routed_experts"] == 128
     assert config["dspark_num_experts_per_tok"] == 3
+    assert config["text_config"]["dspark_n_routed_experts"] == 128
+    assert config["text_config"]["dspark_num_experts_per_tok"] == 3
     assert config["rapid_quantization"]["mtp"] is True
 
 
@@ -129,3 +132,31 @@ def test_overlay_rejects_reserved_mtp_shard_collision(tmp_path):
         module.build_overlay(source, target, tmp_path / "output")
 
     assert not (tmp_path / "output").exists()
+
+
+def test_overlay_failure_does_not_delete_destination_created_during_build(
+    tmp_path, monkeypatch
+):
+    module = _load_script()
+    source, target = _write_overlay_inputs(tmp_path, "model-1.safetensors")
+    (target / "model-1.safetensors").write_bytes(b"target")
+    destination = tmp_path / "output"
+    monkeypatch.setattr(module, "CheckpointIndex", lambda _path: object())
+    monkeypatch.setattr(
+        module,
+        "_mtp_plans",
+        lambda _index: [SimpleNamespace(name="mtp.test", nbytes=1)],
+    )
+
+    def fail_after_destination_appears(_path, _plans):
+        destination.mkdir()
+        (destination / "other-owner.txt").write_text("keep")
+        raise RuntimeError("synthetic writer failure")
+
+    monkeypatch.setattr(module, "write_safetensors", fail_after_destination_appears)
+
+    with pytest.raises(RuntimeError, match="synthetic writer failure"):
+        module.build_overlay(source, target, destination)
+
+    assert (destination / "other-owner.txt").read_text() == "keep"
+    assert not list(tmp_path.glob(".output.staging-*"))

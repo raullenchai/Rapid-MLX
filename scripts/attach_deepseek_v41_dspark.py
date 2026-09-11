@@ -13,6 +13,7 @@ import argparse
 import json
 import os
 import shutil
+import tempfile
 from pathlib import Path
 
 from repack_deepseek_v41_native import (
@@ -47,7 +48,7 @@ def _dspark_config(target_config: dict, source_config: dict) -> dict:
     config = {**target_config, **target_text}
     config["model_type"] = "deepseek_v4"
     config["architectures"] = ["DeepseekV4ForCausalLM"]
-    for key in (
+    dspark_keys = (
         "dspark_block_size",
         "dspark_markov_rank",
         "dspark_n_routed_experts",
@@ -55,8 +56,13 @@ def _dspark_config(target_config: dict, source_config: dict) -> dict:
         "dspark_num_experts_per_tok",
         "dspark_target_layer_ids",
         "num_nextn_predict_layers",
-    ):
+    )
+    for key in dspark_keys:
         config[key] = source_text[key]
+    config["text_config"] = {
+        **target_text,
+        **{key: source_text[key] for key in dspark_keys},
+    }
     config["rapid_quantization"] = {
         **target_config.get("rapid_quantization", {}),
         "mtp": True,
@@ -118,28 +124,31 @@ def build_overlay(source: Path, target: Path, destination: Path) -> dict:
 
     plans = _mtp_plans(CheckpointIndex(source))
     mtp_bytes = sum(plan.nbytes for plan in plans)
-    destination.mkdir(parents=True)
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    staging = Path(
+        tempfile.mkdtemp(prefix=f".{destination.name}.staging-", dir=destination.parent)
+    )
     try:
         for shard in sorted(target_shards):
             source_shard = target / shard
             if not source_shard.is_file():
                 raise FileNotFoundError(source_shard)
-            relative_target = os.path.relpath(source_shard, destination)
-            (destination / shard).symlink_to(relative_target)
+            relative_target = os.path.relpath(source_shard, staging)
+            (staging / shard).symlink_to(relative_target)
 
-        write_safetensors(destination / mtp_shard, plans)
+        write_safetensors(staging / mtp_shard, plans)
         weight_map = dict(target_weights)
         weight_map.update({plan.name: mtp_shard for plan in plans})
         config = _dspark_config(target_config, source_config)
         inference = _inference_config(config)
 
-        (destination / "inference").mkdir()
-        (destination / "config.json").write_text(json.dumps(config, indent=2) + "\n")
-        (destination / "inference" / "config.json").write_text(
+        (staging / "inference").mkdir()
+        (staging / "config.json").write_text(json.dumps(config, indent=2) + "\n")
+        (staging / "inference" / "config.json").write_text(
             json.dumps(inference, indent=2) + "\n"
         )
         total_size = int(target_index.get("metadata", {}).get("total_size", 0))
-        (destination / "model.safetensors.index.json").write_text(
+        (staging / "model.safetensors.index.json").write_text(
             json.dumps(
                 {
                     "metadata": {"total_size": total_size + mtp_bytes},
@@ -149,8 +158,8 @@ def build_overlay(source: Path, target: Path, destination: Path) -> dict:
             )
             + "\n"
         )
-        _copy_metadata(target, destination)
-        (destination / "README.md").write_text(
+        _copy_metadata(target, staging)
+        (staging / "README.md").write_text(
             "# Experimental DeepSeek V4.1 REAP + DSpark overlay\n\n"
             "This local benchmark artifact reuses the target checkpoint via "
             "relative symlinks and adds its checkpoint-native three-stage "
@@ -158,8 +167,11 @@ def build_overlay(source: Path, target: Path, destination: Path) -> dict:
             f"- Added DSpark tensor bytes: {mtp_bytes:,}\n"
             f"- Target artifact: `{target.name}`\n"
         )
+        if destination.exists():
+            raise FileExistsError(f"destination appeared during build: {destination}")
+        staging.rename(destination)
     except BaseException:
-        shutil.rmtree(destination)
+        shutil.rmtree(staging)
         raise
     return {
         "destination": str(destination),
