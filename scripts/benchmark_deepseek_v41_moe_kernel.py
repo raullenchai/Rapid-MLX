@@ -18,6 +18,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT))
 sys.path.insert(0, str(REPO_ROOT / "scripts"))
 
+from deepseek_v41_affine_route_qmv import affine2_route_down_qmv  # noqa: E402
 from deepseek_v41_native.config import ModelArgs  # noqa: E402
 from deepseek_v41_native.moe import MoE  # noqa: E402
 
@@ -100,6 +101,35 @@ class HybridPairSwitch(nn.Module):
         )
         x = self.switch._scatter_unsort(x, inv_order, indices.shape)
         return x.squeeze(-2)
+
+
+class StockPairDirectDown(nn.Module):
+    """Preserve stock gate/up numerics and specialize the exact down QMV."""
+
+    def __init__(self, native):
+        super().__init__()
+        self.gate_proj = native.gate_proj
+        self.up_proj = native.up_proj
+        self.down_proj = native.down_proj
+        self.activation = native.activation
+
+    def __call__(self, x, indices):
+        if int(x.shape[0]) * int(indices.shape[-1]) > 36:
+            expanded = mx.expand_dims(x, (-2, -3))
+            up = self.up_proj(expanded, indices)
+            gate = self.gate_proj(expanded, indices)
+            return self.down_proj(self.activation(up, gate), indices).squeeze(-2)
+        expanded = mx.expand_dims(x, (-2, -3))
+        up = self.up_proj(expanded, indices).squeeze(-2)
+        gate = self.gate_proj(expanded, indices).squeeze(-2)
+        activated = self.activation(up, gate)
+        tokens, topk, width = map(int, activated.shape)
+        down = affine2_route_down_qmv(
+            self.down_proj,
+            activated.reshape(tokens * topk, width),
+            indices.reshape(tokens * topk, 1),
+        )
+        return down.reshape(tokens, topk, -1)
 
 
 def _load_layer(model_path: Path, layer_id: int):
@@ -220,6 +250,7 @@ def main():
             ("native_all", native),
             ("hybrid_pair_bm16", HybridPairSwitch(native, switch, 16, 1)),
             ("hybrid_pair_bm32", HybridPairSwitch(native, switch, 32, 2)),
+            ("stock_pair_direct_down", StockPairDirectDown(native)),
         ):
             moe.experts = experts
             output, seconds = _measure(moe, values, args.iterations)

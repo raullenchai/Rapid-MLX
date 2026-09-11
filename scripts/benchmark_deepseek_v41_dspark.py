@@ -27,7 +27,9 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT))
 sys.path.insert(0, str(REPO_ROOT / "scripts"))
 
+from deepseek_v41_affine_route_qmv import affine2_route_down_qmv  # noqa: E402
 from deepseek_v41_native.load import load  # noqa: E402
+from mlx_lm.models.switch_layers import SwitchGLU  # noqa: E402
 
 BOS = "<｜begin▁of▁sentence｜>"
 USER = "<｜User｜>"
@@ -145,6 +147,46 @@ def _install_native_single_stream_moe(model, source_root: Path) -> int:
         for name in ("gate_proj", "up_proj", "down_proj"):
             projection = getattr(experts, name)
             projection.__class__ = switch.QuantizedSwitchLinear
+        replaced += 1
+    return replaced
+
+
+class ExactDirectDownSwitchGLU(SwitchGLU):
+    """Preserve stock gate/up numerics while specializing the down projection."""
+
+    def __call__(self, x, indices):
+        if int(x.shape[0]) * int(indices.shape[-1]) > 36:
+            return super().__call__(x, indices)
+        expanded = mx.expand_dims(x, (-2, -3))
+        up = self.up_proj(expanded, indices).squeeze(-2)
+        gate = self.gate_proj(expanded, indices).squeeze(-2)
+        activated = self.activation(up, gate)
+        tokens, topk, width = map(int, activated.shape)
+        down = affine2_route_down_qmv(
+            self.down_proj,
+            activated.reshape(tokens * topk, width),
+            indices.reshape(tokens * topk, 1),
+        )
+        return down.reshape(tokens, topk, -1)
+
+
+def _install_direct_down_qmv(model) -> int:
+    """Specialize affine-2bit expert down projections without copying weights."""
+
+    experts_by_layer = [layer.ffn.experts for layer in model.layers]
+    unsupported = [
+        type(experts).__name__
+        for experts in experts_by_layer
+        if not isinstance(experts, SwitchGLU)
+    ]
+    if unsupported:
+        raise TypeError(f"unsupported expert module: {unsupported[0]}")
+
+    replaced = 0
+    for experts in experts_by_layer:
+        if type(experts) is ExactDirectDownSwitchGLU:
+            continue
+        experts.__class__ = ExactDirectDownSwitchGLU
         replaced += 1
     return replaced
 
@@ -606,8 +648,8 @@ def _positive_int(value: str) -> int:
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--target", type=Path, required=True)
-    parser.add_argument("--overlay", type=Path, required=True)
-    parser.add_argument("--checkpoint-runtime", type=Path, required=True)
+    parser.add_argument("--overlay", type=Path)
+    parser.add_argument("--checkpoint-runtime", type=Path)
     parser.add_argument("--trust-checkpoint-runtime", action="store_true")
     parser.add_argument("--omlx-source", type=Path)
     parser.add_argument(
@@ -625,6 +667,16 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Fuse target gate/up expert projections after loading.",
     )
+    parser.add_argument(
+        "--direct-down-qmv",
+        action="store_true",
+        help="Use the experimental exact affine-2bit route QMV for target down projections.",
+    )
+    parser.add_argument(
+        "--target-only",
+        action="store_true",
+        help="Run target AR/oracle checks without loading checkpoint draft code.",
+    )
     parser.add_argument("--tokens", type=_positive_int, default=32)
     parser.add_argument("--eval-interval", type=int, default=40)
     parser.add_argument(
@@ -637,6 +689,14 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
+def _validate_mode(args) -> None:
+    if args.target_only and (args.native_moe_only or args.packed_mtp_only):
+        raise SystemExit(
+            "--target-only cannot be combined with --native-moe-only or "
+            "--packed-mtp-only"
+        )
+
+
 def _run_benchmark(args, checkpoint_runtime, dspark_module) -> None:
     started = time.perf_counter()
     model, _ = load(
@@ -645,7 +705,8 @@ def _run_benchmark(args, checkpoint_runtime, dspark_module) -> None:
         fuse_moe_gate_up=args.fuse_target_moe,
     )
     model.eval_interval = args.eval_interval
-    model._dspark_overlay_path = str(args.overlay.resolve())
+    if args.overlay is not None:
+        model._dspark_overlay_path = str(args.overlay.resolve())
     tokenizer = PreTrainedTokenizerFast(
         tokenizer_file=str(args.target.resolve() / "tokenizer.json")
     )
@@ -674,6 +735,20 @@ def _run_benchmark(args, checkpoint_runtime, dspark_module) -> None:
         peak_gb=mx.get_peak_memory() / 1e9,
     )
     print(json.dumps(ar), flush=True)
+
+    if args.direct_down_qmv:
+        replaced = _install_direct_down_qmv(model)
+        direct_tokens, direct = _run_ar(model, input_ids, args.tokens, eos_id=1)
+        direct.update(
+            event="ar_direct_down_qmv",
+            replaced_layers=replaced,
+            output_tokens=direct_tokens,
+            text=tokenizer.decode(direct_tokens),
+            greedy_matches_ar=direct_tokens == ar_tokens,
+            active_gb=mx.get_active_memory() / 1e9,
+            peak_gb=mx.get_peak_memory() / 1e9,
+        )
+        print(json.dumps(direct), flush=True)
 
     if args.native_moe_only:
         if args.omlx_source is None:
@@ -722,6 +797,9 @@ def _run_benchmark(args, checkpoint_runtime, dspark_module) -> None:
             peak_gb=mx.get_peak_memory() / 1e9,
         )
         print(json.dumps(oracle), flush=True)
+
+    if args.target_only:
+        return
 
     dspark_tokens, dspark = _run_serial_dspark(
         model,
@@ -787,6 +865,12 @@ def _run_benchmark(args, checkpoint_runtime, dspark_module) -> None:
 
 def main() -> None:
     args = parse_args()
+    _validate_mode(args)
+    if args.target_only:
+        _run_benchmark(args, None, None)
+        return
+    if args.overlay is None or args.checkpoint_runtime is None:
+        raise SystemExit("--overlay and --checkpoint-runtime are required for DSpark")
     if not args.trust_checkpoint_runtime:
         raise SystemExit(
             "refusing to execute checkpoint-bundled Python without "

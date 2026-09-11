@@ -4,7 +4,7 @@ import importlib.util
 import subprocess
 import sys
 from pathlib import Path
-from types import ModuleType
+from types import ModuleType, SimpleNamespace
 
 import pytest
 
@@ -12,6 +12,7 @@ pytest.importorskip("mlx")
 pytestmark = pytest.mark.requires_mlx
 
 import mlx.core as mx
+from mlx_lm.models.switch_layers import SwitchGLU
 
 
 def _load_script():
@@ -131,6 +132,20 @@ def test_tokens_must_be_positive() -> None:
         module._positive_int("0")
 
 
+@pytest.mark.parametrize("conflict", ["native_moe_only", "packed_mtp_only"])
+def test_target_only_rejects_modes_that_require_other_runtimes(conflict) -> None:
+    module = _load_script()
+    args = SimpleNamespace(
+        target_only=True,
+        native_moe_only=False,
+        packed_mtp_only=False,
+    )
+    setattr(args, conflict, True)
+
+    with pytest.raises(SystemExit, match="cannot be combined"):
+        module._validate_mode(args)
+
+
 def test_packed_mtp_method_binding_does_not_retain_adapter() -> None:
     module = _load_script()
 
@@ -147,6 +162,53 @@ def test_packed_mtp_method_binding_does_not_retain_adapter() -> None:
     del adapter
 
     assert reference() is None
+
+
+def test_direct_down_install_is_atomic_and_idempotent() -> None:
+    module = _load_script()
+    first = SwitchGLU(64, 64, 2, bias=False)
+    second = SwitchGLU(64, 64, 2, bias=False)
+    model = SimpleNamespace(
+        layers=[
+            SimpleNamespace(ffn=SimpleNamespace(experts=first)),
+            SimpleNamespace(ffn=SimpleNamespace(experts=second)),
+        ]
+    )
+
+    assert module._install_direct_down_qmv(model) == 2
+    assert type(first) is module.ExactDirectDownSwitchGLU
+    assert type(second) is module.ExactDirectDownSwitchGLU
+    assert module._install_direct_down_qmv(model) == 0
+
+    valid = SwitchGLU(64, 64, 2, bias=False)
+    invalid = object()
+    mixed = SimpleNamespace(
+        layers=[
+            SimpleNamespace(ffn=SimpleNamespace(experts=valid)),
+            SimpleNamespace(ffn=SimpleNamespace(experts=invalid)),
+        ]
+    )
+    with pytest.raises(TypeError, match="unsupported expert module"):
+        module._install_direct_down_qmv(mixed)
+    assert type(valid) is SwitchGLU
+
+
+def test_direct_down_falls_back_for_prefill_sized_route_batch() -> None:
+    module = _load_script()
+    experts = SwitchGLU(64, 64, 8, bias=False)
+    model = SimpleNamespace(
+        layers=[SimpleNamespace(ffn=SimpleNamespace(experts=experts))]
+    )
+    inputs = mx.random.normal((7, 64))
+    indices = mx.broadcast_to(mx.arange(6, dtype=mx.uint32), (7, 6))
+    expected = experts(inputs, indices)
+    mx.eval(expected)
+
+    assert module._install_direct_down_qmv(model) == 1
+    actual = experts(inputs, indices)
+    mx.eval(actual)
+
+    assert mx.array_equal(actual, expected).item()
 
 
 def test_moe_layer_loader_merges_indexed_shards(tmp_path, monkeypatch) -> None:

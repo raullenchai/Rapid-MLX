@@ -90,6 +90,45 @@ only 1.0–1.2 extra tokens/block. K5 spends 2.40 seconds of its 2.77-second
 decode in target verification, so further draft-only optimization cannot reach
 20 tok/s and is unlikely to clear 12 tok/s by itself.
 
+## Exact affine 2-bit down-projection follow-up
+
+A route-direct QMV kernel now specializes only the expert down projection. It
+keeps gate/up, activation, routing, and weighted reduction on their stock paths.
+That boundary matters: attempts to specialize gate/up changed BF16 arithmetic,
+while the down-only candidate is element-for-element equal to the stock result.
+
+Real layer 20 measurements, using the same target and six routes per token:
+
+| Input tokens | Routed rows | Layer speedup | Maximum absolute difference |
+| ---: | ---: | ---: | ---: |
+| 1 | 6 | 2.65x | 0 |
+| 4 | 24 | 1.94x | 0 |
+| 5 | 30 | 1.82x | 0 |
+| 6 | 36 | 1.72x | 0 |
+
+Across two full target-only 32-token runs, the specialization reached
+**9.66–9.83 tok/s** from 7.90–7.92 tok/s (+22.2% to +24.0%). The complete
+generated token sequence was identical and peak MLX memory remained 213.5387
+GB. Oracle target throughput was 17.91–18.13, 25.38–25.49, 32.39–33.86, and
+34.49–36.32 rows/s at K2 through K5 respectively. K4 is 30–36% faster than the
+earlier 24.6–24.9 rows/s range.
+
+Representative target-only command:
+
+```shell
+python scripts/benchmark_deepseek_v41_dspark.py \
+  --target <reap12.5-target> \
+  --direct-down-qmv \
+  --target-only \
+  --tokens 32
+```
+
+The original trusted checkpoint runtime was ephemeral and no longer available,
+so the combined DSpark run has not yet been remeasured. Applying the measured
+verification reduction to the previous K4 timing predicts roughly 14–15 tok/s,
+but that is an estimate, not a product claim. Server/catalog integration remains
+blocked on a reproduced end-to-end run and the existing quality qualification.
+
 ## Rejected paths
 
 - Immediate singleton correction erases batching gains. Exact cache rollback
@@ -122,8 +161,8 @@ tok/s and still needs broader numerical/quality qualification.
 
 Reaching 20 tok/s requires a new capability rather than threshold tuning:
 
-1. A persistent affine-2bit MoE verify kernel specialized for six target rows,
-   fusing routing, gate/up, activation, down projection, and weighted reduction.
+1. Combine the exact route-direct down QMV with the checkpoint DSpark runtime
+   and measure the complete K4 path; do not substitute the 14–15 tok/s estimate.
 2. A model-trained MHC-aligned block drafter with materially higher accepted
    length. No compatible V4.1 checkpoint was available during this experiment.
 3. After either exists, re-run a multi-domain, 128-token suite and long-context
