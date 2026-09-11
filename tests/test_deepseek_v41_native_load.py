@@ -139,9 +139,7 @@ def test_native_model_captures_configured_dspark_inputs() -> None:
     model.layers = [IdentityBlock()]
     cache = model.make_cache(max_seq_len=8)
 
-    logits, hidden = model(
-        mx.array([[1, 2]]), cache, return_dspark_hidden=True
-    )
+    logits, hidden = model(mx.array([[1, 2]]), cache, return_dspark_hidden=True)
     mx.eval(logits, hidden)
 
     assert logits.shape == (1, 2, args.vocab_size)
@@ -162,12 +160,21 @@ def test_speculative_cache_rollback_restores_partial_compressor_group() -> None:
     state.pending_start = 4
     state.pending_kv = mx.arange(3 * 32).reshape(1, 3, 32).astype(mx.float32)
     state.pending_score = state.pending_kv + 100
+    cache.rollback_start = 4
     cache.offset = 7
 
     cache.rollback(5)
 
     assert cache.offset == 5
     assert mx.array_equal(state.kv_state[:, :1], state.pending_kv[:, :1]).item()
-    assert mx.array_equal(
-        state.score_state[:, :1], state.pending_score[:, :1]
-    ).item()
+    assert mx.array_equal(state.score_state[:, :1], state.pending_score[:, :1]).item()
+
+
+def test_speculative_cache_rollback_rejects_older_forward() -> None:
+    args = ModelArgs(dim=64, n_layers=0, head_dim=32, compress_ratios=())
+    cache = ModelCache(args, max_seq_len=16)
+    cache.rollback_start = 4
+    cache.offset = 7
+
+    with pytest.raises(ValueError, match="outside latest forward"):
+        cache.rollback(3)

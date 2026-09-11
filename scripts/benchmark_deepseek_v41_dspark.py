@@ -179,28 +179,25 @@ def _install_packed_mtp_moe(adapter) -> int:
                     old = weights.resident.pop(key, None)
                     if old is not None:
                         weights.resident_bytes -= old.nbytes
-            values["config"] = weights.quant_config(
-                f"{base}.experts.0.{projection}"
-            )
+            values["config"] = weights.quant_config(f"{base}.experts.0.{projection}")
             projections[projection] = values
         packed[base] = projections
         mx.clear_cache()
 
     def packed_moe(self, base, x):
         config = self.c
-        logits = x.astype(mx.float32) @ self.w.read(
-            base + ".gate.weight"
-        ).astype(mx.float32).T
+        logits = (
+            x.astype(mx.float32)
+            @ self.w.read(base + ".gate.weight").astype(mx.float32).T
+        )
         scores = mx.sqrt(mx.logaddexp(logits, mx.zeros_like(logits)))
         topk = config["num_experts_per_tok"]
-        picks = mx.argsort(
-            scores + self.w.read(base + ".gate.bias"), axis=-1
-        )[..., -topk:]
+        picks = mx.argsort(scores + self.w.read(base + ".gate.bias"), axis=-1)[
+            ..., -topk:
+        ]
         selected = mx.take_along_axis(scores, picks, axis=-1)
         if config["norm_topk_prob"] and topk > 1:
-            selected = selected / (
-                mx.sum(selected, axis=-1, keepdims=True) + 1e-20
-            )
+            selected = selected / (mx.sum(selected, axis=-1, keepdims=True) + 1e-20)
         selected = selected * config["routed_scaling_factor"]
         expanded = mx.expand_dims(x, (-2, -3))
 
@@ -225,9 +222,9 @@ def _install_packed_mtp_moe(adapter) -> int:
             up = mx.clip(up, -limit, limit)
         # Match the checkpoint runtime exactly: route weights are applied to
         # the activation before its bfloat16 cast and down projection.
-        hidden = (
-            gate * mx.sigmoid(gate) * up * selected[..., None, None]
-        ).astype(x.dtype)
+        hidden = (gate * mx.sigmoid(gate) * up * selected[..., None, None]).astype(
+            x.dtype
+        )
         routed = project("w2", hidden).squeeze(-2).astype(mx.float32)
         routed = mx.sum(routed, axis=-2)
         shared = self.expert(base + ".shared_experts", x).astype(mx.float32)
@@ -436,6 +433,9 @@ def _run_batched_dspark(
     started_all = time.perf_counter()
     while len(output) < output_tokens:
         seed = int(mx.argmax(logits))
+        if not seed_already_emitted and seed == eos_id:
+            output.append(seed)
+            break
         started = time.perf_counter()
         proposals, confidence = draft.propose(seed)
         draft_seconds += time.perf_counter() - started
@@ -472,16 +472,14 @@ def _run_batched_dspark(
         mx.eval(target_logits, target_hidden)
         target_seconds += time.perf_counter() - started
 
-        committed = [] if seed_already_emitted else [seed]
-        mismatch = None
-        for index in range(1, len(candidate)):
-            expected = int(mx.argmax(target_logits[:, index - 1]))
-            if candidate[index] != expected:
-                committed.append(expected)
-                mismatch = index
-                break
-            committed.append(expected)
-            accepted += 1
+        committed, mismatch, hit_eos, accepted_now = _match_greedy_prefix(
+            candidate, target_logits, eos_id, seed_already_emitted
+        )
+        accepted += accepted_now
+
+        if hit_eos:
+            output.extend(committed)
+            break
 
         if mismatch is None:
             for index in range(len(candidate)):
@@ -534,6 +532,21 @@ def _run_batched_dspark(
         "mtp_bytes": mtp_bytes,
         "packed_mtp_bytes": packed_mtp_bytes,
     }
+
+
+def _match_greedy_prefix(candidate, target_logits, eos_id, seed_already_emitted):
+    """Return only target-authoritative tokens through the first EOS/mismatch."""
+    committed = [] if seed_already_emitted else [candidate[0]]
+    accepted = 0
+    for index in range(1, len(candidate)):
+        expected = int(mx.argmax(target_logits[:, index - 1]))
+        committed.append(expected)
+        if candidate[index] != expected:
+            return committed, index, expected == eos_id, accepted
+        accepted += 1
+        if expected == eos_id:
+            return committed, None, True, accepted
+    return committed, None, False, accepted
 
 
 def parse_args() -> argparse.Namespace:
@@ -621,9 +634,7 @@ def main() -> None:
     if args.native_moe_only:
         if args.omlx_source is None:
             raise SystemExit("--native-moe-only requires --omlx-source")
-        replaced = _install_native_single_stream_moe(
-            model, args.omlx_source.resolve()
-        )
+        replaced = _install_native_single_stream_moe(model, args.omlx_source.resolve())
         native_tokens, native = _run_ar(model, input_ids, args.tokens, eos_id=1)
         native.update(
             event="ar_native_small_route_moe",
@@ -716,12 +727,8 @@ def main() -> None:
         print(json.dumps(batched), flush=True)
 
     if args.omlx_source is not None:
-        replaced = _install_native_single_stream_moe(
-            model, args.omlx_source.resolve()
-        )
-        native_tokens, native = _run_ar(
-            model, input_ids, args.tokens, eos_id=1
-        )
+        replaced = _install_native_single_stream_moe(model, args.omlx_source.resolve())
+        native_tokens, native = _run_ar(model, input_ids, args.tokens, eos_id=1)
         native.update(
             event="ar_native_small_route_moe",
             replaced_layers=replaced,

@@ -84,7 +84,11 @@ def _load_layer(model_path: Path, layer_id: int):
     if len(shards) != 1:
         raise ValueError(f"expected one MoE shard, got {shards}")
     weights = mx.load(str(model_path / shards[0]))
-    items = [(key.removeprefix(prefix), value) for key, value in weights.items() if key.startswith(prefix)]
+    items = [
+        (key.removeprefix(prefix), value)
+        for key, value in weights.items()
+        if key.startswith(prefix)
+    ]
 
     moe = MoE(args)
     quantized = {

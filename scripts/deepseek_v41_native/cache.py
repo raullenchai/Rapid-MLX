@@ -83,6 +83,7 @@ class ModelCache:
     ):
         self.max_seq_len = max_seq_len or min(args.max_seq_len, 4096)
         self.offset = 0
+        self.rollback_start = 0
         self.layers = [
             LayerCache(bsz, args, i, self.max_seq_len, dtype)
             for i in range(args.n_layers)
@@ -94,9 +95,12 @@ class ModelCache:
         )
 
     def rollback(self, offset: int) -> None:
-        """Discard a speculative suffix while retaining its correct prefix."""
-        if not 0 <= offset <= self.offset:
-            raise ValueError(f"rollback offset {offset} outside [0, {self.offset}]")
+        """Discard a suffix from the most recent speculative target call."""
+        if not self.rollback_start <= offset <= self.offset:
+            raise ValueError(
+                f"rollback offset {offset} outside latest forward "
+                f"[{self.rollback_start}, {self.offset}]"
+            )
         for layer in self.layers:
             if layer.comp_state is not None:
                 layer.comp_state.rollback(offset)

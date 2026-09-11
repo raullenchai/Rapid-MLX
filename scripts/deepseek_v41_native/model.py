@@ -147,6 +147,7 @@ class Model(nn.Module):
     ) -> mx.array | tuple[mx.array, mx.array]:
         """input_ids [b, n] continue the sequence at cache.offset. Advances the cache."""
         start_pos = cache.offset
+        cache.rollback_start = start_pos
         b, n = input_ids.shape
 
         hashes = None
@@ -167,7 +168,10 @@ class Model(nn.Module):
         shared = SharedState()
         dspark_hiddens = []
         for layer_index, layer in enumerate(self.layers):
-            if return_dspark_hidden and layer_index in self.args.dspark_target_layer_ids:
+            if (
+                return_dspark_hidden
+                and layer_index in self.args.dspark_target_layer_ids
+            ):
                 dspark_hiddens.append(mx.mean(h, axis=2))
             if layer.engram is not None:
                 assert hashes is not None

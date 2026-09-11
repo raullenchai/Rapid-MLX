@@ -73,9 +73,7 @@ def _inference_config(config: dict) -> dict:
         "dspark_target_layer_ids": list(config["dspark_target_layer_ids"]),
         "dspark_markov_rank": int(config["dspark_markov_rank"]),
         "dspark_n_routed_experts": int(config["dspark_n_routed_experts"]),
-        "dspark_num_experts_per_tok": int(
-            config["dspark_num_experts_per_tok"]
-        ),
+        "dspark_num_experts_per_tok": int(config["dspark_num_experts_per_tok"]),
     }
 
 
@@ -95,6 +93,15 @@ def _copy_metadata(target: Path, destination: Path) -> None:
             shutil.copy2(source, destination / name)
 
 
+def _safe_shard_name(value: object) -> str:
+    if not isinstance(value, str) or not value:
+        raise ValueError(f"invalid target shard name: {value!r}")
+    shard = Path(value)
+    if shard.is_absolute() or shard.name != value:
+        raise ValueError(f"target shard must be a basename: {value!r}")
+    return value
+
+
 def build_overlay(source: Path, target: Path, destination: Path) -> dict:
     if destination.exists():
         raise FileExistsError(f"destination already exists: {destination}")
@@ -104,19 +111,22 @@ def build_overlay(source: Path, target: Path, destination: Path) -> dict:
     target_weights = target_index.get("weight_map")
     if not isinstance(target_weights, dict) or not target_weights:
         raise ValueError("target checkpoint has no indexed weights")
+    target_shards = {_safe_shard_name(value) for value in target_weights.values()}
+    mtp_shard = "model-mtp.safetensors"
+    if mtp_shard in target_shards:
+        raise ValueError(f"target checkpoint already uses reserved shard {mtp_shard}")
 
     plans = _mtp_plans(CheckpointIndex(source))
     mtp_bytes = sum(plan.nbytes for plan in plans)
     destination.mkdir(parents=True)
     try:
-        for shard in sorted(set(target_weights.values())):
+        for shard in sorted(target_shards):
             source_shard = target / shard
             if not source_shard.is_file():
                 raise FileNotFoundError(source_shard)
             relative_target = os.path.relpath(source_shard, destination)
             (destination / shard).symlink_to(relative_target)
 
-        mtp_shard = "model-mtp.safetensors"
         write_safetensors(destination / mtp_shard, plans)
         weight_map = dict(target_weights)
         weight_map.update({plan.name: mtp_shard for plan in plans})
@@ -124,9 +134,7 @@ def build_overlay(source: Path, target: Path, destination: Path) -> dict:
         inference = _inference_config(config)
 
         (destination / "inference").mkdir()
-        (destination / "config.json").write_text(
-            json.dumps(config, indent=2) + "\n"
-        )
+        (destination / "config.json").write_text(json.dumps(config, indent=2) + "\n")
         (destination / "inference" / "config.json").write_text(
             json.dumps(inference, indent=2) + "\n"
         )
@@ -155,7 +163,7 @@ def build_overlay(source: Path, target: Path, destination: Path) -> dict:
         raise
     return {
         "destination": str(destination),
-        "target_shards": len(set(target_weights.values())),
+        "target_shards": len(target_shards),
         "mtp_tensors": len(plans),
         "mtp_bytes": mtp_bytes,
         "mtp_gb": round(mtp_bytes / 1e9, 3),

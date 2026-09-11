@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 import importlib.util
+import json
 import sys
 from pathlib import Path
+
+import pytest
 
 
 def _load_script():
@@ -93,3 +96,36 @@ def test_script_has_no_cache_redirect_flags():
     source = Path(module.__file__).read_text()
     assert "cache_dir" not in source
     assert "local_dir" not in source
+
+
+def _write_overlay_inputs(tmp_path, shard_name):
+    source = tmp_path / "source"
+    target = tmp_path / "target"
+    source.mkdir()
+    target.mkdir()
+    (source / "config.json").write_text("{}")
+    (target / "config.json").write_text("{}")
+    (target / "model.safetensors.index.json").write_text(
+        json.dumps({"weight_map": {"head.weight": shard_name}})
+    )
+    return source, target
+
+
+def test_overlay_rejects_traversing_target_shard(tmp_path):
+    module = _load_script()
+    source, target = _write_overlay_inputs(tmp_path, "../outside.safetensors")
+
+    with pytest.raises(ValueError, match="must be a basename"):
+        module.build_overlay(source, target, tmp_path / "output")
+
+    assert not (tmp_path / "output").exists()
+
+
+def test_overlay_rejects_reserved_mtp_shard_collision(tmp_path):
+    module = _load_script()
+    source, target = _write_overlay_inputs(tmp_path, "model-mtp.safetensors")
+
+    with pytest.raises(ValueError, match="reserved shard"):
+        module.build_overlay(source, target, tmp_path / "output")
+
+    assert not (tmp_path / "output").exists()
