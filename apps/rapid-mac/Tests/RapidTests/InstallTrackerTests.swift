@@ -225,9 +225,6 @@ struct InstallTrackerTests {
         let defaults = freshDefaults()
         defaults.set(Date(timeIntervalSince1970: 2_000_000), forKey: InstallTracker.lastSeenMtimeKey)
         defaults.set("0.13.1", forKey: InstallTracker.lastSeenVersionKey)
-        // The notice compares against the ACKNOWLEDGED version, which only the
-        // user's dismiss advances — see `upgradeNoticeIsStickyUntilAcknowledged`.
-        defaults.set("0.13.1", forKey: InstallTracker.acknowledgedVersionKey)
 
         let tracker = InstallTracker(
             currentVersion: "0.14.1",
@@ -255,7 +252,6 @@ struct InstallTrackerTests {
         // Routine relaunch.
         let same = freshDefaults()
         same.set("0.14.1", forKey: InstallTracker.lastSeenVersionKey)
-        same.set("0.14.1", forKey: InstallTracker.acknowledgedVersionKey)
         #expect(InstallTracker(
             currentVersion: "0.14.1",
             currentInfoPlistMtime: mtime,
@@ -266,7 +262,6 @@ struct InstallTrackerTests {
         // Deliberate rollback: "Updated to v0.13.1" would read as a bug.
         let back = freshDefaults()
         back.set("0.14.1", forKey: InstallTracker.lastSeenVersionKey)
-        back.set("0.14.1", forKey: InstallTracker.acknowledgedVersionKey)
         #expect(InstallTracker(
             currentVersion: "0.13.1",
             currentInfoPlistMtime: mtime,
@@ -281,7 +276,6 @@ struct InstallTrackerTests {
     func upgradeNoticeIgnoresBundleLocation() {
         let defaults = freshDefaults()
         defaults.set("0.13.1", forKey: InstallTracker.lastSeenVersionKey)
-        defaults.set("0.13.1", forKey: InstallTracker.acknowledgedVersionKey)
         let tracker = InstallTracker(
             currentVersion: "0.14.1",
             currentInfoPlistMtime: Date(timeIntervalSince1970: 2_000_000),
@@ -297,7 +291,6 @@ struct InstallTrackerTests {
         let mtime = Date(timeIntervalSince1970: 2_000_000)
         defaults.set(mtime, forKey: InstallTracker.lastSeenMtimeKey)
         defaults.set("0.13.1", forKey: InstallTracker.lastSeenVersionKey)
-        defaults.set("0.13.1", forKey: InstallTracker.acknowledgedVersionKey)
 
         let tracker = InstallTracker(
             currentVersion: "0.14.1",
@@ -417,11 +410,11 @@ struct InstallTrackerTests {
         let defaults = freshDefaults()
         let bundle = installedBundleURL
 
-        // Launch 1: first ever. Nothing to announce; baseline seeded.
-        _ = InstallTracker(
+        // Launch 1: first ever. Nothing to announce, nothing owed.
+        #expect(InstallTracker(
             currentVersion: "0.13.1", currentInfoPlistMtime: Date(),
-            currentBundleURL: bundle, defaults: defaults)
-        #expect(defaults.string(forKey: InstallTracker.acknowledgedVersionKey) == "0.13.1")
+            currentBundleURL: bundle, defaults: defaults).upgradedFrom == nil)
+        #expect(defaults.string(forKey: InstallTracker.pendingUpgradeNoticeFromKey) == nil)
 
         // Launch 2: upgraded, notice shown — and the user quits without
         // touching it.
@@ -439,11 +432,72 @@ struct InstallTrackerTests {
         // Dismissing (or opening the notes) is what consumes it.
         relaunched.dismissUpgradeNotice()
         #expect(relaunched.upgradedFrom == nil)
-        #expect(defaults.string(forKey: InstallTracker.acknowledgedVersionKey) == "0.14.1")
+        #expect(defaults.string(forKey: InstallTracker.pendingUpgradeNoticeFromKey) == nil)
         let afterDismiss = InstallTracker(
             currentVersion: "0.14.1", currentInfoPlistMtime: Date(),
             currentBundleURL: bundle, defaults: defaults)
         #expect(afterDismiss.upgradedFrom == nil)
+    }
+
+    @Test("Existing users get the notice on the upgrade that ships it")
+    func upgradeNoticeMigratesFromLastSeenVersion() {
+        // Adversarial review round 7 (codex, blocking): the acknowledgement key
+        // does not exist yet for anyone already running the app, and seeding it
+        // to the current version swallowed the notice on exactly the upgrade
+        // that introduces the feature. It falls back to the last-seen version.
+        let defaults = freshDefaults()
+        defaults.set("0.14.1", forKey: InstallTracker.lastSeenVersionKey)
+        defaults.set(Date(timeIntervalSince1970: 2_000_000), forKey: InstallTracker.lastSeenMtimeKey)
+        #expect(defaults.string(forKey: InstallTracker.pendingUpgradeNoticeFromKey) == nil)
+
+        let tracker = InstallTracker(
+            currentVersion: "0.14.2",
+            currentInfoPlistMtime: Date(timeIntervalSince1970: 2_003_600),
+            currentBundleURL: installedBundleURL,
+            defaults: defaults
+        )
+        #expect(tracker.upgradedFrom == "0.14.1")
+        // Recorded as owed, so the next launch shows the same notice.
+        #expect(defaults.string(forKey: InstallTracker.pendingUpgradeNoticeFromKey) == "0.14.1")
+    }
+
+    @Test("A fresh install stays silent, and the upgrade after it does not")
+    func freshInstallHasNothingToAnnounce() {
+        let defaults = freshDefaults()
+        let first = InstallTracker(
+            currentVersion: "0.14.1", currentInfoPlistMtime: Date(timeIntervalSince1970: 2_000_000),
+            currentBundleURL: installedBundleURL, defaults: defaults)
+        #expect(first.upgradedFrom == nil)
+        // The failed-Replace baseline the first launch DID write is enough for
+        // the next upgrade to compare against.
+        let next = InstallTracker(
+            currentVersion: "0.14.2", currentInfoPlistMtime: Date(timeIntervalSince1970: 2_003_600),
+            currentBundleURL: installedBundleURL, defaults: defaults)
+        #expect(next.upgradedFrom == "0.14.1")
+    }
+
+    @Test("Both install banners can fire at once; the stale-bundle one wins")
+    func upgradeNoticeYieldsToFailedReplace() {
+        // Adversarial review round 7 (codex, nit): the two stopped being
+        // mutually exclusive when the notice became sticky. "Updated to
+        // v0.14.2" over "your update didn't install" contradicts itself.
+        let defaults = freshDefaults()
+        let mtime = Date(timeIntervalSince1970: 2_000_000)
+        defaults.set(mtime, forKey: InstallTracker.lastSeenMtimeKey)
+        defaults.set("0.14.1", forKey: InstallTracker.lastSeenVersionKey)
+
+        // Launch 1: upgraded to 0.14.2, notice pending (never dismissed).
+        _ = InstallTracker(
+            currentVersion: "0.14.2", currentInfoPlistMtime: mtime.addingTimeInterval(60),
+            currentBundleURL: installedBundleURL, defaults: defaults)
+        // Launch 2: a Finder Replace touched the bundle but the version stuck.
+        let tracker = InstallTracker(
+            currentVersion: "0.14.2", currentInfoPlistMtime: mtime.addingTimeInterval(3_600),
+            currentBundleURL: installedBundleURL, defaults: defaults)
+        #expect(tracker.failedReplaceDetected)
+        #expect(tracker.upgradedFrom == "0.14.1")
+        // Both true, so the view-level precedence is what keeps them from
+        // stacking — see `WhatsNewBanner.body`.
     }
 
 }

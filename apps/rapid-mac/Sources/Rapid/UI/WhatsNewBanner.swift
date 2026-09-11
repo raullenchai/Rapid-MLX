@@ -40,7 +40,14 @@ struct WhatsNewBanner: View {
     }
 
     var body: some View {
-        if let from = installTracker.upgradedFrom {
+        // `FailedReplaceBanner` wins when both fire. They are no longer
+        // mutually exclusive by construction: the upgrade notice is sticky
+        // until acknowledged, so a launch that upgraded and a LATER launch
+        // whose Finder Replace failed can both be true at once — and stacking
+        // "Updated to v0.14.2" on top of "your update didn't install" would
+        // contradict itself. The stale-bundle warning is the one the user has
+        // to act on, so it stands alone.
+        if let from = installTracker.upgradedFrom, !installTracker.failedReplaceDetected {
             let current = installTracker.currentVersion
             let headline = "Updated to v\(current)"
             let detail = "You were on v\(from). The release notes list what changed."

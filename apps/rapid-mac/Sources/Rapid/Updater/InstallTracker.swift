@@ -45,12 +45,11 @@ final class InstallTracker {
     /// The version this launch upgraded FROM, or nil when there is nothing
     /// left to announce. Drives ``WhatsNewBanner``.
     ///
-    /// Compared against the ACKNOWLEDGED version, not the last-seen one. The
-    /// two differ on purpose: last-seen rolls forward on every launch because
-    /// the failed-Replace detector needs a per-launch baseline, but the notice
-    /// is sticky — quitting or crashing before reading it must not consume it.
-    /// Acknowledged only advances when the user dismisses the banner or opens
-    /// the notes.
+    /// Backed by its own persisted key, not by the last-seen version. The two
+    /// differ on purpose: last-seen rolls forward on every launch because the
+    /// failed-Replace detector needs a per-launch baseline, but the notice is
+    /// sticky — quitting or crashing before reading it must not consume it.
+    /// Only dismissing the banner (or opening the notes from it) clears it.
     ///
     /// Sparkle installs on quit and relaunches into the new build with no
     /// prompt of any kind, so a user who crossed two feature releases (the
@@ -72,10 +71,16 @@ final class InstallTracker {
     /// other ``rapid.*`` keys in the same suite.
     static let lastSeenMtimeKey = "rapid.install.lastSeenInfoPlistMtime"
     static let lastSeenVersionKey = "rapid.install.lastSeenVersion"
-    /// The newest version whose "what's new" notice the user actually saw.
+    /// The version an UNREAD "what's new" notice is about — what the user was
+    /// running before the upgrade. Present means a notice is owed; absent
+    /// means nothing is pending.
+    ///
     /// Separate from ``lastSeenVersionKey`` because that one is the
-    /// failed-Replace baseline and has to advance every launch.
-    static let acknowledgedVersionKey = "rapid.install.acknowledgedVersion"
+    /// failed-Replace baseline and has to advance on every launch, which is
+    /// precisely what a sticky notice must not do: comparing against it
+    /// consumed the notice on the launch that detected it, so quitting or
+    /// crashing before reading it lost it for good.
+    static let pendingUpgradeNoticeFromKey = "rapid.install.pendingUpgradeNoticeFrom"
 
     /// Production init — reads the running bundle's Info.plist mtime
     /// and ``CFBundleShortVersionString``, compares against the
@@ -117,15 +122,27 @@ final class InstallTracker {
         // Forward moves only. A downgrade (a rollback, or a dev build run
         // over a newer release) is not something to celebrate, and "Updated
         // to v0.13.1" over an intentional rollback reads as a bug.
-        let acknowledged = defaults.string(forKey: Self.acknowledgedVersionKey)
-        if let acknowledged, UpdateChecker.isNewer(currentVersion, than: acknowledged) {
-            self.upgradedFrom = acknowledged
-        } else if acknowledged == nil {
-            // First launch under this key: there is nothing to announce (a
-            // fresh install, or the launch that introduced the key), so seed
-            // the baseline. Without the seed the NEXT upgrade would compare
-            // against nil and stay silent.
-            defaults.set(currentVersion, forKey: Self.acknowledgedVersionKey)
+        // A notice already owed stays owed, unchanged, until it is dismissed —
+        // that is the whole point of the separate key. An owed notice that no
+        // longer describes a forward move (the user rolled back) is dropped.
+        //
+        // Otherwise a forward move against the last-seen version opens a new
+        // notice and RECORDS it, so the next launch shows the same one rather
+        // than recomputing against a baseline that has meanwhile rolled
+        // forward. Falling back to `prevVersion` is also the migration path:
+        // nobody has this key yet, and the alternative — seeding it to the
+        // current version — would swallow the notice on exactly the upgrade
+        // that ships the feature.
+        let pending = defaults.string(forKey: Self.pendingUpgradeNoticeFromKey)
+        if let pending {
+            if UpdateChecker.isNewer(currentVersion, than: pending) {
+                self.upgradedFrom = pending
+            } else {
+                defaults.removeObject(forKey: Self.pendingUpgradeNoticeFromKey)
+            }
+        } else if let prevVersion, UpdateChecker.isNewer(currentVersion, than: prevVersion) {
+            self.upgradedFrom = prevVersion
+            defaults.set(prevVersion, forKey: Self.pendingUpgradeNoticeFromKey)
         }
 
         self.failedReplaceDetected = Self.detect(
@@ -218,6 +235,6 @@ final class InstallTracker {
     /// notice leaves it pending for the next launch.
     func dismissUpgradeNotice() {
         upgradedFrom = nil
-        defaults.set(currentVersion, forKey: Self.acknowledgedVersionKey)
+        defaults.removeObject(forKey: Self.pendingUpgradeNoticeFromKey)
     }
 }
