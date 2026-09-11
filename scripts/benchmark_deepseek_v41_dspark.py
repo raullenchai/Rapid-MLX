@@ -481,6 +481,7 @@ def _run_batched_dspark(
     verify_k,
     confidence_threshold=0.0,
     packed_mtp=False,
+    collect_target_margins=False,
 ):
     target = SimpleNamespace()
     target.w = weights_cls(model._dspark_overlay_path)
@@ -518,6 +519,7 @@ def _run_batched_dspark(
     rollback_seconds = 0.0
     proposed_depths = []
     confidence_values = []
+    target_margins = []
     started_all = time.perf_counter()
     while len(output) < output_tokens:
         seed = int(mx.argmax(logits))
@@ -560,6 +562,11 @@ def _run_batched_dspark(
         )
         mx.eval(target_logits, target_hidden)
         target_seconds += time.perf_counter() - started
+        if collect_target_margins:
+            top_two = mx.topk(target_logits[0], k=2, axis=-1)
+            target_margins.extend(
+                (top_two[:, -1] - top_two[:, -2]).astype(mx.float32).tolist()
+            )
 
         committed, mismatch, hit_eos, accepted_now = _match_greedy_prefix(
             candidate, target_logits, eos_id, seed_already_emitted
@@ -616,6 +623,10 @@ def _run_batched_dspark(
             if confidence_values
             else None
         ),
+        "target_margin_min": min(target_margins) if target_margins else None,
+        "target_margin_below_0_01": sum(value < 0.01 for value in target_margins),
+        "target_margin_below_0_05": sum(value < 0.05 for value in target_margins),
+        "target_margin_below_0_1": sum(value < 0.1 for value in target_margins),
         "confidence_max": max(confidence_values) if confidence_values else None,
         "deferred_corrections": deferred_corrections,
         "mtp_bytes": mtp_bytes,
