@@ -16,6 +16,7 @@ import json
 import os
 import sys
 import time
+import weakref
 from pathlib import Path
 from types import MethodType, SimpleNamespace
 
@@ -49,8 +50,9 @@ def _load_module_file(name: str, path: Path):
     return module
 
 
-def _load_checkpoint_runtime(root: Path):
-    """Load the two trusted files exactly, without ambient module fallback."""
+@contextlib.contextmanager
+def _checkpoint_runtime(root: Path):
+    """Bind the two trusted files exactly for the benchmark lifetime."""
     root = root.absolute()
     if not root.is_dir():
         raise NotADirectoryError(root)
@@ -59,6 +61,7 @@ def _load_checkpoint_runtime(root: Path):
     try:
         runtime = _load_module_file("runtime", root / "runtime.py")
         dspark = _load_module_file("_rapid_checkpoint_dspark", root / "dspark.py")
+        yield runtime, dspark
     finally:
         if previous_runtime is None:
             sys.modules.pop("runtime", None)
@@ -68,7 +71,6 @@ def _load_checkpoint_runtime(root: Path):
             sys.modules.pop("_rapid_checkpoint_dspark", None)
         else:
             sys.modules["_rapid_checkpoint_dspark"] = previous_dspark
-    return runtime, dspark
 
 
 def _prompt(text: str) -> str:
@@ -272,7 +274,9 @@ def _install_packed_mtp_moe(adapter) -> int:
         shared = self.expert(base + ".shared_experts", x).astype(mx.float32)
         return (routed + shared).astype(x.dtype)
 
-    adapter.moe = MethodType(packed_moe, adapter)
+    # Bind through a weak proxy so adapter -> bound method does not retain
+    # adapter (and its 4+ GB packed tensors) in a reference cycle between runs.
+    adapter.moe = MethodType(packed_moe, weakref.proxy(adapter))
     adapter._packed_mtp_moe = packed
     return packed_bytes
 
@@ -592,6 +596,13 @@ def _match_greedy_prefix(candidate, target_logits, eos_id, seed_already_emitted)
     return committed, None, False, accepted
 
 
+def _positive_int(value: str) -> int:
+    parsed = int(value)
+    if parsed < 1:
+        raise argparse.ArgumentTypeError("must be at least 1")
+    return parsed
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--target", type=Path, required=True)
@@ -614,7 +625,7 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Fuse target gate/up expert projections after loading.",
     )
-    parser.add_argument("--tokens", type=int, default=32)
+    parser.add_argument("--tokens", type=_positive_int, default=32)
     parser.add_argument("--eval-interval", type=int, default=40)
     parser.add_argument(
         "--prompt",
@@ -626,17 +637,7 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def main() -> None:
-    args = parse_args()
-    if not args.trust_checkpoint_runtime:
-        raise SystemExit(
-            "refusing to execute checkpoint-bundled Python without "
-            "--trust-checkpoint-runtime"
-        )
-    checkpoint_runtime, dspark_module = _load_checkpoint_runtime(
-        args.checkpoint_runtime
-    )
-
+def _run_benchmark(args, checkpoint_runtime, dspark_module) -> None:
     started = time.perf_counter()
     model, _ = load(
         str(args.target.resolve()),
@@ -782,6 +783,20 @@ def main() -> None:
             peak_gb=mx.get_peak_memory() / 1e9,
         )
         print(json.dumps(native), flush=True)
+
+
+def main() -> None:
+    args = parse_args()
+    if not args.trust_checkpoint_runtime:
+        raise SystemExit(
+            "refusing to execute checkpoint-bundled Python without "
+            "--trust-checkpoint-runtime"
+        )
+    with _checkpoint_runtime(args.checkpoint_runtime) as (
+        checkpoint_runtime,
+        dspark_module,
+    ):
+        _run_benchmark(args, checkpoint_runtime, dspark_module)
 
 
 if __name__ == "__main__":

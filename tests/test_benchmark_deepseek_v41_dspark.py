@@ -104,9 +104,10 @@ def test_checkpoint_runtime_loads_exact_files_and_restores_ambient_module(
     previous = sys.modules.get("runtime")
     sys.modules["runtime"] = ambient
     try:
-        runtime, dspark = module._load_checkpoint_runtime(tmp_path)
-        assert runtime.MARKER == "requested"
-        assert dspark.MARKER == "requested"
+        with module._checkpoint_runtime(tmp_path) as (runtime, dspark):
+            assert runtime.MARKER == "requested"
+            assert dspark.MARKER == "requested"
+            assert sys.modules["runtime"] is runtime
         assert sys.modules["runtime"] is ambient
     finally:
         if previous is None:
@@ -120,6 +121,32 @@ def test_packed_mtp_uses_dspark_specific_topk() -> None:
     config = {"num_experts_per_tok": 6, "dspark_num_experts_per_tok": 3}
 
     assert module._dspark_topk(config) == 3
+
+
+def test_tokens_must_be_positive() -> None:
+    module = _load_script()
+
+    assert module._positive_int("1") == 1
+    with pytest.raises(module.argparse.ArgumentTypeError, match="at least 1"):
+        module._positive_int("0")
+
+
+def test_packed_mtp_method_binding_does_not_retain_adapter() -> None:
+    module = _load_script()
+
+    class Adapter:
+        pass
+
+    adapter = Adapter()
+
+    def method(self):
+        return self
+
+    adapter.method = module.MethodType(method, module.weakref.proxy(adapter))
+    reference = module.weakref.ref(adapter)
+    del adapter
+
+    assert reference() is None
 
 
 def test_moe_layer_loader_merges_indexed_shards(tmp_path, monkeypatch) -> None:
