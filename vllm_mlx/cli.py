@@ -2522,6 +2522,12 @@ def _normalize_speculative_config_or_exit(args):
             args.speculative_config = raw_config
         elif (
             not getattr(args, "no_spec_decode", False)
+            # An explicit modality request outranks an alias-owned performance
+            # default.  The MLLM lane cannot honour speculative decoding, so
+            # injecting MTP here would silently undo ``--mllm`` later in the
+            # shared lane resolver.  Explicit speculative requests are
+            # rejected below instead of being dropped.
+            and not getattr(args, "mllm", False)
             and _alias_continuous_mtp_tier(getattr(args, "model", None)) == "verified"
             and _alias_mtp_default_enabled(getattr(args, "model", None))
         ):
@@ -2547,6 +2553,16 @@ def _normalize_speculative_config_or_exit(args):
                 require_migrated_speculative_config(config)
         except SpeculativeConfigError as exc:
             print(f"error: {exc}", file=sys.stderr)
+            sys.exit(2)
+        if config is not None and getattr(args, "mllm", False):
+            print(
+                "error: --mllm is mutually exclusive with an explicit "
+                "speculative-decoding request because the vision lane cannot "
+                "honour speculative decoding. Remove the speculative option "
+                "to serve images, or remove --mllm to use the accelerated "
+                "text lane.",
+                file=sys.stderr,
+            )
             sys.exit(2)
         if getattr(args, "no_spec_decode", False):
             print(
@@ -3557,6 +3573,12 @@ def serve_command(args):
 
         require_mlx_embeddings_or_exit()
 
+    # Resolve speculative intent before selecting the final serving lane.
+    # This lets an explicit --mllm suppress an alias-owned MTP default while
+    # rejecting an explicit MLLM/speculative conflict before optional-runtime
+    # checks or model downloads can obscure the actionable error.
+    _normalize_speculative_config_or_exit(args)
+
     # R-10 (PyPI 0.8.6 dogfood): same boot-guard shape for vision /
     # multimodal aliases. ``mlx-vlm`` lives behind the ``[vision]``
     # extra, but ``rapid-mlx serve ui-tars-1.5-7b-4bit`` on a fresh
@@ -3610,8 +3632,6 @@ def serve_command(args):
 
     if is_audio_model_alias(getattr(args, "model", None)):
         require_audio_or_exit(args.model)
-
-    _normalize_speculative_config_or_exit(args)
 
     # DDTree has an external experimental runtime and its validated target
     # can be multi-GB. Fail the cheap config/alias/runtime gates before the
@@ -12127,7 +12147,7 @@ Examples:
     serve_parser.add_argument(
         "--mllm",
         action="store_true",
-        help="Force load model as multimodal (vision) even if name doesn't match auto-detection patterns. Also DISABLES the automatic text-only fallback: normally a vision-config checkpoint that ships no usable vision tower auto-degrades to text-only serving (#1187); with --mllm it hard-fails instead so a deliberate demand for the vision lane is never silently downgraded.",
+        help="Force load model as multimodal (vision) even if name doesn't match auto-detection patterns. Also DISABLES automatic text-only fallbacks and alias-owned speculative-decoding defaults; an explicitly requested speculative decoder conflicts and is rejected. A vision-config checkpoint with no usable vision tower hard-fails instead of silently downgrading (#1187).",
     )
     serve_parser.add_argument(
         "--no-mllm",
