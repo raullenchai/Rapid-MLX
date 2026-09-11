@@ -91,6 +91,8 @@ RAPID_MLX_API_KEY='replace-with-a-secret' \
 Then use the OpenAI-compatible API:
 
 ```bash
+# Run this on the server Mac. From another machine, replace localhost with
+# the server Mac's LAN address.
 curl http://localhost:8000/v1/chat/completions \
   -H 'Content-Type: application/json' \
   -H 'Authorization: Bearer replace-with-a-secret' \
