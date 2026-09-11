@@ -28,7 +28,19 @@ def _load_prefix_items(model_path: Path, index: dict, prefix: str):
         raise ValueError(f"no checkpoint tensors found for {prefix}")
     items = {}
     for shard in shards:
-        weights = mx.load(str(model_path / shard))
+        if not isinstance(shard, str) or not shard:
+            raise ValueError(f"invalid checkpoint shard name: {shard!r}")
+        shard_name = Path(shard)
+        if shard_name.is_absolute() or shard_name.name != shard:
+            raise ValueError(f"checkpoint shard must be a basename: {shard!r}")
+        shard_path = model_path / shard
+        if shard_path.is_symlink():
+            raise ValueError(f"checkpoint shard must not be a symlink: {shard_path}")
+        if not shard_path.is_file():
+            raise FileNotFoundError(shard_path)
+        if shard_path.resolve().parent != model_path.resolve():
+            raise ValueError(f"checkpoint shard escapes model directory: {shard_path}")
+        weights = mx.load(str(shard_path))
         for key, value in weights.items():
             if not key.startswith(prefix):
                 continue

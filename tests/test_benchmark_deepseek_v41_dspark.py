@@ -7,6 +7,7 @@ from pathlib import Path
 from types import ModuleType
 
 import mlx.core as mx
+import pytest
 
 
 def _load_script():
@@ -128,6 +129,8 @@ def test_moe_layer_loader_merges_indexed_shards(tmp_path, monkeypatch) -> None:
         "model-1.safetensors": {prefix + "gate.weight": "gate"},
         "model-2.safetensors": {prefix + "experts.weight": "experts"},
     }
+    for shard in contents:
+        (tmp_path / shard).touch()
     monkeypatch.setattr(
         module.mx,
         "load",
@@ -138,3 +141,28 @@ def test_moe_layer_loader_merges_indexed_shards(tmp_path, monkeypatch) -> None:
         ("experts.weight", "experts"),
         ("gate.weight", "gate"),
     ]
+
+
+def test_moe_layer_loader_rejects_traversing_shard(tmp_path) -> None:
+    module = _load_moe_script()
+    prefix = "layers.20.ffn."
+
+    with pytest.raises(ValueError, match="must be a basename"):
+        module._load_prefix_items(
+            tmp_path, {prefix + "gate.weight": "../outside.safetensors"}, prefix
+        )
+
+
+def test_moe_layer_loader_rejects_symlinked_shard(tmp_path) -> None:
+    module = _load_moe_script()
+    prefix = "layers.20.ffn."
+    outside = tmp_path / "outside.safetensors"
+    outside.touch()
+    model_path = tmp_path / "model"
+    model_path.mkdir()
+    (model_path / "model-1.safetensors").symlink_to(outside)
+
+    with pytest.raises(ValueError, match="must not be a symlink"):
+        module._load_prefix_items(
+            model_path, {prefix + "gate.weight": "model-1.safetensors"}, prefix
+        )
