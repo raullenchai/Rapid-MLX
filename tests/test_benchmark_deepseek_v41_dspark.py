@@ -59,6 +59,28 @@ def test_benchmark_requires_explicit_checkpoint_runtime_trust(tmp_path) -> None:
     assert "--trust-checkpoint-runtime" in result.stderr
 
 
+def test_benchmark_defaults_to_product_owned_runtime(tmp_path, monkeypatch) -> None:
+    module = _load_script()
+    observed = {}
+    args = SimpleNamespace(
+        target_only=False,
+        overlay=tmp_path / "overlay",
+        checkpoint_runtime=None,
+        trust_checkpoint_runtime=False,
+    )
+    monkeypatch.setattr(module, "parse_args", lambda: args)
+    monkeypatch.setattr(module, "_validate_mode", lambda value: None)
+    monkeypatch.setattr(
+        module,
+        "_run_benchmark",
+        lambda value, weights, draft: observed.update(weights=weights, draft=draft),
+    )
+
+    module.main()
+
+    assert observed == {"weights": module.rapid_dspark, "draft": module.rapid_dspark}
+
+
 def test_greedy_prefix_stops_at_accepted_eos() -> None:
     module = _load_script()
     eos_id = 1

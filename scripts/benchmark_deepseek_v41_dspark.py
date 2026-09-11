@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Measure V4.1 target-only decode against checkpoint-native DSpark drafting.
+"""Measure V4.1 target-only decode against Rapid-owned DSpark drafting.
 
 This first gate deliberately uses serial target verification.  It establishes
 draft latency, greedy acceptance, output equivalence, and memory headroom before
@@ -28,6 +28,7 @@ sys.path.insert(0, str(REPO_ROOT))
 sys.path.insert(0, str(REPO_ROOT / "scripts"))
 
 from deepseek_v41_affine_route_qmv import affine2_route_down_qmv  # noqa: E402
+from deepseek_v41_native import dspark as rapid_dspark  # noqa: E402
 from deepseek_v41_native.load import load  # noqa: E402
 from mlx_lm.models.switch_layers import SwitchGLU  # noqa: E402
 
@@ -192,6 +193,9 @@ def _install_direct_down_qmv(model) -> int:
 
 
 def _share_target_head(weights, model):
+    if hasattr(weights, "attach_target"):
+        weights.attach_target(model)
+        return
     for suffix in ("weight", "scales", "biases"):
         value = getattr(model.head, suffix, None)
         key = f"head.{suffix}"
@@ -200,6 +204,8 @@ def _share_target_head(weights, model):
 
 
 def _pin_mtp_with_headroom(weights, reserve_gb: float = 8.0) -> int:
+    if hasattr(weights, "pin_mtp"):
+        return weights.pin_mtp(reserve_gb)
     import psutil
 
     keys = [
@@ -261,10 +267,14 @@ def _install_packed_mtp_moe(adapter) -> int:
                 mx.eval(value)
                 values[suffix] = value
                 packed_bytes += value.nbytes
-                for key in keys:
-                    old = weights.resident.pop(key, None)
-                    if old is not None:
-                        weights.resident_bytes -= old.nbytes
+                if hasattr(weights, "release_tensor"):
+                    for key in keys:
+                        weights.release_tensor(key)
+                else:
+                    for key in keys:
+                        old = weights.resident.pop(key, None)
+                        if old is not None:
+                            weights.resident_bytes -= old.nbytes
             values["config"] = weights.quant_config(f"{base}.experts.0.{projection}")
             projections[projection] = values
         packed[base] = projections
@@ -880,18 +890,18 @@ def main() -> None:
     if args.target_only:
         _run_benchmark(args, None, None)
         return
-    if args.overlay is None or args.checkpoint_runtime is None:
-        raise SystemExit("--overlay and --checkpoint-runtime are required for DSpark")
+    if args.overlay is None:
+        raise SystemExit("--overlay is required for DSpark")
+    if args.checkpoint_runtime is None:
+        _run_benchmark(args, rapid_dspark, rapid_dspark)
+        return
     if not args.trust_checkpoint_runtime:
         raise SystemExit(
             "refusing to execute checkpoint-bundled Python without "
             "--trust-checkpoint-runtime"
         )
-    with _checkpoint_runtime(args.checkpoint_runtime) as (
-        checkpoint_runtime,
-        dspark_module,
-    ):
-        _run_benchmark(args, checkpoint_runtime, dspark_module)
+    with _checkpoint_runtime(args.checkpoint_runtime) as (runtime, dspark_module):
+        _run_benchmark(args, runtime, dspark_module)
 
 
 if __name__ == "__main__":

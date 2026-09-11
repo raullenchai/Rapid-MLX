@@ -139,6 +139,31 @@ and 0.006 seconds in rollback. This is the first exact-greedy configuration to
 cross the 12 tok/s performance floor, but it is still one 32-token prompt rather
 than the multi-domain, long-context qualification required for product exposure.
 
+## Product-owned draft runtime
+
+The K4 path was then moved behind a Rapid-owned, data-only DSpark runtime. The
+default benchmark no longer imports Python from the model directory; the old
+runtime remains available only as an explicit trusted A/B oracle. The sidecar
+loader validates a basename-only index, rejects symlinked MTP shards, requires
+the complete three-stage tensor contract, shares the target embedding and head,
+and admits its 4.46 GB allocation against both host and Metal headroom.
+
+On actual sidecar tensors, six observed KV windows, the six-token proposal, and
+all five confidence logits were element-for-element equal between the old and
+owned implementations (maximum difference 0). A complete default-path run on
+the same Studio measured:
+
+| Candidate | tok/s | Change vs same-run 7.82 AR | Greedy equivalent | Peak MLX memory |
+| --- | ---: | ---: | --- | ---: |
+| K4 owned packed DSpark + direct down QMV | **13.42** | **+71.7%** | **yes** | **218.00 GB** |
+| K5 owned packed DSpark + direct down QMV | 14.61 | +86.9% | no | 218.00 GB |
+
+An adversarial full-path run first exposed a 4.25 GB ownership leak: after
+packing experts, the loader retained the unpacked arrays as well. The final
+implementation explicitly releases all 3,456 replaced expert tensors; a repeat
+run reduced peak memory from 222.27 GB back to 218.00 GB without changing K4
+output. K5 remains excluded regardless of its higher throughput.
+
 ## Rejected paths
 
 - Immediate singleton correction erases batching gains. Exact cache rollback
@@ -165,11 +190,11 @@ than the multi-domain, long-context qualification required for product exposure.
 
 ## Product decision and next experiments
 
-Do not enable DSpark for DeepSeek V4.1 Flash by default yet. K4 now reaches
-12.70 tok/s with an exact greedy stream on the qualification prompt, clearing
-the performance floor. It still needs multi-domain 128-token and long-context
-cache qualification. K5 reaches 13.96 tok/s but remains excluded because its
-batched target numerics change the greedy stream.
+Do not enable DSpark for DeepSeek V4.1 Flash by default yet. Product-owned K4
+now reaches 13.42 tok/s with an exact greedy stream on the qualification prompt,
+clearing the performance floor. It still needs stable multi-domain 128-token
+and long-context cache qualification. K5 reaches 14.61 tok/s but remains
+excluded because its batched target numerics change the greedy stream.
 
 Reaching 20 tok/s requires a new capability rather than threshold tuning:
 
