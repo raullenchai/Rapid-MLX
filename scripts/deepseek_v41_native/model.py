@@ -171,12 +171,10 @@ class Model(nn.Module):
         pre_mix = make_identity_pre_mix(b, n, self.hc_mult)
         shared = SharedState()
         dspark_hiddens = {}
-        for layer_index, layer in enumerate(self.layers):
-            if (
-                return_dspark_hidden
-                and layer_index in self.args.dspark_target_layer_ids
-            ):
-                dspark_hiddens[layer_index] = mx.mean(h, axis=2)
+        for execution_index, layer in enumerate(self.layers, 1):
+            layer_id = execution_index - 1
+            if return_dspark_hidden and layer_id in self.args.dspark_target_layer_ids:
+                dspark_hiddens[layer_id] = mx.mean(h, axis=2)
             if layer.engram is not None:
                 assert hashes is not None
                 h = layer.engram(h, hashes[:, :, layer.engram.layer_hash_index])
@@ -193,7 +191,7 @@ class Model(nn.Module):
                 h, pre_mix = layer(h, pre_mix, start_pos, cache, shared_use)
             else:
                 h, pre_mix = layer(h, pre_mix, start_pos, cache, shared)
-            if self.eval_interval and (layer_index + 1) % self.eval_interval == 0:
+            if self.eval_interval and execution_index % self.eval_interval == 0:
                 mx.eval(h, pre_mix)
 
         h = hc_pre(h, pre_mix)  # collapse with the last ffn_pre
