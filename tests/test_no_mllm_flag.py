@@ -2471,6 +2471,19 @@ def test_spec_decode_overrides_mutually_exclusive_in_load_model(monkeypatch):
         )
 
 
+def test_force_mllm_rejects_direct_speculative_scheduler_config():
+    """Programmatic callers get a clear conflict before model resolution."""
+    from vllm_mlx.scheduler import SchedulerConfig
+    from vllm_mlx.server import load_model
+
+    with pytest.raises(ValueError, match="vision lane cannot honour"):
+        load_model(
+            "fake/model",
+            scheduler_config=SchedulerConfig(spec_decode="mtp"),
+            force_mllm=True,
+        )
+
+
 def test_server_main_no_mllm_skips_routing_config_fail_fast(monkeypatch):
     """BLOCKING (#1178 codex r5): standalone ``python -m vllm_mlx.server`` must
     NOT run the config-materialization fail-fast when the user passes an
