@@ -85,7 +85,11 @@ def test_safe_shard_accepts_only_same_repo_hub_blob(tmp_path):
 def test_hard_memory_floor_refuses_before_load(monkeypatch):
     profile = SimpleNamespace(min_memory_gb=224, enforce_min_memory=True)
     monkeypatch.setattr("vllm_mlx.model_aliases.resolve_profile", lambda _: profile)
-    monkeypatch.setattr("vllm_mlx.optimizations.get_system_memory_gb", lambda: 192)
+    monkeypatch.setitem(
+        sys.modules,
+        "vllm_mlx.optimizations",
+        SimpleNamespace(get_system_memory_gb=lambda: 192),
+    )
 
     with pytest.raises(SystemExit) as exc:
         cli._check_alias_min_memory("deepseek-v41-flash-reap-2bit")
@@ -93,7 +97,9 @@ def test_hard_memory_floor_refuses_before_load(monkeypatch):
 
 
 def test_programmatic_server_memory_gate_is_fail_closed(monkeypatch):
-    monkeypatch.setattr("vllm_mlx.optimizations.get_system_memory_gb", lambda: 192)
+    monkeypatch.setattr(
+        "psutil.virtual_memory", lambda: SimpleNamespace(total=192 * 1024**3)
+    )
     with pytest.raises(RuntimeError, match="requires at least 224"):
         artifacts.require_product_memory()
 

@@ -56,9 +56,12 @@ def is_product_target(model_name: str | None) -> bool:
 
 def require_product_memory() -> float:
     """Fail closed for programmatic callers that bypass the CLI catalog gate."""
-    from vllm_mlx.optimizations import get_system_memory_gb
+    import psutil
 
-    total = get_system_memory_gb()
+    # Keep this lightweight artifact gate importable on non-MLX hosts (notably
+    # Linux CI). Importing the general hardware module eagerly imports MLX even
+    # though this check only needs physical memory.
+    total = float(psutil.virtual_memory().total) / (1024**3)
     if total < MIN_UNIFIED_MEMORY_GB:
         raise RuntimeError(
             "DeepSeek V4.1 DSpark K4 requires at least "
