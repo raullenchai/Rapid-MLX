@@ -1314,14 +1314,20 @@ struct ChatMessage: Identifiable, Codable, Equatable, Hashable {
     /// Where the turn's terminal run of machine syntax begins, or nil when
     /// the turn does not end in machine syntax at all.
     ///
-    /// Walks lines from the end: a blank line or a line whose first non-space
-    /// character opens machine syntax (`<`, `{`, `[`, `}`, `]`, `"`, `,`)
-    /// belongs to the run; the first line that reads as prose stops it. That
-    /// one character is enough because the run only has to distinguish an
-    /// envelope dump — which is what a model emits when the parser lost its
-    /// call and generation simply stopped — from a sentence. A closing ```` ```
-    /// ```` also stops the run, which is correct: a turn that ENDS with a
-    /// fenced example is showing the example, not leaking a call.
+    /// Walks lines from the end: a blank line, a line whose first non-space
+    /// character opens machine syntax (`<`, `{`, `[`, `}`, `]`, `"`, `,`), or
+    /// a bare JSON scalar (a pretty-printed array element — `10,`, `true`,
+    /// `null`) belongs to the run; the first line that reads as prose stops
+    /// it. Deliberately a line-shape test rather than a JSON/XML parse: the
+    /// run only has to tell an envelope dump — what a model emits when the
+    /// parser lost its call and generation simply stopped — from a sentence,
+    /// and the input is by definition syntax no parser could read. The scalar
+    /// test is kept strict (a number, `true`, `false`, `null`, optional
+    /// trailing comma — never "ends with a colon", which is how the dogfood
+    /// repro's last prose line reads) because widening it moves the boundary
+    /// EARLIER, and an over-early boundary eats real prose. A closing
+    /// ```` ``` ```` stops the run too, which is correct: a turn that ENDS
+    /// with a fenced example is showing the example, not leaking a call.
     private static func terminalMachineSyntaxRunStart(in content: String) -> String.Index? {
         let openers: Set<Character> = ["<", "{", "[", "}", "]", "\"", ","]
         var runStart: String.Index?
@@ -1335,7 +1341,8 @@ struct ChatMessage: Identifiable, Codable, Equatable, Hashable {
             let trimmed = content[lineStart..<lineEnd]
                 .trimmingCharacters(in: .whitespaces)
             if !trimmed.isEmpty {
-                if let first = trimmed.first, openers.contains(first) {
+                if let first = trimmed.first,
+                   openers.contains(first) || isJSONScalarLine(trimmed) {
                     if runStart == nil { runStart = lineStart }
                     sawContent = true
                 } else {
@@ -1349,6 +1356,21 @@ struct ChatMessage: Identifiable, Codable, Equatable, Hashable {
             lineStart = index
         }
         return sawContent ? runStart : nil
+    }
+
+    /// True for a line that is nothing but a JSON scalar with an optional
+    /// trailing comma — the continuation lines of a pretty-printed array
+    /// (`10,`, `true`, `null`). Quoted strings and the bracket/brace forms are
+    /// already covered by the first-character test.
+    private static func isJSONScalarLine(_ trimmed: String) -> Bool {
+        var body = Substring(trimmed)
+        if body.hasSuffix(",") { body = body.dropLast() }
+        body = Substring(body.trimmingCharacters(in: .whitespaces))
+        if body == "true" || body == "false" || body == "null" { return true }
+        return body.range(
+            of: #"^-?(0|[1-9][0-9]*)(\.[0-9]+)?([eE][-+]?[0-9]+)?$"#,
+            options: .regularExpression
+        ) != nil
     }
 
     /// The character ranges of ``content`` that sit inside a fenced code

@@ -612,6 +612,48 @@ struct ToolCallArtifactSuppressionTests {
         #expect(ChatMessage.trailingToolCallArtifactProse(in: content) == nil)
     }
 
+    @Test("A pretty-printed envelope with array values is still a tail")
+    func trailingPrettyPrintedEnvelopeIsAnArtifact() {
+        // Adversarial review round 6 (codex, blocking): a pretty-printed call
+        // puts bare scalars on their own lines, and those reset the terminal
+        // run, so the raw envelope stayed visible.
+        let content = """
+        Let me search for those records:
+
+        <tool_call>
+        {
+          "name": "search",
+          "arguments": {
+            "ids": [
+              10,
+              -2.5,
+              true,
+              null
+            ]
+          }
+        """
+        #expect(ChatMessage.trailingToolCallArtifactProse(in: content)
+            == "Let me search for those records:")
+        #expect(ChatMessage.shouldSuppressToolCallArtifact(
+            content: content, toolCalls: [], finishReason: "stop", toolsRequested: true))
+    }
+
+    @Test("Prose that merely ends in a comma or colon is not machine syntax")
+    func proseLinesEndingInPunctuationStopTheRun() {
+        // The scalar test must stay strict: a looser one moves the boundary
+        // EARLIER, and an over-early boundary eats real prose. Here the run
+        // has to stop at the last sentence, so the example above it survives.
+        let content = """
+        The shape is:
+
+        <tool_call>{"name":"search","arguments":{}}</tool_call>
+
+        First, note the name field,
+        and second, the arguments object.
+        """
+        #expect(ChatMessage.trailingToolCallArtifactProse(in: content) == nil)
+    }
+
     @Test("A whole-turn artifact still renders the caption alone")
     func wholeTurnArtifactHasNoProse() {
         let content = "<tool_call>{\"name\": \"search\", \"arguments\": {\"q\": \"x\"}}</tool_call>"
