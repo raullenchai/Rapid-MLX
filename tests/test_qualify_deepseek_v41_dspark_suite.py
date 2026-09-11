@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 import importlib.util
+import subprocess
+import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -67,6 +70,52 @@ def test_tokens_must_be_positive() -> None:
     assert module._positive_int("1") == 1
     with pytest.raises(module.argparse.ArgumentTypeError, match="at least 1"):
         module._positive_int("0")
+
+
+def test_suite_requires_explicit_checkpoint_runtime_trust(tmp_path) -> None:
+    script = (
+        Path(__file__).parents[1] / "scripts" / "qualify_deepseek_v41_dspark_suite.py"
+    )
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(script),
+            "--target",
+            str(tmp_path / "target"),
+            "--overlay",
+            str(tmp_path / "overlay"),
+            "--checkpoint-runtime",
+            str(tmp_path / "runtime"),
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode != 0
+    assert "--trust-checkpoint-runtime" in result.stderr
+
+
+def test_suite_validates_all_inputs_before_loading_model(tmp_path) -> None:
+    module = _load_script()
+    target = tmp_path / "target"
+    overlay = tmp_path / "overlay"
+    runtime = tmp_path / "runtime"
+    target.mkdir()
+    overlay.mkdir()
+    runtime.mkdir()
+    args = SimpleNamespace(
+        target=target,
+        overlay=overlay,
+        checkpoint_runtime=runtime,
+    )
+
+    with pytest.raises(SystemExit, match="missing runtime.py"):
+        module._validate_inputs(args)
+
+    (runtime / "runtime.py").touch()
+    (runtime / "dspark.py").touch()
+    module._validate_inputs(args)
 
 
 @pytest.mark.parametrize(

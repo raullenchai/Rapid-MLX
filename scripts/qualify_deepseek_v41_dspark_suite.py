@@ -92,6 +92,17 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
+def _validate_inputs(args) -> None:
+    for label in ("target", "overlay", "checkpoint_runtime"):
+        path = getattr(args, label)
+        if not path.is_dir():
+            raise SystemExit(f"--{label.replace('_', '-')} must be a directory: {path}")
+    for name in ("runtime.py", "dspark.py"):
+        path = args.checkpoint_runtime / name
+        if not path.is_file():
+            raise SystemExit(f"checkpoint runtime is missing {name}: {path}")
+
+
 def main() -> None:
     args = parse_args()
     if not args.trust_checkpoint_runtime:
@@ -99,6 +110,7 @@ def main() -> None:
             "refusing to execute checkpoint-bundled Python without "
             "--trust-checkpoint-runtime"
         )
+    _validate_inputs(args)
 
     started = time.perf_counter()
     model, _ = load(str(args.target.resolve()), lazy=False)
