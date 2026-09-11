@@ -17,17 +17,25 @@ sys.path.insert(0, str(REPO_ROOT))
 sys.path.insert(0, str(REPO_ROOT / "scripts"))
 
 from benchmark_deepseek_v41_dspark import _prompt, _run_ar  # noqa: E402
-from deepseek_v41_native.attention import Attention, window_idx_matrix  # noqa: E402
-from deepseek_v41_native.fakequant import fake_quant_fp8_ue8m0  # noqa: E402
-from deepseek_v41_native.hyper_connections import (  # noqa: E402
+
+from vllm_mlx.models.deepseek_v41_native.attention import (  # noqa: E402
+    Attention,
+    window_idx_matrix,
+)
+from vllm_mlx.models.deepseek_v41_native.fakequant import (
+    fake_quant_fp8_ue8m0,  # noqa: E402
+)
+from vllm_mlx.models.deepseek_v41_native.hyper_connections import (  # noqa: E402
     hc_mixes,
     hc_post,
     hc_pre,
 )
-from deepseek_v41_native.layers import rope_tail  # noqa: E402
-from deepseek_v41_native.load import load  # noqa: E402
-from deepseek_v41_native.model import Block  # noqa: E402
-from deepseek_v41_native.sparse_attention import sparse_attn  # noqa: E402
+from vllm_mlx.models.deepseek_v41_native.layers import rope_tail  # noqa: E402
+from vllm_mlx.models.deepseek_v41_native.load import load  # noqa: E402
+from vllm_mlx.models.deepseek_v41_native.model import Block  # noqa: E402
+from vllm_mlx.models.deepseek_v41_native.sparse_attention import (
+    sparse_attn,  # noqa: E402
+)
 
 DEFAULT_PROMPT = (
     "A train travels 180 km at 60 km/h, waits 35 minutes, then travels "

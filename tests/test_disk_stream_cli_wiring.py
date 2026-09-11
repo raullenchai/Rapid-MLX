@@ -162,8 +162,8 @@ def test_disk_stream_cache_budget_rejects_non_positive_or_non_finite(value):
 def test_check_alias_min_memory_warns_regardless_of_disk_stream(monkeypatch, capsys):
     """_check_alias_min_memory has no disk-stream awareness at all — it is
     called unconditionally in serve_command (see test above) and its warn
-    logic is untouched by this ticket. Pin the warning still fires for an
-    alias whose declared floor exceeds this (mocked) machine's RAM."""
+    logic is independent of this ticket. Pin the warning still fires for an
+    alias whose declared floor exceeds the unified hardware probe."""
     import types
 
     from vllm_mlx import cli
@@ -173,10 +173,7 @@ def test_check_alias_min_memory_warns_regardless_of_disk_stream(monkeypatch, cap
         "vllm_mlx.model_aliases.resolve_profile", lambda _name: fake_profile
     )
 
-    class _FakeVirtualMemory:
-        total = 64 * (1024**3)  # 64 GB — well under the 192 GB floor
-
-    monkeypatch.setattr("psutil.virtual_memory", lambda: _FakeVirtualMemory())
+    monkeypatch.setattr("vllm_mlx.optimizations.get_system_memory_gb", lambda: 64.0)
 
     cli._check_alias_min_memory("hy3-preview-4bit")
 

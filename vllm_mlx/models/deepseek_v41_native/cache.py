@@ -17,6 +17,8 @@ Model-level: the engram compressed-token-id history, and the global offset.
 
 from __future__ import annotations
 
+from typing import Any
+
 import mlx.core as mx
 import numpy as np
 
@@ -113,7 +115,7 @@ class ModelCache:
     def begin_forward(self) -> None:
         """Open the only rollback window supported by this cache."""
         self.rollback_start = self.offset
-        snapshots = []
+        snapshots: list[Any] = []
         for layer in self.layers:
             if layer.comp_state is not None:
                 layer.comp_state.begin_forward(self.offset)

@@ -213,6 +213,7 @@ def _coerce(alias: str, value: object) -> AliasProfile:
             "ddtree_speculative_tokens",
             "ddtree_tree_budget",
             "min_memory_gb",
+            "enforce_min_memory",
             "vision_min_memory_gb",
             "experimental",
             "recommended_sampling",
@@ -720,6 +721,7 @@ def _coerce(alias: str, value: object) -> AliasProfile:
         pflash_keep_ratio=pflash_keep_ratio,
         turboquant_tier=turboquant_tier,
         min_memory_gb=min_memory_gb,
+        enforce_min_memory=_strict_bool("enforce_min_memory", False),
         vision_min_memory_gb=vision_min_memory_gb,
         experimental=_strict_bool("experimental", False),
     )

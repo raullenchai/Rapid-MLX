@@ -13,12 +13,18 @@ import mlx.core as mx
 
 sys.path.insert(0, str(Path(__file__).parents[1] / "scripts"))
 
-from deepseek_v41_native.attention import Attention, GroupedOutputLinear  # noqa: E402
-from deepseek_v41_native.cache import ModelCache  # noqa: E402
-from deepseek_v41_native.compressor import Compressor, CompressorState  # noqa: E402
-from deepseek_v41_native.config import ModelArgs  # noqa: E402
-from deepseek_v41_native.load import reshape_grouped_wo_a  # noqa: E402
-from deepseek_v41_native.model import Model  # noqa: E402
+from vllm_mlx.models.deepseek_v41_native.attention import (  # noqa: E402
+    Attention,
+    GroupedOutputLinear,
+)
+from vllm_mlx.models.deepseek_v41_native.cache import ModelCache  # noqa: E402
+from vllm_mlx.models.deepseek_v41_native.compressor import (  # noqa: E402
+    Compressor,
+    CompressorState,
+)
+from vllm_mlx.models.deepseek_v41_native.config import ModelArgs  # noqa: E402
+from vllm_mlx.models.deepseek_v41_native.load import reshape_grouped_wo_a  # noqa: E402
+from vllm_mlx.models.deepseek_v41_native.model import Model  # noqa: E402
 
 
 def test_reshape_grouped_wo_a_restores_quantized_parameter_axes() -> None:

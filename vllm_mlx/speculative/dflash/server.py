@@ -65,7 +65,7 @@ from vllm_mlx.service.helpers import (
 from vllm_mlx.service.postprocessor import StreamingPostProcessor
 
 from .eligibility import have_runtime
-from .runtime import DFlashRuntime, load_runtime
+from .runtime import load_runtime
 
 logger = logging.getLogger(__name__)
 
@@ -234,8 +234,11 @@ class _DFlashAdmissionReservation:
 class _DFlashAdmission:
     """Bound DFlash's serial-lock queue before it consumes worker memory."""
 
-    def __init__(self, max_concurrent_requests: int) -> None:
+    def __init__(
+        self, max_concurrent_requests: int, backend_name: str = "DFlash"
+    ) -> None:
         self._max_concurrent_requests = max(0, int(max_concurrent_requests))
+        self._backend_name = backend_name
         self._reservations = 0
         self._lock = threading.Lock()
 
@@ -248,7 +251,7 @@ class _DFlashAdmission:
                 raise HTTPException(
                     status_code=503,
                     detail=(
-                        "DFlash is at its max_concurrent_requests admission "
+                        f"{self._backend_name} is at its max_concurrent_requests admission "
                         "limit; retry shortly."
                     ),
                     headers={"Retry-After": "1"},
@@ -611,7 +614,7 @@ def _build_app(
     *,
     model: Any,
     processor: Any,
-    runtime: DFlashRuntime,
+    runtime: Any,
     served_model_name: str,
     default_max_tokens: int,
     cors_origins: list[str],
@@ -625,6 +628,12 @@ def _build_app(
     cors_policy: Any | None = None,
     tool_call_parser: str | None = None,
     reasoning_parser_name: str | None = None,
+    render_prompt_fn: Any | None = None,
+    stream_generate_fn: Any | None = None,
+    generate_fn: Any | None = None,
+    generation_kwargs_fn: Any | None = None,
+    validate_request_fn: Any | None = None,
+    backend_name: str = "DFlash",
 ) -> FastAPI:
     """Create the FastAPI application for DFlash mode.
 
@@ -696,11 +705,11 @@ def _build_app(
                 ) from exc
             raise
 
-    app = FastAPI(title="Rapid-MLX (DFlash)")
+    app = FastAPI(title=f"Rapid-MLX ({backend_name})")
     # DFlash has one GPU worker and serializes generation with
     # ``_dflash_lock``. Bound its waiting room as well so a burst cannot
     # accumulate an unbounded number of requests and their parsed bodies.
-    admission = _DFlashAdmission(max_concurrent_requests)
+    admission = _DFlashAdmission(max_concurrent_requests, backend_name)
     app.state.dflash_admission = admission
     # D-ANTHRO-VALIDATION F11: install the shared exception handlers so
     # Pydantic validation errors return the canonical
@@ -769,7 +778,7 @@ def _build_app(
     async def healthz() -> dict[str, Any]:
         return {
             "status": "ok",
-            "engine": "dflash",
+            "engine": backend_name.lower().replace(" ", "-"),
             "algorithm": runtime.algorithm,
             "mode": "single-user-serial",
             "drafter": runtime.drafter_repo,
@@ -803,23 +812,22 @@ def _build_app(
     ):
         if not request.messages:
             raise HTTPException(status_code=400, detail="messages must not be empty")
+        if validate_request_fn is not None:
+            validate_request_fn(request)
         if request.n is not None and request.n > 1:
             raise HTTPException(status_code=400, detail="n > 1 is not supported")
         if request.tools and not cfg.tool_call_parser:
             raise HTTPException(
                 status_code=400,
                 detail=(
-                    "DFlash tool calling requires an enabled tool-call parser. "
+                    f"{backend_name} tool calling requires an enabled tool-call parser. "
                     "Remove --no-tool-call-parser or configure one explicitly."
                 ),
             )
         if request.tools and request.tool_choice not in (None, "auto"):
             raise HTTPException(
                 status_code=400,
-                detail=(
-                    "DFlash currently supports tool_choice='auto' only. "
-                    "Restart without DFlash for forced or disabled tool choice."
-                ),
+                detail=(f"{backend_name} currently supports tool_choice='auto' only."),
             )
         # Surface unsupported params explicitly rather than silently
         # ignoring — silent-drop is the bug class that makes users think
@@ -827,14 +835,14 @@ def _build_app(
         if request.logprobs:
             raise HTTPException(
                 status_code=400,
-                detail="logprobs is not supported in DFlash mode. Restart without DFlash.",
+                detail=f"logprobs is not supported in {backend_name} mode.",
             )
         if request.response_format is not None:
             raise HTTPException(
                 status_code=400,
                 detail=(
                     "response_format (structured output) is not supported "
-                    "in DFlash mode. Restart without DFlash."
+                    f"in {backend_name} mode."
                 ),
             )
         # F1: the slot was reserved at the ASGI layer
@@ -919,7 +927,7 @@ def _build_app(
                 raise HTTPException(
                     status_code=400,
                     detail=(
-                        "DFlash thinking output requires a reasoning parser. "
+                        f"{backend_name} thinking output requires a reasoning parser. "
                         "Remove --no-reasoning-parser or configure one explicitly."
                     ),
                 )
@@ -943,11 +951,9 @@ def _build_app(
             # released immediately (round-5 #2) — nothing serial is left running
             # behind it, unlike a timed-out generation worker.
             def _render() -> str:
-                return _render_prompt(
-                    processor,
-                    model,
-                    request,
-                    enable_thinking=effective_thinking,
+                renderer = render_prompt_fn or _render_prompt
+                return renderer(
+                    processor, model, request, enable_thinking=effective_thinking
                 )
 
             # codex round-8 #1: validate the remaining budget BEFORE submitting
@@ -959,7 +965,7 @@ def _build_app(
                 raise HTTPException(
                     status_code=504,
                     detail=(
-                        "DFlash request deadline elapsed before prompt "
+                        f"{backend_name} request deadline elapsed before prompt "
                         "rendering could start."
                     ),
                 )
@@ -992,7 +998,7 @@ def _build_app(
                     raise HTTPException(
                         status_code=504,
                         detail=(
-                            "DFlash prompt rendering exceeded the request "
+                            f"{backend_name} prompt rendering exceeded the request "
                             "timeout of "
                             f"{_format_timeout_seconds(request_timeout_for_diagnostics)}."
                         ),
@@ -1008,13 +1014,20 @@ def _build_app(
             )
             top_p = request.top_p if request.top_p is not None else 1.0
 
-            gen_kwargs = dict(
-                max_tokens=max_tokens,
-                temperature=temperature,
-                top_p=top_p,
-                draft_model=runtime.drafter,
-                draft_kind=runtime.kind,
-            )
+            if generation_kwargs_fn is None:
+                gen_kwargs = dict(
+                    max_tokens=max_tokens,
+                    temperature=temperature,
+                    top_p=top_p,
+                    draft_model=runtime.drafter,
+                    draft_kind=runtime.kind,
+                )
+            else:
+                gen_kwargs = generation_kwargs_fn(
+                    max_tokens=max_tokens,
+                    temperature=temperature,
+                    top_p=top_p,
+                )
 
             # Pass the REMAINING budget (post-render) to the completion helper,
             # not the original timeout, so the single absolute deadline
@@ -1031,7 +1044,7 @@ def _build_app(
                     raise HTTPException(
                         status_code=504,
                         detail=(
-                            "DFlash request deadline elapsed during prompt "
+                            f"{backend_name} request deadline elapsed during prompt "
                             "rendering (timeout "
                             f"{_format_timeout_seconds(request_timeout_for_diagnostics)})."
                         ),
@@ -1080,6 +1093,8 @@ def _build_app(
                         deadline=request_deadline,
                         admission_reservation=reservation,
                         enable_thinking=effective_thinking,
+                        stream_generate_fn=stream_generate_fn,
+                        backend_name=backend_name,
                     ),
                     reservation,
                 ),
@@ -1107,6 +1122,8 @@ def _build_app(
                 deadline=request_deadline,
                 admission_reservation=reservation,
                 enable_thinking=effective_thinking,
+                generate_fn=generate_fn,
+                backend_name=backend_name,
             )
         finally:
             reservation.release()
@@ -1247,6 +1264,8 @@ async def _stream_completion(
     deadline: float | None = None,
     admission_reservation: _DFlashAdmissionReservation | None = None,
     enable_thinking: bool = False,
+    stream_generate_fn: Any | None = None,
+    backend_name: str = "DFlash",
 ) -> AsyncIterator[bytes]:
     """Stream OpenAI-format chunks. Generation happens under the serial
     lock; chunks are forwarded as ``data: ...\\n\\n`` SSE events.
@@ -1264,7 +1283,12 @@ async def _stream_completion(
     human-facing timeout messages (codex round-5 #6), so a client sees the
     limit it actually asked for rather than the render-reduced remainder. When
     omitted (direct callers/tests) it mirrors ``timeout``."""
-    from mlx_vlm import stream_generate
+    if stream_generate_fn is None:
+        from mlx_vlm import stream_generate
+
+        active_stream_generate_fn = stream_generate
+    else:
+        active_stream_generate_fn = stream_generate_fn
 
     if timeout_label is None:
         timeout_label = timeout
@@ -1537,7 +1561,9 @@ async def _stream_completion(
             # the same as the mid-stream error path below.
             def _make_gen():
                 try:
-                    return stream_generate(model, processor, prompt, **gen_kwargs)
+                    return active_stream_generate_fn(
+                        model, processor, prompt, **gen_kwargs
+                    )
                 except Exception as e:  # noqa: BLE001 — surface upstream; outer code converts to error SSE
                     return e
 
@@ -1548,7 +1574,7 @@ async def _stream_completion(
             # generator to drive; the lease's deferred cleanup owns closing
             # the (possibly in-flight) worker.
             if gen_or_err is timed_out:
-                error_message = f"DFlash stream timed out after {_format_timeout_seconds(timeout_label)}."
+                error_message = f"{backend_name} stream timed out after {_format_timeout_seconds(timeout_label)}."
                 finish_reason = "length"
                 gen = None
             elif isinstance(gen_or_err, Exception):
@@ -1590,7 +1616,7 @@ async def _stream_completion(
                     # timeout immediately; the still-running token step is
                     # tracked by the lease and cleaned up (lock + slot held
                     # until it stops) via ``__aexit__``'s deferred path.
-                    error_message = f"DFlash stream timed out after {_format_timeout_seconds(timeout_label)}."
+                    error_message = f"{backend_name} stream timed out after {_format_timeout_seconds(timeout_label)}."
                     finish_reason = "length"
                     break
                 if chunk is None:
@@ -1664,12 +1690,12 @@ async def _stream_completion(
                         for event in postprocessor.process_chunk(output):
                             await _emit_postprocessed_event(event)
                 except _DFlashStreamDeadlineError:
-                    error_message = f"DFlash stream timed out after {_format_timeout_seconds(timeout_label)}."
+                    error_message = f"{backend_name} stream timed out after {_format_timeout_seconds(timeout_label)}."
                     finish_reason = "length"
                     break
                 except _DFlashClientGoneError:
                     error_message = (
-                        "DFlash stream aborted: the client did not read "
+                        f"{backend_name} stream aborted: the client did not read "
                         "buffered output within "
                         f"{_STREAM_BACKPRESSURE_TIMEOUT_SECONDS:.0f}s of "
                         "server-side backpressure."
@@ -1860,6 +1886,8 @@ async def _non_stream_completion(
     deadline: float | None = None,
     admission_reservation: _DFlashAdmissionReservation | None = None,
     enable_thinking: bool = False,
+    generate_fn: Any | None = None,
+    backend_name: str = "DFlash",
 ) -> ChatCompletionResponse:
     """Run generation under the serial lock and enforce a safe deadline.
 
@@ -1875,7 +1903,12 @@ async def _non_stream_completion(
     request timeout reported in the 504 message (codex round-5 #6). Omitted →
     mirrors ``timeout``.
     """
-    from mlx_vlm import generate
+    if generate_fn is None:
+        from mlx_vlm import generate
+
+        active_generate_fn = generate
+    else:
+        active_generate_fn = generate_fn
 
     if timeout_label is None:
         timeout_label = timeout
@@ -1944,7 +1977,7 @@ async def _non_stream_completion(
         # the stream path's error handling.
         def _generate_safely():
             try:
-                return generate(model, processor, prompt, **gen_kwargs)
+                return active_generate_fn(model, processor, prompt, **gen_kwargs)
             except Exception as e:  # noqa: BLE001 — surface as HTTPException below
                 return e
 
@@ -1969,7 +2002,7 @@ async def _non_stream_completion(
             _defer_worker_cleanup()
         raise HTTPException(
             status_code=504,
-            detail=f"DFlash request timed out after {_format_timeout_seconds(timeout_label)}.",
+            detail=f"{backend_name} request timed out after {_format_timeout_seconds(timeout_label)}.",
         ) from exc
     except asyncio.CancelledError:
         if lock_acquired and worker_future is not None:
@@ -1985,7 +2018,7 @@ async def _non_stream_completion(
         )
         raise HTTPException(
             status_code=500,
-            detail=f"DFlash runtime error: {type(result).__name__}: {result}",
+            detail=f"{backend_name} runtime error: {type(result).__name__}: {result}",
         )
 
     # OpenAI distinguishes "stop" (natural end / stop sequence) from

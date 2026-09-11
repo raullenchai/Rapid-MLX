@@ -188,19 +188,27 @@ output. K5 remains excluded regardless of its higher throughput.
   tokens/block versus 1.21 for REAP12.5 on this task), rejecting the hypothesis
   that REAP target/drafter mismatch is the dominant loss.
 
-## Product decision and next experiments
+## Product decision
 
-Do not enable DSpark for DeepSeek V4.1 Flash by default yet. Product-owned K4
-now reaches 13.42 tok/s with an exact greedy stream on the qualification prompt,
-clearing the performance floor. It still needs stable multi-domain 128-token
-and long-context cache qualification. K5 reaches 14.61 tok/s but remains
-excluded because its batched target numerics change the greedy stream.
+The stable K4 path is now exposed through an experimental, serial product lane.
+The multi-domain 128-token qualification completed 972 target-authoritative
+transitions twice with 4/4 deterministic outputs. Its weighted throughput was
+10.719 tok/s versus 9.157 tok/s for the same-kernel AR control (+17.1%). The
+isolated two-repeat K4 run measured 11.7588 tok/s and a 218.074 GB peak.
 
-Reaching 20 tok/s requires a new capability rather than threshold tuning:
+The production wrapper was then dogfooded against the full pinned artifacts. It
+strict-loaded in 300.81 seconds, answered the factual prompt correctly, and
+peaked at 217.97 GB. A literal EOS marker found in this run was removed at the
+streaming boundary and covered by a regression test.
 
-1. Run K4 on a multi-domain 128-token prompt suite and verify exact target
-   authority, sustained throughput, and cache rollback at longer contexts.
-2. A model-trained MHC-aligned block drafter with materially higher accepted
-   length. No compatible V4.1 checkpoint was available during this experiment.
-3. After either exists, re-run a multi-domain, 128-token suite and long-context
-   cache qualification before server/catalog integration.
+K5 remains excluded because it does not preserve the qualified target stream.
+K4 remains target-authoritative and deterministic for one fixed batch shape,
+but it is not bitwise-equivalent to serial AR: a 5.96e-8 layer-0
+hyper-connection difference grows through the 40-layer target and can choose a
+different greedy continuation. Exact serial equivalence would serialize the
+token-local matrix work and remove the measured gain.
+
+The product boundary therefore remains explicit: greedy only, single-stream,
+8,192 input tokens, 4,096 output tokens, and no tools/MCP/structured output.
+Reaching 20 tok/s still requires a materially better aligned block drafter or a
+new target execution capability rather than another threshold adjustment.

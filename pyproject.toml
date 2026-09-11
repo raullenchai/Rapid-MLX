@@ -596,6 +596,11 @@ vllm_mlx = [
     # Vendored SD3.5 MLX runtime attribution must ship beside the MIT source.
     "image/sd35_runtime/LICENSE",
     "image/sd35_runtime/NOTICE",
+    # DeepSeek V4.1 native target + DSpark implementations retain separate
+    # upstream licenses; ship both texts and the provenance notice.
+    "models/deepseek_v41_native/LICENSE",
+    "models/deepseek_v41_native/LICENSE-DSPARK",
+    "models/deepseek_v41_native/NOTICE",
 ]
 videox_fun_mlx = ["LICENSE", "NOTICE"]
 

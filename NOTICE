@@ -91,12 +91,12 @@ repository. Each keeps its upstream license text alongside the code.
   bffd4856a4504b76a242536f2dd356093c8e2e92.
   Licensed under the MIT License.
 
-* scripts/deepseek_v41_native/
+* vllm_mlx/models/deepseek_v41_native/
   DeepSeek V4.1 native MLX runtime. The target runtime is adapted under the
   Apache License 2.0; the DSpark draft algorithm follows the model publisher's
   MIT-licensed reference implementation.
-  See scripts/deepseek_v41_native/LICENSE,
-  scripts/deepseek_v41_native/LICENSE-DSPARK, and NOTICE.
+  See vllm_mlx/models/deepseek_v41_native/LICENSE,
+  vllm_mlx/models/deepseek_v41_native/LICENSE-DSPARK, and NOTICE.
 
 
 Runtime dependencies

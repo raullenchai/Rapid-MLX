@@ -284,6 +284,11 @@ class ModelProfile:
     # GB peak RSS — needs 192 GB+ M3 Ultra). Enforced as a boot-time
     # WARNING (not a hard block) in ``vllm_mlx/cli.py``.
     min_memory_gb: float | None = None
+    # A small set of measured, experimental giant-model lanes must refuse
+    # startup below their declared floor because attempting the load can make
+    # the entire host unresponsive. Ordinary aliases retain warning-only
+    # behavior. This is catalog data, never inferred from a model name.
+    enforce_min_memory: bool = False
     # Measured unified-memory floor for automatic vision-lane admission.
     # This is separate from ``min_memory_gb`` because the same checkpoint can
     # remain safe through its text lane on a smaller Mac.  ``None`` preserves

@@ -91,6 +91,7 @@ ALLOWED_PROFILE_KEYS: frozenset[str] = frozenset(
         "ddtree_speculative_tokens",
         "ddtree_tree_budget",
         "min_memory_gb",
+        "enforce_min_memory",
         "vision_min_memory_gb",
         "experimental",
         "recommended_sampling",

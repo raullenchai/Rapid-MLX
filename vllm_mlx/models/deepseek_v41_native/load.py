@@ -15,8 +15,9 @@ random-initialized (the GLM-5.2 lesson); this loader refuses that:
   to the same ``is_quant_target`` / ``bits_for`` rules the converter used.
 
 Builds bundle **nothing executable**: no ``model_file`` mechanism exists here —
-a build is loaded through this package (``deepseek_v41_mlx.load.load``), never
-through ``mlx_lm.load``.
+a build is loaded through this package
+(``vllm_mlx.models.deepseek_v41_native.load``), never through a checkpoint
+Python module.
 """
 
 from __future__ import annotations

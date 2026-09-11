@@ -621,6 +621,24 @@
       "top_p": 1.0
     }
   },
+  "deepseek-v41-flash-reap-2bit": {
+    "hf_path": "rapid-mlx/DeepSeek-V4.1-Flash-REAP-2bit-MLX",
+    "reasoning_parser": "deepseek_v4",
+    "is_hybrid": false,
+    "is_hybrid_explicit": true,
+    "is_text_only": true,
+    "is_moe": true,
+    "supports_spec_decode": false,
+    "mtp_default_enabled": false,
+    "default_max_tokens": 4096,
+    "min_memory_gb": 224,
+    "enforce_min_memory": true,
+    "experimental": true,
+    "recommended_sampling": {
+      "temperature": 0.0,
+      "top_p": 1.0
+    }
+  },
   "qwen3-0.6b-4bit": {
     "hf_path": "mlx-community/Qwen3-0.6B-4bit",
     "tool_call_parser": "hermes",

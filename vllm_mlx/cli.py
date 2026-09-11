@@ -1009,7 +1009,13 @@ def _load_embedding_model_or_exit(args, load_fn) -> None:
     print(f"Embedding model loaded: {args.embedding_model}")
 
 
-def _check_disk_space(model_name: str, force: bool = False) -> None:
+def _check_disk_space(
+    model_name: str,
+    force: bool = False,
+    *,
+    revision_override: str | None = None,
+    allow_patterns: list[str] | None = None,
+) -> None:
     """Verify there's enough disk space to download the model.
 
     Queries HuggingFace for the repo size and compares with available space
@@ -1019,8 +1025,9 @@ def _check_disk_space(model_name: str, force: bool = False) -> None:
     Behaviour:
 
     - Model is already a local path → return.
-    - Files already cached for the current Hub revision are excluded from the
-      required download size.
+    - Files already cached for the selected Hub revision are excluded from the
+      required download size. A pinned product lane may also narrow the check
+      to its declared runtime files.
     - HF API call fails (offline, gated repo, etc.) → return silently. The
       loader's 404/auth handlers will surface the real error if there is one.
     - Determined size and disk is insufficient → print actionable error
@@ -1042,7 +1049,7 @@ def _check_disk_space(model_name: str, force: bool = False) -> None:
     # Text checkpoints retain the selective-loader fast path below.
     from vllm_mlx._download_gate import mflux_missing_weights
 
-    if mflux_missing_weights(model_name) == []:
+    if revision_override is None and mflux_missing_weights(model_name) == []:
         return
 
     # Which directory inside the repo this alias actually needs. Resolved
@@ -1053,7 +1060,7 @@ def _check_disk_space(model_name: str, force: bool = False) -> None:
     # machine with ample room for the one being fetched.
     from vllm_mlx.model_aliases import checkpoint_prefix
 
-    _prefix = checkpoint_prefix(model_name)
+    _prefix = None if allow_patterns is not None else checkpoint_prefix(model_name)
 
     # Keep the historical fast path for ordinary text-model repositories.
     # Their loaders may intentionally fetch only one of several weight formats,
@@ -1062,12 +1069,13 @@ def _check_disk_space(model_name: str, force: bool = False) -> None:
     try:
         from huggingface_hub import try_to_load_from_cache
 
-        cached_config = try_to_load_from_cache(
-            model_name,
-            f"{_prefix}config.json",
-        )
-        if isinstance(cached_config, str) and os.path.exists(cached_config):
-            return
+        if revision_override is None and allow_patterns is None:
+            cached_config = try_to_load_from_cache(
+                model_name,
+                f"{_prefix}config.json",
+            )
+            if isinstance(cached_config, str) and os.path.exists(cached_config):
+                return
     except Exception:
         pass
 
@@ -1081,14 +1089,28 @@ def _check_disk_space(model_name: str, force: bool = False) -> None:
         from huggingface_hub import model_info, try_to_load_from_cache
         from huggingface_hub.constants import HF_HUB_CACHE
 
-        info = model_info(model_name, files_metadata=True)
+        info = (
+            model_info(model_name, revision=revision_override, files_metadata=True)
+            if revision_override is not None
+            else model_info(model_name, files_metadata=True)
+        )
         revision = getattr(info, "sha", None)
+        if allow_patterns is not None:
+            from fnmatch import fnmatchcase
+
+            def _selected(filename: str) -> bool:
+                return any(fnmatchcase(filename, pattern) for pattern in allow_patterns)
+        else:
+
+            def _selected(filename: str) -> bool:
+                return not _prefix or filename.startswith(_prefix)
+
         siblings = [
             sibling
             for sibling in (getattr(info, "siblings", None) or [])
             if hasattr(sibling, "size")
             and hasattr(sibling, "rfilename")
-            and (not _prefix or sibling.rfilename.startswith(_prefix))
+            and _selected(sibling.rfilename)
         ]
         model_size_bytes = 0
         for sibling in siblings:
@@ -1370,8 +1392,7 @@ def _resolve_mtp_depth_for_model(
 
 
 def _check_alias_min_memory(user_typed: str) -> None:
-    """Alias-level unified-memory guard — warn if the user's Mac is
-    smaller than the alias's declared ``min_memory_gb`` floor.
+    """Apply the alias-level unified-memory warning or hard admission floor.
 
     codex #1069 round 3 [NIT #3]: fires alongside (and before) the
     generic model-size / pressure check in ``_check_memory_capacity``.
@@ -1381,9 +1402,10 @@ def _check_alias_min_memory(user_typed: str) -> None:
     GB Max sees the actionable pointer BEFORE the 166 GB
     ``hy3-preview-4bit`` download starts.
 
-    Best-effort: warns loudly (never aborts) so an operator with a
-    borderline machine, headless setup, or unusual memory allocator
-    can still opt in. Silent no-op when:
+    Most aliases warn so an operator with a borderline or unusual host can
+    still opt in. Profiles with ``enforce_min_memory`` fail before download or
+    load because their measured peak is unsafe below the declared floor.
+    Silent no-op when:
       - The alias has no ``min_memory_gb`` metadata (every model we
         ship under 100 GB weights).
       - The model has no built-in alias profile (direct HF paths that match a
@@ -1403,15 +1425,25 @@ def _check_alias_min_memory(user_typed: str) -> None:
         return
 
     try:
-        import psutil
+        from .optimizations import get_system_memory_gb
 
-        total_ram_gb = psutil.virtual_memory().total / (1024**3)
+        total_ram_gb = get_system_memory_gb()
     except Exception:
         return
     if total_ram_gb <= 0:
         return
     if total_ram_gb >= floor_gb:
         return  # Machine is big enough — silent.
+
+    if getattr(profile, "enforce_min_memory", False):
+        print(
+            f"\n  Error: '{user_typed}' requires at least {floor_gb:.0f} GB "
+            f"of unified memory; this Mac reports {total_ram_gb:.1f} GB.\n"
+            "  Rapid-MLX is refusing the load because this qualified runtime "
+            "peaks near 218 GB and an undersized host may become unresponsive.\n",
+            file=sys.stderr,
+        )
+        raise SystemExit(1)
 
     is_tty = sys.stdout.isatty() and "NO_COLOR" not in os.environ
     YELLOW = "\x1b[33m" if is_tty else ""
@@ -1873,6 +1905,17 @@ def _ensure_model_downloaded(
     """
     if os.path.exists(model_name):
         return
+    # Hard-gated giant-model profiles must fail before every implicit download
+    # entry point (chat, bench, submit, and serve). Explicit `pull` remains a
+    # storage-only operation and is intentionally allowed on another machine.
+    try:
+        from .model_aliases import resolve_profile
+
+        profile = resolve_profile(model_name)
+    except Exception:
+        profile = None
+    if profile is not None and getattr(profile, "enforce_min_memory", False):
+        _check_alias_min_memory(model_name)
     # Registered image checkpoints are immutable execution contracts. Resolve
     # the contract before probing cachedness: ``_cache_runnability`` treats a
     # pinned image repo specially and must not let a complete moving ``main``
@@ -3477,6 +3520,30 @@ def _auto_config_lookup_key(config_identity: str) -> str:
     return _resolve_subfolder_checkpoint(config_identity)
 
 
+def _resolve_v41_serve_max_tokens(requested, profile) -> tuple[int, bool]:
+    """Return the explicit value or the V4.1 catalog-qualified default."""
+    if requested is not None:
+        return requested, True
+    profile_default = getattr(profile, "default_max_tokens", None)
+    return (profile_default if profile_default is not None else 32768), False
+
+
+def _validate_v41_product_spec_flags(args, *, owns_runtime: bool) -> None:
+    """Reject controls that would falsely imply the fixed K4 lane is optional."""
+    if not owns_runtime:
+        return
+    if getattr(args, "_speculative_config", None) is not None or getattr(
+        args, "no_spec_decode", False
+    ):
+        print(
+            "error: deepseek-v41-flash-reap-2bit always uses its qualified "
+            "DSpark K4 runtime; do not pass --speculative-config or "
+            "--no-spec-decode.",
+            file=sys.stderr,
+        )
+        raise SystemExit(2)
+
+
 def serve_command(args):
     """Start the OpenAI-compatible server."""
     import logging
@@ -3535,6 +3602,12 @@ def serve_command(args):
     _serve_profile = _resolve_serve_profile(
         getattr(args, "_original_alias", None) or getattr(args, "model", "")
     )
+    if _serve_profile is not None and getattr(
+        _serve_profile, "enforce_min_memory", False
+    ):
+        _check_alias_min_memory(
+            getattr(args, "_original_alias", None) or getattr(args, "model", "")
+        )
     _is_wan_video = False
     _reject_embedding_alias_serve(
         _serve_profile, getattr(args, "_original_alias", None) or args.model
@@ -3544,6 +3617,23 @@ def serve_command(args):
     _owns_pinned_image_download = bool(
         _serve_profile is not None and _serve_profile.hf_path in IMAGE_MODEL_DATA_FILES
     )
+    from .models.deepseek_v41_native.artifacts import is_product_target
+
+    _owns_v41_product_download = is_product_target(args.model)
+    if _owns_v41_product_download:
+        # This qualified lane intentionally carries a lower output cap than
+        # the generic server. Keep the override local to this model so the PR
+        # does not change defaults for unrelated aliases.
+        effective_max_tokens, _max_tokens_is_explicit = _resolve_v41_serve_max_tokens(
+            _arg_max_tokens, _serve_profile
+        )
+    if _owns_v41_product_download and not 1 <= effective_max_tokens <= 4096:
+        print(
+            "error: the experimental DeepSeek V4.1 DSpark K4 server "
+            "currently supports 1 <= --max-tokens <= 4096.",
+            file=sys.stderr,
+        )
+        raise SystemExit(2)
     if _serve_profile is not None and _serve_profile.modality == "video-gen":
         from .runtime.video_lane import require_video_runtime_or_exit
         from .video.wan import is_wan_model
@@ -3633,6 +3723,7 @@ def serve_command(args):
     if is_audio_model_alias(getattr(args, "model", None)):
         require_audio_or_exit(args.model)
 
+    _validate_v41_product_spec_flags(args, owns_runtime=_owns_v41_product_download)
     # DDTree has an external experimental runtime and its validated target
     # can be multi-GB. Fail the cheap config/alias/runtime gates before the
     # version prompt and before any model prefetch so a missing dtree-mlx
@@ -3775,7 +3866,30 @@ def serve_command(args):
     # ImageEngine. The
     # generic prefetch resolves repository HEAD and downloads every file,
     # including unreviewed scripts and samples, before that guarded path runs.
-    if _owns_pinned_image_download:
+    if _owns_v41_product_download:
+        from .models.deepseek_v41_native.artifacts import (
+            MTP_ALLOW_PATTERNS,
+            MTP_REPO,
+            MTP_REVISION,
+            TARGET_REVISION,
+            download_mtp_snapshot,
+            download_target_snapshot,
+        )
+
+        _check_disk_space(
+            args.model,
+            force=getattr(args, "force_disk_check", False),
+            revision_override=TARGET_REVISION,
+        )
+        download_target_snapshot()
+        _check_disk_space(
+            MTP_REPO,
+            force=getattr(args, "force_disk_check", False),
+            revision_override=MTP_REVISION,
+            allow_patterns=list(MTP_ALLOW_PATTERNS),
+        )
+        download_mtp_snapshot()
+    elif _owns_pinned_image_download:
         # Preserve the normal first-run disk guard even though the generic
         # downloader is intentionally bypassed. A complete pinned snapshot is
         # a warm no-op; cold/partial caches are checked before the multi-GB
@@ -4449,13 +4563,49 @@ def serve_command(args):
         features.append("dflash: single-user")
     if args.enable_ddtree:
         features.append("ddtree: experimental single-user")
+    if _owns_v41_product_download:
+        features.append("dspark-k4: experimental single-user")
     if features:
         print(f"  Features: {', '.join(features)}")
     print(f"  Model: {args.model}")
     # Store MCP config path for FastAPI startup
-    if args.mcp_config and not args.enable_dflash:
+    if args.mcp_config and not args.enable_dflash and not _owns_v41_product_download:
         print(f"MCP config: {args.mcp_config}")
         os.environ["RAPID_MLX_MCP_CONFIG"] = args.mcp_config
+
+    if _owns_v41_product_download:
+        if args.mcp_config:
+            print(
+                "error: MCP is not supported by the experimental DeepSeek "
+                "V4.1 DSpark K4 serial server.",
+                file=sys.stderr,
+            )
+            raise SystemExit(2)
+        from .models.deepseek_v41_native.server import run_server as run_v41_server
+
+        server._sync_config()
+        run_v41_server(
+            host=args.host,
+            port=args.port,
+            served_model_name=(
+                args.served_model_name
+                or getattr(args, "_original_alias", None)
+                or args.model
+            ),
+            default_max_tokens=effective_max_tokens,
+            cors_origins=cors_origins,
+            uvicorn_log_level=uvicorn_log_level,
+            no_thinking=args.no_thinking,
+            api_key=server._api_key,
+            rate_limit=args.rate_limit,
+            max_request_bytes=server._max_request_bytes,
+            body_receive_timeout_seconds=server._body_receive_timeout_seconds,
+            default_timeout=server._default_timeout,
+            max_concurrent_requests=args.max_concurrent_requests,
+            cors_policy=server.get_resolved_cors_policy(),
+            reasoning_parser_name=args.reasoning_parser,
+        )
+        return
 
     # DFlash owns a dedicated single-user runtime. Fork before constructing
     # BatchedEngine-only cache/TurboQuant/PFlash state so startup output and
@@ -8183,7 +8333,22 @@ def pull_command(args):
             "https://stability.ai/license before commercial or hosted use."
         )
 
-    if primary_repo in IMAGE_MODEL_DATA_FILES:
+    from vllm_mlx.models.deepseek_v41_native.artifacts import (
+        MTP_ALLOW_PATTERNS,
+        MTP_REPO,
+        MTP_REVISION,
+        TARGET_REPO,
+        TARGET_REVISION,
+        verify_mtp_snapshot,
+    )
+
+    if primary_repo == TARGET_REPO:
+        _check_disk_space(
+            TARGET_REPO,
+            revision_override=TARGET_REVISION,
+        )
+        _pull_repository(primary_args, revision_override=TARGET_REVISION)
+    elif primary_repo in IMAGE_MODEL_DATA_FILES:
         _pull_repository(
             primary_args,
             allow_patterns_override=list(IMAGE_MODEL_DATA_FILES[primary_repo]),
@@ -8191,6 +8356,36 @@ def pull_command(args):
         )
     else:
         _pull_repository(primary_args)
+    if primary_repo == TARGET_REPO:
+        print(f"\n  Runtime assets: {MTP_REPO}")
+        _check_disk_space(
+            MTP_REPO,
+            revision_override=MTP_REVISION,
+            allow_patterns=list(MTP_ALLOW_PATTERNS),
+        )
+        dependency_args = copy.copy(args)
+        dependency_args.model = MTP_REPO
+        dependency_args._original_alias = MTP_REPO
+        dependency_args.bits = None
+        dependency_args.format = None
+        path = _pull_repository(
+            dependency_args,
+            allow_patterns_override=list(MTP_ALLOW_PATTERNS),
+            revision_override=MTP_REVISION,
+        )
+        # _pull_repository is primarily a CLI renderer and historically
+        # returned None. Resolve the pinned local snapshot through the Hub CAS
+        # after the pull and verify it before claiming activation readiness.
+        from huggingface_hub import snapshot_download
+
+        del path
+        sidecar = snapshot_download(
+            MTP_REPO,
+            revision=MTP_REVISION,
+            allow_patterns=list(MTP_ALLOW_PATTERNS),
+            local_files_only=True,
+        )
+        verify_mtp_snapshot(sidecar)
     for asset_repo, revision, allow_patterns in image_runtime_assets_for(primary_repo):
         print(f"\n  Runtime assets: {asset_repo}")
         dependency_args = copy.copy(args)
@@ -10130,9 +10325,15 @@ def info_command(args):
         print(f"  alias: {name} → {resolved}")
         name = resolved
 
-    cfg = detect_model_config(name)
+    from vllm_mlx.models.deepseek_v41_native.artifacts import is_product_target
+
+    is_v41_product = is_product_target(name)
+    cfg = None if is_v41_product else detect_model_config(name)
     print()
-    print(format_profile_table(name, cfg))
+    if is_v41_product:
+        print(_format_v41_product_info(name))
+    else:
+        print(format_profile_table(name, cfg))
     print()
 
     # Download footprint (issue #1286). Manifest-first so known aliases print
@@ -10155,13 +10356,37 @@ def info_command(args):
     # gates pass/fail without consulting the docs. Skipped for unknown
     # models since AliasProfile is alias-keyed.
     profile = resolve_profile(original_alias)
-    if profile is not None:
+    if profile is not None and not is_v41_product:
         _print_dflash_status(original_alias, profile)
         _print_ddtree_status(original_alias, profile)
 
-    if cfg is None:
+    if cfg is None and not is_v41_product:
         print("  No pattern matched — runtime probe will run when the model loads.")
         print()
+
+
+def _format_v41_product_info(model_name: str) -> str:
+    """Render the truthful contract for the dedicated V4.1 product lane."""
+    inner = 60
+
+    def _row(text: str) -> str:
+        return f"│ {text:<{inner}} │"
+
+    return "\n".join(
+        [
+            "┌" + "─" * (inner + 2) + "┐",
+            _row(f"Model: {model_name}"),
+            _row("─" * inner),
+            _row("Status       : ⚠ experimental; 256 GB Apple Silicon"),
+            _row("Architecture : DeepSeek V4.1 MoE; native MLX runtime"),
+            _row("Decode       : target-authoritative DSpark K4; greedy"),
+            _row("Serving      : single-worker serial OpenAI chat"),
+            _row("Limits       : 8,192 input / 4,096 output tokens"),
+            _row("Memory gate  : hard refusal below 224 GiB unified memory"),
+            _row("Tools / MCP  : not qualified"),
+            "└" + "─" * (inner + 2) + "┘",
+        ]
+    )
 
 
 def _print_dflash_status(alias: str, profile) -> None:

@@ -416,6 +416,22 @@ complete `rapid-mlx serve` process tree on an M2 Pro 32 GB Mac mini (the 32 GB+ 
 | **24–31 GB** Mac Mini / MacBook Pro | `bonsai-27b-2bit` | 13.0 GB | `rapid-mlx serve bonsai-27b-2bit` |
 | **32 GB+** Mac Studio / MacBook Pro | `qwen3.8-27b-4bit` | 20.0 GB | `rapid-mlx serve qwen3.8-27b-4bit` |
 
+The experimental `deepseek-v41-flash-reap-2bit` alias is a separate
+256 GB Mac Studio lane, not a recommendation for the table above. It pins the
+199 GiB REAP checkpoint and its 4.47 GB DSpark sidecar, refuses to start below
+224 GiB unified memory, and serves deterministic greedy K4 decoding through a
+serial OpenAI-compatible endpoint:
+
+```bash
+rapid-mlx pull deepseek-v41-flash-reap-2bit
+rapid-mlx serve deepseek-v41-flash-reap-2bit
+```
+
+Sustained four-workload qualification measured 10.72 tok/s overall; the
+isolated stable K4 run measured 11.76 tok/s, with a 217.97 GB product-path peak.
+This first lane is text-only, caps input at 8,192 tokens and output at 4,096,
+and does not claim sampling, tool calling, MCP, or continuous batching.
+
 Every Mac from 32 GB up gets the same pick, and that is the point: Qwen3.8-27B
 scores 52 on the Artificial Analysis Intelligence Index (2026-08-18) —
 GPT-5.6-class, the highest of any open-weights model we serve, ahead of the
@@ -437,7 +453,7 @@ multiplication. The regular `qwen3.8-27b-4bit` alias remains unchanged for M3
 and newer Macs; Rapid does not silently swap checkpoint precision.
 
 → [Full RAM tier map + serve flags per tier](https://rapidmlx.com/docs/hardware-tiers.html)
-→ [Every alias, quant, and family (192 text + 10 image + 10 video + 44 audio aliases, 256 total)](https://rapidmlx.com/docs/aliases.html) · interactive at [models.rapidmlx.com](https://models.rapidmlx.com/)
+→ [Every alias, quant, and family (193 text + 10 image + 10 video + 44 audio aliases, 257 total)](https://rapidmlx.com/docs/aliases.html) · interactive at [models.rapidmlx.com](https://models.rapidmlx.com/)
 
 ---
 

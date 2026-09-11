@@ -26,6 +26,37 @@ Families with registered aliases (run `rapid-mlx models` for the full, current l
 | NeoHorse 1 | 9B (experimental Chat candidate) | 4-bit |
 | G9v3 (AI9Stars) | 39B MoE (5B active) | 4-bit |
 
+### Experimental 256 GB lane: DeepSeek V4.1 Flash
+
+`deepseek-v41-flash-reap-2bit` serves the pinned Rapid-MLX REAP 2-bit
+checkpoint with its pinned DSpark K4 sidecar. The target contains about 199 GiB
+of tensors; the sidecar download is narrowed to the three required MTP shards
+plus its data index and config (4.47 GB), rather than fetching the full source
+repository.
+
+```bash
+rapid-mlx pull deepseek-v41-flash-reap-2bit
+rapid-mlx serve deepseek-v41-flash-reap-2bit
+```
+
+This is a deliberately narrow product lane:
+
+- 256 GB Apple Silicon is the supported hardware; startup fails closed below
+  the measured 224 GiB unified-memory floor.
+- Requests serialize behind one model worker. Continuous batching and prefix
+  caching are not claimed for this architecture-specific cache.
+- Greedy generation is supported, with at most 8,192 input tokens and 4,096
+  output tokens. Sampling, images, tools, MCP, and structured output are not
+  yet qualified.
+- The four-workload 128-token suite was deterministic across two repeats. It
+  measured 10.72 tok/s overall; the isolated stable K4 run measured 11.76
+  tok/s. The product wrapper loaded in 300.81 seconds and peaked at 217.97 GB
+  on the qualification Studio.
+
+The runtime verifies immutable revisions, expected file sizes, SHA-256 values
+for every sidecar data file, and the complete tensor/config contract before it
+reports healthy.
+
 ### MiniCPM5 2B
 
 `minicpm5-2b-4bit` is the compact, tool-capable option for latency-sensitive

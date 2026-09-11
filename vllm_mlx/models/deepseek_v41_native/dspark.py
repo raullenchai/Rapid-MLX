@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import math
 from pathlib import Path
+from typing import Any
 
 import mlx.core as mx
 
@@ -64,10 +65,23 @@ def _safe_shard(root: Path, name: object) -> Path:
     if not isinstance(name, str) or not name or Path(name).name != name:
         raise ValueError("DSpark shard names must be non-empty basenames")
     path = root / name
-    if path.is_symlink():
-        raise ValueError(f"DSpark shard must not be a symlink: {name}")
     if not path.is_file():
         raise FileNotFoundError(path)
+    if path.is_symlink():
+        # Standard Hub snapshots are symlink forests into the same repo's
+        # content-addressed blobs directory. Accept only that exact shape;
+        # arbitrary local sidecar symlinks remain rejected so a crafted index
+        # cannot escape its artifact boundary.
+        resolved = path.resolve(strict=True)
+        blobs = (root.parents[1] / "blobs").resolve()
+        try:
+            resolved.relative_to(blobs)
+        except ValueError as exc:
+            raise ValueError(
+                f"DSpark shard symlink leaves its Hub repository: {name}"
+            ) from exc
+        if not resolved.is_file():
+            raise ValueError(f"DSpark shard symlink is not a file: {name}")
     return path
 
 
@@ -257,7 +271,7 @@ class DSparkWeights:
         import psutil
 
         keys = sorted(key for key in self._arrays if key.startswith("mtp."))
-        total = sum(self._arrays[key].nbytes for key in keys)
+        total = sum(int(self._arrays[key].nbytes) for key in keys)
         reserve = int(reserve_gb * 1e9)
         device_free = (
             int(mx.device_info()["max_recommended_working_set_size"])
@@ -518,7 +532,7 @@ class DSpark:
         self.block_size = self.c["dspark_block_size"]
         self.adapter = _DraftAdapter(self.w, self.c)
         self.position = -1
-        self.windows = {layer: [] for layer in self.layers}
+        self.windows: dict[int, list[Any]] = {layer: [] for layer in self.layers}
         if pin_weights:
             self.w.pin_mtp()
 

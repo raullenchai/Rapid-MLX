@@ -19,8 +19,9 @@ sys.path.insert(0, str(REPO_ROOT))
 sys.path.insert(0, str(REPO_ROOT / "scripts"))
 
 from deepseek_v41_affine_route_qmv import affine2_route_down_qmv  # noqa: E402
-from deepseek_v41_native.config import ModelArgs  # noqa: E402
-from deepseek_v41_native.moe import MoE  # noqa: E402
+
+from vllm_mlx.models.deepseek_v41_native.config import ModelArgs  # noqa: E402
+from vllm_mlx.models.deepseek_v41_native.moe import MoE  # noqa: E402
 
 
 def _load_prefix_items(model_path: Path, index: dict, prefix: str):

@@ -28,9 +28,10 @@ sys.path.insert(0, str(REPO_ROOT))
 sys.path.insert(0, str(REPO_ROOT / "scripts"))
 
 from deepseek_v41_affine_route_qmv import affine2_route_down_qmv  # noqa: E402
-from deepseek_v41_native import dspark as rapid_dspark  # noqa: E402
-from deepseek_v41_native.load import load  # noqa: E402
 from mlx_lm.models.switch_layers import SwitchGLU  # noqa: E402
+
+from vllm_mlx.models.deepseek_v41_native import dspark as rapid_dspark  # noqa: E402
+from vllm_mlx.models.deepseek_v41_native.load import load  # noqa: E402
 
 BOS = "<｜begin▁of▁sentence｜>"
 USER = "<｜User｜>"

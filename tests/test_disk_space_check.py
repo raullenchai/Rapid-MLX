@@ -112,6 +112,31 @@ class TestDiskSpaceCheck:
         model_info.assert_not_called()
         statvfs.assert_not_called()
 
+    def test_pinned_filtered_contract_does_not_shortcut_on_cached_config(self):
+        """A partial giant-model cache must price the selected pinned files."""
+        info = SimpleNamespace(
+            siblings=[
+                SimpleNamespace(rfilename="wanted.bin", size=10 * 1024**3),
+                SimpleNamespace(rfilename="ignored.bin", size=100 * 1024**3),
+            ],
+            sha="resolved-pinned-sha",
+        )
+        model_info = MagicMock(return_value=info)
+        with (
+            patch("huggingface_hub.try_to_load_from_cache", return_value=None),
+            patch("huggingface_hub.model_info", model_info),
+            patch("os.statvfs", return_value=_fake_statvfs(2 * 1024**3)),
+            pytest.raises(SystemExit),
+        ):
+            _check_disk_space(
+                "owner/giant-model",
+                revision_override="pinned-sha",
+                allow_patterns=["wanted.*"],
+            )
+        model_info.assert_called_once_with(
+            "owner/giant-model", revision="pinned-sha", files_metadata=True
+        )
+
     def test_complete_mflux_cache_without_root_config_skips_gate(self, tmp_path):
         """A component-layout mflux repo has no root config.json.
 

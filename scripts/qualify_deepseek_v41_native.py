@@ -22,7 +22,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT))
 sys.path.insert(0, str(REPO_ROOT / "scripts"))
 
-from deepseek_v41_native.load import load  # noqa: E402
+from vllm_mlx.models.deepseek_v41_native.load import load  # noqa: E402
 
 BOS = "<｜begin▁of▁sentence｜>"
 USER = "<｜User｜>"
