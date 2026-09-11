@@ -45,6 +45,13 @@ weighted across the suite. Peak MLX memory is 218.07 GB. The average accepted
 draft length is 0.79 token/block. No prompt preserves the complete sequential
 greedy stream.
 
+| Domain | First divergent token index | Minimum batched top-2 margin | Rows below 0.05 |
+| --- | ---: | ---: | ---: |
+| Code | 79 | 0.0183 | 1 |
+| Reasoning | 4 | 0.0099 | 11 |
+| Structured | 15 | 0.0046 | 16 |
+| Chinese | 7 | 0.0052 | 4 |
+
 The 32-token coding probe reached 12.70 tok/s with an exact sequence, but the
 longer and broader suite fails both required gates: weighted throughput is below
 12 tok/s and exactness is 0/4. Batched target logits remain authoritative, so
@@ -57,8 +64,13 @@ and must be included in any later product qualification.
 
 ## Next experiment
 
-Instrument target top-two logit margins and the first divergent position. Test
-a bounded hybrid that replays only numerically ambiguous verification blocks on
-the sequential path. Keep it only if it restores 4/4 exactness without reducing
-weighted throughput below 12 tok/s. Blindly increasing K is rejected: K5 is
+A 0.05-margin hybrid that replayed only numerically ambiguous verification
+blocks was tested and rejected. It triggered 1/8/9/4 replays across the four
+domains, preserved 0/4 exact sequences, and reduced weighted throughput to
+11.21 tok/s. The Chinese probe also reached a different early EOS. The replay
+implementation was removed rather than adding ineffective controller
+complexity.
+
+The next credible speed path must improve draft acceptance or make target batch
+numerics stable by construction. Blindly increasing K is rejected: K5 is
 already known to change the short greedy stream.

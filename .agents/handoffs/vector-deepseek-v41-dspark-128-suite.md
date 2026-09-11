@@ -5,7 +5,7 @@
 - Branch: `vector/deepseek-v41-dspark-adapter`
 - Base: PR #3309
 - Worktree: `/private/tmp/rapid-mlx-deepseek-v41-dspark-adapter`
-- Status: product qualification failed; ambiguity-rescue experiment next
+- Status: product qualification and margin-rescue experiment failed
 
 ## Verified facts
 
@@ -17,13 +17,17 @@
   12.03 Chinese tok/s.
 - Complete sequential-greedy equivalence is 0/4. This is target batch numerical
   behavior, not an unverified draft token bypassing target verification.
+- First divergence occurs at token 79/4/15/7. Minimum batched top-two margins
+  are 0.0183/0.0099/0.0046/0.0052 for code/reasoning/structured/Chinese.
 - Mean accepted draft tokens/block is 0.79. The low-acceptance reasoning and
   structured prompts erase most speculative gains.
 - The target artifact itself repeats on reasoning and Chinese prompts, which is
   a separate model-quality blocker.
+- A 0.05-margin sequential replay hybrid was rejected and removed: 0/4 exact,
+  11.21 weighted tok/s, and an incorrect early Chinese EOS.
 
 ## Next concrete action
 
-Measure top-two target logit margins at first divergence and prototype bounded
-singleton replay only for ambiguous blocks. Retain it only if four-domain
-exactness reaches 4/4 and weighted throughput remains at least 12 tok/s.
+Improve draft acceptance or make target batch numerics stable by construction.
+Do not reintroduce margin replay without new evidence; the bounded 0.05 trial
+failed both exactness and throughput gates.
