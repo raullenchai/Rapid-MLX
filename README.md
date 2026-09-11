@@ -399,6 +399,44 @@ MTP path was not physically qualified on a 32 GB Mac.
 
 ---
 
+## M4 Pro 48 GB Community Benchmarks
+
+Seven popular models were run on a 12-CPU / 16-GPU-core **Apple M4 Pro with
+48 GB unified memory** using the unmodified PyPI `rapid-mlx==0.14.1` release.
+These are single-request (`B=1`) Community Benchmark v2 medians: one warmup
+plus five measured rounds per case, greedy decode, prefix cache off, and no
+speculative decoding. The Mac was on AC power with nominal thermals and normal
+memory pressure throughout.
+
+| Model | 512 prompt → 128 output | 2K prompt → 512 output | Peak active memory |
+|---|---:|---:|---:|
+| `qwen3.5-4b-4bit` | 0.75s TTFT / **83.45 tok/s** | 2.95s / **82.02 tok/s** | 4.4 GiB |
+| `qwen3.5-9b-4bit` | 1.37s / **49.76 tok/s** | 5.59s / **48.68 tok/s** | 6.7 GiB |
+| `gemma-4-12b-4bit` | 2.19s / **31.87 tok/s** | 9.16s / **30.92 tok/s** | 11.9 GiB |
+| `gpt-oss-20b-mxfp4-q8` | 0.75s / **73.24 tok/s** | 2.82s / **70.10 tok/s** | 12.4 GiB |
+| `gemma-4-26b-4bit` | 0.78s / **75.59 tok/s** | 3.06s / **71.33 tok/s** | 16.9 GiB |
+| `qwen3.6-27b-4bit` | 4.87s / **15.53 tok/s** | 19.25s / **15.30 tok/s** | 18.1 GiB |
+| `qwen3.8-27b-4bit` | 4.87s / **15.53 tok/s** | 19.31s / **15.28 tok/s** | 18.4 GiB |
+
+Run any row as a local server with `rapid-mlx serve <alias>`. To reproduce the
+fixed benchmark instead, preview its exact workload first:
+
+```bash
+rapid-mlx benchmark plan qwen3.5-9b-4bit
+rapid-mlx benchmark run qwen3.5-9b-4bit
+rapid-mlx benchmark share <run-id>   # previews the payload; default is No
+```
+
+Normal serving can enable qualified per-model accelerations that this fixed,
+non-speculative protocol deliberately excludes, so do not compare this table
+directly with the MTP serving measurements above. All seven public rows include
+the model revision, Rapid-MLX version, run conditions, and anonymous submission
+ID.
+
+→ [Full methodology, revisions, commands, and public submission IDs](docs/benchmarks/m4-pro-48gb-community.md) · [Community Benchmark board](https://rapidmlx.com/leaderboard/contributors/jolly-rooted-zebra-edc)
+
+---
+
 ## Choose Your Model
 
 The installer and desktop app use the same RAM-tier recommendation catalog. Run `rapid-mlx recipe` to see its Smart and Fast picks for this Mac (`--max-ram 32` simulates another tier; `--json` is machine-readable). If you want to shop the full catalog: `rapid-mlx models` lists every alias, `rapid-mlx info <alias>` shows the per-alias profile (parser, MoE / hybrid flags, KV codec eligibility, speculative-decoding gates).
