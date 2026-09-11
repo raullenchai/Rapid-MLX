@@ -54,6 +54,15 @@ def test_config_rejects_invalid_expert_topk() -> None:
         _validate_config(config)
 
 
+@pytest.mark.parametrize(
+    "model_type", ["deepseek_v4", "deepseek_v41", "deepseek_v41_text"]
+)
+def test_config_accepts_release_model_type_aliases(model_type) -> None:
+    config = _config()
+    config["model_type"] = model_type
+    _validate_config(config)
+
+
 def test_safe_shard_rejects_traversal_and_symlink(tmp_path) -> None:
     with pytest.raises(ValueError, match="basenames"):
         _safe_shard(tmp_path, "../model.safetensors")

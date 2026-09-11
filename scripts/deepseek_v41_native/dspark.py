@@ -97,7 +97,11 @@ def _validate_config(config: dict) -> None:
         raise ValueError("DSpark top-k exceeds routed expert count")
     if config["qk_rope_head_dim"] > config["head_dim"]:
         raise ValueError("DSpark RoPE width exceeds attention head width")
-    if config.get("model_type") not in ("deepseek_v4", "deepseek_v41"):
+    if config.get("model_type") not in (
+        "deepseek_v4",
+        "deepseek_v41",
+        "deepseek_v41_text",
+    ):
         raise ValueError("DSpark sidecar model_type is not DeepSeek V4.1")
     for key, expected in _RELEASE_ARCHITECTURE.items():
         if config[key] != expected:
