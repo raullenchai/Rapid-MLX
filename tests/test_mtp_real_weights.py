@@ -38,7 +38,7 @@ import os
 
 import pytest
 
-from bench.bench_spec_decode_mtp import _BENCH_PROMPTS
+from bench.bench_spec_decode_mtp import _BENCH_PROMPTS, _tokenizer_stop_tokens
 
 mx = pytest.importorskip("mlx.core")
 
@@ -243,9 +243,7 @@ def test_inject_loads_real_sidecar_weights(loaded_model):
         )
 
 
-def test_mtp_known_stable_prompts_match_pristine_baseline(
-    loaded_model, baseline_tokens
-):
+def test_mtp_lossless_byte_equal_against_baseline(loaded_model, baseline_tokens):
     """Catch real cache/rollback drift on known byte-stable prompt prefixes.
 
     This deliberately narrow regression signature complements, rather than
@@ -313,6 +311,7 @@ def test_mtp_greedy_fixed_depth_real_weight_activity(loaded_model):
 
     model, tokenizer = loaded_model
     inner = model.language_model
+    stop_tokens = _tokenizer_stop_tokens(tokenizer)
 
     def run(prompt: str, max_k: int):
         prompt_ids = _mx.array(tokenizer.encode(prompt), _mx.uint32)
@@ -327,6 +326,7 @@ def test_mtp_greedy_fixed_depth_real_weight_activity(loaded_model):
             accept_counter=counter,
             disable_auto_k=True,
             max_k=max_k,
+            stop_tokens=stop_tokens,
             timing_stats=timing,
         ):
             tokens.append(int(tok))
@@ -338,7 +338,9 @@ def test_mtp_greedy_fixed_depth_real_weight_activity(loaded_model):
         k0_tokens, k0_counter, k0_timing = run(prompt, 0)
         assert k0_counter.attempts == 0
         assert int(k0_timing.get("verify_calls", 0.0)) == 0
-        assert len(k0_tokens) == _CONSISTENCY_N_TOKENS
+        assert len(k0_tokens) == _CONSISTENCY_N_TOKENS or (
+            k0_tokens and k0_tokens[-1] in stop_tokens
+        )
 
         for max_k in (1, 2, 3):
             mtp_tokens, mtp_counter, mtp_timing = run(prompt, max_k)
@@ -346,7 +348,9 @@ def test_mtp_greedy_fixed_depth_real_weight_activity(loaded_model):
                 f"Fixed K={max_k} did not attempt speculation for {prompt[:40]!r}"
             )
             assert int(mtp_timing.get("verify_calls", 0.0)) > 0
-            assert len(mtp_tokens) == _CONSISTENCY_N_TOKENS
+            assert len(mtp_tokens) == _CONSISTENCY_N_TOKENS or (
+                mtp_tokens and mtp_tokens[-1] in stop_tokens
+            )
 
 
 # Sampled-smoke settings. temp>0 with a top_p filter is what ordinary

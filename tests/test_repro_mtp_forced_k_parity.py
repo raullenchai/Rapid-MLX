@@ -24,6 +24,8 @@ def test_parse_k_values_rejects_duplicates_and_negative_depths():
         _parse_k_values("0,1,1")
     with pytest.raises(argparse.ArgumentTypeError, match="non-negative"):
         _parse_k_values("0,-1")
+    with pytest.raises(argparse.ArgumentTypeError, match="supported range"):
+        _parse_k_values("0,4")
 
 
 def test_first_divergence_reports_token_flip_and_early_termination():

@@ -46,6 +46,8 @@ def _parse_k_values(raw: str) -> tuple[int, ...]:
         )
     if any(value < 0 for value in values):
         raise argparse.ArgumentTypeError("K values must be non-negative")
+    if any(value > 3 for value in values):
+        raise argparse.ArgumentTypeError("K values must be in the supported range 0..3")
     if len(set(values)) != len(values):
         raise argparse.ArgumentTypeError("K values must not contain duplicates")
     return values
