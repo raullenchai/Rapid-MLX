@@ -1217,51 +1217,64 @@ struct ChatMessage: Identifiable, Codable, Equatable, Hashable {
             "[<\u{FF5C}]*tool\u{2581}calls\u{2581}begin",
         ]
 
-        // Collect EVERY candidate, not just the first match of each pattern.
-        // A fenced example earlier in the turn must not hide a genuine
-        // unfenced envelope after it: the fence check below skips the fenced
-        // candidate and the scan continues with the next one.
-        var starts: [String.Index] = []
+        // Fences first: one line pass, reused by every pattern below.
+        let fenced = fencedRanges(in: content)
+        func fence(containing index: String.Index) -> Range<String.Index>? {
+            fenced.first { $0.contains(index) }
+        }
+
+        // The earliest UNFENCED candidate across every pattern.
+        //
+        // Two things this must not do. It must not stop at the first match of
+        // a pattern and decide on it alone — a legitimate fenced example
+        // earlier in the turn would then hide the genuine unfenced envelope
+        // after it, and that envelope renders raw. And it must not cap the
+        // number of candidates it will look at — a cap is spent by the
+        // examples and loses the real tail that follows them. Instead a match
+        // inside a fence advances the cursor past the WHOLE fenced block, so a
+        // fence holding a thousand examples costs one step, not a thousand.
+        var earliest: String.Index?
         for pattern in patterns {
             var from = content.startIndex
-            var matched = 0
-            // The cap is PER PATTERN, not shared. A shared budget spent by
-            // 64 fenced `<tool_call>` examples would stop the scan before
-            // the `[TOOL_CALLS]` / DeepSeek patterns ran at all, hiding a
-            // genuine trailing envelope in one of those formats.
-            while matched < maxTrailingArtifactCandidates,
-                  from < content.endIndex,
+            while from < content.endIndex,
                   let found = content.range(
                       of: pattern, options: [.regularExpression],
                       range: from..<content.endIndex
                   ) {
-                starts.append(found.lowerBound)
-                matched += 1
-                from = found.upperBound > found.lowerBound
-                    ? found.upperBound
-                    : content.index(after: found.lowerBound)
+                if let block = fence(containing: found.lowerBound) {
+                    from = max(block.upperBound, content.index(after: found.lowerBound))
+                    continue
+                }
+                // Matches arrive in increasing order, so the first unfenced
+                // one is this pattern's earliest; no need to scan its tail.
+                if earliest == nil || found.lowerBound < earliest! { earliest = found.lowerBound }
+                break
             }
         }
 
-        // The turn OPENS with machine syntax: the leading check owns it and
-        // the caption stands alone. Bailing here rather than scanning on also
-        // keeps a SECOND envelope later in the turn from being reported as
-        // the "prose" of the first.
-        let ordered = starts.sorted()
-        guard let earliest = ordered.first, earliest > content.startIndex else { return nil }
+        // Nothing unfenced, or the turn OPENS with machine syntax: either way
+        // this returns nil — in the second case the leading check owns the
+        // turn and the caption stands alone. Testing the first UNFENCED
+        // candidate (rather than the first candidate of any kind) is what
+        // keeps a turn that opens with a fenced example from bailing here.
+        guard let start = earliest, start > content.startIndex else { return nil }
+        let prose = String(content[content.startIndex..<start])
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        // Whitespace only: the artifact is effectively the whole turn, so the
+        // leading check owns it and the caption stands alone.
+        return prose.isEmpty ? nil : prose
+    }
 
-        let fenced = fencedRanges(in: content)
-        for start in ordered {
-            // A marker inside a code fence is the example the user asked to
-            // see, not a leak. Skip it; a later unfenced candidate still counts.
-            if fenced.contains(where: { $0.contains(start) }) { continue }
-            let before = content[content.startIndex..<start]
-            let prose = String(before).trimmingCharacters(in: .whitespacesAndNewlines)
-            // Whitespace only: the artifact is effectively the whole turn, so
-            // the leading check owns it and the caption stands alone.
-            return prose.isEmpty ? nil : prose
-        }
-        return nil
+    /// What to render above the suppression caption: the prose of a turn
+    /// whose tail was machine syntax, or nil when the artifact was the whole
+    /// turn and the caption stands alone.
+    static func proseAboveSuppressedToolCallArtifact(content: String) -> String? {
+        // Trailing wins when it fires: its own gates already establish that
+        // there is real prose before the machine syntax, which the leading
+        // check cannot tell (it matches the DeepSeek marker ANYWHERE in the
+        // turn, so a prose answer that trailed off into one used to lose the
+        // prose as well as the tail).
+        trailingToolCallArtifactProse(in: content)
     }
 
     /// The character ranges of ``content`` that sit inside a fenced code
@@ -1270,7 +1283,8 @@ struct ChatMessage: Identifiable, Codable, Equatable, Hashable {
     /// CommonMark's actual rule, not a count of literal ```` ``` ````
     /// sequences: a fence opens on a line whose first non-space content is a
     /// run of three or more backticks OR tildes, and closes on a later line
-    /// whose run uses the SAME character and is at least as long. Counting
+    /// whose run uses the SAME character, is at least as long, and carries
+    /// nothing but whitespace after it. Counting
     /// triple-backtick occurrences — the shape this check started as —
     /// misreads a ```` ~~~ ```` fence (no backticks at all) and a
     /// four-backtick fence (the standard way to show a nested example) as
@@ -1280,17 +1294,20 @@ struct ChatMessage: Identifiable, Codable, Equatable, Hashable {
     static func fencedRanges(in content: String) -> [Range<String.Index>] {
         var ranges: [Range<String.Index>] = []
         var openStart: String.Index?
-        var openMarker: (marker: Character, run: Int)?
+        var openMarker: FenceRun?
         var index = content.startIndex
         while index < content.endIndex {
             let lineEnd = content[index...].firstIndex(of: "\n") ?? content.endIndex
             let next = lineEnd < content.endIndex ? content.index(after: lineEnd) : content.endIndex
-            if let found = fenceMarker(in: content[index..<lineEnd]) {
+            if let found = fenceRun(in: content[index..<lineEnd]) {
                 if let open = openMarker, let start = openStart {
-                    // A closer must use the opener's character and be at least
-                    // as long; a shorter or different run is fence CONTENT
-                    // (that is how a ```` fence shows a ``` example).
-                    if found.marker == open.marker, found.run >= open.run {
+                    // A closer must use the opener's character, be at least as
+                    // long, and carry NOTHING but whitespace after the run.
+                    // CommonMark gives a closing fence no info string, so a
+                    // ```` ```swift ```` line inside a ``` block is content —
+                    // treating it as a closer would leave the rest of the
+                    // example unfenced and truncate the answer there.
+                    if found.marker == open.marker, found.run >= open.run, found.isBare {
                         ranges.append(start..<next)
                         openMarker = nil
                         openStart = nil
@@ -1308,43 +1325,39 @@ struct ChatMessage: Identifiable, Codable, Equatable, Hashable {
         return ranges
     }
 
-    /// The fence run a line opens or closes with — its character and length —
-    /// or nil when the line is not a fence line. Up to three leading spaces
-    /// are allowed (CommonMark); a backtick fence's info string may not
-    /// contain a backtick, which is what keeps inline `` `code` `` off this
-    /// path.
-    private static func fenceMarker(in line: Substring) -> (marker: Character, run: Int)? {
+    /// A fence line's delimiter run: which character, how long, and whether
+    /// anything follows it (an info string, which only an OPENER may have).
+    private struct FenceRun {
+        let marker: Character
+        let run: Int
+        let isBare: Bool
+    }
+
+    /// The fence run a line carries, or nil when the line is not a fence line.
+    ///
+    /// Indentation is measured in COLUMNS with tabs expanded to the next
+    /// four-column stop, because that is what decides the CommonMark cutoff:
+    /// four columns in is an indented code block, not a fence opener, and a
+    /// single leading tab already reaches four. A backtick fence's info string
+    /// may not contain a backtick, which is what keeps inline `` `code` ``
+    /// spans off this path.
+    private static func fenceRun(in line: Substring) -> FenceRun? {
         var rest = line
-        var leading = 0
+        var column = 0
         while let first = rest.first, first == " " || first == "\t" {
-            leading += 1
-            if leading > 3 { return nil }
+            column = first == "\t" ? (column / 4 + 1) * 4 : column + 1
+            if column > 3 { return nil }
             rest = rest.dropFirst()
         }
         guard let marker = rest.first, marker == "`" || marker == "~" else { return nil }
         let run = rest.prefix { $0 == marker }.count
         guard run >= 3 else { return nil }
-        if marker == "`", rest.dropFirst(run).contains("`") { return nil }
-        return (marker, run)
-    }
-
-    /// Upper bound on candidate tail openers scanned per message. Each
-    /// pattern is re-run from the previous match, so a pathological message
-    /// (thousands of `<parameter=…>` pairs) would otherwise scan the tail
-    /// repeatedly on the main actor during render. The first unfenced
-    /// candidate is all the caller needs; 64 is far past any real turn.
-    private static let maxTrailingArtifactCandidates = 64
-
-    /// What to render above the suppression caption: the prose of a turn
-    /// whose tail was machine syntax, or nil when the artifact was the whole
-    /// turn and the caption stands alone.
-    static func proseAboveSuppressedToolCallArtifact(content: String) -> String? {
-        // Trailing wins when it fires: its own gates already establish that
-        // there is real prose before the machine syntax, which the leading
-        // check cannot tell (it matches the DeepSeek marker ANYWHERE in the
-        // turn, so a prose answer that trailed off into one used to lose the
-        // prose as well as the tail).
-        trailingToolCallArtifactProse(in: content)
+        let info = rest.dropFirst(run)
+        if marker == "`", info.contains("`") { return nil }
+        return FenceRun(
+            marker: marker, run: run,
+            isBare: info.allSatisfy { $0 == " " || $0 == "\t" }
+        )
     }
 
     /// True when ``content`` is *essentially just* a malformed tool-call

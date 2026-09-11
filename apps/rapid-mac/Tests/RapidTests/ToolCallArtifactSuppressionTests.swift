@@ -471,18 +471,72 @@ struct ToolCallArtifactSuppressionTests {
         #expect(ChatMessage.fencedRanges(in: "    ```\nx\n    ```").isEmpty)
     }
 
-    @Test("An earlier format's fenced examples do not exhaust the scan budget")
-    func perPatternCandidateBudget() {
-        // Adversarial review round 2 (codex, nit): the candidate cap used to
-        // be shared, so a wall of fenced `<tool_call>` examples spent it
-        // before the `[TOOL_CALLS]` pattern ran and a genuine Mistral tail
-        // went unnoticed.
+    @Test("Any number of fenced examples still cannot hide a real tail")
+    func fencedExamplesNeverHideTheTail() {
+        // Adversarial review rounds 2-3 (codex): a candidate CAP — shared or
+        // per pattern — is spent by the examples and loses the real envelope
+        // after them. There is no cap now: a match inside a fence advances
+        // the cursor past the whole fenced block, so 200 examples cost 200
+        // cheap steps and the tail is still found. Same syntax as the tail on
+        // purpose: that is the case a per-pattern cap still got wrong.
         let example = "```xml\n<tool_call>{\"name\": \"s\"}</tool_call>\n```\n"
         let content = "Examples:\n\n"
-            + String(repeating: example, count: 80)
-            + "\nNow running it:\n\n[TOOL_CALLS] [{\"name\":\"search\"}]"
+            + String(repeating: example, count: 200)
+            + "\nNow running it:\n\n<tool_call> {\"name\":\"search\",\"arguments\":{\"q\":\"x\"\n"
         #expect(ChatMessage.trailingToolCallArtifactProse(in: content)?
             .hasSuffix("Now running it:") == true)
+    }
+
+    @Test("A turn that OPENS with a fenced example is still scanned on")
+    func leadingFencedExampleDoesNotEndTheScan() {
+        // Adversarial review round 3 (codex, blocking): the start-index guard
+        // ran before the fence check, so the leading detector could be handed
+        // a turn whose first candidate was merely a fenced example — and the
+        // genuine envelope further down rendered raw. The guard now applies to
+        // the first UNFENCED candidate.
+        let content = """
+        ```xml
+        <tool_call>{"name": "search", "arguments": {"q": "x"}}</tool_call>
+        ```
+
+        That is the shape. Running it:
+
+        <tool_call> {"name":"search","arguments":{"q":"Statement
+        """
+        #expect(ChatMessage.trailingToolCallArtifactProse(in: content)?
+            .hasSuffix("That is the shape. Running it:") == true)
+        #expect(ChatMessage.shouldSuppressToolCallArtifact(
+            content: content, toolCalls: [], finishReason: "stop", toolsRequested: true))
+    }
+
+    @Test("A fence line with an info string never closes a fence")
+    func infoStringLineIsFenceContent() {
+        // Adversarial review round 3 (codex, blocking): CommonMark gives a
+        // CLOSING fence no info string, so a ```` ```swift ```` line inside a
+        // ``` block is content. Closing on it left the rest of the example
+        // unfenced, and the answer was truncated mid-example.
+        let content = """
+        Two examples, one block:
+
+        ```
+        ```swift
+        <tool_call>{"name": "search"}</tool_call>
+        ```
+        """
+        #expect(ChatMessage.trailingToolCallArtifactProse(in: content) == nil)
+        let ranges = ChatMessage.fencedRanges(in: content)
+        #expect(ranges.count == 1)
+        // Trailing whitespace after the run is still a valid closer.
+        #expect(ChatMessage.fencedRanges(in: "```\nx\n```   \nafter").count == 1)
+    }
+
+    @Test("A leading tab is four columns, not one")
+    func tabIndentIsNotAFenceOpener() {
+        // Adversarial review round 3 (codex, nit): indentation decides the
+        // CommonMark cutoff, and a single tab already reaches column four —
+        // an indented code block, not a fence opener.
+        #expect(ChatMessage.fencedRanges(in: "\t```\nx\n\t```").isEmpty)
+        #expect(ChatMessage.fencedRanges(in: "   ```\nx\n   ```").count == 1)
     }
 
     @Test("A whole-turn artifact still renders the caption alone")
