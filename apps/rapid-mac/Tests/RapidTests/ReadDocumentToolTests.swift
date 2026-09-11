@@ -77,6 +77,21 @@ struct ReadDocumentToolTests {
         #expect(result.content.contains("not a valid document id"))
     }
 
+    @Test("Unknown arguments fail closed instead of silently reading offset zero")
+    func unknownArgumentIsRejected() async throws {
+        let cache = freshCache()
+        let id = store("page one must not leak through a malformed cursor", in: cache)
+
+        let result = await run(
+            ["document_id": id.uuidString, "offset_len": 117_524], cache: cache
+        )
+        #expect(result.isError)
+        #expect(result.content.contains("unknown argument"))
+        #expect(result.content.contains("offset_len"))
+        #expect(result.content.contains("use offset"))
+        #expect(!result.content.contains("page one"))
+    }
+
     // MARK: - Sequential paging
 
     @Test("A short document is returned whole with no continuation cursor")

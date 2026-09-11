@@ -84,6 +84,19 @@ final class BuiltinToolsTests {
         #expect(object["invented"] == nil)
     }
 
+    @Test("Native executor rejects unknown arguments for strict tool schemas")
+    func nativeExecutorEnforcesStrictSchema() {
+        let call = ToolCall(
+            id: "document_1",
+            name: "read_document",
+            arguments: #"{"document_id":"00000000-0000-0000-0000-000000000000","offset_len":117524}"#
+        )
+        #expect(NativeToolCallExecutor.normalized(
+            call,
+            for: ReadDocumentTool.definition
+        ) == nil)
+    }
+
     @Test("Native executor rejects non-object or malformed arguments generically")
     func nativeExecutorRejectsMalformedArguments() {
         #expect(NativeToolCallExecutor.normalized(
