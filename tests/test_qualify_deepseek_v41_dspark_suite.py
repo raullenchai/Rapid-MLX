@@ -56,6 +56,7 @@ def test_summary_weights_throughput_by_transitions() -> None:
 
     assert module._summary(rows) == {
         "prompts": 2,
+        "ar_compared_runs": 2,
         "exact_prompts": 1,
         "decode_transitions": 120,
         "decode_seconds": 11.0,
@@ -72,7 +73,15 @@ def test_tokens_must_be_positive() -> None:
         module._positive_int("0")
 
 
-def test_suite_requires_explicit_checkpoint_runtime_trust(tmp_path) -> None:
+def test_stability_qualification_requires_two_repeats() -> None:
+    module = _load_script()
+
+    assert module._at_least_two("2") == 2
+    with pytest.raises(module.argparse.ArgumentTypeError, match="at least 2"):
+        module._at_least_two("1")
+
+
+def test_suite_no_longer_accepts_checkpoint_runtime_code(tmp_path) -> None:
     script = (
         Path(__file__).parents[1] / "scripts" / "qualify_deepseek_v41_dspark_suite.py"
     )
@@ -93,28 +102,42 @@ def test_suite_requires_explicit_checkpoint_runtime_trust(tmp_path) -> None:
     )
 
     assert result.returncode != 0
-    assert "--trust-checkpoint-runtime" in result.stderr
+    assert "unrecognized arguments" in result.stderr
+
+
+def test_prepare_target_installs_shared_ar_and_k4_kernel(monkeypatch, tmp_path) -> None:
+    module = _load_script()
+    model = SimpleNamespace()
+    calls = []
+    monkeypatch.setattr(module, "load", lambda path, lazy: (model, None))
+    monkeypatch.setattr(
+        module,
+        "_install_direct_down_qmv",
+        lambda prepared: calls.append(prepared) or 40,
+    )
+
+    prepared, replaced = module._prepare_target(
+        tmp_path / "target", tmp_path / "overlay", 17
+    )
+
+    assert prepared is model
+    assert replaced == 40
+    assert calls == [model]
+    assert model.eval_interval == 17
+    assert model._dspark_overlay_path == str((tmp_path / "overlay").resolve())
 
 
 def test_suite_validates_all_inputs_before_loading_model(tmp_path) -> None:
     module = _load_script()
     target = tmp_path / "target"
     overlay = tmp_path / "overlay"
-    runtime = tmp_path / "runtime"
     target.mkdir()
-    overlay.mkdir()
-    runtime.mkdir()
-    args = SimpleNamespace(
-        target=target,
-        overlay=overlay,
-        checkpoint_runtime=runtime,
-    )
+    args = SimpleNamespace(target=target, overlay=overlay)
 
-    with pytest.raises(SystemExit, match="missing runtime.py"):
+    with pytest.raises(SystemExit, match="--overlay must be a directory"):
         module._validate_inputs(args)
 
-    (runtime / "runtime.py").touch()
-    (runtime / "dspark.py").touch()
+    overlay.mkdir()
     module._validate_inputs(args)
 
 
