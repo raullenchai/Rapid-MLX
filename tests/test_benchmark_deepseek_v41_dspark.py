@@ -55,3 +55,18 @@ def test_greedy_prefix_stops_at_accepted_eos() -> None:
     assert mismatch is None
     assert hit_eos is True
     assert accepted == 1
+
+
+def test_zero_depth_deferred_seed_advances_without_duplicate_output() -> None:
+    module = _load_script()
+    candidate = [9]
+    logits = mx.zeros((1, 1, 10))
+
+    committed, mismatch, hit_eos, accepted = module._match_greedy_prefix(
+        candidate, logits, eos_id=1, seed_already_emitted=True
+    )
+
+    assert committed == []
+    assert mismatch is None
+    assert hit_eos is False
+    assert accepted == 0

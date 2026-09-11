@@ -502,7 +502,7 @@ def _run_batched_dspark(
             deferred_corrections += 1
 
         output.extend(committed)
-        if output[-1] == eos_id:
+        if output and output[-1] == eos_id:
             break
 
     seconds = time.perf_counter() - started_all
