@@ -80,7 +80,7 @@ def _safe_shard(root: Path, name: object) -> Path:
             raise ValueError(
                 f"DSpark shard symlink leaves its Hub repository: {name}"
             ) from exc
-        if not resolved.is_file():
+        if not resolved.is_file():  # pragma: no cover - guarded filesystem race
             raise ValueError(f"DSpark shard symlink is not a file: {name}")
     return path
 

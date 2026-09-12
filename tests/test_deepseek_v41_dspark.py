@@ -10,6 +10,7 @@ pytestmark = pytest.mark.requires_mlx
 import mlx.core as mx
 
 from vllm_mlx.models.deepseek_v41_native.dspark import (
+    DSpark,
     DSparkWeights,
     Weights,
     _safe_shard,
@@ -108,6 +109,44 @@ def test_release_tensor_drops_both_backing_and_resident_references() -> None:
     assert weights.entries == {}
     assert weights.resident == {}
     assert weights.resident_bytes == 0
+
+
+def test_pin_mtp_materializes_each_weight_once(monkeypatch) -> None:
+    value = mx.zeros((8,), dtype=mx.float32)
+    weights = DSparkWeights.__new__(DSparkWeights)
+    weights._arrays = {"mtp.0.weight": value, "embed.weight": value}
+    weights.resident = {}
+    weights.resident_bytes = 0
+    monkeypatch.setattr(
+        "psutil.virtual_memory", lambda: type("Memory", (), {"available": 10**12})()
+    )
+    monkeypatch.setattr(
+        mx,
+        "device_info",
+        lambda: {"max_recommended_working_set_size": 10**12},
+    )
+    monkeypatch.setattr(mx, "get_active_memory", lambda: 0)
+
+    assert weights.pin_mtp(reserve_gb=0) == value.nbytes
+    assert weights.pin_mtp(reserve_gb=0) == value.nbytes
+    assert weights.resident_bytes == value.nbytes
+
+
+def test_dspark_initializes_one_window_per_contiguous_stage(monkeypatch) -> None:
+    weights = type(
+        "Weights",
+        (),
+        {
+            "entries": {"mtp.0.weight": {}, "mtp.1.weight": {}},
+            "pin_mtp": lambda self: None,
+        },
+    )()
+    target = type("Target", (), {"w": weights, "c": {"dspark_block_size": 5}})()
+
+    draft = DSpark(target)
+
+    assert draft.position == -1
+    assert draft.windows == {0: [], 1: []}
 
 
 def test_verify_greedy_never_observes_rejected_token() -> None:

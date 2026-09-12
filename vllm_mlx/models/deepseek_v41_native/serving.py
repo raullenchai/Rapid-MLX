@@ -447,8 +447,6 @@ def stream_generate(
             yield GenerationChunk(text, token, len(input_ids), generated)
             if ending:
                 return
-        if hit_eos:
-            return
 
 
 def generate(model, processor, prompt: str, *, runtime: DSparkRuntime, **kwargs):

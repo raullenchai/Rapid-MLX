@@ -6,7 +6,9 @@ mx = pytest.importorskip("mlx.core")
 nn = pytest.importorskip("mlx.nn")
 switch_layers = pytest.importorskip("mlx_lm.models.switch_layers")
 
-from scripts.deepseek_v41_affine_route_qmv import affine2_route_down_qmv
+from vllm_mlx.models.deepseek_v41_native.affine_route_qmv import (
+    affine2_route_down_qmv,
+)
 
 
 def _projection(*, bits: int = 2):
@@ -51,3 +53,16 @@ def test_affine2_route_down_qmv_rejects_non_exact_shapes() -> None:
     four_bit = _projection(bits=4)
     with pytest.raises(ValueError, match="unsupported exact"):
         affine2_route_down_qmv(four_bit, mx.zeros((1, 64), dtype=mx.float32), indices)
+
+
+def test_affine2_route_down_qmv_rejects_structural_contract_violations() -> None:
+    projection = _projection()
+    inputs = mx.zeros((1, 64), dtype=mx.float32)
+    indices = mx.zeros((1, 1), dtype=mx.uint32)
+
+    with pytest.raises(ValueError, match="rank two"):
+        affine2_route_down_qmv(projection, inputs[0], indices)
+    with pytest.raises(ValueError, match="one row per input token"):
+        affine2_route_down_qmv(projection, mx.zeros((2, 64), dtype=mx.float32), indices)
+    with pytest.raises(ValueError, match="unsupported exact"):
+        affine2_route_down_qmv(object(), inputs, indices)

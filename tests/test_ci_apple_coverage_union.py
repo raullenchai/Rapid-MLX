@@ -161,6 +161,17 @@ def test_mla_absorbed_verify_coverage_runs_on_apple_silicon() -> None:
     assert "tests/test_mla_absorbed_verify.py" in apple_run
 
 
+def test_deepseek_v41_product_coverage_runs_on_apple_silicon() -> None:
+    """The installed MLX-only V4.1 runtime must contribute to the union."""
+    _, workflow = _workflow()
+    apple_run = workflow["jobs"]["test-apple-silicon"]["steps"][-2]["run"]
+
+    assert "tests/test_deepseek_v41_artifacts.py" in apple_run
+    assert "tests/test_deepseek_v41_affine_route_qmv.py" in apple_run
+    assert "tests/test_deepseek_v41_dspark.py" in apple_run
+    assert "tests/test_deepseek_v41_native_load.py" in apple_run
+
+
 def test_hidream_runtime_coverage_runs_on_apple_silicon() -> None:
     """The MLX-only image runtime must contribute to the coverage union."""
     _, workflow = _workflow()
