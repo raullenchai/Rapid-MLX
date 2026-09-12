@@ -401,9 +401,9 @@ MTP path was not physically qualified on a 32 GB Mac.
 
 ## M4 Pro 48 GB Community Benchmarks
 
-Seven popular models were run on a 12-CPU / 16-GPU-core **Apple M4 Pro with
+Nine public measurements were run on a 12-CPU / 16-GPU-core **Apple M4 Pro with
 48 GB unified memory** using the unmodified PyPI `rapid-mlx==0.14.1` release.
-These are single-request (`B=1`) Community Benchmark v2 medians: one warmup
+The text rows are single-request (`B=1`) Community Benchmark v2 medians: one warmup
 plus five measured rounds per case, greedy decode, prefix cache off, and no
 speculative decoding. The Mac was on AC power with nominal thermals and normal
 memory pressure throughout.
@@ -418,6 +418,16 @@ memory pressure throughout.
 | `qwen3.6-27b-4bit` | 4.87s / **15.53 tok/s** | 19.25s / **15.30 tok/s** | 18.1 GiB |
 | `qwen3.8-27b-4bit` | 4.87s / **15.53 tok/s** | 19.31s / **15.28 tok/s** | 18.4 GiB |
 
+The same released CLI completed a 1024x1024 FLUX.2 Klein 4B image in **272.34s**
+and an 832x480, 81-frame Wan2.2 TI2V 5B video job in **15m57.53s**. These use
+registered image/video protocols and are complete job times, so they are not
+throughput comparisons with the text table.
+
+Normal Qwen3.8 serving also activated its pinned MTP path. In a separate
+same-model A/B, the repeated-run median improved from **13.0 to 17.2 tok/s
+(+32.3%)**. This serving workload differs from the fixed public protocol; the
+full record shows every observation and the acceptance metrics.
+
 Run any row as a local server with `rapid-mlx serve <alias>`. To reproduce the
 fixed benchmark instead, preview its exact workload first:
 
@@ -429,9 +439,11 @@ rapid-mlx benchmark share <run-id>   # previews the payload; default is No
 
 Normal serving can enable qualified per-model accelerations that this fixed,
 non-speculative protocol deliberately excludes, so do not compare this table
-directly with the MTP serving measurements above. All seven public rows include
-the model revision, Rapid-MLX version, run conditions, and anonymous submission
-ID.
+directly with the MTP serving measurements above. All nine public rows include
+the Rapid-MLX version, run conditions, and anonymous submission ID. The seven
+text rows also expose resolved model revisions; the generation rows currently
+report unresolved identity in the public projection, with their exact local
+snapshot revisions preserved in the full record.
 
 → [Full methodology, revisions, commands, and public submission IDs](docs/benchmarks/m4-pro-48gb-community.md) · [Community Benchmark board](https://rapidmlx.com/leaderboard/contributors/jolly-rooted-zebra-edc)
 
