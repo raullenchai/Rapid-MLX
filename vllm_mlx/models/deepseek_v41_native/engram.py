@@ -342,9 +342,6 @@ class DiskQuantizedEngramEmbedding(nn.Module):
             )
         except Exception:
             self._weight = self._scales = self._biases = None
-            if self._executor is not None:
-                self._executor.shutdown(wait=True, cancel_futures=True)
-                self._executor = None
             try:
                 if self._mapping is not None:
                     self._mapping.close()
@@ -474,7 +471,7 @@ class DiskQuantizedEngramEmbedding(nn.Module):
         def consume_error(done: Future) -> None:
             try:
                 done.exception()
-            except CancelledError:
+            except CancelledError:  # pragma: no cover - cancellation race
                 pass
 
         future.add_done_callback(consume_error)
@@ -490,11 +487,11 @@ class DiskQuantizedEngramEmbedding(nn.Module):
         if previous is not None:
             self._discard_future(previous[1])
         executor = self._executor
-        if executor is None:
+        if executor is None:  # pragma: no cover - concurrent close
             raise RuntimeError("Engram embedding is closed")
         future = executor.submit(self._gather_rows, flat)
         with self._lock:
-            if self._closed:
+            if self._closed:  # pragma: no cover - concurrent close
                 future.cancel()
                 raise RuntimeError("Engram embedding is closed")
             self._pending = (flat, future)

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import struct
+from concurrent.futures import Future
 
 import numpy as np
 import pytest
@@ -170,6 +171,42 @@ def test_disk_engram_bounds_close_and_cache_validation(tmp_path):
             bits=2,
             cache_rows=-1,
         )
+    with pytest.raises(ValueError, match="unsupported affine"):
+        DiskQuantizedEngramEmbedding(
+            path,
+            weight_key="layers.1.engram.embed.weight",
+            scales_key="layers.1.engram.embed.scales",
+            biases_key="layers.1.engram.embed.biases",
+            num_embeddings=8,
+            dim=64,
+            group_size=32,
+            bits=5,
+        )
+
+
+def test_disk_engram_bypass_paths_handle_empty_and_uncached_rows(tmp_path):
+    resident, disk, _keys, _path = _modules(tmp_path, cache_rows=0)
+
+    empty = disk(mx.array([], mx.int32))
+    indices = mx.array([1, 3, 1], mx.int32)
+    actual = disk(indices)
+    expected = resident(indices)
+    mx.eval(empty, actual, expected)
+
+    assert empty.shape == (0, 64)
+    assert mx.array_equal(actual, expected).item()
+    assert disk.cache_misses == 2
+    assert disk.cache_hits == 0
+
+
+def test_disk_engram_closed_views_and_prefetch_fail_cleanly(tmp_path):
+    _resident, disk, _keys, _path = _modules(tmp_path)
+    disk.close()
+
+    with pytest.raises(RuntimeError, match="closed"):
+        disk._views()
+    with pytest.raises(RuntimeError, match="closed"):
+        disk.prefetch(np.array([1], dtype=np.int64))
 
 
 def test_disk_engram_close_drains_pending_prefetch(tmp_path):
@@ -233,6 +270,23 @@ def test_disk_engram_rejects_oversized_header_before_read(tmp_path):
         )
 
 
+def test_disk_engram_rejects_truncated_header_prefix(tmp_path):
+    path = tmp_path / "truncated.safetensors"
+    path.write_bytes(b"short")
+
+    with pytest.raises(ValueError, match="truncated"):
+        DiskQuantizedEngramEmbedding(
+            path,
+            weight_key="weight",
+            scales_key="scales",
+            biases_key="biases",
+            num_embeddings=8,
+            dim=64,
+            group_size=32,
+            bits=2,
+        )
+
+
 def test_disk_engram_constructor_preserves_error_after_partial_view(
     tmp_path, monkeypatch
 ):
@@ -274,6 +328,40 @@ def test_disk_engram_rejects_overlapping_tensor_ranges():
             },
             data_size=96,
         )
+
+
+@pytest.mark.parametrize(
+    ("header", "message"),
+    [
+        ([], "invalid safetensors header"),
+        ({"weight": []}, "tensor entry"),
+        ({"weight": {"data_offsets": "0,1"}}, "tensor offsets"),
+        ({"weight": {"data_offsets": [-1, 0]}}, "tensor offsets"),
+    ],
+)
+def test_disk_engram_rejects_malformed_header_entries(header, message):
+    with pytest.raises(ValueError, match=message):
+        DiskQuantizedEngramEmbedding._validate_header_ranges(header, data_size=1)
+
+
+def test_disk_engram_rejects_missing_tensor(tmp_path):
+    _resident, disk, _keys, _path = _modules(tmp_path)
+
+    with pytest.raises(ValueError, match="missing Engram tensor"):
+        disk._tensor_view(
+            {},
+            "missing",
+            dtype="U32",
+            numpy_dtype=np.dtype("<u4"),
+            shape=(8, 4),
+        )
+
+
+def test_disk_engram_discard_future_consumes_cancellation():
+    future = Future()
+    DiskQuantizedEngramEmbedding._discard_future(future)
+
+    assert future.cancelled()
 
 
 @pytest.mark.parametrize(
