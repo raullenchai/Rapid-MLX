@@ -181,7 +181,9 @@ def inject_qwen4_exp_mtp_support(
                 weights.update(_sanitize_mtp_weights(mx.load(str(file))))
 
             from vllm_mlx.models.qwen4_exp import ZeroCenteredRMSNorm
-            from vllm_mlx.models.qwen4_norm_convention import apply_qwen4_norm_convention
+            from vllm_mlx.models.qwen4_norm_convention import (
+                apply_qwen4_norm_convention,
+            )
 
             receipt = getattr(inner, "norm_convention_receipt", None) or {}
             apply_qwen4_norm_convention(

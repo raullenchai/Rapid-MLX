@@ -2002,9 +2002,7 @@ class TextModel(nn.Module):
             sanitized[key] = value
         from .qwen4_norm_convention import normalize_qwen4_checkpoint
 
-        receipt = normalize_qwen4_checkpoint(
-            self, sanitized, ZeroCenteredRMSNorm
-        )
+        receipt = normalize_qwen4_checkpoint(self, sanitized, ZeroCenteredRMSNorm)
         if receipt is not None:
             self.norm_convention_receipt = receipt
         return sanitized

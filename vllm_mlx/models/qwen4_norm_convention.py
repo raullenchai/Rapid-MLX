@@ -47,7 +47,9 @@ def apply_qwen4_norm_convention(model, weights, norm_type, convention, *, prefix
             gamma = value.astype(mx.float32)
             residual = gamma - 1.0
             restored = 1.0 + residual
-            if not bool(mx.all(restored.view(mx.uint32) == gamma.view(mx.uint32)).item()):
+            if not bool(
+                mx.all(restored.view(mx.uint32) == gamma.view(mx.uint32)).item()
+            ):
                 raise ValueError(
                     f"Qwen4 RMSNorm gain cannot be represented exactly as an FP32 residual: {key}"
                 )
@@ -63,14 +65,17 @@ def normalize_qwen4_checkpoint(model, weights, norm_type):
     conversion/key-remapping tools. A norm-bearing mapping must include every
     instantiated attention HC anchor; strict model loading checks other keys.
     """
-    prefix = "language_model." if any(
-        key.startswith("language_model.") for key in weights
-    ) else ""
+    prefix = (
+        "language_model."
+        if any(key.startswith("language_model.") for key in weights)
+        else ""
+    )
     targets = _norm_targets(model, norm_type, prefix)
     if not (targets.keys() & weights.keys()):
         return None
     anchors = {
-        key: module for key, module in targets.items()
+        key: module
+        for key, module in targets.items()
         if key.endswith(".attn_hyper_connection.hc_norm.weight")
     }
     if not anchors or not anchors.keys() <= weights.keys():

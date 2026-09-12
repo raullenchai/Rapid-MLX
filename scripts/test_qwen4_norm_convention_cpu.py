@@ -1,12 +1,12 @@
 # SPDX-License-Identifier: Apache-2.0
 """Checkpoint-convention regressions; CPU is selected before model imports."""
 
-from pathlib import Path
-from dataclasses import asdict
 import json
 import sys
 import tempfile
 import unittest
+from dataclasses import asdict
+from pathlib import Path
 from unittest import mock
 
 import mlx.core as mx
@@ -19,7 +19,9 @@ import numpy as np
 from mlx.utils import tree_flatten
 
 from vllm_mlx.models.qwen4_exp import (
-    Model, ModelArgs, ZeroCenteredRMSNorm,
+    Model,
+    ModelArgs,
+    ZeroCenteredRMSNorm,
 )
 from vllm_mlx.models.qwen4_norm_convention import (
     normalize_qwen4_checkpoint,
@@ -27,18 +29,41 @@ from vllm_mlx.models.qwen4_norm_convention import (
 
 
 def tiny_model():
-    return Model(ModelArgs.from_dict(dict(model_type="qwen4_exp", text_config=dict(
-        hidden_size=8, num_hidden_layers=2, vocab_size=32,
-        num_attention_heads=2, num_key_value_heads=1, head_dim=4,
-        linear_num_key_heads=1, linear_num_value_heads=3,
-        linear_key_head_dim=4, linear_value_head_dim=4, linear_conv_kernel_dim=3,
-        num_experts=4, num_experts_per_tok=2, moe_intermediate_size=4,
-        shared_expert_intermediate_size=4, hc_count=4, hc_lowrank=3,
-        layer_types=["linear_attention", "full_attention"], indexer_n_heads=2,
-        indexer_kv_heads=1, indexer_head_dim=4, indexer_budget=8,
-        indexer_compress_ratio=2, ple_layer_ids=[], eos_token_id=31,
-        mtp_num_hidden_layers=1,
-    ))))
+    return Model(
+        ModelArgs.from_dict(
+            dict(
+                model_type="qwen4_exp",
+                text_config=dict(
+                    hidden_size=8,
+                    num_hidden_layers=2,
+                    vocab_size=32,
+                    num_attention_heads=2,
+                    num_key_value_heads=1,
+                    head_dim=4,
+                    linear_num_key_heads=1,
+                    linear_num_value_heads=3,
+                    linear_key_head_dim=4,
+                    linear_value_head_dim=4,
+                    linear_conv_kernel_dim=3,
+                    num_experts=4,
+                    num_experts_per_tok=2,
+                    moe_intermediate_size=4,
+                    shared_expert_intermediate_size=4,
+                    hc_count=4,
+                    hc_lowrank=3,
+                    layer_types=["linear_attention", "full_attention"],
+                    indexer_n_heads=2,
+                    indexer_kv_heads=1,
+                    indexer_head_dim=4,
+                    indexer_budget=8,
+                    indexer_compress_ratio=2,
+                    ple_layer_ids=[],
+                    eos_token_id=31,
+                    mtp_num_hidden_layers=1,
+                ),
+            )
+        )
+    )
 
 
 def checkpoint(model, *, direct):
@@ -62,15 +87,22 @@ class ConventionTests(unittest.TestCase):
             (path / "config.json").write_text(json.dumps(asdict(model.args)))
             mx.save_safetensors(str(path / "model.safetensors"), weights)
             loaded, _ = load_model(
-                path, lazy=False, strict=True,
+                path,
+                lazy=False,
+                strict=True,
                 model_config={"model_file": None},
                 get_model_classes=lambda config: (Model, ModelArgs),
             )
-        self.assertEqual(loaded.language_model.norm_convention_receipt["source_convention"], "direct_gamma")
+        self.assertEqual(
+            loaded.language_model.norm_convention_receipt["source_convention"],
+            "direct_gamma",
+        )
         for _path, module in loaded.named_modules():
             if type(module) is ZeroCenteredRMSNorm:
                 self.assertEqual(module.weight.dtype, mx.float32)
-                np.testing.assert_array_equal(np.array(module.weight), np.zeros(module.weight.shape))
+                np.testing.assert_array_equal(
+                    np.array(module.weight), np.zeros(module.weight.shape)
+                )
 
     def test_direct_gamma_checkpoint_recentered_before_strict_load(self):
         model = tiny_model()
@@ -85,12 +117,19 @@ class ConventionTests(unittest.TestCase):
         self.assertEqual(receipt["source_convention"], "direct_gamma")
         self.assertEqual(receipt["anchor_count"], 2)
         self.assertGreater(receipt["recentered_tensors"], 2)
-        self.assertIs(sanitized["language_model.model.layers.0.linear_attn.norm.weight"], untouched)
+        self.assertIs(
+            sanitized["language_model.model.layers.0.linear_attn.norm.weight"],
+            untouched,
+        )
         self.assertEqual(sanitized[key].dtype, mx.float32)
-        np.testing.assert_array_equal(np.array(1 + sanitized[key]), np.array(gamma.astype(mx.float32)))
+        np.testing.assert_array_equal(
+            np.array(1 + sanitized[key]), np.array(gamma.astype(mx.float32))
+        )
         norm = model.model.layers[1].self_attn.indexer.q_layernorm
         x = mx.array([[0.25, -0.5, 0.75, 1.0]], dtype=mx.float32)
-        expected = x * mx.rsqrt(mx.mean(mx.square(x), axis=-1, keepdims=True) + norm.eps)
+        expected = x * mx.rsqrt(
+            mx.mean(mx.square(x), axis=-1, keepdims=True) + norm.eps
+        )
         expected = expected * gamma.astype(mx.float32)
         np.testing.assert_array_equal(np.array(norm(x)), np.array(expected))
 
@@ -144,7 +183,9 @@ class ConventionTests(unittest.TestCase):
             with self.subTest(bad=bad):
                 model = tiny_model()
                 weights = checkpoint(model, direct=True)
-                key = "language_model.model.layers.0.attn_hyper_connection.hc_norm.weight"
+                key = (
+                    "language_model.model.layers.0.attn_hyper_connection.hc_norm.weight"
+                )
                 if bad is None:
                     del weights[key]
                 else:
@@ -157,9 +198,13 @@ class ConventionTests(unittest.TestCase):
             with self.subTest(gain=gain):
                 model = tiny_model()
                 weights = checkpoint(model, direct=True)
-                key = "language_model.model.layers.1.self_attn.indexer.q_layernorm.weight"
+                key = (
+                    "language_model.model.layers.1.self_attn.indexer.q_layernorm.weight"
+                )
                 weights[key] = mx.full(weights[key].shape, gain)
-                with self.assertRaisesRegex(ValueError, "cannot be represented exactly"):
+                with self.assertRaisesRegex(
+                    ValueError, "cannot be represented exactly"
+                ):
                     model.sanitize(weights)
 
     def test_raw_anchor_outliers_do_not_require_every_mean_below_half(self):
@@ -174,6 +219,7 @@ class ConventionTests(unittest.TestCase):
                     layer.attn_hyper_connection = nn.Module()
                     layer.attn_hyper_connection.hc_norm = ZeroCenteredRMSNorm(4)
                     self.layers.append(layer)
+
         for direct in (False, True):
             model = Anchors()
             weights = dict(tree_flatten(model.parameters()))
@@ -181,7 +227,10 @@ class ConventionTests(unittest.TestCase):
                 mean = 0.765625 if index == 0 else 0.0390625
                 weights[key] = mx.full((4,), mean + int(direct))
             receipt = normalize_qwen4_checkpoint(model, weights, ZeroCenteredRMSNorm)
-            self.assertEqual(receipt["source_convention"], "direct_gamma" if direct else "zero_centered")
+            self.assertEqual(
+                receipt["source_convention"],
+                "direct_gamma" if direct else "zero_centered",
+            )
 
     def test_mtp_inherits_backbone_convention_not_its_ambiguous_means(self):
         from vllm_mlx.spec_decode.mtp import qwen4_exp_inject as inject
@@ -193,12 +242,18 @@ class ConventionTests(unittest.TestCase):
                 mtp = inject._build_mtp(model.language_model)
                 weights = checkpoint(mtp, direct=direct)
                 # Learned MTP direct gains can be well below the anchor band.
-                gamma = mx.full(mtp.pre_fc_norm_embedding.weight.shape, 0.1, dtype=mx.bfloat16).astype(mx.float32)
+                gamma = mx.full(
+                    mtp.pre_fc_norm_embedding.weight.shape, 0.1, dtype=mx.bfloat16
+                ).astype(mx.float32)
                 weights["pre_fc_norm_embedding.weight"] = gamma if direct else gamma - 1
                 with tempfile.TemporaryDirectory() as directory:
                     path = Path(directory) / "mtp.safetensors"
-                    mx.save_safetensors(str(path), {f"mtp.{k}": v for k, v in weights.items()})
-                    self.assertTrue(inject.inject_qwen4_exp_mtp_support(model, mtp_sidecar=path))
+                    mx.save_safetensors(
+                        str(path), {f"mtp.{k}": v for k, v in weights.items()}
+                    )
+                    self.assertTrue(
+                        inject.inject_qwen4_exp_mtp_support(model, mtp_sidecar=path)
+                    )
                 actual = model.language_model.mtp.pre_fc_norm_embedding.weight
                 np.testing.assert_array_equal(np.array(1 + actual), np.array(gamma))
 
@@ -210,9 +265,14 @@ class ConventionTests(unittest.TestCase):
             mtp = inject._build_mtp(model.language_model)
             with tempfile.TemporaryDirectory() as directory:
                 path = Path(directory) / "mtp.safetensors"
-                mx.save_safetensors(str(path), {f"mtp.{k}": v for k, v in tree_flatten(mtp.parameters())})
+                mx.save_safetensors(
+                    str(path),
+                    {f"mtp.{k}": v for k, v in tree_flatten(mtp.parameters())},
+                )
                 with self.assertLogs(inject.logger, level="ERROR"):
-                    self.assertFalse(inject.inject_qwen4_exp_mtp_support(model, mtp_sidecar=path))
+                    self.assertFalse(
+                        inject.inject_qwen4_exp_mtp_support(model, mtp_sidecar=path)
+                    )
                 self.assertFalse(hasattr(model.language_model, "mtp"))
 
 
