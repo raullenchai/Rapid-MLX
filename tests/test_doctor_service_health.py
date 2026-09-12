@@ -446,6 +446,11 @@ def test_service_section_covers_runtime_and_owner_failure_variants(
     # mismatch below then renders OK and the assertion fails for a reason that
     # has nothing to do with the service. Pin doctor's version so the branch
     # under test is the one that runs.
+    #
+    # Patched on ``vllm_mlx``, not on ``env_health``: the comparison does
+    # ``from vllm_mlx import __version__`` inside the function body, so it
+    # re-reads the package attribute on every call and ``env_health`` has no
+    # ``__version__`` of its own to patch.
     monkeypatch.setattr("vllm_mlx.__version__", "1.2.3")
     missing = tmp_path / "missing-rapid-mlx"
     section = eh.section_always_on_service(
