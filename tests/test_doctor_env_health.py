@@ -17,6 +17,7 @@ mutation) so the suite runs identically on every Python and every OS.
 
 from __future__ import annotations
 
+import contextlib
 import importlib
 import json
 import os
@@ -3453,6 +3454,31 @@ def test_bundle_does_not_ask_user_to_reinstall_for_an_extra_it_never_ships(
     assert "reinstall" not in row.label.lower()
 
 
+@contextlib.contextmanager
+def _distribution_is_absent(distribution: str):
+    """Stage "this extra is not installed" instead of inheriting it from the
+    host.
+
+    ``_module_visibility`` answers from the interpreter that is running
+    pytest, not from the stub in ``tmp_path``. On a developer Mac that has
+    the extra installed, doctor therefore finds the module in-process and
+    goes on to verify it by running the stub as an interpreter — the stub is
+    an empty file, the subprocess raises, and the row becomes "importability
+    unknown — doctor probe did not complete" instead of the "not installed"
+    warning under test. Linux CI passes only because the extra happens to be
+    absent there, which is the host deciding which branch is exercised.
+    """
+    original = eh._module_visibility
+
+    def visibility(dist, *args, **kwargs):
+        if dist == distribution:
+            return (False, False)
+        return original(dist, *args, **kwargs)
+
+    with mock.patch.object(eh, "_module_visibility", visibility):
+        yield
+
+
 def test_cli_install_still_warns_about_missing_embeddings(tmp_path: Path):
     """The exclusion is bundle-only: an ordinary pip install that lacks
     mlx-embeddings must still get the ⚠ + install hint."""
@@ -3462,6 +3488,7 @@ def test_cli_install_still_warns_about_missing_embeddings(tmp_path: Path):
     with (
         mock.patch.object(eh.sys, "executable", str(exe)),
         mock.patch.object(eh, "_safe_version", return_value=None),
+        _distribution_is_absent("mlx-embeddings"),
     ):
         section = eh.section_optional_packages()
 

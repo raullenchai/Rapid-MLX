@@ -437,7 +437,21 @@ def test_uninstalled_service_launchctl_error_is_unverified():
     assert section.checks[0].status is eh.CheckStatus.WARN
 
 
-def test_service_section_covers_runtime_and_owner_failure_variants(tmp_path):
+def test_service_section_covers_runtime_and_owner_failure_variants(
+    tmp_path, monkeypatch
+):
+    # Doctor suppresses the version comparison entirely when it cannot
+    # determine its OWN version (``__version__ == "0.0.0"``), which is exactly
+    # what happens in a bare checkout that was never pip-installed — the
+    # mismatch below then renders OK and the assertion fails for a reason that
+    # has nothing to do with the service. Pin doctor's version so the branch
+    # under test is the one that runs.
+    #
+    # Patched on ``vllm_mlx``, not on ``env_health``: the comparison does
+    # ``from vllm_mlx import __version__`` inside the function body, so it
+    # re-reads the package attribute on every call and ``env_health`` has no
+    # ``__version__`` of its own to patch.
+    monkeypatch.setattr("vllm_mlx.__version__", "1.2.3")
     missing = tmp_path / "missing-rapid-mlx"
     section = eh.section_always_on_service(
         status_data=_status(owner=None, executable=str(missing)),
