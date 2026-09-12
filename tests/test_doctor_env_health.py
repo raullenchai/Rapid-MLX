@@ -3190,14 +3190,14 @@ def test_unsupported_mlx_audio_version_marks_warning():
     audio_row = next(c for c in section.checks if "mlx-audio" in c.label)
     assert audio_row.status is eh.CheckStatus.WARN
     assert "0.4.6" in audio_row.label
-    assert "requires mlx-audio>=0.2.9,<0.4.4" in audio_row.label
+    assert "requires mlx-audio>=0.5.3,<0.6" in audio_row.label
 
 
 def test_supported_mlx_audio_version_marks_ok():
     """A version inside the declared audio range remains healthy."""
 
     def fake_ver(dist: str, runtime=None) -> str | None:
-        return "0.4.3" if dist == "mlx-audio" else None
+        return "0.5.3" if dist == "mlx-audio" else None
 
     with (
         mock.patch.object(eh, "_safe_version", side_effect=fake_ver),
@@ -3223,7 +3223,7 @@ def test_healthy_complete_audio_dependency_stack_marks_ok():
     """When every audio dependency imports and mlx-audio is in range, all
     audio rows are OK."""
     with (
-        mock.patch.object(eh, "_safe_version", return_value="0.4.3"),
+        mock.patch.object(eh, "_safe_version", return_value="0.5.3"),
         mock.patch.object(eh, "_module_available", return_value=True),
     ):
         section = eh.section_optional_packages()
@@ -3244,7 +3244,7 @@ def test_incomplete_audio_dependency_import_stack_marks_warning():
     WARN, not OK — the audio feature set is not actually usable."""
 
     def fake_ver(dist: str, runtime=None) -> str | None:
-        return "0.4.3" if dist == "mlx-audio" else None
+        return "0.5.3" if dist == "mlx-audio" else None
 
     with (
         mock.patch.object(eh, "_safe_version", side_effect=fake_ver),
@@ -3266,7 +3266,7 @@ def test_audio_dependency_timeout_is_inconclusive_not_incomplete(monkeypatch):
     runtime = Path(sys.executable)
 
     def fake_ver(dist: str, runtime=None) -> str | None:
-        return "0.4.3" if dist == "mlx-audio" else None
+        return "0.5.3" if dist == "mlx-audio" else None
 
     def module_available(module, _runtime=None, *, real_import=False):
         if module == "f5_tts_mlx":
@@ -3391,7 +3391,7 @@ def test_bundled_sidecar_grades_audio_against_desktop_extra(tmp_path: Path):
     healthy build as incomplete."""
 
     def fake_ver(dist: str, runtime=None) -> str | None:
-        return "0.4.3" if dist == "mlx-audio" else None
+        return "0.5.3" if dist == "mlx-audio" else None
 
     # Everything outside the audio-desktop extra is absent, exactly like the
     # real bundle.
@@ -3572,7 +3572,7 @@ def test_runtime_override_broken_audio_row_uses_the_runtime_hint(tmp_path: Path)
     remediation the user reads is the runtime one, not the app one."""
 
     def fake_ver(dist: str, runtime=None) -> str | None:
-        return "0.4.3" if dist == "mlx-audio" else None
+        return "0.5.3" if dist == "mlx-audio" else None
 
     exe = _stage_sidecar_bundle(tmp_path, slot="runtime-override")
     with (
@@ -3599,7 +3599,7 @@ def test_bundled_sidecar_still_flags_a_genuinely_broken_audio_install(
     missing soundfile is still inside the audio-desktop contract."""
 
     def fake_ver(dist: str, runtime=None) -> str | None:
-        return "0.4.3" if dist == "mlx-audio" else None
+        return "0.5.3" if dist == "mlx-audio" else None
 
     exe = _stage_sidecar_bundle(tmp_path)
     with (

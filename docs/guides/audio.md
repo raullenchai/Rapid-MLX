@@ -210,9 +210,9 @@ Install with: pip install 'rapid-mlx[audio]'
 ## Installation
 
 ```bash
-# Core audio support — stay inside the supported range
-# (mlx-audio 0.4.4 has a Kokoro istftnet regression; the pin excludes it)
-pip install 'mlx-audio>=0.2.9,<0.4.4'
+# Core audio support — 0.5.3 adds the Silero VAD runtime used by Whisper
+# while retaining the Kokoro istftnet fix
+pip install 'mlx-audio>=0.5.3,<0.6'
 
 # Required dependencies for TTS
 pip install sounddevice soundfile scipy misaki spacy num2words phonemizer-fork numba tiktoken loguru
@@ -821,8 +821,8 @@ Tested on Apple M2 Max (32GB).
 pip install 'rapid-mlx[audio]'
 ```
 This installs `mlx-audio` with the supported version pin
-(`mlx-audio>=0.2.9,<0.4.4` — 0.4.4 has a Kokoro istftnet regression that
-breaks every Kokoro request).
+(`mlx-audio>=0.5.3,<0.6`). This range includes the Silero VAD runtime used
+to reject silent Whisper input and excludes the historical Kokoro regression.
 
 ### Model download slow
 Models are downloaded from HuggingFace on first use. Use `huggingface-cli download` to pre-download:
@@ -843,7 +843,6 @@ mlx-audio 0.2.9 exactly had a Kokoro g2p bug: non-English languages
 (Spanish, Chinese, Japanese, etc.) crashed with `ValueError: too many
 values to unpack` because English g2p returned a tuple `(phonemes, tokens)`
 while other languages returned just a string. Newer releases inside the
-supported range (`mlx-audio>=0.2.9,<0.4.4`, e.g. 0.4.3 — what a fresh
-`pip install 'rapid-mlx[audio]'` resolves to) no longer contain the buggy
-unpacking. If you hit this error, upgrade `mlx-audio` within the pinned
-range instead of hand-patching the package.
+supported range (`mlx-audio>=0.5.3,<0.6`) no longer contain the buggy
+unpacking. If you hit this error, upgrade `mlx-audio` within the pinned range
+instead of hand-patching the package.
