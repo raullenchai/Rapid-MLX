@@ -104,4 +104,23 @@ struct ServerLogNoiseTests {
         let bold = "\u{1B}[32mINFO\u{1B}[0m:     127.0.0.1:1 - \"\u{1B}[1mGET /healthz HTTP/1.1\u{1B}[0m\" \u{1B}[32m200 OK\u{1B}[0m"
         #expect(ServerLogNoise.isAppPollAccessLine(bold))
     }
+    @Test("An access line from another machine is kept")
+    func keepsAccessLinesFromOtherClients() {
+        // codex round 6: any client address matched, so a reachability probe
+        // from a phone on the LAN was filed as the app's own polling noise —
+        // and that line is exactly what someone debugging "why can't my other
+        // machine reach this?" opened the drawer to find.
+        #expect(!ServerLogNoise.isAppPollAccessLine(
+            #"INFO:     192.168.1.42:51234 - "GET /healthz HTTP/1.1" 200 OK"#))
+        #expect(!ServerLogNoise.isAppPollAccessLine(
+            #"INFO:     10.0.0.7:8080 - "GET /v1/models/residency HTTP/1.1" 200 OK"#))
+        // Loopback in each of the forms uvicorn can render it stays filtered.
+        #expect(ServerLogNoise.isAppPollAccessLine(
+            #"INFO:     127.0.0.1:57230 - "GET /healthz HTTP/1.1" 200 OK"#))
+        #expect(ServerLogNoise.isAppPollAccessLine(
+            #"INFO:     ::1:57230 - "GET /healthz HTTP/1.1" 200 OK"#))
+        #expect(ServerLogNoise.isAppPollAccessLine(
+            #"INFO:     localhost:57230 - "GET /healthz HTTP/1.1" 200"#))
+    }
+
 }

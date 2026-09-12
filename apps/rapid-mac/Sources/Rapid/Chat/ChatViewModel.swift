@@ -2543,13 +2543,19 @@ final class ChatViewModel {
                 && ChatViewModel.carriesToolResultForThisTurn(history)
                 ? ChatViewModel.toolGuidancePreamble
                 : nil
+            // ONE instant for the whole assembly, shared with the clock
+            // trailer below. codex caught that two `Date()` calls can straddle
+            // local midnight, which would have the same request asserting
+            // "Today is the 11th" in its system row and "sent … the 12th" on
+            // its newest message.
+            let requestInstant = Date()
             // Inserted BEFORE the trim so its tokens are inside the budget the
             // trim works to, not added on top of a body already sized to fill
             // the window.
             history = ChatViewModel.addingInstructionLayers(
                 to: history,
                 ambientPreamble: ambientPreamble,
-                dateContext: ChatViewModel.currentDateContext(),
+                dateContext: ChatViewModel.currentDateContext(now: requestInstant),
                 memoryContext: memoryContext,
                 global: globalInstruction,
                 conversation: conversationInstruction
@@ -2607,7 +2613,7 @@ final class ChatViewModel {
             // asked in an earlier minute — see ``answeringNowLine``.
             history = ChatViewModel.stampingClockContext(
                 on: history,
-                answeringAt: Date()
+                answeringAt: requestInstant
             )
             // Whether any document extract survived onto THIS request, read
             // off the same array that is about to be encoded. The

@@ -25,6 +25,9 @@ import Foundation
 ///
 ///   * Only the paths the app polls on a timer. A `/v1/chat/completions`
 ///     or `/v1/models/load` line is a *user* action and stays.
+///   * Only loopback clients. A `/healthz` from another machine on the
+///     LAN is someone testing reachability, and dropping it would hide
+///     the one line that proves the request arrived.
 ///   * Only successful (2xx) polls. A `/healthz` that answers 503, or a
 ///     residency refresh that 500s, is exactly what someone opening the
 ///     drawer needs to see, so those lines are kept.
@@ -63,7 +66,14 @@ enum ServerLogNoise {
             .map { NSRegularExpression.escapedPattern(for: $0) }
             .joined(separator: "|")
         let levelPrefix = "(?:[A-Z]+:(?:[A-Za-z0-9_.]+:)?[ \\t]*)?"
-        let clientAddr = "[^ \"]+"
+        // Loopback only. codex caught that any client address matched, so a
+        // `/healthz` from a phone on the LAN — exactly the request someone
+        // debugging "why can't my other machine reach the server?" opened the
+        // drawer to look for — was filed as the app's own noise. Uvicorn
+        // renders `client_addr` as `host:port` (`127.0.0.1:57230`), with the
+        // port absent when the transport reports no peer.
+        let loopbackHost = "(?:127\\.0\\.0\\.1|localhost|\\[::1\\]|::1)"
+        let clientAddr = "\(loopbackHost)(?::[0-9]{1,5})?"
         let requestLine = "\"(?:GET|HEAD) (?:\(alternation))(?:\\?[^ \"]*)? HTTP/[0-9.]+\""
         let status = "2[0-9][0-9]"
         let reasonPhrase = "(?: [A-Za-z][A-Za-z'\\- ]*)?"

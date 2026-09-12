@@ -535,4 +535,34 @@ struct CurrentDateContextWireTests {
             asked: asked, answeringAt: asked.addingTimeInterval(90), calendar: calendar).isEmpty)
     }
 
+    @Test("The system row and the message trailer agree on the date")
+    func oneInstantRendersOneDate() {
+        // codex round 6, blocking: the send site sampled `Date()` twice, once
+        // for the system row and once for the clock trailer, so a request
+        // assembled across local midnight could say "Today is the 11th" and
+        // "this message was sent … the 12th" in the same prompt. The send site
+        // now threads one `requestInstant` into both. This pins the other half
+        // — that both renderings agree on the calendar day for a shared
+        // instant, including right at the boundary, where a mismatched
+        // calendar or time zone between the two formatters would show up.
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = try! #require(TimeZone(identifier: "America/Los_Angeles"))
+        var components = DateComponents()
+        components.year = 2026; components.month = 9; components.day = 11
+        components.hour = 23; components.minute = 59; components.second = 59
+        let justBefore = calendar.date(from: components)!
+
+        for instant in [justBefore, justBefore.addingTimeInterval(1)] {
+            let systemRow = ChatViewModel.currentDateContext(now: instant, calendar: calendar)
+            let trailer = ChatViewModel.clockContext(at: instant, calendar: calendar)
+            // "Today is <EEEE, MMMM d, yyyy> (zone)." vs "… sent <EEEE,
+            // MMMM d, yyyy> at <time> (…)." — the date text is shared.
+            let day = systemRow
+                .replacingOccurrences(of: "[CURRENT DATE]\nToday is ", with: "")
+                .replacingOccurrences(of: " (America/Los_Angeles).", with: "")
+            #expect(trailer.contains(day),
+                    "The system row says \(day) but the trailer is \(trailer).")
+        }
+    }
+
 }
