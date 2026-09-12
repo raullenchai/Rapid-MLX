@@ -120,7 +120,13 @@ def test_prepare_target_installs_shared_ar_and_k4_kernel(monkeypatch, tmp_path) 
     module = _load_script()
     model = SimpleNamespace()
     calls = []
-    monkeypatch.setattr(module, "load", lambda path, lazy: (model, None))
+    load_calls = []
+
+    def fake_load(path, *, lazy, engram_ssd_offload):
+        load_calls.append((path, lazy, engram_ssd_offload))
+        return model, None
+
+    monkeypatch.setattr(module, "load", fake_load)
     monkeypatch.setattr(
         module,
         "_install_direct_down_qmv",
@@ -128,12 +134,16 @@ def test_prepare_target_installs_shared_ar_and_k4_kernel(monkeypatch, tmp_path) 
     )
 
     prepared, replaced = module._prepare_target(
-        tmp_path / "target", tmp_path / "overlay", 17
+        tmp_path / "target",
+        tmp_path / "overlay",
+        17,
+        engram_ssd_offload=True,
     )
 
     assert prepared is model
     assert replaced == 40
     assert calls == [model]
+    assert load_calls == [(str((tmp_path / "target").resolve()), False, True)]
     assert model.eval_interval == 17
     assert model._dspark_overlay_path == str((tmp_path / "overlay").resolve())
 

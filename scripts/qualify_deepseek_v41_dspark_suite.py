@@ -99,6 +99,11 @@ def parse_args() -> argparse.Namespace:
         "--verify-k", type=_positive_int, choices=range(2, 7), default=4
     )
     parser.add_argument("--eval-interval", type=_positive_int, default=40)
+    parser.add_argument(
+        "--engram-ssd-offload",
+        action="store_true",
+        help="Keep affine Engram tables on SSD during 256 GiB qualification.",
+    )
     parser.add_argument("--collect-target-margins", action="store_true")
     parser.add_argument("--skip-ar", action="store_true")
     return parser.parse_args()
@@ -111,8 +116,14 @@ def _validate_inputs(args) -> None:
             raise SystemExit(f"--{label.replace('_', '-')} must be a directory: {path}")
 
 
-def _prepare_target(target: Path, overlay: Path, eval_interval: int):
-    model, _ = load(str(target.resolve()), lazy=False)
+def _prepare_target(
+    target: Path, overlay: Path, eval_interval: int, *, engram_ssd_offload: bool = False
+):
+    model, _ = load(
+        str(target.resolve()),
+        lazy=False,
+        engram_ssd_offload=engram_ssd_offload,
+    )
     model.eval_interval = eval_interval
     model._dspark_overlay_path = str(overlay.resolve())
     # AR and speculative decoding must use the same target kernels. Installing
@@ -127,7 +138,12 @@ def main() -> None:
     _validate_inputs(args)
 
     started = time.perf_counter()
-    model, replaced = _prepare_target(args.target, args.overlay, args.eval_interval)
+    model, replaced = _prepare_target(
+        args.target,
+        args.overlay,
+        args.eval_interval,
+        engram_ssd_offload=args.engram_ssd_offload,
+    )
     tokenizer = PreTrainedTokenizerFast(
         tokenizer_file=str(args.target.resolve() / "tokenizer.json")
     )

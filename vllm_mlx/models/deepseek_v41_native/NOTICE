@@ -10,3 +10,8 @@ MIT-licensed DeepSeek V4.1 reference inference implementation. The Rapid-MLX
 implementation adds a strict data-only sidecar loader, target weight sharing,
 memory admission, validation, and benchmark integration.
 See LICENSE-DSPARK in this directory.
+
+The hyper-connection Metal kernels in hyper_connections.py include modified
+MIT-licensed code from jundot/omlx revision
+75466d33a3f9e1bf4b8257738bcadd4658526bcb. See LICENSE-DSPARK in this
+directory for the MIT license text.
