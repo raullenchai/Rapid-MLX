@@ -53,18 +53,50 @@ struct WireBodyDeterminismTests {
         )
     }
 
-    private static func request() -> ChatStreamClient.Request {
+    private static func request(lastUser: String = "Now name three animals.") -> ChatStreamClient.Request {
         ChatStreamClient.Request(
             alias: "test-model",
             messages: [
                 ChatMessage(role: .system, content: "[CURRENT DATE]\nToday is Friday."),
                 ChatMessage(role: .user, content: "Name three colors."),
                 ChatMessage(role: .assistant, content: "Red, blue, and green."),
-                ChatMessage(role: .user, content: "Now name three animals."),
+                ChatMessage(role: .user, content: lastUser),
             ],
             tools: [tool("web_search"), tool("browse"), tool("weather"), tool("read_document")],
             supportsImageInput: false
         )
+    }
+
+    /// Index of the `]` that closes the top-level `"messages":[...]` array,
+    /// found by bracket-depth counting (string- and escape-aware) rather
+    /// than by searching for a literal. The follow-up test compares
+    /// everything up to that point, so the window must be the real end of
+    /// the array even if a fixture later contains a bracket or a quote.
+    private static func messagesArrayClose(in text: String) -> String.Index? {
+        guard let open = text.range(of: "\"messages\":[") else { return nil }
+        var depth = 0
+        var inString = false
+        var escaped = false
+        var index = text.index(before: open.upperBound)  // the `[` itself
+        while index < text.endIndex {
+            let character = text[index]
+            if escaped {
+                escaped = false
+            } else if character == "\\" {
+                escaped = true
+            } else if character == "\"" {
+                inString.toggle()
+            } else if !inString {
+                if character == "[" || character == "{" {
+                    depth += 1
+                } else if character == "]" || character == "}" {
+                    depth -= 1
+                    if depth == 0 { return index }
+                }
+            }
+            index = text.index(after: index)
+        }
+        return nil
     }
 
     @Test("Encoding the same request twice yields identical bytes")
@@ -133,50 +165,106 @@ struct WireBodyDeterminismTests {
         let one = try #require(String(data: oneData, encoding: .utf8))
         let two = try #require(String(data: twoData, encoding: .utf8))
         // Sorted keys put "messages" before "model"/"tools", so the messages
-        // array is the one region that legitimately grows; everything encoded
-        // before it must match, and the earlier turns inside it must match too.
-        let head = try #require(one.range(of: "\"messages\":["))
-        #expect(one[..<head.upperBound] == two[..<head.upperBound])
-        let firstTurns = try #require(
-            one.range(of: "{\"content\":\"Name three colors.\",\"role\":\"user\"}")
-        )
-        #expect(one[..<firstTurns.upperBound] == two[..<firstTurns.upperBound],
-                "Everything up to and including the first user turn must be byte-identical between the two requests.")
+        // array is the one region that legitimately grows. Three things have
+        // to hold, and all three are the property the prefix cache needs --
+        // comparing only through the FIRST user message (an earlier version
+        // of this test) would have stayed green while a later message, or the
+        // whole tools array, changed underneath.
+        let oneClose = try #require(Self.messagesArrayClose(in: one))
+        let twoClose = try #require(Self.messagesArrayClose(in: two))
+
+        // (1) Turn one's ENTIRE encoding up to the end of its last message
+        //     object -- the request head, every earlier message, and that
+        //     message's closing brace -- is a byte prefix of turn two.
+        let onePrefix = String(one[..<oneClose])
+        let sharedLength = zip(onePrefix, two).prefix(while: { $0 == $1 }).count
+        #expect(two.hasPrefix(onePrefix),
+                "Turn two must begin with every byte of turn one's message array, closing brace included; the two diverged after \(sharedLength) of \(onePrefix.count) characters.")
+
+        // (2) It EXTENDS that prefix rather than merely equalling it: the very
+        //     next bytes are the new assistant turn, appended.
+        #expect(two.dropFirst(onePrefix.count).hasPrefix(",{\"content\":\"Red, blue, and green.\""),
+                "Turn two must append the new turns after turn one's bytes, not re-serialize the array.")
+
+        // (3) Everything encoded AFTER the array -- `model`, `stream`, and the
+        //     whole `tools` array -- is byte-identical. The tools array is the
+        //     one this PR exists for: the engine renders it into the prompt
+        //     text, so a reordered schema is a reordered prompt.
+        #expect(one[oneClose...] == two[twoClose...],
+                "Every field after `messages` (`model`, `stream`, `tools`) must be byte-identical between turns.")
+    }
+
+    @Test("Two captures running concurrently do not read each other's bodies")
+    func concurrentCapturesStayIsolated() async throws {
+        // The capture harness is process-global, so without a per-capture key
+        // two overlapping sends would overwrite (or consume) one another and
+        // this suite would go flaky -- or, worse, falsely green, comparing one
+        // request against itself. The desktop suite runs `--no-parallel`
+        // today; correctness must not depend on a runner flag.
+        async let alpha = WireBodyCaptureProtocol.capture(Self.request(lastUser: "Alpha marker question."))
+        async let beta = WireBodyCaptureProtocol.capture(Self.request(lastUser: "Beta marker question."))
+        let (alphaData, betaData) = await (alpha, beta)
+        let alphaBody = try #require(alphaData)
+        let betaBody = try #require(betaData)
+        let alphaText = try #require(String(data: alphaBody, encoding: .utf8))
+        let betaText = try #require(String(data: betaBody, encoding: .utf8))
+        #expect(alphaText.contains("Alpha marker question."))
+        #expect(!alphaText.contains("Beta marker question."))
+        #expect(betaText.contains("Beta marker question."))
+        #expect(!betaText.contains("Alpha marker question."))
     }
 }
 
 /// Captures the encoded HTTP body of one ``ChatStreamClient/send`` call.
 ///
-/// The body is written on the `URLProtocol` loading thread and read from the
-/// caller afterwards, so it is boxed behind a lock (the pattern the other wire
-/// captures in this suite use).
+/// `URLProtocol` subclasses are instantiated by the loading system, so the
+/// captured body has to travel through process-global state. It is keyed by a
+/// token minted per capture and carried in the fake base URL's host, which the
+/// protocol reads back off the outgoing request: two captures in flight at once
+/// therefore write to (and consume) different slots instead of clobbering each
+/// other. The store is boxed behind a lock because the write happens on the
+/// loading thread and the read on the caller's.
 private final class WireBodyCaptureProtocol: URLProtocol, @unchecked Sendable {
     private final class Store: @unchecked Sendable {
         private let lock = NSLock()
-        private var body: Data?
-        func get() -> Data? { lock.lock(); defer { lock.unlock() }; return body }
-        func set(_ value: Data?) { lock.lock(); defer { lock.unlock() }; body = value }
+        private var bodies: [String: Data] = [:]
+        func put(_ value: Data?, for token: String) {
+            lock.lock()
+            defer { lock.unlock() }
+            if let value { bodies[token] = value }
+        }
+        /// Read-and-remove, so a capture can never see a stale body left
+        /// behind by an earlier one.
+        func take(_ token: String) -> Data? {
+            lock.lock()
+            defer { lock.unlock() }
+            return bodies.removeValue(forKey: token)
+        }
     }
 
     private static let store = Store()
 
     static func capture(_ request: ChatStreamClient.Request) async -> Data? {
-        store.set(nil)
+        // Lowercased because `URL.host` normalises case; hyphens and hex are
+        // valid host characters, so a UUID round-trips unchanged.
+        let token = UUID().uuidString.lowercased()
         let config = URLSessionConfiguration.ephemeral
         config.protocolClasses = [WireBodyCaptureProtocol.self]
         let client = ChatStreamClient(
-            baseURL: URL(string: "fake://wire-determinism")!,
+            baseURL: URL(string: "fake://\(token)")!,
             session: URLSession(configuration: config)
         )
         try? await client.send(request) { _ in }
-        return store.get()
+        return store.take(token)
     }
 
     override class func canInit(with request: URLRequest) -> Bool { true }
     override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
 
     override func startLoading() {
-        Self.store.set(Self.bodyData(from: request))
+        if let token = request.url?.host {
+            Self.store.put(Self.bodyData(from: request), for: token)
+        }
         let response = HTTPURLResponse(
             url: request.url!,
             statusCode: 200,

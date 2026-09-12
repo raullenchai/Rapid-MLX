@@ -1055,9 +1055,12 @@ struct ChatMessage: Identifiable, Codable, Equatable, Hashable {
     ///     would contradict the chip on screen. A tool that ERRORED does
     ///     NOT count as succeeded — a hallucinated raw answer after a
     ///     failed tool is exactly the shape we still want to flag.
-    ///   * ``promptHadAttachment == false`` — the user's turn carried
-    ///     no document. An answer read off an attached file is
-    ///     grounded, not guessed, and no tool would have helped.
+    ///   * ``promptHadAttachment == false``, OR the prompt asks for
+    ///     live data (see ``promptAsksForLiveData``). An answer read
+    ///     off an attached file is grounded, not guessed — but an
+    ///     attachment cannot ground "what is today's stock price",
+    ///     so the exemption is withheld for prompts that name a
+    ///     moving target.
     ///   * ``finishReason`` is ``nil`` or anything OTHER than
     ///     ``"tool_calls"`` — a real tool-call turn doesn't need
     ///     the caption (the chip row already speaks for it). A
@@ -1079,7 +1082,9 @@ struct ChatMessage: Identifiable, Codable, Equatable, Hashable {
     /// them to ignore the next one. That is why the prompt heuristic
     /// matches whole words (see ``promptLooksCalculatorish``) and why
     /// a document-grounded turn is exempt (Gate 1c) instead of
-    /// relying on the user to dismiss it.
+    /// relying on the user to dismiss it — and equally why that
+    /// exemption is *narrow*: an attachment on the turn does not make
+    /// a live-data question answerable from the page.
     ///
     /// Role-agnostic (assertion-only check); the view layer enforces
     /// "only paint on assistant rows".
@@ -1109,19 +1114,26 @@ struct ChatMessage: Identifiable, Codable, Equatable, Hashable {
         // computed at the call site from the turn's message history (see
         // ``ChatViewModel.turnHadSuccessfulTool``).
         guard !toolSucceededThisTurn else { return false }
-        // Gate 1c: the user's turn carried no document. When it did,
-        // the answer is grounded in text the user supplied in the
-        // prompt, so "answered without calling any of the available
-        // tools" is not a caution — it is the correct behaviour, and
-        // no tool on the roster could have improved it. Dogfooding
-        // 0.14.1 hit exactly this: a scanned-invoice turn whose
-        // grounded, correct total wore the caption, which reads as
-        // "this number may be a guess" directly under a number the
-        // model had in fact read off the page. Flagging a right answer
-        // is not a harmless false positive — it spends the user's
-        // trust in the caption, so the next one (a real hallucinated
-        // total) gets ignored too.
-        guard !promptHadAttachment else { return false }
+        // Gate 1c: the user's turn carried a document AND the question
+        // is one that document could answer. When it is, the answer is
+        // grounded in text the user supplied in the prompt, so
+        // "answered without calling any of the available tools" is not
+        // a caution — it is the correct behaviour, and no tool on the
+        // roster could have improved it. Dogfooding 0.14.1 hit exactly
+        // this: a scanned-invoice turn whose grounded, correct total
+        // wore the caption, which reads as "this number may be a
+        // guess" directly under a number the model had in fact read
+        // off the page. Flagging a right answer is not a harmless
+        // false positive — it spends the user's trust in the caption,
+        // so the next one (a real hallucinated total) gets ignored too.
+        //
+        // But the exemption has to be narrow, because an attachment is
+        // not a general licence: attach a PDF and ask "what is today's
+        // stock price?" and the page cannot possibly hold the answer,
+        // so a bare number with no tool call is precisely the
+        // hallucination this caption exists to catch. So the turn is
+        // exempt only when the prompt is NOT asking for live data.
+        if promptHadAttachment, !promptAsksForLiveData(userPrompt) { return false }
         // Gate 2: model must have produced no tool_calls. A real
         // tool-call turn doesn't need the caption.
         let noToolCalls = (toolCalls?.isEmpty ?? true)
@@ -1925,26 +1937,61 @@ struct ChatMessage: Identifiable, Codable, Equatable, Hashable {
         ]
         for kw in mathKeywords where containsKeyword(kw, in: lowered) { return true }
 
-        // Web-search keywords. Note: codex r1 MAJOR-1 (#308 PR)
-        // dropped the bare ``"what is the"`` keyword — it matched
-        // every plain factual question ("What is the capital of
-        // France?") and false-flagged short prose answers like
-        // "Paris." Web-search keywords must point at LIVE / DATED
-        // information; an evergreen factual lookup is not the
-        // failure mode this caption guards against.
-        let webKeywords: [String] = [
-            "search for", "google for", "look up", "look it up",
+        // Live-data keywords — see ``promptAsksForLiveData``, which owns
+        // the list so Gate 1c and this heuristic cannot drift apart.
+        //
+        // Note: codex r1 MAJOR-1 (#308 PR) dropped the bare
+        // ``"what is the"`` keyword — it matched every plain factual
+        // question ("What is the capital of France?") and false-flagged
+        // short prose answers like "Paris." Web-search keywords must
+        // point at LIVE / DATED information; an evergreen factual
+        // lookup is not the failure mode this caption guards against.
+        if promptAsksForLiveData(lowered) { return true }
+
+        // Retrieval-shaped keywords that an ATTACHED document can still
+        // satisfy — "look up the invoice number" is answered by the
+        // page, which is why these are not in the live-data list above
+        // and so do not withhold Gate 1c's exemption.
+        let retrievalKeywords: [String] = ["search for", "look up", "look it up"]
+        for kw in retrievalKeywords where containsKeyword(kw, in: lowered) { return true }
+
+        return false
+    }
+
+    /// True when `prompt` names a MOVING target — something that
+    /// changes without the conversation changing, so no document the
+    /// user attached can contain the answer.
+    ///
+    /// This is the line that makes Gate 1c of
+    /// ``shouldFlagToolNotCalled`` safe to draw. Without it, any
+    /// attachment on the turn silences the caption, including for
+    /// "here is my portfolio PDF — what is today's stock price?",
+    /// where a bare number with no tool call is exactly the
+    /// hallucination the caption exists to flag.
+    ///
+    /// ``"google for"`` lives here rather than with the
+    /// retrieval-shaped keywords in ``promptLooksCalculatorish``
+    /// because it names an external service outright; ``"search
+    /// for"`` / ``"look up"`` do not, and pointing either of those at
+    /// an attached document is an ordinary thing for a user to do.
+    ///
+    /// Whole-word matching throughout (see ``containsKeyword``), so
+    /// "temperature" does not fire on "temperatures"' neighbours and
+    /// "current" does not fire on "concurrent".
+    static func promptAsksForLiveData(_ prompt: String) -> Bool {
+        let lowered = prompt.lowercased()
+        let liveKeywords: [String] = [
+            "google for",
             "latest news", "latest version", "news about",
             "today's", "this week's", "right now",
             "current price", "stock price", "exchange rate",
-            "current weather"
+            "current weather",
+            // Looser than the phrases above, and deliberately so: a
+            // bare "weather" / "temperature" / "forecast" is always a
+            // live-data question, attachment or not.
+            "weather", "temperature", "forecast"
         ]
-        for kw in webKeywords where containsKeyword(kw, in: lowered) { return true }
-
-        // Weather keywords (looser than the web list above).
-        let weatherKeywords: [String] = ["weather", "temperature", "forecast"]
-        for kw in weatherKeywords where containsKeyword(kw, in: lowered) { return true }
-
+        for kw in liveKeywords where containsKeyword(kw, in: lowered) { return true }
         return false
     }
 

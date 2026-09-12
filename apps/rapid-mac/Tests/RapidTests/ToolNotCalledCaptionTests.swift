@@ -345,6 +345,57 @@ struct ToolNotCalledCaptionTests {
         #expect(!flaggedWithTheGate)
     }
 
+    @Test("An attachment does NOT exempt a live-data question")
+    func attachmentDoesNotExemptLiveDataQuestions() {
+        // codex, reviewing this PR: a blanket attachment exemption lets the
+        // exact failure mode straight through. Attach a portfolio PDF, ask
+        // for today's price, and no page on earth holds the answer — so a
+        // bare number with no tool call is a guess, and the caption is right.
+        let liveDataPrompts = [
+            "Here is my portfolio. What is today's stock price for it?",
+            "What's the current price of the first item on this invoice?",
+            "Given this itinerary, what is the weather in Lisbon?",
+            "Summarise this and add the latest news about the company.",
+            "What's the exchange rate to convert the total on this invoice?",
+        ]
+        for prompt in liveDataPrompts {
+            #expect(ChatMessage.shouldFlagToolNotCalled(
+                userPrompt: prompt,
+                assistantContent: "$1,204.55",
+                toolCalls: nil,
+                finishReason: "stop",
+                toolsRequested: true,
+                promptHadAttachment: true
+            ), "A live-data question is not answerable from an attachment: \(prompt)")
+        }
+    }
+
+    @Test("promptAsksForLiveData draws the line at a moving target")
+    func liveDataContract() {
+        // Names a moving target: no attached document can hold the answer.
+        for prompt in ["what is today's close?", "latest news about the merger",
+                       "the forecast for tomorrow", "current weather in Oslo",
+                       "google for the spec", "what's the temperature outside",
+                       "stock price now", "right now, how many users?"] {
+            #expect(ChatMessage.promptAsksForLiveData(prompt), "should be live: \(prompt)")
+        }
+        // Retrieval-shaped, but an attached document answers it — so these
+        // stay OUT of the live list and keep Gate 1c's exemption available.
+        for prompt in ["look up the invoice number", "search for the clause about refunds",
+                       "what is the total due?", "calculate 15 percent of the subtotal",
+                       "sum of the line items"] {
+            #expect(!ChatMessage.promptAsksForLiveData(prompt), "should not be live: \(prompt)")
+        }
+        // Whole-word matching still holds here: "concurrent" is not "current",
+        // and a "forecasting model" question is not a weather question.
+        #expect(!ChatMessage.promptAsksForLiveData("explain concurrent map access"))
+        #expect(!ChatMessage.promptAsksForLiveData("what is a temperate climate"))
+        // But the live list must still reach promptLooksCalculatorish, so the
+        // two cannot drift apart.
+        #expect(ChatMessage.promptLooksCalculatorish("what is the forecast"))
+        #expect(ChatMessage.promptLooksCalculatorish("google for the spec"))
+    }
+
     // ``ChatViewModel`` is @MainActor; the rest of this suite is pure.
     @MainActor
     @Test("The attachment gate reads the user row that opened the turn")

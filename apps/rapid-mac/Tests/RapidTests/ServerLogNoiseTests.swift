@@ -64,6 +64,38 @@ struct ServerLogNoiseTests {
         #expect(!ServerLogNoise.isAppPollAccessLine(""))
     }
 
+    @Test("A diagnostic that QUOTES a poll's request line survives")
+    func keepsProseQuotingAnAccessLine() {
+        // codex, reviewing this PR: an unanchored pattern would suppress any
+        // line containing the quoted fragment, including the one message a
+        // user most needs when health checks are lying to the app. The
+        // pattern is anchored at both ends, so a line is only dropped when it
+        // is nothing but an access line.
+        #expect(!ServerLogNoise.isAppPollAccessLine(
+            #"WARNING: probe failed: sent "GET /healthz HTTP/1.1" 200 but the body was empty"#))
+        #expect(!ServerLogNoise.isAppPollAccessLine(
+            #"ERROR: residency refresh loop is wedged; last line was 127.0.0.1:1 - "GET /v1/models/residency HTTP/1.1" 200 OK"#))
+        // A trailing comment on an otherwise well-formed access line means
+        // someone wrapped it in prose, so it is not uvicorn's own output.
+        #expect(!ServerLogNoise.isAppPollAccessLine(
+            #"INFO:     127.0.0.1:1 - "GET /healthz HTTP/1.1" 200 OK  <-- took 2.4s, model still loading"#))
+    }
+
+    @Test("The access logger propagating to a root handler is still suppressed")
+    func suppressesPropagatedAccessLines() {
+        // The server calls `uvicorn.run(app, ...)` with no `log_config`, so
+        // uvicorn's padded `levelprefix` is the shape today. If the access
+        // logger is ever left to propagate to a root handler instead, Python's
+        // default `%(levelname)s:%(name)s:%(message)s` is what comes out, and
+        // the filter must not quietly stop working.
+        #expect(ServerLogNoise.isAppPollAccessLine(
+            #"INFO:uvicorn.access:127.0.0.1:57230 - "GET /healthz HTTP/1.1" 200 OK"#))
+        // IPv6 client address, and a line arriving with a trailing CR from the
+        // pipe.
+        #expect(ServerLogNoise.isAppPollAccessLine(
+            "INFO:     [::1]:57230 - \"GET /healthz HTTP/1.1\" 200 OK\r"))
+    }
+
     @Test("Colourised access lines are suppressed too")
     func suppressesColourisedLines() {
         // uvicorn bolds the request line when `use_colors` is on. The app

@@ -28,10 +28,11 @@ import Foundation
 ///   * Only successful (2xx) polls. A `/healthz` that answers 503, or a
 ///     residency refresh that 500s, is exactly what someone opening the
 ///     drawer needs to see, so those lines are kept.
-///   * Only the access-log shape — the quoted `GET … HTTP/1.1` request
-///     line followed by a status code. A warning or traceback that
-///     merely mentions `/healthz` in prose is not an access line and is
-///     never suppressed.
+///   * Only a line that is *entirely* an access-log line. The pattern is
+///     anchored at both ends, so a warning or traceback that merely
+///     mentions `/healthz` — even one that quotes a whole request line
+///     back at you, e.g. `WARNING: probe failed: sent "GET /healthz
+///     HTTP/1.1" got 200 with an empty body` — is never suppressed.
 ///
 /// Pure function, no shared state, matching `LogScrubber`'s contract.
 enum ServerLogNoise {
@@ -42,14 +43,31 @@ enum ServerLogNoise {
     /// Uvicorn's default access format is
     /// `%(levelprefix)s %(client_addr)s - "%(request_line)s" %(status_code)s`,
     /// e.g. `INFO:     127.0.0.1:57230 - "GET /healthz HTTP/1.1" 200 OK`.
-    /// The optional query-string branch covers a future poll that
-    /// carries parameters; the status branch is pinned to 2xx so
-    /// failures survive.
+    /// The server runs `uvicorn.run(app, …)` with no `log_config`, so
+    /// uvicorn installs its own default config and that *is* the shape
+    /// on the wire.
+    ///
+    /// Anchored at both ends (`^…$`), which is the whole safety
+    /// argument: the line must be nothing but an access line, so prose
+    /// that quotes a request line back at the reader stays visible. The
+    /// leading group absorbs either uvicorn's padded `levelprefix`
+    /// (`INFO:     `) or a `LEVEL:logger.name:` prefix, in case the
+    /// access logger is ever left to propagate to a root handler using
+    /// Python's default `%(levelname)s:%(name)s:%(message)s` format. The
+    /// optional query-string branch covers a future poll that carries
+    /// parameters; the status branch is pinned to 2xx so failures
+    /// survive; the trailing group is the HTTP reason phrase
+    /// (`OK`, `No Content`, `Non-Authoritative Information`).
     private static let accessLinePattern: String = {
         let alternation = polledPaths
             .map { NSRegularExpression.escapedPattern(for: $0) }
             .joined(separator: "|")
-        return "\"(?:GET|HEAD) (?:\(alternation))(?:\\?[^ \"]*)? HTTP/[0-9.]+\" 2[0-9][0-9]"
+        let levelPrefix = "(?:[A-Z]+:(?:[A-Za-z0-9_.]+:)?[ \\t]*)?"
+        let clientAddr = "[^ \"]+"
+        let requestLine = "\"(?:GET|HEAD) (?:\(alternation))(?:\\?[^ \"]*)? HTTP/[0-9.]+\""
+        let status = "2[0-9][0-9]"
+        let reasonPhrase = "(?: [A-Za-z][A-Za-z'\\- ]*)?"
+        return "^\(levelPrefix)\(clientAddr) - \(requestLine) \(status)\(reasonPhrase)$"
     }()
 
     /// True when `line` is a successful access-log line for one of the
@@ -65,6 +83,10 @@ enum ServerLogNoise {
             with: "",
             options: .regularExpression
         )
-        return stripped.range(of: accessLinePattern, options: .regularExpression) != nil
+        // Trimmed because the pattern is `$`-anchored and lines arrive from a
+        // pipe: a trailing `\r` (or indentation on a continuation line) must
+        // not be the thing that decides whether the filter fires.
+        let trimmed = stripped.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.range(of: accessLinePattern, options: .regularExpression) != nil
     }
 }
