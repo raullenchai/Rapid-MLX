@@ -472,4 +472,67 @@ struct CurrentDateContextWireTests {
         #expect(edited[0].wireSuffix == firstPass[0].wireSuffix)
     }
 
+    @Test("A late regenerate appends the answer time without rewriting the ask")
+    func lateRegenerateAppendsTheAnswerTime() throws {
+        // codex round 5, blocking: reusing the row meant re-answering "what
+        // time is it?" 45 minutes later reported the 45-minute-old clock —
+        // worse than the pre-change behaviour, which recomputed per request.
+        let calendar = Calendar(identifier: .gregorian)
+        let asked = Date(timeIntervalSince1970: 1_757_000_000)
+        let muchLater = asked.addingTimeInterval(45 * 60)
+
+        let earlier = ChatMessage(role: .user, content: "hello", createdAt: asked.addingTimeInterval(-3600))
+        let reused = ChatMessage(role: .user, content: "what time is it?", createdAt: asked)
+        let regenerated = ChatViewModel.stampingClockContext(
+            on: [earlier, reused],
+            calendar: calendar,
+            answeringAt: muchLater
+        )
+        let trailer = try #require(regenerated[1].wireSuffix)
+
+        // The ask stamp is untouched and still leads: APPEND, not rewrite, so
+        // the row's own rendering never changes retroactively.
+        #expect(trailer.hasPrefix(ChatViewModel.clockContext(at: asked, calendar: calendar)))
+        // And the answer time is actually there, so the model can answer the
+        // question it was asked.
+        #expect(trailer.contains(ChatViewModel.clockStampText(at: muchLater, calendar: calendar)))
+        #expect(trailer.contains("This answer is being generated"))
+
+        // Only the newest user row. An earlier turn renders exactly as it did
+        // before, which is the append-only property the prefix cache needs.
+        #expect(regenerated[0].wireSuffix
+            == ChatViewModel.clockContext(at: earlier.createdAt, calendar: calendar))
+    }
+
+    @Test("An ordinary send and a same-minute regenerate add nothing at all")
+    func sameMinuteAnswerAddsNothing() throws {
+        let calendar = Calendar(identifier: .gregorian)
+        let asked = Date(timeIntervalSince1970: 1_757_000_000)
+        let row = ChatMessage(role: .user, content: "what time is it?", createdAt: asked)
+
+        // The common path: the row was minted by this very request.
+        let fresh = ChatViewModel.stampingClockContext(on: [row], calendar: calendar, answeringAt: asked)
+        let unstamped = ChatViewModel.stampingClockContext(on: [row], calendar: calendar)
+        #expect(fresh[0].wireSuffix == unstamped[0].wireSuffix,
+                "Passing this request's own instant must be byte-identical to passing nothing, or every ordinary send pays for the regenerate feature.")
+
+        // A regenerate twenty seconds on renders the same minute, so it still
+        // says nothing new and still costs no prefix.
+        let prompt = ChatViewModel.stampingClockContext(
+            on: [row], calendar: calendar, answeringAt: asked.addingTimeInterval(20))
+        #expect(prompt[0].wireSuffix == unstamped[0].wireSuffix)
+    }
+
+    @Test("answeringNowLine speaks only when it has something to say")
+    func answeringNowLineContract() {
+        let calendar = Calendar(identifier: .gregorian)
+        let asked = Date(timeIntervalSince1970: 1_757_000_000)
+        #expect(ChatViewModel.answeringNowLine(asked: asked, answeringAt: asked, calendar: calendar) == "")
+        #expect(ChatViewModel.answeringNowLine(
+            asked: asked, answeringAt: asked.addingTimeInterval(30), calendar: calendar) == "",
+                "Sub-minute differences render identically; emitting a line for them would break the prefix for nothing.")
+        #expect(!ChatViewModel.answeringNowLine(
+            asked: asked, answeringAt: asked.addingTimeInterval(90), calendar: calendar).isEmpty)
+    }
+
 }

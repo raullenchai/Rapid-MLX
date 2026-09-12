@@ -1745,13 +1745,6 @@ final class ChatViewModel {
         return false
     }
 
-    /// Set on every request from the post-trim wire history, read at the
-    /// completion site by the tool-not-called caption. A per-turn fact rather
-    /// than derived state: by the time the stream finishes, the trim that
-    /// decided whether a document extract reached the model is no longer
-    /// recomputable from ``messages``.
-    private var wireHistoryCarriesAttachmentGrounding = false
-
     /// Keeps the system row and latest complete user/tool turn, then fills the
     /// remaining context newest-first. Oversized tool bodies are shortened in place.
     static func trimMessagesForContextWindow(
@@ -2608,13 +2601,26 @@ final class ChatViewModel {
             // motivates moving the clock out of the system row, and
             // ``stampingClockContext`` for why it is every user row rather
             // than just the newest one.
-            history = ChatViewModel.stampingClockContext(on: history)
+            // ``answeringAt`` is this request's instant: it changes nothing
+            // for an ordinary send (the newest row was minted just now) and
+            // only speaks up when a regenerate is re-answering a question
+            // asked in an earlier minute — see ``answeringNowLine``.
+            history = ChatViewModel.stampingClockContext(
+                on: history,
+                answeringAt: Date()
+            )
             // Whether any document extract survived onto THIS request, read
             // off the same array that is about to be encoded. The
             // tool-not-called caption is decided later, at the completion
             // site, where the trim is no longer visible — see
             // ``historyCarriesAttachmentGrounding``.
-            wireHistoryCarriesAttachmentGrounding =
+            //
+            // A request-scoped `let`, captured by the completion closure
+            // alongside `request` itself, NOT view-model state: codex caught
+            // that a stored property is read by whichever stream finishes
+            // last, so two overlapping sends could decide each other's
+            // caption.
+            let wireCarriesAttachmentGrounding =
                 ChatViewModel.historyCarriesAttachmentGrounding(history)
             let request: ChatStreamClient.Request
             if let s = sampling {
@@ -2647,6 +2653,7 @@ final class ChatViewModel {
             let outcome = await runOneStream(
                 placeholderIndex: currentPlaceholder,
                 request: request,
+                wireCarriesAttachmentGrounding: wireCarriesAttachmentGrounding,
                 epoch: epoch
             )
             switch outcome {
@@ -3121,15 +3128,11 @@ final class ChatViewModel {
         """
     }
 
-    /// The wall clock at `instant`, for the trailer stamped on a user turn.
-    ///
-    /// Split out of the system row for the prefix-cache reason documented on
-    /// ``currentDateContext``. It keeps #2330's contract — the newest user row
-    /// always carries the time it was sent, so the model is still told the
-    /// current local time on every request and never answers a "what time is
-    /// it" from training memory — while keeping the volatile tokens out of the
-    /// prompt's head.
-    nonisolated static func clockContext(
+    /// One minute-resolution wall-clock stamp: "<full date> at <h:mm a>
+    /// (<abbreviation>, <identifier>)". Shared by the "sent" trailer and the
+    /// regenerate line so the two can never drift in format — and so
+    /// comparing them for equality is a reliable "does this say anything new".
+    nonisolated static func clockStampText(
         at instant: Date,
         calendar inputCalendar: Calendar = .autoupdatingCurrent
     ) -> String {
@@ -3143,10 +3146,57 @@ final class ChatViewModel {
         formatter.dateFormat = "EEEE, MMMM d, yyyy 'at' h:mm a"
         let stampText = formatter.string(from: instant)
         let abbreviation = zone.abbreviation(for: instant) ?? zone.identifier
-        return """
-        [MESSAGE SENT]
-        This message was sent \(stampText) (\(abbreviation), \(zone.identifier)).
+        return "\(stampText) (\(abbreviation), \(zone.identifier))"
+    }
+
+    /// The wall clock at `instant`, for the trailer stamped on a user turn.
+    ///
+    /// Split out of the system row for the prefix-cache reason documented on
+    /// ``currentDateContext``. It keeps #2330's contract — the newest user row
+    /// always carries the time it was sent, so the model is still told the
+    /// current local time on every request and never answers a "what time is
+    /// it" from training memory — while keeping the volatile tokens out of the
+    /// prompt's head.
+    nonisolated static func clockContext(
+        at instant: Date,
+        calendar inputCalendar: Calendar = .autoupdatingCurrent
+    ) -> String {
         """
+        [MESSAGE SENT]
+        This message was sent \(clockStampText(at: instant, calendar: inputCalendar)).
+        """
+    }
+
+    /// The extra trailer line a REGENERATE or RETRY adds to the turn it is
+    /// re-answering, and only when it carries information: the question was
+    /// asked at one instant and is being answered at a materially later one.
+    ///
+    /// Returns "" when both instants render to the same minute-resolution
+    /// stamp, which is every ordinary send (the row was minted by this
+    /// request) and every regenerate within the same minute. So the common
+    /// path is byte-identical to having no such line at all.
+    ///
+    /// Why this exists: the reused row's "sent" stamp is honestly the original
+    /// ask time, but a model asked "what time is it?" and re-answering it 45
+    /// minutes later would otherwise report the stale clock — the exact
+    /// regression codex caught, against the pre-change behaviour where the
+    /// clock was recomputed per request. Appending rather than rewriting keeps
+    /// the row's own stamp immutable.
+    ///
+    /// The cache cost is bounded and paid only by the user who regenerated:
+    /// the line is gone again on the NEXT turn (which re-stamps from
+    /// ``ChatMessage/createdAt``), so that turn's shared prefix ends just
+    /// before this row instead of after it — a re-prefill of the last exchange,
+    /// not of the conversation. The document in the first turn stays cached.
+    nonisolated static func answeringNowLine(
+        asked: Date,
+        answeringAt: Date,
+        calendar: Calendar = .autoupdatingCurrent
+    ) -> String {
+        let askedText = clockStampText(at: asked, calendar: calendar)
+        let nowText = clockStampText(at: answeringAt, calendar: calendar)
+        guard askedText != nowText else { return "" }
+        return "\nThis answer is being generated \(nowText)."
     }
 
     /// Stamp every user row with the moment it was sent, as a wire-only
@@ -3194,25 +3244,35 @@ final class ChatViewModel {
     ///     the shared prefix at that row, so there is no reuse to protect.
     ///   * **Regenerate / Retry** (``regenerateAnswer(afterUserAt:…)``) reuse
     ///     the existing user row deliberately — the question was asked then,
-    ///     and re-answering it is not asking it again. Its trailer therefore
-    ///     keeps the original ask time. This is not a shortcut: a "live"
-    ///     clock here would have to be stable on every LATER turn as well, or
-    ///     the prefix breaks for the rest of the conversation, so "live clock
-    ///     on regenerate" and "reuse the prefix" cannot both hold. Reporting
-    ///     when the user actually asked is the more defensible half, and a
-    ///     model that needs the wall clock right now is answering a live-data
-    ///     question, which wants a tool rather than a prompt trailer.
+    ///     and re-answering it is not asking it again — so its "sent" stamp
+    ///     keeps the original ask time. But re-answering "what time is it?"
+    ///     three quarters of an hour later must not report the stale clock,
+    ///     which is why ``answeringNowLine`` APPENDS the answer time to that
+    ///     one row when the two instants differ. Append, not rewrite: the
+    ///     row's own stamp stays immutable, the common regenerate (same
+    ///     minute) adds nothing at all, and the bounded cache cost of the rare
+    ///     late one is documented on that helper.
     nonisolated static func stampingClockContext(
         on messages: [ChatMessage],
-        calendar: Calendar = .autoupdatingCurrent
+        calendar: Calendar = .autoupdatingCurrent,
+        answeringAt: Date? = nil
     ) -> [ChatMessage] {
         guard messages.contains(where: { $0.role == .user }) else { return messages }
         var result = messages
+        let newestUserIndex = result.lastIndex { $0.role == .user }
         for index in result.indices where result[index].role == .user {
-            result[index].wireSuffix = clockContext(
+            var trailer = clockContext(
                 at: result[index].createdAt,
                 calendar: calendar
             )
+            if index == newestUserIndex, let answeringAt {
+                trailer += answeringNowLine(
+                    asked: result[index].createdAt,
+                    answeringAt: answeringAt,
+                    calendar: calendar
+                )
+            }
+            result[index].wireSuffix = trailer
         }
         return result
     }
@@ -3387,6 +3447,11 @@ Your previous draft refused the question by claiming you lack real-time access o
     private func runOneStream(
         placeholderIndex: Int,
         request: ChatStreamClient.Request,
+        // Travels WITH the request rather than living on the view model:
+        // whether a document extract survived the trim onto this particular
+        // wire body. codex caught that a stored property would be read by
+        // whichever stream happens to finish last.
+        wireCarriesAttachmentGrounding: Bool,
         epoch: Int
     ) async -> StreamOutcome {
         var current = currentMessage(index: placeholderIndex)
@@ -3585,8 +3650,7 @@ Your previous draft refused the question by claiming you lack real-time access o
                                 messages: self.messages,
                                 placeholderIndex: placeholderIndex
                             ),
-                            promptHadAttachment:
-                                self.wireHistoryCarriesAttachmentGrounding
+                            promptHadAttachment: wireCarriesAttachmentGrounding
                         )
                         // Issue #513 (defense-in-depth, layer 3): when
                         // the request offered tools but the model emitted
