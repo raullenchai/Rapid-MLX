@@ -11,6 +11,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+from importlib.machinery import PathFinder
 from pathlib import Path
 
 
@@ -91,6 +92,51 @@ def _is_ltx25_name(model_name: str | None) -> bool:
     return is_ltx25_model(model_name)
 
 
+def _submodule_spec_exists_without_import(parent: str, child: str) -> bool:
+    """Find a child module without executing the parent's ``__init__``."""
+
+    parent_spec = importlib.util.find_spec(parent)
+    if parent_spec is None or parent_spec.submodule_search_locations is None:
+        return False
+    return (
+        PathFinder.find_spec(
+            f"{parent}.{child}", parent_spec.submodule_search_locations
+        )
+        is not None
+    )
+
+
+def _default_video_runtime_requirements(model_name: str | None) -> list[str]:
+    """Pure dependency probe for the default/Wan mlx-video runtime."""
+
+    mlx_video_available = importlib.util.find_spec("mlx_video") is not None
+    wan_available = not _is_wan_name(model_name) or (
+        mlx_video_available
+        and _submodule_spec_exists_without_import("mlx_video", "generate_wan")
+    )
+    if not mlx_video_available or not wan_available:
+        return ["the `rapid-mlx[video]` Python extra"]
+    return []
+
+
+def registered_wan_runtime_issue(model_name: str) -> str | None:
+    """Return an actionable, side-effect-free Wan benchmark runtime problem."""
+
+    if sys.version_info < (3, 11):
+        return (
+            "video generation requires Python 3.11 or newer "
+            f"(current: {sys.version_info.major}.{sys.version_info.minor}). "
+            "Rapid-MLX core still supports Python 3.10, but the upstream "
+            "mlx-video runtime does not."
+        )
+    missing = _default_video_runtime_requirements(model_name)
+    if _resolve_ffmpeg() is None:
+        missing.append("ffmpeg (`brew install ffmpeg`)")
+    if missing:
+        return "video generation requires " + " and ".join(missing) + "."
+    return None
+
+
 def require_video_runtime_or_exit(model_name: str | None = None) -> None:
     """Fail before model download when the optional video stack is absent."""
     if sys.version_info < (3, 11):
@@ -165,13 +211,7 @@ def require_video_runtime_or_exit(model_name: str | None = None) -> None:
             if importlib.util.find_spec(module) is None
         )
     else:
-        mlx_video_available = importlib.util.find_spec("mlx_video") is not None
-        wan_available = not _is_wan_name(model_name) or (
-            mlx_video_available
-            and importlib.util.find_spec("mlx_video.generate_wan") is not None
-        )
-        if not mlx_video_available or not wan_available:
-            missing.append("the `rapid-mlx[video]` Python extra")
+        missing.extend(_default_video_runtime_requirements(model_name))
     if _resolve_ffmpeg() is None:
         missing.append("ffmpeg (`brew install ffmpeg`)")
     if missing:

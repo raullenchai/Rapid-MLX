@@ -50,6 +50,7 @@ from vllm_mlx.community_bench.upload import SubmitError
 from vllm_mlx.community_bench.workspace import (
     LocalRunArchive,
     benchmark_catalog,
+    benchmark_runtime_readiness,
     describe_case,
     plan_for_alias,
 )
@@ -156,6 +157,58 @@ def test_catalog_is_model_first_and_derives_protocol_from_atomic_task() -> None:
     assert by_alias["qwen-image"]["memory_fit"] == "does_not_fit"
     assert by_alias["qwen-image"]["memory_estimate_source"] == "profile_minimum"
     assert all("modality" not in model for model in catalog["models"])
+
+
+def test_runtime_readiness_reuses_fail_fast_generation_guards(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from vllm_mlx.runtime import image_lane, video_lane
+
+    assert benchmark_runtime_readiness("qwen3.5-4b-4bit", "text_generation") == {
+        "status": "ready",
+        "message": None,
+    }
+
+    def missing_image(_alias: str) -> str:
+        return (
+            "image generation requires the `rapid-mlx[image]` Python extra "
+            "(`pip install 'rapid-mlx[image]'`)."
+        )
+
+    monkeypatch.setattr(image_lane, "image_runtime_issue", missing_image)
+    image = benchmark_runtime_readiness("flux2-klein-4b", "image_generation")
+    assert image == {
+        "status": "unavailable",
+        "message": (
+            "image generation requires the `rapid-mlx[image]` Python extra "
+            "(`pip install 'rapid-mlx[image]'`)."
+        ),
+    }
+
+    monkeypatch.setattr(video_lane, "registered_wan_runtime_issue", lambda _alias: None)
+    assert benchmark_runtime_readiness("wan2.2-ti2v-5b-q8", "video_generation") == {
+        "status": "ready",
+        "message": None,
+    }
+    assert benchmark_runtime_readiness("qwen3.5-4b-4bit", "unsupported") == {
+        "status": "unknown",
+        "message": "Runtime readiness could not be verified; run will check again.",
+    }
+
+
+def test_runtime_readiness_degrades_probe_faults_to_unknown(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from vllm_mlx.runtime import image_lane
+
+    def probe_fault(_alias: str) -> str | None:
+        raise RuntimeError("probe fault must not escape planning")
+
+    monkeypatch.setattr(image_lane, "image_runtime_issue", probe_fault)
+    assert benchmark_runtime_readiness("flux2-klein-4b", "image_generation") == {
+        "status": "unknown",
+        "message": "Runtime readiness could not be verified; run will check again.",
+    }
 
 
 def test_memory_fit_requires_headroom_for_the_os_and_kv_cache() -> None:
@@ -3210,6 +3263,7 @@ def test_cli_plan_prints_protocol_and_local_storage(
 ) -> None:
     _cli_archive(monkeypatch, SimpleNamespace())
     seen: dict[str, object] = {}
+    runtime_readiness: dict[str, object] = {"status": "ready", "message": None}
 
     def fake_plan(alias, **kwargs):
         seen.update(kwargs)
@@ -3222,6 +3276,7 @@ def test_cli_plan_prints_protocol_and_local_storage(
                 "estimated_memory_gib": 6,
                 "memory_estimate_source": "artifact_size_fallback",
                 "memory_fit": "fits",
+                "runtime": runtime_readiness,
             },
             "workload": {
                 "protocol_version": 2,
@@ -3253,6 +3308,7 @@ def test_cli_plan_prints_protocol_and_local_storage(
         "Memory:   ~6 GB estimated (from download size); fits this Mac (18 GB)" in out
     )
     assert "Download: not cached yet; `benchmark run` downloads it" in out
+    assert "Runtime:  ready" in out
     assert (
         "Storage:  local; upload requires a separate share command and consent" in out
     )
@@ -3266,6 +3322,17 @@ def test_cli_plan_prints_protocol_and_local_storage(
     assert payload["workload"]["protocol_version"] == 2
     assert payload["memory_gib"] == 18
     assert payload["model_cached"] is False
+
+    args.json = False
+    runtime_readiness.update(status="unavailable", message="install the image runtime")
+    assert community_cli.benchmark_command(args) == 0
+    assert (
+        "Runtime:  unavailable — install the image runtime" in capsys.readouterr().out
+    )
+
+    runtime_readiness.update(status="unknown", message=None)
+    assert community_cli.benchmark_command(args) == 0
+    assert "Runtime:  unknown" in capsys.readouterr().out
 
 
 def test_cli_plan_memory_and_download_lines_cover_every_verdict(
@@ -5207,6 +5274,11 @@ def test_plan_for_alias_adds_memory_fit_and_cache_state_without_downloading(
     assert "memory_gib" not in base
     assert "model_cached" not in base
     assert base["model"]["memory_fit"] == "unknown"
+    assert base["model"]["runtime"]["status"] in {
+        "ready",
+        "unavailable",
+        "unknown",
+    }
 
     # The probe is the modality-aware one behind ``models --cached`` (mflux
     # image and Wan video layouts are not the text ``model*.safetensors``

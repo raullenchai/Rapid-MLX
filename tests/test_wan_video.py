@@ -8,6 +8,7 @@ import json
 import subprocess
 import sys
 import threading
+from collections import namedtuple
 from pathlib import Path
 from types import ModuleType
 
@@ -16,7 +17,12 @@ from fastapi import HTTPException
 
 from vllm_mlx.model_aliases import resolve_profile
 from vllm_mlx.routes import video
-from vllm_mlx.runtime.video_lane import VideoEngine, require_video_runtime_or_exit
+from vllm_mlx.runtime.video_lane import (
+    VideoEngine,
+    _submodule_spec_exists_without_import,
+    registered_wan_runtime_issue,
+    require_video_runtime_or_exit,
+)
 from vllm_mlx.video.wan import WanBackendError, WanRequestError, WanVideoEngine
 
 
@@ -95,18 +101,15 @@ def test_wan_wraps_non_utf8_config(monkeypatch, tmp_path) -> None:
 
 
 def test_wan_runtime_guard_checks_wan_module(monkeypatch, capsys) -> None:
-    checked = []
     monkeypatch.setattr(sys, "version_info", (3, 11))
-
-    def fake_find_spec(module):
-        checked.append(module)
-        return None if module == "mlx_video.generate_wan" else object()
-
-    monkeypatch.setattr("importlib.util.find_spec", fake_find_spec)
+    monkeypatch.setattr("importlib.util.find_spec", lambda _module: object())
+    monkeypatch.setattr(
+        "vllm_mlx.runtime.video_lane._submodule_spec_exists_without_import",
+        lambda parent, child: False,
+    )
     monkeypatch.setattr("shutil.which", lambda _: "/opt/homebrew/bin/ffmpeg")
     with pytest.raises(SystemExit):
         require_video_runtime_or_exit("Anes1032/Wan2.2-TI2V-5B-mlx-q8")
-    assert "mlx_video.generate_wan" in checked
     assert "rapid-mlx[video]" in capsys.readouterr().err
 
 
@@ -123,6 +126,61 @@ def test_wan_runtime_guard_handles_missing_parent_package(monkeypatch, capsys) -
     with pytest.raises(SystemExit):
         require_video_runtime_or_exit("Anes1032/Wan2.2-TI2V-5B-mlx-q8")
     assert "rapid-mlx[video]" in capsys.readouterr().err
+
+
+def test_wan_submodule_probe_does_not_import_parent(monkeypatch, tmp_path) -> None:
+    package = tmp_path / "probe_parent"
+    package.mkdir()
+    marker = tmp_path / "parent-imported"
+    (package / "__init__.py").write_text(
+        f"from pathlib import Path\nPath({str(marker)!r}).touch()\n"
+    )
+    (package / "child.py").write_text("AVAILABLE = True\n")
+    monkeypatch.syspath_prepend(str(tmp_path))
+
+    assert _submodule_spec_exists_without_import("probe_parent", "child") is True
+    assert marker.exists() is False
+    assert "probe_parent" not in sys.modules
+
+    monkeypatch.setattr("importlib.util.find_spec", lambda _module: None)
+    assert _submodule_spec_exists_without_import("missing_parent", "child") is False
+
+
+def test_wan_runtime_probe_reports_missing_ffmpeg_without_exiting(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(sys, "version_info", (3, 11))
+    monkeypatch.setattr("importlib.util.find_spec", lambda _module: object())
+    monkeypatch.setattr(
+        "vllm_mlx.runtime.video_lane._submodule_spec_exists_without_import",
+        lambda parent, child: True,
+    )
+    monkeypatch.setattr("vllm_mlx.runtime.video_lane._resolve_ffmpeg", lambda: None)
+
+    issue = registered_wan_runtime_issue("wan2.2-ti2v-5b-q8")
+
+    assert issue == "video generation requires ffmpeg (`brew install ffmpeg`)."
+
+
+def test_wan_runtime_probe_reports_unsupported_python_and_ready_runtime(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    version_info = namedtuple("version_info", "major minor")
+    monkeypatch.setattr(sys, "version_info", version_info(3, 10))
+    issue = registered_wan_runtime_issue("wan2.2-ti2v-5b-q8")
+    assert issue is not None
+    assert "Python 3.11 or newer (current: 3.10)" in issue
+
+    monkeypatch.setattr(sys, "version_info", version_info(3, 11))
+    monkeypatch.setattr(
+        "vllm_mlx.runtime.video_lane._default_video_runtime_requirements",
+        lambda _model: [],
+    )
+    monkeypatch.setattr(
+        "vllm_mlx.runtime.video_lane._resolve_ffmpeg",
+        lambda: "/opt/homebrew/bin/ffmpeg",
+    )
+    assert registered_wan_runtime_issue("wan2.2-ti2v-5b-q8") is None
 
 
 def test_wan_engine_maps_current_mlx_video_api(monkeypatch, tmp_path) -> None:
