@@ -1598,6 +1598,25 @@ class MLXMultimodalLM:
                     trust_remote_code=False,
                 )
 
+            config_model_type = (
+                self.config.get("model_type")
+                if isinstance(self.config, dict)
+                else getattr(self.config, "model_type", None)
+            )
+            if config_model_type == "glm5_next":
+                # Keep GLM's MLLM lane at parity with BatchedEngine's text
+                # lane: collapse each eligible MoE gate/up pair into one
+                # gather_qmm. GLM-5.3-Flash always routes through this wrapper,
+                # so without this step its 42 sparse expert layers issue an
+                # extra quantized projection for every generated token. Keep
+                # the first rollout architecture-scoped; other MoE VLMs need
+                # their own real-model qualification before enrollment.
+                # Server use runs this method on the model-owning mllm-step
+                # worker, preserving the stream contract from #170.
+                from ..moe_fusion import fuse_gate_up
+
+                fuse_gate_up(self.model)
+
             # Augment the wrapped tokenizer's EOS set with the chat-
             # template terminator ids from ``generation_config.json``.
             # Gemma 3 / 3n VL variants are the canonical case:

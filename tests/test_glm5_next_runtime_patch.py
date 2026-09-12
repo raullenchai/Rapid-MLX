@@ -3,6 +3,8 @@
 
 from __future__ import annotations
 
+import builtins
+import sys
 from types import SimpleNamespace
 
 import pytest
@@ -23,6 +25,49 @@ class _Quantized:
         self.group_size = group_size
         self.bits = bits
         self.mode = mode
+
+
+@pytest.mark.requires_mlx
+def test_moe_fusion_declines_uninspectable_call_contract() -> None:
+    from vllm_mlx import moe_fusion
+
+    class UninspectableSwitchGLU:
+        __call__ = 1
+
+    assert not moe_fusion._supports_fused_call_contract(UninspectableSwitchGLU)
+
+
+@pytest.mark.requires_mlx
+def test_moe_family_discovery_survives_optional_import_failure(monkeypatch) -> None:
+    from vllm_mlx import moe_fusion
+
+    real_import = builtins.__import__
+
+    def import_without_mlx_lm_switch(name, *args, **kwargs):
+        if name == "mlx_lm.models.switch_layers":
+            raise ImportError("simulated optional dependency failure")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", import_without_mlx_lm_switch)
+    monkeypatch.delitem(sys.modules, "mlx_vlm.models.switch_layers", raising=False)
+
+    assert moe_fusion._switch_layer_families() == ()
+
+
+@pytest.mark.requires_mlx
+def test_moe_family_discovery_ignores_incomplete_vlm_module(monkeypatch) -> None:
+    from vllm_mlx import moe_fusion
+
+    monkeypatch.setitem(
+        sys.modules,
+        "mlx_vlm.models.switch_layers",
+        SimpleNamespace(),
+    )
+
+    families = moe_fusion._switch_layer_families()
+    assert any(
+        family[1].__module__ == "mlx_lm.models.switch_layers" for family in families
+    )
 
 
 def test_kda_projection_fusion_requires_one_quantization() -> None:
