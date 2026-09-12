@@ -25,6 +25,7 @@ from __future__ import annotations
 import glob
 import json
 import os
+from pathlib import Path
 
 import mlx.core as mx
 import mlx.nn as nn
@@ -33,6 +34,70 @@ from mlx.utils import tree_flatten
 from .config import ModelArgs
 from .convert import VISION_PREFIXES, bits_for, is_quant_target
 from .model import Model
+
+
+def resolve_indexed_shard(model_path: str, filename: str) -> str:
+    """Resolve an indexed shard without escaping its model/CAS repository."""
+    root = Path(model_path).resolve()
+    lexical = Path(os.path.abspath(os.path.join(root, filename)))
+    if os.path.commonpath((root, lexical)) != str(root):
+        raise ValueError("Engram shard must stay inside the model directory")
+    resolved = lexical.resolve(strict=True)
+    if os.path.commonpath((root, resolved)) == str(root):
+        return str(resolved)
+    # Hub snapshots legitimately symlink immutable files into the specific
+    # repository's sibling blobs directory. Recognize the repository layout,
+    # rather than trusting any parent directory merely named "snapshots".
+    repository = root.parent.parent
+    if root.parent.name == "snapshots" and repository.name.startswith("models--"):
+        lexical_blobs = repository / "blobs"
+        blobs = lexical_blobs.resolve()
+        if (
+            lexical_blobs.is_dir()
+            and not lexical_blobs.is_symlink()
+            and os.path.commonpath((repository, blobs)) == str(repository)
+            and os.path.commonpath((blobs, resolved)) == str(blobs)
+        ):
+            return str(resolved)
+    raise ValueError("Engram shard symlink escapes the model repository")
+
+
+def supports_engram_ssd_offload(path: str) -> bool:
+    """Return whether a checkpoint has the complete supported Engram layout."""
+    try:
+        with open(os.path.join(path, "config.json")) as config_file:
+            config = json.load(config_file)
+        args = ModelArgs.from_dict(config)
+        quantization = config.get("quantization")
+        if (
+            not args.engram_layer_ids
+            or not isinstance(quantization, dict)
+            or not quantization.get("engram_bits")
+        ):
+            return False
+        with open(os.path.join(path, "model.safetensors.index.json")) as index_file:
+            index = json.load(index_file)
+        mapping = index.get("weight_map")
+        if not isinstance(mapping, dict):
+            return False
+        for layer_id in args.engram_layer_ids:
+            prefix = f"layers.{layer_id}.engram.embed"
+            keys = (prefix + ".weight", prefix + ".scales", prefix + ".biases")
+            filenames = [mapping.get(key) for key in keys]
+            if (
+                any(
+                    not isinstance(filename, str) or not filename
+                    for filename in filenames
+                )
+                or len(set(filenames)) != 1
+            ):
+                return False
+            filename = filenames[0]
+            assert isinstance(filename, str)
+            resolve_indexed_shard(path, filename)
+    except (OSError, TypeError, ValueError, json.JSONDecodeError):
+        return False
+    return True
 
 
 def reshape_grouped_wo_a(items, args: ModelArgs):
@@ -108,6 +173,7 @@ def load(
     lazy: bool | None = None,
     strict: bool = True,
     fuse_moe_gate_up: bool = False,
+    engram_ssd_offload: bool = False,
 ):
     """``lazy=None`` auto-selects: builds that fit comfortably in physical RAM
     are materialized at load time (CPU-side, avoiding cold-mmap page-in inside
@@ -167,6 +233,18 @@ def load(
     model = Model(args, token_map=token_map)
 
     q = cfg.get("quantization")
+    engram_keys: set[str] = set()
+    engram_mapping: dict[str, object] = {}
+    if engram_ssd_offload:
+        index_path = os.path.join(path, "model.safetensors.index.json")
+        if not os.path.isfile(index_path):
+            raise ValueError("Engram SSD offload requires a safetensors index")
+        with open(index_path) as index_file:
+            index = json.load(index_file)
+        raw_mapping = index.get("weight_map")
+        if not isinstance(raw_mapping, dict):
+            raise ValueError("Engram SSD offload requires a valid weight map")
+        engram_mapping = raw_mapping
     if q:
         if q.get("bits"):
             module_map = q.get("modules")
@@ -179,17 +257,56 @@ def load(
                 ),
             )
         if q.get("engram_bits"):
-            from .engram import QuantizedEngramEmbedding
+            from .engram import (
+                DiskQuantizedEngramEmbedding,
+                QuantizedEngramEmbedding,
+            )
 
             for layer in model.layers:
                 if layer.engram is not None:
                     e = layer.engram.embed
-                    layer.engram.embed = QuantizedEngramEmbedding(
-                        e.weight.shape[0],
-                        e.weight.shape[1],
-                        q["group_size"],
-                        q["engram_bits"],
-                    )
+                    if engram_ssd_offload:
+                        prefix = f"layers.{layer.layer_id}.engram.embed"
+                        keys = {
+                            "weight": prefix + ".weight",
+                            "scales": prefix + ".scales",
+                            "biases": prefix + ".biases",
+                        }
+                        filenames = []
+                        for key in keys.values():
+                            filename = engram_mapping.get(key)
+                            if not isinstance(filename, str) or not filename:
+                                raise ValueError(
+                                    "Engram SSD offload is missing indexed tensor: "
+                                    f"{key}"
+                                )
+                            filenames.append(filename)
+                        if len(set(filenames)) != 1:
+                            raise ValueError(
+                                "Engram affine tensors must share one shard"
+                            )
+                        filename = filenames[0]
+                        shard_path = resolve_indexed_shard(path, filename)
+                        layer.engram.embed = DiskQuantizedEngramEmbedding(
+                            shard_path,
+                            weight_key=keys["weight"],
+                            scales_key=keys["scales"],
+                            biases_key=keys["biases"],
+                            num_embeddings=e.weight.shape[0],
+                            dim=e.weight.shape[1],
+                            group_size=q["group_size"],
+                            bits=q["engram_bits"],
+                        )
+                        engram_keys.update(keys.values())
+                    else:
+                        layer.engram.embed = QuantizedEngramEmbedding(
+                            e.weight.shape[0],
+                            e.weight.shape[1],
+                            q["group_size"],
+                            q["engram_bits"],
+                        )
+    if engram_ssd_offload and args.engram_layer_ids and not engram_keys:
+        raise ValueError("Engram SSD offload requires affine-quantized Engram tables")
 
     loaded: set[str] = set()
     vision_skipped: set[str] = set()
@@ -197,6 +314,8 @@ def load(
         w = mx.load(shard)
         items = []
         for k, v in w.items():
+            if k in engram_keys:
+                continue
             if k.startswith(VISION_PREFIXES):
                 vision_skipped.add(k)  # declared passthrough, text-only runtime
                 continue
