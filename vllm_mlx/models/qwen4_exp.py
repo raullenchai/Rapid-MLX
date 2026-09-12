@@ -66,6 +66,49 @@ _FAST_RMSNORM_DEFAULT = (
     else "stock"
 )
 
+# Submit each short Qwen4 decoder layer as soon as its graph is constructed.
+# This is scheduling-only: ``async_eval`` does not materialize the value on the
+# host or alter the graph result.  The 64-row ceiling deliberately excludes
+# prefill slabs, which already keep the device occupied and do not benefit from
+# per-layer submission.  Enabled by default for the private Rapid lane after
+# the same 48-layer Qwen4 path was qualified bit-exact in mlx-lm-unified;
+# operators retain an immediate fail-open escape hatch.
+_EAGER_DISPATCH = os.environ.get(
+    "RAPID_MLX_QWEN4_EAGER_DISPATCH",
+    os.environ.get("MLX_QWEN4_EAGER_DISPATCH", "1"),
+).strip().lower() in {"1", "true", "yes", "on"}
+_EAGER_DISPATCH_MAX_ROWS = max(
+    1,
+    int(
+        os.environ.get(
+            "RAPID_MLX_QWEN4_EAGER_DISPATCH_MAX_ROWS",
+            os.environ.get("MLX_QWEN4_EAGER_DISPATCH_MAX_ROWS", "64"),
+        )
+    ),
+)
+
+
+def set_qwen4_eager_dispatch(enabled: bool) -> bool:
+    """Set short-forward eager dispatch and return its previous state."""
+    if not isinstance(enabled, bool):
+        raise TypeError("Qwen4 eager dispatch state must be a boolean")
+    global _EAGER_DISPATCH
+    previous = _EAGER_DISPATCH
+    _EAGER_DISPATCH = enabled
+    return previous
+
+
+def qwen4_eager_dispatch_admitted(batch: int, length: int) -> bool:
+    """Return the no-sync admission decision for one decoder forward."""
+    if any(
+        isinstance(value, bool) or not isinstance(value, int)
+        for value in (batch, length)
+    ):
+        raise TypeError("Qwen4 eager dispatch dimensions must be integers")
+    if batch < 1 or length < 1:
+        raise ValueError("Qwen4 eager dispatch dimensions must be positive")
+    return _EAGER_DISPATCH and batch * length <= _EAGER_DISPATCH_MAX_ROWS
+
 
 @dataclass
 class TextModelArgs(BaseModelArgs):
@@ -1890,6 +1933,9 @@ class Qwen4ExpTextModel(nn.Module):
             else cache[attention_index][0]
         )
         attention_mask = create_attention_mask(hidden_states, attention_cache)
+        eager_dispatch = qwen4_eager_dispatch_admitted(
+            int(hidden_states.shape[0]), int(hidden_states.shape[1])
+        )
         for layer, layer_cache in zip(self.layers, cache):
             hidden_states = layer(
                 hidden_states,
@@ -1899,6 +1945,8 @@ class Qwen4ExpTextModel(nn.Module):
                 record_rollback=record_rollback,
                 record_qsa_rollback=record_qsa_rollback,
             )
+            if eager_dispatch:
+                mx.async_eval(hidden_states)
         output = self.hyper_connection_mixer(hidden_states)
         return (output, hidden_states) if return_hidden else output
 
