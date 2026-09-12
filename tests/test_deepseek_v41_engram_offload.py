@@ -108,6 +108,22 @@ def test_disk_engram_discards_failed_stale_prefetch(tmp_path):
     assert mx.array_equal(actual, expected).item()
 
 
+def test_disk_engram_replaces_failed_prefetch_with_current_request(tmp_path):
+    resident, disk, _keys, _path = _modules(tmp_path)
+    disk.prefetch(np.array([8], dtype=np.int64))
+    assert disk._pending is not None
+    with pytest.raises(IndexError, match="outside"):
+        disk._pending[1].result()
+    requested = mx.array([2, 7], mx.int32)
+
+    disk.prefetch(requested)
+    expected = resident(requested)
+    actual = disk(requested)
+    mx.eval(expected, actual)
+
+    assert mx.array_equal(actual, expected).item()
+
+
 def test_disk_engram_gather_can_exceed_lru_capacity(tmp_path):
     resident, disk, _keys, _path = _modules(tmp_path, cache_rows=1)
     indices = mx.array([1, 3, 2], mx.int32)

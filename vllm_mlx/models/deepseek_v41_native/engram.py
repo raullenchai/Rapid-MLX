@@ -462,6 +462,14 @@ class DiskQuantizedEngramEmbedding(nn.Module):
                 )
         return rows
 
+    @staticmethod
+    def _discard_future(future: Future) -> None:
+        if not future.cancel():
+            try:
+                future.result()
+            except Exception:
+                pass
+
     def prefetch(self, indices: np.ndarray) -> None:
         """Start selected-row I/O before this embedding's layer executes."""
         flat = np.asarray(indices, dtype=np.int64).reshape(-1).copy()
@@ -470,7 +478,7 @@ class DiskQuantizedEngramEmbedding(nn.Module):
                 raise RuntimeError("Engram embedding is closed")
             previous, self._pending = self._pending, None
         if previous is not None:
-            previous[1].result()
+            self._discard_future(previous[1])
         executor = self._executor
         if executor is None:
             raise RuntimeError("Engram embedding is closed")
@@ -491,11 +499,7 @@ class DiskQuantizedEngramEmbedding(nn.Module):
             if np.array_equal(requested, flat):
                 rows = future.result()
             else:
-                if not future.cancel():
-                    try:
-                        future.result()
-                    except Exception:
-                        pass
+                self._discard_future(future)
                 rows = self._gather_rows(flat)
         else:
             rows = self._gather_rows(flat)
