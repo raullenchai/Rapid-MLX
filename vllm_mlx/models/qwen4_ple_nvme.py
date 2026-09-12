@@ -9,7 +9,7 @@ import mlx.core as mx
 import mlx.nn as nn
 import numpy as np
 
-from .qwen4_ple_sidecar import (ADAPTER_VERSION, PLESidecarReader, _bound_load_source, require_load_source, validate_artifact)
+from .qwen4_ple_sidecar import (ADAPTER_VERSION, PLESidecarReader, _bound_load_source, own_load_reader, require_load_source, validate_artifact)
 
 
 class FileBackedPLEEmbedding(nn.Module):
@@ -57,6 +57,7 @@ def install_file_backed_ple(model, weights: dict, sidecar_path, model_path, *, c
         raise ValueError('PLE load hook requires an unmodified Rapid ShardedEmbedding')
     reader = PLESidecarReader(model_path, sidecar_path, cache_bytes=cache_bytes)
     try:
+        own_load_reader(reader)
         manifest = reader.manifest
         prefix = f'language_model.model.layers.{index}.ple.ple_embedding.ngram_embedding'
         geometry = (resident.rows_per_shard, len(resident.shards), int(resident.shards[0].weight.shape[-1]))
@@ -86,7 +87,10 @@ def install_file_backed_ple(model, weights: dict, sidecar_path, model_path, *, c
                                          cache_max_bytes=cache_bytes)
         return pruned
     except BaseException:
-        reader.close()
+        try:
+            reader.close()
+        except BaseException:
+            pass
         raise
 
 
@@ -114,8 +118,8 @@ def load_file_backed_qwen4(model_path, sidecar_path, *, cache_bytes=0, lazy=Fals
     with _bound_load_source(model_path):
         model, config = load_model(model_path, strict=True, lazy=lazy, model_config=options,
                                    get_model_classes=lambda config: (Model, ModelArgs))
-    if type(model) is not Model or not getattr(model, '_ple_offload_receipt', None):
-        raise RuntimeError('PLE load did not return the exact vendored Rapid model with an offload receipt')
+        if type(model) is not Model or not getattr(model, '_ple_offload_receipt', None):
+            raise RuntimeError('PLE load did not return the exact vendored Rapid model with an offload receipt')
     return model, config
 
 

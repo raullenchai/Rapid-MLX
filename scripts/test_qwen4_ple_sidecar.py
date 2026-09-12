@@ -100,6 +100,44 @@ class SidecarContracts(unittest.TestCase):
         expected=(q.astype(np.float64)/16-0.125).astype(np.float32).view(np.uint32)
         self.assertTrue(np.array_equal(actual,(expected>>16).astype(np.uint16)))
 
+    def test_nested_load_reader_ownership_and_original_cleanup_exception(self):
+        outer=SimpleNamespace(close=mock.Mock())
+        inner=SimpleNamespace(close=mock.Mock(side_effect=RuntimeError('cleanup failed')))
+        with sidecar._bound_load_source(self.a.root):
+            sidecar.own_load_reader(outer)
+            with self.assertRaisesRegex(ValueError,'original failure'):
+                with sidecar._bound_load_source(self.a.root/'inner'):
+                    sidecar.own_load_reader(inner)
+                    raise ValueError('original failure')
+            sidecar.require_load_source(self.a.root)
+            outer.close.assert_not_called()
+        inner.close.assert_called_once()
+        outer.close.assert_not_called()
+        self.assertIsNone(sidecar._LOAD_READERS.get())
+        with self.assertRaisesRegex(ValueError,'bound load'):
+            sidecar.own_load_reader(outer)
+
+    def test_concurrent_load_reader_ownership_is_isolated(self):
+        readers=[SimpleNamespace(close=mock.Mock()),SimpleNamespace(close=mock.Mock())]
+        barrier=threading.Barrier(2)
+        errors=[]
+        def worker(index):
+            try:
+                with sidecar._bound_load_source(self.a.root/str(index)):
+                    sidecar.own_load_reader(readers[index])
+                    barrier.wait(timeout=2)
+                    if index==0: raise ValueError('failed load')
+            except BaseException as exc:
+                errors.append((index,str(exc)))
+        threads=[threading.Thread(target=worker,args=(i,)) for i in range(2)]
+        for thread in threads: thread.start()
+        for thread in threads: thread.join(3)
+        self.assertFalse(any(thread.is_alive() for thread in threads))
+        self.assertEqual(errors,[(0,'failed load')])
+        readers[0].close.assert_called_once()
+        readers[1].close.assert_not_called()
+        self.assertIsNone(sidecar._LOAD_READERS.get())
+
     def test_lookup_shape_bounds_close_and_cache(self):
         reader=sidecar.PLESidecarReader(self.a.root,self.a.path,cache_bytes=2*532)
         self.addCleanup(reader.close)
@@ -289,6 +327,8 @@ class CPULoadContracts(SidecarContracts):
         flat=tree_flatten(loaded.parameters())
         self.assertFalse(any(self.a.prefix in key for key,_ in flat))
         table=loaded.model.layers[0].ple.ple_embedding.ngram_embedding
+        self.assertIsNotNone(table._reader._fd)
+        self.assertIsNone(sidecar._LOAD_READERS.get())
         self.assertEqual(table.parameters(),{})
         self.assertEqual(loaded._ple_offload_receipt['removed_tensors'],6)
         self.assertEqual(loaded._ple_offload_receipt['resident_ple_tensors'],0)
@@ -300,6 +340,60 @@ class CPULoadContracts(SidecarContracts):
         self.assertLessEqual(table.stats['cache_charged_bytes'],1064)
         table.close()
         self.assertEqual(mx.default_device(),mx.cpu)
+
+    def test_strict_load_failure_closes_reader_even_with_retained_traceback(self):
+        from mlx.utils import tree_flatten
+        from vllm_mlx.models import qwen4_ple_nvme as adapter
+        mx=self.mx
+        model=self.qwen.Model(self.qwen.ModelArgs.from_dict(self.a.config))
+        target={key:value for key,value in tree_flatten(model.parameters()) if self.a.prefix not in key}
+        target.pop('language_model.model.embed_tokens.weight')
+        mx.save_safetensors(str(self.a.root/'model-target.safetensors'),target)
+        self.a.index['weight_map'].update({key:'model-target.safetensors' for key in target})
+        self.a.save_index()
+        refs=[]; original_reader=adapter.PLESidecarReader
+        def track(*args,**kwargs):
+            reader=original_reader(*args,**kwargs)
+            refs.append(weakref.ref(reader))
+            return reader
+        held_error=None
+        with mock.patch.object(adapter,'PLESidecarReader',side_effect=track):
+            try:
+                adapter.load_file_backed_qwen4(self.a.root,self.a.path)
+            except ValueError as exc:
+                held_error=exc
+        self.assertIsNotNone(held_error)
+        self.assertIn('embed_tokens.weight',str(held_error))
+        reader=refs[0]()
+        self.assertIsNotNone(reader)  # retained partial model in traceback
+        self.assertIsNone(reader._fd)
+        self.assertEqual(reader.stats['cache_rows'],0)
+        self.assertIsNone(sidecar._LOAD_READERS.get())
+        self.assertEqual(mx.default_device(),mx.cpu)
+
+    def test_loader_identity_failure_remains_inside_reader_ownership_scope(self):
+        from vllm_mlx.models import qwen4_ple_nvme as adapter
+        import mlx_lm.utils as utils
+        reader=SimpleNamespace(close=mock.Mock())
+        def wrong_model(*args,**kwargs):
+            sidecar.own_load_reader(reader)
+            return SimpleNamespace(),self.a.config
+        with mock.patch.object(utils,'load_model',side_effect=wrong_model):
+            with self.assertRaisesRegex(RuntimeError,'exact vendored'):
+                adapter.load_file_backed_qwen4(self.a.root,self.a.path)
+        reader.close.assert_called_once()
+
+    def test_installer_cleanup_error_does_not_replace_original_validation_error(self):
+        from vllm_mlx.models import qwen4_ple_nvme as adapter
+        model=self.qwen.Model(self.qwen.ModelArgs.from_dict(self.a.config))
+        reader=sidecar.PLESidecarReader(self.a.root,self.a.path,random_rows=0)
+        real_close=reader.close
+        self.addCleanup(real_close)
+        reader.close=mock.Mock(side_effect=OSError('cleanup failed'))
+        with mock.patch.object(adapter,'PLESidecarReader',return_value=reader):
+            with self.assertRaisesRegex(ValueError,'missing or invalid'):
+                with sidecar._bound_load_source(self.a.root):
+                    adapter.install_file_backed_ple(model,{},self.a.path,self.a.root)
 
     def test_arbitrary_source_override_refused_before_model_construction(self):
         args=self.qwen.ModelArgs.from_dict(dict(self.a.config,ple_nvme_sidecar=str(self.a.path),

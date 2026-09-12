@@ -24,6 +24,7 @@ import numpy as np
 
 ADAPTER_VERSION = 1
 _LOAD_SOURCE = ContextVar('rapid_qwen4_ple_load_source', default=None)
+_LOAD_READERS = ContextVar('rapid_qwen4_ple_load_readers', default=None)
 # Serialize descriptor publication with fork. Unlike per-reader locks, this
 # mutex is replaced in the child; no callback retains individual readers.
 _RESOURCE_LOCK = threading.RLock()
@@ -50,10 +51,30 @@ if hasattr(os, 'register_at_fork'):
 @contextmanager
 def _bound_load_source(model_path):
     token = _LOAD_SOURCE.set(Path(model_path).resolve())
+    readers = []
+    readers_token = _LOAD_READERS.set(readers)
     try:
         yield
+    except BaseException:
+        # A strict weight-load/evaluation failure may retain the partial model
+        # in its traceback. Release external descriptors now, not at GC time.
+        # Cleanup must never replace the original load exception.
+        for reader in reversed(readers):
+            try:
+                reader.close()
+            except BaseException:
+                pass
+        raise
     finally:
+        _LOAD_READERS.reset(readers_token)
         _LOAD_SOURCE.reset(token)
+
+
+def own_load_reader(reader):
+    readers = _LOAD_READERS.get()
+    if readers is None:
+        raise ValueError('PLE reader requires a bound load ownership scope')
+    readers.append(reader)
 
 
 def require_load_source(model_path):
