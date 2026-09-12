@@ -29,7 +29,7 @@ import math
 import mmap
 import struct
 from collections import OrderedDict
-from concurrent.futures import Future, ThreadPoolExecutor
+from concurrent.futures import CancelledError, Future, ThreadPoolExecutor
 from pathlib import Path
 from threading import RLock
 
@@ -39,6 +39,8 @@ import numpy as np
 
 from .config import ModelArgs
 from .dequant import dequant_fp8_rows
+
+_MAX_SAFETENSORS_HEADER_SIZE = 100_000_000
 
 
 def _isprime(n: int) -> bool:
@@ -301,7 +303,10 @@ class DiskQuantizedEngramEmbedding(nn.Module):
                 raise ValueError("truncated safetensors header")
             header_length = struct.unpack("<Q", length_raw)[0]
             file_size = self._file.seek(0, 2)
-            if header_length > file_size - 8:
+            if (
+                header_length > _MAX_SAFETENSORS_HEADER_SIZE
+                or header_length > file_size - 8
+            ):
                 raise ValueError("invalid safetensors header length")
             self._file.seek(8)
             header = json.loads(self._file.read(header_length))
@@ -370,12 +375,13 @@ class DiskQuantizedEngramEmbedding(nn.Module):
                 raise ValueError(f"invalid safetensors tensor offsets: {key}")
             ranges.append((start, end, key))
         ranges.sort()
-        for previous, current in zip(ranges, ranges[1:]):
-            if current[0] < previous[1]:
-                raise ValueError(
-                    "overlapping safetensors tensor offsets: "
-                    f"{previous[2]} and {current[2]}"
-                )
+        expected_start = 0
+        for start, end, key in ranges:
+            if start != expected_start or end == start:
+                raise ValueError(f"non-contiguous safetensors tensor offsets: {key}")
+            expected_start = end
+        if expected_start != data_size:
+            raise ValueError("safetensors tensor offsets do not cover the data buffer")
 
     def _tensor_view(self, header, key, *, dtype, numpy_dtype, shape):
         entry = header.get(key)
@@ -464,11 +470,14 @@ class DiskQuantizedEngramEmbedding(nn.Module):
 
     @staticmethod
     def _discard_future(future: Future) -> None:
-        if not future.cancel():
+        def consume_error(done: Future) -> None:
             try:
-                future.result()
-            except Exception:
+                done.exception()
+            except CancelledError:
                 pass
+
+        future.add_done_callback(consume_error)
+        future.cancel()
 
     def prefetch(self, indices: np.ndarray) -> None:
         """Start selected-row I/O before this embedding's layer executes."""

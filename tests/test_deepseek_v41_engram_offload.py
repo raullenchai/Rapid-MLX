@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import struct
+
 import numpy as np
 import pytest
 
@@ -188,6 +190,23 @@ def test_disk_engram_rejects_header_contract_mismatch(tmp_path):
         )
 
 
+def test_disk_engram_rejects_oversized_header_before_read(tmp_path):
+    path = tmp_path / "oversized.safetensors"
+    path.write_bytes(struct.pack("<Q", 100_000_001))
+
+    with pytest.raises(ValueError, match="header length"):
+        DiskQuantizedEngramEmbedding(
+            path,
+            weight_key="weight",
+            scales_key="scales",
+            biases_key="biases",
+            num_embeddings=8,
+            dim=64,
+            group_size=32,
+            bits=2,
+        )
+
+
 def test_disk_engram_constructor_preserves_error_after_partial_view(
     tmp_path, monkeypatch
 ):
@@ -220,7 +239,7 @@ def test_disk_engram_constructor_preserves_error_after_partial_view(
 
 
 def test_disk_engram_rejects_overlapping_tensor_ranges():
-    with pytest.raises(ValueError, match="overlapping"):
+    with pytest.raises(ValueError, match="non-contiguous"):
         DiskQuantizedEngramEmbedding._validate_header_ranges(
             {
                 "weight": {"data_offsets": [0, 64]},
@@ -229,3 +248,16 @@ def test_disk_engram_rejects_overlapping_tensor_ranges():
             },
             data_size=96,
         )
+
+
+@pytest.mark.parametrize(
+    ("header", "data_size", "message"),
+    [
+        ({"weight": {"data_offsets": [1, 2]}}, 2, "non-contiguous"),
+        ({"weight": {"data_offsets": [0, 1]}}, 2, "do not cover"),
+        ({"weight": {"data_offsets": [0, 0]}}, 0, "non-contiguous"),
+    ],
+)
+def test_disk_engram_rejects_incomplete_tensor_coverage(header, data_size, message):
+    with pytest.raises(ValueError, match=message):
+        DiskQuantizedEngramEmbedding._validate_header_ranges(header, data_size)
