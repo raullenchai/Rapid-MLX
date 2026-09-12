@@ -24,6 +24,27 @@ import numpy as np
 
 ADAPTER_VERSION = 1
 _LOAD_SOURCE = ContextVar('rapid_qwen4_ple_load_source', default=None)
+# Serialize descriptor publication with fork. Unlike per-reader locks, this
+# mutex is replaced in the child; no callback retains individual readers.
+_RESOURCE_LOCK = threading.RLock()
+
+
+def _before_fork():
+    _RESOURCE_LOCK.acquire()
+
+
+def _after_fork_parent():
+    _RESOURCE_LOCK.release()
+
+
+def _after_fork_child():
+    global _RESOURCE_LOCK
+    _RESOURCE_LOCK = threading.RLock()
+
+
+if hasattr(os, 'register_at_fork'):
+    os.register_at_fork(before=_before_fork, after_in_parent=_after_fork_parent,
+                        after_in_child=_after_fork_child)
 
 
 @contextmanager
@@ -207,12 +228,13 @@ class PLESidecarReader:
         before = self._stat_identity(os.stat(sidecar_path))
         self.receipt = validate_artifact(model_path, sidecar_path, random_rows=random_rows)
         self.manifest = self.receipt['manifest']
-        self._fd = os.open(sidecar_path, os.O_RDONLY)
-        self._identity = self._stat_identity(os.fstat(self._fd))
-        if self._identity != before:
-            os.close(self._fd)
-            self._fd = None
-            raise RuntimeError('PLE sidecar changed during validation')
+        with _RESOURCE_LOCK:
+            self._fd = os.open(sidecar_path, os.O_RDONLY)
+            self._identity = self._stat_identity(os.fstat(self._fd))
+            if self._identity != before:
+                os.close(self._fd)
+                self._fd = None
+                raise RuntimeError('PLE sidecar changed during validation')
         self._pid = os.getpid()
         self._lock = threading.Lock()
         self.lookups = self.rows = self.unique_rows = self.bytes_read = 0
@@ -238,18 +260,34 @@ class PLESidecarReader:
         return stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns
 
     def close(self):
+        # A fork can inherit this mutex while a vanished parent thread owns
+        # it. The child's descriptor table and Python cache are private copies;
+        # close that inherited descriptor without touching the parent mutex.
+        if os.getpid() != self._pid:
+            with _RESOURCE_LOCK:
+                if self._fd is not None:
+                    os.close(self._fd)
+                    self._fd = None
+                self._cache.clear()
+            return
         with self._lock:
-            if self._fd is not None:
-                os.close(self._fd)
-                self._fd = None
+            with _RESOURCE_LOCK:
+                if self._fd is not None:
+                    os.close(self._fd)
+                    self._fd = None
             self._cache.clear()
 
     def __del__(self):
-        if getattr(self, '_fd', None) is not None:
-            os.close(self._fd)
-            self._fd = None
+        with _RESOURCE_LOCK:
+            if getattr(self, '_fd', None) is not None:
+                os.close(self._fd)
+                self._fd = None
 
     def lookup_bits(self, indices) -> np.ndarray:
+        # Refuse before acquiring an inherited lock, which may stay locked
+        # forever in a child whose owning parent thread no longer exists.
+        if os.getpid() != self._pid:
+            raise RuntimeError('PLE reader is inherited across fork')
         values = np.asarray(indices)
         if values.dtype.kind not in 'iu':
             raise ValueError('PLE indices must be integers')

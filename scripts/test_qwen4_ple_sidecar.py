@@ -3,14 +3,20 @@
 from __future__ import annotations
 
 from contextlib import ExitStack
+import gc
 import hashlib
 import importlib.util
 import json
+import os
 from pathlib import Path
+import signal
 import struct
 import sys
 import tempfile
+import threading
+import time
 import unittest
+import weakref
 from types import SimpleNamespace
 from unittest import mock
 
@@ -141,6 +147,119 @@ class SidecarContracts(unittest.TestCase):
             return receipt
         with mock.patch.object(sidecar,'validate_artifact',side_effect=replace):
             with self.assertRaisesRegex(RuntimeError,'changed during'): sidecar.PLESidecarReader(self.a.root,self.a.path)
+
+    @unittest.skipUnless(hasattr(os, 'fork'), 'requires POSIX fork')
+    def test_forked_reader_refuses_lookup_and_closes_with_inherited_locked_mutex(self):
+        reader=sidecar.PLESidecarReader(self.a.root,self.a.path,random_rows=0,cache_bytes=1064)
+        self.addCleanup(reader.close)
+        ids=np.array([0],dtype=np.int64)
+        expected=reader.lookup_bits(ids)
+        for operation in ('lookup', 'close', 'concurrent_close'):
+            # Simulate fork while a different parent thread owns the mutex.
+            # The parent's lock stays held until the child exits. An alarm is
+            # a test failure, never an accepted refusal or an unbounded hang.
+            with reader._lock:
+                child=os.fork()
+                if child == 0:
+                    signal.signal(signal.SIGALRM,lambda *_: os._exit(124))
+                    signal.alarm(2)
+                    try:
+                        if operation == 'lookup':
+                            try:
+                                reader.lookup_bits(ids)
+                            except RuntimeError as exc:
+                                if 'inherited across fork' not in str(exc):
+                                    os._exit(2)
+                            else:
+                                os._exit(3)
+                        elif operation == 'close':
+                            reader.close()
+                            reader.close()
+                            if reader._fd is not None or reader.stats['cache_rows'] != 0:
+                                os._exit(4)
+                        else:
+                            original_close=sidecar.os.close
+                            calls=[]; errors=[]
+                            def delayed_close(fd):
+                                calls.append(fd)
+                                time.sleep(.02)
+                                original_close(fd)
+                            def closer():
+                                try: reader.close()
+                                except BaseException as exc: errors.append(exc)
+                            sidecar.os.close=delayed_close
+                            threads=[threading.Thread(target=closer) for _ in range(2)]
+                            for thread in threads: thread.start()
+                            for thread in threads: thread.join(.5)
+                            if any(thread.is_alive() for thread in threads) or errors or len(calls)!=1:
+                                os._exit(6)
+                    except BaseException:
+                        os._exit(5)
+                    os._exit(0)
+                _, status=os.waitpid(child,0)
+            self.assertEqual(os.waitstatus_to_exitcode(status),0,operation)
+            # Child close must not close the parent's fd or clear its cache.
+            os.fstat(reader._fd)
+            self.assertEqual(reader.stats['cache_rows'],1)
+            self.assertTrue(np.array_equal(reader.lookup_bits(ids),expected))
+
+    @unittest.skipUnless(hasattr(os, 'fork'), 'requires POSIX fork')
+    def test_fork_waits_for_parent_descriptor_close_publication(self):
+        reader=sidecar.PLESidecarReader(self.a.root,self.a.path,random_rows=0)
+        self.addCleanup(reader.close)
+        closed=threading.Event(); finish=threading.Event()
+        original_close=sidecar.os.close
+        errors=[]
+        def delayed_close(fd):
+            original_close(fd)
+            closed.set()
+            if not finish.wait(2): raise RuntimeError('close publication timeout')
+        def closer():
+            try: reader.close()
+            except BaseException as exc: errors.append(exc)
+        with mock.patch.object(sidecar.os,'close',side_effect=delayed_close):
+            thread=threading.Thread(target=closer); thread.start()
+            self.assertTrue(closed.wait(1))
+            timer=threading.Timer(.05,finish.set); timer.start()
+            try:
+                child=os.fork()
+                if child==0:
+                    signal.signal(signal.SIGALRM,lambda *_: os._exit(124)); signal.alarm(2)
+                    # The before-fork resource barrier must wait until the fd
+                    # is both closed and published as None, not snapshot stale
+                    # fd ownership that could later close an unrelated file.
+                    if reader._fd is not None: os._exit(7)
+                    reader.close(); os._exit(0)
+                _,status=os.waitpid(child,0)
+            finally:
+                finish.set(); thread.join(2); timer.join(2)
+        self.assertFalse(thread.is_alive())
+        self.assertEqual(errors,[])
+        self.assertEqual(os.waitstatus_to_exitcode(status),0)
+
+    @unittest.skipUnless(hasattr(os, 'fork'), 'requires POSIX fork')
+    def test_resource_guard_allows_cyclic_reader_finalizer_reentrancy(self):
+        reader=sidecar.PLESidecarReader(self.a.root,self.a.path,random_rows=0)
+        reader.cycle=reader
+        fd=reader._fd
+        child=os.fork()
+        if child==0:
+            signal.signal(signal.SIGALRM,lambda *_: os._exit(124)); signal.alarm(2)
+            ref=weakref.ref(reader)
+            del reader
+            with sidecar._RESOURCE_LOCK:
+                gc.collect()
+            if ref() is not None: os._exit(8)
+            try: os.fstat(fd)
+            except OSError: os._exit(0)
+            os._exit(9)
+        try:
+            _,status=os.waitpid(child,0)
+            self.assertEqual(os.waitstatus_to_exitcode(status),0)
+            os.fstat(fd)
+        finally:
+            reader.close()
+            del reader.cycle
 
 
 class CPULoadContracts(SidecarContracts):
