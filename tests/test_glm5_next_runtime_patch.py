@@ -243,3 +243,44 @@ def test_native_runtime_probe_requires_the_complete_new_class_family() -> None:
     complete.Glm5NextMoE = object
     complete.Glm5NextSparseAttention = object
     assert not _has_native_glm5_next_runtime(complete)
+
+
+@pytest.mark.requires_mlx
+def test_installer_defers_to_complete_native_runtime() -> None:
+    from mlx_vlm.models.glm5_next import language
+
+    from vllm_mlx.patches import glm5_next_runtime as patch
+
+    native_names = (
+        "Glm5NextAttention",
+        "Glm5NextLinearAttention",
+        "Glm5NextMLP",
+        "Glm5NextMoE",
+    )
+    missing = object()
+    saved = {name: getattr(language, name, missing) for name in native_names}
+    sparse_attention = language.Glm5NextSparseAttention
+    marker = getattr(language, "_RAPID_MLX_RUNTIME_FIX_INSTALLED", None)
+    marker_existed = hasattr(language, "_RAPID_MLX_RUNTIME_FIX_INSTALLED")
+    patch._INSTALLED = False
+
+    try:
+        del language.Glm5NextSparseAttention
+        for name in native_names:
+            setattr(language, name, object)
+
+        assert patch.install_glm5_next_runtime_fix() is False
+        assert patch.is_installed() is True
+        assert language._RAPID_MLX_RUNTIME_FIX_INSTALLED is True
+    finally:
+        language.Glm5NextSparseAttention = sparse_attention
+        for name, value in saved.items():
+            if value is missing:
+                delattr(language, name)
+            else:
+                setattr(language, name, value)
+        if marker_existed:
+            language._RAPID_MLX_RUNTIME_FIX_INSTALLED = marker
+        else:
+            del language._RAPID_MLX_RUNTIME_FIX_INSTALLED
+        patch._INSTALLED = False
