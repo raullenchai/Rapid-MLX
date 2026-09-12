@@ -14,11 +14,18 @@ from vllm_mlx.patches.glm5_next_runtime import (
 
 
 class _Linear:
+    weight = object()
+
+
+class _ExternalLinear:
+    """Callable quantized linear whose packed weights are intentionally private."""
+
     pass
 
 
 class _Quantized:
     def __init__(self, *, group_size=64, bits=4, mode="affine"):
+        self.weight = object()
         self.scales = object()
         self.group_size = group_size
         self.bits = bits
@@ -28,6 +35,9 @@ class _Quantized:
 def test_kda_projection_fusion_requires_one_quantization() -> None:
     assert _projection_quantization_is_homogeneous([_Linear(), _Linear()])
     assert _projection_quantization_is_homogeneous([_Quantized(), _Quantized()])
+    assert not _projection_quantization_is_homogeneous(
+        [_ExternalLinear(), _ExternalLinear()]
+    )
     assert not _projection_quantization_is_homogeneous([_Linear(), _Quantized()])
     assert not _projection_quantization_is_homogeneous(
         [_Quantized(bits=4), _Quantized(bits=8)]
