@@ -123,6 +123,7 @@ class LaneAdmission:
     lane_id: str
     base_bytes: int = 0
     bytes_per_draft_token: int = 0
+    resident_cache: bool = False
     sampling: SamplingContract = SamplingContract()
     cache_ready: bool = True
     terminal: bool = False
@@ -137,13 +138,24 @@ class LaneAdmission:
             raise ValueError("lane memory estimates must be integers")
         if self.base_bytes < 0 or self.bytes_per_draft_token < 0:
             raise ValueError("lane memory estimates cannot be negative")
-        if not isinstance(self.cache_ready, bool) or not isinstance(
-            self.terminal, bool
+        if (
+            not isinstance(self.cache_ready, bool)
+            or not isinstance(self.terminal, bool)
+            or not isinstance(self.resident_cache, bool)
         ):
             raise ValueError("lane lifecycle flags must be booleans")
 
     def estimated_bytes(self, draft_tokens: int) -> int:
-        return self.base_bytes + self.bytes_per_draft_token * draft_tokens
+        """Return incremental bytes not already visible in live memory.
+
+        ``free_bytes`` is measured after resident caches have been allocated.
+        Charging ``base_bytes`` again for an active lane can permanently queue
+        the only lane while it waits for itself to free memory.  A new or
+        joining lane still pays the complete base allocation; both pay the
+        next verification transient.
+        """
+        base = 0 if self.resident_cache else self.base_bytes
+        return base + self.bytes_per_draft_token * draft_tokens
 
 
 @dataclass(frozen=True)
