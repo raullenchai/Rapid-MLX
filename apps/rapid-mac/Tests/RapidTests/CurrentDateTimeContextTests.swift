@@ -86,9 +86,14 @@ struct CurrentDateTimeContextTests {
             at: Self.instant("2026-08-25T14:37:00Z"),
             calendar: Self.calendar("America/Los_Angeles")
         )
+        // Send-time wording, and the DATE as well as the clock. Both because
+        // every user row in the history wears one of these: "the current
+        // local time" would have the prompt asserting three contradictory
+        // current times, and a bare clock on an old row would attach
+        // yesterday's time to today's [CURRENT DATE] across midnight.
         #expect(out == """
-        [CURRENT LOCAL TIME]
-        The current local time is 7:37 AM (PDT, America/Los_Angeles).
+        [MESSAGE SENT]
+        This message was sent Tuesday, August 25, 2026 at 7:37 AM (PDT, America/Los_Angeles).
         """)
     }
 
@@ -122,7 +127,7 @@ struct CurrentDateTimeContextTests {
         // longer match and the engine would re-prefill from that row onward.
         #expect(stamped[1].modelContent.hasSuffix("7:37 AM (PDT, America/Los_Angeles)."))
         #expect(stamped[3].modelContent.hasSuffix("7:41 AM (PDT, America/Los_Angeles)."))
-        #expect(stamped[1].modelContent.hasPrefix("first question\n\n[CURRENT LOCAL TIME]"))
+        #expect(stamped[1].modelContent.hasPrefix("first question\n\n[MESSAGE SENT]"))
         // Non-user rows are never stamped: the assistant transcript has to
         // stay byte-identical to what the model produced, and the system row
         // is exactly where the clock must not be.
@@ -174,11 +179,11 @@ struct CurrentDateTimeContextTests {
             role: .user, content: "what is the total?",
             fileAttachments: [attachment], status: .complete
         )
-        message.wireSuffix = "[CURRENT LOCAL TIME]\nThe current local time is 7:37 AM."
+        message.wireSuffix = "[MESSAGE SENT]\nThis message was sent at 7:37 AM."
 
         let wire = message.modelContent
         let extractIndex = try #require(wire.range(of: "TOTAL DUE 1,204.55"))
-        let trailerIndex = try #require(wire.range(of: "[CURRENT LOCAL TIME]"))
+        let trailerIndex = try #require(wire.range(of: "[MESSAGE SENT]"))
         #expect(extractIndex.upperBound < trailerIndex.lowerBound,
                 "The trailer must follow the extract, or the prompt diverges before the document and the cache cannot reuse it.")
         #expect(wire.hasPrefix("what is the total?"))
@@ -187,8 +192,8 @@ struct CurrentDateTimeContextTests {
     @Test("An empty-prose row gains no leading blank line from the trailer")
     func blankPromptDoesNotGainLeadingNewlines() {
         var message = ChatMessage(role: .user, content: "   ", status: .complete)
-        message.wireSuffix = "[CURRENT LOCAL TIME]\nThe current local time is 7:37 AM."
-        #expect(message.modelContent.hasPrefix("[CURRENT LOCAL TIME]"))
+        message.wireSuffix = "[MESSAGE SENT]\nThis message was sent at 7:37 AM."
+        #expect(message.modelContent.hasPrefix("[MESSAGE SENT]"))
     }
 
     @Test("A blank trailer is dropped rather than appended")
@@ -201,7 +206,7 @@ struct CurrentDateTimeContextTests {
     @Test("The wire-only trailer is not persisted")
     func trailerIsNotPersisted() throws {
         var message = ChatMessage(role: .user, content: "hello", status: .complete)
-        message.wireSuffix = "[CURRENT LOCAL TIME]\nThe current local time is 7:37 AM."
+        message.wireSuffix = "[MESSAGE SENT]\nThis message was sent at 7:37 AM."
         let round = try JSONDecoder().decode(
             ChatMessage.self, from: JSONEncoder().encode(message)
         )
@@ -400,15 +405,15 @@ struct CurrentDateContextWireTests {
         #expect(system.contains("Today is "))
         // The wall clock must NOT be in the system row — it is the first
         // thing in the prompt and a minute tick there costs a full re-prefill.
-        #expect(!system.contains("[CURRENT LOCAL TIME]"))
+        #expect(!system.contains("[MESSAGE SENT]"))
         // …and it must still be on the wire, on the user turn, so #2330's
         // "the model is told the current time" contract survives the split.
         let user = try #require(
             messages.first { $0["role"] as? String == "user" }?["content"] as? String
         )
         #expect(user.contains("what is the date today"))
-        #expect(user.contains("[CURRENT LOCAL TIME]"))
-        #expect(user.contains("The current local time is "))
+        #expect(user.contains("[MESSAGE SENT]"))
+        #expect(user.contains("This message was sent "))
     }
     @MainActor
     @Test("An edited send gets the live clock; regenerate keeps the original ask time")

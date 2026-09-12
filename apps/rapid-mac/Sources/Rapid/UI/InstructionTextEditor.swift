@@ -194,7 +194,7 @@ struct EffectiveSystemPromptDisclosure: View {
                 // ``ChatViewModel.currentDateContext``), so say where it went
                 // — otherwise this preview reads as "the model doesn't know
                 // what time it is".
-                Text("Preview includes current automatic context. The current time is attached to each message you send. Tool and attachment context may be added when you send.")
+                Text("Preview includes current automatic context. Each message you send carries the time you sent it. Tool and attachment context may be added when you send.")
                     .font(RapidFont.caption)
                     .foregroundStyle(RapidTheme.textSecondary)
                 TimelineView(.periodic(from: .now, by: 60)) { context in

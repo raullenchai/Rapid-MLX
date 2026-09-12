@@ -2050,15 +2050,31 @@ struct ChatMessage: Identifiable, Codable, Equatable, Hashable {
         guard hasDigit else { return false }
         let mathOperators: Set<Character> = ["+", "*", "/", "%", "=", "^"]
         if prompt.contains(where: { mathOperators.contains($0) }) { return true }
-        // "-" only counts between two digits: a hyphenated filename or a
-        // dashed aside ("attached is my resume - what does it say?") is
-        // not arithmetic, but "1200-180" is.
+        // "-" only counts with a number on each side: a hyphenated filename
+        // or a dashed aside ("attached is my resume - what does it say?") is
+        // not arithmetic, but "1200-180" and "1200 - 180" both are. codex
+        // caught the spaced form being missed, which is the way most people
+        // actually type it.
         let scalars = Array(prompt.unicodeScalars)
         func isDigit(_ index: Int) -> Bool {
-            scalars.indices.contains(index) && scalars[index].value >= 0x30 && scalars[index].value <= 0x39
+            scalars.indices.contains(index)
+                && scalars[index].value >= 0x30
+                && scalars[index].value <= 0x39
+        }
+        func digitLookingBack(from index: Int) -> Bool {
+            var i = index
+            while scalars.indices.contains(i), scalars[i] == " " || scalars[i] == "\t" { i -= 1 }
+            return isDigit(i)
+        }
+        func digitLookingForward(from index: Int) -> Bool {
+            var i = index
+            while scalars.indices.contains(i), scalars[i] == " " || scalars[i] == "\t" { i += 1 }
+            return isDigit(i)
         }
         for (offset, scalar) in scalars.enumerated() where scalar == "-" {
-            if isDigit(offset - 1) && isDigit(offset + 1) { return true }
+            if digitLookingBack(from: offset - 1), digitLookingForward(from: offset + 1) {
+                return true
+            }
         }
         return false
     }

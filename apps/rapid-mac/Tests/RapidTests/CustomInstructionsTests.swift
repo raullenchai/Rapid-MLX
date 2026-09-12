@@ -148,7 +148,7 @@ struct CustomInstructionsTests {
         // a time would be showing a system row the app never sends.
         #expect(!before.contains("11:59 PM"))
         #expect(!after.contains("12:01 AM"))
-        #expect(!before.contains("[CURRENT LOCAL TIME]"))
+        #expect(!before.contains("[MESSAGE SENT]"))
 
         var tokyo = utc
         tokyo.timeZone = try #require(TimeZone(identifier: "Asia/Tokyo"))
@@ -178,7 +178,7 @@ struct CustomInstructionsTests {
         // The system row no longer carries the wall clock, so the caption has
         // to say where it went — otherwise the preview reads as "the model
         // does not know what time it is".
-        #expect(editor.contains("The current time is attached to each message you send."))
+        #expect(editor.contains("Each message you send carries the time you sent it."))
         #expect(editor.contains("TimelineView(.periodic(from: .now, by: 60))"))
         #expect(editor.contains("at: context.date"))
         #expect(editor.contains("calendar: .autoupdatingCurrent"))

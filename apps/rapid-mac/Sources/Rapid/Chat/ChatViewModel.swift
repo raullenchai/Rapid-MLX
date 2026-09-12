@@ -1675,24 +1675,35 @@ final class ChatViewModel {
     }
 
     /// True when the user message that opened the turn ending at
-    /// ``placeholderIndex`` carried at least one file attachment.
+    /// True when the request for this turn carried at least one file
+    /// attachment's extracted text.
     ///
     /// Feeds ``ChatMessage.shouldFlagToolNotCalled``'s
     /// ``promptHadAttachment`` gate: an answer read off a document the
     /// user attached is grounded in the prompt, so the "didn't call a
     /// tool" caution is wrong on it (see that method's Gate 1c).
-    /// Walks back the same way as ``lastUserPromptBefore`` so the two
-    /// always describe the same user message.
-    static func lastUserPromptHadAttachmentBefore(
-        messages: [ChatMessage],
-        placeholderIndex: Int
+    ///
+    /// Takes the history that actually went on the wire, NOT the
+    /// transcript, and scans EVERY user row in it rather than only the
+    /// newest. Both choices are corrections of an earlier version of
+    /// this helper, which walked back to the nearest user row and
+    /// stopped:
+    ///
+    ///   * **Every row**, because ``ChatMessage/modelContent`` re-sends
+    ///     each attachment's extracted text on every follow-up. So
+    ///     "what was the invoice total?" two turns after the invoice
+    ///     was attached IS answered from a document in front of the
+    ///     model, and the earlier helper captioned it as a guess.
+    ///   * **The wire history**, because
+    ///     ``trimMessagesForContextWindow`` drops the oldest rows on a
+    ///     long conversation. A document that was trimmed away is no
+    ///     longer grounding anything, and scanning the transcript would
+    ///     claim it still is — silencing the caption exactly when the
+    ///     evidence is gone, which is the worst moment to silence it.
+    nonisolated static func historyCarriesAttachmentGrounding(
+        _ messages: [ChatMessage]
     ) -> Bool {
-        guard placeholderIndex > 0 else { return false }
-        let upper = min(placeholderIndex, messages.count)
-        for i in stride(from: upper - 1, through: 0, by: -1) where messages[i].role == .user {
-            return !messages[i].fileAttachments.isEmpty
-        }
-        return false
+        messages.contains { $0.role == .user && !$0.fileAttachments.isEmpty }
     }
 
     /// True when the assistant turn ending at ``placeholderIndex`` was
@@ -1733,6 +1744,13 @@ final class ChatViewModel {
         }
         return false
     }
+
+    /// Set on every request from the post-trim wire history, read at the
+    /// completion site by the tool-not-called caption. A per-turn fact rather
+    /// than derived state: by the time the stream finishes, the trim that
+    /// decided whether a document extract reached the model is no longer
+    /// recomputable from ``messages``.
+    private var wireHistoryCarriesAttachmentGrounding = false
 
     /// Keeps the system row and latest complete user/tool turn, then fills the
     /// remaining context newest-first. Oversized tool bodies are shortened in place.
@@ -2591,6 +2609,13 @@ final class ChatViewModel {
             // ``stampingClockContext`` for why it is every user row rather
             // than just the newest one.
             history = ChatViewModel.stampingClockContext(on: history)
+            // Whether any document extract survived onto THIS request, read
+            // off the same array that is about to be encoded. The
+            // tool-not-called caption is decided later, at the completion
+            // site, where the trim is no longer visible — see
+            // ``historyCarriesAttachmentGrounding``.
+            wireHistoryCarriesAttachmentGrounding =
+                ChatViewModel.historyCarriesAttachmentGrounding(history)
             let request: ChatStreamClient.Request
             if let s = sampling {
                 let resolved = s.resolved(toolsEnabled: !definitions.isEmpty)
@@ -3110,17 +3135,30 @@ final class ChatViewModel {
         formatter.calendar = gregorian
         formatter.locale = Locale(identifier: "en_US_POSIX")
         formatter.timeZone = zone
-        formatter.dateFormat = "h:mm a"
-        let timeText = formatter.string(from: instant)
+        formatter.dateFormat = "EEEE, MMMM d, yyyy 'at' h:mm a"
+        let stampText = formatter.string(from: instant)
         let abbreviation = zone.abbreviation(for: instant) ?? zone.identifier
         return """
-        [CURRENT LOCAL TIME]
-        The current local time is \(timeText) (\(abbreviation), \(zone.identifier)).
+        [MESSAGE SENT]
+        This message was sent \(stampText) (\(abbreviation), \(zone.identifier)).
         """
     }
 
-    /// Stamp every user row with the wall clock of the moment it was sent,
-    /// as a wire-only trailer.
+    /// Stamp every user row with the moment it was sent, as a wire-only
+    /// trailer.
+    ///
+    /// The trailer reads "This message was sent <full date> at <time>", not
+    /// "the current local time is …", and it carries the date as well as the
+    /// clock. Both were codex findings on this PR, and both are about the
+    /// same thing: every user row in the history wears one of these, so
+    /// anything phrased as "current" would have the prompt asserting three
+    /// contradictory current times, and a bare time on an old row would
+    /// silently attach yesterday's clock to today's ``[CURRENT DATE]`` in a
+    /// conversation that crossed midnight. A send-time stamp is true of every
+    /// row forever, which is also exactly what makes it cacheable.
+    ///
+    /// The model still knows what time it is now: the newest user row is the
+    /// one being sent, so its stamp IS the request time.
     ///
     /// Derived from each row's own ``ChatMessage/createdAt`` — which is
     /// persisted and immutable — rather than from "now", so the rendering of
@@ -3543,10 +3581,7 @@ Your previous draft refused the question by claiming you lack real-time access o
                                 placeholderIndex: placeholderIndex
                             ),
                             promptHadAttachment:
-                                ChatViewModel.lastUserPromptHadAttachmentBefore(
-                                    messages: self.messages,
-                                    placeholderIndex: placeholderIndex
-                                )
+                                self.wireHistoryCarriesAttachmentGrounding
                         )
                         // Issue #513 (defense-in-depth, layer 3): when
                         // the request offered tools but the model emitted

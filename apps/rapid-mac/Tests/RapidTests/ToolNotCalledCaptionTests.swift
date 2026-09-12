@@ -378,7 +378,7 @@ struct ToolNotCalledCaptionTests {
         // a bare wrong product is the #308 failure mode.
         for prompt in ["Attached is my resume; calculate 17*23",
                        "Here's the invoice. Also, what is 1200 * 0.15?",
-                       "Using this deck, confirm 1200-180 for me",
+                       "Using this deck, confirm 1200 - 180 for me",
                        "this pdf, plus: 88 / 7 = ?"] {
             #expect(ChatMessage.shouldFlagToolNotCalled(
                 userPrompt: prompt,
@@ -405,6 +405,9 @@ struct ToolNotCalledCaptionTests {
     @Test("promptContainsSelfContainedArithmetic: brought its own numbers?")
     func selfContainedArithmeticContract() {
         for prompt in ["17*23", "what is 1200 * 0.15", "88 / 7", "1200-180",
+                       // Spaced around the minus, which is how most people
+                       // actually type it (codex round 3).
+                       "1200 - 180", "what is 1200 -  180?",
                        "5 + 5 = ?", "2^10", "give me 40% of 250"] {
             #expect(ChatMessage.promptContainsSelfContainedArithmetic(prompt),
                     "should be self-contained: \(prompt)")
@@ -457,44 +460,47 @@ struct ToolNotCalledCaptionTests {
         #expect(ChatMessage.promptLooksCalculatorish("google for the spec"))
     }
 
-    // ``ChatViewModel`` is @MainActor; the rest of this suite is pure.
-    @MainActor
-    @Test("The attachment gate reads the user row that opened the turn")
-    func attachmentGateWalksBackToTheTurnsUserRow() throws {
+    @Test("The attachment gate reads the wire history, and every user row in it")
+    func attachmentGateReadsTheWireHistory() throws {
         let attachment = try ChatFileAttachment(
             filename: "invoice.pdf",
             kind: .pdf,
             extractedText: "TOTAL DUE 1,204.55",
             sourceByteCount: 18
         )
-        let withDocument: [ChatMessage] = [
+        let newestRowCarriesIt: [ChatMessage] = [
             ChatMessage(role: .user, content: "earlier question"),
             ChatMessage(role: .assistant, content: "earlier answer"),
             ChatMessage(role: .user, content: "total?", fileAttachments: [attachment]),
-            ChatMessage(role: .assistant, content: "", status: .streaming),
         ]
-        #expect(ChatViewModel.lastUserPromptHadAttachmentBefore(
-            messages: withDocument, placeholderIndex: 3
-        ))
-        // A document in an EARLIER turn does not exempt a later bare
-        // question: the model is answering from transcript, not from a
-        // document in front of it, and that is a shape worth captioning.
-        let documentIsStale: [ChatMessage] = [
+        #expect(ChatViewModel.historyCarriesAttachmentGrounding(newestRowCarriesIt))
+
+        // An EARLIER turn counts, which reverses what an earlier version of
+        // this test asserted. codex was right that the premise was wrong:
+        // ``ChatMessage/modelContent`` re-sends each attachment's extracted
+        // text on every follow-up, so "and 15 percent of that?" two turns on
+        // is still answered from a document in front of the model — and
+        // captioning it as a guess is the trust-spending false positive this
+        // gate exists to prevent.
+        let documentIsTwoTurnsBack: [ChatMessage] = [
             ChatMessage(role: .user, content: "total?", fileAttachments: [attachment]),
             ChatMessage(role: .assistant, content: "$1,204.55"),
             ChatMessage(role: .user, content: "and 15 percent of that?"),
-            ChatMessage(role: .assistant, content: "", status: .streaming),
         ]
-        #expect(!ChatViewModel.lastUserPromptHadAttachmentBefore(
-            messages: documentIsStale, placeholderIndex: 3
-        ))
-        // Degenerate indices must not exempt anything by accident.
-        #expect(!ChatViewModel.lastUserPromptHadAttachmentBefore(
-            messages: withDocument, placeholderIndex: 0
-        ))
-        #expect(!ChatViewModel.lastUserPromptHadAttachmentBefore(
-            messages: [], placeholderIndex: 3
-        ))
+        #expect(ChatViewModel.historyCarriesAttachmentGrounding(documentIsTwoTurnsBack))
+
+        // But it is the WIRE history, so a document the context trim dropped
+        // no longer grounds anything — the caption must come back rather than
+        // stay silent at the exact moment the evidence is gone.
+        let trimmedAway = Array(documentIsTwoTurnsBack.dropFirst(2))
+        #expect(!ChatViewModel.historyCarriesAttachmentGrounding(trimmedAway))
+
+        // An attachment on an ASSISTANT row is not user-supplied grounding,
+        // and an empty history exempts nothing.
+        #expect(!ChatViewModel.historyCarriesAttachmentGrounding([
+            ChatMessage(role: .assistant, content: "here", fileAttachments: [attachment])
+        ]))
+        #expect(!ChatViewModel.historyCarriesAttachmentGrounding([]))
     }
 
     @Test("promptLooksCalculatorish: casual prompt → FALSE")
