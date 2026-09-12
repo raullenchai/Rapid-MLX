@@ -632,7 +632,6 @@ class DSpark:
                 ]
             )
             hidden = _hc_post(ffn, hidden, post, combine)
-            mx.eval(hidden, pre)
         base = f"mtp.{self.layers[-1]}"
         collapsed = _hc_pre(hidden, pre)
         logits = self.w.linear(
