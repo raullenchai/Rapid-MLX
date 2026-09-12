@@ -19,6 +19,7 @@ from ..tool_call_scan import (
     declared_tool_names as _declared_tool_names,
 )
 from ..tool_call_scan import (
+    payload_spans,
     split_marked_calls,
     split_marked_parameters,
 )
@@ -136,6 +137,7 @@ class NemotronToolParser(ToolParser):
                 r"<function=([^>]+)>",
                 "</function>",
                 valid_names=_declared_tool_names(request),
+                not_inside=payload_spans(text, "<parameter=", "</parameter>"),
             )
         ]
         removed = list(valid_spans)
@@ -216,6 +218,21 @@ class NemotronToolParser(ToolParser):
                 tools_called=False, tool_calls=[], content=model_output
             )
 
+        # With no wrapper, a second function opener after a close is
+        # indistinguishable from argument text forging its own closing tags.
+        # Do not partially parse that ambiguous sequence: doing so can merge
+        # the later call's parameters into the first invocation and silently
+        # change what executes. Properly wrapped consecutive calls remain
+        # independently delimited and are handled below.
+        if "<tool_call>" not in model_output and model_output.count("<function=") > 1:
+            logger.warning(
+                "nemotron tool parser: ambiguous consecutive bare function "
+                "markers; refusing the complete sequence"
+            )
+            return ExtractedToolCallInformation(
+                tools_called=False, tool_calls=[], content=model_output
+            )
+
         tool_calls = []
         cleaned_text = model_output
 
@@ -237,6 +254,7 @@ class NemotronToolParser(ToolParser):
             r"<function=([^>]+)>",
             "</function>",
             valid_names=_declared_tool_names(request),
+            not_inside=payload_spans(model_output, "<parameter=", "</parameter>"),
         )
         for func_name, content, _span_start, _span_end in matches:
             func_name = func_name.strip()
