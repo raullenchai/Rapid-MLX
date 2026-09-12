@@ -3738,6 +3738,17 @@ struct QuickstartView: View {
             guard let capability else { return onDisk }
             return "\(onDisk) · \(capability)%"
         }
+        // Cached, but we could not measure what it occupies. Falling through
+        // to the download estimate here is what codex caught on this PR: the
+        // caller has already decided this row is on this Mac, so the estimate
+        // would be rendered — and spoken — as an on-disk figure for a model
+        // that is not being downloaded at all. An unknown size is better said
+        // by saying nothing; the ON THIS MAC badge still carries the fact
+        // that matters, and the accessibility label already degrades to a
+        // bare "on disk" when the size text is empty.
+        // A percentage in the size slot would be spoken as "on disk 65%",
+        // which is the same defect one layer along, so say nothing at all.
+        if cached != nil { return "" }
         guard let physicalRAMGB else { return sizeText(for: choice) }
         return sizeText(forRecommended: choice, physicalRAMGB: physicalRAMGB)
     }

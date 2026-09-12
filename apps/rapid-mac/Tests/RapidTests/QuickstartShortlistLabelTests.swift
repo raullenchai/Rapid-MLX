@@ -73,22 +73,6 @@ struct QuickstartShortlistLabelTests {
         }
     }
 
-    @Test("A cached entry with no size falls back rather than showing nothing")
-    func cachedWithoutSizeFallsBack() {
-        // `rapid-mlx ls` can hand back a row with no size (an external model,
-        // a partial snapshot). An empty size lane would read as "free".
-        let choice = QuickstartCoordinator.lowMemoryChoice
-        for blank in [nil, ""] as [String?] {
-            #expect(
-                QuickstartView.shortlistSizeText(
-                    for: choice,
-                    cached: entry(choice.alias, sizeOnDisk: blank),
-                    recommendedForPhysicalRAMGB: nil
-                ) == QuickstartView.sizeText(for: choice)
-            )
-        }
-    }
-
     @Test("VoiceOver says \"on disk\", not \"download\", in every lane")
     func spokenLabelsFollowTheCachedState() {
         let choice = QuickstartCoordinator.lowMemoryChoice
@@ -120,4 +104,43 @@ struct QuickstartShortlistLabelTests {
             for: choice, sizeText: "", isCached: true
         ).contains("on disk"))
     }
+    @Test("A cached model with no measurable size claims no size at all")
+    func cachedWithoutSizeClaimsNothing() {
+        // `rapid-mlx ls` can hand back a cached row with no size (an external
+        // model, a partial snapshot). This test replaces an earlier one that
+        // asserted the opposite — fall through to the download estimate, on
+        // the theory that an empty size lane reads as "free". codex was right
+        // that the fallback is worse: it shows, and VoiceOver speaks, an
+        // estimated DOWNLOAD figure as an on-disk size for a model that is
+        // not being downloaded at all. That is the same defect this whole
+        // file exists for ("download 20 GB" on a model already holding 19.03
+        // GiB), one lane along. A wrong number is worse than no number, and
+        // the accessibility label already degrades to a bare "on disk" when
+        // the size text is empty.
+        let choice = QuickstartCoordinator.lowMemoryChoice
+        // Both shapes of "we could not measure it": absent and empty.
+        for unmeasured in [entry(choice.alias, sizeOnDisk: nil),
+                           entry(choice.alias, sizeOnDisk: "")] {
+            let text = QuickstartView.shortlistSizeText(
+                for: choice,
+                cached: unmeasured,
+                recommendedForPhysicalRAMGB: 256
+            )
+            #expect(text.isEmpty,
+                    "A cached row with no measured size must not borrow the download estimate.")
+            // The spoken label degrades to a bare "on disk" — no number, and
+            // in particular not a download figure described as one.
+            let spoken = QuickstartRecommendedCard.accessibilityText(
+                for: choice, sizeText: text, isCached: true
+            )
+            #expect(spoken.contains("on disk"))
+            #expect(!spoken.contains("download"))
+        }
+        // Sanity check: the uncached lane still produces a size, so the
+        // assertions above are about provenance and not about an empty helper.
+        #expect(!QuickstartView.shortlistSizeText(
+            for: choice, cached: nil, recommendedForPhysicalRAMGB: 256
+        ).isEmpty)
+    }
+
 }

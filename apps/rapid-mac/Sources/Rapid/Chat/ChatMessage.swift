@@ -1056,11 +1056,13 @@ struct ChatMessage: Identifiable, Codable, Equatable, Hashable {
     ///     NOT count as succeeded — a hallucinated raw answer after a
     ///     failed tool is exactly the shape we still want to flag.
     ///   * ``promptHadAttachment == false``, OR the prompt asks for
-    ///     live data (see ``promptAsksForLiveData``). An answer read
+    ///     live data (``promptAsksForLiveData``), OR it carries
+    ///     self-contained arithmetic
+    ///     (``promptContainsSelfContainedArithmetic``). An answer read
     ///     off an attached file is grounded, not guessed — but an
     ///     attachment cannot ground "what is today's stock price",
-    ///     so the exemption is withheld for prompts that name a
-    ///     moving target.
+    ///     and it has nothing to do with "calculate 17*23", so the
+    ///     exemption is withheld in both cases.
     ///   * ``finishReason`` is ``nil`` or anything OTHER than
     ///     ``"tool_calls"`` — a real tool-call turn doesn't need
     ///     the caption (the chip row already speaks for it). A
@@ -1128,12 +1130,23 @@ struct ChatMessage: Identifiable, Codable, Equatable, Hashable {
         // so the next one (a real hallucinated total) gets ignored too.
         //
         // But the exemption has to be narrow, because an attachment is
-        // not a general licence: attach a PDF and ask "what is today's
-        // stock price?" and the page cannot possibly hold the answer,
-        // so a bare number with no tool call is precisely the
-        // hallucination this caption exists to catch. So the turn is
-        // exempt only when the prompt is NOT asking for live data.
-        if promptHadAttachment, !promptAsksForLiveData(userPrompt) { return false }
+        // not a general licence. Two ways a prompt can carry a document
+        // and still be unanswerable from it, both raised by codex on
+        // this PR:
+        //
+        //   * live data — "attach my portfolio PDF, what is today's
+        //     stock price?" (``promptAsksForLiveData``); and
+        //   * self-contained arithmetic — "attached is my resume;
+        //     calculate 17*23", where the document is simply
+        //     irrelevant and the calculator is the tool that should
+        //     have run (``promptContainsSelfContainedArithmetic``).
+        //
+        // In both, a bare number with no tool call is precisely the
+        // hallucination this caption exists to catch, so the turn is
+        // exempt only when neither holds.
+        if promptHadAttachment,
+           !promptAsksForLiveData(userPrompt),
+           !promptContainsSelfContainedArithmetic(userPrompt) { return false }
         // Gate 2: model must have produced no tool_calls. A real
         // tool-call turn doesn't need the caption.
         let noToolCalls = (toolCalls?.isEmpty ?? true)
@@ -1896,6 +1909,28 @@ struct ChatMessage: Identifiable, Codable, Equatable, Hashable {
         func isWordScalar(_ scalar: Unicode.Scalar) -> Bool {
             CharacterSet.alphanumerics.contains(scalar)
         }
+        /// A boundary, or a regular English plural immediately followed by
+        /// one. codex flagged the regression this closes: moving from
+        /// substring to whole-word matching silently dropped "temperatures",
+        /// "forecasts" and "current prices", all of which the old substring
+        /// match caught and all of which are ordinary live-data questions.
+        /// Accepting a trailing "s"/"es" before the boundary keeps the
+        /// inflections without reopening the substring bug — "forecasting"
+        /// is still rejected (the next scalar is "i"), "forecasted" too
+        /// ("ed" is not "es"), and "concurrent" never contained a keyword to
+        /// begin with.
+        func boundaryFollows(_ index: String.Index) -> Bool {
+            if index == haystack.endIndex { return true }
+            if !isWordScalar(haystack[index].unicodeScalars.first!) { return true }
+            for suffix in ["es", "s"] where haystack[index...].hasPrefix(suffix) {
+                let after = haystack.index(index, offsetBy: suffix.count)
+                if after == haystack.endIndex
+                    || !isWordScalar(haystack[after].unicodeScalars.first!) {
+                    return true
+                }
+            }
+            return false
+        }
         var searchStart = haystack.startIndex
         while let range = haystack.range(
             of: keyword,
@@ -1906,9 +1941,7 @@ struct ChatMessage: Identifiable, Codable, Equatable, Hashable {
                     haystack[haystack.index(before: range.lowerBound)]
                         .unicodeScalars.first!
                 )
-            let rightOK = range.upperBound == haystack.endIndex
-                || !isWordScalar(haystack[range.upperBound].unicodeScalars.first!)
-            if leftOK && rightOK { return true }
+            if leftOK && boundaryFollows(range.upperBound) { return true }
             // Overlapping matches matter ("timestimes"), so advance by
             // one character rather than past the whole keyword.
             searchStart = haystack.index(after: range.lowerBound)
@@ -1992,6 +2025,41 @@ struct ChatMessage: Identifiable, Codable, Equatable, Hashable {
             "weather", "temperature", "forecast"
         ]
         for kw in liveKeywords where containsKeyword(kw, in: lowered) { return true }
+        return false
+    }
+
+    /// True when `prompt` carries arithmetic that stands on its own — a
+    /// digit and an operator, as in "17*23" or "1200 * 0.15".
+    ///
+    /// Such a question does not become document-grounded just because a
+    /// document happens to be attached: the numbers are in the prompt,
+    /// the page is irrelevant, and the calculator is exactly the tool
+    /// that should have run. So this withholds Gate 1c's exemption
+    /// alongside ``promptAsksForLiveData``.
+    ///
+    /// Note what it deliberately does NOT cover: math *keywords* with
+    /// no literal expression — "what is the total due? calculate it
+    /// from the invoice", the 0.14.1 dogfood case — where the operands
+    /// live on the page and reading them off it is the grounded,
+    /// correct answer. The discriminator is whether the prompt brought
+    /// its own numbers.
+    static func promptContainsSelfContainedArithmetic(_ prompt: String) -> Bool {
+        let hasDigit = prompt.unicodeScalars.contains { scalar in
+            scalar.value >= 0x30 && scalar.value <= 0x39
+        }
+        guard hasDigit else { return false }
+        let mathOperators: Set<Character> = ["+", "*", "/", "%", "=", "^"]
+        if prompt.contains(where: { mathOperators.contains($0) }) { return true }
+        // "-" only counts between two digits: a hyphenated filename or a
+        // dashed aside ("attached is my resume - what does it say?") is
+        // not arithmetic, but "1200-180" is.
+        let scalars = Array(prompt.unicodeScalars)
+        func isDigit(_ index: Int) -> Bool {
+            scalars.indices.contains(index) && scalars[index].value >= 0x30 && scalars[index].value <= 0x39
+        }
+        for (offset, scalar) in scalars.enumerated() where scalar == "-" {
+            if isDigit(offset - 1) && isDigit(offset + 1) { return true }
+        }
         return false
     }
 

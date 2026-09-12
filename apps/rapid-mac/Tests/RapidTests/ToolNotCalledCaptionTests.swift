@@ -370,6 +370,57 @@ struct ToolNotCalledCaptionTests {
         }
     }
 
+    @Test("An attachment does NOT exempt self-contained arithmetic")
+    func attachmentDoesNotExemptSelfContainedArithmetic() {
+        // codex, round 2: "Attached is my resume; calculate 17*23" carries a
+        // document that has nothing to do with the question. The numbers are
+        // in the prompt, the calculator is the tool that should have run, and
+        // a bare wrong product is the #308 failure mode.
+        for prompt in ["Attached is my resume; calculate 17*23",
+                       "Here's the invoice. Also, what is 1200 * 0.15?",
+                       "Using this deck, confirm 1200-180 for me",
+                       "this pdf, plus: 88 / 7 = ?"] {
+            #expect(ChatMessage.shouldFlagToolNotCalled(
+                userPrompt: prompt,
+                assistantContent: "391",
+                toolCalls: nil,
+                finishReason: "stop",
+                toolsRequested: true,
+                promptHadAttachment: true
+            ), "Self-contained arithmetic is not grounded by an attachment: \(prompt)")
+        }
+        // The dogfood case is the other side of the line and must stay
+        // exempt: the operands live on the page, so reading them off it is
+        // the grounded, correct answer.
+        #expect(!ChatMessage.shouldFlagToolNotCalled(
+            userPrompt: "What is the total due? Calculate it from the invoice.",
+            assistantContent: "$1,204.55",
+            toolCalls: nil,
+            finishReason: "stop",
+            toolsRequested: true,
+            promptHadAttachment: true
+        ))
+    }
+
+    @Test("promptContainsSelfContainedArithmetic: brought its own numbers?")
+    func selfContainedArithmeticContract() {
+        for prompt in ["17*23", "what is 1200 * 0.15", "88 / 7", "1200-180",
+                       "5 + 5 = ?", "2^10", "give me 40% of 250"] {
+            #expect(ChatMessage.promptContainsSelfContainedArithmetic(prompt),
+                    "should be self-contained: \(prompt)")
+        }
+        for prompt in ["calculate the total from the invoice",
+                       "sum of the line items", "what is the square root of it",
+                       // A hyphen is not a minus sign unless it sits between
+                       // two digits: a filename or a dashed aside is not math.
+                       "see q3-report.pdf - what does it say?",
+                       "the 2026 budget - summarise it",
+                       "no numbers here at all"] {
+            #expect(!ChatMessage.promptContainsSelfContainedArithmetic(prompt),
+                    "should not be self-contained: \(prompt)")
+        }
+    }
+
     @Test("promptAsksForLiveData draws the line at a moving target")
     func liveDataContract() {
         // Names a moving target: no attached document can hold the answer.
@@ -386,10 +437,20 @@ struct ToolNotCalledCaptionTests {
                        "sum of the line items"] {
             #expect(!ChatMessage.promptAsksForLiveData(prompt), "should not be live: \(prompt)")
         }
+        // codex round 2: moving to whole-word matching must not drop ordinary
+        // English plurals, which the old substring match caught.
+        for prompt in ["what are the temperatures today", "the forecasts for the week",
+                       "current prices on these", "latest versions of the spec",
+                       "exchange rates right now", "stock prices"] {
+            #expect(ChatMessage.promptAsksForLiveData(prompt), "plural should be live: \(prompt)")
+        }
         // Whole-word matching still holds here: "concurrent" is not "current",
-        // and a "forecasting model" question is not a weather question.
+        // a "forecasting model" question is not a weather question, and an
+        // "-ed" inflection is not an "-s" one.
         #expect(!ChatMessage.promptAsksForLiveData("explain concurrent map access"))
         #expect(!ChatMessage.promptAsksForLiveData("what is a temperate climate"))
+        #expect(!ChatMessage.promptAsksForLiveData("explain forecasting models"))
+        #expect(!ChatMessage.promptAsksForLiveData("the weathered stone wall"))
         // But the live list must still reach promptLooksCalculatorish, so the
         // two cannot drift apart.
         #expect(ChatMessage.promptLooksCalculatorish("what is the forecast"))

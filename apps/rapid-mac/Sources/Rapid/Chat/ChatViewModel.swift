@@ -3138,6 +3138,27 @@ final class ChatViewModel {
     ///
     /// The cost is roughly twenty tokens per user turn, bought with the entire
     /// prefill of every follow-up — 15–17 s in the 0.14.1 document dogfood.
+    ///
+    /// What this means for the three ways a turn can be re-sent, because codex
+    /// asked and the answer is not uniform:
+    ///
+    ///   * **A new send** mints a fresh row (``send(_:alias:…)`` builds a
+    ///     ``ChatMessage`` with the default ``createdAt`` of `Date()`), so the
+    ///     trailer is the live clock. This is the common case.
+    ///   * **An edited send** goes through ``editUserMessage(id:newContent:…)``,
+    ///     which rewinds the path and calls ``send`` — so it, too, mints a new
+    ///     row and gets the live clock. Free: the edited text already broke
+    ///     the shared prefix at that row, so there is no reuse to protect.
+    ///   * **Regenerate / Retry** (``regenerateAnswer(afterUserAt:…)``) reuse
+    ///     the existing user row deliberately — the question was asked then,
+    ///     and re-answering it is not asking it again. Its trailer therefore
+    ///     keeps the original ask time. This is not a shortcut: a "live"
+    ///     clock here would have to be stable on every LATER turn as well, or
+    ///     the prefix breaks for the rest of the conversation, so "live clock
+    ///     on regenerate" and "reuse the prefix" cannot both hold. Reporting
+    ///     when the user actually asked is the more defensible half, and a
+    ///     model that needs the wall clock right now is answering a live-data
+    ///     question, which wants a tool rather than a prompt trailer.
     nonisolated static func stampingClockContext(
         on messages: [ChatMessage],
         calendar: Calendar = .autoupdatingCurrent

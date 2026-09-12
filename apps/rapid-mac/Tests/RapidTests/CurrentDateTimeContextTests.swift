@@ -410,4 +410,40 @@ struct CurrentDateContextWireTests {
         #expect(user.contains("[CURRENT LOCAL TIME]"))
         #expect(user.contains("The current local time is "))
     }
+    @MainActor
+    @Test("An edited send gets the live clock; regenerate keeps the original ask time")
+    func reSendPathsReportTheRightClock() throws {
+        // codex asked what happens on retry/regenerate/edit. The answer is
+        // not uniform and is worth pinning, because each path reaches the
+        // stamper with a different row.
+        let calendar = Calendar(identifier: .gregorian)
+        let asked = Date(timeIntervalSince1970: 1_757_000_000)     // the original send
+        let later = asked.addingTimeInterval(13 * 60)              // thirteen minutes on
+
+        // Regenerate / Retry reuse the SAME row, so its trailer keeps the
+        // time the question was asked. Stamping is a pure function of the
+        // row, so re-running it later must not move the clock.
+        let reused = ChatMessage(role: .user, content: "what time is it?", createdAt: asked)
+        let firstPass = ChatViewModel.stampingClockContext(on: [reused], calendar: calendar)
+        let secondPass = ChatViewModel.stampingClockContext(on: firstPass, calendar: calendar)
+        #expect(firstPass[0].wireSuffix == secondPass[0].wireSuffix,
+                "Re-answering the same row must not change what that row renders, or every later turn loses the shared prefix.")
+        #expect(try #require(firstPass[0].wireSuffix).contains(
+            ChatViewModel.clockContext(at: asked, calendar: calendar)))
+
+        // An edited send mints a NEW row (editUserMessage rewinds and calls
+        // send, which defaults createdAt to Date()), so it reports the live
+        // clock — and that costs nothing, because the edited text has already
+        // broken the shared prefix at that row.
+        let freshlySent = ChatMessage(role: .user, content: "what time is it now?", createdAt: later)
+        let edited = ChatViewModel.stampingClockContext(on: [reused, freshlySent], calendar: calendar)
+        #expect(try #require(edited[1].wireSuffix).contains(
+            ChatViewModel.clockContext(at: later, calendar: calendar)))
+        #expect(edited[0].wireSuffix != edited[1].wireSuffix,
+                "Two rows sent thirteen minutes apart must not render the same clock.")
+        // And the earlier row is untouched by the new one arriving: that is
+        // the append-only property the prefix cache needs.
+        #expect(edited[0].wireSuffix == firstPass[0].wireSuffix)
+    }
+
 }
