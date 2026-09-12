@@ -110,6 +110,14 @@ COST_SEED_MIN_SAMPLES = 4
 # converge), resets to base on any EV-pick shift.
 STARVATION_PROBE_INTERVAL = 4
 
+# Rounds between controller diagnostic logs. Ollama logs its learned curves
+# once per request (``speculate_stats.go:64-84``); the controller sees rounds,
+# not request boundaries, so pace it at roughly one typical response instead --
+# often enough to watch a depth decision drift, rare enough that a DEBUG run
+# stays readable. Only the cost/acceptance/EV curves explain a depth choice, so
+# without them a bad pick is undiagnosable from logs alone.
+DIAGNOSTICS_LOG_INTERVAL = 128
+
 
 # ---------------------------------------------------------------------------
 # CostModel — per-K target-forward wall-time EWMA.
@@ -302,6 +310,17 @@ class AcceptanceModel:
             if j < len(self._seen) and self._seen[j] >= ACCEPTANCE_MIN_SAMPLES:
                 return self._rate[j]
         return 1.0
+
+    def sample_string(self) -> str:
+        """Per-position rates over the trusted window ``[1, frontier]``.
+
+        Deeper positions have no data of their own -- :meth:`acceptance`
+        answers for them by inheriting the deepest trusted rate, which is a
+        search policy, not a measurement, so it is not reported as one.
+        """
+        return " ".join(
+            f"{i}:{self.acceptance(i):.2f}" for i in range(1, self.frontier() + 1)
+        )
 
     def expected_committed(self, n: int) -> float:
         """Expected committed tokens at depth N: the current token
@@ -610,6 +629,10 @@ class DepthController:
                 else:
                     break
             self.acc.observe(len(accepts), accepted)
+        if self.round_count % DIAGNOSTICS_LOG_INTERVAL == 0 and logger.isEnabledFor(
+            logging.DEBUG
+        ):
+            logger.debug("[MTP-controller] %s", self.diagnostics())
 
     # ------------------------------------------------------------------
     # Internals
@@ -654,13 +677,35 @@ class DepthController:
                 return n
         return -1
 
+    def expected_tps_string(self) -> str:
+        """EV per depth over the searched window ``[0, limit]``, in tok/s.
+
+        This is the quantity :meth:`pick_k` maximizes, so printing it says why
+        a depth won -- cost alone cannot, since the depth with the lowest cost
+        is never the pick. Empty until two depths have been sampled, because
+        interpolating a one-point cost curve would report a slope that was
+        never measured.
+        """
+        if not self.cost.ready():
+            return ""
+        limit = min(self.frontier() + 1, self.max_k)
+        # ``observe`` folds a sample only for a positive wall time and
+        # ``cost`` interpolates between samples, so every cost the ready
+        # model reports is positive and the division below is safe.
+        return " ".join(
+            f"{n}:{1000.0 * self.acc.expected_committed(n) / self.cost.cost(n):.1f}"
+            for n in range(0, limit + 1)
+        )
+
     def diagnostics(self) -> str:
-        """Human-readable snapshot for INFO logs."""
+        """Human-readable snapshot of the learned curves and probe state."""
         return (
             f"K_scheduled={self.scheduled} frontier={self.frontier()} "
             f"max_k={self.max_k} rounds={self.round_count} "
             f"parks={self.park_count} "
             f"cost=[{self.cost.sample_string()}] "
+            f"acceptance=[{self.acc.sample_string()}] "
+            f"expected_tps=[{self.expected_tps_string()}] "
             f"probe_interval={self._probe_interval} "
             f"starve_interval={self._round_probe_interval} "
             f"starve_probes={self.starvation_probe_count}"

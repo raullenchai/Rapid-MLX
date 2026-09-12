@@ -1360,6 +1360,178 @@ def test_starvation_probe_resets_when_ev_pick_changes():
 
 
 # ---------------------------------------------------------------------------
+# 5c. DepthController diagnostics (the learned curves, for DEBUG logs)
+# ---------------------------------------------------------------------------
+
+
+def _seeded_controller(max_k=3, cost_ms=(65.0, 73.0, 88.0, 110.0), accept=0.8):
+    """A controller fed a realistic cost curve and acceptance stream.
+
+    ``cost_ms`` is indexed by depth and ``accept`` is the per-position
+    acceptance rate; both are applied often enough to pass
+    ``ACCEPTANCE_MIN_SAMPLES`` so the frontier actually moves.
+    """
+    from vllm_mlx.spec_decode.mtp.draft_k_controller_v2 import (
+        DepthController,
+        reset_controllers,
+    )
+
+    reset_controllers()
+    ctrl = DepthController(max_k=max_k)
+    hits = round(accept * 10)
+    for depth in range(0, max_k + 1):
+        credit = 0
+        for _ in range(200):
+            # Bresenham: ``hits`` accepts per 10 rounds, spread evenly rather
+            # than blocked, so the EWMA settles on the requested rate instead
+            # of on wherever a run of rejections happened to leave it.
+            credit += hits
+            accepted = credit >= 10
+            if accepted:
+                credit -= 10
+            ctrl.record(
+                depth,
+                cost_ms[depth],
+                [True] * depth if accepted else [False] * depth,
+            )
+    if max_k >= 1:
+        # An EWMA of a repeating pattern ripples rather than converging;
+        # ``ACCEPTANCE_EWMA_ALPHA`` bounds that ripple well inside 0.1.
+        assert ctrl.acc.acceptance(1) == pytest.approx(accept, abs=0.1)
+    return ctrl
+
+
+def test_acceptance_sample_string_reports_only_trusted_positions():
+    """Positions past the frontier read back an inherited rate, not a
+    measured one, so publishing them would pass off the search policy as
+    data. The string stops at the frontier for that reason."""
+    from vllm_mlx.spec_decode.mtp.draft_k_controller_v2 import (
+        ACCEPTANCE_MIN_SAMPLES,
+        AcceptanceModel,
+    )
+
+    acc = AcceptanceModel()
+    assert acc.sample_string() == ""
+
+    for _ in range(ACCEPTANCE_MIN_SAMPLES):
+        acc.observe(2, 1)  # position 1 accepted, position 2 rejected
+
+    assert acc.frontier() == 2
+    assert acc.sample_string() == "1:1.00 2:0.00"
+    # Position 3 answers (inheriting 0.00) but is not reported.
+    assert acc.acceptance(3) == pytest.approx(0.0)
+
+
+def test_expected_tps_string_is_empty_until_two_depths_are_sampled():
+    """One cost sample gives a point, not a slope; a tok/s figure derived
+    from it would be an extrapolation reported as a measurement."""
+    from vllm_mlx.spec_decode.mtp.draft_k_controller_v2 import (
+        DepthController,
+        reset_controllers,
+    )
+
+    reset_controllers()
+    ctrl = DepthController(max_k=3)
+    for _ in range(6):
+        ctrl.record(0, 65.0, [])
+
+    assert ctrl.expected_tps_string() == ""
+    assert "expected_tps=[]" in ctrl.diagnostics()
+
+
+def test_expected_tps_string_is_the_quantity_the_pick_maximizes():
+    """The printed curve has to be the comparator's own, or the log
+    explains a decision the controller did not make. Check the argmax of
+    the string equals ``pick_k``'s selection."""
+    ctrl = _seeded_controller()
+
+    parts = dict(
+        (int(k), float(v))
+        for k, v in (p.split(":") for p in ctrl.expected_tps_string().split())
+    )
+    assert set(parts) == set(range(0, min(ctrl.frontier() + 1, ctrl.max_k) + 1))
+    # tok/s, not tok/ms: a 65ms park round is ~15 tok/s.
+    assert parts[0] == pytest.approx(1000.0 / 65.0, rel=0.05)
+
+    best = max(parts, key=lambda n: parts[n])
+    assert ctrl._selected() == best
+
+
+def test_diagnostics_carries_every_curve_a_depth_choice_depends_on():
+    """A depth pick is a function of cost, acceptance and the resulting
+    EV; a log missing any one of them cannot be used to second-guess it."""
+    ctrl = _seeded_controller()
+
+    line = ctrl.diagnostics()
+    for field in ("cost=[", "acceptance=[", "expected_tps=[", "probe_interval="):
+        assert field in line
+    assert "cost=[]" not in line
+    assert "acceptance=[]" not in line
+    assert "expected_tps=[]" not in line
+
+
+def test_record_logs_diagnostics_on_the_configured_cadence(caplog):
+    """``diagnostics()`` was unreachable from a running server before
+    this -- nothing called it -- so the curves could not be read off a
+    DEBUG run at all."""
+    import logging
+
+    from vllm_mlx.spec_decode.mtp.draft_k_controller_v2 import (
+        DIAGNOSTICS_LOG_INTERVAL,
+        DepthController,
+        reset_controllers,
+    )
+
+    reset_controllers()
+    ctrl = DepthController(max_k=3)
+    with caplog.at_level(
+        logging.DEBUG, logger="vllm_mlx.spec_decode.mtp.draft_k_controller_v2"
+    ):
+        for _ in range(DIAGNOSTICS_LOG_INTERVAL - 1):
+            ctrl.record(1, 73.0, [True])
+        assert not [r for r in caplog.records if "[MTP-controller]" in r.message]
+
+        ctrl.record(1, 73.0, [True])
+        hits = [r for r in caplog.records if "[MTP-controller]" in r.message]
+
+    assert len(hits) == 1
+    assert f"rounds={DIAGNOSTICS_LOG_INTERVAL}" in hits[0].getMessage()
+
+
+def test_record_does_not_build_the_diagnostics_line_below_debug(monkeypatch):
+    """The line walks both models' curves, so paying for it on a default
+    INFO server would be a per-round cost for output nobody reads."""
+    from vllm_mlx.spec_decode.mtp.draft_k_controller_v2 import (
+        DIAGNOSTICS_LOG_INTERVAL,
+        DepthController,
+        reset_controllers,
+    )
+
+    reset_controllers()
+    ctrl = DepthController(max_k=3)
+    calls = []
+    monkeypatch.setattr(
+        type(ctrl),
+        "diagnostics",
+        lambda self: calls.append(1) or "",
+    )
+
+    import logging
+
+    logger = logging.getLogger("vllm_mlx.spec_decode.mtp.draft_k_controller_v2")
+    old_level, logger.level = logger.level, logging.INFO
+    old_propagate, logger.propagate = logger.propagate, False
+    try:
+        for _ in range(DIAGNOSTICS_LOG_INTERVAL):
+            ctrl.record(1, 73.0, [True])
+    finally:
+        logger.level = old_level
+        logger.propagate = old_propagate
+
+    assert calls == []
+
+
+# ---------------------------------------------------------------------------
 # 6. MTP head builder
 # ---------------------------------------------------------------------------
 
