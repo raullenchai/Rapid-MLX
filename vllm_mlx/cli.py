@@ -1425,9 +1425,12 @@ def _check_alias_min_memory(user_typed: str) -> None:
         return
 
     try:
-        from .optimizations import get_system_memory_gb
+        # Keep the generic alias gate independent of MLX imports. This path is
+        # also exercised by Linux clients and by preflight commands that must
+        # remain usable before the accelerator runtime is available.
+        import psutil
 
-        total_ram_gb = get_system_memory_gb()
+        total_ram_gb = psutil.virtual_memory().total / (1024**3)
     except Exception:
         return
     if total_ram_gb <= 0:
