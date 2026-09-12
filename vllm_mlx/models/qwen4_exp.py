@@ -2000,6 +2000,13 @@ class TextModel(nn.Module):
                 shard, leaf = suffix.split(".", 1)
                 key = f"{prefix}.ngram_embedding.shards.{int(shard)}.{leaf}"
             sanitized[key] = value
+        from .qwen4_norm_convention import normalize_qwen4_checkpoint
+
+        receipt = normalize_qwen4_checkpoint(
+            self, sanitized, ZeroCenteredRMSNorm
+        )
+        if receipt is not None:
+            self.norm_convention_receipt = receipt
         return sanitized
 
     @property
