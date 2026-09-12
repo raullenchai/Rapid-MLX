@@ -329,6 +329,30 @@ def plan_router_install(
         cache_quantized=cache_quantized,
         cache_windowed=cache_windowed,
     )
+    # Lane capacity is a deployment fact (``--max-num-seqs``), not a programming
+    # error: serving a single user with one lane is a normal way to run. The
+    # config contract raises on ``min_batch_lanes > max_lanes``, and this
+    # planner runs lazily, when the first request builds the batch generator —
+    # so a one-lane server used to abort that request's generation step with
+    # ``min_batch_lanes cannot exceed max_lanes`` and hang the request instead
+    # of falling back. Refuse like every other missing capability and let the
+    # caller keep the mature singleton verifier.
+    if max_lanes < min_batch_lanes:
+        return ContinuousMTPRouterInstallDecision(
+            admitted=False,
+            router=None,
+            fallback=(
+                ContinuousMTPIntegrationRoute.LEGACY_MTP
+                if legacy
+                else ContinuousMTPIntegrationRoute.PLAIN_DECODE
+            ),
+            reasons=(
+                f"continuous self-MTP needs at least {min_batch_lanes} completion "
+                f"lanes to amortize ragged bookkeeping; this deployment has "
+                f"{max_lanes}",
+            ),
+        )
+
     router = ContinuousMTPIntegrationRouter(
         config=BatchedMTPConfig(
             enabled=enabled,
