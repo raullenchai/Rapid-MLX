@@ -96,6 +96,18 @@ def test_disk_engram_prefetch_mismatch_falls_back_to_requested_rows(tmp_path):
     assert mx.array_equal(actual, expected).item()
 
 
+def test_disk_engram_discards_failed_stale_prefetch(tmp_path):
+    resident, disk, _keys, _path = _modules(tmp_path)
+    disk.prefetch(np.array([8], dtype=np.int64))
+    requested = mx.array([2, 7], mx.int32)
+
+    expected = resident(requested)
+    actual = disk(requested)
+    mx.eval(expected, actual)
+
+    assert mx.array_equal(actual, expected).item()
+
+
 def test_disk_engram_gather_can_exceed_lru_capacity(tmp_path):
     resident, disk, _keys, _path = _modules(tmp_path, cache_rows=1)
     indices = mx.array([1, 3, 2], mx.int32)

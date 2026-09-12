@@ -286,16 +286,16 @@ class DiskQuantizedEngramEmbedding(nn.Module):
         self.cache_misses = 0
         self._lock = RLock()
         self._closed = False
-        self._executor = ThreadPoolExecutor(
-            max_workers=1, thread_name_prefix="deepseek-v41-engram"
-        )
+        self._executor: ThreadPoolExecutor | None = None
         self._pending: tuple[np.ndarray, Future] | None = None
         self._cache: OrderedDict[int, tuple[np.ndarray, np.ndarray, np.ndarray]] = (
             OrderedDict()
         )
-        self._file = Path(path).open("rb")
+        self._file = None
+        self._mapping = None
         self._weight = self._scales = self._biases = None
         try:
+            self._file = Path(path).open("rb")
             length_raw = self._file.read(8)
             if len(length_raw) != 8:
                 raise ValueError("truncated safetensors header")
@@ -332,14 +332,20 @@ class DiskQuantizedEngramEmbedding(nn.Module):
                 numpy_dtype=np.dtype("<u2"),
                 shape=quant_shape,
             )
+            self._executor = ThreadPoolExecutor(
+                max_workers=1, thread_name_prefix="deepseek-v41-engram"
+            )
         except Exception:
             self._weight = self._scales = self._biases = None
-            mapping = getattr(self, "_mapping", None)
+            if self._executor is not None:
+                self._executor.shutdown(wait=True, cancel_futures=True)
+                self._executor = None
             try:
-                if mapping is not None:
-                    mapping.close()
+                if self._mapping is not None:
+                    self._mapping.close()
             finally:
-                self._file.close()
+                if self._file is not None:
+                    self._file.close()
             raise
 
     @staticmethod
@@ -458,7 +464,10 @@ class DiskQuantizedEngramEmbedding(nn.Module):
             previous, self._pending = self._pending, None
         if previous is not None:
             previous[1].result()
-        future = self._executor.submit(self._gather_rows, flat)
+        executor = self._executor
+        if executor is None:
+            raise RuntimeError("Engram embedding is closed")
+        future = executor.submit(self._gather_rows, flat)
         with self._lock:
             if self._closed:
                 future.cancel()
@@ -472,12 +481,15 @@ class DiskQuantizedEngramEmbedding(nn.Module):
             pending, self._pending = self._pending, None
         if pending is not None:
             requested, future = pending
-            prefetched = future.result()
-            rows = (
-                prefetched
-                if np.array_equal(requested, flat)
-                else self._gather_rows(flat)
-            )
+            if np.array_equal(requested, flat):
+                rows = future.result()
+            else:
+                if not future.cancel():
+                    try:
+                        future.result()
+                    except Exception:
+                        pass
+                rows = self._gather_rows(flat)
         else:
             rows = self._gather_rows(flat)
         values = self._dequantize(rows)
@@ -491,14 +503,18 @@ class DiskQuantizedEngramEmbedding(nn.Module):
             pending, self._pending = self._pending, None
         if pending is not None:
             pending[1].cancel()
-        self._executor.shutdown(wait=True, cancel_futures=True)
+        executor, self._executor = self._executor, None
+        if executor is not None:
+            executor.shutdown(wait=True, cancel_futures=True)
         with self._lock:
             self._cache.clear()
             self._weight = self._scales = self._biases = None
             try:
-                self._mapping.close()
+                if self._mapping is not None:
+                    self._mapping.close()
             finally:
-                self._file.close()
+                if self._file is not None:
+                    self._file.close()
 
     def __del__(self):
         try:
