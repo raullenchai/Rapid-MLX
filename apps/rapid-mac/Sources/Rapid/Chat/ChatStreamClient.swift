@@ -435,7 +435,34 @@ struct ChatStreamClient {
                 : .init(enable_thinking: false)
         )
         let encoder = JSONEncoder()
-        encoder.outputFormatting = []
+        // Deterministic key order, because this body is not just transport:
+        // the engine renders `tools` (and the message list) into the prompt
+        // TEXT through the model's chat template, and its prefix cache reuses
+        // a stored request only when the new one is a byte-exact token prefix
+        // of it. Any reordering between two turns therefore rewrites the
+        // prompt's head and costs the whole conversation a re-prefill.
+        //
+        // And the order DOES move. `ToolDefinition.Function.parameters` is a
+        // ``CodableJSON`` blob whose `.object` case is a Swift dictionary, and
+        // dictionary iteration order is randomized per instance. Captured
+        // bodies from two consecutive turns of one conversation (0.14.1,
+        // 2026-09-11):
+        //
+        //     turn 1  "tools":[{"function":{"name":"web_search","description":…
+        //     turn 2  "tools":[{"type":"function","function":{"name":"web_search","parameters":…
+        //
+        // Same four tools, same order, different bytes. The engine saw
+        // `shared=96 entry_len=1460 requested_len=1511` and re-prefilled all
+        // 1511 tokens — 4.6 s to first token on a follow-up that should have
+        // cost ~0.5 s, and 15–17 s once an 8-page PDF is in the conversation.
+        // No amount of append-only message discipline can recover a prompt
+        // whose tool block is re-shuffled underneath it.
+        //
+        // `.sortedKeys` is the whole fix: JSON objects are unordered by spec,
+        // the engine parses into dicts, and sorting makes every level stable
+        // across requests AND across app launches (so a reloaded conversation
+        // can still reuse the engine's on-disk prefix cache).
+        encoder.outputFormatting = [.sortedKeys]
         req.httpBody = try encoder.encode(body)
 
         // URLSession.shared inherits app-level timeouts which can be

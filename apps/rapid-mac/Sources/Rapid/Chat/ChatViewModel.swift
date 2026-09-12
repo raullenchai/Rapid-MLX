@@ -1674,6 +1674,27 @@ final class ChatViewModel {
         return ""
     }
 
+    /// True when the user message that opened the turn ending at
+    /// ``placeholderIndex`` carried at least one file attachment.
+    ///
+    /// Feeds ``ChatMessage.shouldFlagToolNotCalled``'s
+    /// ``promptHadAttachment`` gate: an answer read off a document the
+    /// user attached is grounded in the prompt, so the "didn't call a
+    /// tool" caution is wrong on it (see that method's Gate 1c).
+    /// Walks back the same way as ``lastUserPromptBefore`` so the two
+    /// always describe the same user message.
+    static func lastUserPromptHadAttachmentBefore(
+        messages: [ChatMessage],
+        placeholderIndex: Int
+    ) -> Bool {
+        guard placeholderIndex > 0 else { return false }
+        let upper = min(placeholderIndex, messages.count)
+        for i in stride(from: upper - 1, through: 0, by: -1) where messages[i].role == .user {
+            return !messages[i].fileAttachments.isEmpty
+        }
+        return false
+    }
+
     /// True when the assistant turn ending at ``placeholderIndex`` was
     /// preceded — since the most recent user message — by a tool that
     /// SUCCEEDED (a ``.tool`` result message with status ``.complete``).
@@ -2517,7 +2538,7 @@ final class ChatViewModel {
             history = ChatViewModel.addingInstructionLayers(
                 to: history,
                 ambientPreamble: ambientPreamble,
-                dateContext: ChatViewModel.currentDateTimeContext(),
+                dateContext: ChatViewModel.currentDateContext(),
                 memoryContext: memoryContext,
                 global: globalInstruction,
                 conversation: conversationInstruction
@@ -2562,6 +2583,14 @@ final class ChatViewModel {
             if forceGroundingCorrection {
                 history = ChatViewModel.addingGroundingCorrectionPreamble(to: history)
             }
+            // LAST, after the trim and every preamble: each user turn carries
+            // the clock of the moment it was sent, so the prompt stays
+            // append-only between turns and the engine's prefix cache can
+            // reuse it. See ``currentDateContext`` for the measurement that
+            // motivates moving the clock out of the system row, and
+            // ``stampingClockContext`` for why it is every user row rather
+            // than just the newest one.
+            history = ChatViewModel.stampingClockContext(on: history)
             let request: ChatStreamClient.Request
             if let s = sampling {
                 let resolved = s.resolved(toolsEnabled: !definitions.isEmpty)
@@ -2994,7 +3023,12 @@ final class ChatViewModel {
         addingInstructionLayers(
             to: [],
             ambientPreamble: nil,
-            dateContext: dateContext ?? currentDateTimeContext(),
+            // The preview shows what actually goes on the wire: the system
+            // row carries the DATE only. The wall clock rides each user turn
+            // as a wire-only trailer (``stampingClockContext``), so quoting it
+            // here would show the reader a system row Rapid never sends. The
+            // editor's caption tells them where the time went.
+            dateContext: dateContext ?? currentDateContext(),
             memoryContext: memoryContext,
             global: global,
             conversation: conversation
@@ -3005,22 +3039,42 @@ final class ChatViewModel {
     /// model does not guess "today" from training memory (issue #2330, where
     /// `qwen3.5-4b-4bit` answered "Friday, May 24, 2024" and then insisted it
     /// had no way to know the date). This supplies the Mac's authoritative
-    /// local date/time as a system-prompt template variable at request time —
-    /// the pattern peer desktop chat products use — rather than relying on the
+    /// local date as a system-prompt template variable at request time — the
+    /// pattern peer desktop chat products use — rather than relying on the
     /// model to infer it must search for the date, and without adding a
     /// local-clock tool or touching tool routing.
     ///
     /// Injected per `send` (each request recomputes it against the live clock),
     /// so it cannot go stale across midnight, a time-zone change, a restored
-    /// conversation, or a long-lived session. `now` and the calendar's
-    /// time zone are injectable so tests can pin the exact output and cover
+    /// conversation, or a long-lived session. `now` and the calendar's time
+    /// zone are injectable so tests can pin the exact output and cover
     /// rollover.
-    nonisolated static func currentDateTimeContext(
+    ///
+    /// The calendar day, time zone and nothing finer — the half of #2330's
+    /// context that belongs in the leading system row.
+    ///
+    /// The wall CLOCK deliberately does not appear here; it rides each user
+    /// turn instead (``clockContext(at:calendar:)`` +
+    /// ``stampingClockContext(on:calendar:)``). The engine's prompt cache
+    /// reuses a request only when its token prefix is byte-identical to a
+    /// stored one, and the system row is the FIRST thing in every request: a
+    /// minute-resolution string there rewrites the head of the prompt the
+    /// moment the clock ticks, which turns an append-only follow-up into a
+    /// full re-prefill of the whole conversation, document and all.
+    ///
+    /// Measured against this engine on an M3 Ultra (qwen3.8-27b-4bit, a
+    /// 2.3k-token prompt): an append-only second turn with a byte-identical
+    /// system row answers in 0.6 s; the same second turn with only the minute
+    /// changed costs 7.3 s — the cold-start prefill, paid again. With an
+    /// 8-page PDF attached the desktop was paying 15–17 s on EVERY follow-up.
+    ///
+    /// Day granularity still moves once per day, so a conversation spanning
+    /// local midnight re-prefills exactly once. That is the price of keeping
+    /// #2330's guarantee that the model never has to guess the date.
+    nonisolated static func currentDateContext(
         now: Date = Date(),
         calendar inputCalendar: Calendar = .autoupdatingCurrent
     ) -> String {
-        // Fixed gregorian calendar + en_US_POSIX so output never depends on the
-        // user's locale for date/time names or AM/PM rendering.
         var gregorian = Calendar(identifier: .gregorian)
         gregorian.timeZone = inputCalendar.timeZone
         let zone = inputCalendar.timeZone
@@ -3028,17 +3082,75 @@ final class ChatViewModel {
         formatter.calendar = gregorian
         formatter.locale = Locale(identifier: "en_US_POSIX")
         formatter.timeZone = zone
-
         formatter.dateFormat = "EEEE, MMMM d, yyyy"
         let dateText = formatter.string(from: now)
-        formatter.dateFormat = "h:mm a"
-        let timeText = formatter.string(from: now)
-
         let abbreviation = zone.abbreviation(for: now) ?? zone.identifier
         return """
-        [CURRENT DATE AND TIME]
-        Today is \(dateText). The current local time is \(timeText) (\(abbreviation), \(zone.identifier)).
+        [CURRENT DATE]
+        Today is \(dateText) (\(abbreviation), \(zone.identifier)).
         """
+    }
+
+    /// The wall clock at `instant`, for the trailer stamped on a user turn.
+    ///
+    /// Split out of the system row for the prefix-cache reason documented on
+    /// ``currentDateContext``. It keeps #2330's contract — the newest user row
+    /// always carries the time it was sent, so the model is still told the
+    /// current local time on every request and never answers a "what time is
+    /// it" from training memory — while keeping the volatile tokens out of the
+    /// prompt's head.
+    nonisolated static func clockContext(
+        at instant: Date,
+        calendar inputCalendar: Calendar = .autoupdatingCurrent
+    ) -> String {
+        var gregorian = Calendar(identifier: .gregorian)
+        gregorian.timeZone = inputCalendar.timeZone
+        let zone = inputCalendar.timeZone
+        let formatter = DateFormatter()
+        formatter.calendar = gregorian
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.timeZone = zone
+        formatter.dateFormat = "h:mm a"
+        let timeText = formatter.string(from: instant)
+        let abbreviation = zone.abbreviation(for: instant) ?? zone.identifier
+        return """
+        [CURRENT LOCAL TIME]
+        The current local time is \(timeText) (\(abbreviation), \(zone.identifier)).
+        """
+    }
+
+    /// Stamp every user row with the wall clock of the moment it was sent,
+    /// as a wire-only trailer.
+    ///
+    /// Derived from each row's own ``ChatMessage/createdAt`` — which is
+    /// persisted and immutable — rather than from "now", so the rendering of
+    /// a turn never changes after the fact and each request is a strict
+    /// EXTENSION of the one before it. That is the precise shape the engine's
+    /// prompt cache requires: it reuses a stored entry only when that entry is
+    /// a token-exact prefix of the new request.
+    ///
+    /// Stamping only the newest row was tried first and does not work. The
+    /// trailer then has to be removed from that row on the following turn, the
+    /// stored entry stops being a prefix, and reuse is lost exactly as it was
+    /// with the clock in the system row. Measured on this engine
+    /// (qwen3.8-27b-4bit, ~2.3k-token prompt, M3 Ultra): newest-row-only
+    /// trailer 7.4 s on turn two; stamped-per-turn 0.8 s against 7.5 s cold.
+    ///
+    /// The cost is roughly twenty tokens per user turn, bought with the entire
+    /// prefill of every follow-up — 15–17 s in the 0.14.1 document dogfood.
+    nonisolated static func stampingClockContext(
+        on messages: [ChatMessage],
+        calendar: Calendar = .autoupdatingCurrent
+    ) -> [ChatMessage] {
+        guard messages.contains(where: { $0.role == .user }) else { return messages }
+        var result = messages
+        for index in result.indices where result[index].role == .user {
+            result[index].wireSuffix = clockContext(
+                at: result[index].createdAt,
+                calendar: calendar
+            )
+        }
+        return result
     }
 
     /// Remove an exact first component from the merged system row. Used when
@@ -3408,7 +3520,12 @@ Your previous draft refused the question by claiming you lack real-time access o
                             toolSucceededThisTurn: ChatViewModel.turnHadSuccessfulTool(
                                 messages: self.messages,
                                 placeholderIndex: placeholderIndex
-                            )
+                            ),
+                            promptHadAttachment:
+                                ChatViewModel.lastUserPromptHadAttachmentBefore(
+                                    messages: self.messages,
+                                    placeholderIndex: placeholderIndex
+                                )
                         )
                         // Issue #513 (defense-in-depth, layer 3): when
                         // the request offered tools but the model emitted

@@ -270,6 +270,121 @@ struct ToolNotCalledCaptionTests {
         #expect(ChatMessage.promptLooksCalculatorish("Show me the forecast"))
     }
 
+    @Test("0.14.1 dogfood: keywords match whole words, not substrings")
+    func promptKeywordsAreWholeWords() {
+        // Every one of these is ordinary prose that the shipped
+        // `lowered.contains(kw)` classified as calculator-shaped:
+        // "computer"/"computed"/"computing" ⊃ compute, "sometimes" ⊃
+        // times, "surplus" ⊃ plus, "minuscule" ⊃ minus, "forecasting" ⊃
+        // forecast, "temperatures" is the plural of a keyword. Paired
+        // with the short-answer-with-a-digit content gate, any of them
+        // put the "didn't call a tool" caution under a perfectly good
+        // grounded answer.
+        #expect(!ChatMessage.promptLooksCalculatorish(
+            "Summarize what the computer vision section says"))
+        #expect(!ChatMessage.promptLooksCalculatorish(
+            "How was this computed in the report"))
+        #expect(!ChatMessage.promptLooksCalculatorish(
+            "Does it sometimes fail on startup"))
+        #expect(!ChatMessage.promptLooksCalculatorish(
+            "Explain the trade surplus argument"))
+        #expect(!ChatMessage.promptLooksCalculatorish(
+            "Is the risk minuscule or material"))
+        #expect(!ChatMessage.promptLooksCalculatorish(
+            "Who owns the forecasting process"))
+        // …while the whole words themselves still match.
+        #expect(ChatMessage.promptLooksCalculatorish("compute the total"))
+        #expect(ChatMessage.promptLooksCalculatorish("3 times 4 equals what"))
+        #expect(ChatMessage.promptLooksCalculatorish("what is the forecast"))
+        // Punctuation and line ends are boundaries too.
+        #expect(ChatMessage.promptLooksCalculatorish("(compute) the total"))
+        #expect(ChatMessage.promptLooksCalculatorish("weather?"))
+        #expect(ChatMessage.promptLooksCalculatorish("forecast"))
+    }
+
+    @Test("containsKeyword: boundaries, phrases, overlaps")
+    func containsKeywordContract() {
+        #expect(ChatMessage.containsKeyword("plus", in: "2 plus 2"))
+        #expect(!ChatMessage.containsKeyword("plus", in: "surplus"))
+        #expect(!ChatMessage.containsKeyword("plus", in: "plusher"))
+        // Multi-word phrases only need their outer edges checked.
+        #expect(ChatMessage.containsKeyword("look up", in: "please look up tokyo"))
+        #expect(!ChatMessage.containsKeyword("look up", in: "overlook upstream"))
+        // A later whole-word hit is still found after an embedded miss.
+        #expect(ChatMessage.containsKeyword("sum of", in: "consumer sum of costs"))
+        #expect(!ChatMessage.containsKeyword("", in: "anything"))
+    }
+
+    @Test("0.14.1 dogfood: a document-grounded answer wears no caution")
+    func attachmentGroundedAnswerIsNotFlagged() throws {
+        // The dogfood shape: a scanned invoice attached, a numeric
+        // question, and a short correct answer read straight off the
+        // page. Nothing on the tool roster could have done better, so
+        // "answered without calling any of the available tools" is not a
+        // caution — and firing it here spends the trust that makes the
+        // caption worth showing when a model really does invent a total.
+        let flaggedWithoutTheGate = ChatMessage.shouldFlagToolNotCalled(
+            userPrompt: "What is the total due? Calculate it from the invoice.",
+            assistantContent: "$1,204.55",
+            toolCalls: nil,
+            finishReason: "stop",
+            toolsRequested: true,
+            promptHadAttachment: false
+        )
+        #expect(flaggedWithoutTheGate,
+                "Sanity check: without the attachment the shape IS the #308 failure mode and must still fire.")
+
+        let flaggedWithTheGate = ChatMessage.shouldFlagToolNotCalled(
+            userPrompt: "What is the total due? Calculate it from the invoice.",
+            assistantContent: "$1,204.55",
+            toolCalls: nil,
+            finishReason: "stop",
+            toolsRequested: true,
+            promptHadAttachment: true
+        )
+        #expect(!flaggedWithTheGate)
+    }
+
+    // ``ChatViewModel`` is @MainActor; the rest of this suite is pure.
+    @MainActor
+    @Test("The attachment gate reads the user row that opened the turn")
+    func attachmentGateWalksBackToTheTurnsUserRow() throws {
+        let attachment = try ChatFileAttachment(
+            filename: "invoice.pdf",
+            kind: .pdf,
+            extractedText: "TOTAL DUE 1,204.55",
+            sourceByteCount: 18
+        )
+        let withDocument: [ChatMessage] = [
+            ChatMessage(role: .user, content: "earlier question"),
+            ChatMessage(role: .assistant, content: "earlier answer"),
+            ChatMessage(role: .user, content: "total?", fileAttachments: [attachment]),
+            ChatMessage(role: .assistant, content: "", status: .streaming),
+        ]
+        #expect(ChatViewModel.lastUserPromptHadAttachmentBefore(
+            messages: withDocument, placeholderIndex: 3
+        ))
+        // A document in an EARLIER turn does not exempt a later bare
+        // question: the model is answering from transcript, not from a
+        // document in front of it, and that is a shape worth captioning.
+        let documentIsStale: [ChatMessage] = [
+            ChatMessage(role: .user, content: "total?", fileAttachments: [attachment]),
+            ChatMessage(role: .assistant, content: "$1,204.55"),
+            ChatMessage(role: .user, content: "and 15 percent of that?"),
+            ChatMessage(role: .assistant, content: "", status: .streaming),
+        ]
+        #expect(!ChatViewModel.lastUserPromptHadAttachmentBefore(
+            messages: documentIsStale, placeholderIndex: 3
+        ))
+        // Degenerate indices must not exempt anything by accident.
+        #expect(!ChatViewModel.lastUserPromptHadAttachmentBefore(
+            messages: withDocument, placeholderIndex: 0
+        ))
+        #expect(!ChatViewModel.lastUserPromptHadAttachmentBefore(
+            messages: [], placeholderIndex: 3
+        ))
+    }
+
     @Test("promptLooksCalculatorish: casual prompt → FALSE")
     func promptCasual() {
         #expect(!ChatMessage.promptLooksCalculatorish("hello there"))

@@ -37,6 +37,16 @@ struct GoldenChatFakeContractTests {
         let surface = GoldenChatSurface.mount()
         try await surface.sendPrompt("probe prompt")
         try await surface.waitForSendIdle()
-        #expect(surface.fake.recordedPrompts() == ["probe prompt"])
+        // The mounted surface goes through the real request assembly, so the
+        // recorded prompt is the WIRE text: the user's prose followed by the
+        // per-turn clock trailer. Asserting both halves here makes this golden
+        // flow the end-to-end proof that #2330's "the model is told the
+        // current time" contract survived moving the clock off the system row
+        // (see ``ChatViewModel.stampingClockContext``).
+        let recorded = try #require(surface.fake.recordedPrompts().first)
+        #expect(surface.fake.recordedPrompts().count == 1)
+        #expect(recorded.hasPrefix("probe prompt"))
+        #expect(recorded.contains("[CURRENT LOCAL TIME]"))
+        #expect(recorded.contains("The current local time is "))
     }
 }

@@ -582,6 +582,22 @@ struct ChatMessage: Identifiable, Codable, Equatable, Hashable {
     var parentID: UUID?
     let createdAt: Date
 
+    /// Wire-only trailer appended after this row's prose AND its attachment
+    /// extracts — see ``modelContent``.
+    ///
+    /// Deliberately absent from ``CodingKeys``: it is set on the throwaway
+    /// array ``ChatViewModel`` builds for one request, never on the
+    /// transcript, so it is not part of the conversation and must not reach
+    /// `conversations.json`. ``init(from:)`` therefore restores it as `nil`.
+    ///
+    /// The one producer is ``ChatViewModel/stampingClockContext(on:calendar:)``,
+    /// which needs each user turn's wall clock to land after that turn's
+    /// attachment extracts. Writing it into ``content`` instead would put it
+    /// in FRONT of the extract, so the first request carrying a document and
+    /// the next one would diverge before the document rather than after it,
+    /// and the engine's prefix cache could not reuse the document.
+    var wireSuffix: String?
+
     init(
         id: UUID = UUID(),
         role: Role,
@@ -602,7 +618,8 @@ struct ChatMessage: Identifiable, Codable, Equatable, Hashable {
         toolCallArtifactSuppressed: Bool = false,
         wireVisibility: WireVisibility = .model,
         parentID: UUID? = nil,
-        createdAt: Date = Date()
+        createdAt: Date = Date(),
+        wireSuffix: String? = nil
     ) {
         self.id = id
         self.role = role
@@ -624,6 +641,7 @@ struct ChatMessage: Identifiable, Codable, Equatable, Hashable {
         self.wireVisibility = wireVisibility
         self.parentID = parentID
         self.createdAt = createdAt
+        self.wireSuffix = wireSuffix
     }
 
     /// Codex r1 MAJOR-1: keep ``reasoningTruncated`` decodable from
@@ -746,17 +764,32 @@ struct ChatMessage: Identifiable, Codable, Equatable, Hashable {
         // assumed to mean "root" until that repair has run.
         self.parentID = try c.decodeIfPresent(UUID.self, forKey: .parentID)
         self.createdAt = try c.decode(Date.self, forKey: .createdAt)
+        // Transient by construction — a persisted turn carries no wire
+        // trailer, and the next request mints a fresh one.
+        self.wireSuffix = nil
     }
 
     /// Text sent to the model. Document extracts stay out of the visible
     /// ``content`` property but remain part of this turn on every retry and
     /// follow-up request.
+    /// ``wireSuffix`` is joined LAST, after the attachment extracts, so a
+    /// per-request trailer cannot displace the document text that the
+    /// engine's prefix cache needs to find unchanged.
     var modelContent: String {
-        guard !fileAttachments.isEmpty else { return content }
+        let trailer = wireSuffix.flatMap {
+            $0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? nil : [$0]
+        } ?? []
+        guard !fileAttachments.isEmpty else {
+            guard !trailer.isEmpty else { return content }
+            // An empty prose row must not gain a leading blank line.
+            let head = content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                ? [] : [content]
+            return (head + trailer).joined(separator: "\n\n")
+        }
         let request = content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
             ? "Analyze the attached file and summarize the important findings."
             : content
-        return ([request] + fileAttachments.map(\.promptText))
+        return ([request] + fileAttachments.map(\.promptText) + trailer)
             .joined(separator: "\n\n")
     }
 
@@ -1022,6 +1055,9 @@ struct ChatMessage: Identifiable, Codable, Equatable, Hashable {
     ///     would contradict the chip on screen. A tool that ERRORED does
     ///     NOT count as succeeded — a hallucinated raw answer after a
     ///     failed tool is exactly the shape we still want to flag.
+    ///   * ``promptHadAttachment == false`` — the user's turn carried
+    ///     no document. An answer read off an attached file is
+    ///     grounded, not guessed, and no tool would have helped.
     ///   * ``finishReason`` is ``nil`` or anything OTHER than
     ///     ``"tool_calls"`` — a real tool-call turn doesn't need
     ///     the caption (the chip row already speaks for it). A
@@ -1033,12 +1069,17 @@ struct ChatMessage: Identifiable, Codable, Equatable, Hashable {
     ///     numeric-or-short heuristic AND the user's prompt looks
     ///     calculator-shaped (see ``promptLooksCalculatorish``).
     ///
-    /// The heuristic is intentionally loose — a false-positive
-    /// caption ("model probably tool-called; this caption is wrong")
-    /// is annoying but harmless; a false-negative (silent wrong
-    /// answer) is the bug we're fixing. The view layer is
-    /// responsible for making the caption dismissible (one-shot per
-    /// session) so a user who knows better can mute it.
+    /// The heuristic leans towards firing — a false-negative (a
+    /// silent wrong answer) is the bug we're fixing, and the view
+    /// layer makes the caption dismissible (one-shot per session) so
+    /// a user who knows better can mute it. But false positives are
+    /// NOT free, which the original #308 note understated: the
+    /// caption's whole value is that the user believes it, and each
+    /// time it appears under a demonstrably correct answer it teaches
+    /// them to ignore the next one. That is why the prompt heuristic
+    /// matches whole words (see ``promptLooksCalculatorish``) and why
+    /// a document-grounded turn is exempt (Gate 1c) instead of
+    /// relying on the user to dismiss it.
     ///
     /// Role-agnostic (assertion-only check); the view layer enforces
     /// "only paint on assistant rows".
@@ -1048,7 +1089,8 @@ struct ChatMessage: Identifiable, Codable, Equatable, Hashable {
         toolCalls: [ToolCall]?,
         finishReason: String?,
         toolsRequested: Bool,
-        toolSucceededThisTurn: Bool = false
+        toolSucceededThisTurn: Bool = false,
+        promptHadAttachment: Bool = false
     ) -> Bool {
         // Gate 1: tools must have actually been advertised. Without
         // this gate every short numeric answer would wear the caption.
@@ -1067,6 +1109,19 @@ struct ChatMessage: Identifiable, Codable, Equatable, Hashable {
         // computed at the call site from the turn's message history (see
         // ``ChatViewModel.turnHadSuccessfulTool``).
         guard !toolSucceededThisTurn else { return false }
+        // Gate 1c: the user's turn carried no document. When it did,
+        // the answer is grounded in text the user supplied in the
+        // prompt, so "answered without calling any of the available
+        // tools" is not a caution — it is the correct behaviour, and
+        // no tool on the roster could have improved it. Dogfooding
+        // 0.14.1 hit exactly this: a scanned-invoice turn whose
+        // grounded, correct total wore the caption, which reads as
+        // "this number may be a guess" directly under a number the
+        // model had in fact read off the page. Flagging a right answer
+        // is not a harmless false positive — it spends the user's
+        // trust in the caption, so the next one (a real hallucinated
+        // total) gets ignored too.
+        guard !promptHadAttachment else { return false }
         // Gate 2: model must have produced no tool_calls. A real
         // tool-call turn doesn't need the caption.
         let noToolCalls = (toolCalls?.isEmpty ?? true)
@@ -1788,8 +1843,10 @@ struct ChatMessage: Identifiable, Codable, Equatable, Hashable {
     /// True when the user's prompt reads as a calculator-, web-
     /// search-, or weather-style query — i.e. the kind of question
     /// where a tool-call SHOULD have been the right shape. The
-    /// match is keyword-based and intentionally inclusive; the
-    /// caption is dismissible and a false-positive is harmless.
+    /// match is keyword-based and inclusive, but WHOLE-WORD (see
+    /// ``containsKeyword``): substring matching flagged any prose
+    /// containing "computer", "sometimes" or "surplus", and a
+    /// caption under a correct answer costs more than #308 assumed.
     ///
     /// Heuristics:
     ///   * Math operators (``+``, ``-``, ``*``, ``/``, ``%``, ``=``,
@@ -1803,6 +1860,50 @@ struct ChatMessage: Identifiable, Codable, Equatable, Hashable {
     ///     ``news``, ``today``, ``current``).
     ///   * Weather-shaped keywords (``weather``, ``temperature``,
     ///     ``forecast``).
+    /// True when ``keyword`` appears in ``haystack`` as a whole word
+    /// (or whole phrase) rather than as a substring of a longer word.
+    ///
+    /// ``lowered.contains(kw)`` is what shipped with #308, and it
+    /// misfires on ordinary English: ``compute`` matches "computer"
+    /// and "computing", ``times`` matches "sometimes", ``plus``
+    /// matches "surplus", ``minus`` matches "minuscule",
+    /// ``forecast`` matches "forecasting", ``sum of`` matches
+    /// "consum[er] of". Every one of those turns a normal prose
+    /// question into a "calculator-shaped" one, and a short answer
+    /// containing any digit then wears the caution. Dogfooding
+    /// 0.14.1 tripped it on a document question with "computed" in
+    /// the prose.
+    ///
+    /// A boundary is anything that is not a letter or a digit, plus
+    /// the ends of the string — so "compute 17*23", "(compute)" and
+    /// "compute." all match while "computer" does not. Multi-word
+    /// keywords keep working because only the outer edges of the
+    /// phrase are checked.
+    static func containsKeyword(_ keyword: String, in haystack: String) -> Bool {
+        guard !keyword.isEmpty else { return false }
+        func isWordScalar(_ scalar: Unicode.Scalar) -> Bool {
+            CharacterSet.alphanumerics.contains(scalar)
+        }
+        var searchStart = haystack.startIndex
+        while let range = haystack.range(
+            of: keyword,
+            range: searchStart..<haystack.endIndex
+        ) {
+            let leftOK = range.lowerBound == haystack.startIndex
+                || !isWordScalar(
+                    haystack[haystack.index(before: range.lowerBound)]
+                        .unicodeScalars.first!
+                )
+            let rightOK = range.upperBound == haystack.endIndex
+                || !isWordScalar(haystack[range.upperBound].unicodeScalars.first!)
+            if leftOK && rightOK { return true }
+            // Overlapping matches matter ("timestimes"), so advance by
+            // one character rather than past the whole keyword.
+            searchStart = haystack.index(after: range.lowerBound)
+        }
+        return false
+    }
+
     static func promptLooksCalculatorish(_ prompt: String) -> Bool {
         let trimmed = prompt.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return false }
@@ -1822,7 +1923,7 @@ struct ChatMessage: Identifiable, Codable, Equatable, Hashable {
             "divide", "multiply", "sum of", "product of", "plus", "minus",
             "times", "divided by"
         ]
-        for kw in mathKeywords where lowered.contains(kw) { return true }
+        for kw in mathKeywords where containsKeyword(kw, in: lowered) { return true }
 
         // Web-search keywords. Note: codex r1 MAJOR-1 (#308 PR)
         // dropped the bare ``"what is the"`` keyword — it matched
@@ -1838,11 +1939,11 @@ struct ChatMessage: Identifiable, Codable, Equatable, Hashable {
             "current price", "stock price", "exchange rate",
             "current weather"
         ]
-        for kw in webKeywords where lowered.contains(kw) { return true }
+        for kw in webKeywords where containsKeyword(kw, in: lowered) { return true }
 
         // Weather keywords (looser than the web list above).
         let weatherKeywords: [String] = ["weather", "temperature", "forecast"]
-        for kw in weatherKeywords where lowered.contains(kw) { return true }
+        for kw in weatherKeywords where containsKeyword(kw, in: lowered) { return true }
 
         return false
     }

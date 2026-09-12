@@ -155,6 +155,10 @@ struct QuickstartRecommendedCard: View {
     let choice: QuickstartModelChoice
     let selected: Bool
     let sizeText: String
+    /// True when the weights are already in the shared Hugging Face cache.
+    /// Without it this lane advertised a download for a model the Mac already
+    /// held — see ``QuickstartView/shortlistSizeText(for:cached:recommendedForPhysicalRAMGB:)``.
+    var isCached: Bool = false
     var onActivate: (() -> Void)? = nil
     let onTap: () -> Void
 
@@ -168,6 +172,9 @@ struct QuickstartRecommendedCard: View {
                             .scaledSystemFont(15, weight: .semibold)
                             .foregroundStyle(RapidTheme.textPrimary)
                         OnboardingBadge(text: "START HERE", tone: .ink)
+                        if isCached {
+                            OnboardingBadge(text: "ON THIS MAC", tone: .ready)
+                        }
                         Spacer(minLength: 8)
                         if !sizeText.isEmpty {
                             Text(sizeText)
@@ -194,7 +201,9 @@ struct QuickstartRecommendedCard: View {
         .modelRowActivation(onActivate)
         .accessibilityIdentifier("Quickstart.Choice.\(choice.alias)")
         .accessibilityAddTraits(selected ? .isSelected : [])
-        .accessibilityLabel(Self.accessibilityText(for: choice, sizeText: sizeText))
+        .accessibilityLabel(
+            Self.accessibilityText(for: choice, sizeText: sizeText, isCached: isCached)
+        )
     }
 
     /// Fold the framing, size and attribute pills into the spoken label — the
@@ -202,7 +211,8 @@ struct QuickstartRecommendedCard: View {
     /// and blurb only.
     static func accessibilityText(
         for choice: QuickstartModelChoice,
-        sizeText: String
+        sizeText: String,
+        isCached: Bool = false
     ) -> String {
         var parts = [choice.displayName]
         // Below 16 GB the existing lowest-memory choice is deliberately the
@@ -214,7 +224,11 @@ struct QuickstartRecommendedCard: View {
         }
         parts.append("recommended starter")
         parts.append(choice.blurb)
-        if !sizeText.isEmpty { parts.append("download \(sizeText)") }
+        if isCached {
+            parts.append(sizeText.isEmpty ? "on disk" : "on disk \(sizeText)")
+        } else if !sizeText.isEmpty {
+            parts.append("download \(sizeText)")
+        }
         parts.append("on-device, fits this Mac")
         return parts.joined(separator: ". ")
     }
@@ -228,6 +242,9 @@ struct QuickstartLowMemoryCard: View {
     let choice: QuickstartModelChoice
     let selected: Bool
     let sizeText: String
+    /// See ``QuickstartRecommendedCard/isCached`` — same defect, same lane
+    /// shape: LFM2.5 read "Download ~633 MB" with all 637 MB already on disk.
+    var isCached: Bool = false
     var onActivate: (() -> Void)? = nil
     let onTap: () -> Void
 
@@ -241,6 +258,9 @@ struct QuickstartLowMemoryCard: View {
                             .scaledSystemFont(14, weight: .semibold)
                             .foregroundStyle(RapidTheme.textPrimary)
                         OnboardingBadge(text: "LOWEST MEMORY", tone: .ready)
+                        if isCached {
+                            OnboardingBadge(text: "ON THIS MAC", tone: .ready)
+                        }
                         Spacer(minLength: 8)
                         if !sizeText.isEmpty {
                             Text(sizeText)
@@ -262,10 +282,21 @@ struct QuickstartLowMemoryCard: View {
         .modelRowActivation(onActivate)
         .accessibilityIdentifier("Quickstart.Choice.\(choice.alias)")
         .accessibilityAddTraits(selected ? .isSelected : [])
-        .accessibilityLabel(
-            "\(choice.displayName). Lowest memory. \(choice.blurb)"
-                + (sizeText.isEmpty ? "" : " Download \(sizeText)")
-        )
+        .accessibilityLabel(Self.accessibilityText(for: choice, sizeText: sizeText, isCached: isCached))
+    }
+
+    static func accessibilityText(
+        for choice: QuickstartModelChoice,
+        sizeText: String,
+        isCached: Bool = false
+    ) -> String {
+        var text = "\(choice.displayName). Lowest memory. \(choice.blurb)"
+        if isCached {
+            text += sizeText.isEmpty ? " On disk" : " On disk \(sizeText)"
+        } else if !sizeText.isEmpty {
+            text += " Download \(sizeText)"
+        }
+        return text
     }
 }
 
