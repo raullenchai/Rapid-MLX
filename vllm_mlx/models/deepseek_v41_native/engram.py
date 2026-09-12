@@ -414,18 +414,25 @@ class DiskQuantizedEngramEmbedding(nn.Module):
             mode="affine",
         ).astype(mx.float32)
 
+    def _views(self) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+        if self._weight is None or self._scales is None or self._biases is None:
+            raise RuntimeError("Engram embedding is closed")
+        return self._weight, self._scales, self._biases
+
     def _raw_rows(self, flat: np.ndarray):
+        weight, scales, biases = self._views()
         return (
-            np.array(self._weight[flat], copy=True),
-            np.array(self._scales[flat], copy=True),
-            np.array(self._biases[flat], copy=True),
+            np.array(weight[flat], copy=True),
+            np.array(scales[flat], copy=True),
+            np.array(biases[flat], copy=True),
         )
 
     def _gather_rows(self, flat: np.ndarray):
         with self._lock:
             if self._closed:
                 raise RuntimeError("Engram embedding is closed")
-            if flat.size and (flat.min() < 0 or flat.max() >= self._weight.shape[0]):
+            weight, _, _ = self._views()
+            if flat.size and (flat.min() < 0 or flat.max() >= weight.shape[0]):
                 raise IndexError("Engram row outside table")
             if not flat.size or not self.cache_rows or flat.size > 4096:
                 rows = self._raw_rows(flat)

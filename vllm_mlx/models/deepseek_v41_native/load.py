@@ -190,16 +190,17 @@ def load(
 
     q = cfg.get("quantization")
     engram_keys: set[str] = set()
-    engram_mapping = None
+    engram_mapping: dict[str, object] = {}
     if engram_ssd_offload:
         index_path = os.path.join(path, "model.safetensors.index.json")
         if not os.path.isfile(index_path):
             raise ValueError("Engram SSD offload requires a safetensors index")
         with open(index_path) as index_file:
             index = json.load(index_file)
-        engram_mapping = index.get("weight_map")
-        if not isinstance(engram_mapping, dict):
+        raw_mapping = index.get("weight_map")
+        if not isinstance(raw_mapping, dict):
             raise ValueError("Engram SSD offload requires a valid weight map")
+        engram_mapping = raw_mapping
     if q:
         if q.get("bits"):
             module_map = q.get("modules")
