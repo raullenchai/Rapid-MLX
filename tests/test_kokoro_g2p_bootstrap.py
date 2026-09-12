@@ -70,6 +70,47 @@ def test_installer_env_targets_running_interpreter(source, prefix, is_venv, expe
     assert source == original
 
 
+def test_installer_env_finds_official_user_local_uv(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+):
+    uv = tmp_path / ".local" / "bin" / "uv"
+    uv.parent.mkdir(parents=True)
+    uv.write_text("#!/bin/sh\n")
+    uv.chmod(0o755)
+    monkeypatch.setattr(
+        runtime_requirements.shutil, "which", lambda *args, **kwargs: None
+    )
+
+    source = {"HOME": str(tmp_path), "PATH": "/usr/bin:/bin"}
+    env = _installer_env(source, "/opt/venv", True)
+
+    assert env["PATH"] == f"/usr/bin:/bin:{uv.parent}"
+    assert env["VIRTUAL_ENV"] == "/opt/venv"
+    assert source == {"HOME": str(tmp_path), "PATH": "/usr/bin:/bin"}
+
+
+def test_installer_env_does_not_override_uv_already_on_path(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+):
+    user_uv = tmp_path / ".local" / "bin" / "uv"
+    user_uv.parent.mkdir(parents=True)
+    user_uv.write_text("#!/bin/sh\n")
+    user_uv.chmod(0o755)
+    monkeypatch.setattr(
+        runtime_requirements.shutil,
+        "which",
+        lambda name, *, path: "/managed/bin/uv",
+    )
+
+    env = _installer_env(
+        {"HOME": str(tmp_path), "PATH": "/managed/bin:/usr/bin"},
+        "/opt/venv",
+        True,
+    )
+
+    assert env["PATH"] == "/managed/bin:/usr/bin"
+
+
 def _fake_spacy(monkeypatch, state):
     util = types.ModuleType("spacy.util")
     util.is_package = lambda name: bool(state.get("installed"))

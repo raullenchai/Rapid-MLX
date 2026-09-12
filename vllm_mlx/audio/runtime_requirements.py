@@ -11,9 +11,11 @@ from __future__ import annotations
 import importlib
 import logging
 import os
+import shutil
 import signal
 import subprocess
 import sys
+from pathlib import Path
 
 from vllm_mlx.audio.registry import AudioRuntimeRequirement
 
@@ -47,6 +49,18 @@ def _installer_env(
         env["VIRTUAL_ENV"] = prefix
     else:
         env.pop("VIRTUAL_ENV", None)
+
+    # ``uv venv`` intentionally creates environments without pip. spaCy can
+    # use uv instead, but non-interactive shells do not always inherit the
+    # user-local bin directory where uv's official installer places it.
+    if shutil.which("uv", path=env.get("PATH", "")) is None:
+        home = env.get("HOME")
+        user_uv = Path(home, ".local", "bin", "uv") if home else None
+        if user_uv and user_uv.is_file() and os.access(user_uv, os.X_OK):
+            current_path = env.get("PATH", "")
+            env["PATH"] = os.pathsep.join(
+                part for part in (current_path, str(user_uv.parent)) if part
+            )
     return env
 
 
