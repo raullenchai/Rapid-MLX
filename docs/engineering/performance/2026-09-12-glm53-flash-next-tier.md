@@ -15,10 +15,72 @@ one and 512-token context (1.481x, 90.5% acceptance, exact output parity) on an
 M3 Ultra.
 
 Rapid must not enable this path from the external number alone. The optimized
-implementation landed after the mlx-vlm v0.7.0 tag, changes a broad runtime
-surface, and the exact 181.7 GB Rapid target is not currently present in the
-policy-controlled Hugging Face cache. A paired Rapid server benchmark remains
-the release gate.
+implementation landed after the mlx-vlm v0.7.0 tag and changes a broad runtime
+surface. The exact 181.7 GB Rapid target is now present in the policy-controlled
+Hugging Face cache, and the K=0 production path has completed a paired server
+benchmark. K=1/2/3 MTP still requires the same full-model release gate.
+
+## Current-revision production-path E2E
+
+The exact current snapshot
+`76add2a341a1cd90ad0e86bb69839ea9c35827c6` was dogfooded through the Rapid
+OpenAI-compatible server at `d5c66fb9542b48f0d60c9f8177d0de4e7cd17901`
+on the 256 GB M3 Ultra Studio. The environment used Python 3.12.13, MLX 0.32.2,
+mlx-lm 0.31.3, and mlx-vlm 0.6.17. Prefix state was cleared before every run;
+each row is the median of three batch-one requests generating 256 tokens.
+
+| Prompt | Unfused prefill | Fused prefill | Unfused decode | Fused decode | Decode ratio |
+| ---: | ---: | ---: | ---: | ---: | ---: |
+| 128 | 155.72 | 153.69 | 29.45 | 29.91 | 1.016x |
+| 2,048 | 373.80 | 373.31 | 25.81 | 26.25 | 1.017x |
+| 8,192 | 360.65 | 360.82 | 25.48 | 25.77 | 1.011x |
+| 32,768 | 269.62 | 276.16 | 25.17 | 25.12 | 0.998x |
+
+The 32K decode delta is -0.19%, which is treated as noise rather than a win.
+The other three buckets improve 1.1-1.7%, while prefill is effectively
+unchanged as expected for a decode-dispatch optimization. After the campaign,
+both modes reported 180.6 GB active Metal memory and 195.58 GB peak. The first
+128-token request in each fresh process included deferred Metal compilation;
+the table uses the specified three-run median and does not discard that run.
+
+Artifact SHA-256 values from the machine-local JSON records:
+
+- unfused: `cc6c97311c3056af140529caf41f295b8006c58b1dd4977752a27874075a0bb7`
+- fused: `4c13eb3b63c1bc11c0b26991daa692ba84f18a2377b5515eb5b13c2066b33575`
+
+The paired servers used the following command; add
+`RAPID_MLX_MOE_GATE_UP_FUSION=0` for the unfused side:
+
+```bash
+HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 \
+python -m vllm_mlx.cli serve \
+  "$HF_HUB_CACHE/models--Vontra--GLM-5.3-Flash-MLX-4bit-MTP/snapshots/76add2a341a1cd90ad0e86bb69839ea9c35827c6" \
+  --served-model-name glm5.3-flash-4bit \
+  --host 127.0.0.1 --port 8465 --no-thinking
+```
+
+The client used the exact tokenizer-counted prompt construction and streamed
+SSE accounting in `scripts/bench_service_prefill.py`, with target lengths
+128/2,048/8,192/32,768, `temperature=0`, `max_tokens=256`, and three runs per
+length. `/v1/cache/clear` ran before every timed request; `/v1/status` supplied
+the Metal memory figures.
+
+### Load-time memory regression and fix
+
+The original fusion implementation materialized the complete
+`named_modules()` result before rewriting the 42 routed MoE layers. That list
+kept every removed `up_proj` module and its old buffers strongly referenced, so
+the documented per-layer `mx.clear_cache()` did not actually bound the
+transient. With other model-serving apps stopped, the exact checkpoint reached
+Ready and then exited without a Python traceback under memory pressure.
+
+An A/B run with `RAPID_MLX_MOE_GATE_UP_FUSION=0` stayed healthy. The corrected
+scan retains only eligible parent `SwitchGLU` modules, allowing each removed
+projection to die before that layer's cache drain. With all 42 layers fused,
+the server stayed healthy, completed all 12 requests through 32K, and shut down
+cleanly. A weak-reference regression test verifies that at least one removed
+projection has been released at the first per-layer cache drain; the focused
+GLM/fusion suite passed 52 tests.
 
 ## Current Rapid baseline
 

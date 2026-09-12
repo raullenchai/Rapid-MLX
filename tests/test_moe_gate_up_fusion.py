@@ -12,6 +12,8 @@ kill-switch.
 
 from __future__ import annotations
 
+import weakref
+
 import pytest
 
 mx = pytest.importorskip("mlx.core")
@@ -89,6 +91,22 @@ class TestBitExactness:
 
 
 class TestRewriteSemantics:
+    def test_removed_up_projection_is_released_per_layer(self, monkeypatch):
+        """The module scan must not pin old expert buffers until fusion ends."""
+        model = TinyMoE(n_layers=2)
+        mx.eval(model.parameters())
+        old_ups = [weakref.ref(layer.up_proj) for layer in model.layers]
+        released_at_clear = []
+
+        monkeypatch.setattr(
+            moe_fusion.mx,
+            "clear_cache",
+            lambda: released_at_clear.append(any(ref() is None for ref in old_ups)),
+        )
+
+        assert moe_fusion.fuse_gate_up(model) == 2
+        assert released_at_clear[0] is True
+
     def test_originals_dropped_and_container_reused(self):
         model = TinyMoE()
         mx.eval(model.parameters())
