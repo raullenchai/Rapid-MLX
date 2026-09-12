@@ -27,8 +27,9 @@ Atlas (architecture, dependency compatibility, and release disposition).
   the benchmarked `06d6a...` revision no longer resolves on the Hub. Layer 45
   now spans source shards 1 and 2. The upstream splitter produced a strict-load
   3.9 GiB q4-g64 drafter. Its real one-token block measured 1.541 ms median and
-  3.896 GiB active memory, so the old K=1 regression is not explained by an
-  expensive draft head alone.
+  3.896 GiB active memory. Including the checkpoint's q4 output head and argmax
+  over 154,880 tokens measured 2.141 ms median, so the old K=1 regression is
+  not explained by an expensive draft proposal alone.
 
 ## Unresolved
 

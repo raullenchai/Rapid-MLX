@@ -57,6 +57,13 @@ block is about 5% of Rapid's approximately 31-32 ms ordinary target-token time.
 The old K=1 regression is therefore more consistent with verification and
 rollback overhead than with an intrinsically too-expensive drafter.
 
+A second campaign added the checkpoint's real q4-g64 `lm_head` and greedy
+argmax over its 154,880-token vocabulary. The three 30-sample medians were
+2.148, 2.141, and 2.112 ms; the median of medians was 2.141 ms. The output head
+is shared with the target in production, so its weights are not incremental MTP
+memory. This complete one-token proposal is about 6.8% of an ordinary target
+step, reinforcing that target verification/rollback is the dominant lever.
+
 ## External full-model evidence
 
 ### mlx-vlm GLM rewrite and MTP
@@ -150,7 +157,8 @@ family and retires the old overlay. Verification:
 - Rapid `MLXMultimodalLM` wrapper: the same five-layer fixture completed load
   when the dependency-version gate was intentionally bypassed for the probe.
 - current-revision real layer-45 head: upstream split and strict load passed;
-  1.541 ms median one-token block latency and 3.896 GiB active memory.
+  1.541 ms median block-only latency, 2.141 ms including the real q4 output
+  head and argmax, and 3.896 GiB incremental drafter memory.
 
 This does not authorize a dependency bump. Atlas owns that compatibility
 decision after upstream publishes a fixed revision.
