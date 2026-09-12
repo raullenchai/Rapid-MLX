@@ -1086,11 +1086,23 @@ def test_resident_metadata_preserves_preexisting_positional_request_signature():
     sampling = SamplingContract(greedy=False)
     apc_hit = _apc_hit((1, 2))
     request = ContinuousMTPRequestMetadata(
-        "old-caller", 7, (1, 2), 8, frozenset({9}), sampling, .5,
-        10, 20, False, True, False, True, apc_hit,
+        "old-caller",
+        7,
+        (1, 2),
+        8,
+        frozenset({9}),
+        sampling,
+        0.5,
+        10,
+        20,
+        False,
+        True,
+        False,
+        True,
+        apc_hit,
     )
     assert request.sampling is sampling
-    assert request.temperature == .5
+    assert request.temperature == 0.5
     assert request.base_bytes == 10
     assert request.bytes_per_draft_token == 20
     assert request.cache_ready is False
