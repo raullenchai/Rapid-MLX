@@ -173,7 +173,15 @@ def test_check_alias_min_memory_warns_regardless_of_disk_stream(monkeypatch, cap
         "vllm_mlx.model_aliases.resolve_profile", lambda _name: fake_profile
     )
 
-    monkeypatch.setattr("vllm_mlx.optimizations.get_system_memory_gb", lambda: 64.0)
+    # Stage the host RAM the check actually reads. ``_check_alias_min_memory``
+    # deliberately reads ``psutil.virtual_memory()`` rather than the
+    # optimizations helper, to stay independent of the MLX import (it runs on
+    # Linux clients and in preflight commands). Patching the helper alone left
+    # the real machine deciding the outcome: on a 256 GB Mac the floor is met,
+    # the check returns silently, and the assertion below sees empty output.
+    # CI passes only because its runners are small.
+    fake_memory = types.SimpleNamespace(total=int(64 * 1024**3))
+    monkeypatch.setattr("psutil.virtual_memory", lambda: fake_memory)
 
     cli._check_alias_min_memory("hy3-preview-4bit")
 
