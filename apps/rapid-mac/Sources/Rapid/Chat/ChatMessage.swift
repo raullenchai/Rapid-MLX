@@ -582,6 +582,22 @@ struct ChatMessage: Identifiable, Codable, Equatable, Hashable {
     var parentID: UUID?
     let createdAt: Date
 
+    /// Wire-only trailer appended after this row's prose AND its attachment
+    /// extracts — see ``modelContent``.
+    ///
+    /// Deliberately absent from ``CodingKeys``: it is set on the throwaway
+    /// array ``ChatViewModel`` builds for one request, never on the
+    /// transcript, so it is not part of the conversation and must not reach
+    /// `conversations.json`. ``init(from:)`` therefore restores it as `nil`.
+    ///
+    /// The one producer is ``ChatViewModel/stampingClockContext(on:calendar:)``,
+    /// which needs each user turn's wall clock to land after that turn's
+    /// attachment extracts. Writing it into ``content`` instead would put it
+    /// in FRONT of the extract, so the first request carrying a document and
+    /// the next one would diverge before the document rather than after it,
+    /// and the engine's prefix cache could not reuse the document.
+    var wireSuffix: String?
+
     init(
         id: UUID = UUID(),
         role: Role,
@@ -602,7 +618,8 @@ struct ChatMessage: Identifiable, Codable, Equatable, Hashable {
         toolCallArtifactSuppressed: Bool = false,
         wireVisibility: WireVisibility = .model,
         parentID: UUID? = nil,
-        createdAt: Date = Date()
+        createdAt: Date = Date(),
+        wireSuffix: String? = nil
     ) {
         self.id = id
         self.role = role
@@ -624,6 +641,7 @@ struct ChatMessage: Identifiable, Codable, Equatable, Hashable {
         self.wireVisibility = wireVisibility
         self.parentID = parentID
         self.createdAt = createdAt
+        self.wireSuffix = wireSuffix
     }
 
     /// Codex r1 MAJOR-1: keep ``reasoningTruncated`` decodable from
@@ -746,17 +764,32 @@ struct ChatMessage: Identifiable, Codable, Equatable, Hashable {
         // assumed to mean "root" until that repair has run.
         self.parentID = try c.decodeIfPresent(UUID.self, forKey: .parentID)
         self.createdAt = try c.decode(Date.self, forKey: .createdAt)
+        // Transient by construction — a persisted turn carries no wire
+        // trailer, and the next request mints a fresh one.
+        self.wireSuffix = nil
     }
 
     /// Text sent to the model. Document extracts stay out of the visible
     /// ``content`` property but remain part of this turn on every retry and
     /// follow-up request.
+    /// ``wireSuffix`` is joined LAST, after the attachment extracts, so a
+    /// per-request trailer cannot displace the document text that the
+    /// engine's prefix cache needs to find unchanged.
     var modelContent: String {
-        guard !fileAttachments.isEmpty else { return content }
+        let trailer = wireSuffix.flatMap {
+            $0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? nil : [$0]
+        } ?? []
+        guard !fileAttachments.isEmpty else {
+            guard !trailer.isEmpty else { return content }
+            // An empty prose row must not gain a leading blank line.
+            let head = content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                ? [] : [content]
+            return (head + trailer).joined(separator: "\n\n")
+        }
         let request = content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
             ? "Analyze the attached file and summarize the important findings."
             : content
-        return ([request] + fileAttachments.map(\.promptText))
+        return ([request] + fileAttachments.map(\.promptText) + trailer)
             .joined(separator: "\n\n")
     }
 
@@ -1022,6 +1055,13 @@ struct ChatMessage: Identifiable, Codable, Equatable, Hashable {
     ///     would contradict the chip on screen. A tool that ERRORED does
     ///     NOT count as succeeded — a hallucinated raw answer after a
     ///     failed tool is exactly the shape we still want to flag.
+    ///   * ``promptHadAttachment == false``, OR the prompt is not one
+    ///     an attached document could answer
+    ///     (``promptIsAttachmentAnswerable``). An answer read off an
+    ///     attached file is grounded, not guessed — but a page cannot
+    ///     ground "what is today's stock price", has nothing to do
+    ///     with "calculate 17*23", and is not what "search for Ada
+    ///     Lovelace's biography" asks for.
     ///   * ``finishReason`` is ``nil`` or anything OTHER than
     ///     ``"tool_calls"`` — a real tool-call turn doesn't need
     ///     the caption (the chip row already speaks for it). A
@@ -1033,12 +1073,19 @@ struct ChatMessage: Identifiable, Codable, Equatable, Hashable {
     ///     numeric-or-short heuristic AND the user's prompt looks
     ///     calculator-shaped (see ``promptLooksCalculatorish``).
     ///
-    /// The heuristic is intentionally loose — a false-positive
-    /// caption ("model probably tool-called; this caption is wrong")
-    /// is annoying but harmless; a false-negative (silent wrong
-    /// answer) is the bug we're fixing. The view layer is
-    /// responsible for making the caption dismissible (one-shot per
-    /// session) so a user who knows better can mute it.
+    /// The heuristic leans towards firing — a false-negative (a
+    /// silent wrong answer) is the bug we're fixing, and the view
+    /// layer makes the caption dismissible (one-shot per session) so
+    /// a user who knows better can mute it. But false positives are
+    /// NOT free, which the original #308 note understated: the
+    /// caption's whole value is that the user believes it, and each
+    /// time it appears under a demonstrably correct answer it teaches
+    /// them to ignore the next one. That is why the prompt heuristic
+    /// matches whole words (see ``promptLooksCalculatorish``) and why
+    /// a document-grounded turn is exempt (Gate 1c) instead of
+    /// relying on the user to dismiss it — and equally why that
+    /// exemption is *narrow*: an attachment on the turn does not make
+    /// a live-data question answerable from the page.
     ///
     /// Role-agnostic (assertion-only check); the view layer enforces
     /// "only paint on assistant rows".
@@ -1048,7 +1095,8 @@ struct ChatMessage: Identifiable, Codable, Equatable, Hashable {
         toolCalls: [ToolCall]?,
         finishReason: String?,
         toolsRequested: Bool,
-        toolSucceededThisTurn: Bool = false
+        toolSucceededThisTurn: Bool = false,
+        promptHadAttachment: Bool = false
     ) -> Bool {
         // Gate 1: tools must have actually been advertised. Without
         // this gate every short numeric answer would wear the caption.
@@ -1067,6 +1115,27 @@ struct ChatMessage: Identifiable, Codable, Equatable, Hashable {
         // computed at the call site from the turn's message history (see
         // ``ChatViewModel.turnHadSuccessfulTool``).
         guard !toolSucceededThisTurn else { return false }
+        // Gate 1c: the user's turn carried a document AND the question
+        // is one that document could answer. When it is, the answer is
+        // grounded in text the user supplied in the prompt, so
+        // "answered without calling any of the available tools" is not
+        // a caution — it is the correct behaviour, and no tool on the
+        // roster could have improved it. Dogfooding 0.14.1 hit exactly
+        // this: a scanned-invoice turn whose grounded, correct total
+        // wore the caption, which reads as "this number may be a
+        // guess" directly under a number the model had in fact read
+        // off the page. Flagging a right answer is not a harmless
+        // false positive — it spends the user's trust in the caption,
+        // so the next one (a real hallucinated total) gets ignored too.
+        //
+        // But the exemption has to be narrow, because an attachment is
+        // not a general licence — three review rounds each found a
+        // prompt that carried a document and still could not be
+        // answered from it. So the test is stated positively, as the
+        // one shape a page CAN answer: math vocabulary whose operands
+        // live on that page. See ``promptIsAttachmentAnswerable`` for
+        // the table of what that excludes and why.
+        if promptHadAttachment, promptIsAttachmentAnswerable(userPrompt) { return false }
         // Gate 2: model must have produced no tool_calls. A real
         // tool-call turn doesn't need the caption.
         let noToolCalls = (toolCalls?.isEmpty ?? true)
@@ -1788,8 +1857,10 @@ struct ChatMessage: Identifiable, Codable, Equatable, Hashable {
     /// True when the user's prompt reads as a calculator-, web-
     /// search-, or weather-style query — i.e. the kind of question
     /// where a tool-call SHOULD have been the right shape. The
-    /// match is keyword-based and intentionally inclusive; the
-    /// caption is dismissible and a false-positive is harmless.
+    /// match is keyword-based and inclusive, but WHOLE-WORD (see
+    /// ``containsKeyword``): substring matching flagged any prose
+    /// containing "computer", "sometimes" or "surplus", and a
+    /// caption under a correct answer costs more than #308 assumed.
     ///
     /// Heuristics:
     ///   * Math operators (``+``, ``-``, ``*``, ``/``, ``%``, ``=``,
@@ -1803,6 +1874,70 @@ struct ChatMessage: Identifiable, Codable, Equatable, Hashable {
     ///     ``news``, ``today``, ``current``).
     ///   * Weather-shaped keywords (``weather``, ``temperature``,
     ///     ``forecast``).
+    /// True when ``keyword`` appears in ``haystack`` as a whole word
+    /// (or whole phrase) rather than as a substring of a longer word.
+    ///
+    /// ``lowered.contains(kw)`` is what shipped with #308, and it
+    /// misfires on ordinary English: ``compute`` matches "computer"
+    /// and "computing", ``times`` matches "sometimes", ``plus``
+    /// matches "surplus", ``minus`` matches "minuscule",
+    /// ``forecast`` matches "forecasting", ``sum of`` matches
+    /// "consum[er] of". Every one of those turns a normal prose
+    /// question into a "calculator-shaped" one, and a short answer
+    /// containing any digit then wears the caution. Dogfooding
+    /// 0.14.1 tripped it on a document question with "computed" in
+    /// the prose.
+    ///
+    /// A boundary is anything that is not a letter or a digit, plus
+    /// the ends of the string — so "compute 17*23", "(compute)" and
+    /// "compute." all match while "computer" does not. Multi-word
+    /// keywords keep working because only the outer edges of the
+    /// phrase are checked.
+    static func containsKeyword(_ keyword: String, in haystack: String) -> Bool {
+        guard !keyword.isEmpty else { return false }
+        func isWordScalar(_ scalar: Unicode.Scalar) -> Bool {
+            CharacterSet.alphanumerics.contains(scalar)
+        }
+        /// A boundary, or a regular English plural immediately followed by
+        /// one. codex flagged the regression this closes: moving from
+        /// substring to whole-word matching silently dropped "temperatures",
+        /// "forecasts" and "current prices", all of which the old substring
+        /// match caught and all of which are ordinary live-data questions.
+        /// Accepting a trailing "s"/"es" before the boundary keeps the
+        /// inflections without reopening the substring bug — "forecasting"
+        /// is still rejected (the next scalar is "i"), "forecasted" too
+        /// ("ed" is not "es"), and "concurrent" never contained a keyword to
+        /// begin with.
+        func boundaryFollows(_ index: String.Index) -> Bool {
+            if index == haystack.endIndex { return true }
+            if !isWordScalar(haystack[index].unicodeScalars.first!) { return true }
+            for suffix in ["es", "s"] where haystack[index...].hasPrefix(suffix) {
+                let after = haystack.index(index, offsetBy: suffix.count)
+                if after == haystack.endIndex
+                    || !isWordScalar(haystack[after].unicodeScalars.first!) {
+                    return true
+                }
+            }
+            return false
+        }
+        var searchStart = haystack.startIndex
+        while let range = haystack.range(
+            of: keyword,
+            range: searchStart..<haystack.endIndex
+        ) {
+            let leftOK = range.lowerBound == haystack.startIndex
+                || !isWordScalar(
+                    haystack[haystack.index(before: range.lowerBound)]
+                        .unicodeScalars.first!
+                )
+            if leftOK && boundaryFollows(range.upperBound) { return true }
+            // Overlapping matches matter ("timestimes"), so advance by
+            // one character rather than past the whole keyword.
+            searchStart = haystack.index(after: range.lowerBound)
+        }
+        return false
+    }
+
     static func promptLooksCalculatorish(_ prompt: String) -> Bool {
         let trimmed = prompt.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return false }
@@ -1816,34 +1951,166 @@ struct ChatMessage: Identifiable, Codable, Equatable, Hashable {
         let hasOperator = lowered.contains(where: { mathOperators.contains($0) })
         if hasDigit && hasOperator { return true }
 
-        // Math keywords.
+        // The three remaining lanes each live in their own predicate, so
+        // Gate 1c can name exactly which of them an attachment neutralises
+        // without either copy of the keyword lists drifting.
+        if promptContainsMathKeyword(lowered) { return true }
+        // Note: codex r1 MAJOR-1 (#308 PR) dropped the bare
+        // ``"what is the"`` keyword — it matched every plain factual
+        // question ("What is the capital of France?") and false-flagged
+        // short prose answers like "Paris." Web-search keywords must
+        // point at LIVE / DATED information; an evergreen factual
+        // lookup is not the failure mode this caption guards against.
+        if promptAsksForLiveData(lowered) { return true }
+        if promptAsksForExternalRetrieval(lowered) { return true }
+
+        return false
+    }
+
+    /// Math vocabulary with no literal expression — "calculate the total",
+    /// "sum of the line items", "what percent of it".
+    ///
+    /// This is the ONE lane an attachment neutralises (see Gate 1c of
+    /// ``shouldFlagToolNotCalled``): the operands can live on the page, so
+    /// reading them off it is the grounded, correct answer.
+    static func promptContainsMathKeyword(_ prompt: String) -> Bool {
+        let lowered = prompt.lowercased()
         let mathKeywords: [String] = [
             "square root", "sqrt", "percent", "calculate", "compute", "solve",
             "divide", "multiply", "sum of", "product of", "plus", "minus",
             "times", "divided by"
         ]
-        for kw in mathKeywords where lowered.contains(kw) { return true }
+        for kw in mathKeywords where containsKeyword(kw, in: lowered) { return true }
+        return false
+    }
 
-        // Web-search keywords. Note: codex r1 MAJOR-1 (#308 PR)
-        // dropped the bare ``"what is the"`` keyword — it matched
-        // every plain factual question ("What is the capital of
-        // France?") and false-flagged short prose answers like
-        // "Paris." Web-search keywords must point at LIVE / DATED
-        // information; an evergreen factual lookup is not the
-        // failure mode this caption guards against.
-        let webKeywords: [String] = [
-            "search for", "google for", "look up", "look it up",
+    /// Asks for something to be fetched from outside the conversation.
+    ///
+    /// These used to sit with the math keywords on the theory that "look up
+    /// the invoice number" is answered by an attached page. codex was right
+    /// that the theory does not survive its own counterexample: attach a
+    /// résumé and ask to "search for Ada Lovelace's biography" and the page
+    /// grounds nothing, yet the exemption silenced the caption on a
+    /// completely ungrounded answer — the #308 failure mode itself.
+    ///
+    /// So external-retrieval language now withholds the exemption. The cost
+    /// is accepted knowingly: "look up the invoice number" with the invoice
+    /// attached will wear a caution it does not deserve. Of the two errors,
+    /// the false negative is the one this feature exists to prevent, and the
+    /// caption is dismissible while a silent wrong answer is not.
+    static func promptAsksForExternalRetrieval(_ prompt: String) -> Bool {
+        let lowered = prompt.lowercased()
+        let retrievalKeywords: [String] = ["search for", "look up", "look it up"]
+        for kw in retrievalKeywords where containsKeyword(kw, in: lowered) { return true }
+        return false
+    }
+
+    /// True when an attached document could actually answer `prompt`.
+    ///
+    /// Stated as what IS exempt rather than as a list of disqualifiers,
+    /// because the disqualifier form grew a hole every review round. Of the
+    /// four lanes that make a prompt tool-shaped at all
+    /// (``promptLooksCalculatorish``), exactly one is answerable from a page
+    /// the user attached:
+    ///
+    /// | lane | attached document can answer it? |
+    /// | --- | --- |
+    /// | math keywords, no literal expression | **yes** — operands are on the page |
+    /// | self-contained arithmetic (`17*23`) | no — prompt brought its own numbers |
+    /// | live data (today's price, the weather) | no — no page holds a moving target |
+    /// | external retrieval (search for, look up) | no — it asks to leave the document |
+    static func promptIsAttachmentAnswerable(_ prompt: String) -> Bool {
+        guard !promptAsksForLiveData(prompt) else { return false }
+        guard !promptContainsSelfContainedArithmetic(prompt) else { return false }
+        guard !promptAsksForExternalRetrieval(prompt) else { return false }
+        return promptContainsMathKeyword(prompt)
+    }
+
+    /// True when `prompt` names a MOVING target — something that
+    /// changes without the conversation changing, so no document the
+    /// user attached can contain the answer.
+    ///
+    /// This is the line that makes Gate 1c of
+    /// ``shouldFlagToolNotCalled`` safe to draw. Without it, any
+    /// attachment on the turn silences the caption, including for
+    /// "here is my portfolio PDF — what is today's stock price?",
+    /// where a bare number with no tool call is exactly the
+    /// hallucination the caption exists to flag.
+    ///
+    /// ``"google for"`` lives here rather than with the
+    /// retrieval-shaped keywords in ``promptLooksCalculatorish``
+    /// because it names an external service outright; ``"search
+    /// for"`` / ``"look up"`` do not, and pointing either of those at
+    /// an attached document is an ordinary thing for a user to do.
+    ///
+    /// Whole-word matching throughout (see ``containsKeyword``), so
+    /// "temperature" does not fire on "temperatures"' neighbours and
+    /// "current" does not fire on "concurrent".
+    static func promptAsksForLiveData(_ prompt: String) -> Bool {
+        let lowered = prompt.lowercased()
+        let liveKeywords: [String] = [
+            "google for",
             "latest news", "latest version", "news about",
             "today's", "this week's", "right now",
             "current price", "stock price", "exchange rate",
-            "current weather"
+            "current weather",
+            // Looser than the phrases above, and deliberately so: a
+            // bare "weather" / "temperature" / "forecast" is always a
+            // live-data question, attachment or not.
+            "weather", "temperature", "forecast"
         ]
-        for kw in webKeywords where lowered.contains(kw) { return true }
+        for kw in liveKeywords where containsKeyword(kw, in: lowered) { return true }
+        return false
+    }
 
-        // Weather keywords (looser than the web list above).
-        let weatherKeywords: [String] = ["weather", "temperature", "forecast"]
-        for kw in weatherKeywords where lowered.contains(kw) { return true }
-
+    /// True when `prompt` carries arithmetic that stands on its own — a
+    /// digit and an operator, as in "17*23" or "1200 * 0.15".
+    ///
+    /// Such a question does not become document-grounded just because a
+    /// document happens to be attached: the numbers are in the prompt,
+    /// the page is irrelevant, and the calculator is exactly the tool
+    /// that should have run. So this withholds Gate 1c's exemption
+    /// alongside ``promptAsksForLiveData``.
+    ///
+    /// Note what it deliberately does NOT cover: math *keywords* with
+    /// no literal expression — "what is the total due? calculate it
+    /// from the invoice", the 0.14.1 dogfood case — where the operands
+    /// live on the page and reading them off it is the grounded,
+    /// correct answer. The discriminator is whether the prompt brought
+    /// its own numbers.
+    static func promptContainsSelfContainedArithmetic(_ prompt: String) -> Bool {
+        let hasDigit = prompt.unicodeScalars.contains { scalar in
+            scalar.value >= 0x30 && scalar.value <= 0x39
+        }
+        guard hasDigit else { return false }
+        let mathOperators: Set<Character> = ["+", "*", "/", "%", "=", "^"]
+        if prompt.contains(where: { mathOperators.contains($0) }) { return true }
+        // "-" only counts with a number on each side: a hyphenated filename
+        // or a dashed aside ("attached is my resume - what does it say?") is
+        // not arithmetic, but "1200-180" and "1200 - 180" both are. codex
+        // caught the spaced form being missed, which is the way most people
+        // actually type it.
+        let scalars = Array(prompt.unicodeScalars)
+        func isDigit(_ index: Int) -> Bool {
+            scalars.indices.contains(index)
+                && scalars[index].value >= 0x30
+                && scalars[index].value <= 0x39
+        }
+        func digitLookingBack(from index: Int) -> Bool {
+            var i = index
+            while scalars.indices.contains(i), scalars[i] == " " || scalars[i] == "\t" { i -= 1 }
+            return isDigit(i)
+        }
+        func digitLookingForward(from index: Int) -> Bool {
+            var i = index
+            while scalars.indices.contains(i), scalars[i] == " " || scalars[i] == "\t" { i += 1 }
+            return isDigit(i)
+        }
+        for (offset, scalar) in scalars.enumerated() where scalar == "-" {
+            if digitLookingBack(from: offset - 1), digitLookingForward(from: offset + 1) {
+                return true
+            }
+        }
         return false
     }
 

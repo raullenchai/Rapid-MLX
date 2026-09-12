@@ -270,6 +270,278 @@ struct ToolNotCalledCaptionTests {
         #expect(ChatMessage.promptLooksCalculatorish("Show me the forecast"))
     }
 
+    @Test("0.14.1 dogfood: keywords match whole words, not substrings")
+    func promptKeywordsAreWholeWords() {
+        // Every one of these is ordinary prose that the shipped
+        // `lowered.contains(kw)` classified as calculator-shaped:
+        // "computer"/"computed"/"computing" ⊃ compute, "sometimes" ⊃
+        // times, "surplus" ⊃ plus, "minuscule" ⊃ minus, "forecasting" ⊃
+        // forecast, "temperatures" is the plural of a keyword. Paired
+        // with the short-answer-with-a-digit content gate, any of them
+        // put the "didn't call a tool" caution under a perfectly good
+        // grounded answer.
+        #expect(!ChatMessage.promptLooksCalculatorish(
+            "Summarize what the computer vision section says"))
+        #expect(!ChatMessage.promptLooksCalculatorish(
+            "How was this computed in the report"))
+        #expect(!ChatMessage.promptLooksCalculatorish(
+            "Does it sometimes fail on startup"))
+        #expect(!ChatMessage.promptLooksCalculatorish(
+            "Explain the trade surplus argument"))
+        #expect(!ChatMessage.promptLooksCalculatorish(
+            "Is the risk minuscule or material"))
+        #expect(!ChatMessage.promptLooksCalculatorish(
+            "Who owns the forecasting process"))
+        // …while the whole words themselves still match.
+        #expect(ChatMessage.promptLooksCalculatorish("compute the total"))
+        #expect(ChatMessage.promptLooksCalculatorish("3 times 4 equals what"))
+        #expect(ChatMessage.promptLooksCalculatorish("what is the forecast"))
+        // Punctuation and line ends are boundaries too.
+        #expect(ChatMessage.promptLooksCalculatorish("(compute) the total"))
+        #expect(ChatMessage.promptLooksCalculatorish("weather?"))
+        #expect(ChatMessage.promptLooksCalculatorish("forecast"))
+    }
+
+    @Test("containsKeyword: boundaries, phrases, overlaps")
+    func containsKeywordContract() {
+        #expect(ChatMessage.containsKeyword("plus", in: "2 plus 2"))
+        #expect(!ChatMessage.containsKeyword("plus", in: "surplus"))
+        #expect(!ChatMessage.containsKeyword("plus", in: "plusher"))
+        // Multi-word phrases only need their outer edges checked.
+        #expect(ChatMessage.containsKeyword("look up", in: "please look up tokyo"))
+        #expect(!ChatMessage.containsKeyword("look up", in: "overlook upstream"))
+        // A later whole-word hit is still found after an embedded miss.
+        #expect(ChatMessage.containsKeyword("sum of", in: "consumer sum of costs"))
+        #expect(!ChatMessage.containsKeyword("", in: "anything"))
+    }
+
+    @Test("0.14.1 dogfood: a document-grounded answer wears no caution")
+    func attachmentGroundedAnswerIsNotFlagged() throws {
+        // The dogfood shape: a scanned invoice attached, a numeric
+        // question, and a short correct answer read straight off the
+        // page. Nothing on the tool roster could have done better, so
+        // "answered without calling any of the available tools" is not a
+        // caution — and firing it here spends the trust that makes the
+        // caption worth showing when a model really does invent a total.
+        let flaggedWithoutTheGate = ChatMessage.shouldFlagToolNotCalled(
+            userPrompt: "What is the total due? Calculate it from the invoice.",
+            assistantContent: "$1,204.55",
+            toolCalls: nil,
+            finishReason: "stop",
+            toolsRequested: true,
+            promptHadAttachment: false
+        )
+        #expect(flaggedWithoutTheGate,
+                "Sanity check: without the attachment the shape IS the #308 failure mode and must still fire.")
+
+        let flaggedWithTheGate = ChatMessage.shouldFlagToolNotCalled(
+            userPrompt: "What is the total due? Calculate it from the invoice.",
+            assistantContent: "$1,204.55",
+            toolCalls: nil,
+            finishReason: "stop",
+            toolsRequested: true,
+            promptHadAttachment: true
+        )
+        #expect(!flaggedWithTheGate)
+    }
+
+    @Test("An attachment does NOT exempt a live-data question")
+    func attachmentDoesNotExemptLiveDataQuestions() {
+        // codex, reviewing this PR: a blanket attachment exemption lets the
+        // exact failure mode straight through. Attach a portfolio PDF, ask
+        // for today's price, and no page on earth holds the answer — so a
+        // bare number with no tool call is a guess, and the caption is right.
+        let liveDataPrompts = [
+            "Here is my portfolio. What is today's stock price for it?",
+            "What's the current price of the first item on this invoice?",
+            "Given this itinerary, what is the weather in Lisbon?",
+            "Summarise this and add the latest news about the company.",
+            "What's the exchange rate to convert the total on this invoice?",
+        ]
+        for prompt in liveDataPrompts {
+            #expect(ChatMessage.shouldFlagToolNotCalled(
+                userPrompt: prompt,
+                assistantContent: "$1,204.55",
+                toolCalls: nil,
+                finishReason: "stop",
+                toolsRequested: true,
+                promptHadAttachment: true
+            ), "A live-data question is not answerable from an attachment: \(prompt)")
+        }
+    }
+
+    @Test("An attachment does NOT exempt self-contained arithmetic")
+    func attachmentDoesNotExemptSelfContainedArithmetic() {
+        // codex, round 2: "Attached is my resume; calculate 17*23" carries a
+        // document that has nothing to do with the question. The numbers are
+        // in the prompt, the calculator is the tool that should have run, and
+        // a bare wrong product is the #308 failure mode.
+        for prompt in ["Attached is my resume; calculate 17*23",
+                       "Here's the invoice. Also, what is 1200 * 0.15?",
+                       "Using this deck, confirm 1200 - 180 for me",
+                       "this pdf, plus: 88 / 7 = ?"] {
+            #expect(ChatMessage.shouldFlagToolNotCalled(
+                userPrompt: prompt,
+                assistantContent: "391",
+                toolCalls: nil,
+                finishReason: "stop",
+                toolsRequested: true,
+                promptHadAttachment: true
+            ), "Self-contained arithmetic is not grounded by an attachment: \(prompt)")
+        }
+        // The dogfood case is the other side of the line and must stay
+        // exempt: the operands live on the page, so reading them off it is
+        // the grounded, correct answer.
+        #expect(!ChatMessage.shouldFlagToolNotCalled(
+            userPrompt: "What is the total due? Calculate it from the invoice.",
+            assistantContent: "$1,204.55",
+            toolCalls: nil,
+            finishReason: "stop",
+            toolsRequested: true,
+            promptHadAttachment: true
+        ))
+    }
+
+    @Test("promptContainsSelfContainedArithmetic: brought its own numbers?")
+    func selfContainedArithmeticContract() {
+        for prompt in ["17*23", "what is 1200 * 0.15", "88 / 7", "1200-180",
+                       // Spaced around the minus, which is how most people
+                       // actually type it (codex round 3).
+                       "1200 - 180", "what is 1200 -  180?",
+                       "5 + 5 = ?", "2^10", "give me 40% of 250"] {
+            #expect(ChatMessage.promptContainsSelfContainedArithmetic(prompt),
+                    "should be self-contained: \(prompt)")
+        }
+        for prompt in ["calculate the total from the invoice",
+                       "sum of the line items", "what is the square root of it",
+                       // A hyphen is not a minus sign unless it sits between
+                       // two digits: a filename or a dashed aside is not math.
+                       "see q3-report.pdf - what does it say?",
+                       "the 2026 budget - summarise it",
+                       "no numbers here at all"] {
+            #expect(!ChatMessage.promptContainsSelfContainedArithmetic(prompt),
+                    "should not be self-contained: \(prompt)")
+        }
+    }
+
+    @Test("An attachment does NOT exempt an external-retrieval prompt")
+    func attachmentDoesNotExemptExternalRetrieval() {
+        // codex, round 4: "search for Ada Lovelace's biography" with a resume
+        // attached asks to leave the document entirely, so the page grounds
+        // nothing and a short confident answer is ungrounded.
+        for prompt in ["Attached is my resume. Search for Ada Lovelace's biography.",
+                       "Here's the invoice — look up the vendor's rating online",
+                       "google for the current spec, see attached"] {
+            #expect(ChatMessage.shouldFlagToolNotCalled(
+                userPrompt: prompt,
+                assistantContent: "1815.",
+                toolCalls: nil,
+                finishReason: "stop",
+                toolsRequested: true,
+                promptHadAttachment: true
+            ), "External retrieval is not grounded by an attachment: \(prompt)")
+        }
+    }
+
+    @Test("promptIsAttachmentAnswerable: only the math-keyword lane")
+    func attachmentAnswerableContract() {
+        // The ONE exempt shape: math vocabulary whose operands are on the page.
+        for prompt in ["what is the total due? calculate it from the invoice",
+                       "sum of the line items", "what percent of the total is tax",
+                       "compute the subtotal"] {
+            #expect(ChatMessage.promptIsAttachmentAnswerable(prompt),
+                    "should be answerable from the page: \(prompt)")
+        }
+        // The three lanes it excludes, one case each.
+        #expect(!ChatMessage.promptIsAttachmentAnswerable("calculate 17*23"))
+        #expect(!ChatMessage.promptIsAttachmentAnswerable("calculate today's stock price"))
+        #expect(!ChatMessage.promptIsAttachmentAnswerable("calculate it, then search for the source"))
+        // And a prompt with no math vocabulary at all is not exempted either —
+        // Gate 5 would reject it anyway, but the predicate must not claim it.
+        #expect(!ChatMessage.promptIsAttachmentAnswerable("what does this say?"))
+    }
+
+    @Test("promptAsksForLiveData draws the line at a moving target")
+    func liveDataContract() {
+        // Names a moving target: no attached document can hold the answer.
+        for prompt in ["what is today's close?", "latest news about the merger",
+                       "the forecast for tomorrow", "current weather in Oslo",
+                       "google for the spec", "what's the temperature outside",
+                       "stock price now", "right now, how many users?"] {
+            #expect(ChatMessage.promptAsksForLiveData(prompt), "should be live: \(prompt)")
+        }
+        // Not live-data (they name no moving target) — but note these no
+        // longer keep Gate 1c's exemption either: as of round 4 they are
+        // external-retrieval language, which withholds it. See
+        // ``promptAsksForExternalRetrieval``.
+        for prompt in ["look up the invoice number", "search for the clause about refunds",
+                       "what is the total due?", "calculate 15 percent of the subtotal",
+                       "sum of the line items"] {
+            #expect(!ChatMessage.promptAsksForLiveData(prompt), "should not be live: \(prompt)")
+        }
+        // codex round 2: moving to whole-word matching must not drop ordinary
+        // English plurals, which the old substring match caught.
+        for prompt in ["what are the temperatures today", "the forecasts for the week",
+                       "current prices on these", "latest versions of the spec",
+                       "exchange rates right now", "stock prices"] {
+            #expect(ChatMessage.promptAsksForLiveData(prompt), "plural should be live: \(prompt)")
+        }
+        // Whole-word matching still holds here: "concurrent" is not "current",
+        // a "forecasting model" question is not a weather question, and an
+        // "-ed" inflection is not an "-s" one.
+        #expect(!ChatMessage.promptAsksForLiveData("explain concurrent map access"))
+        #expect(!ChatMessage.promptAsksForLiveData("what is a temperate climate"))
+        #expect(!ChatMessage.promptAsksForLiveData("explain forecasting models"))
+        #expect(!ChatMessage.promptAsksForLiveData("the weathered stone wall"))
+        // But the live list must still reach promptLooksCalculatorish, so the
+        // two cannot drift apart.
+        #expect(ChatMessage.promptLooksCalculatorish("what is the forecast"))
+        #expect(ChatMessage.promptLooksCalculatorish("google for the spec"))
+    }
+
+    @Test("The attachment gate reads the wire history, and every user row in it")
+    func attachmentGateReadsTheWireHistory() throws {
+        let attachment = try ChatFileAttachment(
+            filename: "invoice.pdf",
+            kind: .pdf,
+            extractedText: "TOTAL DUE 1,204.55",
+            sourceByteCount: 18
+        )
+        let newestRowCarriesIt: [ChatMessage] = [
+            ChatMessage(role: .user, content: "earlier question"),
+            ChatMessage(role: .assistant, content: "earlier answer"),
+            ChatMessage(role: .user, content: "total?", fileAttachments: [attachment]),
+        ]
+        #expect(ChatViewModel.historyCarriesAttachmentGrounding(newestRowCarriesIt))
+
+        // An EARLIER turn counts, which reverses what an earlier version of
+        // this test asserted. codex was right that the premise was wrong:
+        // ``ChatMessage/modelContent`` re-sends each attachment's extracted
+        // text on every follow-up, so "and 15 percent of that?" two turns on
+        // is still answered from a document in front of the model — and
+        // captioning it as a guess is the trust-spending false positive this
+        // gate exists to prevent.
+        let documentIsTwoTurnsBack: [ChatMessage] = [
+            ChatMessage(role: .user, content: "total?", fileAttachments: [attachment]),
+            ChatMessage(role: .assistant, content: "$1,204.55"),
+            ChatMessage(role: .user, content: "and 15 percent of that?"),
+        ]
+        #expect(ChatViewModel.historyCarriesAttachmentGrounding(documentIsTwoTurnsBack))
+
+        // But it is the WIRE history, so a document the context trim dropped
+        // no longer grounds anything — the caption must come back rather than
+        // stay silent at the exact moment the evidence is gone.
+        let trimmedAway = Array(documentIsTwoTurnsBack.dropFirst(2))
+        #expect(!ChatViewModel.historyCarriesAttachmentGrounding(trimmedAway))
+
+        // An attachment on an ASSISTANT row is not user-supplied grounding,
+        // and an empty history exempts nothing.
+        #expect(!ChatViewModel.historyCarriesAttachmentGrounding([
+            ChatMessage(role: .assistant, content: "here", fileAttachments: [attachment])
+        ]))
+        #expect(!ChatViewModel.historyCarriesAttachmentGrounding([]))
+    }
+
     @Test("promptLooksCalculatorish: casual prompt → FALSE")
     func promptCasual() {
         #expect(!ChatMessage.promptLooksCalculatorish("hello there"))

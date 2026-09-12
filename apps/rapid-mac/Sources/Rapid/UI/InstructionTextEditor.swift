@@ -178,7 +178,7 @@ struct EffectiveSystemPromptDisclosure: View {
         conversation: String
     ) -> String {
         ChatViewModel.effectiveSystemPrompt(
-            dateContext: ChatViewModel.currentDateTimeContext(
+            dateContext: ChatViewModel.currentDateContext(
                 now: now,
                 calendar: calendar
             ),
@@ -190,7 +190,11 @@ struct EffectiveSystemPromptDisclosure: View {
     var body: some View {
         DisclosureGroup("Effective System Prompt", isExpanded: $expanded) {
             VStack(alignment: .leading, spacing: RapidTheme.Space.sm) {
-                Text("Preview includes current automatic context. Tool and attachment context may be added when you send.")
+                // The clock is deliberately absent from the system row (see
+                // ``ChatViewModel.currentDateContext``), so say where it went
+                // — otherwise this preview reads as "the model doesn't know
+                // what time it is".
+                Text("Preview includes current automatic context. Each message you send carries the time you sent it. Tool and attachment context may be added when you send.")
                     .font(RapidFont.caption)
                     .foregroundStyle(RapidTheme.textSecondary)
                 TimelineView(.periodic(from: .now, by: 60)) { context in

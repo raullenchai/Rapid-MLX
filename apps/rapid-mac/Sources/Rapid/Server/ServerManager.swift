@@ -4046,9 +4046,19 @@ final class ServerManager {
         // carry no signal a human would want to read.
         var displayable: [String] = []
         displayable.reserveCapacity(lines.count)
+        //
+        // 0.14.1 dogfood: the app's own ``/healthz`` and
+        // ``/v1/models/residency`` poll loops each produce a uvicorn
+        // access line, and between them they evicted the whole ring
+        // buffer within minutes of idling — a user who opened the
+        // drawer saw the app talking to itself and nothing else. Same
+        // treatment as the byte heartbeat, same reasoning; see
+        // ``ServerLogNoise``, which keeps FAILED polls so a broken
+        // server still shows up here.
         for line in lines {
             downloadProgress.ingest(line)
-            if !DownloadProgress.isHeartbeatLogLine(line) {
+            if !DownloadProgress.isHeartbeatLogLine(line),
+               !ServerLogNoise.isAppPollAccessLine(line) {
                 displayable.append(line)
             }
         }

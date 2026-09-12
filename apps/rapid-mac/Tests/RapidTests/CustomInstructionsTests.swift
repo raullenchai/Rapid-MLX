@@ -99,12 +99,12 @@ struct CustomInstructionsTests {
     @Test("Effective prompt preview uses the wire assembly and includes automatic context")
     func effectivePromptPreviewUsesWireAssembly() {
         let preview = ChatViewModel.effectiveSystemPrompt(
-            dateContext: "[CURRENT DATE AND TIME]\nToday is Tuesday, August 25, 2026.",
+            dateContext: "[CURRENT DATE]\nToday is Tuesday, August 25, 2026.",
             global: "Reply in plain language.",
             conversation: "Use bullet points."
         )
 
-        #expect(preview.hasPrefix("[CURRENT DATE AND TIME]"))
+        #expect(preview.hasPrefix("[CURRENT DATE]"))
         #expect(preview.contains("[GLOBAL USER INSTRUCTIONS]"))
         #expect(preview.contains("Reply in plain language."))
         #expect(preview.contains("[CONVERSATION INSTRUCTIONS - HIGHEST USER PRIORITY]"))
@@ -137,10 +137,18 @@ struct CustomInstructionsTests {
             conversation: "Conversation"
         )
 
-        #expect(before.contains("Tuesday, August 25, 2026"))
-        #expect(before.contains("11:59 PM (GMT, GMT)"))
-        #expect(after.contains("Wednesday, August 26, 2026"))
-        #expect(after.contains("12:01 AM (GMT, GMT)"))
+        #expect(before.contains("Tuesday, August 25, 2026 (GMT)"))
+        #expect(after.contains("Wednesday, August 26, 2026 (GMT)"))
+        #expect(before != after)
+        // The preview shows what Rapid actually sends in the system row, and
+        // since 0.14.1 that is the DATE only — the wall clock rides each user
+        // turn instead, because a minute-resolution string at the head of the
+        // prompt costs the engine's prefix cache a full re-prefill of the
+        // conversation (measured 7.3 s vs 0.6 s). A preview that still quoted
+        // a time would be showing a system row the app never sends.
+        #expect(!before.contains("11:59 PM"))
+        #expect(!after.contains("12:01 AM"))
+        #expect(!before.contains("[MESSAGE SENT]"))
 
         var tokyo = utc
         tokyo.timeZone = try #require(TimeZone(identifier: "Asia/Tokyo"))
@@ -150,8 +158,7 @@ struct CustomInstructionsTests {
             global: "Global",
             conversation: "Conversation"
         )
-        #expect(tokyoPreview.contains("Wednesday, August 26, 2026"))
-        #expect(tokyoPreview.contains("8:59 AM (GMT+9, Asia/Tokyo)"))
+        #expect(tokyoPreview.contains("Wednesday, August 26, 2026 (Asia/Tokyo)"))
         #expect(tokyoPreview != before)
     }
 
@@ -168,6 +175,10 @@ struct CustomInstructionsTests {
         #expect(editor.contains("this prompt wins."))
         #expect(editor.contains("DisclosureGroup(\"Effective System Prompt\""))
         #expect(editor.contains("Tool and attachment context may be added when you send."))
+        // The system row no longer carries the wall clock, so the caption has
+        // to say where it went — otherwise the preview reads as "the model
+        // does not know what time it is".
+        #expect(editor.contains("Each message you send carries the time you sent it."))
         #expect(editor.contains("TimelineView(.periodic(from: .now, by: 60))"))
         #expect(editor.contains("at: context.date"))
         #expect(editor.contains("calendar: .autoupdatingCurrent"))

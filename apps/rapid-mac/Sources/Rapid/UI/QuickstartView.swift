@@ -2464,10 +2464,19 @@ struct QuickstartView: View {
                     }
 
                     ForEach(list.starters) { choice in
+                        let cached = Self.cachedModel(
+                            alias: choice.alias,
+                            cachedModels: cachedModels
+                        )
                         QuickstartRecommendedCard(
                             choice: choice,
                             selected: coordinator.selection.alias == choice.alias,
-                            sizeText: Self.sizeText(for: choice),
+                            sizeText: Self.shortlistSizeText(
+                                for: choice,
+                                cached: cached,
+                                recommendedForPhysicalRAMGB: nil
+                            ),
+                            isCached: cached != nil,
                             onActivate: { activatePrimary(in: .shortlist) }
                         ) { coordinator.select(choice) }
                     }
@@ -2480,13 +2489,19 @@ struct QuickstartView: View {
                         )
                         .padding(.top, 14)
                         ForEach(list.recommended) { choice in
+                            let cached = Self.cachedModel(
+                                alias: choice.alias,
+                                cachedModels: cachedModels
+                            )
                             QuickstartCompactCard(
                                 choice: choice,
                                 selected: coordinator.selection.alias == choice.alias,
-                                sizeText: Self.sizeText(
-                                    forRecommended: choice,
-                                    physicalRAMGB: hardware.physicalRAMGB
+                                sizeText: Self.shortlistSizeText(
+                                    for: choice,
+                                    cached: cached,
+                                    recommendedForPhysicalRAMGB: hardware.physicalRAMGB
                                 ),
+                                isCached: cached != nil,
                                 onActivate: { activatePrimary(in: .shortlist) }
                             ) { coordinator.select(choice) }
                         }
@@ -2496,10 +2511,19 @@ struct QuickstartView: View {
                         OnboardingGroupLabel(text: "NEED THE LIGHTEST OPTION?")
                             .padding(.top, 14)
                         ForEach(list.lowMemory) { choice in
+                            let cached = Self.cachedModel(
+                                alias: choice.alias,
+                                cachedModels: cachedModels
+                            )
                             QuickstartLowMemoryCard(
                                 choice: choice,
                                 selected: coordinator.selection.alias == choice.alias,
-                                sizeText: Self.sizeText(for: choice),
+                                sizeText: Self.shortlistSizeText(
+                                    for: choice,
+                                    cached: cached,
+                                    recommendedForPhysicalRAMGB: nil
+                                ),
+                                isCached: cached != nil,
                                 onActivate: { activatePrimary(in: .shortlist) }
                             ) { coordinator.select(choice) }
                         }
@@ -3059,10 +3083,19 @@ struct QuickstartView: View {
         OnboardingIntrinsicColumn {
             VStack(alignment: .leading, spacing: 10) {
                 ForEach(list.starters) { choice in
+                    let cached = Self.cachedModel(
+                        alias: choice.alias,
+                        cachedModels: cachedModels
+                    )
                     QuickstartRecommendedCard(
                         choice: choice,
                         selected: coordinator.selection.alias == choice.alias,
-                        sizeText: Self.sizeText(for: choice),
+                        sizeText: Self.shortlistSizeText(
+                            for: choice,
+                            cached: cached,
+                            recommendedForPhysicalRAMGB: nil
+                        ),
+                        isCached: cached != nil,
                         onActivate: { activatePrimary(in: .review) }
                     ) { coordinator.select(choice) }
                 }
@@ -3074,13 +3107,19 @@ struct QuickstartView: View {
                     )
                     .padding(.top, 14)
                     ForEach(list.recommended) { choice in
+                        let cached = Self.cachedModel(
+                            alias: choice.alias,
+                            cachedModels: cachedModels
+                        )
                         QuickstartCompactCard(
                             choice: choice,
                             selected: coordinator.selection.alias == choice.alias,
-                            sizeText: Self.sizeText(
-                                forRecommended: choice,
-                                physicalRAMGB: hardware.physicalRAMGB
+                            sizeText: Self.shortlistSizeText(
+                                for: choice,
+                                cached: cached,
+                                recommendedForPhysicalRAMGB: hardware.physicalRAMGB
                             ),
+                            isCached: cached != nil,
                             onActivate: { activatePrimary(in: .review) }
                         ) { coordinator.select(choice) }
                     }
@@ -3089,10 +3128,19 @@ struct QuickstartView: View {
                     OnboardingGroupLabel(text: "NEED THE LIGHTEST OPTION?")
                         .padding(.top, 14)
                     ForEach(list.lowMemory) { choice in
+                        let cached = Self.cachedModel(
+                            alias: choice.alias,
+                            cachedModels: cachedModels
+                        )
                         QuickstartLowMemoryCard(
                             choice: choice,
                             selected: coordinator.selection.alias == choice.alias,
-                            sizeText: Self.sizeText(for: choice),
+                            sizeText: Self.shortlistSizeText(
+                                for: choice,
+                                cached: cached,
+                                recommendedForPhysicalRAMGB: nil
+                            ),
+                            isCached: cached != nil,
                             onActivate: { activatePrimary(in: .review) }
                         ) { coordinator.select(choice) }
                     }
@@ -3656,6 +3704,53 @@ struct QuickstartView: View {
             return sizeText(for: choice)
         }
         return recommendationSizeText(from: pick)
+    }
+
+    /// The size lane for a shortlist row, cached-aware.
+    ///
+    /// Every lane has to answer "download, or already here?" the same way.
+    /// Only the trade-up lane did. The cached shortlist is bounded to six
+    /// rows, so on a Mac holding more than six chat models the seventh is
+    /// rendered by one of the download-shaped lanes — which is how
+    /// `qwen3.6-35b-4bit` came to read "download 20 GB · 87%" on a Mac that
+    /// already held all 19.03 GB of it, three rows below an "ALREADY ON THIS
+    /// MAC" heading and beside a rail reading "Free space 6 GB". Following
+    /// that row cost a 20 GB download the user did not need and, at 6 GB
+    /// free, could not complete.
+    ///
+    /// A cached row keeps its capability percentage when it has one: being on
+    /// disk changes what it costs, not how capable it is.
+    ///
+    /// `recommendedForPhysicalRAMGB` is the RAM bucket for lanes that quote
+    /// the SSOT recommendation footprint, and `nil` for lanes that quote the
+    /// authored download size.
+    static func shortlistSizeText(
+        for choice: QuickstartModelChoice,
+        cached: ModelEntry?,
+        recommendedForPhysicalRAMGB physicalRAMGB: Double?
+    ) -> String {
+        let capability = physicalRAMGB.flatMap { gb in
+            RAMBucketedDefault.picks(forPhysicalRAMGB: gb)
+                .first { $0.alias == choice.alias }?
+                .capabilityPct
+        }
+        if let onDisk = cached?.sizeOnDisk, !onDisk.isEmpty {
+            guard let capability else { return onDisk }
+            return "\(onDisk) · \(capability)%"
+        }
+        // Cached, but we could not measure what it occupies. Falling through
+        // to the download estimate here is what codex caught on this PR: the
+        // caller has already decided this row is on this Mac, so the estimate
+        // would be rendered — and spoken — as an on-disk figure for a model
+        // that is not being downloaded at all. An unknown size is better said
+        // by saying nothing; the ON THIS MAC badge still carries the fact
+        // that matters, and the accessibility label already degrades to a
+        // bare "on disk" when the size text is empty.
+        // A percentage in the size slot would be spoken as "on disk 65%",
+        // which is the same defect one layer along, so say nothing at all.
+        if cached != nil { return "" }
+        guard let physicalRAMGB else { return sizeText(for: choice) }
+        return sizeText(forRecommended: choice, physicalRAMGB: physicalRAMGB)
     }
 
     /// Stable, bounded presentation for models already on disk. The catalogue
