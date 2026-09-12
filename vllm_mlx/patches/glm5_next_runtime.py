@@ -47,7 +47,9 @@ def _has_native_glm5_next_runtime(language: Any) -> bool:
     return (
         not hasattr(language, "Glm5NextSparseAttention")
         and all(hasattr(language, name) for name in required)
-        and isinstance(getattr(language.LanguageModel, "cast_predicate", None), property)
+        and isinstance(
+            getattr(language.LanguageModel, "cast_predicate", None), property
+        )
         and callable(getattr(language.LanguageModel, "sanitize", None))
     )
 
