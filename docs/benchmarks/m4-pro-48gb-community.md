@@ -83,9 +83,9 @@ only speculative decoding changed.
 The repeated-run median improved by 32.3%. A separate initial cold MTP
 observation measured 12.8 tok/s and is excluded from that median; the table
 shows the next three runs instead of selecting the fastest sample. Across the
-measured MTP activity, 189 of 297 drafted tokens were accepted (63.64%), saving
-189 target-model token steps. Thermal state remained nominal and memory
-pressure remained normal.
+measured MTP activity, the runtime counters recorded 297 attempts, 189 accepts
+(63.64%), and 189 saved target tokens. Thermal state remained nominal and
+memory pressure remained normal.
 
 This is a serving result, not a Community Benchmark submission. Its workload
 and acceleration policy differ from the fixed protocol table above.
