@@ -1318,18 +1318,24 @@ def load_model_with_fallback(
         # Explicit strict lane, before both native selection and permissive
         # fallback. The helper binds PLE to this resolved checkpoint path.
         from mlx_lm.utils import load_tokenizer
+
         from ..models.qwen4_ple_nvme import load_file_backed_qwen4
 
         cache_bytes = int(os.environ.get("RAPID_MLX_QWEN4_PLE_CACHE_BYTES", "0"))
         model, config = load_file_backed_qwen4(
-            model_name, ple_sidecar, cache_bytes=cache_bytes, lazy=lazy,
+            model_name,
+            ple_sidecar,
+            cache_bytes=cache_bytes,
+            lazy=lazy,
         )
         try:
             tokenizer_config = _neutralize_unbundled_template_types(
-                model_name, tokenizer_config or {},
+                model_name,
+                tokenizer_config or {},
             )
             tokenizer = load_tokenizer(
-                Path(model_name), tokenizer_config,
+                Path(model_name),
+                tokenizer_config,
                 eos_token_ids=config.get("eos_token_id"),
             )
             _try_inject_mtp_post_load(model, model_name)
@@ -1343,6 +1349,7 @@ def load_model_with_fallback(
             return (*result, str(model_name)) if return_source else result
         except BaseException:
             from ..models.qwen4_ple_nvme import close_file_backed_ple
+
             close_file_backed_ple(model)
             raise
 
