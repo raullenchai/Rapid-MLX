@@ -207,10 +207,6 @@ def fuse_gate_up(model: Any) -> int:
     if not families:
         return 0
 
-    try:
-        modules = [m for _, m in model.named_modules()]
-    except Exception:  # noqa: BLE001 — unusual model containers: no fusion
-        return 0
     # Exact type only: a subclass may override __call__ and never consult
     # gate_up_proj, so fusing it would silently waste memory (or worse if
     # it reads gate_proj directly).
@@ -222,11 +218,20 @@ def fuse_gate_up(model: Any) -> int:
         gather_sort,
         scatter_unsort,
     ) in families:
-        targets = [
-            m
-            for m in modules
-            if type(m) is switch_glu_cls and _can_fuse(m, quantized_cls, plain_cls)
-        ]
+        try:
+            # Keep only the parent SwitchGLUs alive.  Retaining the complete
+            # named_modules() result also retains every original up_proj after
+            # it has been removed from its parent, defeating the per-layer
+            # mx.clear_cache() below.  On a 200B-class MoE that load-time
+            # transient is large enough for macOS to kill the process.
+            targets = [
+                module
+                for _, module in model.named_modules()
+                if type(module) is switch_glu_cls
+                and _can_fuse(module, quantized_cls, plain_cls)
+            ]
+        except Exception:  # noqa: BLE001 — unusual model containers: no fusion
+            continue
         if not targets:
             continue
         _ensure_call_patch(switch_glu_cls, gather_sort, scatter_unsort)
