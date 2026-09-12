@@ -293,6 +293,19 @@ def test_lane_metadata_contracts_fail_closed(changes, message):
         LaneAdmission(**values)
 
 
+def test_resident_metadata_preserves_preexisting_positional_lane_signature():
+    sampling = SamplingContract(greedy=False)
+    lane = LaneAdmission("old-caller", 10, 20, sampling, False, True)
+    assert lane.sampling is sampling
+    assert lane.cache_ready is False
+    assert lane.terminal is True
+    assert lane.resident_cache is False
+    assert lane.estimated_bytes(2) == 50
+    resident = LaneAdmission("resident", 10, 20, sampling, False, True, resident_cache=True)
+    assert resident.sampling is sampling
+    assert resident.estimated_bytes(2) == 40
+
+
 def test_terminal_empty_and_plain_on_pressure_routes_are_explicit():
     terminal = assess_lane(
         LaneAdmission("done", terminal=True),

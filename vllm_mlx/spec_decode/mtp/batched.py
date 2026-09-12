@@ -123,10 +123,11 @@ class LaneAdmission:
     lane_id: str
     base_bytes: int = 0
     bytes_per_draft_token: int = 0
-    resident_cache: bool = False
     sampling: SamplingContract = SamplingContract()
     cache_ready: bool = True
     terminal: bool = False
+    # Append new metadata to preserve the preexisting positional constructor.
+    resident_cache: bool = False
 
     def __post_init__(self) -> None:
         if not isinstance(self.lane_id, str) or not self.lane_id:

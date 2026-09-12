@@ -70,12 +70,13 @@ class ContinuousMTPRequestMetadata:
     temperature: float = 0.0
     base_bytes: int = 0
     bytes_per_draft_token: int = 0
-    resident_cache: bool = False
     cache_ready: bool = True
     cache_quantized: bool = False
     cache_windowed: bool = False
     terminal: bool = False
     apc_hit: ContinuousMTPAPCHit | None = None
+    # Append new metadata to preserve the preexisting positional constructor.
+    resident_cache: bool = False
 
     def __post_init__(self) -> None:
         if not isinstance(self.uid, int) or isinstance(self.uid, bool):
