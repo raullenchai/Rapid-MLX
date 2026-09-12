@@ -221,11 +221,43 @@ class TextModelArgs(BaseModelArgs):
 class ModelArgs(BaseModelArgs):
     model_type: str
     text_config: dict[str, Any]
+    # Per-load options: supplied through mlx-lm model_config, never inferred
+    # from a process-global env flag or persisted into the source artifact.
+    ple_nvme_sidecar: str | None = None
+    ple_nvme_model_path: str | None = None
+    ple_nvme_cache_bytes: int = 0
+
+    def __post_init__(self):
+        if bool(self.ple_nvme_sidecar) != bool(self.ple_nvme_model_path):
+            raise ValueError("PLE offload requires both sidecar and source model path")
+        if any(
+            value is not None and (not isinstance(value, str) or not value)
+            for value in (self.ple_nvme_sidecar, self.ple_nvme_model_path)
+        ):
+            raise ValueError("PLE offload paths must be nonempty strings")
+        if (
+            isinstance(self.ple_nvme_cache_bytes, bool)
+            or not isinstance(self.ple_nvme_cache_bytes, int)
+            or not 0 <= self.ple_nvme_cache_bytes <= 512 * 1024**2
+        ):
+            raise ValueError("PLE row cache must be between0 and512 MiB")
 
     @classmethod
     def from_dict(cls, params):
         if "text_config" not in params:
-            return cls(model_type=params["model_type"], text_config=params)
+            return cls(
+                model_type=params["model_type"],
+                text_config=params,
+                **{
+                    key: params[key]
+                    for key in (
+                        "ple_nvme_sidecar",
+                        "ple_nvme_model_path",
+                        "ple_nvme_cache_bytes",
+                    )
+                    if key in params
+                },
+            )
         return super().from_dict(params)
 
 
@@ -2026,6 +2058,11 @@ class Model(nn.Module):
         super().__init__()
         self.args = args
         self.model_type = args.model_type
+        if args.ple_nvme_sidecar:
+            from .qwen4_ple_sidecar import require_load_source, validate_artifact
+
+            require_load_source(args.ple_nvme_model_path)
+            validate_artifact(args.ple_nvme_model_path, args.ple_nvme_sidecar)
         self.language_model = TextModel(TextModelArgs.from_dict(args.text_config))
 
     def __call__(
@@ -2067,7 +2104,18 @@ class Model(nn.Module):
             elif not key.startswith("language_model."):
                 key = f"language_model.{key}"
             mapped[key] = value
-        return self.language_model.sanitize(mapped)
+        sanitized = self.language_model.sanitize(mapped)
+        if self.args.ple_nvme_sidecar:
+            from .qwen4_ple_nvme import install_file_backed_ple
+
+            sanitized = install_file_backed_ple(
+                self,
+                sanitized,
+                self.args.ple_nvme_sidecar,
+                self.args.ple_nvme_model_path,
+                cache_bytes=self.args.ple_nvme_cache_bytes,
+            )
+        return sanitized
 
     @property
     def quant_predicate(self):
