@@ -194,6 +194,16 @@ def _print_plan(value: dict[str, Any]) -> None:
             "Download: could not verify the local cache; `benchmark run` "
             "downloads anything that is missing"
         )
+    runtime = model.get("runtime")
+    if isinstance(runtime, dict):
+        status = runtime.get("status")
+        message = runtime.get("message")
+        if status == "ready":
+            print("Runtime:  ready")
+        elif isinstance(message, str) and message:
+            print(f"Runtime:  {status} — {message}")
+        else:
+            print(f"Runtime:  {status}")
     print("Storage:  local; upload requires a separate share command and consent")
     print("Nothing is uploaded by this command or by `benchmark run`.")
 

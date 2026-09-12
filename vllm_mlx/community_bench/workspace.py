@@ -47,6 +47,47 @@ _REGISTERED_WAN_ALIASES = frozenset(
 )
 
 
+def benchmark_runtime_readiness(alias: str, task_type: str) -> dict[str, Any]:
+    """Probe whether this process can execute a registered workload.
+
+    The serving lanes expose their side-effect-free dependency probes so
+    planning and execution stay on one contract without loading a model,
+    downloading anything, or duplicating dependency rules. The registered
+    video protocol admits only Wan aliases; other video families never reach
+    this function through the catalog.
+
+    Probe faults are ``unknown`` rather than ``unavailable``. A diagnostic
+    must not invent a missing dependency, and ``benchmark run`` retains the
+    authoritative fail-closed guard if the environment changes after planning.
+    """
+
+    if task_type == "text_generation":
+        return {"status": "ready", "message": None}
+    if task_type == "image_generation":
+        from vllm_mlx.runtime.image_lane import image_runtime_issue
+    elif task_type == "video_generation" and alias in _REGISTERED_WAN_ALIASES:
+        from vllm_mlx.runtime.video_lane import registered_wan_runtime_issue
+    else:
+        return {
+            "status": "unknown",
+            "message": "Runtime readiness could not be verified; run will check again.",
+        }
+
+    try:
+        if task_type == "image_generation":
+            issue = image_runtime_issue(alias)
+        else:
+            issue = registered_wan_runtime_issue(alias)
+    except Exception:
+        return {
+            "status": "unknown",
+            "message": "Runtime readiness could not be verified; run will check again.",
+        }
+    if issue:
+        return {"status": "unavailable", "message": issue}
+    return {"status": "ready", "message": None}
+
+
 def _primary_task(task_types: list[str]) -> str | None:
     # A multimodal chat alias also advertises vision_language. Text is the
     # registered output-speed protocol until a VLM workload is published.
@@ -236,6 +277,7 @@ def benchmark_catalog(*, memory_gib: int | None = None) -> dict[str, Any]:
                 "memory_fit": fit,
                 "identity_strength": alias["target"]["resolution_status"],
                 "comparable": alias["target"]["resolution_status"] != "unresolved",
+                "runtime": benchmark_runtime_readiness(alias["alias"], task),
             }
         )
     entries.sort(key=lambda item: (not item["focus"], item["alias"]))

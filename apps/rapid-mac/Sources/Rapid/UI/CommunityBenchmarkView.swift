@@ -13,8 +13,11 @@ struct CommunityBenchmarkModel: Identifiable, Hashable {
     let isFocus: Bool
     let estimatedMemoryGib: Int?
     let memoryFit: String
+    let runtimeStatus: String?
+    let runtimeMessage: String?
 
     var id: String { entry.alias }
+    var runtimeCanRun: Bool { runtimeStatus != "unavailable" }
 
     static let focusAliases: Set<String> = [
         "qwen3.8-27b-4bit", "qwen3.5-9b-4bit", "gemma-4-e4b-4bit",
@@ -76,7 +79,9 @@ struct CommunityBenchmarkModel: Identifiable, Hashable {
                 protocolName: protocolName,
                 isFocus: catalogModel?.focus ?? focusAliases.contains(entry.alias),
                 estimatedMemoryGib: catalogModel?.estimatedMemoryGib,
-                memoryFit: catalogModel?.memoryFit ?? "unknown"
+                memoryFit: catalogModel?.memoryFit ?? "unknown",
+                runtimeStatus: catalogModel?.runtime?.status,
+                runtimeMessage: catalogModel?.runtime?.message
             )
         }
         .sorted {
@@ -141,14 +146,20 @@ struct CommunityBenchmarkModel: Identifiable, Hashable {
 }
 
 struct CommunityBenchmarkCatalogModel: Decodable, Sendable {
+    struct RuntimeReadiness: Decodable, Sendable {
+        let status: String
+        let message: String?
+    }
+
     let alias: String
     let focus: Bool
     let estimatedMemoryGib: Int?
     let memoryFit: String
     let protocolVersion: Int?
+    let runtime: RuntimeReadiness?
 
     enum CodingKeys: String, CodingKey {
-        case alias, focus
+        case alias, focus, runtime
         case estimatedMemoryGib = "estimated_memory_gib"
         case memoryFit = "memory_fit"
         case protocolVersion = "protocol_version"
@@ -1348,6 +1359,14 @@ struct CommunityBenchmarkView: View {
                 Text(protocolDescription(selected.task))
                     .font(.caption)
                     .foregroundStyle(.secondary)
+                if selected.runtimeStatus == "unavailable",
+                   let message = selected.runtimeMessage {
+                    Label(message, systemImage: "exclamationmark.triangle.fill")
+                        .font(.caption)
+                        .foregroundStyle(.orange)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .accessibilityIdentifier("CommunityBenchmark.RuntimeUnavailable")
+                }
             }
 
             if let errorMessage {
@@ -1369,7 +1388,10 @@ struct CommunityBenchmarkView: View {
                 .accessibilityIdentifier("CommunityBenchmark.RunOrStop")
                 .disabled(
                     !isRunning
-                        && (selected == nil || binary == nil || !benchmarkCLIAvailable)
+                        && (
+                            selected == nil || binary == nil || !benchmarkCLIAvailable
+                                || selected?.runtimeCanRun == false
+                        )
                 )
                 if isRunning {
                     ProgressView().controlSize(.small)
