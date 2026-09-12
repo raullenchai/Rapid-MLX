@@ -75,6 +75,8 @@ class ContinuousMTPRequestMetadata:
     cache_windowed: bool = False
     terminal: bool = False
     apc_hit: ContinuousMTPAPCHit | None = None
+    # Append new metadata to preserve the preexisting positional constructor.
+    resident_cache: bool = False
 
     def __post_init__(self) -> None:
         if not isinstance(self.uid, int) or isinstance(self.uid, bool):
@@ -209,6 +211,7 @@ class ContinuousMTPIntegrationRouter:
                     lane_id=request.lane_id,
                     base_bytes=request.base_bytes,
                     bytes_per_draft_token=request.bytes_per_draft_token,
+                    resident_cache=request.resident_cache,
                     sampling=request.sampling,
                     cache_ready=request.cache_ready,
                     terminal=request.terminal,

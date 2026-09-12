@@ -1027,6 +1027,11 @@ def _install_continuous_mtp_router(
             temperature=float(params.temperature),
             base_bytes=sum(int(getattr(cache, "nbytes", 0)) for cache in caches),
             bytes_per_draft_token=0,
+            # Non-empty caches are already represented in the live Metal/RSS
+            # headroom probe. Preserve that ownership fact even though the
+            # current fresh-cohort gate normally refuses such a lane; APC and
+            # future reattach paths may legitimately present one.
+            resident_cache=any(_cache_offset(cache) for cache in caches),
             cache_ready=cache_ready,
             cache_quantized=cache_quantized,
             cache_windowed=cache_windowed,
@@ -1124,6 +1129,7 @@ def _install_continuous_mtp_router(
                 lane_id=metadata.lane_id,
                 base_bytes=metadata.base_bytes,
                 bytes_per_draft_token=metadata.bytes_per_draft_token,
+                resident_cache=metadata.resident_cache,
                 sampling=metadata.sampling,
                 cache_ready=metadata.cache_ready,
                 terminal=False,
