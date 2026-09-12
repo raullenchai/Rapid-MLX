@@ -16,7 +16,11 @@ from fastapi import HTTPException
 
 from vllm_mlx.model_aliases import resolve_profile
 from vllm_mlx.routes import video
-from vllm_mlx.runtime.video_lane import VideoEngine, require_video_runtime_or_exit
+from vllm_mlx.runtime.video_lane import (
+    VideoEngine,
+    registered_wan_runtime_issue,
+    require_video_runtime_or_exit,
+)
 from vllm_mlx.video.wan import WanBackendError, WanRequestError, WanVideoEngine
 
 
@@ -123,6 +127,18 @@ def test_wan_runtime_guard_handles_missing_parent_package(monkeypatch, capsys) -
     with pytest.raises(SystemExit):
         require_video_runtime_or_exit("Anes1032/Wan2.2-TI2V-5B-mlx-q8")
     assert "rapid-mlx[video]" in capsys.readouterr().err
+
+
+def test_wan_runtime_probe_reports_missing_ffmpeg_without_exiting(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(sys, "version_info", (3, 11))
+    monkeypatch.setattr("importlib.util.find_spec", lambda _module: object())
+    monkeypatch.setattr("vllm_mlx.runtime.video_lane._resolve_ffmpeg", lambda: None)
+
+    issue = registered_wan_runtime_issue("wan2.2-ti2v-5b-q8")
+
+    assert issue == "video generation requires ffmpeg (`brew install ffmpeg`)."
 
 
 def test_wan_engine_maps_current_mlx_video_api(monkeypatch, tmp_path) -> None:

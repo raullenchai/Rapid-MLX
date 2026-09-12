@@ -154,7 +154,8 @@ struct CommunityBenchmarkModelTests {
             focus: true,
             estimatedMemoryGib: 64,
             memoryFit: "does_not_fit",
-            protocolVersion: 1
+            protocolVersion: 1,
+            runtime: nil
         )
         let model = try #require(
             CommunityBenchmarkModel.models(
@@ -163,6 +164,46 @@ struct CommunityBenchmarkModelTests {
         )
         #expect(model.estimatedMemoryGib == 64)
         #expect(model.memoryFit == "does_not_fit")
+    }
+
+    @Test("CLI runtime readiness disables an unavailable benchmark")
+    func runtimeReadiness() throws {
+        let image = ModelEntry(
+            alias: "flux2-klein-4b",
+            hfRepo: "Runpod/FLUX.2-klein-4B-mflux-4bit",
+            sizeOnDisk: "4.3 GiB",
+            cached: true,
+            taskTypes: [.imageGeneration],
+            operationModes: [.textToImage]
+        )
+        let message = "image generation requires the rapid-mlx image extra"
+        let metadata = try JSONDecoder().decode(
+            CommunityBenchmarkCatalogModel.self,
+            from: Data(
+                """
+                {
+                  "alias": "flux2-klein-4b",
+                  "focus": true,
+                  "estimated_memory_gib": 12,
+                  "memory_fit": "fits",
+                  "protocol_version": 1,
+                  "runtime": {
+                    "status": "unavailable",
+                    "message": "image generation requires the rapid-mlx image extra"
+                  }
+                }
+                """.utf8
+            )
+        )
+
+        let model = try #require(
+            CommunityBenchmarkModel.models(
+                from: [image], metadata: [image.alias: metadata]
+            ).first
+        )
+        #expect(model.runtimeStatus == "unavailable")
+        #expect(model.runtimeMessage == message)
+        #expect(model.runtimeCanRun == false)
     }
 
     @Test("CLI catalog filtering repairs an asynchronously selected alias")
@@ -186,7 +227,8 @@ struct CommunityBenchmarkModelTests {
             focus: true,
             estimatedMemoryGib: 8,
             memoryFit: "fits",
-            protocolVersion: 2
+            protocolVersion: 2,
+            runtime: nil
         )
         let filtered = CommunityBenchmarkModel.models(
             from: [removed, retained],
@@ -654,7 +696,7 @@ struct CommunityBenchmarkModelTests {
         func meta(_ alias: String, focus: Bool, fit: String) -> CommunityBenchmarkCatalogModel {
             CommunityBenchmarkCatalogModel(
                 alias: alias, focus: focus, estimatedMemoryGib: 8,
-                memoryFit: fit, protocolVersion: 2
+                memoryFit: fit, protocolVersion: 2, runtime: nil
             )
         }
         let catalog = [

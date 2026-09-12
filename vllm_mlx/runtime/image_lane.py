@@ -23,22 +23,22 @@ __all__ = [
     "ImageEngine",
     "ImageGenerationCancelled",
     "ImageRuntimeError",
+    "image_runtime_issue",
     "require_image_runtime_or_exit",
 ]
 
 
-def require_image_runtime_or_exit(model_name: str | None = None) -> None:
-    """Fail before model download when the optional image stack is absent."""
+def image_runtime_issue(model_name: str | None = None) -> str | None:
+    """Return an actionable, side-effect-free image runtime problem."""
+
     family = _detect_family(model_name) if model_name else ""
     if sys.version_info < (3, 11) and family not in {"sdxl-base", "sd35-large"}:
-        print(
-            "\n  Error: image generation requires Python 3.11 or newer "
+        return (
+            "image generation requires Python 3.11 or newer "
             f"(current: {sys.version_info.major}.{sys.version_info.minor}). "
             "Rapid-MLX core still supports Python 3.10, but the mflux runtime "
-            "does not.\n",
-            file=sys.stderr,
+            "does not."
         )
-        raise SystemExit(2)
     runtime_module = (
         "mlx_vlm"
         if family == "hidream-o1-dev"
@@ -47,11 +47,18 @@ def require_image_runtime_or_exit(model_name: str | None = None) -> None:
         else "mflux"
     )
     if importlib.util.find_spec(runtime_module) is None:
-        print(
-            "\n  Error: image generation requires the `rapid-mlx[image]` "
-            "Python extra (`pip install 'rapid-mlx[image]'`).\n",
-            file=sys.stderr,
+        return (
+            "image generation requires the `rapid-mlx[image]` "
+            "Python extra (`pip install 'rapid-mlx[image]'`)."
         )
+    return None
+
+
+def require_image_runtime_or_exit(model_name: str | None = None) -> None:
+    """Fail before model download when the optional image stack is absent."""
+
+    if issue := image_runtime_issue(model_name):
+        print(f"\n  Error: {issue.rstrip()}\n", file=sys.stderr)
         raise SystemExit(2)
 
 
