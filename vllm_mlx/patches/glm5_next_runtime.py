@@ -55,6 +55,12 @@ def _has_native_glm5_next_runtime(language: Any) -> bool:
 
 
 def _projection_quantization_is_homogeneous(modules: Sequence[Any]) -> bool:
+    # Third-party weight formats such as EXL3 deliberately expose a callable
+    # linear without a materialized ``weight`` tensor.  The released GLM
+    # fusion concatenates ``module.weight`` values, so those modules must use
+    # the equivalent per-projection fallback instead of entering that path.
+    if any(not hasattr(module, "weight") for module in modules):
+        return False
     quantized = [hasattr(module, "scales") for module in modules]
     if not all(quantized) and any(quantized):
         return False
