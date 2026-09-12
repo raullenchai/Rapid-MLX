@@ -26,6 +26,7 @@ from vllm_mlx.models.deepseek_v41_native.config import ModelArgs  # noqa: E402
 from vllm_mlx.models.deepseek_v41_native.load import (  # noqa: E402
     reshape_grouped_wo_a,
     resolve_indexed_shard,
+    supports_engram_ssd_offload,
 )
 from vllm_mlx.models.deepseek_v41_native.model import Model  # noqa: E402
 
@@ -90,6 +91,40 @@ def test_indexed_shard_does_not_trust_arbitrary_snapshots_name(tmp_path) -> None
 
     with pytest.raises(ValueError, match="symlink escapes"):
         resolve_indexed_shard(str(snapshot), "shard.safetensors")
+
+
+def test_indexed_shard_rejects_symlinked_hub_blobs_directory(tmp_path) -> None:
+    repository = tmp_path / "models--owner--model"
+    snapshot = repository / "snapshots" / "revision"
+    external_blobs = tmp_path / "external-blobs"
+    snapshot.mkdir(parents=True)
+    external_blobs.mkdir()
+    blob = external_blobs / "digest"
+    blob.touch()
+    (repository / "blobs").symlink_to(external_blobs)
+    (snapshot / "shard.safetensors").symlink_to(blob)
+
+    with pytest.raises(ValueError, match="symlink escapes"):
+        resolve_indexed_shard(str(snapshot), "shard.safetensors")
+
+
+def test_engram_ssd_capability_requires_affine_indexed_layout(tmp_path) -> None:
+    (tmp_path / "config.json").write_text(
+        '{"text_config":{"engram_layer_ids":[1]},"quantization":{"engram_bits":2}}'
+    )
+    (tmp_path / "shard.safetensors").touch()
+    index = tmp_path / "model.safetensors.index.json"
+    index.write_text(
+        '{"weight_map":{'
+        '"layers.1.engram.embed.weight":"shard.safetensors",'
+        '"layers.1.engram.embed.scales":"shard.safetensors",'
+        '"layers.1.engram.embed.biases":"shard.safetensors"}}'
+    )
+
+    assert supports_engram_ssd_offload(str(tmp_path))
+
+    index.write_text('{"weight_map":{}}')
+    assert not supports_engram_ssd_offload(str(tmp_path))
 
 
 def test_quantized_grouped_wo_a_preserves_batch_sequence_and_group_axes() -> None:

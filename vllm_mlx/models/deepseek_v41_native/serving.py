@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import contextlib
-import os
 import weakref
 from dataclasses import dataclass
 from types import MethodType, SimpleNamespace
@@ -22,7 +21,7 @@ from mlx_lm.tokenizer_utils import NaiveStreamingDetokenizer  # noqa: E402
 
 from .affine_route_qmv import affine2_route_down_qmv
 from .dspark import DSpark, DSparkWeights, draft_attention, quantize_cache
-from .load import load
+from .load import load, supports_engram_ssd_offload
 
 
 @dataclass(frozen=True)
@@ -230,11 +229,10 @@ def load_product_runtime(
     mtp_revision: str,
     mtp_identity: str | None = None,
 ):
-    index_path = os.path.join(target_path, "model.safetensors.index.json")
     model, _args = load(
         target_path,
         lazy=False,
-        engram_ssd_offload=os.path.isfile(index_path),
+        engram_ssd_offload=supports_engram_ssd_offload(target_path),
     )
     model.eval_interval = 40
     if install_target_qmv(model) != len(model.layers):

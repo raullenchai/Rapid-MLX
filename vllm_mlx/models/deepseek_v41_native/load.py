@@ -50,10 +50,54 @@ def resolve_indexed_shard(model_path: str, filename: str) -> str:
     # rather than trusting any parent directory merely named "snapshots".
     repository = root.parent.parent
     if root.parent.name == "snapshots" and repository.name.startswith("models--"):
-        blobs = (repository / "blobs").resolve()
-        if blobs.is_dir() and os.path.commonpath((blobs, resolved)) == str(blobs):
+        lexical_blobs = repository / "blobs"
+        blobs = lexical_blobs.resolve()
+        if (
+            lexical_blobs.is_dir()
+            and not lexical_blobs.is_symlink()
+            and os.path.commonpath((repository, blobs)) == str(repository)
+            and os.path.commonpath((blobs, resolved)) == str(blobs)
+        ):
             return str(resolved)
     raise ValueError("Engram shard symlink escapes the model repository")
+
+
+def supports_engram_ssd_offload(path: str) -> bool:
+    """Return whether a checkpoint has the complete supported Engram layout."""
+    try:
+        with open(os.path.join(path, "config.json")) as config_file:
+            config = json.load(config_file)
+        args = ModelArgs.from_dict(config)
+        quantization = config.get("quantization")
+        if (
+            not args.engram_layer_ids
+            or not isinstance(quantization, dict)
+            or not quantization.get("engram_bits")
+        ):
+            return False
+        with open(os.path.join(path, "model.safetensors.index.json")) as index_file:
+            index = json.load(index_file)
+        mapping = index.get("weight_map")
+        if not isinstance(mapping, dict):
+            return False
+        for layer_id in args.engram_layer_ids:
+            prefix = f"layers.{layer_id}.engram.embed"
+            keys = (prefix + ".weight", prefix + ".scales", prefix + ".biases")
+            filenames = [mapping.get(key) for key in keys]
+            if (
+                any(
+                    not isinstance(filename, str) or not filename
+                    for filename in filenames
+                )
+                or len(set(filenames)) != 1
+            ):
+                return False
+            filename = filenames[0]
+            assert isinstance(filename, str)
+            resolve_indexed_shard(path, filename)
+    except (OSError, TypeError, ValueError, json.JSONDecodeError):
+        return False
+    return True
 
 
 def reshape_grouped_wo_a(items, args: ModelArgs):

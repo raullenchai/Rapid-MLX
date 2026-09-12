@@ -779,7 +779,7 @@ def test_load_product_runtime_composes_owned_components(monkeypatch):
     draft = SimpleNamespace()
     calls = []
     load_calls = []
-    monkeypatch.setattr(serving.os.path, "isfile", lambda _path: True)
+    monkeypatch.setattr(serving, "supports_engram_ssd_offload", lambda _path: True)
     monkeypatch.setattr(
         serving,
         "load",
@@ -830,7 +830,7 @@ def test_load_product_runtime_keeps_nonindexed_target_resident(monkeypatch):
     )
     draft = SimpleNamespace()
     load_calls = []
-    monkeypatch.setattr(serving.os.path, "isfile", lambda _path: False)
+    monkeypatch.setattr(serving, "supports_engram_ssd_offload", lambda _path: False)
     monkeypatch.setattr(
         serving,
         "load",
