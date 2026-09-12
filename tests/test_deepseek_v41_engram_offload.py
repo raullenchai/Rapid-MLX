@@ -72,16 +72,28 @@ def test_disk_engram_matches_resident_affine_rows_and_caches_repeats(tmp_path):
     assert disk.cache_hits == 5
 
 
-def test_disk_engram_prefetch_matches_requested_rows(tmp_path):
+def test_disk_engram_prefetch_matches_requested_rows(tmp_path, monkeypatch):
     resident, disk, _keys, _path = _modules(tmp_path)
     indices = mx.array([[[1, 3, 1], [7, 3, 2]]], mx.int32)
+    gather_calls = 0
+    original = disk._gather_rows
+
+    def counted_gather(flat):
+        nonlocal gather_calls
+        gather_calls += 1
+        return original(flat)
+
+    monkeypatch.setattr(disk, "_gather_rows", counted_gather)
 
     disk.prefetch(indices)
+    assert disk._pending is not None
+    disk._pending[1].result()
     expected = resident(indices)
     actual = disk(indices)
     mx.eval(expected, actual)
 
     assert mx.array_equal(actual, expected).item()
+    assert gather_calls == 1
     assert disk.cache_misses == 4
     assert disk.cache_hits == 2
 

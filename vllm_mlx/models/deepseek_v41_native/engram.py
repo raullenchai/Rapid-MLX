@@ -441,6 +441,7 @@ class DiskQuantizedEngramEmbedding(nn.Module):
             if flat.size and (flat.min() < 0 or flat.max() >= weight.shape[0]):
                 raise IndexError("Engram row outside table")
             if not flat.size or not self.cache_rows or flat.size > 4096:
+                self.cache_misses += len(set(int(row) for row in flat))
                 rows = self._raw_rows(flat)
             else:
                 unique = list(dict.fromkeys(int(row) for row in flat))

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import contextlib
+import os
 import weakref
 from dataclasses import dataclass
 from types import MethodType, SimpleNamespace
@@ -229,7 +230,12 @@ def load_product_runtime(
     mtp_revision: str,
     mtp_identity: str | None = None,
 ):
-    model, _args = load(target_path, lazy=False, engram_ssd_offload=True)
+    index_path = os.path.join(target_path, "model.safetensors.index.json")
+    model, _args = load(
+        target_path,
+        lazy=False,
+        engram_ssd_offload=os.path.isfile(index_path),
+    )
     model.eval_interval = 40
     if install_target_qmv(model) != len(model.layers):
         raise RuntimeError("failed to install target affine-2bit QMV on every layer")

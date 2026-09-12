@@ -779,6 +779,7 @@ def test_load_product_runtime_composes_owned_components(monkeypatch):
     draft = SimpleNamespace()
     calls = []
     load_calls = []
+    monkeypatch.setattr(serving.os.path, "isfile", lambda _path: True)
     monkeypatch.setattr(
         serving,
         "load",
@@ -813,6 +814,47 @@ def test_load_product_runtime_composes_owned_components(monkeypatch):
     assert model.eval_interval == 40
     assert load_calls == [(("/target",), {"lazy": False, "engram_ssd_offload": True})]
     assert calls == [draft, draft]
+
+
+@pytest.mark.requires_mlx
+def test_load_product_runtime_keeps_nonindexed_target_resident(monkeypatch):
+    from vllm_mlx.models.deepseek_v41_native import serving
+
+    model = SimpleNamespace(
+        layers=[object()], eval_interval=0, embed=object(), head=object()
+    )
+    weights = SimpleNamespace(
+        config={"dspark_block_size": 5},
+        attach_target=lambda _model: None,
+        pin_mtp=lambda: None,
+    )
+    draft = SimpleNamespace()
+    load_calls = []
+    monkeypatch.setattr(serving.os.path, "isfile", lambda _path: False)
+    monkeypatch.setattr(
+        serving,
+        "load",
+        lambda *args, **kwargs: load_calls.append((args, kwargs)) or (model, object()),
+    )
+    monkeypatch.setattr(serving, "install_target_qmv", lambda _model: 1)
+    monkeypatch.setattr(serving, "DSparkWeights", lambda _path: weights)
+    monkeypatch.setattr(serving, "DSpark", lambda _target, pin_weights: draft)
+    monkeypatch.setattr(serving, "_install_vectorized_mtp_attention", lambda _draft: 0)
+    monkeypatch.setattr(serving, "_install_packed_mtp_moe", lambda _draft: 0)
+    monkeypatch.setattr(
+        serving.PreTrainedTokenizerFast,
+        "from_pretrained",
+        lambda *_a, **_k: _Tokenizer(),
+    )
+
+    serving.load_product_runtime(
+        "/target",
+        "/mtp",
+        target_revision="target-rev",
+        mtp_revision="mtp-rev",
+    )
+
+    assert load_calls == [(("/target",), {"lazy": False, "engram_ssd_offload": False})]
 
 
 @pytest.mark.requires_mlx
