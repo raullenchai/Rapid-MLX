@@ -2016,6 +2016,9 @@ def test_qwen4_mtp_inject_loads_complete_local_tensor_contract(tmp_path, monkeyp
     args = _ple_args()
     args.mtp_num_hidden_layers = 1
     model = Model(ModelArgs(model_type="qwen4_exp", text_config=asdict(args)))
+    model.language_model.norm_convention_receipt = {
+        "source_convention": "zero_centered"
+    }
     monkeypatch.setattr(nn, "quantize", lambda *_args, **_kwargs: None)
     expected_mtp = inject._build_mtp(model.language_model)
     checkpoint = tmp_path / "mtp.safetensors"
@@ -2056,6 +2059,9 @@ def test_qwen4_mtp_inject_fails_closed_on_guards_tensor_mismatch_and_exception(
     args.mtp_num_hidden_layers = 1
     model = Model(ModelArgs(model_type="qwen4_exp", text_config=asdict(args)))
     assert inject.inject_qwen4_exp_mtp_support(model) is False
+    model.language_model.norm_convention_receipt = {
+        "source_convention": "zero_centered"
+    }
 
     monkeypatch.setattr(nn, "quantize", lambda *_args, **_kwargs: None)
     bad_checkpoint = tmp_path / "bad.safetensors"

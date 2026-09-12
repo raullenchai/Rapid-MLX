@@ -180,6 +180,16 @@ def inject_qwen4_exp_mtp_support(
             for file in _mtp_weight_files(mtp_sidecar):
                 weights.update(_sanitize_mtp_weights(mx.load(str(file))))
 
+            from vllm_mlx.models.qwen4_exp import ZeroCenteredRMSNorm
+            from vllm_mlx.models.qwen4_norm_convention import (
+                apply_qwen4_norm_convention,
+            )
+
+            receipt = getattr(inner, "norm_convention_receipt", None) or {}
+            apply_qwen4_norm_convention(
+                mtp, weights, ZeroCenteredRMSNorm, receipt.get("source_convention")
+            )
+
             expected = dict(tree_flatten(mtp.parameters()))
             missing = set(expected) - set(weights)
             unexpected = set(weights) - set(expected)
