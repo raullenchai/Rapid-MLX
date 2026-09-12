@@ -27,7 +27,12 @@ from .attention import Attention
 from .cache import ModelCache
 from .config import ModelArgs
 from .engram import Engram, EngramHasher
-from .hyper_connections import hc_mixes, hc_post, hc_pre, make_identity_pre_mix
+from .hyper_connections import (
+    hc_mixes,
+    hc_post,
+    hc_pre_norm,
+    make_identity_pre_mix,
+)
 from .layers import RMSNorm
 from .moe import MoE
 
@@ -87,8 +92,8 @@ class Block(nn.Module):
             self.norm_eps,
             self.hc_eps,
         )
-        h = hc_pre(x, pre_mix)
-        h = self.attn(self.attn_norm(h), start_pos, cache, shared)
+        h = hc_pre_norm(x, pre_mix, self.attn_norm.weight, self.attn_norm.eps)
+        h = self.attn(h, start_pos, cache, shared)
         x = hc_post(h, residual, attn_post, attn_comb)
 
         residual = x
@@ -102,8 +107,8 @@ class Block(nn.Module):
             self.norm_eps,
             self.hc_eps,
         )
-        h = hc_pre(x, attn_pre)
-        h = self.ffn(self.ffn_norm(h))
+        h = hc_pre_norm(x, attn_pre, self.ffn_norm.weight, self.ffn_norm.eps)
+        h = self.ffn(h)
         x = hc_post(h, residual, ffn_post, ffn_comb)
         return x, ffn_pre
 
@@ -199,8 +204,9 @@ class Model(nn.Module):
             if self.eval_interval and execution_index % self.eval_interval == 0:
                 mx.eval(h, pre_mix)
 
-        h = hc_pre(h, pre_mix)  # collapse with the last ffn_pre
-        h = self.norm(h)
+        h = hc_pre_norm(
+            h, pre_mix, self.norm.weight, self.norm.eps
+        )  # collapse with the last ffn_pre
         if last_logit_only:
             h = h[:, -1:]
         logits = self.head(h.astype(mx.float32))  # fp32 logits, as the reference
