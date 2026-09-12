@@ -2,10 +2,14 @@
 
 Date: 2026-09-11
 
-Owner: Vector  
-Host: Studio  
-Branch: `vector/deepseek-v41-fast-hc`  
-Worktree: `/private/tmp/rapid-mlx-deepseek-v41-fast-hc`  
+Owner: Vector
+
+Host: Studio
+
+Branch: `vector/deepseek-v41-fast-hc`
+
+Worktree: `/private/tmp/rapid-mlx-deepseek-v41-fast-hc`
+
 Base dependency: PR #3338 (`vector/deepseek-v41-engram-offload`)
 
 ## Intention and boundary
