@@ -95,6 +95,37 @@ def test_ffmpeg_resolver_uses_homebrew_fallback_when_path_is_missing(
     assert _resolve_ffmpeg() == str(homebrew_link)
 
 
+def test_ffmpeg_resolver_uses_binary_from_declared_video_extra(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    bundled = tmp_path / "ffmpeg-macos-aarch64"
+    bundled.write_bytes(b"#!/bin/sh\n")
+    bundled.chmod(0o755)
+    monkeypatch.delenv("FFMPEG_BINARY", raising=False)
+    monkeypatch.setattr(video_lane.shutil, "which", lambda _: None)
+    monkeypatch.setattr(video_lane, "_FFMPEG_FALLBACK_PATHS", ())
+    imageio_ffmpeg = ModuleType("imageio_ffmpeg")
+    imageio_ffmpeg.get_ffmpeg_exe = lambda: str(bundled)  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "imageio_ffmpeg", imageio_ffmpeg)
+
+    assert _resolve_ffmpeg() == str(bundled)
+
+
+def test_ffmpeg_resolver_rejects_unusable_video_extra_binary(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    bundled = tmp_path / "ffmpeg-macos-aarch64"
+    bundled.write_bytes(b"not executable")
+    monkeypatch.delenv("FFMPEG_BINARY", raising=False)
+    monkeypatch.setattr(video_lane.shutil, "which", lambda _: None)
+    monkeypatch.setattr(video_lane, "_FFMPEG_FALLBACK_PATHS", ())
+    imageio_ffmpeg = ModuleType("imageio_ffmpeg")
+    imageio_ffmpeg.get_ffmpeg_exe = lambda: str(bundled)  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "imageio_ffmpeg", imageio_ffmpeg)
+
+    assert _resolve_ffmpeg() is None
+
+
 def test_ffmpeg_resolver_honors_executable_override(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

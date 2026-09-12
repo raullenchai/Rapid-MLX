@@ -28,6 +28,19 @@ _FFMPEG_FALLBACK_PATHS = (
 )
 
 
+def _resolve_imageio_ffmpeg() -> str | None:
+    """Return the executable bundled by the declared video extra, if usable."""
+    try:
+        import imageio_ffmpeg
+
+        candidate = Path(imageio_ffmpeg.get_ffmpeg_exe()).expanduser()
+    except (ImportError, OSError, RuntimeError, TypeError, ValueError):
+        return None
+    if candidate.is_file() and os.access(candidate, os.X_OK):
+        return str(candidate.absolute())
+    return None
+
+
 def _resolve_ffmpeg() -> str | None:
     """Resolve the ffmpeg binary consistently across the video lane."""
     override = os.environ.get("FFMPEG_BINARY", "").strip()
@@ -52,7 +65,7 @@ def _resolve_ffmpeg() -> str | None:
     for candidate in _FFMPEG_FALLBACK_PATHS:
         if candidate.is_file() and os.access(candidate, os.X_OK):
             return str(candidate)
-    return None
+    return _resolve_imageio_ffmpeg()
 
 
 def validate_video_request(
