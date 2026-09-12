@@ -3109,10 +3109,15 @@ final class ChatViewModel {
         formatter.timeZone = zone
         formatter.dateFormat = "EEEE, MMMM d, yyyy"
         let dateText = formatter.string(from: now)
-        let abbreviation = zone.abbreviation(for: now) ?? zone.identifier
+        // Identifier only, no abbreviation. codex caught that "PST"/"PDT" is
+        // instant-specific: it flips mid-day at a daylight-saving transition
+        // and would re-prefill every open conversation at 2 a.m. twice a
+        // year, in the one block this whole change exists to hold still. The
+        // abbreviation still rides on each message trailer, where it is
+        // describing a specific instant and is therefore correct there.
         return """
         [CURRENT DATE]
-        Today is \(dateText) (\(abbreviation), \(zone.identifier)).
+        Today is \(dateText) (\(zone.identifier)).
         """
     }
 

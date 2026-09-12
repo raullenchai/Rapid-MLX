@@ -137,8 +137,8 @@ struct CustomInstructionsTests {
             conversation: "Conversation"
         )
 
-        #expect(before.contains("Tuesday, August 25, 2026 (GMT, GMT)"))
-        #expect(after.contains("Wednesday, August 26, 2026 (GMT, GMT)"))
+        #expect(before.contains("Tuesday, August 25, 2026 (GMT)"))
+        #expect(after.contains("Wednesday, August 26, 2026 (GMT)"))
         #expect(before != after)
         // The preview shows what Rapid actually sends in the system row, and
         // since 0.14.1 that is the DATE only — the wall clock rides each user
@@ -158,7 +158,7 @@ struct CustomInstructionsTests {
             global: "Global",
             conversation: "Conversation"
         )
-        #expect(tokyoPreview.contains("Wednesday, August 26, 2026 (GMT+9, Asia/Tokyo)"))
+        #expect(tokyoPreview.contains("Wednesday, August 26, 2026 (Asia/Tokyo)"))
         #expect(tokyoPreview != before)
     }
 

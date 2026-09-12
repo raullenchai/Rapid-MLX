@@ -1055,14 +1055,13 @@ struct ChatMessage: Identifiable, Codable, Equatable, Hashable {
     ///     would contradict the chip on screen. A tool that ERRORED does
     ///     NOT count as succeeded — a hallucinated raw answer after a
     ///     failed tool is exactly the shape we still want to flag.
-    ///   * ``promptHadAttachment == false``, OR the prompt asks for
-    ///     live data (``promptAsksForLiveData``), OR it carries
-    ///     self-contained arithmetic
-    ///     (``promptContainsSelfContainedArithmetic``). An answer read
-    ///     off an attached file is grounded, not guessed — but an
-    ///     attachment cannot ground "what is today's stock price",
-    ///     and it has nothing to do with "calculate 17*23", so the
-    ///     exemption is withheld in both cases.
+    ///   * ``promptHadAttachment == false``, OR the prompt is not one
+    ///     an attached document could answer
+    ///     (``promptIsAttachmentAnswerable``). An answer read off an
+    ///     attached file is grounded, not guessed — but a page cannot
+    ///     ground "what is today's stock price", has nothing to do
+    ///     with "calculate 17*23", and is not what "search for Ada
+    ///     Lovelace's biography" asks for.
     ///   * ``finishReason`` is ``nil`` or anything OTHER than
     ///     ``"tool_calls"`` — a real tool-call turn doesn't need
     ///     the caption (the chip row already speaks for it). A
@@ -1130,23 +1129,13 @@ struct ChatMessage: Identifiable, Codable, Equatable, Hashable {
         // so the next one (a real hallucinated total) gets ignored too.
         //
         // But the exemption has to be narrow, because an attachment is
-        // not a general licence. Two ways a prompt can carry a document
-        // and still be unanswerable from it, both raised by codex on
-        // this PR:
-        //
-        //   * live data — "attach my portfolio PDF, what is today's
-        //     stock price?" (``promptAsksForLiveData``); and
-        //   * self-contained arithmetic — "attached is my resume;
-        //     calculate 17*23", where the document is simply
-        //     irrelevant and the calculator is the tool that should
-        //     have run (``promptContainsSelfContainedArithmetic``).
-        //
-        // In both, a bare number with no tool call is precisely the
-        // hallucination this caption exists to catch, so the turn is
-        // exempt only when neither holds.
-        if promptHadAttachment,
-           !promptAsksForLiveData(userPrompt),
-           !promptContainsSelfContainedArithmetic(userPrompt) { return false }
+        // not a general licence — three review rounds each found a
+        // prompt that carried a document and still could not be
+        // answered from it. So the test is stated positively, as the
+        // one shape a page CAN answer: math vocabulary whose operands
+        // live on that page. See ``promptIsAttachmentAnswerable`` for
+        // the table of what that excludes and why.
+        if promptHadAttachment, promptIsAttachmentAnswerable(userPrompt) { return false }
         // Gate 2: model must have produced no tool_calls. A real
         // tool-call turn doesn't need the caption.
         let noToolCalls = (toolCalls?.isEmpty ?? true)
@@ -1962,17 +1951,10 @@ struct ChatMessage: Identifiable, Codable, Equatable, Hashable {
         let hasOperator = lowered.contains(where: { mathOperators.contains($0) })
         if hasDigit && hasOperator { return true }
 
-        // Math keywords.
-        let mathKeywords: [String] = [
-            "square root", "sqrt", "percent", "calculate", "compute", "solve",
-            "divide", "multiply", "sum of", "product of", "plus", "minus",
-            "times", "divided by"
-        ]
-        for kw in mathKeywords where containsKeyword(kw, in: lowered) { return true }
-
-        // Live-data keywords — see ``promptAsksForLiveData``, which owns
-        // the list so Gate 1c and this heuristic cannot drift apart.
-        //
+        // The three remaining lanes each live in their own predicate, so
+        // Gate 1c can name exactly which of them an attachment neutralises
+        // without either copy of the keyword lists drifting.
+        if promptContainsMathKeyword(lowered) { return true }
         // Note: codex r1 MAJOR-1 (#308 PR) dropped the bare
         // ``"what is the"`` keyword — it matched every plain factual
         // question ("What is the capital of France?") and false-flagged
@@ -1980,15 +1962,68 @@ struct ChatMessage: Identifiable, Codable, Equatable, Hashable {
         // point at LIVE / DATED information; an evergreen factual
         // lookup is not the failure mode this caption guards against.
         if promptAsksForLiveData(lowered) { return true }
-
-        // Retrieval-shaped keywords that an ATTACHED document can still
-        // satisfy — "look up the invoice number" is answered by the
-        // page, which is why these are not in the live-data list above
-        // and so do not withhold Gate 1c's exemption.
-        let retrievalKeywords: [String] = ["search for", "look up", "look it up"]
-        for kw in retrievalKeywords where containsKeyword(kw, in: lowered) { return true }
+        if promptAsksForExternalRetrieval(lowered) { return true }
 
         return false
+    }
+
+    /// Math vocabulary with no literal expression — "calculate the total",
+    /// "sum of the line items", "what percent of it".
+    ///
+    /// This is the ONE lane an attachment neutralises (see Gate 1c of
+    /// ``shouldFlagToolNotCalled``): the operands can live on the page, so
+    /// reading them off it is the grounded, correct answer.
+    static func promptContainsMathKeyword(_ prompt: String) -> Bool {
+        let lowered = prompt.lowercased()
+        let mathKeywords: [String] = [
+            "square root", "sqrt", "percent", "calculate", "compute", "solve",
+            "divide", "multiply", "sum of", "product of", "plus", "minus",
+            "times", "divided by"
+        ]
+        for kw in mathKeywords where containsKeyword(kw, in: lowered) { return true }
+        return false
+    }
+
+    /// Asks for something to be fetched from outside the conversation.
+    ///
+    /// These used to sit with the math keywords on the theory that "look up
+    /// the invoice number" is answered by an attached page. codex was right
+    /// that the theory does not survive its own counterexample: attach a
+    /// résumé and ask to "search for Ada Lovelace's biography" and the page
+    /// grounds nothing, yet the exemption silenced the caption on a
+    /// completely ungrounded answer — the #308 failure mode itself.
+    ///
+    /// So external-retrieval language now withholds the exemption. The cost
+    /// is accepted knowingly: "look up the invoice number" with the invoice
+    /// attached will wear a caution it does not deserve. Of the two errors,
+    /// the false negative is the one this feature exists to prevent, and the
+    /// caption is dismissible while a silent wrong answer is not.
+    static func promptAsksForExternalRetrieval(_ prompt: String) -> Bool {
+        let lowered = prompt.lowercased()
+        let retrievalKeywords: [String] = ["search for", "look up", "look it up"]
+        for kw in retrievalKeywords where containsKeyword(kw, in: lowered) { return true }
+        return false
+    }
+
+    /// True when an attached document could actually answer `prompt`.
+    ///
+    /// Stated as what IS exempt rather than as a list of disqualifiers,
+    /// because the disqualifier form grew a hole every review round. Of the
+    /// four lanes that make a prompt tool-shaped at all
+    /// (``promptLooksCalculatorish``), exactly one is answerable from a page
+    /// the user attached:
+    ///
+    /// | lane | attached document can answer it? |
+    /// | --- | --- |
+    /// | math keywords, no literal expression | **yes** — operands are on the page |
+    /// | self-contained arithmetic (`17*23`) | no — prompt brought its own numbers |
+    /// | live data (today's price, the weather) | no — no page holds a moving target |
+    /// | external retrieval (search for, look up) | no — it asks to leave the document |
+    static func promptIsAttachmentAnswerable(_ prompt: String) -> Bool {
+        guard !promptAsksForLiveData(prompt) else { return false }
+        guard !promptContainsSelfContainedArithmetic(prompt) else { return false }
+        guard !promptAsksForExternalRetrieval(prompt) else { return false }
+        return promptContainsMathKeyword(prompt)
     }
 
     /// True when `prompt` names a MOVING target — something that

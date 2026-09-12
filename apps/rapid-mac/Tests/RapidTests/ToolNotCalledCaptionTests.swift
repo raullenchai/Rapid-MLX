@@ -424,6 +424,43 @@ struct ToolNotCalledCaptionTests {
         }
     }
 
+    @Test("An attachment does NOT exempt an external-retrieval prompt")
+    func attachmentDoesNotExemptExternalRetrieval() {
+        // codex, round 4: "search for Ada Lovelace's biography" with a resume
+        // attached asks to leave the document entirely, so the page grounds
+        // nothing and a short confident answer is ungrounded.
+        for prompt in ["Attached is my resume. Search for Ada Lovelace's biography.",
+                       "Here's the invoice — look up the vendor's rating online",
+                       "google for the current spec, see attached"] {
+            #expect(ChatMessage.shouldFlagToolNotCalled(
+                userPrompt: prompt,
+                assistantContent: "1815.",
+                toolCalls: nil,
+                finishReason: "stop",
+                toolsRequested: true,
+                promptHadAttachment: true
+            ), "External retrieval is not grounded by an attachment: \(prompt)")
+        }
+    }
+
+    @Test("promptIsAttachmentAnswerable: only the math-keyword lane")
+    func attachmentAnswerableContract() {
+        // The ONE exempt shape: math vocabulary whose operands are on the page.
+        for prompt in ["what is the total due? calculate it from the invoice",
+                       "sum of the line items", "what percent of the total is tax",
+                       "compute the subtotal"] {
+            #expect(ChatMessage.promptIsAttachmentAnswerable(prompt),
+                    "should be answerable from the page: \(prompt)")
+        }
+        // The three lanes it excludes, one case each.
+        #expect(!ChatMessage.promptIsAttachmentAnswerable("calculate 17*23"))
+        #expect(!ChatMessage.promptIsAttachmentAnswerable("calculate today's stock price"))
+        #expect(!ChatMessage.promptIsAttachmentAnswerable("calculate it, then search for the source"))
+        // And a prompt with no math vocabulary at all is not exempted either —
+        // Gate 5 would reject it anyway, but the predicate must not claim it.
+        #expect(!ChatMessage.promptIsAttachmentAnswerable("what does this say?"))
+    }
+
     @Test("promptAsksForLiveData draws the line at a moving target")
     func liveDataContract() {
         // Names a moving target: no attached document can hold the answer.
@@ -433,8 +470,10 @@ struct ToolNotCalledCaptionTests {
                        "stock price now", "right now, how many users?"] {
             #expect(ChatMessage.promptAsksForLiveData(prompt), "should be live: \(prompt)")
         }
-        // Retrieval-shaped, but an attached document answers it — so these
-        // stay OUT of the live list and keep Gate 1c's exemption available.
+        // Not live-data (they name no moving target) — but note these no
+        // longer keep Gate 1c's exemption either: as of round 4 they are
+        // external-retrieval language, which withholds it. See
+        // ``promptAsksForExternalRetrieval``.
         for prompt in ["look up the invoice number", "search for the clause about refunds",
                        "what is the total due?", "calculate 15 percent of the subtotal",
                        "sum of the line items"] {

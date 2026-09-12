@@ -55,7 +55,7 @@ struct CurrentDateTimeContextTests {
         )
         #expect(out == """
         [CURRENT DATE]
-        Today is Tuesday, August 25, 2026 (PDT, America/Los_Angeles).
+        Today is Tuesday, August 25, 2026 (America/Los_Angeles).
         """)
     }
 
@@ -78,6 +78,27 @@ struct CurrentDateTimeContextTests {
         #expect(!before.contains("AM"))
         #expect(!before.contains("PM"))
         #expect(!before.contains("time"))
+    }
+
+    @Test("The day-stable block carries no instant-specific zone abbreviation")
+    func systemRowHoldsStillAcrossADaylightSavingTransition() {
+        // codex round 4: "PST"/"PDT" flips mid-day at a DST transition, which
+        // would re-prefill every open conversation twice a year inside the one
+        // block this change exists to hold still. Same day, either side of the
+        // 2 a.m. spring-forward, must render identically.
+        let calendar = Self.calendar("America/Los_Angeles")
+        let beforeSpringForward = Self.instant("2026-03-08T09:30:00Z")  // 01:30 PST
+        let afterSpringForward = Self.instant("2026-03-08T11:30:00Z")   // 04:30 PDT
+        let before = ChatViewModel.currentDateContext(now: beforeSpringForward, calendar: calendar)
+        let after = ChatViewModel.currentDateContext(now: afterSpringForward, calendar: calendar)
+        #expect(before == after)
+        #expect(!before.contains("PST"))
+        #expect(!before.contains("PDT"))
+        #expect(before.contains("America/Los_Angeles"))
+        // The abbreviation still rides on the message trailer, where it
+        // describes a specific instant and so is correct.
+        #expect(ChatViewModel.clockContext(at: beforeSpringForward, calendar: calendar).contains("PST"))
+        #expect(ChatViewModel.clockContext(at: afterSpringForward, calendar: calendar).contains("PDT"))
     }
 
     @Test("The clock trailer pins the wall clock of the instant it stamps")
