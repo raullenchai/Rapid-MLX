@@ -78,7 +78,7 @@ class TestExtractMlxBounds:
         }
 
     def test_ignores_non_mlx_and_prefix_lookalikes(self):
-        text = _pp("mlx-audio>=0.2.9,<0.4.4", "transformers<5.13", "mlxfoo==1.0")
+        text = _pp("mlx-audio>=0.5.3,<0.6", "transformers<5.13", "mlxfoo==1.0")
         bounds = guard.extract_mlx_bounds(text)
         assert bounds["mlx"] == set()
         assert bounds["mlx-lm"] == set()

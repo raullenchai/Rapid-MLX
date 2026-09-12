@@ -156,7 +156,7 @@ struct SidecarBuildScriptTests {
 
         #expect(pyproject.contains("\naudio-desktop = ["),
                 "The bounded desktop audio dependency group must remain separately installable.")
-        #expect(pyproject.contains(#""mlx-audio>=0.2.9,<0.4.4""#))
+        #expect(pyproject.contains(#""mlx-audio>=0.5.3,<0.6""#))
         #expect(pyproject.contains(#""soundfile>=0.12.0""#))
         #expect(script.contains(#""${RAPID_MLX_INSTALL_TARGET}[audio-desktop]""#),
                 "The desktop sidecar must install the bounded desktop audio dependency set.")
