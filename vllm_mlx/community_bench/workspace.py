@@ -65,12 +65,8 @@ def benchmark_runtime_readiness(alias: str, task_type: str) -> dict[str, Any]:
         return {"status": "ready", "message": None}
     if task_type == "image_generation":
         from vllm_mlx.runtime.image_lane import image_runtime_issue
-
-        probe = image_runtime_issue
     elif task_type == "video_generation" and alias in _REGISTERED_WAN_ALIASES:
         from vllm_mlx.runtime.video_lane import registered_wan_runtime_issue
-
-        probe = registered_wan_runtime_issue
     else:
         return {
             "status": "unknown",
@@ -78,7 +74,10 @@ def benchmark_runtime_readiness(alias: str, task_type: str) -> dict[str, Any]:
         }
 
     try:
-        issue = probe(alias)
+        if task_type == "image_generation":
+            issue = image_runtime_issue(alias)
+        else:
+            issue = registered_wan_runtime_issue(alias)
     except Exception:
         return {
             "status": "unknown",
