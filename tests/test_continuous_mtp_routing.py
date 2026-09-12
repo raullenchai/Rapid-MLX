@@ -228,6 +228,51 @@ def test_install_plan_is_default_off_and_fails_closed_without_mutation():
     assert vars(model) == before
 
 
+def test_single_lane_deployment_refuses_instead_of_raising():
+    """``--max-num-seqs 1`` is a deployment choice, not a programming error.
+
+    The planner runs lazily, from the first request's batch-generator build, so
+    letting ``BatchedMTPConfig`` raise on ``min_batch_lanes > max_lanes`` there
+    aborted that request's generation step and left it waiting for tokens that
+    never came. One lane has to refuse like any other missing capability and
+    keep the singleton verifier.
+    """
+    model = _Model()
+    before = dict(vars(model))
+
+    single = plan_router_install(model, enabled=True, max_lanes=1, hard_reserve_bytes=0)
+    at_minimum = plan_router_install(
+        model, enabled=True, max_lanes=2, hard_reserve_bytes=0
+    )
+
+    assert single.admitted is False
+    assert single.router is None
+    assert single.fallback is ContinuousMTPIntegrationRoute.LEGACY_MTP
+    assert "at least 2 completion lanes" in " ".join(single.reasons)
+    # The boundary itself still admits: two lanes are enough to amortize.
+    assert at_minimum.admitted is True
+    assert vars(model) == before
+
+
+def test_single_lane_without_legacy_mtp_falls_back_to_plain_decode():
+    class _PlainOnly:
+        batched_mtp_capability = _descriptor()
+
+        def __call__(self, *args, **kwargs):
+            return args, kwargs
+
+        def mtp_batch_forward(self, *args, **kwargs):
+            return args, kwargs
+
+    decision = plan_router_install(
+        _PlainOnly(), enabled=True, max_lanes=1, hard_reserve_bytes=0
+    )
+
+    assert decision.admitted is False
+    assert decision.fallback is ContinuousMTPIntegrationRoute.PLAIN_DECODE
+    assert "this deployment has 1" in " ".join(decision.reasons)
+
+
 def test_install_plan_threads_attested_dynamic_membership():
     admitted = plan_router_install(
         _Model(),
