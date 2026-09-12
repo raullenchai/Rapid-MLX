@@ -217,3 +217,29 @@ def test_installer_respects_runtime_that_is_already_patched() -> None:
         else:
             del language._RAPID_MLX_RUNTIME_FIX_INSTALLED
         patch._INSTALLED = False
+
+
+def test_native_runtime_probe_requires_the_complete_new_class_family() -> None:
+    from vllm_mlx.patches.glm5_next_runtime import _has_native_glm5_next_runtime
+
+    complete = SimpleNamespace(
+        Glm5NextAttention=object,
+        Glm5NextLinearAttention=object,
+        Glm5NextMLP=object,
+        Glm5NextMoE=object,
+        LanguageModel=type(
+            "LanguageModel",
+            (),
+            {
+                "cast_predicate": property(lambda self: None),
+                "sanitize": lambda self, weights: weights,
+            },
+        ),
+    )
+
+    assert _has_native_glm5_next_runtime(complete)
+    del complete.Glm5NextMoE
+    assert not _has_native_glm5_next_runtime(complete)
+    complete.Glm5NextMoE = object
+    complete.Glm5NextSparseAttention = object
+    assert not _has_native_glm5_next_runtime(complete)
