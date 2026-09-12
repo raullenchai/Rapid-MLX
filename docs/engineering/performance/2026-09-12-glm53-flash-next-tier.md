@@ -18,7 +18,73 @@ Rapid must not enable this path from the external number alone. The optimized
 implementation landed after the mlx-vlm v0.7.0 tag and changes a broad runtime
 surface. The exact 181.7 GB Rapid target is now present in the policy-controlled
 Hugging Face cache, and the K=0 production path has completed a paired server
-benchmark. K=1/2/3 MTP still requires the same full-model release gate.
+benchmark. A subsequent full-model K=1/2/3 campaign failed the release gate:
+the best paired gain was only 1.064x, K=3 regressed to 0.882x, and every MTP
+depth diverged from serial greedy output at token 109 on the qualification
+prompt. Keep native MTP disabled for this alias.
+
+## Same-artifact runtime comparison
+
+The public oMLX number uses a different oQ4e checkpoint. To isolate runtime
+from checkpoint layout, the exact Rapid alias snapshot was loaded by all three
+runtimes on the same M3 Ultra. Each 8K prefill row below used the same tokenizer,
+the same synthetic prompt ending in `Reply directly.`, eight output tokens,
+and a cleared prefix cache before each of three requests.
+
+| Runtime | Revision | 8K runs (tok/s) | Median | vs Rapid |
+| --- | --- | ---: | ---: | ---: |
+| Rapid | `e3bff770d` | 338.665 / 362.122 / 351.627 | **351.627** | 1.000x |
+| oMLX, native extensions enabled | `b390b31` | 342.244 / 342.754 / 367.160 | 342.754 | 0.975x |
+| mlx-vlm post-0.7 main | `d2a1434` | 336.226 / 337.128 / 337.491 | 337.128 | 0.959x |
+
+Thus Rapid is 2.6% faster than oMLX and 4.3% faster than mlx-vlm on the same
+uniform q4-g64 artifact. oMLX's published 449.6 tok/s at 32K is not evidence of
+a faster runtime on Rapid's artifact: the material variable is its 169 GiB,
+calibrated mixed-precision oQ4e layout. Its custom affine QMM, DSA scorer, and
+pooling kernels produced no end-to-end win in this controlled comparison.
+
+The same 512-token / 256-output deterministic filler produced a Rapid K=0
+median of 30.406 tok/s (30.827 / 30.352 / 30.406). Latest mlx-vlm measured
+29.016 tok/s at K=0 and 27.774 tok/s at K=3; its K=3 run accepted 106 of 197
+drafts (53.8%) and was 4.3% slower than its own baseline. The upstream 43.67
+tok/s result therefore depends on its reported 90.5% acceptance workload and
+must not be generalized to arbitrary chat/code prompts.
+
+### Full-model native-head qualification
+
+An experimental Rapid injector restored the real q4-g64 layer-45 head and
+added multi-boundary recurrent-cache snapshots. This was an in-memory spike;
+the code was discarded after it failed the gate. The paired batch-one greedy
+results were:
+
+| Depth | Baseline | MTP | Ratio | Acceptance | Greedy parity |
+| ---: | ---: | ---: | ---: | ---: | --- |
+| K=1 | 31.431 | 33.453 | 1.064x | 76.39% | fail at token 109 |
+| K=2 | 31.431 | 33.154 | 1.055x | 50.79% | fail at token 109 |
+| K=3 | 30.329 | 26.760 | 0.882x | 32.31% | fail at token 109 |
+
+The K=2 run proves the old one-token rollback limitation can be removed, but
+doing so is not itself the optimization: recursive draft quality falls with
+depth, while position-wise KDA snapshots add verifier dispatches. The first
+K=2 campaign increased active Metal memory from 165.385 to 171.098 GiB
+(+5.713 GiB) and peaked at 173.701 GiB. K=1 and K=2 reached the same first
+divergence, consistent with GLM's multi-token short-block numerical path rather
+than a K=2-only rollback bug.
+
+The next MTP attempt should use upstream's exact transactional verifier after
+it appears in a tagged mlx-vlm release. It must still re-run the workload gate;
+acceptance rate alone is not a release criterion.
+
+### oQ4e follow-up blocked by cache capacity
+
+`dfp-official/GLM-5.3-Flash-oQ4e-mtp` is the strongest next checkpoint to
+qualify: it is calibrated mixed precision, preserves MTP, and is the artifact
+family behind oMLX's 482.3 / 443.2 / 449.6 tok/s published prefill results.
+At the time of this campaign the policy-controlled Hugging Face volume had
+77 GiB free, while the repository reports approximately 182 GB. Per Studio
+storage policy no download was attempted, no other model was deleted, and no
+alternate cache path was used. Resume only when the normal HF cache has enough
+capacity.
 
 ## Current-revision production-path E2E
 
