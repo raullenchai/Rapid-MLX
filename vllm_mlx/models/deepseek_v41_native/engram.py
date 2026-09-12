@@ -306,6 +306,7 @@ class DiskQuantizedEngramEmbedding(nn.Module):
             self._file.seek(8)
             header = json.loads(self._file.read(header_length))
             self._data_start = 8 + header_length
+            self._validate_header_ranges(header, file_size - self._data_start)
             self._mapping = mmap.mmap(self._file.fileno(), 0, access=mmap.ACCESS_READ)
             if hasattr(self._mapping, "madvise"):
                 self._mapping.madvise(mmap.MADV_RANDOM)
@@ -340,6 +341,35 @@ class DiskQuantizedEngramEmbedding(nn.Module):
             finally:
                 self._file.close()
             raise
+
+    @staticmethod
+    def _validate_header_ranges(header, data_size: int) -> None:
+        if not isinstance(header, dict):
+            raise ValueError("invalid safetensors header")
+        ranges = []
+        for key, entry in header.items():
+            if key == "__metadata__":
+                continue
+            if not isinstance(entry, dict):
+                raise ValueError(f"invalid safetensors tensor entry: {key}")
+            offsets = entry.get("data_offsets")
+            if (
+                not isinstance(offsets, list)
+                or len(offsets) != 2
+                or not all(isinstance(value, int) for value in offsets)
+            ):
+                raise ValueError(f"invalid safetensors tensor offsets: {key}")
+            start, end = offsets
+            if start < 0 or end < start or end > data_size:
+                raise ValueError(f"invalid safetensors tensor offsets: {key}")
+            ranges.append((start, end, key))
+        ranges.sort()
+        for previous, current in zip(ranges, ranges[1:]):
+            if current[0] < previous[1]:
+                raise ValueError(
+                    "overlapping safetensors tensor offsets: "
+                    f"{previous[2]} and {current[2]}"
+                )
 
     def _tensor_view(self, header, key, *, dtype, numpy_dtype, shape):
         entry = header.get(key)

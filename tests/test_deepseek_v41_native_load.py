@@ -81,6 +81,17 @@ def test_indexed_shard_allows_same_repository_hub_blob(tmp_path) -> None:
     assert resolve_indexed_shard(str(snapshot), "shard.safetensors") == str(blob)
 
 
+def test_indexed_shard_does_not_trust_arbitrary_snapshots_name(tmp_path) -> None:
+    snapshot = tmp_path / "snapshots" / "revision"
+    snapshot.mkdir(parents=True)
+    outside = tmp_path / "outside.safetensors"
+    outside.touch()
+    (snapshot / "shard.safetensors").symlink_to(outside)
+
+    with pytest.raises(ValueError, match="symlink escapes"):
+        resolve_indexed_shard(str(snapshot), "shard.safetensors")
+
+
 def test_quantized_grouped_wo_a_preserves_batch_sequence_and_group_axes() -> None:
     args = ModelArgs(
         dim=16,

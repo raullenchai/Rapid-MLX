@@ -189,3 +189,15 @@ def test_disk_engram_constructor_preserves_error_after_partial_view(
             group_size=32,
             bits=2,
         )
+
+
+def test_disk_engram_rejects_overlapping_tensor_ranges():
+    with pytest.raises(ValueError, match="overlapping"):
+        DiskQuantizedEngramEmbedding._validate_header_ranges(
+            {
+                "weight": {"data_offsets": [0, 64]},
+                "scales": {"data_offsets": [32, 96]},
+                "__metadata__": {"format": "mlx"},
+            },
+            data_size=96,
+        )

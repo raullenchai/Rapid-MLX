@@ -43,13 +43,17 @@ def resolve_indexed_shard(model_path: str, filename: str) -> str:
     if os.path.commonpath((root, lexical)) != str(root):
         raise ValueError("Engram shard must stay inside the model directory")
     resolved = lexical.resolve(strict=True)
-    # Hub snapshots legitimately symlink immutable files into their sibling
-    # blobs directory. Keep that CAS layout working without allowing a local
-    # model directory to point at arbitrary files elsewhere on the machine.
-    allowed = root.parent.parent if root.parent.name == "snapshots" else root
-    if os.path.commonpath((allowed, resolved)) != str(allowed):
-        raise ValueError("Engram shard symlink escapes the model repository")
-    return str(resolved)
+    if os.path.commonpath((root, resolved)) == str(root):
+        return str(resolved)
+    # Hub snapshots legitimately symlink immutable files into the specific
+    # repository's sibling blobs directory. Recognize the repository layout,
+    # rather than trusting any parent directory merely named "snapshots".
+    repository = root.parent.parent
+    if root.parent.name == "snapshots" and repository.name.startswith("models--"):
+        blobs = (repository / "blobs").resolve()
+        if blobs.is_dir() and os.path.commonpath((blobs, resolved)) == str(blobs):
+            return str(resolved)
+    raise ValueError("Engram shard symlink escapes the model repository")
 
 
 def reshape_grouped_wo_a(items, args: ModelArgs):
