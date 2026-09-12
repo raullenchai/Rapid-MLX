@@ -377,7 +377,7 @@ class DiskQuantizedEngramEmbedding(nn.Module):
         ranges.sort()
         expected_start = 0
         for start, end, key in ranges:
-            if start != expected_start or end == start:
+            if start != expected_start:
                 raise ValueError(f"non-contiguous safetensors tensor offsets: {key}")
             expected_start = end
         if expected_start != data_size:

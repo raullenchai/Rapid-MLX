@@ -160,6 +160,20 @@ def test_disk_engram_bounds_close_and_cache_validation(tmp_path):
         )
 
 
+def test_disk_engram_close_drains_pending_prefetch(tmp_path):
+    _resident, disk, _keys, _path = _modules(tmp_path)
+    disk.prefetch(np.array([1, 3], dtype=np.int64))
+    assert disk._pending is not None
+    pending = disk._pending[1]
+
+    disk.close()
+
+    assert pending.done()
+    assert disk._executor is None
+    with pytest.raises(RuntimeError, match="closed"):
+        disk(mx.array([1], mx.int32))
+
+
 def test_disk_engram_rejects_header_contract_mismatch(tmp_path):
     _resident, disk, keys, path = _modules(tmp_path)
     with pytest.raises(ValueError, match="shape"):
@@ -255,9 +269,18 @@ def test_disk_engram_rejects_overlapping_tensor_ranges():
     [
         ({"weight": {"data_offsets": [1, 2]}}, 2, "non-contiguous"),
         ({"weight": {"data_offsets": [0, 1]}}, 2, "do not cover"),
-        ({"weight": {"data_offsets": [0, 0]}}, 0, "non-contiguous"),
     ],
 )
 def test_disk_engram_rejects_incomplete_tensor_coverage(header, data_size, message):
     with pytest.raises(ValueError, match=message):
         DiskQuantizedEngramEmbedding._validate_header_ranges(header, data_size)
+
+
+def test_disk_engram_allows_empty_safetensors_tensor_ranges():
+    DiskQuantizedEngramEmbedding._validate_header_ranges(
+        {
+            "empty": {"data_offsets": [0, 0]},
+            "weight": {"data_offsets": [0, 1]},
+        },
+        data_size=1,
+    )
