@@ -33,6 +33,7 @@ import plistlib
 import re
 import shlex
 import shutil
+import stat
 import subprocess
 import sys
 import threading
@@ -283,6 +284,7 @@ _RUNTIME_OVERRIDE_REPAIR_HINT_TEMPLATE = (
 )
 _DOCTOR_BUDGET_S = 5.0
 _DOCTOR_DEEP_BUDGET_S = 30.0
+_IMPORT_PROBE_TIMEOUT_S = 20.0
 # Leave enough scheduling-budget headroom for subprocess timeout cleanup, report
 # assembly, and CLI rendering.  ``subprocess.run(timeout=...)`` only starts
 # terminating the child at its timeout and can return a few milliseconds
@@ -290,6 +292,7 @@ _DOCTOR_DEEP_BUDGET_S = 30.0
 # for rendering and cleanup.
 _DOCTOR_COMPLETION_HEADROOM_S = 0.1
 _DOCTOR_DEADLINE: float | None = None
+_DOCTOR_DEEP_MODE = False
 _DOCTOR_RUN_LOCK = threading.Lock()
 _RUNTIME_CONTEXTS: dict[Path, tuple[Path, dict[str, str]]] = {}
 _RUNTIME_DISTRIBUTION_CACHE: dict[Path, bool] = {}
@@ -1122,12 +1125,17 @@ def _add_inconclusive_import(
     )
     version_text = f" {version}" if version else ""
     verify = _runtime_import_command(runtime, module)
+    retry = (
+        "rerun `rapid-mlx doctor --deep` to allow cold optional imports more time"
+        if outcome is _ImportProbeOutcome.TIMED_OUT and not _DOCTOR_DEEP_MODE
+        else f"verify with `{verify}`"
+    )
     section.add(
         f"{label}{version_text} importability unknown — doctor probe {reason}",
         CheckStatus.WARN,
         detail=(
             f"distribution={label} module={module} outcome={outcome.value}; "
-            f"rerun doctor after cold imports settle or verify with `{verify}`; "
+            f"{retry}; "
             "this result does not indicate that reinstall or rollback is needed"
         ),
     )
@@ -1216,7 +1224,7 @@ def _runtime_module_importable(
             command,
             capture_output=True,
             text=True,
-            timeout=_bounded_timeout(10),
+            timeout=_bounded_timeout(_IMPORT_PROBE_TIMEOUT_S),
             env={
                 "HOME": os.environ.get("HOME", str(Path.home())),
                 "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
@@ -1565,13 +1573,13 @@ def _dir_size_gb(path: Path, *, budget_s: float = _CACHE_WALK_BUDGET_S) -> float
 
         Otherwise the total in GB.
 
-    Walks with ``os.walk(..., followlinks=False)`` so LM-Studio-style symlinks
-    don't double-count. The deadline is checked **inside** the per-file loop,
-    not just between directories: HF cache's ``blobs/`` subdir is flat with
-    thousands of entries, so a per-directory deadline would let a single
-    cold-cache stat() storm blow past the 1.5 s budget. Codex review round 2
-    caught the per-directory variant as a contract violation; this version
-    aborts on the very next file once the deadline expires.
+    Walks with ``os.walk(..., followlinks=False)`` and sizes entries with
+    ``lstat`` so snapshot symlinks do not count their shared blobs twice. The
+    deadline is checked **inside** the per-file loop, not just between
+    directories: HF cache's ``blobs/`` subdir is flat with thousands of
+    entries, so a per-directory deadline would let a single cold-cache stat()
+    storm blow past the 1.5 s budget. This version aborts on the very next file
+    once the deadline expires.
     """
     import time as _time
 
@@ -1589,7 +1597,9 @@ def _dir_size_gb(path: Path, *, budget_s: float = _CACHE_WALK_BUDGET_S) -> float
                     # useful (lower bound only). Caller renders "unknown".
                     return None
                 try:
-                    total += os.path.getsize(os.path.join(root, f))
+                    file_stat = os.lstat(os.path.join(root, f))
+                    if stat.S_ISREG(file_stat.st_mode):
+                        total += file_stat.st_size
                 except OSError:
                     # Broken symlink, permission denied — skip silently;
                     # this probe is "is the cache enormous?", not "audit
@@ -3845,10 +3855,11 @@ def _run_all_serialized(
     report as a single ✗ row labelled with the exception class — that's
     still a useful signal ("doctor is broken, file a bug").
     """
-    global _DOCTOR_DEADLINE, _RUNTIME_SELECTION_DONE
+    global _DOCTOR_DEADLINE, _DOCTOR_DEEP_MODE, _RUNTIME_SELECTION_DONE
     report = Report()
     try:
         _DOCTOR_DEADLINE = caller_deadline
+        _DOCTOR_DEEP_MODE = deep
         _RUNTIME_SELECTION_DONE = False
         _RUNTIME_PROBE_CACHE.clear()
         _RUNTIME_PROBE_TIMEOUTS.clear()
@@ -3939,6 +3950,7 @@ def _run_all_serialized(
                 )
     finally:
         _DOCTOR_DEADLINE = None
+        _DOCTOR_DEEP_MODE = False
     return report
 
 
