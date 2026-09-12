@@ -22,7 +22,7 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 from vllm_mlx.request import Request, SamplingParams
-from vllm_mlx.scheduler import Scheduler, SchedulerConfig
+from vllm_mlx.scheduler import _PREFILL_TILE_ROWS, Scheduler, SchedulerConfig
 
 
 def _make_scheduler_with_cache():
@@ -80,6 +80,190 @@ class TestPromptCacheSnapshot:
         assert boundary == 3
         assert request._cache_snapshot_boundary == 3
         assert request._cache_snapshot_is_internal is True
+
+    def _boundary_request(self, prompt_len: int = 64, boundary: int = 0):
+        request = Request(
+            request_id="req-tile-align",
+            prompt="ignored",
+            prompt_token_ids=list(range(prompt_len)),
+            sampling_params=SamplingParams(max_tokens=4),
+        )
+        request.prefix_boundary = boundary
+        return request
+
+    def test_boundary_is_rounded_down_to_whole_tiles(self):
+        """An unaligned split costs a whole extra prefill tile."""
+        scheduler = _make_scheduler_with_cache()
+        scheduler._prefill_tile_rows_cached = 32
+        request = self._boundary_request(boundary=40)
+
+        assert scheduler._resolve_snapshot_boundary(request) == 32
+        assert request._cache_snapshot_boundary == 32
+
+    def test_boundary_inside_the_first_tile_falls_back_to_n_minus_one(self):
+        """Below one tile the snapshot cannot pay for the tile it costs.
+
+        Dropping it is not a plain loss: the bounded N-1 fallback takes over,
+        which costs one extra single-token forward instead of a tile and covers
+        the whole prompt, so an exact repeat is served from cache outright.
+        """
+        scheduler = _make_scheduler_with_cache()
+        scheduler.config.hybrid_cache_entries = 8
+        scheduler.config.non_trimmable_exact_prefix_reuse = True
+        scheduler._prefill_tile_rows_cached = 32
+        request = self._boundary_request(boundary=17)
+
+        assert scheduler._resolve_snapshot_boundary(request) == 63
+        assert request._cache_snapshot_boundary == 63
+        assert request._cache_snapshot_is_internal is True
+
+    def test_dropped_boundary_leaves_no_snapshot_when_n_minus_one_is_off(self):
+        scheduler = _make_scheduler_with_cache()
+        scheduler._prefill_tile_rows_cached = 32
+        request = self._boundary_request(boundary=17)
+
+        assert scheduler._resolve_snapshot_boundary(request) == 0
+        assert request._cache_snapshot_boundary == 0
+        assert not hasattr(request, "_cache_snapshot_is_internal")
+
+    def test_alignment_is_relative_to_the_reused_prefix(self):
+        """The prefill is charged for the segment after the reused prefix.
+
+        A continuing turn that reuses 622 tokens and carries boundary 633 has
+        an 11-token segment to split.  Flooring the absolute boundary would put
+        the snapshot at 608 -- behind the prefix the request is reusing.
+        """
+        scheduler = _make_scheduler_with_cache()
+        scheduler._prefill_tile_rows_cached = 32
+        request = self._boundary_request(prompt_len=700, boundary=633)
+        request.cached_tokens = 622
+
+        assert scheduler._resolve_snapshot_boundary(request) == 0
+        assert request._cache_snapshot_boundary == 0
+
+        request.prefix_boundary = 692
+        assert scheduler._resolve_snapshot_boundary(request) == 686
+        assert request._cache_snapshot_boundary == 686
+
+    def test_boundary_inside_the_reused_prefix_is_left_alone(self):
+        """A prefix that already covers the boundary leaves nothing to split.
+
+        The turn reuses 622 tokens and the message boundary sits at 600, so the
+        prefill starts past it: there is no local segment to round, and moving
+        the boundary would only walk the snapshot backwards into cache the
+        request is already reusing.
+        """
+        scheduler = _make_scheduler_with_cache()
+        scheduler._prefill_tile_rows_cached = 32
+        request = self._boundary_request(prompt_len=700, boundary=600)
+        request.cached_tokens = 622
+
+        assert scheduler._resolve_snapshot_boundary(request) == 600
+        assert not hasattr(request, "_cache_snapshot_boundary")
+
+    def test_internal_n_minus_one_boundary_is_not_aligned(self):
+        """Its tail is one token on the single-row path, not a tile."""
+        scheduler = _make_scheduler_with_cache()
+        scheduler.config.hybrid_cache_entries = 8
+        scheduler.config.non_trimmable_exact_prefix_reuse = True
+        scheduler._prefill_tile_rows_cached = 32
+        request = self._boundary_request()
+
+        assert scheduler._resolve_snapshot_boundary(request) == 63
+        assert request._cache_snapshot_is_internal is True
+
+    def test_unquantized_weights_keep_their_exact_boundary(self):
+        """The 32-row step was only measured on quantized matmuls."""
+        import mlx.core as mx
+
+        scheduler = _make_scheduler_with_cache()
+        scheduler.model = SimpleNamespace(
+            parameters=lambda: {"weight": mx.zeros((4, 4), mx.bfloat16)}
+        )
+        assert scheduler._prefill_tile_rows() == 1
+
+        request = self._boundary_request(boundary=17)
+        assert scheduler._resolve_snapshot_boundary(request) == 17
+
+    def test_quantized_weights_are_detected_from_the_packing_dtype(self):
+        """Packed 4-bit weights are uint32 words wherever they are nested."""
+        import mlx.core as mx
+
+        scheduler = _make_scheduler_with_cache()
+        scheduler.model = SimpleNamespace(
+            parameters=lambda: {
+                "layers": [
+                    {
+                        "mlp": {
+                            "weight": mx.zeros((4, 4), mx.uint32),
+                            "scales": mx.zeros((4, 1), mx.bfloat16),
+                        }
+                    }
+                ]
+            }
+        )
+        assert scheduler._prefill_tile_rows() == _PREFILL_TILE_ROWS
+
+    def test_free_split_is_preserved_even_when_unaligned(self):
+        """Rounding is for splits that cost a tile, not for every odd offset.
+
+        33 pending tokens cost two tiles whether or not they are split at 1, so
+        rounding there would forfeit reuse for nothing.
+        """
+        scheduler = _make_scheduler_with_cache()
+        scheduler._prefill_tile_rows_cached = 32
+        request = self._boundary_request(prompt_len=33, boundary=1)
+
+        assert scheduler._resolve_snapshot_boundary(request) == 1
+        assert not hasattr(request, "_cache_snapshot_boundary")
+
+    def test_extra_tile_predicate_matches_the_tile_arithmetic(self):
+        """The premise the rounding rests on, asserted rather than commented."""
+        tile = _PREFILL_TILE_ROWS
+
+        def tiles(count: int) -> int:
+            return -(-count // tile)
+
+        saw_free_unaligned = False
+        saw_waste = False
+        for n in range(2, 4 * tile + 2):
+            for b in range(1, n):
+                extra = Scheduler._extra_prefill_tiles(b, n, tile)
+                assert extra == tiles(b) + tiles(n - b) - tiles(n)
+                assert extra in (0, 1), f"n={n} b={b} extra={extra}"
+                if b % tile == 0:
+                    assert extra == 0, f"aligned split n={n} b={b} costs a tile"
+                elif extra == 0:
+                    saw_free_unaligned = True
+                else:
+                    saw_waste = True
+        assert saw_waste, "unaligned splits never cost extra - the premise is wrong"
+        assert saw_free_unaligned, "no unaligned split is free - rounding is trivial"
+        assert Scheduler._extra_prefill_tiles(1, tile + 1, tile) == 0
+
+    def test_unreadable_weights_answer_conservatively_without_caching(self):
+        """A traversal failure is not evidence, so it must not stick."""
+        import mlx.core as mx
+
+        scheduler = _make_scheduler_with_cache()
+        scheduler.model = SimpleNamespace()  # no .parameters()
+        assert scheduler._prefill_tile_rows() == 1
+        assert scheduler._prefill_tile_rows_cached is None
+
+        scheduler.model = SimpleNamespace(
+            parameters=lambda: {"weight": mx.zeros((4, 4), mx.uint32)}
+        )
+        assert scheduler._prefill_tile_rows() == _PREFILL_TILE_ROWS
+
+    def test_unquantized_weights_are_not_inferred_from_a_scales_name(self):
+        """A parameter named ``scales`` is not proof of packed weights."""
+        import mlx.core as mx
+
+        scheduler = _make_scheduler_with_cache()
+        scheduler.model = SimpleNamespace(
+            parameters=lambda: {"encoder": {"scales": mx.zeros((4,), mx.float32)}}
+        )
+        assert scheduler._prefill_tile_rows() == 1
 
     def test_valid_semantic_boundary_is_preserved(self):
         scheduler = _make_scheduler_with_cache()
