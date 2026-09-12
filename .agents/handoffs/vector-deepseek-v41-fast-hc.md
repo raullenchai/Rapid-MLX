@@ -56,6 +56,19 @@ adaptive verification, and other model families.
   K4 shape, and that no drafter, quantization, or catalog change entered the
   diff. No in-contract defect remained.
 
+## PR validation
+
+- PR: #3343, stacked on #3338.
+- `pr_validate` exact head/base override: description, supply chain, test
+  environment, vocabulary, lint, and 93.1% patch coverage passed. The external
+  Codex step was intentionally skipped because this task uses the recorded
+  author-owned review.
+- Full unit: 23,868 passed, 132 skipped, 18 failed. All 18 failures reproduce
+  unchanged on base #3338: 16 extraction tests require undeclared `torch`, one
+  image precision test requires undeclared `mflux`, and one existing disk-stream
+  CLI assertion receives no warning. There is no head-only failure; these are
+  not fixed here to preserve the PR boundary.
+
 ## Remaining work
 
 1. Complete author-owned adversarial review and fix only in-contract findings.
