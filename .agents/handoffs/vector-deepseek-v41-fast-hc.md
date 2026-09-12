@@ -10,7 +10,7 @@ Branch: `vector/deepseek-v41-fast-hc`
 
 Worktree: `/private/tmp/rapid-mlx-deepseek-v41-fast-hc`
 
-Base dependency: PR #3338 (`vector/deepseek-v41-engram-offload`)
+Base: `main` (PR #3338 has merged)
 
 ## Intention and boundary
 
@@ -59,10 +59,15 @@ adaptive verification, and other model families.
   separately, that the prior 19.39 tok/s comparison uses the same four-domain
   K4 shape, and that no drafter, quantization, or catalog change entered the
   diff. No in-contract defect remained.
+- Round 4, CI observability: the new Metal-path tests were absent from the
+  explicit Apple Silicon roster, so changed-lines coverage could not observe
+  the kernel execution. Added the focused test to that roster, guarded the
+  roster contract, and added a mocked Block wiring test for both fused
+  collapse-normalize call sites. Focused diff coverage is now 100% (58/58).
 
 ## PR validation
 
-- PR: #3343, stacked on #3338.
+- PR: #3343, rebased onto `main` after #3338 merged.
 - `pr_validate` exact head/base override: description, supply chain, test
   environment, vocabulary, lint, and 93.1% patch coverage passed. The external
   Codex step was intentionally skipped because this task uses the recorded
@@ -73,14 +78,14 @@ adaptive verification, and other model families.
   CLI assertion receives no warning. There is no head-only failure; these are
   not fixed here to preserve the PR boundary.
 
-## Remaining work
+## Follow-up experiment findings (outside this PR)
 
-1. Complete author-owned adversarial review and fix only in-contract findings.
-2. Run PR validation, commit, push, and open the stacked PR.
-3. Rebase onto `main` after #3338 lands, then queue.
-4. Separately re-evaluate the full 4-bit DSpark head under Engram offload; its
-   metadata currently needs explicit 2-bit overrides for target-shared embed
-   and head tensors. That is the next 40 tok/s experiment, not part of this PR.
+- The full 4-bit DSpark sidecar did not improve acceptance and regressed two
+  domains while adding about 3.4 GB; do not productize it.
+- A fixed-K sweep kept K4 as the best global setting. K selection is not a
+  credible route to 40 tok/s.
+- The next separate experiment is acceptance-aware drafter calibration against
+  the actual 2-bit target's verification labels. Do not add that work to #3343.
 
 ## Risks
 
@@ -88,4 +93,4 @@ adaptive verification, and other model families.
   warm measurements rather than quoting only 34.9 tok/s.
 - Low-acceptance domains remain below 30 tok/s. Kernel work alone does not prove
   a universal 40 tok/s claim.
-- The PR is stacked on #3338 and must not merge first.
+- Low-acceptance prompts are now dominated by drafter quality, not mHC dispatch.

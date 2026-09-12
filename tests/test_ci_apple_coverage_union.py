@@ -169,6 +169,7 @@ def test_deepseek_v41_product_coverage_runs_on_apple_silicon() -> None:
     assert "tests/test_deepseek_v41_artifacts.py" in apple_run
     assert "tests/test_deepseek_v41_affine_route_qmv.py" in apple_run
     assert "tests/test_deepseek_v41_dspark.py" in apple_run
+    assert "tests/test_deepseek_v41_hyper_connections.py" in apple_run
     assert "tests/test_deepseek_v41_native_load.py" in apple_run
 
 

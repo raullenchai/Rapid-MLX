@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import pytest
 
 pytest.importorskip("mlx")
@@ -8,6 +10,7 @@ pytestmark = pytest.mark.requires_mlx
 import mlx.core as mx
 
 from vllm_mlx.models.deepseek_v41_native import hyper_connections as hc
+from vllm_mlx.models.deepseek_v41_native import model as model_module
 
 
 def _requires_metal() -> None:
@@ -176,3 +179,58 @@ def test_release_layout_stays_portable_on_cpu(monkeypatch) -> None:
     assert expanded.shape == residual.shape
     assert normalized.shape == x.shape
     assert sinkhorn.shape == comb.shape
+
+
+def test_block_uses_fused_pre_norm_for_attention_and_ffn(monkeypatch) -> None:
+    calls = []
+    pre = mx.ones((1, 1, 4), dtype=mx.float32)
+    post = mx.ones((1, 1, 4), dtype=mx.float32)
+    comb = mx.eye(4, dtype=mx.float32)[None, None]
+
+    def fake_mixes(*_args):
+        calls.append("mixes")
+        return pre, post, comb
+
+    def fake_pre_norm(x, mix, weight, eps):
+        calls.append(("pre_norm", mix, weight, eps))
+        return mx.sum(x, axis=2)
+
+    def fake_post(value, _residual, _post, _comb):
+        calls.append("post")
+        return mx.repeat(value[:, :, None, :], 4, axis=2)
+
+    monkeypatch.setattr(model_module, "hc_mixes", fake_mixes)
+    monkeypatch.setattr(model_module, "hc_pre_norm", fake_pre_norm)
+    monkeypatch.setattr(model_module, "hc_post", fake_post)
+
+    block = SimpleNamespace(
+        hc_attn_fn=mx.zeros((24, 32)),
+        hc_ffn_fn=mx.zeros((24, 32)),
+        hc_attn_scale=mx.ones((3,)),
+        hc_ffn_scale=mx.ones((3,)),
+        hc_attn_base=mx.zeros((24,)),
+        hc_ffn_base=mx.zeros((24,)),
+        hc_mult=4,
+        hc_iters=20,
+        norm_eps=1e-6,
+        hc_eps=1e-6,
+        attn_norm=SimpleNamespace(weight=mx.ones((8,)), eps=1e-6),
+        ffn_norm=SimpleNamespace(weight=mx.ones((8,)), eps=1e-6),
+        attn=lambda value, *_args: value + 1,
+        ffn=lambda value: value + 2,
+    )
+    x = mx.ones((1, 1, 4, 8), dtype=mx.float32)
+
+    output, next_pre = model_module.Block.__call__(block, x, pre, 0, None, None)
+    mx.eval(output, next_pre)
+
+    assert output.shape == x.shape
+    assert next_pre is pre
+    assert calls[0] == "mixes"
+    assert calls[2:4] == ["post", "mixes"]
+    assert calls[-1] == "post"
+    pre_norm_calls = [call for call in calls if isinstance(call, tuple)]
+    assert pre_norm_calls[0][1] is pre
+    assert pre_norm_calls[1][1] is pre
+    assert pre_norm_calls[0][2] is block.attn_norm.weight
+    assert pre_norm_calls[1][2] is block.ffn_norm.weight
