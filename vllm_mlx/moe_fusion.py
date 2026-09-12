@@ -1,7 +1,8 @@
 # SPDX-License-Identifier: Apache-2.0
 """Fuse MoE routed gate/up expert projections into one ``gather_qmm``.
 
-At single-token decode, mlx-lm's stock ``SwitchGLU`` issues three tiny
+At single-token decode, the stock ``SwitchGLU`` implementations in mlx-lm
+and mlx-vlm issue three tiny
 ``gather_qmm`` launches per MoE layer (gate, up, down). Affine
 quantization packs each output row independently, so concatenating the
 gate and up expert weights along the output axis and issuing ONE
@@ -16,8 +17,8 @@ Fusion design adapted from the oMLX project
 (https://github.com/jundot/omlx, Apache-2.0), which ships it default-on
 for the same layer type.
 
-``fuse_gate_up(model)`` runs once post-load: it patches
-``SwitchGLU.__call__`` with a fused-aware branch (class-level, once per
+``fuse_gate_up(model)`` runs once post-load: it patches each loaded
+``SwitchGLU.__call__`` family with a fused-aware branch (class-level, once per
 process, stock path preserved for unfused instances) and rewrites each
 eligible instance in place — the gate module becomes the fused container
 so quantization parameters carry over, and the original gate/up buffers
@@ -28,19 +29,35 @@ gate/up pair fails the structural checks are left untouched. Set
 
 from __future__ import annotations
 
+import inspect
 import logging
 import os
+import sys
 from typing import Any
 
 import mlx.core as mx
 
 logger = logging.getLogger(__name__)
 
-_CALL_PATCHED = False
+
+def _supports_fused_call_contract(switch_glu_cls) -> bool:
+    """Fail closed if an upstream SwitchGLU changes its calling convention."""
+    try:
+        parameters = tuple(inspect.signature(switch_glu_cls.__call__).parameters)
+    except (TypeError, ValueError):
+        return False
+    return parameters == ("self", "x", "indices")
 
 
-def _switch_layer_types():
-    """Import lazily so a changed mlx-lm degrades to no-fusion, never a crash."""
+def _switch_layer_families():
+    """Return loaded compatible SwitchGLU families without importing mlx-vlm.
+
+    mlx-vlm carries a private copy of the switch layers rather than re-exporting
+    mlx-lm's classes. Importing mlx-vlm from a text-only process would defeat
+    Rapid's optional vision dependency, so enroll that family only after its
+    module is already resident (which is necessarily true for a loaded VLM).
+    """
+    families = []
     try:
         from mlx_lm.models.switch_layers import (
             QuantizedSwitchLinear,
@@ -50,8 +67,37 @@ def _switch_layer_types():
             _scatter_unsort,
         )
     except ImportError:
-        return None
-    return QuantizedSwitchLinear, SwitchGLU, SwitchLinear, _gather_sort, _scatter_unsort
+        pass
+    else:
+        if _supports_fused_call_contract(SwitchGLU):
+            families.append(
+                (
+                    QuantizedSwitchLinear,
+                    SwitchGLU,
+                    SwitchLinear,
+                    _gather_sort,
+                    _scatter_unsort,
+                )
+            )
+
+    vlm_switch = sys.modules.get("mlx_vlm.models.switch_layers")
+    if vlm_switch is not None:
+        try:
+            family = (
+                vlm_switch.QuantizedSwitchLinear,
+                vlm_switch.SwitchGLU,
+                vlm_switch.SwitchLinear,
+                vlm_switch._gather_sort,
+                vlm_switch._scatter_unsort,
+            )
+        except AttributeError:
+            pass
+        else:
+            if _supports_fused_call_contract(family[1]) and all(
+                family[1] is not existing[1] for existing in families
+            ):
+                families.append(family)
+    return tuple(families)
 
 
 def _can_fuse(switch_mlp: Any, quantized_cls, plain_cls) -> bool:
@@ -137,15 +183,12 @@ def _make_fused_call(orig_call, gather_sort, scatter_unsort):
 
 
 def _ensure_call_patch(switch_glu_cls, gather_sort, scatter_unsort) -> None:
-    global _CALL_PATCHED
-    if _CALL_PATCHED or getattr(switch_glu_cls, "_rapid_gate_up_fused_call", False):
-        _CALL_PATCHED = True
+    if getattr(switch_glu_cls, "_rapid_gate_up_fused_call", False):
         return
     orig = switch_glu_cls.__call__
     switch_glu_cls.__call__ = _make_fused_call(orig, gather_sort, scatter_unsort)
     switch_glu_cls._rapid_gate_up_fused_call = True
     switch_glu_cls._rapid_gate_up_original_call = orig
-    _CALL_PATCHED = True
 
 
 def fuse_gate_up(model: Any) -> int:
@@ -160,10 +203,9 @@ def fuse_gate_up(model: Any) -> int:
     if os.environ.get("RAPID_MLX_MOE_GATE_UP_FUSION", "1") == "0":
         logger.info("[moe_fusion] disabled via RAPID_MLX_MOE_GATE_UP_FUSION=0")
         return 0
-    layer_types = _switch_layer_types()
-    if layer_types is None:
+    families = _switch_layer_families()
+    if not families:
         return 0
-    quantized_cls, switch_glu_cls, plain_cls, gather_sort, scatter_unsort = layer_types
 
     try:
         modules = [m for _, m in model.named_modules()]
@@ -172,19 +214,29 @@ def fuse_gate_up(model: Any) -> int:
     # Exact type only: a subclass may override __call__ and never consult
     # gate_up_proj, so fusing it would silently waste memory (or worse if
     # it reads gate_proj directly).
-    targets = [
-        m
-        for m in modules
-        if type(m) is switch_glu_cls and _can_fuse(m, quantized_cls, plain_cls)
-    ]
-    if not targets:
-        return 0
-    _ensure_call_patch(switch_glu_cls, gather_sort, scatter_unsort)
-    for switch_mlp in targets:
-        _fuse_one(switch_mlp, quantized_cls)
-        # The freed gate/up buffers land in the MLX buffer pool. Drain per
-        # fused layer so the load-time transient stays bounded to a single
-        # layer's worth instead of ~2/3 of the whole routed expert set.
-        mx.clear_cache()
-    logger.info("[moe_fusion] gate+up fusion applied: %d MoE layers", len(targets))
-    return len(targets)
+    fused_count = 0
+    for (
+        quantized_cls,
+        switch_glu_cls,
+        plain_cls,
+        gather_sort,
+        scatter_unsort,
+    ) in families:
+        targets = [
+            m
+            for m in modules
+            if type(m) is switch_glu_cls and _can_fuse(m, quantized_cls, plain_cls)
+        ]
+        if not targets:
+            continue
+        _ensure_call_patch(switch_glu_cls, gather_sort, scatter_unsort)
+        for switch_mlp in targets:
+            _fuse_one(switch_mlp, quantized_cls)
+            fused_count += 1
+            # The freed gate/up buffers land in the MLX buffer pool. Drain per
+            # fused layer so the load-time transient stays bounded to a single
+            # layer's worth instead of ~2/3 of the whole routed expert set.
+            mx.clear_cache()
+    if fused_count:
+        logger.info("[moe_fusion] gate+up fusion applied: %d MoE layers", fused_count)
+    return fused_count

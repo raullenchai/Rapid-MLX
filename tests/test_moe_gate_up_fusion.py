@@ -36,6 +36,18 @@ class TinyMoE(nn.Module):
             nn.quantize(self, group_size=32, bits=4)
 
 
+class TinyVLMMoE(nn.Module):
+    """mlx-vlm owns a separate, API-compatible SwitchGLU class family."""
+
+    def __init__(self, n_layers=2, quantize=True):
+        super().__init__()
+        from mlx_vlm.models.switch_layers import SwitchGLU as VLMSwitchGLU
+
+        self.layers = [VLMSwitchGLU(HID, INTER, E) for _ in range(n_layers)]
+        if quantize:
+            nn.quantize(self, group_size=32, bits=4)
+
+
 def _decode_inputs(seed=3, tokens=1):
     mx.random.seed(seed)
     x = mx.random.normal((1, tokens, HID)).astype(mx.float16)
@@ -117,8 +129,120 @@ class TestRewriteSemantics:
 
         assert moe_fusion.fuse_gate_up(Dense()) == 0
 
+    def test_mllm_wrapper_applies_fusion_after_load(self, monkeypatch):
+        """The VLM lane must not leave eligible MoE projections unfused.
+
+        GLM-5.3-Flash is forced through ``MLXMultimodalLM``. Before this
+        regression guard, only the text BatchedEngine called ``fuse_gate_up``
+        after loading, so all 42 GLM sparse layers missed the optimization.
+        """
+        import mlx_vlm
+        import mlx_vlm.utils
+
+        from vllm_mlx.models import mllm
+        from vllm_mlx.utils import tokenizer as tokenizer_utils
+
+        model = TinyVLMMoE(n_layers=1)
+        model.config = type("Config", (), {})()
+        processor = type(
+            "Processor",
+            (),
+            {"tokenizer": type("Tokenizer", (), {})()},
+        )()
+        monkeypatch.setattr(mllm, "_require_mlx_vlm", lambda: None)
+        monkeypatch.setattr(mlx_vlm, "load", lambda *args, **kwargs: (model, processor))
+        monkeypatch.setattr(
+            mlx_vlm.utils,
+            "load_config",
+            lambda *args, **kwargs: {"model_type": "glm5_next"},
+        )
+        monkeypatch.setattr(
+            tokenizer_utils,
+            "augment_eos_token_ids_from_generation_config",
+            lambda *args, **kwargs: None,
+        )
+        monkeypatch.setattr(
+            tokenizer_utils,
+            "repair_byte_level_decoder",
+            lambda *args, **kwargs: None,
+        )
+
+        wrapper = mllm.MLXMultimodalLM("unit-test/glm5-next")
+        wrapper.load()
+
+        assert hasattr(model.layers[0], "gate_up_proj")
+        assert not hasattr(model.layers[0], "gate_proj")
+        assert not hasattr(model.layers[0], "up_proj")
+
+    def test_mlx_vlm_family_is_byte_identical(self):
+        model = TinyVLMMoE(n_layers=1)
+        mx.eval(model.parameters())
+        x, inds = _decode_inputs()
+        before = _run_all(model, x, inds)[0]
+
+        assert moe_fusion.fuse_gate_up(model) == 1
+        after = _run_all(model, x, inds)[0]
+
+        assert bool(mx.array_equal(before, after))
+
+    def test_mlx_vlm_sorted_path_is_byte_identical(self):
+        model = TinyVLMMoE(n_layers=1)
+        mx.eval(model.parameters())
+        x, inds = _decode_inputs(tokens=40)
+        before = _run_all(model, x, inds)[0]
+
+        assert moe_fusion.fuse_gate_up(model) == 1
+        after = _run_all(model, x, inds)[0]
+
+        assert bool(mx.array_equal(before, after))
+
+    def test_non_glm_mllm_does_not_enable_unqualified_fusion(self, monkeypatch):
+        import mlx_vlm
+        import mlx_vlm.utils
+
+        from vllm_mlx.models import mllm
+        from vllm_mlx.utils import tokenizer as tokenizer_utils
+
+        model = TinyVLMMoE(n_layers=1)
+        model.config = type("Config", (), {})()
+        processor = type(
+            "Processor",
+            (),
+            {"tokenizer": type("Tokenizer", (), {})()},
+        )()
+        monkeypatch.setattr(mllm, "_require_mlx_vlm", lambda: None)
+        monkeypatch.setattr(mlx_vlm, "load", lambda *args, **kwargs: (model, processor))
+        monkeypatch.setattr(
+            mlx_vlm.utils,
+            "load_config",
+            lambda *args, **kwargs: {"model_type": "other_vlm"},
+        )
+        monkeypatch.setattr(
+            tokenizer_utils,
+            "augment_eos_token_ids_from_generation_config",
+            lambda *args, **kwargs: None,
+        )
+        monkeypatch.setattr(
+            tokenizer_utils,
+            "repair_byte_level_decoder",
+            lambda *args, **kwargs: None,
+        )
+
+        wrapper = mllm.MLXMultimodalLM("unit-test/other-vlm")
+        wrapper.load()
+
+        assert hasattr(model.layers[0], "gate_proj")
+        assert hasattr(model.layers[0], "up_proj")
+
 
 class TestGates:
+    def test_changed_switch_glu_call_contract_fails_closed(self):
+        class FutureSwitchGLU:
+            def __call__(self, x, indices, routing_weights):
+                return x, indices, routing_weights
+
+        assert not moe_fusion._supports_fused_call_contract(FutureSwitchGLU)
+
     def test_env_opt_out(self, monkeypatch):
         monkeypatch.setenv("RAPID_MLX_MOE_GATE_UP_FUSION", "0")
         model = TinyMoE()
