@@ -56,6 +56,33 @@ from typing import Any
 logger = logging.getLogger(__name__)
 
 
+# Which backbone hidden state the MTP head is fed for its ``pre_fc_norm_hidden``
+# input. Qwen3-Next-style MTP heads are TRAINED on the backbone's final hidden
+# state -- the very tensor ``lm_head`` scores -- which for this family is
+# post-norm: ``Qwen3_5TextModel.__call__`` ends in ``self.norm(hidden_states)``,
+# and vLLM's ``qwen3_next_mtp.py`` hands ``Qwen3NextModel``'s post-norm return
+# value straight to ``pre_fc_norm_hidden`` (its ``compute_logits`` applies no
+# further norm). mlx-vlm's ``qwen3_5_mtp`` drafter takes the same tensor.
+# ``pre_fc_norm_hidden`` is the head's OWN norm on top of that, not a stand-in
+# for the backbone's.
+#
+# Feeding the un-normalized hidden instead is silent: the head still emits
+# fluent tokens, they are just accepted less often, so only acceptance
+# telemetry shows it. Measured greedy at K pinned to 2, aggregated over six
+# unrelated prompts (~1.4k tokens, ~600 rounds -- one prompt is a single
+# deterministic trajectory and moves several percent on its own):
+#
+#   Qwen3.8-27B-4bit  pre 2.340 -> post 2.436 tok/round  d1 0.787 -> 0.828
+#   Qwen3.5-9B-4bit   pre 2.376 -> post 2.400 tok/round  d1 0.795 -> 0.818
+#
+# at an unchanged round cost, so the tok/round gain is the throughput gain.
+# Both families move the same way, which is what makes it the contract rather
+# than one checkpoint's quirk. An MTPLX artifact that really was exported
+# against the pre-norm hidden can still pin ``base_hidden_variant`` in its
+# ``mtplx_runtime.json``.
+BASE_HIDDEN_VARIANT_DEFAULT = "post_norm"
+
+
 BATCHED_MTP_CAPABILITY = MappingProxyType(
     {
         "protocol_version": 1,
@@ -385,12 +412,13 @@ def _find_mtp_weights_file(sidecar_dir: Path) -> Path | None:
 def _load_mtplx_runtime_contract(weights_file: Path) -> dict[str, Any]:
     """Return the colocated MTPLX MTP contract, or an empty mapping.
 
-    Ordinary mlx-community sidecars have no runtime manifest and retain the
-    upstream mlx-lm PR #990 contract (pre-norm hidden, cache-relative MTP
-    positions).  MTPLX combined artifacts carry ``mtplx_runtime.json`` next
-    to ``mtp.safetensors``; silently treating their post-norm head as the
-    PR #990 variant produces plausible but low-acceptance drafts.  Read only
-    the closed contract fields we implement and fail closed on malformed
+    Ordinary mlx-community sidecars have no runtime manifest and take the
+    defaults below, which are the Qwen3-Next MTP training contract:
+    post-norm base hidden, cache-relative MTP positions.  MTPLX combined
+    artifacts carry ``mtplx_runtime.json`` next to ``mtp.safetensors`` and
+    may pin a different variant; a head fed the wrong hidden still emits
+    plausible tokens, so the only symptom is low acceptance.  Read only the
+    closed contract fields we implement and fail closed on malformed
     metadata.
     """
 
@@ -407,7 +435,7 @@ def _load_mtplx_runtime_contract(weights_file: Path) -> dict[str, Any]:
     contract = payload.get("mtp_contract")
     if not isinstance(contract, dict):
         return {}
-    base_hidden = contract.get("base_hidden_variant", "pre_norm")
+    base_hidden = contract.get("base_hidden_variant", BASE_HIDDEN_VARIANT_DEFAULT)
     hidden = contract.get("hidden_variant", base_hidden)
     concat = contract.get("concat_order", "embedding_hidden")
     position = contract.get("mtp_position_mode", "cache")
@@ -564,7 +592,9 @@ def inject_mtp_support(
     runtime_contract = (
         _load_mtplx_runtime_contract(weights_file) if weights_file is not None else {}
     )
-    base_hidden_variant = runtime_contract.get("base_hidden_variant", "pre_norm")
+    base_hidden_variant = runtime_contract.get(
+        "base_hidden_variant", BASE_HIDDEN_VARIANT_DEFAULT
+    )
     mtp_concat_order = runtime_contract.get("concat_order", "embedding_hidden")
 
     # --- Step 3: Match the MTP module's quantization to the SIDECAR ---
@@ -909,9 +939,9 @@ def inject_mtp_support(
         The forward is inlined from
         ``mlx_lm.models.qwen3_5.Qwen3_5TextModel.__call__`` so that:
 
-        * ``return_hidden=True`` can return the pre-norm hidden state
-          the MTP head consumes (the upstream forward returns only the
-          post-norm output).
+        * ``return_hidden=True`` can return the hidden state the MTP
+          head consumes alongside the logits (the upstream forward
+          returns only the logits), in either norm variant.
         * ``n_confirmed`` is accepted on the signature for ABI parity
           with PR #990 (the generator passes ``n_confirmed=1`` during
           verify forwards). It is currently a no-op below this layer
@@ -970,9 +1000,6 @@ def inject_mtp_support(
                         if c is not None and hasattr(c, "n_confirmed_for_mtp"):
                             c.n_confirmed_for_mtp = 0
 
-            # Return PRE-norm hidden so MTP can apply its own
-            # ``pre_fc_norm_hidden`` — matches PR #990's contract that
-            # ``mtp_forward(hidden, ...)`` consumes pre-norm hidden.
             normed = inner_m.norm(hidden_states)
             if self.args.tie_word_embeddings:
                 out = inner_m.embed_tokens.as_linear(normed)
@@ -980,6 +1007,11 @@ def inject_mtp_support(
                 out = self.lm_head(normed)
 
             if return_hidden:
+                # Hand the drafter the same tensor ``lm_head`` just scored.
+                # ``pre_fc_norm_hidden`` in the MTP head is the head's own
+                # norm over the backbone's FINAL hidden state, not a
+                # substitute for the backbone's ``norm`` -- see
+                # ``BASE_HIDDEN_VARIANT_DEFAULT``.
                 hidden = normed if base_hidden_variant == "post_norm" else hidden_states
                 return out, hidden
             return out

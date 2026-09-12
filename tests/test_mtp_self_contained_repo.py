@@ -2,6 +2,7 @@ import json
 from pathlib import Path
 
 from vllm_mlx.spec_decode.mtp.qwen3_5_inject import (
+    BASE_HIDDEN_VARIANT_DEFAULT,
     _find_mtp_weights_file,
     _load_mtplx_runtime_contract,
 )
@@ -78,3 +79,37 @@ def test_rejects_unknown_mtplx_contract_values(tmp_path: Path):
     )
 
     assert _load_mtplx_runtime_contract(weights) == {}
+
+
+def test_manifest_without_a_hidden_variant_takes_the_trained_contract(tmp_path: Path):
+    """An MTPLX manifest may pin only the fields it disagrees with.
+
+    Whatever it leaves out has to land on the same default a sidecar with
+    no manifest at all gets, or the two paths drift and the same head is
+    driven two different ways depending on whether an unrelated field was
+    worth writing down.
+    """
+    weights = tmp_path / "mtp.safetensors"
+    weights.touch()
+    (tmp_path / "mtplx_runtime.json").write_text(
+        json.dumps({"mtp_contract": {"mtp_position_mode": "local"}}),
+        encoding="utf-8",
+    )
+
+    assert _load_mtplx_runtime_contract(weights) == {
+        "base_hidden_variant": BASE_HIDDEN_VARIANT_DEFAULT,
+        "hidden_variant": BASE_HIDDEN_VARIANT_DEFAULT,
+        "concat_order": "embedding_hidden",
+        "mtp_position_mode": "local",
+    }
+
+
+def test_the_default_base_hidden_is_the_tensor_the_output_head_scores():
+    """Qwen3-Next MTP heads are trained on the backbone's final hidden.
+
+    ``mlx_lm.models.qwen3_5.TextModel.__call__`` ends in
+    ``self.norm(hidden_states)``, and vLLM's ``qwen3_next_mtp.py`` hands
+    ``pre_fc_norm_hidden`` the post-norm tensor its ``compute_logits``
+    scores. Pinning the constant keeps a future edit to it deliberate.
+    """
+    assert BASE_HIDDEN_VARIANT_DEFAULT == "post_norm"
