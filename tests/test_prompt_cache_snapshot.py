@@ -145,6 +145,22 @@ class TestPromptCacheSnapshot:
         assert scheduler._resolve_snapshot_boundary(request) == 686
         assert request._cache_snapshot_boundary == 686
 
+    def test_boundary_inside_the_reused_prefix_is_left_alone(self):
+        """A prefix that already covers the boundary leaves nothing to split.
+
+        The turn reuses 622 tokens and the message boundary sits at 600, so the
+        prefill starts past it: there is no local segment to round, and moving
+        the boundary would only walk the snapshot backwards into cache the
+        request is already reusing.
+        """
+        scheduler = _make_scheduler_with_cache()
+        scheduler._prefill_tile_rows_cached = 32
+        request = self._boundary_request(prompt_len=700, boundary=600)
+        request.cached_tokens = 622
+
+        assert scheduler._resolve_snapshot_boundary(request) == 600
+        assert not hasattr(request, "_cache_snapshot_boundary")
+
     def test_internal_n_minus_one_boundary_is_not_aligned(self):
         """Its tail is one token on the single-row path, not a tile."""
         scheduler = _make_scheduler_with_cache()

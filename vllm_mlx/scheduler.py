@@ -8126,11 +8126,8 @@ class Scheduler:
             return boundary
         aligned = local - (local % tile)
         if aligned <= 0:
-            request._cache_snapshot_boundary = 0
             return 0
-        boundary = cached + aligned
-        request._cache_snapshot_boundary = boundary
-        return boundary
+        return cached + aligned
 
     def _resolve_snapshot_boundary(self, request: Request) -> int:
         """Return a usable prompt boundary, arming N-1 reuse when needed.
@@ -8141,6 +8138,11 @@ class Scheduler:
         """
         prompt_tokens = request.prompt_token_ids or []
         snapshot_boundary = int(getattr(request, "prefix_boundary", 0) or 0)
+        # The snapshot machinery reads ``_cache_snapshot_boundary`` and falls
+        # back to the caller's ``prefix_boundary``, so a boundary moved below
+        # has to be recorded -- and only then, so an untouched boundary keeps
+        # reading through to the caller's value.
+        override_boundary = False
         if snapshot_boundary >= len(prompt_tokens):
             logger.debug(
                 "[boundary_snapshot] ignoring out-of-range boundary "
@@ -8151,7 +8153,9 @@ class Scheduler:
             )
             snapshot_boundary = 0
         elif snapshot_boundary > 0:
-            snapshot_boundary = self._tile_aligned_boundary(request, snapshot_boundary)
+            aligned_boundary = self._tile_aligned_boundary(request, snapshot_boundary)
+            override_boundary = aligned_boundary != snapshot_boundary
+            snapshot_boundary = aligned_boundary
 
         if (
             snapshot_boundary <= 0
@@ -8162,7 +8166,7 @@ class Scheduler:
             and len(prompt_tokens) > 1
         ):
             snapshot_boundary = len(prompt_tokens) - 1
-            request._cache_snapshot_boundary = snapshot_boundary
+            override_boundary = True
             request._cache_snapshot_is_internal = True
             logger.debug(
                 "[boundary_snapshot] armed internal N-1 boundary request=%s "
@@ -8171,6 +8175,8 @@ class Scheduler:
                 snapshot_boundary,
                 len(prompt_tokens),
             )
+        if override_boundary:
+            request._cache_snapshot_boundary = snapshot_boundary
         return snapshot_boundary
 
     def _max_running_sequences(self) -> int:
