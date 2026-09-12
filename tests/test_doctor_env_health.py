@@ -23,6 +23,7 @@ import json
 import os
 import plistlib
 import shlex
+import stat
 import subprocess
 import sys
 import threading
@@ -3072,6 +3073,40 @@ def test_bounded_timeout_uses_only_one_millisecond_after_deadline(monkeypatch):
     assert eh._bounded_timeout(2.0) == 0.001
 
 
+def test_deep_doctor_allows_slow_cold_optional_imports(monkeypatch):
+    monkeypatch.setattr(eh.time, "monotonic", lambda: 100.0)
+    monkeypatch.setattr(eh, "_DOCTOR_DEADLINE", 129.9)
+
+    assert eh._bounded_timeout(eh._IMPORT_PROBE_TIMEOUT_S) == 20.0
+
+
+def test_deep_doctor_timeout_recommends_direct_import_not_same_retry(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setattr(
+        eh,
+        "_import_probe_outcome",
+        lambda *args, **kwargs: eh._ImportProbeOutcome.TIMED_OUT,
+    )
+    monkeypatch.setattr(eh, "_import_probe_was_interrupted", lambda *args: False)
+    monkeypatch.setattr(eh, "_DOCTOR_DEEP_MODE", True)
+    section = eh.Section("test")
+    runtime = tmp_path / "bin" / "python"
+
+    assert eh._add_inconclusive_import(
+        section,
+        label="mlx-vlm",
+        version="0.6.17",
+        runtime=runtime,
+        module="mlx_vlm",
+        sidecar_root=None,
+    )
+
+    detail = section.checks[0].detail
+    assert "doctor --deep" not in detail
+    assert eh._runtime_import_command(runtime, "mlx_vlm") in detail
+
+
 def test_run_all_serializes_process_global_probe_state(monkeypatch):
     active = 0
     peak_active = 0
@@ -3730,21 +3765,33 @@ def test_dir_size_walk_aborts_inside_flat_directory(tmp_path: Path):
     )
 
 
+def test_dir_size_walk_does_not_follow_hf_snapshot_symlinks(tmp_path: Path):
+    blobs = tmp_path / "models--owner--model" / "blobs"
+    snapshot = tmp_path / "models--owner--model" / "snapshots" / "revision"
+    blobs.mkdir(parents=True)
+    snapshot.mkdir(parents=True)
+    blob = blobs / "digest"
+    blob.write_bytes(b"x" * 4096)
+    (snapshot / "model.safetensors").symlink_to(blob)
+
+    assert eh._dir_size_gb(tmp_path) == pytest.approx(4096 / (1024**3))
+
+
 def test_dir_size_walk_cannot_outlive_shared_doctor_deadline(tmp_path, monkeypatch):
     (tmp_path / "first.bin").write_bytes(b"x")
     (tmp_path / "second.bin").write_bytes(b"x")
     clock = [100.0]
     stat_calls = 0
 
-    def fake_getsize(_path):
+    def fake_lstat(_path):
         nonlocal stat_calls
         stat_calls += 1
         clock[0] += 0.02
-        return 1
+        return SimpleNamespace(st_mode=stat.S_IFREG, st_size=1)
 
     monkeypatch.setattr(eh.time, "monotonic", lambda: clock[0])
     monkeypatch.setattr(eh, "_DOCTOR_DEADLINE", 100.01)
-    monkeypatch.setattr(eh.os.path, "getsize", fake_getsize)
+    monkeypatch.setattr(eh.os, "lstat", fake_lstat)
 
     assert eh._dir_size_gb(tmp_path, budget_s=1.5) is None
     assert stat_calls == 1
