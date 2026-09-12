@@ -8,6 +8,7 @@ import json
 import subprocess
 import sys
 import threading
+from collections import namedtuple
 from pathlib import Path
 from types import ModuleType
 
@@ -141,6 +142,9 @@ def test_wan_submodule_probe_does_not_import_parent(monkeypatch, tmp_path) -> No
     assert marker.exists() is False
     assert "probe_parent" not in sys.modules
 
+    monkeypatch.setattr("importlib.util.find_spec", lambda _module: None)
+    assert _submodule_spec_exists_without_import("missing_parent", "child") is False
+
 
 def test_wan_runtime_probe_reports_missing_ffmpeg_without_exiting(
     monkeypatch: pytest.MonkeyPatch,
@@ -156,6 +160,27 @@ def test_wan_runtime_probe_reports_missing_ffmpeg_without_exiting(
     issue = registered_wan_runtime_issue("wan2.2-ti2v-5b-q8")
 
     assert issue == "video generation requires ffmpeg (`brew install ffmpeg`)."
+
+
+def test_wan_runtime_probe_reports_unsupported_python_and_ready_runtime(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    version_info = namedtuple("version_info", "major minor")
+    monkeypatch.setattr(sys, "version_info", version_info(3, 10))
+    issue = registered_wan_runtime_issue("wan2.2-ti2v-5b-q8")
+    assert issue is not None
+    assert "Python 3.11 or newer (current: 3.10)" in issue
+
+    monkeypatch.setattr(sys, "version_info", version_info(3, 11))
+    monkeypatch.setattr(
+        "vllm_mlx.runtime.video_lane._default_video_runtime_requirements",
+        lambda _model: [],
+    )
+    monkeypatch.setattr(
+        "vllm_mlx.runtime.video_lane._resolve_ffmpeg",
+        lambda: "/opt/homebrew/bin/ffmpeg",
+    )
+    assert registered_wan_runtime_issue("wan2.2-ti2v-5b-q8") is None
 
 
 def test_wan_engine_maps_current_mlx_video_api(monkeypatch, tmp_path) -> None:

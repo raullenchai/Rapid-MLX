@@ -190,6 +190,10 @@ def test_runtime_readiness_reuses_fail_fast_generation_guards(
         "status": "ready",
         "message": None,
     }
+    assert benchmark_runtime_readiness("qwen3.5-4b-4bit", "unsupported") == {
+        "status": "unknown",
+        "message": "Runtime readiness could not be verified; run will check again.",
+    }
 
 
 def test_runtime_readiness_degrades_probe_faults_to_unknown(
@@ -3259,6 +3263,7 @@ def test_cli_plan_prints_protocol_and_local_storage(
 ) -> None:
     _cli_archive(monkeypatch, SimpleNamespace())
     seen: dict[str, object] = {}
+    runtime_readiness: dict[str, object] = {"status": "ready", "message": None}
 
     def fake_plan(alias, **kwargs):
         seen.update(kwargs)
@@ -3271,7 +3276,7 @@ def test_cli_plan_prints_protocol_and_local_storage(
                 "estimated_memory_gib": 6,
                 "memory_estimate_source": "artifact_size_fallback",
                 "memory_fit": "fits",
-                "runtime": {"status": "ready", "message": None},
+                "runtime": runtime_readiness,
             },
             "workload": {
                 "protocol_version": 2,
@@ -3317,6 +3322,17 @@ def test_cli_plan_prints_protocol_and_local_storage(
     assert payload["workload"]["protocol_version"] == 2
     assert payload["memory_gib"] == 18
     assert payload["model_cached"] is False
+
+    args.json = False
+    runtime_readiness.update(status="unavailable", message="install the image runtime")
+    assert community_cli.benchmark_command(args) == 0
+    assert (
+        "Runtime:  unavailable — install the image runtime" in capsys.readouterr().out
+    )
+
+    runtime_readiness.update(status="unknown", message=None)
+    assert community_cli.benchmark_command(args) == 0
+    assert "Runtime:  unknown" in capsys.readouterr().out
 
 
 def test_cli_plan_memory_and_download_lines_cover_every_verdict(
