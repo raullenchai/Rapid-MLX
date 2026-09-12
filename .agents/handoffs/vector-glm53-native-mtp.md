@@ -6,7 +6,8 @@ Atlas (architecture, dependency compatibility, and release disposition).
 
 ## Current branch
 
-`vector/glm53-native-mtp`, based on `origin/main@233439e88`.
+Original compatibility work: `vector/glm53-native-mtp`. Follow-up qualification:
+`vector/glm53-adaptive-mtp`, rebased onto `origin/main@f18255fb2`.
 
 ## Verified facts
 
@@ -30,15 +31,24 @@ Atlas (architecture, dependency compatibility, and release disposition).
   3.896 GiB active memory. Including the checkpoint's q4 output head and argmax
   over 154,880 tokens measured 2.141 ms median, so the old K=1 regression is
   not explained by an expensive draft proposal alone.
+- The full target is now cached. Same-artifact 8K prefill medians were Rapid
+  351.627 tok/s, native-extension oMLX 342.754, and post-0.7 mlx-vlm 337.128.
+  The public oMLX 449.6 tok/s result is primarily a different oQ4e checkpoint,
+  not a runtime advantage on Rapid's uniform-q4 artifact.
+- A full-model Rapid multi-boundary rollback spike ran K=1/2/3. K=1 was
+  31.431 to 33.453 tok/s (1.064x, 76.39% acceptance), K=2 was 33.154 tok/s
+  (1.055x, 50.79%), and K=3 was 30.329 to 26.760 tok/s (0.882x, 32.31%).
+  All depths first diverged from serial greedy output at token 109. The spike
+  was discarded and the alias remains fail-closed.
 
 ## Unresolved
 
 - Choose between waiting for the next tagged mlx-vlm release and vendoring the
   GLM-specific drafter/verifier. The upstream PR touches a broad cache,
   quantized-verifier, model, and speculative-runtime surface.
-- Re-run the full 181.7 GB Rapid target. It is absent from the HF cache; Studio
-  has about 65 GiB free and Mini about 104 GiB free, so policy-compliant restore
-  is currently blocked without storage capacity becoming available.
+- Qualify `dfp-official/GLM-5.3-Flash-oQ4e-mtp` once the policy-controlled HF
+  cache has capacity. It had 77 GiB free during this campaign versus the
+  repository's approximately 182 GB size; no download was attempted.
 - Decide whether a future proven path is experimental opt-in or default-on.
 
 ## Risks
@@ -52,8 +62,7 @@ Atlas (architecture, dependency compatibility, and release disposition).
 
 ## Recommended next action
 
-Approve the fail-closed compatibility seam independently. Wait for a tagged
-post-v0.7 mlx-vlm artifact, then run the exact paired K=0/1/2/3 server campaign
-defined in
+Keep native MTP disabled. Wait for a tagged post-v0.7 mlx-vlm artifact and
+policy-compliant oQ4e cache capacity, then re-run the exact workload gate in
 `docs/engineering/performance/2026-09-12-glm53-flash-next-tier.md` before any
 alias capability or dependency change.
