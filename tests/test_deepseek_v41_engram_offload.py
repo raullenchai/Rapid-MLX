@@ -158,3 +158,34 @@ def test_disk_engram_rejects_header_contract_mismatch(tmp_path):
             numpy_dtype=np.dtype("<u4"),
             shape=(8, 4),
         )
+
+
+def test_disk_engram_constructor_preserves_error_after_partial_view(
+    tmp_path, monkeypatch
+):
+    _resident, disk, keys, path = _modules(tmp_path)
+    disk.close()
+    calls = 0
+    original = DiskQuantizedEngramEmbedding._tensor_view
+
+    def fail_after_first_view(self, *args, **kwargs):
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            raise ValueError("malformed scales")
+        return original(self, *args, **kwargs)
+
+    monkeypatch.setattr(
+        DiskQuantizedEngramEmbedding, "_tensor_view", fail_after_first_view
+    )
+    with pytest.raises(ValueError, match="malformed scales"):
+        DiskQuantizedEngramEmbedding(
+            path,
+            weight_key=keys["weight"],
+            scales_key=keys["scales"],
+            biases_key=keys["biases"],
+            num_embeddings=8,
+            dim=64,
+            group_size=32,
+            bits=2,
+        )

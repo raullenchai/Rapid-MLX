@@ -25,6 +25,7 @@ from __future__ import annotations
 import glob
 import json
 import os
+from pathlib import Path
 
 import mlx.core as mx
 import mlx.nn as nn
@@ -33,6 +34,22 @@ from mlx.utils import tree_flatten
 from .config import ModelArgs
 from .convert import VISION_PREFIXES, bits_for, is_quant_target
 from .model import Model
+
+
+def resolve_indexed_shard(model_path: str, filename: str) -> str:
+    """Resolve an indexed shard without escaping its model/CAS repository."""
+    root = Path(model_path).resolve()
+    lexical = Path(os.path.abspath(os.path.join(root, filename)))
+    if os.path.commonpath((root, lexical)) != str(root):
+        raise ValueError("Engram shard must stay inside the model directory")
+    resolved = lexical.resolve(strict=True)
+    # Hub snapshots legitimately symlink immutable files into their sibling
+    # blobs directory. Keep that CAS layout working without allowing a local
+    # model directory to point at arbitrary files elsewhere on the machine.
+    allowed = root.parent.parent if root.parent.name == "snapshots" else root
+    if os.path.commonpath((allowed, resolved)) != str(allowed):
+        raise ValueError("Engram shard symlink escapes the model repository")
+    return str(resolved)
 
 
 def reshape_grouped_wo_a(items, args: ModelArgs):
@@ -220,12 +237,7 @@ def load(
                                 "Engram affine tensors must share one shard"
                             )
                         filename = filenames[0]
-                        root = os.path.abspath(path)
-                        shard_path = os.path.abspath(os.path.join(root, filename))
-                        if os.path.commonpath((root, shard_path)) != root:
-                            raise ValueError(
-                                "Engram shard must stay inside the model directory"
-                            )
+                        shard_path = resolve_indexed_shard(path, filename)
                         layer.engram.embed = DiskQuantizedEngramEmbedding(
                             shard_path,
                             weight_key=keys["weight"],

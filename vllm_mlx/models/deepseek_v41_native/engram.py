@@ -294,6 +294,7 @@ class DiskQuantizedEngramEmbedding(nn.Module):
             OrderedDict()
         )
         self._file = Path(path).open("rb")
+        self._weight = self._scales = self._biases = None
         try:
             length_raw = self._file.read(8)
             if len(length_raw) != 8:
@@ -331,10 +332,13 @@ class DiskQuantizedEngramEmbedding(nn.Module):
                 shape=quant_shape,
             )
         except Exception:
+            self._weight = self._scales = self._biases = None
             mapping = getattr(self, "_mapping", None)
-            if mapping is not None:
-                mapping.close()
-            self._file.close()
+            try:
+                if mapping is not None:
+                    mapping.close()
+            finally:
+                self._file.close()
             raise
 
     def _tensor_view(self, header, key, *, dtype, numpy_dtype, shape):
@@ -460,8 +464,11 @@ class DiskQuantizedEngramEmbedding(nn.Module):
         self._executor.shutdown(wait=True, cancel_futures=True)
         with self._lock:
             self._cache.clear()
-            self._mapping.close()
-            self._file.close()
+            self._weight = self._scales = self._biases = None
+            try:
+                self._mapping.close()
+            finally:
+                self._file.close()
 
     def __del__(self):
         try:

@@ -23,7 +23,10 @@ from vllm_mlx.models.deepseek_v41_native.compressor import (  # noqa: E402
     CompressorState,
 )
 from vllm_mlx.models.deepseek_v41_native.config import ModelArgs  # noqa: E402
-from vllm_mlx.models.deepseek_v41_native.load import reshape_grouped_wo_a  # noqa: E402
+from vllm_mlx.models.deepseek_v41_native.load import (  # noqa: E402
+    reshape_grouped_wo_a,
+    resolve_indexed_shard,
+)
 from vllm_mlx.models.deepseek_v41_native.model import Model  # noqa: E402
 
 
@@ -52,6 +55,30 @@ def test_reshape_grouped_wo_a_rejects_incompatible_rows() -> None:
     args = ModelArgs(o_groups=2, o_lora_rank=3)
     with pytest.raises(ValueError, match="expected 6"):
         reshape_grouped_wo_a([("layers.0.attn.wo_a.weight", mx.zeros((5, 4)))], args)
+
+
+def test_indexed_shard_rejects_local_symlink_escape(tmp_path) -> None:
+    model = tmp_path / "model"
+    model.mkdir()
+    outside = tmp_path / "outside.safetensors"
+    outside.touch()
+    (model / "shard.safetensors").symlink_to(outside)
+
+    with pytest.raises(ValueError, match="symlink escapes"):
+        resolve_indexed_shard(str(model), "shard.safetensors")
+
+
+def test_indexed_shard_allows_same_repository_hub_blob(tmp_path) -> None:
+    repository = tmp_path / "models--owner--model"
+    snapshot = repository / "snapshots" / "revision"
+    blobs = repository / "blobs"
+    snapshot.mkdir(parents=True)
+    blobs.mkdir()
+    blob = blobs / "digest"
+    blob.touch()
+    (snapshot / "shard.safetensors").symlink_to(blob)
+
+    assert resolve_indexed_shard(str(snapshot), "shard.safetensors") == str(blob)
 
 
 def test_quantized_grouped_wo_a_preserves_batch_sequence_and_group_axes() -> None:
