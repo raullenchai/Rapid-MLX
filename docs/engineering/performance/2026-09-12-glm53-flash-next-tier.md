@@ -22,7 +22,10 @@ the release gate.
 
 ## Current Rapid baseline
 
-Artifact revision: `06d6a0240420137661ac3c84f845ae5e3513ff2f`.
+Benchmark artifact revision: `06d6a0240420137661ac3c84f845ae5e3513ff2f`.
+The repository has since advanced to `76add2a341a1cd90ad0e86bb69839ea9c35827c6`;
+the old revision no longer resolves through the Hub. Keep comparisons tied to
+the revision that produced them.
 
 | Context | Prefill tok/s | Decode tok/s |
 | ---: | ---: | ---: |
@@ -36,6 +39,23 @@ ordinary decode and 31.59 tok/s for MTP over 512 output tokens (0.989x), despite
 72.97% acceptance and 5.71 GiB additional active memory. That implementation
 split the recurrent KDA update at every verification boundary. It established
 correct loading and rollback, but it did not amortize verification work.
+
+### Current-revision real MTP head probe
+
+The current immutable revision was probed without restoring the 181.7 GB
+target. Its 2,641 layer-45 tensors span shards 1 and 2 (2,215 and 426 tensors),
+rather than the single shard assumed by the older experiment. Both source
+shards were downloaded through the policy-controlled HF cache. The upstream
+GLM splitter produced a strict-loadable 3.9 GiB `glm5_next_mtp` drafter with
+4-bit, group-size-64 affine weights and 3.896 GiB active memory.
+
+Thirty measured one-token head forwards followed five warmups in each of three
+campaigns. The per-campaign medians were 1.598, 1.541, and 1.317 ms; the median
+of medians was 1.541 ms. This excludes the shared target embedding/output head
+and does not predict E2E speedup by itself. It does show that the real drafter
+block is about 5% of Rapid's approximately 31-32 ms ordinary target-token time.
+The old K=1 regression is therefore more consistent with verification and
+rollback overhead than with an intrinsically too-expensive drafter.
 
 ## External full-model evidence
 
@@ -129,6 +149,8 @@ family and retires the old overlay. Verification:
   fixture loaded strictly;
 - Rapid `MLXMultimodalLM` wrapper: the same five-layer fixture completed load
   when the dependency-version gate was intentionally bypassed for the probe.
+- current-revision real layer-45 head: upstream split and strict load passed;
+  1.541 ms median one-token block latency and 3.896 GiB active memory.
 
 This does not authorize a dependency bump. Atlas owns that compatibility
 decision after upstream publishes a fixed revision.
@@ -153,4 +175,3 @@ decision after upstream publishes a fixed revision.
 - <https://github.com/jundot/omlx/releases/tag/v0.6.4>
 - <https://huggingface.co/incoai/GLM-5.3-Flash-DFlash2>
 - `docs/benchmarks/recent-large-models-m3-ultra.md`
-

@@ -23,6 +23,12 @@ Atlas (architecture, dependency compatibility, and release disposition).
 - Rapid's previous full-model K=1 probe was a no-go: 31.94 to 31.59 tok/s,
   72.97% acceptance, +5.71 GiB. The upstream result uses a substantially newer
   transactional/batched verifier and native block size three.
+- The current target revision is `76add2a341a1cd90ad0e86bb69839ea9c35827c6`;
+  the benchmarked `06d6a...` revision no longer resolves on the Hub. Layer 45
+  now spans source shards 1 and 2. The upstream splitter produced a strict-load
+  3.9 GiB q4-g64 drafter. Its real one-token block measured 1.541 ms median and
+  3.896 GiB active memory, so the old K=1 regression is not explained by an
+  expensive draft head alone.
 
 ## Unresolved
 
