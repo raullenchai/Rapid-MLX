@@ -108,6 +108,7 @@ def load(
     lazy: bool | None = None,
     strict: bool = True,
     fuse_moe_gate_up: bool = False,
+    engram_ssd_offload: bool = False,
 ):
     """``lazy=None`` auto-selects: builds that fit comfortably in physical RAM
     are materialized at load time (CPU-side, avoiding cold-mmap page-in inside
@@ -167,6 +168,17 @@ def load(
     model = Model(args, token_map=token_map)
 
     q = cfg.get("quantization")
+    engram_keys: set[str] = set()
+    engram_mapping = None
+    if engram_ssd_offload:
+        index_path = os.path.join(path, "model.safetensors.index.json")
+        if not os.path.isfile(index_path):
+            raise ValueError("Engram SSD offload requires a safetensors index")
+        with open(index_path) as index_file:
+            index = json.load(index_file)
+        engram_mapping = index.get("weight_map")
+        if not isinstance(engram_mapping, dict):
+            raise ValueError("Engram SSD offload requires a valid weight map")
     if q:
         if q.get("bits"):
             module_map = q.get("modules")
@@ -179,17 +191,61 @@ def load(
                 ),
             )
         if q.get("engram_bits"):
-            from .engram import QuantizedEngramEmbedding
+            from .engram import (
+                DiskQuantizedEngramEmbedding,
+                QuantizedEngramEmbedding,
+            )
 
             for layer in model.layers:
                 if layer.engram is not None:
                     e = layer.engram.embed
-                    layer.engram.embed = QuantizedEngramEmbedding(
-                        e.weight.shape[0],
-                        e.weight.shape[1],
-                        q["group_size"],
-                        q["engram_bits"],
-                    )
+                    if engram_ssd_offload:
+                        prefix = f"layers.{layer.layer_id}.engram.embed"
+                        keys = {
+                            "weight": prefix + ".weight",
+                            "scales": prefix + ".scales",
+                            "biases": prefix + ".biases",
+                        }
+                        filenames = []
+                        for key in keys.values():
+                            filename = engram_mapping.get(key)
+                            if not isinstance(filename, str) or not filename:
+                                raise ValueError(
+                                    "Engram SSD offload is missing indexed tensor: "
+                                    f"{key}"
+                                )
+                            filenames.append(filename)
+                        if len(set(filenames)) != 1:
+                            raise ValueError(
+                                "Engram affine tensors must share one shard"
+                            )
+                        filename = filenames[0]
+                        root = os.path.abspath(path)
+                        shard_path = os.path.abspath(os.path.join(root, filename))
+                        if os.path.commonpath((root, shard_path)) != root:
+                            raise ValueError(
+                                "Engram shard must stay inside the model directory"
+                            )
+                        layer.engram.embed = DiskQuantizedEngramEmbedding(
+                            shard_path,
+                            weight_key=keys["weight"],
+                            scales_key=keys["scales"],
+                            biases_key=keys["biases"],
+                            num_embeddings=e.weight.shape[0],
+                            dim=e.weight.shape[1],
+                            group_size=q["group_size"],
+                            bits=q["engram_bits"],
+                        )
+                        engram_keys.update(keys.values())
+                    else:
+                        layer.engram.embed = QuantizedEngramEmbedding(
+                            e.weight.shape[0],
+                            e.weight.shape[1],
+                            q["group_size"],
+                            q["engram_bits"],
+                        )
+    if engram_ssd_offload and args.engram_layer_ids and not engram_keys:
+        raise ValueError("Engram SSD offload requires affine-quantized Engram tables")
 
     loaded: set[str] = set()
     vision_skipped: set[str] = set()
@@ -197,6 +253,8 @@ def load(
         w = mx.load(shard)
         items = []
         for k, v in w.items():
+            if k in engram_keys:
+                continue
             if k.startswith(VISION_PREFIXES):
                 vision_skipped.add(k)  # declared passthrough, text-only runtime
                 continue

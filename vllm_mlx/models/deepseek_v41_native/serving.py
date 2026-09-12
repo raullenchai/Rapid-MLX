@@ -229,7 +229,7 @@ def load_product_runtime(
     mtp_revision: str,
     mtp_identity: str | None = None,
 ):
-    model, _args = load(target_path, lazy=False)
+    model, _args = load(target_path, lazy=False, engram_ssd_offload=True)
     model.eval_interval = 40
     if install_target_qmv(model) != len(model.layers):
         raise RuntimeError("failed to install target affine-2bit QMV on every layer")

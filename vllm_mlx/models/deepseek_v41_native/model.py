@@ -157,8 +157,13 @@ class Model(nn.Module):
         hashes = None
         if self.engram_hasher is not None:
             ids_np = np.array(input_ids, dtype=np.int64)
-            hashes = self.engram_hasher(ids_np, start_pos, cache.engram_ids)
-            hashes = mx.array(hashes)  # [b, n, n_engram_layers, cols]
+            hashes_np = self.engram_hasher(ids_np, start_pos, cache.engram_ids)
+            for layer in self.layers:
+                if layer.engram is not None and hasattr(layer.engram.embed, "prefetch"):
+                    layer.engram.embed.prefetch(
+                        hashes_np[:, :, layer.engram.layer_hash_index]
+                    )
+            hashes = mx.array(hashes_np)  # [b, n, n_engram_layers, cols]
         elif self.args.engram_layer_ids:
             raise RuntimeError(
                 "model has engram layers but no token map — call "

@@ -483,6 +483,7 @@ jobs:
             tests/test_deepseek_v41_artifacts.py \
             tests/test_deepseek_v41_affine_route_qmv.py \
             tests/test_deepseek_v41_dspark.py \
+            tests/test_deepseek_v41_engram_offload.py \
             tests/test_deepseek_v41_native_load.py \
             tests/test_dspark_scheduler.py \
             tests/test_scheduler_admission_policy.py \

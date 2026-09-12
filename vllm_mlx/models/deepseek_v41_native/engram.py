@@ -24,6 +24,15 @@ the value into the stream by a normalized stream-key dot product pushed through
 
 from __future__ import annotations
 
+import json
+import math
+import mmap
+import struct
+from collections import OrderedDict
+from concurrent.futures import Future, ThreadPoolExecutor
+from pathlib import Path
+from threading import RLock
+
 import mlx.core as mx
 import mlx.nn as nn
 import numpy as np
@@ -243,6 +252,222 @@ class QuantizedEngramEmbedding(nn.Module):
             bits=self.bits,
         )
         return out.astype(mx.float32)
+
+
+class DiskQuantizedEngramEmbedding(nn.Module):
+    """Selected-row affine Engram reader backed by a safetensors mmap.
+
+    Only packed rows requested by the current n-gram hashes cross into MLX.
+    A bounded raw-row LRU absorbs repeated decode lookups without retaining a
+    device-sized view of the embedding table.
+    """
+
+    def __init__(
+        self,
+        path: str | Path,
+        *,
+        weight_key: str,
+        scales_key: str,
+        biases_key: str,
+        num_embeddings: int,
+        dim: int,
+        group_size: int,
+        bits: int,
+        cache_rows: int = 16384,
+    ):
+        super().__init__()
+        if bits not in (2, 3, 4, 6, 8):
+            raise ValueError(f"unsupported affine Engram width: {bits}")
+        if cache_rows < 0:
+            raise ValueError("Engram cache_rows cannot be negative")
+        self.group_size, self.bits = group_size, bits
+        self.cache_rows = cache_rows
+        self.cache_hits = 0
+        self.cache_misses = 0
+        self._lock = RLock()
+        self._closed = False
+        self._executor = ThreadPoolExecutor(
+            max_workers=1, thread_name_prefix="deepseek-v41-engram"
+        )
+        self._pending: tuple[np.ndarray, Future] | None = None
+        self._cache: OrderedDict[int, tuple[np.ndarray, np.ndarray, np.ndarray]] = (
+            OrderedDict()
+        )
+        self._file = Path(path).open("rb")
+        try:
+            length_raw = self._file.read(8)
+            if len(length_raw) != 8:
+                raise ValueError("truncated safetensors header")
+            header_length = struct.unpack("<Q", length_raw)[0]
+            file_size = self._file.seek(0, 2)
+            if header_length > file_size - 8:
+                raise ValueError("invalid safetensors header length")
+            self._file.seek(8)
+            header = json.loads(self._file.read(header_length))
+            self._data_start = 8 + header_length
+            self._mapping = mmap.mmap(self._file.fileno(), 0, access=mmap.ACCESS_READ)
+            if hasattr(self._mapping, "madvise"):
+                self._mapping.madvise(mmap.MADV_RANDOM)
+            self._weight = self._tensor_view(
+                header,
+                weight_key,
+                dtype="U32",
+                numpy_dtype=np.dtype("<u4"),
+                shape=(num_embeddings, dim * bits // 32),
+            )
+            quant_shape = (num_embeddings, dim // group_size)
+            self._scales = self._tensor_view(
+                header,
+                scales_key,
+                dtype="BF16",
+                numpy_dtype=np.dtype("<u2"),
+                shape=quant_shape,
+            )
+            self._biases = self._tensor_view(
+                header,
+                biases_key,
+                dtype="BF16",
+                numpy_dtype=np.dtype("<u2"),
+                shape=quant_shape,
+            )
+        except Exception:
+            mapping = getattr(self, "_mapping", None)
+            if mapping is not None:
+                mapping.close()
+            self._file.close()
+            raise
+
+    def _tensor_view(self, header, key, *, dtype, numpy_dtype, shape):
+        entry = header.get(key)
+        if entry is None or entry.get("dtype") != dtype:
+            raise ValueError(f"invalid or missing Engram tensor: {key}")
+        if tuple(entry.get("shape", ())) != shape:
+            raise ValueError(f"invalid Engram tensor shape: {key}")
+        start, end = entry.get("data_offsets", (-1, -1))
+        expected = math.prod(shape) * numpy_dtype.itemsize
+        if (
+            start < 0
+            or end - start != expected
+            or self._data_start + end > len(self._mapping)
+        ):
+            raise ValueError(f"invalid Engram tensor byte length: {key}")
+        return np.ndarray(
+            shape,
+            dtype=numpy_dtype,
+            buffer=self._mapping,
+            offset=self._data_start + start,
+        )
+
+    @staticmethod
+    def _bfloat16(raw: np.ndarray) -> mx.array:
+        values = (raw.astype(np.uint32) << 16).view(np.float32)
+        return mx.array(values).astype(mx.bfloat16)
+
+    def _dequantize(self, rows) -> mx.array:
+        weights, scales, biases = rows
+        return mx.dequantize(
+            mx.array(weights),
+            self._bfloat16(scales),
+            self._bfloat16(biases),
+            group_size=self.group_size,
+            bits=self.bits,
+            mode="affine",
+        ).astype(mx.float32)
+
+    def _raw_rows(self, flat: np.ndarray):
+        return (
+            np.array(self._weight[flat], copy=True),
+            np.array(self._scales[flat], copy=True),
+            np.array(self._biases[flat], copy=True),
+        )
+
+    def _gather_rows(self, flat: np.ndarray):
+        with self._lock:
+            if self._closed:
+                raise RuntimeError("Engram embedding is closed")
+            if flat.size and (flat.min() < 0 or flat.max() >= self._weight.shape[0]):
+                raise IndexError("Engram row outside table")
+            if not flat.size or not self.cache_rows or flat.size > 4096:
+                rows = self._raw_rows(flat)
+            else:
+                unique = list(dict.fromkeys(int(row) for row in flat))
+                resolved = {
+                    row: self._cache[row] for row in unique if row in self._cache
+                }
+                missing = [row for row in unique if row not in resolved]
+                self.cache_misses += len(missing)
+                if missing:
+                    loaded = self._raw_rows(np.asarray(missing, dtype=np.int64))
+                    for index, row in enumerate(missing):
+                        value = tuple(value[index].copy() for value in loaded)
+                        resolved[row] = value
+                        self._cache[row] = value
+                        while len(self._cache) > self.cache_rows:
+                            self._cache.popitem(last=False)
+                gathered = [resolved[int(row)] for row in flat]
+                for row in unique:
+                    if row in self._cache:
+                        self._cache.move_to_end(row)
+                self.cache_hits += flat.size - len(missing)
+                rows = tuple(
+                    np.stack([value[column] for value in gathered])
+                    for column in range(3)
+                )
+        return rows
+
+    def prefetch(self, indices: np.ndarray) -> None:
+        """Start selected-row I/O before this embedding's layer executes."""
+        flat = np.asarray(indices, dtype=np.int64).reshape(-1).copy()
+        with self._lock:
+            if self._closed:
+                raise RuntimeError("Engram embedding is closed")
+            previous, self._pending = self._pending, None
+        if previous is not None:
+            previous[1].result()
+        future = self._executor.submit(self._gather_rows, flat)
+        with self._lock:
+            if self._closed:
+                future.cancel()
+                raise RuntimeError("Engram embedding is closed")
+            self._pending = (flat, future)
+
+    def __call__(self, indices: mx.array) -> mx.array:
+        host = np.asarray(indices, dtype=np.int64)
+        flat = host.reshape(-1)
+        with self._lock:
+            pending, self._pending = self._pending, None
+        if pending is not None:
+            requested, future = pending
+            prefetched = future.result()
+            rows = (
+                prefetched
+                if np.array_equal(requested, flat)
+                else self._gather_rows(flat)
+            )
+        else:
+            rows = self._gather_rows(flat)
+        values = self._dequantize(rows)
+        return values.reshape(*host.shape, values.shape[-1])
+
+    def close(self) -> None:
+        with self._lock:
+            if self._closed:
+                return
+            self._closed = True
+            pending, self._pending = self._pending, None
+        if pending is not None:
+            pending[1].cancel()
+        self._executor.shutdown(wait=True, cancel_futures=True)
+        with self._lock:
+            self._cache.clear()
+            self._mapping.close()
+            self._file.close()
+
+    def __del__(self):
+        try:
+            self.close()
+        except Exception:
+            pass
 
 
 class Engram(nn.Module):

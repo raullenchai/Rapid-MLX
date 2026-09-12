@@ -778,7 +778,12 @@ def test_load_product_runtime_composes_owned_components(monkeypatch):
     )
     draft = SimpleNamespace()
     calls = []
-    monkeypatch.setattr(serving, "load", lambda *_a, **_k: (model, object()))
+    load_calls = []
+    monkeypatch.setattr(
+        serving,
+        "load",
+        lambda *args, **kwargs: load_calls.append((args, kwargs)) or (model, object()),
+    )
     monkeypatch.setattr(serving, "install_target_qmv", lambda _model: 1)
     monkeypatch.setattr(serving, "DSparkWeights", lambda _path: weights)
     monkeypatch.setattr(serving, "DSpark", lambda _target, pin_weights: draft)
@@ -806,6 +811,7 @@ def test_load_product_runtime_composes_owned_components(monkeypatch):
     assert runtime.drafter is draft
     assert runtime.drafter_repo == "owner/head"
     assert model.eval_interval == 40
+    assert load_calls == [(("/target",), {"lazy": False, "engram_ssd_offload": True})]
     assert calls == [draft, draft]
 
 
