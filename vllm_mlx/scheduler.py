@@ -245,6 +245,11 @@ def _assemble_stop_tokens(
     return stop_tokens
 
 
+# Rows per tile in MLX's quantized matmuls; see
+# ``Scheduler._prefill_tile_rows`` for the measurements behind it.
+_PREFILL_TILE_ROWS = 32
+
+
 @dataclass
 class SchedulerConfig:
     """Configuration for the scheduler."""
@@ -3764,6 +3769,8 @@ class Scheduler:
         """
         self.model = model
         self.tokenizer = tokenizer
+        # Derived from the weights once, on the first segmented prefill.
+        self._prefill_tile_rows_cached: int | None = None
         self.config = config or SchedulerConfig()
         self._tool_logits_processor_factory = tool_logits_processor_factory
         self.model_config = model_config
@@ -8029,6 +8036,102 @@ class Scheduler:
             return request.prompt_token_ids
         return tokens_to_process
 
+    def _prefill_tile_rows(self) -> int:
+        """Rows the prefill's matmuls are quantized to, 1 when there is none.
+
+        MLX feeds prompt rows to its quantized matmuls in tiles, so a segment
+        of ``n`` tokens costs ``ceil(n / tile)`` tiles rather than ``n`` tokens
+        of work.  One 17408x5120 4-bit projection takes 1074us for any row
+        count from 13 to 32 and 2116us from 33 to 64 on an M4 Pro (359us and
+        681us on an M3 Ultra -- same steps, different constants), and the whole
+        27B model inherits it: 32 prompt tokens prefill in 336ms, 33 in 640ms.
+
+        Only quantized weights are known to step at 32.  A checkpoint with no
+        quantized parameters keeps its exact boundary rather than forfeiting
+        reuse for a tile that has not been measured.
+        """
+        tile = self._prefill_tile_rows_cached
+        if tile is not None:
+            return tile
+        try:
+            import mlx.core as mx
+            from mlx.utils import tree_flatten
+
+            # The packing dtype is the fact worth testing: MLX stores
+            # quantized weights as uint32 words of packed values, and nothing
+            # else in a checkpoint is a uint32 parameter.  A parameter *named*
+            # ``scales`` proves nothing by itself.
+            quantized = any(
+                isinstance(param, mx.array) and param.dtype == mx.uint32
+                for _, param in tree_flatten(self.model.parameters())
+            )
+        except (ImportError, AttributeError, TypeError, ValueError) as exc:
+            # A model this traversal cannot read is not evidence of anything,
+            # so answer conservatively but do NOT cache it: a transient failure
+            # during initialization would otherwise disable alignment for the
+            # process lifetime.
+            logger.debug(
+                "[prefill_tile] weight inspection failed, assuming unquantized "
+                "for this request: %r",
+                exc,
+            )
+            return 1
+        tile = _PREFILL_TILE_ROWS if quantized else 1
+        self._prefill_tile_rows_cached = tile
+        return tile
+
+    @staticmethod
+    def _extra_prefill_tiles(split: int, pending: int, tile: int) -> int:
+        """Tiles a prefill split at ``split`` costs beyond one unsplit pass."""
+
+        def tiles(count: int) -> int:
+            return -(-count // tile)
+
+        return tiles(split) + tiles(pending - split) - tiles(pending)
+
+    def _tile_aligned_boundary(self, request: Request, boundary: int) -> int:
+        """Round a snapshot boundary down so its prefill stays whole-tile.
+
+        The boundary is an absolute prompt offset, but what the prefill is
+        charged for is the segment after the reused prefix, so the rounding is
+        applied there and translated back -- flooring the absolute offset would
+        instead walk the snapshot backwards into the reused prefix on every
+        continuing turn.  A split at a tile multiple is exactly free
+        (``b / q + ceil((n - b) / q) == ceil(n / q)`` for ``b % q == 0``); an
+        unaligned one costs a whole extra tile, which on a single-tile prompt
+        doubles TTFT.  Rounding trades at most ``q - 1`` tokens of next-turn
+        reuse for that.
+
+        A segment shorter than one tile is dropped entirely: reusing it later
+        saves one tile at most, while splitting for it spends one tile on every
+        request, including the ones that never get a follow-up.  Dropping it
+        also hands the request to the bounded N-1 fallback below, which costs a
+        single extra one-token forward and covers the whole prompt rather than a
+        fraction of it.
+        """
+        cached = request.cached_tokens or 0
+        local = boundary - cached
+        if local <= 0:
+            # Already inside the reused prefix: the prefill is not segmented
+            # for this boundary, so there is no tile to align.
+            return boundary
+        tile = self._prefill_tile_rows()
+        # A tile multiple is always free, but it is not the only free split:
+        # 33 pending tokens cost two tiles whether or not they are split at 1,
+        # because both halves round up into tiles the unsplit pass also pays
+        # for.  Keep any split that costs nothing -- it is strictly more reuse
+        # than the rounded one.
+        pending = max(len(request.prompt_token_ids or []) - cached, local + 1)
+        if self._extra_prefill_tiles(local, pending, tile) == 0:
+            return boundary
+        aligned = local - (local % tile)
+        if aligned <= 0:
+            request._cache_snapshot_boundary = 0
+            return 0
+        boundary = cached + aligned
+        request._cache_snapshot_boundary = boundary
+        return boundary
+
     def _resolve_snapshot_boundary(self, request: Request) -> int:
         """Return a usable prompt boundary, arming N-1 reuse when needed.
 
@@ -8047,6 +8150,8 @@ class Scheduler:
                 len(prompt_tokens),
             )
             snapshot_boundary = 0
+        elif snapshot_boundary > 0:
+            snapshot_boundary = self._tile_aligned_boundary(request, snapshot_boundary)
 
         if (
             snapshot_boundary <= 0
