@@ -23,6 +23,37 @@ _LOCK = threading.Lock()
 _INSTALLED = False
 
 
+def _has_native_glm5_next_runtime(language: Any) -> bool:
+    """Return whether mlx-vlm already owns the corrected GLM implementation.
+
+    The post-0.7 GLM rewrite replaced the released ``SparseAttention`` /
+    DeepSeek-derived MoE classes with architecture-owned attention, MoE, and
+    MLP implementations.  Those classes include the clamped SwiGLU, fp32
+    router, corrected norm epsilons, fused projections, and cast predicates
+    that this compatibility overlay supplied to mlx-vlm 0.6.x.  Refusing to
+    monkey-patch that new class family is important: the old names no longer
+    exist, and partially applying an old overlay would produce a mixed runtime.
+
+    Keep the structural probe deliberately strict so an unrelated or partial
+    upstream refactor still fails closed instead of silently skipping fixes.
+    """
+    required = (
+        "Glm5NextAttention",
+        "Glm5NextLinearAttention",
+        "Glm5NextMLP",
+        "Glm5NextMoE",
+        "LanguageModel",
+    )
+    return (
+        not hasattr(language, "Glm5NextSparseAttention")
+        and all(hasattr(language, name) for name in required)
+        and isinstance(
+            getattr(language.LanguageModel, "cast_predicate", None), property
+        )
+        and callable(getattr(language.LanguageModel, "sanitize", None))
+    )
+
+
 def _projection_quantization_is_homogeneous(modules: Sequence[Any]) -> bool:
     quantized = [hasattr(module, "scales") for module in modules]
     if not all(quantized) and any(quantized):
@@ -54,12 +85,18 @@ def install_glm5_next_runtime_fix() -> bool:
 
         import mlx.core as mx
         import mlx.nn as nn
+        from mlx_vlm.models.glm5_next import language
+
+        if _has_native_glm5_next_runtime(language):
+            language._RAPID_MLX_RUNTIME_FIX_INSTALLED = True
+            _INSTALLED = True
+            return False
+
         from mlx_vlm.models.deepseek_v32.language import (
             DeepseekV32MoE,
             MoEGate,
             group_expert_select,
         )
-        from mlx_vlm.models.glm5_next import language
         from mlx_vlm.models.mlp import DeepseekMLP
 
         if getattr(language, "_RAPID_MLX_RUNTIME_FIX_INSTALLED", False):
