@@ -17,3 +17,12 @@ end-to-end serving benchmarks use `rapid-mlx bench`).
   ```bash
   python3 bench/repro_mtp_forced_k_parity.py --format markdown
   ```
+- `bench_ltx_video.py` — LTX-2.3/LTX-2.5 cold-start, per-step, process-tree
+  RSS, MLX Metal allocator, and swap benchmark. It emits a JSON record plus a
+  Markdown summary and runs each repetition in a fresh process:
+
+  ```bash
+  python3 bench/bench_ltx_video.py \
+    --runtime mlx23 --model notapalindrome/ltx23-mlx-av-q4 \
+    --frames 121 --size 768x512 --seed 42 --runs 3
+  ```
