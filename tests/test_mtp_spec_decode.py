@@ -3505,8 +3505,11 @@ def test_generator_rolls_back_verify_round_on_early_materialization_abort(
 
     assert next(gen)[0] == 7
     assert model_cache.offset == 1
-    # The draft is generated when the generator resumes for the next token.
-    assert mtp_cache.offset == 0
+    # The draft for the next round is built BEFORE this round's token is
+    # handed over, so the MTP cache already holds its uncommitted position
+    # when the caller gets 7. That position is exactly what the abort below
+    # has to roll back.
+    assert mtp_cache.offset == 1
 
     eval_calls = 0
 
