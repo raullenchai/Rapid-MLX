@@ -3457,7 +3457,13 @@ def test_scheduler_stats_export_vendored_mtp_counters_by_value():
 
 
 def test_install_mtp_vendored_does_not_admit_sampled_prompt_lookup(monkeypatch):
-    """Non-greedy requests stay on ordinary MTP pending separate qualification."""
+    """Non-greedy requests stay on ordinary MTP pending separate qualification.
+
+    The family below declares ``enabled_by_default`` and nothing else, which
+    is the greedy-only qualification. Copying at temperature > 0 is a second
+    declaration (``enabled_under_sampling``) and this request must not get it
+    by accident -- see the sibling test for the qualified case.
+    """
     from types import SimpleNamespace
 
     import mlx.core as mx
@@ -3512,6 +3518,245 @@ def test_install_mtp_vendored_does_not_admit_sampled_prompt_lookup(monkeypatch):
 
     assert seen["prompt_lookup_enabled"] is False
     assert seen["prompt_lookup_history"] is None
+
+
+def test_install_mtp_vendored_admits_sampled_prompt_lookup_once_qualified(
+    monkeypatch,
+):
+    """The served path is where a sampled family's qualification has to land.
+
+    Every desktop chat is this request: the app's persisted default
+    temperature is 0.7 and it always sends a value, so a served request is
+    non-greedy unless the user goes looking for the slider. Gating copying on
+    greedy alone therefore handed the whole speedup to API callers who omit
+    ``temperature`` and to nobody else.
+
+    Two things are asserted, and the second is the one that broke in
+    development: the wrapper must admit the request, AND the policy it hands
+    the generator must still carry ``enabled_under_sampling``.
+    ``_effective_prompt_lookup_policy`` rebuilds the policy to fold in the
+    operator's ``RAPID_MLX_*`` overrides, and a rebuild that forgets this
+    field leaves the generator re-deciding the gate against a default-off
+    copy -- which turns the whole feature off again on exactly this path,
+    with every unit test of the policy itself still green.
+    """
+    from types import SimpleNamespace
+
+    import mlx.core as mx
+
+    from vllm_mlx.scheduler import _install_mtp_vendored
+    from vllm_mlx.spec_decode.mtp import generator as _gen_mod
+    from vllm_mlx.spec_decode.mtp.prompt_lookup import PromptLookupPolicy
+
+    seen: dict[str, object] = {}
+
+    class _FakeGen:
+        def __iter__(self):
+            return self
+
+        def __next__(self):
+            return (201, mx.array([0.0]), False)
+
+        def close(self):
+            pass
+
+    class _SampledQualifiedModel(_StubModel):
+        mtp_prompt_lookup_supported = True
+        mtp_prompt_lookup_policy = PromptLookupPolicy(
+            enabled_by_default=True, enabled_under_sampling=True
+        )
+
+    monkeypatch.delenv("RAPID_MLX_MTP_PROMPT_LOOKUP", raising=False)
+    monkeypatch.delenv("RAPID_MLX_MTP_PROMPT_LOOKUP_SAMPLED", raising=False)
+    monkeypatch.setattr(
+        _gen_mod,
+        "mtp_generate_step",
+        lambda *args, **kwargs: seen.update(kwargs) or _FakeGen(),
+    )
+    batch_gen, gb = _make_batch_gen_with_gb()
+    gb.uids = [33]
+    gb.tokens = [[101, 102]]
+    gb._next_tokens = mx.array([500], dtype=mx.uint32)
+    gb._next_logprobs = [mx.array([0.0])]
+    request_stub = SimpleNamespace(
+        sampling_params=SimpleNamespace(
+            temperature=0.7,
+            top_p=0.9,
+            top_k=0,
+            min_p=0.0,
+            seed=None,
+        ),
+    )
+
+    assert _install_mtp_vendored(
+        batch_gen,
+        model=_SampledQualifiedModel(),
+        requests={"req-33": request_stub},
+        uid_to_request_id={33: "req-33"},
+    )
+    gb._step()
+
+    assert seen["prompt_lookup_enabled"] is True
+    assert seen["prompt_lookup_history"] == [101, 102, 500]
+    assert seen["prompt_lookup_policy"].enabled_under_sampling is True
+
+
+def test_install_mtp_vendored_indexes_the_prompt_not_the_uncached_tail(
+    monkeypatch,
+):
+    """A prefix-cache hit must not empty out the copy index.
+
+    ``gb.tokens[0]`` is the batch row, and a reused prefix never passes
+    through the batch: on a hit the row begins at the unprocessed tail. The
+    copy index is the prompt, so reading the row silently indexes a stub
+    exactly when the prompt is long enough to be worth copying from -- on an
+    M4 Pro the same 236-token rename request proposed 12 copies cold and 0 on
+    the byte-identical next request, which for a chat is every turn after the
+    first.
+
+    The row here is shaped like that hit: two tokens of tail against a
+    six-token prompt the request still knows in full.
+    """
+    from types import SimpleNamespace
+
+    import mlx.core as mx
+
+    from vllm_mlx.scheduler import _install_mtp_vendored
+    from vllm_mlx.spec_decode.mtp import generator as _gen_mod
+    from vllm_mlx.spec_decode.mtp.prompt_lookup import PromptLookupPolicy
+
+    seen: dict[str, object] = {}
+
+    class _FakeGen:
+        def __iter__(self):
+            return self
+
+        def __next__(self):
+            return (201, mx.array([0.0]), False)
+
+        def close(self):
+            pass
+
+    class _QualifiedModel(_StubModel):
+        mtp_prompt_lookup_supported = True
+        mtp_prompt_lookup_policy = PromptLookupPolicy(enabled_by_default=True)
+
+    monkeypatch.delenv("RAPID_MLX_MTP_PROMPT_LOOKUP", raising=False)
+    monkeypatch.setattr(
+        _gen_mod,
+        "mtp_generate_step",
+        lambda *args, **kwargs: seen.update(kwargs) or _FakeGen(),
+    )
+    batch_gen, gb = _make_batch_gen_with_gb()
+    gb.uids = [36]
+    # What mlx-lm exposes after the scheduler reused the first four tokens.
+    gb.tokens = [[105, 106]]
+    gb._next_tokens = mx.array([500], dtype=mx.uint32)
+    gb._next_logprobs = [mx.array([0.0])]
+    request_stub = SimpleNamespace(
+        sampling_params=SimpleNamespace(temperature=0.0),
+        prompt_token_ids=[101, 102, 103, 104, 105, 106],
+    )
+
+    assert _install_mtp_vendored(
+        batch_gen,
+        model=_QualifiedModel(),
+        requests={"req-36": request_stub},
+        uid_to_request_id={36: "req-36"},
+    )
+    gb._step()
+
+    assert seen["prompt_lookup_enabled"] is True
+    assert seen["prompt_lookup_history"] == [101, 102, 103, 104, 105, 106, 500]
+
+
+def test_install_mtp_vendored_sampled_prompt_lookup_honours_operator_off(
+    monkeypatch,
+):
+    """An operator can put sampled requests back on the old route alone.
+
+    The kill switch for copying as a whole
+    (``RAPID_MLX_MTP_PROMPT_LOOKUP=0``) takes greedy requests down with it,
+    which is the wrong instrument for someone bisecting a report that only
+    sampled chats look wrong. ``_SAMPLED=0`` leaves the greedy route exactly
+    as it was.
+    """
+    from types import SimpleNamespace
+
+    import mlx.core as mx
+
+    from vllm_mlx.scheduler import _install_mtp_vendored
+    from vllm_mlx.spec_decode.mtp import generator as _gen_mod
+    from vllm_mlx.spec_decode.mtp.prompt_lookup import PromptLookupPolicy
+
+    seen: dict[str, object] = {}
+
+    class _FakeGen:
+        def __iter__(self):
+            return self
+
+        def __next__(self):
+            return (201, mx.array([0.0]), False)
+
+        def close(self):
+            pass
+
+    class _SampledQualifiedModel(_StubModel):
+        mtp_prompt_lookup_supported = True
+        mtp_prompt_lookup_policy = PromptLookupPolicy(
+            enabled_by_default=True, enabled_under_sampling=True
+        )
+
+    monkeypatch.setenv("RAPID_MLX_MTP_PROMPT_LOOKUP_SAMPLED", "0")
+    monkeypatch.setattr(
+        _gen_mod,
+        "mtp_generate_step",
+        lambda *args, **kwargs: seen.update(kwargs) or _FakeGen(),
+    )
+    batch_gen, gb = _make_batch_gen_with_gb()
+    gb.uids = [34]
+    gb.tokens = [[101, 102]]
+    gb._next_tokens = mx.array([500], dtype=mx.uint32)
+    gb._next_logprobs = [mx.array([0.0])]
+    sampled = SimpleNamespace(
+        sampling_params=SimpleNamespace(
+            temperature=0.7, top_p=0.9, top_k=0, min_p=0.0, seed=None
+        ),
+    )
+
+    assert _install_mtp_vendored(
+        batch_gen,
+        model=_SampledQualifiedModel(),
+        requests={"req-34": sampled},
+        uid_to_request_id={34: "req-34"},
+    )
+    gb._step()
+
+    assert seen["prompt_lookup_enabled"] is False
+    # Greedy on the same build is untouched: this knob is about one request
+    # class, not about copying.
+    greedy_seen: dict[str, object] = {}
+    monkeypatch.setattr(
+        _gen_mod,
+        "mtp_generate_step",
+        lambda *args, **kwargs: greedy_seen.update(kwargs) or _FakeGen(),
+    )
+    batch_gen2, gb2 = _make_batch_gen_with_gb()
+    gb2.uids = [35]
+    gb2.tokens = [[101, 102]]
+    gb2._next_tokens = mx.array([500], dtype=mx.uint32)
+    gb2._next_logprobs = [mx.array([0.0])]
+    greedy = SimpleNamespace(sampling_params=SimpleNamespace(temperature=0.0))
+
+    assert _install_mtp_vendored(
+        batch_gen2,
+        model=_SampledQualifiedModel(),
+        requests={"req-35": greedy},
+        uid_to_request_id={35: "req-35"},
+    )
+    gb2._step()
+
+    assert greedy_seen["prompt_lookup_enabled"] is True
 
 
 def test_install_mtp_vendored_passes_request_sampling_and_safe_penalty_context(

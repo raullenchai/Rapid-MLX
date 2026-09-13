@@ -100,3 +100,9 @@ number were rejected by the target and rolled back without changing output.
 This evidence does not qualify sampled/non-greedy PLD, other model families, or
 continuous multi-request speculation. Those routes remain on their existing
 decoders until they have independent correctness and performance evidence.
+
+Sampled PLD has since been qualified for a different family on its own
+evidence — see `2026-09-13-qwen38-copy-draft-sampled.md`. Qwen4 Flash-Next is
+unaffected and stays greedy-only: the policy above declares no sampled route,
+and that declaration is per family precisely so one family's measurements
+cannot enable another's.

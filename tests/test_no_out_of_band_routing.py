@@ -237,6 +237,14 @@ ALLOWED_RAPID_MLX_ENV_VARS: frozenset[str] = frozenset(
         # token-lossless across verification chunk boundaries; the other
         # three size the n-gram match window.
         "RAPID_MLX_MTP_PROMPT_LOOKUP",
+        # Disable-only switch for the sampled half of the same opt-in: it can
+        # put a family's temperature > 0 requests back on the greedy-only
+        # route, and cannot put an unqualified family onto the sampled one.
+        # It selects a draft source inside an already-selected model's
+        # speculative decode, and the emitted distribution is the target's
+        # either way, so it cannot change which model, parser, tier or lane
+        # serves the request.
+        "RAPID_MLX_MTP_PROMPT_LOOKUP_SAMPLED",
         "RAPID_MLX_MTP_PROMPT_LOOKUP_MAX_TOKENS",
         "RAPID_MLX_MTP_PROMPT_LOOKUP_MIN_NGRAM",
         "RAPID_MLX_MTP_PROMPT_LOOKUP_MAX_NGRAM",

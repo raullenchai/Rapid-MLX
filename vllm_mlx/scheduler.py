@@ -1568,6 +1568,38 @@ def _install_mtp_vendored(
         departed_log_keys = {key for key in _initial_skip_logged if key[0] == uid}
         _initial_skip_logged.difference_update(departed_log_keys)
 
+    def _prompt_lookup_history_for(uid: int, first_tok: int) -> list[int]:
+        """The immutable prompt to index, even when its KV came from cache.
+
+        ``gb.tokens[0]`` is mlx-lm's row history, and on a prefix-cache hit it
+        begins at the *unprocessed* tail -- the reused prefix never passes
+        through the batch at all. Indexing that row builds the copy index over
+        a stub exactly when the prompt is longest and most worth copying from.
+        Measured on an M4 Pro with ``qwen3.8-27b-4bit``: one 236-token rename
+        request proposes 12 copies cold, and the next, byte-identical request
+        proposes zero because its prefix was served from cache. For a chat that
+        is every turn after the first, which is to say all of them.
+
+        The request's own ``prompt_token_ids`` is the whole prompt whatever the
+        cache did with it, and it is what the index contract actually asks for:
+        generated text is the lookup *query* and must never enter the index, or
+        self-repetition becomes a fast loop. That also makes this the right
+        source if construction is ever re-entered after tokens have been
+        emitted, where the row would carry generated text.
+        """
+        prompt_tokens: list[int] = []
+        if uid_to_request_id is not None and requests is not None:
+            request_id = uid_to_request_id.get(uid)
+            request = requests.get(request_id) if request_id is not None else None
+            prompt_ids = getattr(request, "prompt_token_ids", None)
+            if prompt_ids:
+                prompt_tokens = [int(token) for token in prompt_ids]
+        if not prompt_tokens:
+            # Standalone/benchmark callers own no request map; the row is all
+            # there is, and without cache reuse it is the prompt.
+            prompt_tokens = [int(token) for token in gb.tokens[0]]
+        return prompt_tokens + [int(first_tok)]
+
     def _sampling_options_for_uid(uid: int) -> tuple[dict[str, Any] | None, str]:
         """Resolve the request-local MTP sampling contract, fail closed.
 
@@ -2019,9 +2051,14 @@ def _install_mtp_vendored(
                     )
             try:
                 prompt_lookup_policy = _effective_prompt_lookup_policy(mtp_model)
-                prompt_lookup_enabled = sampling_options[
-                    "temp"
-                ] == 0 and _prompt_lookup_is_enabled(
+                # Greedy, or a family that has qualified the sampled route.
+                # The desktop app's persisted default temperature is 0.7 and
+                # it always sends a value, so gating on greedy alone hands
+                # the whole copy-draft speedup to API callers that omit
+                # ``temperature`` and to nobody else.
+                prompt_lookup_enabled = prompt_lookup_policy.admits_temperature(
+                    sampling_options["temp"]
+                ) and _prompt_lookup_is_enabled(
                     mtp_model,
                     requested=prompt_lookup_policy.enabled_by_default,
                 )
@@ -2076,7 +2113,7 @@ def _install_mtp_vendored(
                     # generator mutates GenerationBatch bookkeeping.
                     prompt_lookup_enabled=prompt_lookup_enabled,
                     prompt_lookup_history=(
-                        list(gb.tokens[0]) + [first_tok]
+                        _prompt_lookup_history_for(uid, first_tok)
                         if prompt_lookup_enabled
                         else None
                     ),

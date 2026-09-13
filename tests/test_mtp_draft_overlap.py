@@ -518,3 +518,152 @@ def test_prompt_lookup_drafts_replace_the_drafter_chain_on_a_parked_round():
         True,
     ], emitted
     assert model.mtp_calls == 0, events
+
+
+class _SoftTargetModel(_ScriptedModel):
+    """``_ScriptedModel`` with a chosen distribution at one verify position.
+
+    The one-hot 50.0 logits the base class emits make every accept/reject
+    decision deterministic, which is what the greedy tests want and exactly
+    what a sampled-acceptance test cannot use: a copied token whose target
+    probability is 1 is always accepted at any temperature.  ``soft`` maps a
+    scripted backbone id to a ``{token: probability}`` row, emitted as
+    ``temp * log(p)`` so that the generator's own ``logits / temp`` softmax
+    reproduces ``p`` exactly rather than some sharpened version of it.
+    """
+
+    def __init__(self, backbone, mtp, events, soft, temp, **kwargs):
+        super().__init__(backbone, mtp, events, **kwargs)
+        self._soft = soft
+        self._temp = temp
+
+    def _logits(self, ids, batch):
+        rows = []
+        for tid in ids:
+            probs = self._soft.get(tid)
+            if probs is None:
+                rows.append(
+                    mx.where(
+                        mx.arange(self.vocab)[None, :] == tid,
+                        mx.array(50.0),
+                        mx.array(0.0),
+                    )
+                    + mx.zeros((batch, self.vocab))
+                )
+                continue
+            # -1e9 rather than -inf: the generator subtracts a logsumexp from
+            # this row, and inf - inf is nan.
+            row = [-1e9] * self.vocab
+            for token, p in probs.items():
+                import math
+
+                row[token] = self._temp * math.log(p)
+            rows.append(mx.array([row] * batch))
+        return mx.stack(rows, axis=1)
+
+
+def _sampled_copy_run(*, temp, enabled_under_sampling, seed, soft=None):
+    """One sampled turn whose third token is the copy-verified position."""
+    from vllm_mlx._seeded_sampler import RequestSeededRNG
+    from vllm_mlx.spec_decode.mtp.prompt_lookup import PromptLookupPolicy
+
+    events: list = []
+    backbone = [7, 20, 25, 26, 27, 27, 27]
+    if soft is None:
+        model = _ScriptedModel(backbone, [], events)
+    else:
+        model = _SoftTargetModel(backbone, [], events, soft, temp)
+    model.mtp_prompt_lookup_supported = True
+    emitted = _run(
+        model,
+        max_tokens=3,
+        max_k=0,
+        events=events,
+        temp=temp,
+        lane_rng=RequestSeededRNG(seed),
+        prompt_lookup_enabled=None,
+        prompt_lookup_history=[7, 20, 25, 26],
+        prompt_lookup_policy=PromptLookupPolicy(
+            enabled_by_default=True,
+            enabled_under_sampling=enabled_under_sampling,
+            min_ngram=2,
+            max_ngram=2,
+            max_tokens=1,
+        ),
+    )
+    return emitted, model
+
+
+def test_prompt_lookup_copies_under_sampling_when_the_family_qualifies_it():
+    """A sampled request on a qualified family drafts by copy, not by chain.
+
+    The gate used to read ``_is_greedy and ...``, so this turn -- temperature
+    0.7, everything else identical to the greedy copy test above -- took the
+    ordinary MTP path and copied nothing.  With the family declaring the
+    sampled route, the third token arrives as an accepted draft and the
+    drafter chain still never runs (``max_k=0`` parks it, and a copy proposal
+    replaces it).
+    """
+    emitted, model = _sampled_copy_run(temp=0.7, enabled_under_sampling=True, seed=17)
+
+    assert [tok for tok, _ in emitted] == [7, 20, 25], emitted
+    assert [from_draft for _, from_draft in emitted] == [False, False, True], emitted
+    assert model.mtp_calls == 0
+
+
+def test_prompt_lookup_stays_off_when_the_family_has_not_qualified_sampling():
+    """The sampled route is per-family, so an unqualified family must not copy.
+
+    Same turn as the test above with ``enabled_under_sampling=False``: the
+    third token is still the target's own 25, but it is delivered as a
+    non-draft, which is the observable difference between "copied and
+    verified" and "decoded one token at a time".
+    """
+    emitted, model = _sampled_copy_run(temp=0.7, enabled_under_sampling=False, seed=17)
+
+    assert [from_draft for _, from_draft in emitted] == [
+        False,
+        False,
+        False,
+    ], emitted
+
+
+def test_prompt_lookup_under_sampling_emits_the_target_distribution():
+    """The copy path must not bend what is sampled, only how fast it arrives.
+
+    A copied token is a point-mass proposal, so speculative sampling accepts
+    it with probability ``p(token)`` and otherwise draws from ``p`` with that
+    token removed and renormalised.  Composed, those two branches emit
+    exactly ``p`` -- ``p(d)`` for the proposal and, for any other token,
+    ``(1 - p(d)) * p(x) / (1 - p(d)) = p(x)``.  So script the verify position
+    to a known distribution and check the delivered token against it, which
+    is the only assertion that would catch an acceptance rule that forgot the
+    proposal's own probability (it would emit 25 far too often) or a residual
+    that kept the refused token in play.
+    """
+    probs = {25: 0.5, 26: 0.3, 27: 0.2}
+    reps = 400
+    seen = {25: 0, 26: 0, 27: 0}
+    drafted = 0
+    for seed in range(reps):
+        emitted, _model = _sampled_copy_run(
+            temp=0.7,
+            enabled_under_sampling=True,
+            seed=seed,
+            soft={25: probs},
+        )
+        token, from_draft = emitted[2]
+        assert token in seen, emitted
+        seen[token] += 1
+        drafted += int(from_draft)
+
+    # Sampling error at 400 draws is ~2.5 points per bin, so 8 points of
+    # total-variation slack is ~3 sigma on the worst bin while still failing
+    # any of the ways the mechanism can be wrong: always accepting the
+    # proposal puts 1.0 on token 25, never accepting puts 0.0 there, and a
+    # residual that leaves 25 in play overshoots it.
+    tv = 0.5 * sum(abs(seen[t] / reps - p) for t, p in probs.items())
+    assert tv < 0.08, (seen, tv)
+    # Only the accepted proposals are delivered as drafts, so the draft rate
+    # is the acceptance probability: p(25) = 0.5.
+    assert abs(drafted / reps - probs[25]) < 0.08, (drafted, reps)

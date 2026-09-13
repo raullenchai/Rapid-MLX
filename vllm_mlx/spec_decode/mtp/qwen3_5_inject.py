@@ -996,8 +996,19 @@ def inject_mtp_support(
         # gain in every rep (spreads of 1.3% and 0.1%); the annotate and
         # prose cells are host-noise dominated and move inside their own
         # spread, worst single rep -3.1%.
+        # Sampled requests copy on this family too, which is what makes the
+        # feature reach the desktop app at all (its persisted default
+        # temperature is 0.7 and it always sends a value). Acceptance barely
+        # moves -- 52.5-57.7% of copied rows accepted at temp 0.7 against
+        # 54.5-54.7% at temp 0, same task and build, +21.7% either way -- and
+        # the rollback contract is temperature-independent: a refused proposal
+        # trims exactly the rows the verify wrote, which is what
+        # ``_safe_prompt_lookup_draft_count`` already sizes for. Served
+        # multi-turn evidence and the correctness argument are in
+        # ``docs/engineering/performance/2026-09-13-qwen38-copy-draft-sampled.md``.
         mtp_prompt_lookup_policy = PromptLookupPolicy(
             enabled_by_default=True,
+            enabled_under_sampling=True,
             min_ngram=8,
             max_ngram=64,
             max_tokens=MAX_COPY_DRAFT_TOKENS,
