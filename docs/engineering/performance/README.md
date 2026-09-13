@@ -7,6 +7,7 @@ summary statistics, and limitations.
 ## Reports
 
 - [Qwen3.6-35B-A3B fused MoE router qualification](2026-09-12-qwen36-35b-fused-router.md)
+- [GLM-5.3 real-task MTP qualification](2026-09-12-glm53-real-task-mtp.md)
 - [DeepSeek V4.1 Flash Engram SSD offload qualification](2026-09-11-deepseek-v41-engram-offload.md)
 - [Qwen3.8 27B MTP FP16 checkpoint qualification](2026-09-07-qwen38-mtp-fp16.md)
 - [Qwen4 fp32-input fast RMSNorm qualification](2026-09-06-qwen4-fast-rmsnorm.md)
