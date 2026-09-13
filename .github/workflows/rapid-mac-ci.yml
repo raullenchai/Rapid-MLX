@@ -509,10 +509,12 @@ jobs:
       run:
         working-directory: apps/rapid-mac
     env:
-      # Each matrix child receives only one manifest group. Every named step
-      # remains visible, but the harness exits before launch for journeys owned
-      # by another shard. Separate hosted VMs isolate HOME, defaults, ports,
-      # app processes, and result directories by construction.
+      # Each matrix child receives one duration-balanced bundle of whole
+      # manifest groups. Every named step remains visible, but the harness
+      # exits before launch for journeys owned by another lane. The harness
+      # gives every selected journey its own HOME, defaults, ports, app
+      # processes, and result directory; separate hosted VMs isolate the two
+      # concurrent bundles from one another.
       GUI_FLOWS: ${{ matrix.gui_flows }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1

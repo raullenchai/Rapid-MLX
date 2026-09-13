@@ -82,6 +82,7 @@ REQUIRED_CI_MATRIX_PREFIXES = {
     "test-matrix (": 9,
     "l1-smoke (": 5,
 }
+MAX_GUI_MATRIX_JOBS = 2
 
 
 class EvidenceError(RuntimeError):
@@ -275,23 +276,40 @@ def _validate_mac_jobs(
     jobs = _successful_jobs(client, run)
     selected = [_require_unique_success(jobs, name) for name in REQUIRED_MAC_JOBS]
     matrix: dict[str, list[dict[str, Any]]] = {group: [] for group in expected_groups}
+    matrix_jobs: dict[int, dict[str, Any]] = {}
     for job in jobs:
         name = job.get("name")
         if not isinstance(name, str) or not name.startswith("gui-golden-flows ("):
             continue
-        for group in expected_groups:
-            if name.startswith(f"gui-golden-flows ({group},"):
-                matrix[group].append(job)
+        bundle = name.removeprefix("gui-golden-flows (").split(",", maxsplit=1)[0]
+        groups = bundle.split("+")
+        if (
+            not groups
+            or len(groups) != len(set(groups))
+            or not set(groups) <= expected_groups
+        ):
+            raise EvidenceError(
+                f"GUI candidate exposed malformed group bundle: {bundle}"
+            )
+        for group in groups:
+            matrix[group].append(job)
+        matrix_jobs[_field(job, "id", int)] = job
     missing = sorted(group for group, matches in matrix.items() if len(matches) != 1)
     if missing:
         raise EvidenceError(
             "GUI candidate did not expose exactly one matrix job for groups: "
             + ", ".join(missing)
         )
+    expected_job_count = min(MAX_GUI_MATRIX_JOBS, len(expected_groups))
+    if len(matrix_jobs) != expected_job_count:
+        raise EvidenceError(
+            "GUI candidate exposed the wrong number of balanced lanes: "
+            f"expected {expected_job_count}, found {len(matrix_jobs)}"
+        )
     for group, (job,) in matrix.items():
         if job.get("status") != "completed" or job.get("conclusion") != "success":
             raise EvidenceError(f"GUI matrix group {group!r} did not succeed")
-        selected.append(job)
+    selected.extend(matrix_jobs.values())
     return selected
 
 

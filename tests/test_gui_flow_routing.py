@@ -12,7 +12,14 @@ from pathlib import Path
 import pytest
 import yaml
 
-from scripts.select_gui_flows import all_flows, select, shard_matrix
+from scripts.queue_tree_evidence import MAX_GUI_MATRIX_JOBS
+from scripts.select_gui_flows import (
+    GUI_GROUP_WEIGHTS,
+    GUI_LANE_COUNT,
+    all_flows,
+    select,
+    shard_matrix,
+)
 
 ROOT = Path(__file__).resolve().parent.parent
 MANIFEST = ROOT / "apps/rapid-mac/Tests/GUIGoldenFlows/journeys.yaml"
@@ -139,13 +146,18 @@ def test_shards_partition_every_selected_flow_once_by_manifest_group():
     selected = all_flows()
     matrix = shard_matrix(selected)
     shards = matrix["include"]
-    assert [shard["group"] for shard in shards] == sorted(_groups())
+    assert len(shards) == GUI_LANE_COUNT
 
     flattened = [
         flow for shard in shards for flow in json.loads(str(shard["gui_flows"]))
     ]
     assert set(flattened) == set(selected)
     assert len(flattened) == len(set(flattened))
+    bundled_groups = [
+        group for shard in shards for group in str(shard["group"]).split("+")
+    ]
+    assert set(bundled_groups) == set(_groups())
+    assert len(bundled_groups) == len(set(bundled_groups))
     assert all(
         group_flows == sorted(group_flows, key=selected.index)
         for group_flows in (json.loads(str(shard["gui_flows"])) for shard in shards)
@@ -154,6 +166,42 @@ def test_shards_partition_every_selected_flow_once_by_manifest_group():
         shard["flow_count"] == len(json.loads(str(shard["gui_flows"])))
         for shard in shards
     )
+    lane_weights = [
+        sum(GUI_GROUP_WEIGHTS[group] for group in str(shard["group"]).split("+"))
+        for shard in shards
+    ]
+    assert GUI_LANE_COUNT == MAX_GUI_MATRIX_JOBS
+    assert sorted(lane_weights) == [615, 700]
+
+
+def test_one_or_two_selected_groups_keep_whole_group_jobs():
+    image_flows = _groups()["images"]
+    assert shard_matrix(image_flows)["include"] == [
+        {
+            "group": "images",
+            "gui_flows": json.dumps(
+                [flow for flow in all_flows() if flow in image_flows],
+                separators=(",", ":"),
+            ),
+            "flow_count": len(image_flows),
+        }
+    ]
+
+    selected = _groups()["chat"] | _groups()["models"]
+    shards = shard_matrix(selected)["include"]
+    assert {str(shard["group"]) for shard in shards} == {"chat", "models"}
+
+
+def test_partial_group_input_never_expands_to_unselected_journeys():
+    selected = ["fresh-install", "settings-persistence"]
+
+    assert shard_matrix(selected)["include"] == [
+        {
+            "group": "onboarding-settings",
+            "gui_flows": '["fresh-install","settings-persistence"]',
+            "flow_count": 2,
+        }
+    ]
 
 
 def test_shard_matrix_rejects_empty_or_unknown_flow_sets():
