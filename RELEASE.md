@@ -233,7 +233,7 @@ Run the offline tests with `./tests/release/test_build_release_notes.sh`.
 ## The pipeline
 
 `.github/workflows/auto-release.yml` runs on every push to `main`. On a version
-bump it fans out, waits for two independent gates, gathers pre-approval
+bump it fans out, waits for three independent gates, gathers pre-approval
 evidence, asks a human to approve the exact SHA, then claims the desktop tag and
 creates the engine release:
 
@@ -245,16 +245,15 @@ detect (GitHub-hosted, ~2s): is it a bump? does pyproject agree?
    is the release missing? → outputs should_release / version.
    Non-bump pushes stop here.
    │ should_release == true
-   ├───────────────────────────────►  (PARALLEL — independent, both need only detect)
-   ▼                                    │
-tier1-agent-gate (self-hosted "Studio") │    desktop-candidate-gate (macos-15)
-Build exact source; run agent_smoke.sh  │    Build + sign + notarise + DMG-validate
-driving Claude Code / Codex / Hermes /  │    the app at the EXACT release commit;
-Aider / DeepSeek Harness.  Exit non-zero│    emit a Desktop manifest binding source
-if any of the 5 regresses.              │    SHA + embedded versions + DMG digest
-                                        │    (no tag, no release, no updater pointer)
-   │  BOTH must pass (tier1 force-bypassable)        │
-   ▼                                                    ▼
+   ├───────────────────────────────►  (PARALLEL — independent; need only detect)
+   ├─ release-final-ci: wait for ordinary ci.yml::tests and
+   │  rapid-mac-ci.yml::desktop-tests at this exact SHA
+   ├─ tier1-agent-gate (self-hosted "Studio"): build exact source and run the
+   │  five-agent real-model smoke (force-bypassable only on emergency dispatch)
+   └─ desktop-candidate-gate (macos-15): build + sign + notarise + DMG-validate
+      at the exact source; emit SHA/version/digest manifest (no publication)
+   │  ALL THREE must pass (except the documented Tier-1 emergency bypass)
+   ▼
 release-prep (pre-approval evidence, no env): resolve the exact release SHA,
 verify it equals the accepted desktop-candidate SHA, verify the LIVE main head
 still equals it, gather LIVE release-blocker evidence vs the waiver file, and
@@ -263,7 +262,8 @@ print all of it — this exact SHA is what a reviewer approves.
    ▼
 release (environment: rapid-mac-tag — HUMAN APPROVAL on the printed SHA):
    re-verify live rapid-mac-tag protection, re-query live blockers + main head
-   (TOCTOU), then tag the desktop app at the exact validated SHA.
+   + exact-SHA ordinary CI (TOCTOU), then tag the desktop app at the exact
+   validated SHA.
    │
    ▼
 rapid-mac-v* tag fires rapid-mac-release.yml: re-runs the SAME shared
@@ -277,10 +277,13 @@ release creates the engine tag vX.Y.Z + GitHub Release (RELEASE_PAT)
 → publish.yml to PyPI.
 ```
 
-The two gates run **in parallel** (they share nothing — different runners,
-different checks) and `release-prep` `needs` BOTH, so **a canonical normal
-release cannot tag or publish unless *both* pass**: the Tier-1 engine gate and
-the signed Desktop candidate at the exact commit.
+The three gates run **in parallel** and `release-prep` needs all three, so **a
+canonical normal release cannot tag or publish unless all three pass**: the
+ordinary engine/Desktop aggregate checks at the exact SHA, the Tier-1 engine
+gate, and the signed Desktop candidate at that commit. The coordinator ignores
+a newer cancelled duplicate only when another non-cancelled run supplies valid
+evidence; API errors, missing evidence, cancellation-only evidence, and red
+facades fail closed.
 
 For `workflow_dispatch` with `dry_run=true`, detect intentionally sets the gate
 route active with `force=false`; the same two gates run, then
@@ -290,8 +293,8 @@ the production environment or publish.
 
 Exact invariant: canonical normal releases require the Tier-1 gate; the audited
 **emergency dispatch may bypass only the Tier-1 gate** (see below); the signed
-Desktop candidate, the exact-SHA binding, the live release-blocker / main-head
-gates, and the protected `rapid-mac-tag` environment approval are **never
+Desktop candidate, exact-SHA ordinary CI, the exact-SHA binding, the live
+release-blocker / main-head gates, and the protected `rapid-mac-tag` environment approval are **never
 bypassed by either supported auto-release route** (normal or emergency). (Manual
 `rapid-mac-v*` tag creation is separately unsupported — `apps/rapid-mac/RELEASING.md` D2.)
 

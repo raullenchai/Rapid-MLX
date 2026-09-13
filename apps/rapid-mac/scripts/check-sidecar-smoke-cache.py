@@ -14,6 +14,7 @@ import argparse
 import json
 import os
 import re
+import subprocess
 import sys
 from pathlib import Path, PurePosixPath
 
@@ -23,6 +24,7 @@ _REPOSITORY = re.compile(
     r"[A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?/"
     r"[A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?"
 )
+_READ_TIMEOUT_SECONDS = 5
 
 
 class PreflightError(Exception):
@@ -90,6 +92,28 @@ def snapshot_path(cache_root: Path, repository: str, revision: str) -> Path:
     )
 
 
+def file_is_readable(path: Path) -> bool:
+    """Probe one byte out-of-process so a macOS TCC denial cannot hang CI."""
+    try:
+        result = subprocess.run(
+            [
+                sys.executable,
+                "-I",
+                "-c",
+                "import sys; open(sys.argv[1], 'rb').read(1)",
+                str(path),
+            ],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            check=False,
+            timeout=_READ_TIMEOUT_SECONDS,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return result.returncode == 0
+
+
 def missing_pins(
     pins: dict[str, tuple[str, str, tuple[str, ...]]], cache_root: Path
 ) -> list[tuple[str, str, tuple[str, ...]]]:
@@ -98,14 +122,26 @@ def missing_pins(
         snapshot = snapshot_path(cache_root, repository, revision)
         missing_files: list[str] = []
         for file in files:
+            candidate = snapshot / file
+            path_exists = False
             try:
-                # is_file follows the cache's blob symlinks. It catches both
-                # absent entries and evicted blobs without opening model data.
-                present = snapshot.is_dir() and (snapshot / file).is_file()
+                # Reading one byte catches macOS privacy/TCC denials on a
+                # warm-tier symlink. ``is_file`` alone can succeed while the
+                # release runner later blocks forever opening the same blob.
+                # The probe is an isolated, bounded subprocess for that reason.
+                path_exists = snapshot.is_dir() and candidate.is_file()
+                present = path_exists
+                if present:
+                    present = file_is_readable(candidate)
             except OSError:
                 present = False
             if not present:
                 missing_files.append(file)
+                # A path that exists but cannot be opened normally indicates a
+                # snapshot-wide host access boundary. Stop after the first
+                # proof rather than multiplying the timeout by every shard.
+                if path_exists:
+                    break
         if missing_files:
             missing.append((repository, revision, tuple(missing_files)))
     return missing
@@ -139,15 +175,15 @@ def main(argv: list[str] | None = None) -> int:
     if missing:
         print(
             f"sidecar cache preflight: FAIL: {len(missing)} immutable snapshot(s) "
-            f"missing from {cache_root}",
+            f"missing or unreadable in {cache_root}",
             file=sys.stderr,
         )
         for repository, revision, missing_files in missing:
             print(f"  - {repository}@{revision}", file=sys.stderr)
             for file in missing_files:
-                print(f"      missing: {file}", file=sys.stderr)
+                print(f"      unavailable: {file}", file=sys.stderr)
             print(
-                '    restore: python3 -c "from huggingface_hub import '
+                '    repair cache access, or restore: python3 -c "from huggingface_hub import '
                 f"snapshot_download; snapshot_download('{repository}', "
                 f"revision='{revision}')\"",
                 file=sys.stderr,

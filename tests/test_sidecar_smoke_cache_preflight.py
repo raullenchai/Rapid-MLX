@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -107,12 +108,45 @@ def test_all_missing_are_reported_together(
         assert f"{repository}@{revision}" in error
 
 
-def test_all_present_pass_without_reading_model_files(tmp_path: Path) -> None:
+def test_all_present_and_readable_pass(tmp_path: Path) -> None:
     for repository, revision, _ in _MODULE.load_pins(_MANIFEST).values():
         _populate(tmp_path, repository, revision)
     assert (
         _MODULE.main(["--manifest", str(_MANIFEST), "--cache-root", str(tmp_path)]) == 0
     )
+
+
+def test_present_but_unreadable_file_fails_closed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    pins = _MODULE.load_pins(_MANIFEST)
+    for repository, revision, _ in pins.values():
+        _populate(tmp_path, repository, revision)
+    blocked = (
+        _MODULE.snapshot_path(tmp_path, pins["qwen"][0], pins["qwen"][1])
+        / "config.json"
+    )
+    original_probe = _MODULE.file_is_readable
+    monkeypatch.setattr(
+        _MODULE,
+        "file_is_readable",
+        lambda path: False if path == blocked else original_probe(path),
+    )
+    missing = _MODULE.missing_pins(pins, tmp_path)
+    assert missing == [(pins["qwen"][0], pins["qwen"][1], ("config.json",))]
+
+
+def test_readability_probe_times_out_instead_of_hanging(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    candidate = tmp_path / "config.json"
+    candidate.write_text("stub")
+
+    def timeout(*args: object, **kwargs: object):
+        raise subprocess.TimeoutExpired(cmd="probe", timeout=5)
+
+    monkeypatch.setattr(_MODULE.subprocess, "run", timeout)
+    assert _MODULE.file_is_readable(candidate) is False
 
 
 @pytest.mark.parametrize(
@@ -145,7 +179,7 @@ def test_partial_snapshot_fails_closed(
     )
     error = capsys.readouterr().err
     assert f"{pins['qwen'][0]}@{pins['qwen'][1]}" in error
-    assert f"missing: {damaged_file}" in error
+    assert f"unavailable: {damaged_file}" in error
 
 
 def test_present_pins_emit_workflow_outputs(tmp_path: Path) -> None:

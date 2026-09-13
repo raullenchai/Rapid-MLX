@@ -31,6 +31,16 @@ ok()  { PASS=$((PASS + 1)); printf '  \033[32mPASS\033[0m %s\n' "$1"; }
 bad() { FAIL=$((FAIL + 1)); printf '  \033[31mFAIL\033[0m %s\n' "$1"; }
 contains() { if grep -qF -- "$2" <<<"$1"; then ok "$3"; else bad "$3"; printf '        want substring: %s\n        got:            %s\n' "$2" "$1"; fi; }
 lacks()    { if grep -qF -- "$2" <<<"$1"; then bad "$3"; else ok "$3"; fi; }
+order() {
+  local first second
+  first=$(grep -nF -- "$2" <<<"$1" | head -1 | cut -d: -f1 || true)
+  second=$(grep -nF -- "$3" <<<"$1" | head -1 | cut -d: -f1 || true)
+  if [[ -n "$first" && -n "$second" && "$first" -lt "$second" ]]; then
+    ok "$4"
+  else
+    bad "$4"
+  fi
+}
 
 A="1111111111111111111111111111111111111111"  # bump commit (candidate)
 B="2222222222222222222222222222222222222222"  # packaging fix that lands on main
@@ -350,13 +360,41 @@ contains "$CAND_NEEDS" "needs: detect" \
 lacks "$CAND_NEEDS" "tier1-agent-gate" \
   "desktop-candidate-gate does NOT wait on the Tier-1 gate"
 PREP_NEEDS=$(sed -n '/^  release-prep:/,/^    if:/p' "$AUTO_RELEASE")
-contains "$PREP_NEEDS" "needs: [detect, tier1-agent-gate, desktop-candidate-gate]" \
-  "release-prep needs AND requires BOTH the Tier-1 gate and the desktop candidate gate"
+contains "$PREP_NEEDS" "needs: [detect, tier1-agent-gate, desktop-candidate-gate, release-final-ci]" \
+  "release-prep needs Tier-1, desktop candidate, and exact-SHA ordinary CI"
 RELPREP_IF=$(sed -n '/^  release-prep:/,/runs-on:/p' "$AUTO_RELEASE")
 contains "$RELPREP_IF" "needs.tier1-agent-gate.result == 'success'" \
   "release-prep requires Tier-1 success (or force)"
 contains "$RELPREP_IF" "needs.desktop-candidate-gate.result == 'success'" \
   "release-prep requires desktop-candidate success"
+contains "$RELPREP_IF" "needs.release-final-ci.result == 'success'" \
+  "release-prep requires exact-SHA ordinary CI success"
+FINAL_CI=$(sed -n '/^  release-final-ci:/,/^  dry-run-summary:/p' "$AUTO_RELEASE")
+contains "$FINAL_CI" "needs: detect" \
+  "exact-SHA ordinary CI starts in parallel after detect"
+contains "$FINAL_CI" "actions: read" \
+  "exact-SHA ordinary CI has read-only workflow access"
+contains "$FINAL_CI" '--require ci.yml:tests' \
+  "exact-SHA ordinary CI requires the engine facade"
+contains "$FINAL_CI" '--require rapid-mac-ci.yml:desktop-tests' \
+  "exact-SHA ordinary CI requires the Desktop facade"
+contains "$FINAL_CI" "needs.detect.outputs.dry_run != 'true'" \
+  "pre-bump dry runs do not wait for unavailable push-run evidence"
+RELEASE_IF=$(sed -n '/^  release:/,/runs-on:/p' "$AUTO_RELEASE")
+contains "$RELEASE_IF" "needs: [detect, tier1-agent-gate, desktop-candidate-gate, release-final-ci, release-prep]" \
+  "environment-gated publication directly needs exact-SHA ordinary CI"
+contains "$RELEASE_IF" "needs.release-final-ci.result == 'success'" \
+  "environment-gated publication reasserts exact-SHA ordinary CI success"
+TAG_JOB=$(sed -n '/^  release:/,$p' "$AUTO_RELEASE")
+contains "$TAG_JOB" "Re-query exact-SHA ordinary CI immediately before tag" \
+  "publication re-queries ordinary CI after human approval"
+contains "$TAG_JOB" '--require ci.yml:tests' \
+  "post-approval re-query requires the engine facade"
+contains "$TAG_JOB" '--require rapid-mac-ci.yml:desktop-tests' \
+  "post-approval re-query requires the Desktop facade"
+order "$TAG_JOB" "Re-query exact-SHA ordinary CI immediately before tag" \
+  "Tag the desktop app at the exact validated SHA" \
+  "post-approval ordinary CI re-query precedes the first tag claim"
 
 # ---------------------------------------------------------------------------
 echo "== 7b. normal workflow_dispatch retry after main drift (no bypass) =="
