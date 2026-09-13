@@ -1,4 +1,5 @@
 import os
+import shlex
 import subprocess
 from pathlib import Path
 
@@ -101,11 +102,12 @@ def test_swift_failure_terminates_parallel_sidecar_process_group(
     bin_dir.mkdir()
     child_pid = tmp_path / "child.pid"
     sidecar = tmp_path / "fake-sidecar.sh"
+    quoted_child_pid = shlex.quote(str(child_pid))
     sidecar.write_text(
         "#!/bin/bash\n"
         "set -eu\n"
         "(while :; do sleep 1; done) &\n"
-        f"echo $! > {child_pid!s}\n"
+        f"echo $! > {quoted_child_pid}\n"
         "wait\n"
     )
     sidecar.chmod(0o755)
@@ -113,7 +115,7 @@ def test_swift_failure_terminates_parallel_sidecar_process_group(
     swift.write_text(
         "#!/bin/bash\n"
         "set -eu\n"
-        f"for _ in $(seq 1 100); do [[ -s {child_pid!s} ]] && exit 47; sleep 0.01; done\n"
+        f"for _ in $(seq 1 100); do [[ -s {quoted_child_pid} ]] && exit 47; sleep 0.01; done\n"
         "exit 48\n"
     )
     swift.chmod(0o755)

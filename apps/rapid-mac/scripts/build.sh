@@ -44,6 +44,7 @@ SIDECAR_CACHE_STAMP="$SIDECAR_STAGE/.rapid-sidecar-cache-key"
 PARALLEL_SIDECAR_BUILD="${PARALLEL_SIDECAR_BUILD:-0}"
 SIDECAR_BUILD_PID=""
 SIDECAR_BUILD_LOG=""
+SIDECAR_BUILD_READY=""
 SIDECAR_BUILD_STARTED=0
 
 cleanup_parallel_sidecar() {
@@ -61,6 +62,7 @@ cleanup_parallel_sidecar() {
             cat "$SIDECAR_BUILD_LOG"
         fi
     fi
+    [[ -z "$SIDECAR_BUILD_READY" ]] || rm -f "$SIDECAR_BUILD_READY"
     return "$status"
 }
 trap cleanup_parallel_sidecar EXIT
@@ -78,16 +80,44 @@ if [[ "$PARALLEL_SIDECAR_BUILD" == "1" \
     fi
     mkdir -p "$ROOT/build" "${RUNNER_TEMP:-$ROOT/build}"
     SIDECAR_BUILD_LOG="${RUNNER_TEMP:-$ROOT/build}/rapid-sidecar-build-$$.log"
+    SIDECAR_BUILD_READY="${RUNNER_TEMP:-$ROOT/build}/rapid-sidecar-ready-$$"
+    rm -f "$SIDECAR_BUILD_READY"
     rm -rf "$SIDECAR_STAGE"
     echo "==> starting signed sidecar build beside Swift compilation"
     python3 -c \
-        'import os, sys; os.setsid(); os.execvp(sys.argv[1], sys.argv[1:])' \
-        bash "$SIDECAR_SCRIPT" \
+        'import os, pathlib, sys; os.setsid(); pathlib.Path(sys.argv[1]).touch(); os.execvp(sys.argv[2], sys.argv[2:])' \
+        "$SIDECAR_BUILD_READY" bash "$SIDECAR_SCRIPT" \
         --out "$SIDECAR_STAGE" \
         --developer-id "$CODESIGN_IDENTITY" \
         >"$SIDECAR_BUILD_LOG" 2>&1 &
     SIDECAR_BUILD_PID=$!
     SIDECAR_BUILD_STARTED=$SECONDS
+    for _ in {1..500}; do
+        [[ -f "$SIDECAR_BUILD_READY" ]] && break
+        if ! kill -0 "$SIDECAR_BUILD_PID" 2>/dev/null; then
+            if wait "$SIDECAR_BUILD_PID"; then
+                SIDECAR_BUILD_STATUS=0
+            else
+                SIDECAR_BUILD_STATUS=$?
+            fi
+            SIDECAR_BUILD_PID=""
+            cat "$SIDECAR_BUILD_LOG"
+            rm -f "$SIDECAR_BUILD_LOG"
+            echo "ERR: parallel sidecar launcher exited before process-group readiness ($SIDECAR_BUILD_STATUS)" >&2
+            [[ "$SIDECAR_BUILD_STATUS" -ne 0 ]] || SIDECAR_BUILD_STATUS=1
+            exit "$SIDECAR_BUILD_STATUS"
+        fi
+        sleep 0.01
+    done
+    if [[ ! -f "$SIDECAR_BUILD_READY" ]]; then
+        kill -TERM -- "-$SIDECAR_BUILD_PID" 2>/dev/null \
+            || kill "$SIDECAR_BUILD_PID" 2>/dev/null \
+            || true
+        wait "$SIDECAR_BUILD_PID" 2>/dev/null || true
+        SIDECAR_BUILD_PID=""
+        echo "ERR: parallel sidecar process group was not ready within 5 seconds" >&2
+        exit 1
+    fi
 fi
 
 cd "$ROOT"
@@ -428,6 +458,8 @@ else
         SIDECAR_BUILD_SECONDS=$((SECONDS - SIDECAR_BUILD_STARTED))
         SIDECAR_JOIN_SECONDS=$((SECONDS - SIDECAR_JOIN_STARTED))
         SIDECAR_BUILD_PID=""
+        rm -f "$SIDECAR_BUILD_READY"
+        SIDECAR_BUILD_READY=""
         cat "$SIDECAR_BUILD_LOG"
         rm -f "$SIDECAR_BUILD_LOG"
         if [[ "$SIDECAR_BUILD_STATUS" -ne 0 ]]; then
