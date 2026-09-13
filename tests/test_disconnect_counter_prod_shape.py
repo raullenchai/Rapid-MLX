@@ -487,6 +487,46 @@ def test_disconnect_recorder_resolver_finds_deep_prod_path():
     assert recorder == scheduler.record_disconnect_abort
 
 
+def test_dual_lane_disconnect_aborts_and_attributes_text_owner_only():
+    """A text request on an MLLM/text dual lane must not run after disconnect."""
+    from vllm_mlx.service.helpers import _force_abort_request
+
+    mllm_scheduler = _make_scheduler()
+    text_scheduler = _make_scheduler()
+    _admit(text_scheduler, "req-dual-text")
+
+    engine = _BatchedEngineLike(_AsyncEngineCoreLike(_EngineCoreLike(text_scheduler)))
+    engine._mllm_scheduler = mllm_scheduler
+    engine._is_mllm = True
+    engine._mllm_native_text_engine = True
+
+    assert _force_abort_request(engine, ["req-dual-text"]) is True
+    assert text_scheduler.get_stats()["num_requests_cancelled"] == 1
+    assert text_scheduler.get_stats()["num_requests_cancelled_via_disconnect"] == 1
+    assert mllm_scheduler.get_stats()["num_requests_cancelled"] == 0
+    assert mllm_scheduler.get_stats()["num_requests_cancelled_via_disconnect"] == 0
+
+
+def test_dual_lane_disconnect_aborts_and_attributes_media_owner_only():
+    """The dual-lane resolver must retain the MLLM request path as well."""
+    from vllm_mlx.service.helpers import _force_abort_request
+
+    mllm_scheduler = _make_scheduler()
+    text_scheduler = _make_scheduler()
+    _admit(mllm_scheduler, "req-dual-media")
+
+    engine = _BatchedEngineLike(_AsyncEngineCoreLike(_EngineCoreLike(text_scheduler)))
+    engine._mllm_scheduler = mllm_scheduler
+    engine._is_mllm = True
+    engine._mllm_native_text_engine = True
+
+    assert _force_abort_request(engine, ["req-dual-media"]) is True
+    assert mllm_scheduler.get_stats()["num_requests_cancelled"] == 1
+    assert mllm_scheduler.get_stats()["num_requests_cancelled_via_disconnect"] == 1
+    assert text_scheduler.get_stats()["num_requests_cancelled"] == 0
+    assert text_scheduler.get_stats()["num_requests_cancelled_via_disconnect"] == 0
+
+
 # ---------------------------------------------------------------------------
 # Logging guard: future engine-shape changes do not silently regress
 # ---------------------------------------------------------------------------

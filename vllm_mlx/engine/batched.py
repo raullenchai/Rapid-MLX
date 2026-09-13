@@ -5,10 +5,11 @@ Batched engine for continuous batching with multiple concurrent users.
 This engine wraps AsyncEngineCore to provide continuous batching
 for better throughput when serving multiple concurrent requests.
 
-For MLLM models, all requests (text-only and multimodal) are routed through
-the MLLMScheduler, which handles vision encoding and batched generation via
-MLLMBatchGenerator. MLLM models only initialise the MLLM scheduler (not the
-LLM engine), so text-only requests must also be routed through it.
+For MLLM models, multimodal requests are routed through MLLMScheduler, which
+handles vision encoding and batched generation via MLLMBatchGenerator. A
+strictly qualified hybrid language backbone may additionally share its loaded
+weights with the standard text scheduler so text-only requests use its native
+cache ABI without loading a second model.
 """
 
 import asyncio
@@ -869,6 +870,100 @@ class MLLMModelWrapper:
         return getattr(self._model, name)
 
 
+class Qwen36NativeCacheTextWrapper(MLLMModelWrapper):
+    """Expose MLX-LM caches for qualified Qwen3.6 text-only scheduling.
+
+    The vision runtime's language module and the text runtime share the same
+    cache semantics, but their cache container classes take materially
+    different singleton decode paths. This wrapper changes only cache
+    construction; forward calls still use the already-loaded vision language
+    module and therefore the exact same weights and model operations.
+    """
+
+    def __init__(self, model):
+        super().__init__(model)
+        self._native_position_ids = None
+        self._native_rope_deltas = None
+
+    def __call__(self, *args, **kwargs):
+        # mlx-vlm retains MRoPE bookkeeping on the language module rather than
+        # in the request cache. Two schedulers share the weights but must not
+        # share these lane-local values. Both calls execute on the same
+        # single-thread executor, so swapping them around the complete forward
+        # is atomic with respect to model execution.
+        missing = object()
+        previous_position_ids = getattr(self._model, "_position_ids", missing)
+        previous_rope_deltas = getattr(self._model, "_rope_deltas", missing)
+        self._model._position_ids = self._native_position_ids
+        self._model._rope_deltas = self._native_rope_deltas
+        try:
+            return super().__call__(*args, **kwargs)
+        finally:
+            self._native_position_ids = getattr(self._model, "_position_ids", None)
+            self._native_rope_deltas = getattr(self._model, "_rope_deltas", None)
+            if previous_position_ids is missing:
+                del self._model._position_ids
+            else:
+                self._model._position_ids = previous_position_ids
+            if previous_rope_deltas is missing:
+                del self._model._rope_deltas
+            else:
+                self._model._rope_deltas = previous_rope_deltas
+
+    def make_cache(self):
+        from mlx_lm.models.cache import ArraysCache, KVCache
+
+        return [
+            ArraysCache(size=2) if layer.is_linear else KVCache()
+            for layer in self.layers
+        ]
+
+
+def _supports_qwen36_native_text_cache(language_model: Any) -> bool:
+    """Fail closed to the real-model geometry qualified on Apple Silicon."""
+
+    args = getattr(language_model, "args", None)
+    expected = {
+        "model_type": "qwen3_5_moe_text",
+        "hidden_size": 2048,
+        "num_hidden_layers": 40,
+        "num_experts": 256,
+        "num_experts_per_tok": 8,
+        "full_attention_interval": 4,
+        "linear_num_value_heads": 32,
+        "linear_num_key_heads": 16,
+        "linear_key_head_dim": 128,
+        "linear_value_head_dim": 128,
+    }
+    try:
+        if any(getattr(args, key, None) != value for key, value in expected.items()):
+            return False
+        layers = list(language_model.layers)
+        return len(layers) == 40 and all(
+            bool(layer.is_linear) == ((index + 1) % 4 != 0)
+            for index, layer in enumerate(layers)
+        )
+    except (AttributeError, TypeError):
+        return False
+
+
+def _should_start_qwen36_native_text_cache(
+    language_model: Any,
+    *,
+    config_model_type: str | None,
+    arrays_cache_compat: bool,
+    spec_decode: str,
+    no_hybrid: bool = False,
+) -> bool:
+    return bool(
+        arrays_cache_compat
+        and not no_hybrid
+        and config_model_type == "qwen3_5_moe"
+        and spec_decode == "none"
+        and _supports_qwen36_native_text_cache(language_model)
+    )
+
+
 class BatchedEngine(BaseEngine):
     """
     Batched engine for continuous batching.
@@ -1001,6 +1096,7 @@ class BatchedEngine(BaseEngine):
         self._tokenizer = None  # For LLM
         self._engine = None  # AsyncEngineCore for LLM
         self._mllm_scheduler = None  # MLLMScheduler for MLLM
+        self._mllm_native_text_engine = False
         self._model_load_executor = None  # mlx-step worker (#170)
         self._mllm_instance = None  # MLXMultimodalLM instance
         # The MLLM lane has no text EngineCore/model_config to query. Set this
@@ -1323,23 +1419,38 @@ class BatchedEngine(BaseEngine):
         }
 
     def _lifecycle_scheduler(self):
-        scheduler = self._mllm_scheduler
-        if scheduler is None and self._engine is not None:
-            scheduler = getattr(
+        schedulers = self._lifecycle_schedulers()
+        return schedulers[0] if schedulers else None
+
+    def _lifecycle_schedulers(self) -> tuple[Any, ...]:
+        """Return every live scheduler, without duplicating test stubs."""
+
+        schedulers: list[Any] = []
+        if self._mllm_scheduler is not None:
+            schedulers.append(self._mllm_scheduler)
+        if self._engine is not None:
+            text_scheduler = getattr(
                 getattr(self._engine, "engine", None), "scheduler", None
             )
-        return scheduler
+            if text_scheduler is not None and all(
+                text_scheduler is not scheduler for scheduler in schedulers
+            ):
+                schedulers.append(text_scheduler)
+        return tuple(schedulers)
 
     def _lifecycle_request_ids(self) -> set[str]:
         """Snapshot request IDs owned by either scheduler implementation."""
 
-        scheduler = self._lifecycle_scheduler()
-        if scheduler is None:
-            return set()
-        snapshot = getattr(scheduler, "request_ids_snapshot", None)
-        if callable(snapshot):
-            return {str(request_id) for request_id in snapshot()}
-        return {str(request_id) for request_id in (scheduler.requests or {})}
+        request_ids: set[str] = set()
+        for scheduler in self._lifecycle_schedulers():
+            snapshot = getattr(scheduler, "request_ids_snapshot", None)
+            if callable(snapshot):
+                request_ids.update(str(request_id) for request_id in snapshot())
+            else:
+                request_ids.update(
+                    str(request_id) for request_id in (scheduler.requests or {})
+                )
+        return request_ids
 
     async def pause_generation(
         self, mode: str = "wait", *, timeout: float | None = None
@@ -1349,7 +1460,7 @@ class BatchedEngine(BaseEngine):
         if mode not in {"wait", "abort"}:
             raise ValueError("pause mode must be 'wait' or 'abort'")
 
-        scheduler = self._lifecycle_scheduler()
+        schedulers = self._lifecycle_schedulers()
         admitted_tasks: tuple[asyncio.Task, ...] = ()
         with self._admission_lock:
             self._reconcile_orphaned_reservations_locked()
@@ -1372,21 +1483,27 @@ class BatchedEngine(BaseEngine):
                     aborted_tasks = weakref.WeakSet()
                     self._lifecycle_aborted_tasks = aborted_tasks
                 aborted_tasks.update(admitted_tasks)
-            pause_admission = getattr(scheduler, "pause_generation_admission", None)
-            if callable(pause_admission):
-                pause_admission(admitted_tokens, mode)
-            else:
+            scheduler_owned = len(self._lifecycle_request_ids())
+            legacy_allowance_granted = False
+            for scheduler in schedulers:
+                pause_admission = getattr(scheduler, "pause_generation_admission", None)
+                if callable(pause_admission):
+                    pause_admission(admitted_tokens, mode)
+                    continue
                 set_paused = getattr(scheduler, "set_generation_paused", None)
                 if callable(set_paused):
-                    scheduler_owned = len(self._lifecycle_request_ids())
+                    # Legacy stubs lack token-aware admission. Grant the
+                    # already-admitted allowance once globally, never once per
+                    # scheduler.
                     set_paused(
                         True,
                         add_allowance=(
                             max(0, len(admitted_tokens) - scheduler_owned)
-                            if mode == "wait"
+                            if mode == "wait" and not legacy_allowance_granted
                             else 0
                         ),
                     )
+                    legacy_allowance_granted = True
 
         if mode == "abort":
             current = asyncio.current_task()
@@ -1425,10 +1542,10 @@ class BatchedEngine(BaseEngine):
         with self._admission_lock:
             self._generation_paused = False
             self._generation_pause_mode = None
-        scheduler = self._lifecycle_scheduler()
-        set_paused = getattr(scheduler, "set_generation_paused", None)
-        if callable(set_paused):
-            set_paused(False)
+        for scheduler in self._lifecycle_schedulers():
+            set_paused = getattr(scheduler, "set_generation_paused", None)
+            if callable(set_paused):
+                set_paused(False)
         return self.lifecycle_status()
 
     @property
@@ -1766,6 +1883,22 @@ class BatchedEngine(BaseEngine):
         )
         await self._mllm_scheduler.start()
 
+        config = getattr(self._mllm_instance, "config", None)
+        config_model_type = (
+            config.get("model_type")
+            if isinstance(config, dict)
+            else getattr(config, "model_type", None)
+        )
+        spec_decode = getattr(self._scheduler_config, "spec_decode", "none")
+        if _should_start_qwen36_native_text_cache(
+            language_model,
+            config_model_type=config_model_type,
+            arrays_cache_compat=arrays_cache_compat,
+            spec_decode=spec_decode,
+            no_hybrid=getattr(self, "_no_hybrid", False),
+        ):
+            await self._start_qwen36_native_text_engine(language_model)
+
         logger.info(
             f"MLLM Scheduler started with continuous batching: "
             f"max_num_seqs={max_num_seqs}, prefill_batch={prefill_batch_size}, "
@@ -1775,6 +1908,79 @@ class BatchedEngine(BaseEngine):
             f"{mllm_config.vision_prefill_token_budget}, vision_min_pixels="
             f"{vision_min_pixels or 'model-default'}, vision_max_pixels="
             f"{vision_max_pixels or 'model-default'}"
+        )
+
+    async def _start_qwen36_native_text_engine(self, language_model: Any) -> None:
+        """Share qualified Qwen3.6 weights with a native-cache text scheduler.
+
+        This is an optional optimization. Any dependency or scheduler drift
+        leaves the already-started MLLM scheduler authoritative for every
+        request. The text engine never owns the injected model executor, so
+        both schedulers serialize MLX work on the model's loading thread.
+        """
+
+        from ..engine_core import AsyncEngineCore, EngineConfig
+        from ..scheduler import SchedulerConfig
+
+        assert self._model_load_executor is not None
+        scheduler_config = self._scheduler_config or SchedulerConfig()
+        engine_config = EngineConfig(
+            model_name=self._model_name,
+            profile_name=self._profile_name,
+            scheduler_config=scheduler_config,
+            stream_interval=self._stream_interval,
+            gpu_memory_utilization=(
+                0.90
+                if self._gpu_memory_utilization is None
+                else self._gpu_memory_utilization
+            ),
+            tool_logits_processor_factory=self._tool_logits_processor_factory,
+            force_hybrid=self._force_hybrid,
+            no_hybrid=self._no_hybrid,
+            force_spec_decode=self._force_spec_decode,
+            no_spec_decode=self._no_spec_decode,
+        )
+        candidate = None
+        try:
+            candidate = AsyncEngineCore(
+                model=Qwen36NativeCacheTextWrapper(language_model),
+                tokenizer=self.tokenizer,
+                config=engine_config,
+                executor=self._model_load_executor,
+            )
+            self._model_load_executor.submit(
+                candidate.engine.scheduler.preflight_metal_admission
+            ).result()
+            await candidate.engine.start(executor=self._model_load_executor)
+        except Exception:
+            logger.warning(
+                "Qwen3.6 native-cache text lane unavailable; "
+                "keeping all requests on the MLLM scheduler",
+                exc_info=True,
+            )
+            if candidate is not None:
+                try:
+                    await candidate.stop()
+                except Exception:
+                    logger.debug(
+                        "Failed to stop rejected Qwen3.6 text candidate",
+                        exc_info=True,
+                    )
+                try:
+                    candidate.engine.close()
+                except Exception:
+                    logger.debug(
+                        "Failed to close rejected Qwen3.6 text candidate",
+                        exc_info=True,
+                    )
+            return
+
+        self._engine = candidate
+        self._mllm_native_text_engine = True
+        self._engine_started = True
+        logger.info(
+            "Qwen3.6 text-only requests will use native caches with "
+            "the already-loaded MLLM language weights"
         )
 
     async def _start_llm(self) -> None:
@@ -2168,19 +2374,20 @@ class BatchedEngine(BaseEngine):
         # used by guided decoding. Signal guided jobs first so a long schema
         # request cannot hold model unload behind it.
         self._abort_all_guided_requests()
-        if self._mllm_scheduler:
-            await self._mllm_scheduler.stop()
-            self._mllm_scheduler = None
-            # MLLMScheduler doesn't own the injected executor, so shut it
-            # down here on the MLLM path. (For LLM, _engine.stop() already
-            # tore it down via the executor handoff.)
-            if self._is_mllm and self._model_load_executor is not None:
-                self._model_load_executor.shutdown(wait=False)
-
+        # A qualified MLLM can run two scheduler loops over one injected
+        # executor. Stop both loops and close their cache state before the
+        # owning BatchedEngine shuts that executor down.
         if self._engine:
             await self._engine.stop()
             self._engine.engine.close()
             self._engine = None
+
+        if self._mllm_scheduler:
+            await self._mllm_scheduler.stop()
+            self._mllm_scheduler = None
+
+        if self._is_mllm and self._model_load_executor is not None:
+            self._model_load_executor.shutdown(wait=False)
 
         # _engine.stop() already shutdown the shared mlx-step executor
         # (handed off in start()). Drop our reference so __del__ doesn't
@@ -2194,6 +2401,7 @@ class BatchedEngine(BaseEngine):
         self._mllm_instance = None
         self._loaded = False
         self._engine_started = False
+        self._mllm_native_text_engine = False
         logger.info("BatchedEngine stopped")
 
     def _prepare_harmony_no_thinking_prompt(
@@ -2423,6 +2631,17 @@ class BatchedEngine(BaseEngine):
                 prepared.append(msg)
         return prepared
 
+    def _uses_mllm_request_path(
+        self, images: list[str] | None, videos: list[str] | None
+    ) -> bool:
+        """Return whether this request needs the media-capable scheduler."""
+
+        return bool(
+            self._is_mllm
+            and self._mllm_scheduler
+            and (getattr(self, "_engine", None) is None or images or videos)
+        )
+
     async def generate(
         self,
         prompt: str | list[int],
@@ -2459,10 +2678,12 @@ class BatchedEngine(BaseEngine):
                 admission_token, clear_context=owns_admission
             )
 
-        if self._is_mllm and self._mllm_scheduler:
-            # Use MLLM scheduler for all requests when model is multimodal.
-            # MLLM models only initialise the _mllm_scheduler (not _engine),
-            # so text-only requests must also be routed here.
+        if self._uses_mllm_request_path(images, videos):
+            mllm_scheduler = self._mllm_scheduler
+            assert mllm_scheduler is not None
+            # Media requests always use the MLLM scheduler. Qualified hybrid
+            # Qwen checkpoints additionally expose a zero-copy native-cache
+            # text engine; every other MLLM keeps this branch for all requests.
             #
             # ``_assistant_text_prefix`` — see the text-engine branch
             # below for the rationale. The MLLM branch pops the same
@@ -2492,7 +2713,7 @@ class BatchedEngine(BaseEngine):
             ]
             prefix_boundary = kwargs.pop("prefix_boundary", 0)
             try:
-                output = await self._mllm_scheduler.generate(
+                output = await mllm_scheduler.generate(
                     prompt=prompt,
                     images=images,
                     videos=videos,
@@ -2723,8 +2944,11 @@ class BatchedEngine(BaseEngine):
             if owns_admission and not request_committed:
                 self.release_admission_reservation()
 
-        if self._is_mllm and self._mllm_scheduler:
-            # Use MLLM scheduler for all streaming when model is multimodal
+        if self._uses_mllm_request_path(images, videos):
+            mllm_scheduler = self._mllm_scheduler
+            assert mllm_scheduler is not None
+            # Media always stays on MLLMScheduler; only qualified text-only
+            # requests may use the shared-weight native-cache engine.
             # OpenAI-spec penalty passthrough (#512) — see ``generate()``
             # MLLM branch above for the rationale.
             _mllm_penalty_kwargs = {
@@ -2739,7 +2963,7 @@ class BatchedEngine(BaseEngine):
             ]
             prefix_boundary = kwargs.pop("prefix_boundary", 0)
             try:
-                request_id = await self._mllm_scheduler.add_request_async(
+                request_id = await mllm_scheduler.add_request_async(
                     request_id=request_id,
                     prompt=prompt,
                     images=images,
@@ -2772,7 +2996,7 @@ class BatchedEngine(BaseEngine):
             if request_admitted_event is not None:
                 request_admitted_event.set()
 
-            async for output in self._mllm_scheduler.stream_outputs(request_id):
+            async for output in mllm_scheduler.stream_outputs(request_id):
                 # ``logprobs`` is now wired through from
                 # ``MLLMScheduler._process_batch_responses`` (the
                 # ``MLLMBatchResponse`` carries them but the prior
@@ -2953,8 +3177,9 @@ class BatchedEngine(BaseEngine):
         """
         Chat completion (non-streaming).
 
-        For MLLM models, all requests (including text-only) are routed through
-        the MLLMScheduler for vision-aware batched generation.
+        For MLLM models, media requests are routed through MLLMScheduler for
+        vision-aware batched generation. Strictly qualified hybrid backbones
+        may route text-only requests through a shared-weight text scheduler.
         For non-MLLM models, uses the LLM engine with BatchGenerator.
 
         Args:
@@ -3740,8 +3965,9 @@ class BatchedEngine(BaseEngine):
         """
         Stream chat completion token by token.
 
-        For MLLM models, all requests (including text-only) are streamed through
-        the MLLMScheduler for vision-aware batched generation.
+        For MLLM models, media requests stream through MLLMScheduler. Strictly
+        qualified hybrid backbones may stream text-only requests through a
+        shared-weight text scheduler with native caches.
         For non-MLLM models, uses the LLM engine with BatchGenerator.
 
         Args:
@@ -3976,6 +4202,25 @@ class BatchedEngine(BaseEngine):
                 if key in mllm_stats:
                     stats[key] = mllm_stats[key]
             stats["steps_executed"] = getattr(self._mllm_scheduler, "_step_count", 0)
+            if self._engine is not None:
+                text_stats = self._engine.get_stats()
+                stats["text_scheduler"] = text_stats
+                for key in (
+                    "num_waiting",
+                    "num_running",
+                    "num_finished",
+                    "num_requests_processed",
+                    "total_prompt_tokens",
+                    "total_completion_tokens",
+                    "num_requests_cancelled",
+                    "num_requests_cancelled_via_disconnect",
+                    "num_repetition_loop_stops",
+                    "num_repetition_loop_breaks",
+                ):
+                    stats[key] = int(stats.get(key, 0) or 0) + int(
+                        text_stats.get(key, 0) or 0
+                    )
+                stats["steps_executed"] += int(text_stats.get("steps_executed", 0) or 0)
             start_time = getattr(self, "_start_time", None)
             stats["uptime_seconds"] = (
                 max(0.0, time.monotonic() - start_time)
@@ -3990,18 +4235,28 @@ class BatchedEngine(BaseEngine):
     def get_cache_stats(self) -> dict[str, Any] | None:
         """Get cache statistics."""
         if self._mllm_scheduler:
-            return self._mllm_scheduler.get_cache_stats()
+            mllm_stats = self._mllm_scheduler.get_cache_stats()
+            if self._engine is not None:
+                text_stats = self._engine.get_cache_stats()
+                if text_stats is not None:
+                    combined = dict(mllm_stats or {})
+                    combined["text_scheduler"] = text_stats
+                    return combined
+            return mllm_stats
         elif self._engine:
             return self._engine.get_cache_stats()
         return None
 
     def clear_prefix_cache(self, *, reset_stats: bool = True) -> bool:
         """Clear reusable text prefix KV state while keeping weights loaded."""
+        cleared = False
         if self._mllm_scheduler:
-            return self._mllm_scheduler.clear_prefix_cache(reset_stats=reset_stats)
+            cleared = self._mllm_scheduler.clear_prefix_cache(reset_stats=reset_stats)
         if self._engine:
-            return self._engine.clear_prefix_cache(reset_stats=reset_stats)
-        return False
+            cleared = (
+                self._engine.clear_prefix_cache(reset_stats=reset_stats) or cleared
+            )
+        return cleared
 
     async def abort_request(
         self, request_id: str, *, error_kind: str | None = None
@@ -4019,19 +4274,25 @@ class BatchedEngine(BaseEngine):
 
         if self.abort_guided_request(request_id):
             return True
+        accepted = False
         if self._mllm_scheduler is not None:
             if error_kind is None:
-                return self._mllm_scheduler.abort_request(request_id)
-            return self._mllm_scheduler.abort_request(request_id, error_kind=error_kind)
+                accepted = self._mllm_scheduler.abort_request(request_id)
+            else:
+                accepted = self._mllm_scheduler.abort_request(
+                    request_id, error_kind=error_kind
+                )
+            if accepted and not getattr(self, "_mllm_native_text_engine", False):
+                return True
         if self._engine is not None and hasattr(self._engine, "abort_request"):
             if error_kind is None:
                 result = self._engine.abort_request(request_id)
             else:
                 result = self._engine.abort_request(request_id, error_kind=error_kind)
             if inspect.isawaitable(result):
-                return await result
-            return result
-        return False
+                result = await result
+            accepted = bool(result) or accepted
+        return accepted
 
     def save_cache_to_disk(self, cache_dir: str, should_abort=None) -> bool:
         """Save prefix cache to disk for persistence across restarts.
@@ -4040,7 +4301,7 @@ class BatchedEngine(BaseEngine):
         lifespan SIGTERM-grace deadline can short-circuit a multi-GB
         flush; see ``EngineCore.save_cache_to_disk`` for details.
         """
-        if self._engine:
+        if self._engine and not self._is_mllm:
             return self._engine.save_cache_to_disk(cache_dir, should_abort=should_abort)
         return False
 
@@ -4057,7 +4318,7 @@ class BatchedEngine(BaseEngine):
         ``protected_import`` (#1111 codex r3): True for explicit HTTP import
         (pin), False for startup auto-load (obey the retention bound).
         """
-        if self._engine:
+        if self._engine and not self._is_mllm:
             return self._engine.load_cache_from_disk(
                 cache_dir, replace=replace, protected_import=protected_import
             )
@@ -4076,7 +4337,7 @@ class BatchedEngine(BaseEngine):
         persist" is legitimate — only the export/import outcome path must fail
         loudly.)
         """
-        if self._engine:
+        if self._engine and not self._is_mllm:
             return self._engine.save_cache_with_outcome(
                 cache_dir, should_abort=should_abort
             )
@@ -4097,7 +4358,7 @@ class BatchedEngine(BaseEngine):
         ``protected_import`` (#1111 codex r3): defaults True — this
         result-returning path serves the EXPLICIT HTTP import (#476).
         """
-        if self._engine:
+        if self._engine and not self._is_mllm:
             return self._engine.load_cache_with_result(
                 cache_dir, replace=replace, protected_import=protected_import
             )

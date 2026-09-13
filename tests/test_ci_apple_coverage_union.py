@@ -155,6 +155,15 @@ def test_qwen4_fused_gdn_coverage_runs_on_apple_silicon() -> None:
     assert "tests/test_qsa_indexed_splitk.py" in apple_run
 
 
+def test_qwen36_dual_lane_coverage_runs_on_apple_silicon() -> None:
+    """Qwen3.6 routing and disconnect ownership must reach the MLX lane."""
+    _, workflow = _workflow()
+    apple_run = workflow["jobs"]["test-apple-silicon"]["steps"][-2]["run"]
+
+    assert "tests/test_qwen36_native_text_cache.py" in apple_run
+    assert "tests/test_disconnect_counter_prod_shape.py" in apple_run
+
+
 def test_mla_absorbed_verify_coverage_runs_on_apple_silicon() -> None:
     """MLX-only absorbed-MLA paths must contribute to changed-line coverage."""
     _, workflow = _workflow()

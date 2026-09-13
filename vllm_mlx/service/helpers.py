@@ -3536,6 +3536,24 @@ def _maybe_pin_system_prompt(messages: list) -> None:
 # ── Disconnect detection ───────────────────────────────────────────
 
 
+def _dual_lane_disconnect_schedulers(engine) -> tuple[object, ...]:
+    """Return both schedulers for the qualified MLLM/text dual lane."""
+    if not getattr(engine, "_mllm_native_text_engine", False):
+        return ()
+
+    schedulers = []
+    mllm = getattr(engine, "_mllm_scheduler", None)
+    if mllm is not None:
+        schedulers.append(mllm)
+
+    async_engine = getattr(engine, "_engine", None)
+    engine_core = getattr(async_engine, "engine", None)
+    text = getattr(engine_core, "scheduler", None)
+    if text is not None and all(text is not item for item in schedulers):
+        schedulers.append(text)
+    return tuple(schedulers)
+
+
 def _resolve_sync_scheduler_for_abort(engine):
     """C-01 codex r1 BLOCKING #2 helper: find the SYNC scheduler-side
     ``abort_request`` entry point for the **currently active**
@@ -3559,9 +3577,10 @@ def _resolve_sync_scheduler_for_abort(engine):
     ``_mllm_scheduler.abort_request(rid)`` on a request that lives in
     ``_engine.scheduler`` would enqueue the abort into the wrong
     pending set and leave the real request running. The
-    ``_is_mllm`` flag is the canonical active-path signal — same
-    predicate ``stream_generate`` uses to pick which backend to call
-    in the first place.
+    ``_is_mllm`` flag is the canonical active-path signal for ordinary
+    single-lane engines. The qualified Qwen3.6 dual lane is the exception:
+    ``_mllm_native_text_engine`` means either scheduler may own the request,
+    so both receive the ID and reject it when they are not the owner.
 
     Resolution order:
 
@@ -3585,6 +3604,28 @@ def _resolve_sync_scheduler_for_abort(engine):
     ``engine.abort_request`` as a last resort with documented
     fire-and-forget semantics).
     """
+    # The qualified Qwen3.6 MLLM path can own a media request in the MLLM
+    # scheduler or a text-only request in the native-cache scheduler. Request
+    # IDs are the only ownership signal available to the disconnect guard, so
+    # give both synchronous schedulers the ID; the non-owner rejects it.
+    dual_schedulers = _dual_lane_disconnect_schedulers(engine)
+    if dual_schedulers:
+        aborts = tuple(
+            abort
+            for scheduler in dual_schedulers
+            if (abort := getattr(scheduler, "abort_request", None)) is not None
+            and not asyncio.iscoroutinefunction(abort)
+        )
+        if aborts:
+
+            def _abort_dual_lane(request_id):
+                accepted = False
+                for abort in aborts:
+                    accepted = bool(abort(request_id)) or accepted
+                return accepted
+
+            return _abort_dual_lane
+
     # Plain engines that expose .scheduler directly (no active-path
     # ambiguity). Includes AsyncEngineCore and the fake engines used
     # in tests.
@@ -3658,7 +3699,8 @@ def _resolve_disconnect_abort_recorder(engine):
 
     The cancel-attribution sub-counter lives on the same scheduler
     where the public-API total counter lives, so the resolver must
-    follow the active-path gate (``_is_mllm``). We deliberately keep
+    follow the active-path gate (``_is_mllm``), except for the qualified
+    dual lane where both ownership-gated recorders are called. We keep
     this separate from ``_resolve_sync_scheduler_for_abort`` (which
     gates on ``not iscoroutinefunction(abort_request)``) because the
     sub-counter is a sync-only method wholly independent of the abort
@@ -3688,6 +3730,25 @@ def _resolve_disconnect_abort_recorder(engine):
     sub-counter, the total counter on the route side still defaults
     to zero).
     """
+    # Match the dual-lane abort resolver above. Calling both recorders is safe:
+    # each scheduler records attribution only when its own abort ledger
+    # contains the request ID, so the non-owner is an exact no-op.
+    dual_schedulers = _dual_lane_disconnect_schedulers(engine)
+    if dual_schedulers:
+        recorders = tuple(
+            recorder
+            for scheduler in dual_schedulers
+            if (recorder := getattr(scheduler, "record_disconnect_abort", None))
+            is not None
+        )
+        if recorders:
+
+            def _record_dual_lane(request_id):
+                for recorder in recorders:
+                    recorder(request_id)
+
+            return _record_dual_lane
+
     # M-01 codex r7 BLOCKING #2: when ``_is_mllm`` is set we MUST
     # honor it before falling back to a direct ``engine.scheduler``
     # — otherwise a dual-shaped engine (one that exposes
@@ -3842,9 +3903,8 @@ def _force_abort_request(engine, request_id_holder) -> bool:
     ``set.add`` per ``Scheduler.abort_request`` docstring. The
     sync-path resolver (``_resolve_sync_scheduler_for_abort``) walks
     ``engine.scheduler`` first, then the active-backend branch on
-    ``BatchedEngine`` (gated by ``engine._is_mllm`` per codex r2
-    BLOCKING #1): MLLM → ``engine._mllm_scheduler``, text →
-    ``engine._engine.scheduler``.
+    ``BatchedEngine``. A qualified MLLM/text dual lane probes both
+    schedulers because only the request ID identifies its owner.
 
     Falls back to ``engine.abort_request(rid)`` (the public engine
     surface — may be async on engines that haven't been refactored)
