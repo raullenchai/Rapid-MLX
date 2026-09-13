@@ -2331,6 +2331,7 @@ def _normalize_speculative_config_or_exit(args):
             "mtp_sidecar": None,
             "mtp_max_k": 1,
             "mtp_disable_auto_k": False,
+            "mtp_backend": None,
             "mtp_continuous_batching": False,
             "mtp_allow_dynamic_membership": False,
             "suffix_decoding": False,
@@ -2637,6 +2638,7 @@ def _normalize_speculative_config_or_exit(args):
         args.dspark_num_speculative_tokens = config.num_speculative_tokens or 5
     elif config.method == "mtp":
         args.spec_decode = "mtp"
+        args.mtp_backend = config.backend
         continuous_tier = _alias_continuous_mtp_tier(getattr(args, "model", None))
         args.mtp_continuous_batching_tier = continuous_tier
         continuous_was_explicit = config.continuous_batching is not None
@@ -2716,6 +2718,116 @@ def _normalize_speculative_config_or_exit(args):
             args.suffix_min_draft_len = config.min_draft_len
 
     _fill_suffix_defaults()
+
+
+def _preflight_native_mtp_or_exit(args):
+    """Validate explicit native MTP before any target or sidecar download."""
+    if getattr(args, "mtp_backend", None) != "native":
+        return None
+
+    unsupported = []
+    if getattr(args, "mcp_config", None):
+        unsupported.append("--mcp-config")
+    if getattr(args, "embedding_model", None):
+        unsupported.append("--embedding-model")
+    if getattr(args, "enable_disk_stream", False):
+        unsupported.append("--disk-stream")
+    if getattr(args, "mllm", False):
+        unsupported.append("--mllm")
+    if getattr(args, "mtp_continuous_batching", False):
+        unsupported.append("continuous MTP")
+    if unsupported:
+        print(
+            "error: native MTP uses a text-only serial server and does not "
+            f"support: {', '.join(unsupported)}",
+            file=sys.stderr,
+        )
+        raise SystemExit(2)
+
+    from .model_aliases import resolve_profile
+    from .speculative.native_mtp import (
+        NativeMTPUnavailableError,
+        resolve_native_mtp_pair,
+    )
+
+    alias_name = getattr(args, "_original_alias", None) or args.model
+    profile = resolve_profile(alias_name)
+    try:
+        pair = resolve_native_mtp_pair(
+            alias=alias_name,
+            target_repo=profile.hf_path if profile is not None else args.model,
+            drafter_repo=getattr(args, "mtp_sidecar", None),
+            draft_tokens=getattr(args, "mtp_max_k", 1),
+        )
+    except NativeMTPUnavailableError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        raise SystemExit(2) from exc
+
+    from .speculative.native_mtp.runtime import (
+        QUALIFIED_MLX_VLM_VERSION,
+        have_runtime,
+    )
+
+    if not have_runtime():
+        print(
+            "\n  Error: native MTP requires the qualified "
+            f"mlx-vlm {QUALIFIED_MLX_VLM_VERSION} runtime.\n\n"
+            "  Install it with:\n"
+            "    pip install 'rapid-mlx[mtp]'\n",
+            file=sys.stderr,
+        )
+        raise SystemExit(1)
+
+    args._native_mtp_pair = pair
+    return pair
+
+
+def _serve_native_mtp_if_requested(
+    args,
+    *,
+    server_module,
+    effective_max_tokens: int,
+    cors_origins: list[str],
+    uvicorn_log_level: str,
+) -> bool:
+    """Run the explicit qualified native-MTP server, or return ``False``."""
+
+    if getattr(args, "mtp_backend", None) != "native":
+        return False
+
+    pair = getattr(args, "_native_mtp_pair", None)
+    if pair is None:
+        pair = _preflight_native_mtp_or_exit(args)
+
+    from .speculative.native_mtp.server import run_native_mtp_server
+
+    alias_name = getattr(args, "_original_alias", None) or args.model
+    _check_disk_space(pair.target_repo, force=getattr(args, "force_disk_check", False))
+    _check_disk_space(pair.drafter_repo, force=getattr(args, "force_disk_check", False))
+    _check_memory_capacity(pair.target_repo, alias=alias_name)
+    server_module._sync_config()
+    run_native_mtp_server(
+        pair=pair,
+        host=args.host,
+        port=args.port,
+        served_model_name=args.served_model_name or alias_name,
+        default_max_tokens=effective_max_tokens,
+        cors_origins=cors_origins,
+        uvicorn_log_level=uvicorn_log_level,
+        no_thinking=args.no_thinking,
+        api_key=server_module._api_key,
+        rate_limit=args.rate_limit,
+        max_request_bytes=server_module._max_request_bytes,
+        body_receive_timeout_seconds=server_module._body_receive_timeout_seconds,
+        default_timeout=server_module._default_timeout,
+        max_concurrent_requests=args.max_concurrent_requests,
+        cors_policy=server_module.get_resolved_cors_policy(),
+        tool_call_parser=(
+            args.tool_call_parser if args.enable_auto_tool_choice else None
+        ),
+        reasoning_parser_name=args.reasoning_parser,
+    )
+    return True
 
 
 def _resolve_dflash_drafter_repo(args, profile) -> str | None:
@@ -3671,6 +3783,7 @@ def serve_command(args):
     # rejecting an explicit MLLM/speculative conflict before optional-runtime
     # checks or model downloads can obscure the actionable error.
     _normalize_speculative_config_or_exit(args)
+    _preflight_native_mtp_or_exit(args)
 
     # R-10 (PyPI 0.8.6 dogfood): same boot-guard shape for vision /
     # multimodal aliases. ``mlx-vlm`` lives behind the ``[vision]``
@@ -4061,7 +4174,7 @@ def serve_command(args):
     # the effective lane, NOT the raw multimodal classification: a hybrid VLM
     # that auto-downgrades to the text-only lane is PFlash-capable there,
     # exactly as an explicit ``--text-only`` run would be (#352 dogfood P1-②).
-    if not args.enable_dflash:
+    if not args.enable_dflash and getattr(args, "mtp_backend", None) != "native":
         _requested_spec_decode = getattr(args, "spec_decode", "none") or "none"
         if _requested_spec_decode == "none" and getattr(
             args, "force_spec_decode", False
@@ -4609,6 +4722,18 @@ def serve_command(args):
             reasoning_parser_name=args.reasoning_parser,
         )
         return
+
+    # The qualified native-MTP path intentionally owns a serial,
+    # thread-affine API boundary. It is explicit because that path does not
+    # expose the full BatchedEngine feature surface.
+    if _serve_native_mtp_if_requested(
+        args,
+        server_module=server,
+        effective_max_tokens=effective_max_tokens,
+        cors_origins=cors_origins,
+        uvicorn_log_level=uvicorn_log_level,
+    ):
+        return  # pragma: no cover - exercised by the real-model HTTP dogfood
 
     # DFlash owns a dedicated single-user runtime. Fork before constructing
     # BatchedEngine-only cache/TurboQuant/PFlash state so startup output and

@@ -130,6 +130,35 @@ def test_require_migrated_speculative_config_accepts_mtp() -> None:
     require_migrated_speculative_config(cfg)
 
 
+def test_parse_native_mtp_backend() -> None:
+    cfg = parse_speculative_config(
+        '{"method":"mtp","backend":"native","num_speculative_tokens":2}'
+    )
+    assert cfg is not None
+    assert cfg.backend == "native"
+
+
+@pytest.mark.parametrize(
+    ("raw", "match"),
+    [
+        ('{"method":"mtp","backend":"standard"}', "backend must be 'native'"),
+        (
+            '{"method":"suffix","backend":"native"}',
+            "unsupported speculative-config key",
+        ),
+        (
+            '{"method":"mtp","backend":"native","continuous_batching":true}',
+            "serial",
+        ),
+    ],
+)
+def test_parse_native_mtp_backend_rejects_unsupported_modes(
+    raw: str, match: str
+) -> None:
+    with pytest.raises(SpeculativeConfigError, match=match):
+        parse_speculative_config(raw)
+
+
 def test_require_migrated_speculative_config_accepts_ddtree() -> None:
     cfg = parse_speculative_config('{"method":"ddtree"}')
     assert cfg is not None
@@ -233,6 +262,7 @@ def _spec_config_args(**overrides):
         "mtp_sidecar": None,
         "mtp_max_k": None,
         "mtp_disable_auto_k": False,
+        "mtp_backend": None,
         "suffix_decoding": False,
         "suffix_max_draft": None,
         "suffix_max_suffix_len": None,
@@ -284,6 +314,22 @@ def test_speculative_config_mtp_populates_runtime_args() -> None:
     assert config_args.suffix_decoding is False
     assert config_args.enable_dflash is False
     assert config_args.enable_ddtree is False
+
+
+def test_speculative_config_native_mtp_populates_explicit_backend() -> None:
+    from vllm_mlx.cli import _normalize_speculative_config_or_exit
+
+    args = _spec_config_args(
+        model="qwen3.6-35b-4bit",
+        speculative_config='{"method":"mtp","backend":"native"}',
+    )
+
+    _normalize_speculative_config_or_exit(args)
+
+    assert args.spec_decode == "mtp"
+    assert args.mtp_backend == "native"
+    assert args.mtp_sidecar == "mlx-community/Qwen3.6-35B-A3B-MTP-4bit"
+    assert args.mtp_max_k == 2
 
 
 def test_speculative_config_mtp_without_token_count_keeps_legacy_one_token() -> None:

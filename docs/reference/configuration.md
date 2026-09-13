@@ -162,6 +162,7 @@ into the same config path.
 | `{"method":"mtp","model":"<sidecar-head-repo>"}` | Attach a standalone MTP **sidecar head** (e.g. `mlx-community/Qwen3.6-27B-MTP-4bit`) to a full base checkpoint. The base must be MTP-eligible; the head repo goes in the `model` field — **not** in the `serve` positional. See [MTP sidecar heads are not standalone models](#mtp-sidecar-heads-are-not-standalone-models) below. Gemma 4 sidecar MTP remains disabled after its greedy-lossless A/B failed. |
 | `{"method":"mtp","num_speculative_tokens":3}` | Set the MTP max-K controller ceiling. |
 | `{"method":"mtp","disable_auto_k":true}` | Disable the MTP EV depth controller for fixed-K parity benches. |
+| `{"method":"mtp","backend":"native"}` | Use the qualified serial native verifier for `qwen3.6-35b-4bit`. This explicit backend is greedy-only and keeps a deliberately smaller API surface; see below. |
 | `{"method":"suffix","num_speculative_tokens":8}` | Enable explicit SuffixDecoding for high-overlap workloads. |
 
 Rapid-MLX separates capability from recommendation. Registry flags identify
@@ -214,6 +215,30 @@ Mac mini M2 Pro / 32GB, `temperature=0`, medians over 4 repetitions:
 (Acceptance and the fixed-K throughput are from the same run, so they
 describe the same work; the auto-K row is a separate run of the same
 protocol.)
+
+The exact `qwen3.6-35b-4bit` target/sidecar pair also has a separately
+qualified native serial backend on large Apple Silicon systems:
+
+```bash
+rapid-mlx serve qwen3.6-35b-4bit \
+  --speculative-config '{"method":"mtp","backend":"native"}'
+```
+
+This path pins both artifacts to the revisions Rapid-MLX qualified, accepts
+greedy requests only (`temperature=0`), and target-verifies every draft. On an
+M3 Ultra with 256 GB unified memory, five workload categories and 30 paired
+runs were byte-identical to target-only greedy output. Median decode throughput
+was 83.32 -> 130.93 tok/s; a steady 192-token HTTP request completed in
+1.52-1.54 seconds (about 125 tok/s end to end). The standard Rapid MTP server
+handled the same request at 97.4 tok/s.
+
+Native MTP is explicit because it is a single-user serial text server. It
+supports `/healthz`, `/v1/models`, and `/v1/chat/completions`, including
+streaming, automatic tool-call parsing, reasoning parsing, auth, rate limits,
+deadlines, cancellation, and bounded admission. It does not support image,
+audio, embeddings, MCP, prefix caching, structured-output constraints,
+logprobs, sampling penalties, or continuous batching. Use ordinary MTP or plain
+decode when those capabilities matter more than singleton latency.
 
 An 86% acceptance rate buys a 9% ceiling here, and per-round overhead
 consumes it. The architecture is why: this is a linear-attention hybrid,

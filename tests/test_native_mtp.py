@@ -1,0 +1,471 @@
+from __future__ import annotations
+
+import builtins
+import concurrent.futures
+import sys
+from pathlib import Path
+from types import ModuleType, SimpleNamespace
+
+import pytest
+from fastapi import HTTPException
+
+from vllm_mlx.speculative.native_mtp.eligibility import (
+    QWEN36_35B_4BIT,
+    NativeMTPUnavailableError,
+    resolve_native_mtp_pair,
+)
+from vllm_mlx.speculative.native_mtp.server import _validate_greedy_request
+
+try:
+    import tomllib
+except ModuleNotFoundError:  # pragma: no cover - Python 3.10
+    import tomli as tomllib
+
+
+def test_native_mtp_resolves_only_qualified_pair() -> None:
+    pair = resolve_native_mtp_pair(
+        alias="qwen3.6-35b-4bit",
+        target_repo=QWEN36_35B_4BIT.target_repo,
+        drafter_repo=QWEN36_35B_4BIT.drafter_repo,
+        draft_tokens=2,
+    )
+    assert pair == QWEN36_35B_4BIT
+    assert pair.block_size == pair.draft_tokens + 1
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {"alias": "qwen3.6-35b-8bit"},
+        {"target_repo": "mlx-community/Qwen3.6-35B-A3B-8bit"},
+        {"drafter_repo": "other/model"},
+        {"draft_tokens": 3},
+    ],
+)
+def test_native_mtp_rejects_unqualified_pair(overrides: dict[str, object]) -> None:
+    kwargs = {
+        "alias": "qwen3.6-35b-4bit",
+        "target_repo": QWEN36_35B_4BIT.target_repo,
+        "drafter_repo": QWEN36_35B_4BIT.drafter_repo,
+        "draft_tokens": 2,
+    }
+    kwargs.update(overrides)
+    with pytest.raises(NativeMTPUnavailableError):
+        resolve_native_mtp_pair(**kwargs)
+
+
+def test_native_mtp_accepts_greedy_without_penalties() -> None:
+    _validate_greedy_request(
+        SimpleNamespace(
+            temperature=0,
+            repetition_penalty=None,
+            presence_penalty=0,
+            frequency_penalty=0,
+        )
+    )
+
+
+def test_native_mtp_rejects_sampling() -> None:
+    with pytest.raises(HTTPException, match="greedy") as exc_info:
+        _validate_greedy_request(SimpleNamespace(temperature=0.7))
+    assert exc_info.value.status_code == 400
+
+
+@pytest.mark.parametrize(
+    "penalty",
+    [
+        {"repetition_penalty": 1.1},
+        {"presence_penalty": 0.2},
+        {"frequency_penalty": -0.1},
+    ],
+)
+def test_native_mtp_rejects_sampling_penalties(penalty: dict[str, float]) -> None:
+    request = SimpleNamespace(temperature=0, **penalty)
+    with pytest.raises(HTTPException, match="penalties") as exc_info:
+        _validate_greedy_request(request)
+    assert exc_info.value.status_code == 400
+
+
+def test_native_mtp_runtime_probe_is_exact_version(monkeypatch) -> None:
+    from vllm_mlx.speculative.native_mtp import runtime
+
+    monkeypatch.setattr(runtime, "find_spec", lambda _name: object())
+    monkeypatch.setattr(runtime, "version", lambda _name: "0.6.17")
+    assert runtime.have_runtime() is True
+
+    monkeypatch.setattr(runtime, "version", lambda _name: "0.6.18")
+    assert runtime.have_runtime() is False
+
+    monkeypatch.setattr(
+        runtime,
+        "find_spec",
+        lambda _name: (_ for _ in ()).throw(RuntimeError("broken optional stack")),
+    )
+    assert runtime.have_runtime() is False
+
+
+def test_load_native_mtp_runtime_reports_missing_optional_runtime(monkeypatch) -> None:
+    from vllm_mlx.speculative.native_mtp.runtime import load_runtime
+
+    real_import = builtins.__import__
+
+    def fail_drafter_import(name, *args, **kwargs):
+        if name == "mlx_vlm.speculative.drafters":
+            raise ImportError("missing native runtime")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", fail_drafter_import)
+    with pytest.raises(RuntimeError, match=r"rapid-mlx\[mtp\]"):
+        load_runtime(
+            "org/drafter",
+            target_revision="a" * 40,
+            drafter_revision="b" * 40,
+            block_size=3,
+        )
+
+
+def test_mtp_extra_carries_the_qualified_native_runtime() -> None:
+    from vllm_mlx.speculative.native_mtp.runtime import QUALIFIED_MLX_VLM_VERSION
+
+    with (Path(__file__).parents[1] / "pyproject.toml").open("rb") as handle:
+        extras = tomllib.load(handle)["project"]["optional-dependencies"]
+
+    assert f"mlx-vlm=={QUALIFIED_MLX_VLM_VERSION}" in extras["mtp"]
+
+
+def _fake_mlx_vlm_modules(monkeypatch, drafter, kind: str = "mtp") -> None:
+    root = ModuleType("mlx_vlm")
+    root.__path__ = []
+    speculative = ModuleType("mlx_vlm.speculative")
+    speculative.__path__ = []
+    drafters = ModuleType("mlx_vlm.speculative.drafters")
+    drafters.load_drafter = lambda source, kind: (drafter, kind)
+    utils = ModuleType("mlx_vlm.utils")
+    utils.get_model_path = lambda repo, revision: f"/{repo}@{revision}"
+    monkeypatch.setitem(sys.modules, "mlx_vlm", root)
+    monkeypatch.setitem(sys.modules, "mlx_vlm.speculative", speculative)
+    monkeypatch.setitem(sys.modules, "mlx_vlm.speculative.drafters", drafters)
+    monkeypatch.setitem(sys.modules, "mlx_vlm.utils", utils)
+
+
+def test_load_native_mtp_runtime_validates_architecture_and_block(monkeypatch) -> None:
+    from vllm_mlx.speculative.native_mtp.runtime import load_runtime
+
+    drafter = SimpleNamespace(
+        config=SimpleNamespace(model_type="qwen3_5_mtp", block_size=3),
+        accept_lens=[1],
+        draft_lens=[2],
+    )
+    _fake_mlx_vlm_modules(monkeypatch, drafter)
+    runtime = load_runtime(
+        "org/drafter",
+        target_revision="a" * 40,
+        drafter_revision="b" * 40,
+        block_size=3,
+    )
+    assert runtime.kind == "mtp"
+    assert runtime.algorithm == "mtp"
+    assert runtime.accept_lens_snapshot() == [1]
+    runtime.reset_accept_lens()
+    assert drafter.accept_lens == []
+    assert drafter.draft_lens == []
+
+    drafter.config.model_type = "wrong_architecture"
+    with pytest.raises(RuntimeError, match="architecture mismatch"):
+        load_runtime(
+            "org/drafter",
+            target_revision="a" * 40,
+            drafter_revision="b" * 40,
+            block_size=3,
+        )
+
+    drafter.config.model_type = "qwen3_5_mtp"
+    drafter.config.block_size = 4
+    with pytest.raises(RuntimeError, match="block-size mismatch"):
+        load_runtime(
+            "org/drafter",
+            target_revision="a" * 40,
+            drafter_revision="b" * 40,
+            block_size=3,
+        )
+
+
+def test_serve_native_mtp_helper_routes_exact_pair(monkeypatch) -> None:
+    from vllm_mlx import cli
+    from vllm_mlx.speculative.native_mtp import server as native_server
+
+    disk_checks = []
+    capacity_checks = []
+    captured = {}
+    monkeypatch.setattr(
+        cli, "_check_disk_space", lambda model, force=False: disk_checks.append(model)
+    )
+    monkeypatch.setattr(
+        cli,
+        "_check_memory_capacity",
+        lambda model, alias=None: capacity_checks.append((model, alias)),
+    )
+    monkeypatch.setattr(
+        native_server,
+        "run_native_mtp_server",
+        lambda **kwargs: captured.update(kwargs),
+    )
+    preflight_calls = []
+    monkeypatch.setattr(
+        cli,
+        "_preflight_native_mtp_or_exit",
+        lambda args: preflight_calls.append(args) or QWEN36_35B_4BIT,
+    )
+    sync_calls = []
+    server_stub = SimpleNamespace(
+        _api_key="secret",
+        _max_request_bytes=123,
+        _body_receive_timeout_seconds=4.0,
+        _default_timeout=5.0,
+        _sync_config=lambda: sync_calls.append(True),
+        get_resolved_cors_policy=lambda: "cors-policy",
+    )
+    args = SimpleNamespace(
+        mtp_backend="native",
+        mcp_config=None,
+        embedding_model=None,
+        enable_disk_stream=False,
+        mllm=False,
+        mtp_continuous_batching=False,
+        _original_alias="qwen3.6-35b-4bit",
+        model=QWEN36_35B_4BIT.target_repo,
+        mtp_sidecar=QWEN36_35B_4BIT.drafter_repo,
+        mtp_max_k=2,
+        force_disk_check=False,
+        host="127.0.0.1",
+        port=8766,
+        served_model_name=None,
+        no_thinking=True,
+        rate_limit=7,
+        max_concurrent_requests=8,
+        enable_auto_tool_choice=True,
+        tool_call_parser="qwen3_coder_xml",
+        reasoning_parser="qwen3",
+    )
+
+    assert cli._serve_native_mtp_if_requested(
+        args,
+        server_module=server_stub,
+        effective_max_tokens=192,
+        cors_origins=["http://localhost"],
+        uvicorn_log_level="warning",
+    )
+    assert disk_checks == [
+        QWEN36_35B_4BIT.target_repo,
+        QWEN36_35B_4BIT.drafter_repo,
+    ]
+    assert capacity_checks == [(QWEN36_35B_4BIT.target_repo, "qwen3.6-35b-4bit")]
+    assert sync_calls == [True]
+    assert preflight_calls == [args]
+    assert captured["pair"] == QWEN36_35B_4BIT
+    assert captured["served_model_name"] == "qwen3.6-35b-4bit"
+
+
+def test_native_mtp_preflight_rejects_wrong_alias_before_runtime_probe(
+    monkeypatch,
+) -> None:
+    from vllm_mlx import cli
+    from vllm_mlx.speculative.native_mtp import runtime
+
+    runtime_probes = []
+    monkeypatch.setattr(
+        runtime, "have_runtime", lambda: runtime_probes.append(True) or True
+    )
+    args = SimpleNamespace(
+        mtp_backend="native",
+        model="mlx-community/Qwen3.6-35B-A3B-4bit",
+        _original_alias="another-model",
+        mtp_sidecar=QWEN36_35B_4BIT.drafter_repo,
+        mtp_max_k=2,
+    )
+
+    with pytest.raises(SystemExit) as exc_info:
+        cli._preflight_native_mtp_or_exit(args)
+
+    assert exc_info.value.code == 2
+    assert runtime_probes == []
+
+
+def test_native_mtp_preflight_caches_pair(monkeypatch) -> None:
+    from vllm_mlx import cli
+    from vllm_mlx.speculative.native_mtp import runtime
+
+    monkeypatch.setattr(runtime, "have_runtime", lambda: True)
+    args = SimpleNamespace(
+        mtp_backend="native",
+        model=QWEN36_35B_4BIT.target_repo,
+        _original_alias="qwen3.6-35b-4bit",
+        mtp_sidecar=QWEN36_35B_4BIT.drafter_repo,
+        mtp_max_k=2,
+    )
+
+    assert cli._preflight_native_mtp_or_exit(args) == QWEN36_35B_4BIT
+    assert args._native_mtp_pair == QWEN36_35B_4BIT
+
+
+def test_native_mtp_preflight_is_noop_for_standard_backend() -> None:
+    from vllm_mlx.cli import _preflight_native_mtp_or_exit
+
+    assert _preflight_native_mtp_or_exit(SimpleNamespace(mtp_backend=None)) is None
+
+
+def test_native_mtp_preflight_rejects_all_unsupported_features(capsys) -> None:
+    from vllm_mlx.cli import _preflight_native_mtp_or_exit
+
+    args = SimpleNamespace(
+        mtp_backend="native",
+        mcp_config="mcp.json",
+        embedding_model="org/embed",
+        enable_disk_stream=True,
+        mllm=True,
+        mtp_continuous_batching=True,
+    )
+
+    with pytest.raises(SystemExit) as exc_info:
+        _preflight_native_mtp_or_exit(args)
+
+    assert exc_info.value.code == 2
+    stderr = capsys.readouterr().err
+    for expected in (
+        "--mcp-config",
+        "--embedding-model",
+        "--disk-stream",
+        "--mllm",
+        "continuous MTP",
+    ):
+        assert expected in stderr
+
+
+def test_native_mtp_preflight_reports_missing_runtime(monkeypatch, capsys) -> None:
+    from vllm_mlx import cli
+    from vllm_mlx.speculative.native_mtp import runtime
+
+    monkeypatch.setattr(runtime, "have_runtime", lambda: False)
+    args = SimpleNamespace(
+        mtp_backend="native",
+        model=QWEN36_35B_4BIT.target_repo,
+        _original_alias="qwen3.6-35b-4bit",
+        mtp_sidecar=QWEN36_35B_4BIT.drafter_repo,
+        mtp_max_k=2,
+    )
+
+    with pytest.raises(SystemExit) as exc_info:
+        cli._preflight_native_mtp_or_exit(args)
+
+    assert exc_info.value.code == 1
+    assert "rapid-mlx[mtp]" in capsys.readouterr().err
+
+
+def test_serve_native_mtp_helper_is_noop_for_standard_backend() -> None:
+    from vllm_mlx.cli import _serve_native_mtp_if_requested
+
+    assert (
+        _serve_native_mtp_if_requested(
+            SimpleNamespace(mtp_backend=None),
+            server_module=None,
+            effective_max_tokens=1,
+            cors_origins=[],
+            uvicorn_log_level="warning",
+        )
+        is False
+    )
+
+
+def test_native_mtp_server_builds_qualified_serial_app(monkeypatch) -> None:
+    from vllm_mlx.speculative.native_mtp import server as native_server
+
+    class ImmediateExecutor:
+        def submit(self, fn, *args, **kwargs):
+            future = concurrent.futures.Future()
+            future.set_result(fn(*args, **kwargs))
+            return future
+
+    loaded = []
+    mlx_vlm = ModuleType("mlx_vlm")
+    mlx_vlm.load = lambda repo, revision: (
+        loaded.append((repo, revision)) or "model",
+        "processor",
+    )
+    uvicorn = ModuleType("uvicorn")
+    run_calls = []
+    uvicorn.run = lambda app, **kwargs: run_calls.append((app, kwargs))
+    monkeypatch.setitem(sys.modules, "mlx_vlm", mlx_vlm)
+    monkeypatch.setitem(sys.modules, "uvicorn", uvicorn)
+
+    bound = []
+    drafter = SimpleNamespace(bind=lambda model: bound.append(model))
+    runtime = SimpleNamespace(
+        drafter=drafter,
+        kind="mtp",
+        block_size=3,
+        algorithm="mtp",
+        drafter_repo=QWEN36_35B_4BIT.drafter_repo,
+        target_revision=QWEN36_35B_4BIT.target_revision,
+        drafter_revision=QWEN36_35B_4BIT.drafter_revision,
+    )
+    monkeypatch.setattr(native_server, "load_runtime", lambda *args, **kwargs: runtime)
+
+    app_kwargs = {}
+    dflash_server = ModuleType("vllm_mlx.speculative.dflash.server")
+    dflash_server._dflash_executor = ImmediateExecutor()
+    dflash_server._build_app = lambda **kwargs: app_kwargs.update(kwargs) or "app"
+    monkeypatch.setitem(
+        sys.modules, "vllm_mlx.speculative.dflash.server", dflash_server
+    )
+
+    native_server.run_native_mtp_server(
+        pair=QWEN36_35B_4BIT,
+        host="127.0.0.1",
+        port=8766,
+        served_model_name="qwen3.6-35b-4bit",
+        default_max_tokens=192,
+        cors_origins=[],
+        uvicorn_log_level="warning",
+    )
+
+    assert loaded == [(QWEN36_35B_4BIT.target_repo, QWEN36_35B_4BIT.target_revision)]
+    assert bound == ["model"]
+    assert app_kwargs["backend_name"] == "Native MTP"
+    assert app_kwargs["runtime"] is runtime
+    assert app_kwargs["generation_kwargs_fn"](
+        max_tokens=9, temperature=0.0, top_p=1.0
+    ) == {
+        "max_tokens": 9,
+        "temperature": 0.0,
+        "top_p": 1.0,
+        "draft_model": drafter,
+        "draft_kind": "mtp",
+        "draft_block_size": 3,
+    }
+    assert run_calls == [
+        (
+            "app",
+            {
+                "host": "127.0.0.1",
+                "port": 8766,
+                "log_level": "warning",
+                "timeout_keep_alive": 30,
+            },
+        )
+    ]
+
+
+def test_native_mtp_server_reports_missing_optional_runtime(monkeypatch) -> None:
+    from vllm_mlx.speculative.native_mtp import server as native_server
+
+    monkeypatch.setitem(sys.modules, "uvicorn", None)
+    with pytest.raises(RuntimeError, match=r"rapid-mlx\[mtp\]"):
+        native_server.run_native_mtp_server(
+            pair=QWEN36_35B_4BIT,
+            host="127.0.0.1",
+            port=8766,
+            served_model_name="qwen3.6-35b-4bit",
+            default_max_tokens=192,
+            cors_origins=[],
+            uvicorn_log_level="warning",
+        )

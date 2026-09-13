@@ -66,7 +66,7 @@ The base text-only install is ~460 MB. Vision/audio/etc. ship as opt-in extras.
 | `chat` | `pip install 'rapid-mlx[chat]'` | Gradio web UI (~150 MB) |
 | `video` | `pip install 'rapid-mlx[video]'` | mlx-video + imageio for LTX-2.3/Wan; LTX-2.5 additionally uses a pinned source runtime documented in the video guide; requires Python 3.11+ |
 | `image` | `pip install 'rapid-mlx[image]'` | mflux for text-to-image / image edit (FLUX.1-schnell, Qwen-Image); requires Python 3.11+ |
-| `mtp` | `pip install 'rapid-mlx[mtp]'` | pillow for MTP speculative decoding (Gemma 4 assistant drafters) |
+| `mtp` | `pip install 'rapid-mlx[mtp]'` | MTP sidecars plus the qualified native Qwen3.6 verifier runtime |
 | `guided` | `pip install 'rapid-mlx[guided]'` | Legacy no-op kept for compatibility — llguidance ships in the core install (it replaced outlines in 0.10) |
 | `all` | `pip install 'rapid-mlx[all]'` | vision + dflash + audio + embeddings + chat (~1.1 GB); `video` / `image` / `mtp` are installed separately |
 

@@ -436,6 +436,10 @@ rapid-mlx serve /path/to/DeepSeek-V4-Flash-0731-MLX \
 rapid-mlx serve <mtp-eligible-qwen-checkpoint> \
   --speculative-config '{"method":"mtp","num_speculative_tokens":1,"disable_auto_k":true}'
 
+# Qualified greedy serial MTP for Qwen3.6-35B-A3B 4-bit
+rapid-mlx serve qwen3.6-35b-4bit \
+  --speculative-config '{"method":"mtp","backend":"native"}'
+
 # MTP with a sidecar head: serve a FULL base checkpoint and pass the head
 # repo in the `model` field. The `*-mtp-4bit` aliases are sidecar HEADS
 # (~246 MB, model_type qwen3_5_mtp) — do NOT serve them directly.

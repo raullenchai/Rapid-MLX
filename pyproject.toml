@@ -194,19 +194,13 @@ dflash = [
 # banner prints — misleading users into thinking their sidecar path is
 # wrong. Text-only; does NOT pull torch/cv2 like [vision].
 #
-# Codex round-I NIT (0.9.13 PR-A): do NOT re-pin ``mlx-vlm`` here.
-# The only place a Gemma 4 MTP boot touches ``mlx_vlm`` at all is
-# during target model construction in
-# ``vllm_mlx/models/gemma4_text.py``, which surfaces its own
-# actionable ImportError with a size-tiered install hint (16 MB vs
-# +450 MB). Duplicating that pin under ``[mtp]`` doubled the install
-# surface of a text-only sidecar path just to satisfy a transitive
-# PIL import that ``pillow`` already covers directly. Operators who
-# want Gemma 4 targets install ``rapid-mlx[mtp,vision]`` (or the
-# ``pip install --no-deps mlx-vlm>=0.6.1`` sliver flagged by
-# gemma4_text.py) — the ``[mtp]`` extra stays narrow to just the
-# MTP subsystem's own direct dependencies.
+# The original sidecar injector needed only Pillow. The explicit native-MTP
+# backend now calls mlx-vlm directly, so [mtp] owns the same exact runtime pin
+# as the signed Desktop sidecar. It remains text-only: no torch/cv2 extras.
 mtp = [
+    # Required by the explicit native-MTP backend. Keep this exact pin aligned
+    # with the signed Desktop sidecar and the vision/DFlash extras.
+    "mlx-vlm==0.6.17",
     "pillow>=10.0.0",
 ]
 # Embedding endpoint

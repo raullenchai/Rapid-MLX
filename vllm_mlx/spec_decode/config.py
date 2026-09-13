@@ -29,6 +29,9 @@ class SpeculativeConfig:
     num_speculative_tokens: int | None = None
     tree_budget: int | None = None
     disable_auto_k: bool | None = None
+    # Select an alternate execution backend only when the operator explicitly
+    # asks for it. ``None`` preserves the standard scheduler-owned MTP path.
+    backend: str | None = None
     # ``None`` means artifact-qualified auto selection.  Preserve the
     # distinction between an omitted key and an explicit ``false`` so users
     # retain a stable ordinary-MTP opt-out after a target is promoted.
@@ -55,6 +58,7 @@ _METHOD_KEYS = {
             "model",
             "num_speculative_tokens",
             "disable_auto_k",
+            "backend",
             "continuous_batching",
             "allow_dynamic_membership",
         }
@@ -163,6 +167,7 @@ def parse_speculative_config(value: str | None) -> SpeculativeConfig | None:
         ),
         tree_budget=_positive_int(payload.get("tree_budget"), "tree_budget"),
         disable_auto_k=_optional_bool(payload.get("disable_auto_k"), "disable_auto_k"),
+        backend=_optional_string(payload.get("backend"), "backend"),
         continuous_batching=_optional_bool(
             payload.get("continuous_batching"), "continuous_batching"
         ),
@@ -181,6 +186,12 @@ def parse_speculative_config(value: str | None) -> SpeculativeConfig | None:
     if config.allow_dynamic_membership and config.continuous_batching is not True:
         raise SpeculativeConfigError(
             "allow_dynamic_membership requires continuous_batching=true"
+        )
+    if config.backend not in (None, "native"):
+        raise SpeculativeConfigError("backend must be 'native' when specified")
+    if config.backend == "native" and config.continuous_batching is True:
+        raise SpeculativeConfigError(
+            "backend='native' is serial and cannot use continuous_batching=true"
         )
     return config
 
