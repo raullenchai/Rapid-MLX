@@ -161,6 +161,9 @@ ALLOWED_RAPID_MLX_ENV_VARS: frozenset[str] = frozenset(
         # This changes only a launch-count optimization after model loading;
         # it cannot select a model, parser, tier, or serving lane.
         "RAPID_MLX_QWEN35_MOE_ROUTER",
+        # Opt-out of the bit-exact Qwen3.5-family GDN decode kernel. It changes
+        # only the implementation of an already-selected model's recurrence.
+        "RAPID_MLX_QWEN35_FUSED_GDN_DECODE",
         # Opt-in direct QSA block-sparse attention on an already-selected
         # Qwen4-Exp model. This changes only the prefill kernel after a measured
         # context crossover; model, parser, tier, and engine routing are

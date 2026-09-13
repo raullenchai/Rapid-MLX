@@ -1884,8 +1884,18 @@ class BatchedEngine(BaseEngine):
             _sc = self._scheduler_config
             if _sc is None or getattr(_sc, "spec_decode", "none") != "mtp":
                 from ..gdn_in_proj_fusion import fuse_gdn_in_proj
+                from ..qwen35_fused_gdn_decode import (
+                    install_qwen35_fused_gdn_decode,
+                )
 
                 self._model_load_executor.submit(fuse_gdn_in_proj, self._model).result()
+                # Collapse the qualified Qwen3.5-family single-token GDN
+                # recurrence after its input projections have been fused.
+                # The installer runs an output + both-cache bit-parity probe;
+                # prefill, batching, MTP, and unknown layouts stay stock.
+                self._model_load_executor.submit(  # type: ignore[attr-defined]
+                    install_qwen35_fused_gdn_decode, self._model
+                ).result()
 
         # Capture persistence identity from the exact immutable snapshot
         # selected by the loader before this engine is published through
