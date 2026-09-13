@@ -49,6 +49,30 @@ SIDECAR_BUILD_READY=""
 SIDECAR_BUILD_STARTED=0
 PARALLEL_SIDECAR_COMPLETE=0
 
+validate_sidecar_stage_for_rebuild() {
+    local requested="$1"
+    local canonical
+    canonical="$(python3 - "$requested" <<'PY'
+import os
+import sys
+
+print(os.path.realpath(sys.argv[1]))
+PY
+)"
+    if [[ -z "$requested" || "$requested" != /* \
+        || "$canonical" == "/" \
+        || "$(basename "$canonical")" != "sidecar-stage" \
+        || "$canonical" == "$ROOT" \
+        || "$canonical" == "$ENGINE_ROOT" \
+        || "$ROOT" == "$canonical"/* \
+        || "$ENGINE_ROOT" == "$canonical"/* ]]; then
+        echo "ERR: refusing unsafe sidecar staging path: ${requested:-<empty>}" >&2
+        exit 1
+    fi
+    SIDECAR_STAGE="$canonical"
+    SIDECAR_CACHE_STAMP="$SIDECAR_STAGE/.rapid-sidecar-cache-key"
+}
+
 terminate_parallel_sidecar_group() {
     local pgid="$1"
     [[ -n "$pgid" ]] || return 0
@@ -131,9 +155,10 @@ if [[ "$PARALLEL_SIDECAR_BUILD" == "1" \
     SIDECAR_BUILD_LOG="${RUNNER_TEMP:-$ROOT/build}/rapid-sidecar-build-$$.log"
     SIDECAR_BUILD_READY="${RUNNER_TEMP:-$ROOT/build}/rapid-sidecar-ready-$$"
     rm -f "$SIDECAR_BUILD_READY"
+    validate_sidecar_stage_for_rebuild "$SIDECAR_STAGE"
     rm -rf "$SIDECAR_STAGE"
     echo "==> starting signed sidecar build beside Swift compilation"
-    python3 -c \
+    RAPID_MLX_ENGINE_ROOT="$ENGINE_ROOT" RAPID_MLX_SOURCE="$ENGINE_ROOT" python3 -c \
         'import os, pathlib, sys; os.setsid(); pathlib.Path(sys.argv[1]).touch(); os.execvp(sys.argv[2], sys.argv[2:])' \
         "$SIDECAR_BUILD_READY" bash "$SIDECAR_SCRIPT" \
         --out "$SIDECAR_STAGE" \

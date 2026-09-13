@@ -103,11 +103,14 @@ def test_swift_failure_terminates_parallel_sidecar_process_group(
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
     child_pid = tmp_path / "child.pid"
+    engine_root_seen = tmp_path / "engine-root-seen"
     sidecar = tmp_path / "fake-sidecar.sh"
     quoted_child_pid = shlex.quote(str(child_pid))
+    quoted_engine_root_seen = shlex.quote(str(engine_root_seen))
     sidecar.write_text(
         "#!/bin/bash\n"
         "set -eu\n"
+        f"printf '%s\\n' \"$RAPID_MLX_SOURCE\" > {quoted_engine_root_seen}\n"
         "(trap '' TERM; while :; do sleep 1; done) &\n"
         f"echo $! > {quoted_child_pid}\n"
         "wait\n"
@@ -144,6 +147,7 @@ def test_swift_failure_terminates_parallel_sidecar_process_group(
     )
 
     assert result.returncode == 47, result.stdout + result.stderr
+    assert engine_root_seen.read_text().strip() == str(ROOT)
     assert "ignored SIGTERM; sending SIGKILL" in result.stderr
     pid = int(child_pid.read_text())
     deadline = time.monotonic() + 2
@@ -155,6 +159,28 @@ def test_swift_failure_terminates_parallel_sidecar_process_group(
         time.sleep(0.02)
     else:
         pytest.fail(f"sidecar grandchild {pid} survived process-group cleanup")
+
+
+def test_parallel_sidecar_rejects_unsafe_stage_before_recursive_delete() -> None:
+    env = os.environ | {
+        "PARALLEL_SIDECAR_BUILD": "1",
+        "CODESIGN_IDENTITY": "test identity",
+        "RAPID_SIDECAR_STAGE": "/",
+        "RAPID_MLX_ENGINE_ROOT": str(ROOT),
+    }
+    result = subprocess.run(
+        ["bash", str(BUILD)],
+        cwd=BUILD.parent.parent,
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=10,
+        check=False,
+    )
+
+    assert result.returncode == 1
+    assert "refusing unsafe sidecar staging path: /" in result.stderr
+    assert "starting signed sidecar build" not in result.stdout
 
 
 def test_parallel_sidecar_failure_is_propagated_before_app_assembly(
