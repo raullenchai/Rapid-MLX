@@ -6,6 +6,7 @@ summary statistics, and limitations.
 
 ## Reports
 
+- [Qwen3.6-35B-A3B fused GDN decode qualification](2026-09-12-qwen36-35b-fused-gdn-decode.md)
 - [Qwen3.6-35B-A3B fused MoE router qualification](2026-09-12-qwen36-35b-fused-router.md)
 - [DeepSeek V4.1 Flash Engram SSD offload qualification](2026-09-11-deepseek-v41-engram-offload.md)
 - [Qwen3.8 27B MTP FP16 checkpoint qualification](2026-09-07-qwen38-mtp-fp16.md)
