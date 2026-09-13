@@ -147,6 +147,7 @@ def _run(
     processors=None,
     stop_after=None,
     counter=None,
+    **kwargs,
 ):
     """Drive the generator, logging each delivered token into ``events``."""
     from vllm_mlx.spec_decode.mtp.generator import mtp_generate_step
@@ -160,6 +161,7 @@ def _run(
         disable_auto_k=True,
         logits_processors=processors,
         accept_counter=counter,
+        **kwargs,
     )
     try:
         for tok, _lp, from_draft in stream:
@@ -452,3 +454,67 @@ def test_drafting_before_the_yield_never_leaks_guard_state_to_the_caller():
         f"token; drafting leaked into it. Log: {events}"
     )
     assert [e[1] for e in events if e[0] == "apply"] == [0, 1, 2], events
+
+
+def test_a_round_ending_on_an_accepted_eos_draft_pays_for_no_draft():
+    """EOS inside the accepted run ends the round before the drafter runs.
+
+    Positions past a stop token are never reached in real decode, so the round
+    truncates at EOS: no bonus token, no residual, and -- now that drafting
+    moved to the front of the delivery phase -- no drafter chain either. The
+    old code reached its ``return`` before the draft; ``round_done`` has to
+    stand in for that, or every terminating request would pay one wasted
+    drafter forward whose output is discarded with the request.
+    """
+    events: list = []
+    model = _ScriptedModel(_ALL_ACCEPT_BACKBONE, _ALL_ACCEPT_MTP, events)
+
+    emitted = _run(model, max_tokens=10, events=events, stop_tokens={11})
+
+    # 7 bootstraps, 11 is accepted and is the stop token: nothing after it.
+    assert emitted == [(7, False), (11, True)], emitted
+    # Two forwards for round 0's chain and none for the terminated round.
+    assert model.mtp_calls == 2, events
+
+
+def test_prompt_lookup_drafts_replace_the_drafter_chain_on_a_parked_round():
+    """A parked round with a prompt hit drafts by copy, not by MTP forward.
+
+    ``max_k=0`` parks the drafter, so every round takes the bootstrap path;
+    once the generated suffix matches an indexed prompt n-gram the proposal
+    comes from the prompt itself. This is the one draft-setup branch that must
+    NOT reach ``_draft_chain_timed`` -- there is no chain to launch and no
+    draft wall time to charge the next round -- so ``mtp_forward`` staying at
+    zero is the assertion that matters.
+    """
+    from vllm_mlx.spec_decode.mtp.prompt_lookup import PromptLookupPolicy
+
+    events: list = []
+    # Round 0 emits 7, round 1 emits 20; the suffix (7, 20) then matches the
+    # history below, whose continuation is (25, 26) -- and the backbone goes
+    # on to confirm both, so they are delivered as accepted drafts. Every id
+    # stays under ``_ScriptedModel``'s 32-wide vocab, or the one-hot logit
+    # lands out of range and greedy silently falls back to 0.
+    model = _ScriptedModel([7, 20, 25, 26, 27, 27, 27], [], events)
+    model.mtp_prompt_lookup_supported = True
+
+    emitted = _run(
+        model,
+        max_tokens=4,
+        max_k=0,
+        events=events,
+        prompt_lookup_enabled=True,
+        prompt_lookup_history=[7, 20, 25, 26],
+        prompt_lookup_policy=PromptLookupPolicy(
+            enabled_by_default=True, min_ngram=2, max_ngram=2, max_tokens=4
+        ),
+    )
+
+    assert [tok for tok, _ in emitted][:4] == [7, 20, 25, 26], emitted
+    assert [from_draft for _, from_draft in emitted][:4] == [
+        False,
+        False,
+        True,
+        True,
+    ], emitted
+    assert model.mtp_calls == 0, events
