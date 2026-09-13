@@ -32,7 +32,7 @@ from collections.abc import Sequence
 from typing import Any
 
 from ..api.tool_calling import _decode_json_like, _schema_type
-from ..tool_call_scan import split_marked_parameters
+from ..tool_call_scan import split_marked_parameters, trim_wrapping_newlines
 from .abstract_tool_parser import (
     ExtractedToolCallInformation,
     ToolParser,
@@ -87,8 +87,33 @@ def _is_string_param(param_name: str, param_config: dict) -> bool:
 def _convert_param_value(
     param_value: str, param_name: str, param_config: dict, func_name: str
 ) -> Any:
-    """Convert parameter value based on its type in the schema."""
+    """Convert parameter value based on its type in the schema.
+
+    The TYPED scalar branches match against a whitespace-trimmed copy, never
+    against the value that gets returned. Values used to arrive here already
+    ``.strip()``-ed; now that only the wire's wrapping newline is removed
+    (#3401), a model that pads a scalar -- ``<parameter=flag> true </parameter>``
+    -- must still resolve to the scalar rather than to ``False``.
+
+    A padded ``null`` is the keyword for every parameter EXCEPT a string-typed
+    one, and that boundary is ``_is_string_param`` rather than a per-branch
+    test, because it has to hold for the shapes that never reach the type
+    dispatch at all: an undeclared parameter, a schema with no ``type`` key,
+    and ``{"type": ["null"]}`` / null-only ``anyOf`` / ``oneOf`` (for which
+    ``_schema_type`` returns ``None``). v0.14.1 resolved all of them to
+    ``None`` because the value arrived pre-stripped.
+
+    The string case is the deliberate exception, twice over. Its padding is
+    payload under this wire's contract, and it is also the only set of values
+    that reaches ``_close_string_increment``, where this function can be
+    applied a second time to an already-decoded value (a pre-existing defect
+    left untouched here). Trimming there would turn the string ``" null "``
+    into ``None`` in the streamed arguments but not the non-streamed ones.
+    """
+    keyword = param_value.strip()
     if param_value.lower() == "null":
+        return None
+    if keyword.lower() == "null" and not _is_string_param(param_name, param_config):
         return None
 
     if param_name not in param_config:
@@ -107,18 +132,19 @@ def _convert_param_value(
         if isinstance(decoded, str):
             return decoded
         return param_value
-    elif param_type.startswith(("int", "uint", "long", "short", "unsigned")):
+
+    if param_type.startswith(("int", "uint", "long", "short", "unsigned")):
         try:
-            return int(param_value)
+            return int(keyword)
         except (ValueError, TypeError):
             return param_value
     elif param_type.startswith(("num", "float", "double")):
         try:
-            return float(param_value)
+            return float(keyword)
         except (ValueError, TypeError):
             return param_value
     elif param_type in ("boolean", "bool", "binary"):
-        return param_value.lower() == "true"
+        return keyword.lower() == "true"
     else:
         if param_type in ("object", "array", "arr") or param_type.startswith(
             ("dict", "list")
@@ -471,7 +497,7 @@ class Qwen3CoderToolParser(ToolParser):
             p_name = match_text[:idx]
             if p_name in param_dict or p_name not in param_config:
                 continue
-            p_value = str(match_text[idx + 1 :]).strip("\n")
+            p_value = trim_wrapping_newlines(str(match_text[idx + 1 :]))
             param_dict[p_name] = _convert_param_value(
                 p_value, p_name, param_config, function_name
             )

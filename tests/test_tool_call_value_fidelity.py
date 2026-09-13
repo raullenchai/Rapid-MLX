@@ -402,18 +402,26 @@ def test_repeated_calls_to_the_same_tool_are_all_kept():
 )
 def test_argument_value_survives_round_trip(parser_name, wire_format, case, value):
     """A string argument reaches the caller byte-identical."""
-    if wire_format in ("xml_body", "minicpm_native"):
-        # These formats have no escaping layer, so a value containing the
-        # format's own closing marker is only resolvable by CONVENTION: the
-        # LAST occurrence closes the element, earlier ones are payload.
-        # That convention is exactly what this suite pins — do not skip
-        # these cases, they are the Nemotron truncation bug (omlx#2507).
+    # ``xml_body`` USED to be skipped here alongside ``minicpm_native``, on
+    # the belief that "surrounding whitespace is layout in an XML body, not
+    # payload". That belief is what shipped #3401: on the ``<parameter=…>``
+    # wire only ONE newline per side is layout, so trimming the rest ate the
+    # indentation of every value's first line and broke agent code edits.
+    # Since the fix the format IS byte-faithful, so these values are asserted
+    # rather than skipped — including ``trailing_newline``, ``leading_space``
+    # and ``newlines_tabs`` (which carries a ``\r\n``). Do not re-add the skip
+    # to buy back a green run; that is how the bug hid for so long.
+    if wire_format in ("minicpm_native",):
+        # This format has no escaping layer, so a value containing its own
+        # closing marker is only resolvable by CONVENTION: the LAST
+        # occurrence closes the element, earlier ones are payload. That
+        # convention is exactly what this suite pins — do not skip those
+        # cases, they are the Nemotron truncation bug (omlx#2507).
         #
-        # Surrounding whitespace is layout in an XML body, not payload, and
-        # CRLF normalisation (\r\n -> \n) is spec-conformant XML. Both are
-        # format properties rather than fidelity defects; the same values
-        # are asserted against json_body / raw_json, where they must
-        # survive byte-identical.
+        # Whitespace and CRLF normalisation, on the other hand, are real
+        # properties of THIS parser's ``<param name=…>`` markup rather than
+        # fidelity defects; the same values are asserted against json_body /
+        # raw_json, where they must survive byte-identical.
         if value != value.strip():
             pytest.skip(f"{wire_format} trims formatting whitespace by convention")
         if "\r" in value:
