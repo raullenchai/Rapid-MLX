@@ -432,6 +432,20 @@ def patch_gated_delta_net_for_mtp() -> bool:
         return True
 
 
+def gated_delta_snapshot_rollback_installed() -> bool:
+    """Return whether the chunk-split verify patch is live on GatedDeltaNet.
+
+    When it is, a verify forward with ``cache.n_confirmed_for_mtp > 0``
+    leaves every linear-attention ``ArraysCache`` holding a restore point:
+    a single ``(conv, ssm)`` tuple at S == 2, and one tuple per interior
+    boundary (``S - 1`` of them) at S > 2. That is a rollback capability
+    ``ArraysCache`` does not otherwise advertise -- it owns no ``trim()``
+    and no ``restore_rollback()`` -- so admission checks have to ask here
+    instead of inferring it from the cache object.
+    """
+    return _gated_delta_patched
+
+
 def _is_patched_for_tests() -> bool:
     """Test-only — inspect the install flag."""
     return _patched

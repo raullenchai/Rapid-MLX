@@ -53,6 +53,8 @@ from pathlib import Path
 from types import MappingProxyType
 from typing import Any
 
+from vllm_mlx.spec_decode.mtp.prompt_lookup import PromptLookupPolicy
+
 logger = logging.getLogger(__name__)
 
 
@@ -952,6 +954,37 @@ def inject_mtp_support(
         # backends whose MTP cache-history synchronization has been audited.
         # This injector covers the Qwen 3.5/3.6/3.8 family.
         mtp_prompt_lookup_supported = True
+        # The chunk-split verify installed above leaves one (conv, ssm)
+        # restore point per interior boundary of the verify block, so any
+        # acceptance prefix of a wide copy-draft is recoverable. Without
+        # this declaration the generator's admission guard sees 48
+        # GatedDeltaNet ``ArraysCache`` entries that own neither trim() nor
+        # restore_rollback(), refuses every proposal, and prompt lookup is
+        # dead code on this family however it is configured.
+        mtp_wide_verify_rollback_supported = True
+        # Tuned on Qwen3.8-27B-4bit (M4 Pro, 800-token answers) in tok/round,
+        # which unlike wall clock is immune to the host being shared:
+        #
+        #   task            off     (16,64,8)     (8,64,16)
+        #   code:annotate  1.810   1.909 (+5.5%)  1.961 (+8.3%)
+        #   code:rename    1.914   2.564 (+34%)   2.888 (+51%)
+        #   code:bugfix    1.848   2.360 (+28%)   2.572 (+39%)
+        #   prose:essay    1.843   1.831 (-0.7%)  1.861 (+0.9%)
+        #   prose:explain  1.739   1.747 (+0.4%)  1.747 (+0.4%)
+        #
+        # min_ngram is the precision knob and max_tokens the depth knob.
+        # ``qwen4_exp_inject`` ships the conservative (16, 64, 8); this
+        # family tolerates the loose setting because a miss is nearly free
+        # here -- a rejected copy-draft costs one wide verify whose extra
+        # rows are the cheap part of the round, while prose (where almost
+        # every proposal misses) stays inside noise. Editing tasks, which
+        # is what a copy-draft exists for, gain a third to a half.
+        mtp_prompt_lookup_policy = PromptLookupPolicy(
+            enabled_by_default=True,
+            min_ngram=8,
+            max_ngram=64,
+            max_tokens=16,
+        )
         batched_mtp_capability = BATCHED_MTP_CAPABILITY
         mtp_recursive_draft_depth = 2
         mtp_batch_forward = _mtp_batch_forward
@@ -1081,6 +1114,8 @@ def inject_mtp_support(
     # regardless of which supported shape reaches the generator.
     if model is not inner:
         model.mtp_prompt_lookup_supported = True
+        model.mtp_wide_verify_rollback_supported = True
+        model.mtp_prompt_lookup_policy = inner.mtp_prompt_lookup_policy
         model.mtp_batch_forward = inner.mtp_batch_forward
     model.batched_mtp_capability = BATCHED_MTP_CAPABILITY
     model.mtp_recursive_draft_depth = 2

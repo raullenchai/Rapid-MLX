@@ -1495,6 +1495,7 @@ def _install_mtp_vendored(
         "prompt_lookup_accepted_tokens": 0.0,
         "prompt_lookup_rejections": 0.0,
         "prompt_lookup_cache_fallthroughs": 0.0,
+        "prompt_lookup_ev_declines": 0.0,
         "prompt_lookup_mtp_sync_seconds": 0.0,
     }
 
