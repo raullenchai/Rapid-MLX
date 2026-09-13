@@ -2,13 +2,16 @@ from __future__ import annotations
 
 import pytest
 
+import vllm_mlx.quantization.glm53_rmq as rmq
 from vllm_mlx.quantization.glm53_rmq import (
+    QuantSpec,
     TensorDescriptor,
     fusion_domain,
     module_path,
     module_paths,
     mtp_module_paths,
     plan_tensors,
+    projected_storage_bytes,
     summarize_plan,
 )
 
@@ -80,6 +83,18 @@ def test_invalid_sensitivity_fails_closed():
         plan_tensors([tensor], CONFIG, {tensor.name: 1.1})
 
 
+def test_invalid_quant_specs_fail_closed():
+    with pytest.raises(ValueError, match="floating-point"):
+        QuantSpec(bits=None).as_config()
+    assert QuantSpec(bits=8, group_size=64, mode="affine").as_config() == {
+        "bits": 8,
+        "group_size": 64,
+        "mode": "affine",
+    }
+    with pytest.raises(ValueError, match="Q7"):
+        rmq._q(7, "invalid")
+
+
 def test_non_native_width_and_vision_stay_float():
     tensors = [
         td("model.language_model.layers.1.mlp.down_proj.weight", (64, 96)),
@@ -87,6 +102,18 @@ def test_non_native_width_and_vision_stay_float():
     ]
     plan = plan_tensors(tensors, CONFIG)
     assert [item.spec.bits for item in plan] == [None, None]
+
+
+def test_remaining_policy_fallbacks_and_float_storage():
+    tensors = [
+        td("model.language_model.layers.1.buffer.weight", dtype="U8"),
+        td("model.language_model.layers.1.mlp.down_proj.weight"),
+        td("model.language_model.layers.1.other.weight"),
+        td("model.language_model.layers.1.float_state", (64,), "F32"),
+    ]
+    plan = plan_tensors(tensors, CONFIG)
+    assert [item.spec.bits for item in plan] == [None, 8, 4, None]
+    assert projected_storage_bytes([plan[-1]]) == 64 * 4
 
 
 def test_module_path_matches_mlx_vlm_tree_and_summary_is_stable():
@@ -133,6 +160,7 @@ def test_fusion_domain_is_explicit_and_narrow():
     ("source", "expected"),
     [
         ("eh_proj", ("eh_proj",)),
+        ("shared_head.norm", ("shared_head_norm",)),
         (
             "mlp.experts.7.down_proj",
             ("mtp_block.mlp.switch_mlp.down_proj",),
