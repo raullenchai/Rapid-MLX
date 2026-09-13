@@ -55,7 +55,11 @@ from .cache_patch import (
     patch_arrays_cache_rollback_state,
 )
 from .draft_k_controller_v2 import DepthController, get_or_create_controller
-from .prompt_lookup import CopyDraftGate, PromptLookupIndex, PromptLookupPolicy
+from .prompt_lookup import (
+    CopyDraftGate,
+    PromptLookupIndex,
+    PromptLookupPolicy,
+)
 
 _LEGACY_PROMPT_LOOKUP_POLICY = PromptLookupPolicy()
 
@@ -93,6 +97,19 @@ def _effective_prompt_lookup_policy(model) -> PromptLookupPolicy:
                 )
             ),
         ),
+        # The ceiling is the family policy's, and an operator who overrides it
+        # is taken at their word rather than silently clamped: a copy-draft of
+        # N tokens is verified in one N+1 row forward and ``quantized_matmul``
+        # tiles those rows in blocks of 32, so the rows inside a tile are
+        # nearly free and the one that crosses an edge costs a whole tile
+        # (measured on Qwen3.8-27B-4bit: 331.50 ms at 13 rows, 342.26 at 32,
+        # 647.52 at 33). That makes 31, 63, 95 the useful values and anything
+        # just past a multiple of 32 the wasteful one -- but which of them
+        # pays depends on how far that workload's copies actually run, which
+        # the operator can know and this module cannot. The default is
+        # ``prompt_lookup.MAX_COPY_DRAFT_TOKENS`` and ``CopyDraftGate`` still
+        # only proposes a width the turn has earned, so a high ceiling costs
+        # nothing until the copies reach it.
         max_tokens=max(
             1,
             int(
@@ -1102,10 +1119,11 @@ def mtp_generate_step(
         )
         if match is None:
             return None
-        extension = max(0, match.matched_suffix - _prompt_lookup_index.min_ngram)
-        confidence_ladder = (8, 12, 16, 24, 32)
-        confidence_cap = confidence_ladder[min(extension, len(confidence_ladder) - 1)]
-        proposed_tokens = match.tokens[:confidence_cap]
+        # The request's ceiling is proposed, not taken: how long the matched
+        # suffix ran says the match is real, not how far it stays right, and
+        # only this turn's own accepted rows can say that. See
+        # ``CopyDraftGate.width_cap``.
+        proposed_tokens = match.tokens[: _copy_draft_gate.width_cap(len(match.tokens))]
         safe_count = _safe_prompt_lookup_draft_count(
             model_cache,
             len(proposed_tokens),
@@ -1429,6 +1447,8 @@ def mtp_generate_step(
                     is_copy_draft=True,
                     committed=committed_this_round,
                     round_ms=round_wall_ms,
+                    accepted=accepted_count,
+                    proposed=k_len,
                 )
                 pending_draft_ms = 0.0
             else:

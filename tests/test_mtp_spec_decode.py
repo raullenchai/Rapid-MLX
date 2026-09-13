@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import copy
 import dataclasses
+import textwrap
 import types
 
 import pytest
@@ -1691,7 +1692,15 @@ def test_inject_mtp_support_attaches_four_surfaces():
     assert model.mtp_wide_verify_rollback_supported is True
     policy = model.mtp_prompt_lookup_policy
     assert policy.enabled_by_default is True
-    assert (policy.min_ngram, policy.max_ngram, policy.max_tokens) == (8, 64, 16)
+    assert (policy.min_ngram, policy.max_ngram) == (8, 64)
+    # The depth knob is the tile edge itself, not a number that merely
+    # happens to sit under it -- see that constant's own contract test. This
+    # policy is where the ceiling lives: the generator honours whatever it (or
+    # an operator override) says, so a default of anything else would be the
+    # whole feature mis-sized.
+    from vllm_mlx.spec_decode.mtp.prompt_lookup import MAX_COPY_DRAFT_TOKENS
+
+    assert policy.max_tokens == MAX_COPY_DRAFT_TOKENS
 
 
 def test_inject_mtp_support_mirrors_batch_seam_to_outer_wrapper():
@@ -3617,6 +3626,114 @@ def test_generator_rejection_path_does_not_count_as_accept():
     assert snap.tokens_saved == 0
 
 
+def test_copy_draft_width_stays_inside_one_quantized_matmul_tile():
+    """The widest copy-draft must verify in 32 rows, not 33.
+
+    A proposal of N tokens is verified in one N+1 row forward, and MLX's
+    ``quantized_matmul`` tiles rows in blocks of 32, so N = 32 buys a whole
+    second tile for a single row. Measured on Qwen3.8-27B-4bit: 342.26 ms
+    at 32 rows against 647.52 at 33. This is a cost-model contract, not a
+    style preference -- a future rung of 32 would silently cost 89%.
+    """
+    from vllm_mlx.spec_decode.mtp.prompt_lookup import (
+        COPY_DRAFT_FREE_WIDTH_FLOOR,
+        COPY_DRAFT_MIN_WIDTH,
+        COPY_DRAFT_PROBE_WIDTH,
+        MAX_COPY_DRAFT_TOKENS,
+    )
+
+    assert MAX_COPY_DRAFT_TOKENS == 31
+    # Every width the sizer can hand back lands inside the same tile.
+    assert COPY_DRAFT_MIN_WIDTH <= COPY_DRAFT_PROBE_WIDTH
+    assert COPY_DRAFT_PROBE_WIDTH < COPY_DRAFT_FREE_WIDTH_FLOOR
+    assert COPY_DRAFT_FREE_WIDTH_FLOOR <= MAX_COPY_DRAFT_TOKENS
+
+
+def test_generator_honours_an_operator_ceiling_past_the_tile_edge(monkeypatch):
+    """The proposal ceiling is the policy's, and an override is obeyed.
+
+    ``RAPID_MLX_MTP_PROMPT_LOOKUP_MAX_TOKENS`` is how an operator says how
+    far their workload's copies run, and that is knowledge this module does
+    not have: rows inside a 32-row ``quantized_matmul`` tile are nearly free
+    and the row that crosses an edge costs a whole tile, so 63 is as
+    reasonable a ceiling as 31 for a workload whose matches run that long.
+    The default is the first tile edge (pinned on the policy itself in
+    ``test_inject_mtp_support_declares_prompt_lookup_policy``) and a silent
+    clamp on top of the override would make the knob a lie -- an operator
+    asking for 64 and getting 31 has no way to see it.
+
+    What keeps the knob from being a footgun is the sizer, not a clamp:
+    ``CopyDraftGate.width_cap`` proposes two rows until copies have been
+    verified and widens only into acceptance the turn has actually earned,
+    so a high ceiling costs nothing until the matches reach it.
+    """
+    import vllm_mlx.spec_decode.mtp.generator as generator_mod
+    from vllm_mlx.spec_decode.mtp.accept_counter import MTPAcceptCounter
+    from vllm_mlx.spec_decode.mtp.generator import mtp_generate_step
+    from vllm_mlx.spec_decode.mtp.prompt_lookup import (
+        COPY_DRAFT_PROBE_WIDTH,
+        CopyDraftGate,
+    )
+
+    monkeypatch.setenv("RAPID_MLX_MTP_PROMPT_LOOKUP", "1")
+    monkeypatch.setenv("RAPID_MLX_MTP_PROMPT_LOOKUP_MIN_NGRAM", "2")
+    monkeypatch.setenv("RAPID_MLX_MTP_PROMPT_LOOKUP_MAX_NGRAM", "2")
+    monkeypatch.setenv("RAPID_MLX_MTP_PROMPT_LOOKUP_MAX_TOKENS", "64")
+
+    asked: list[int] = []
+    real_propose = generator_mod.PromptLookupIndex.propose
+
+    def recording_propose(self, generated, *, max_tokens=24):
+        asked.append(max_tokens)
+        return real_propose(self, generated, max_tokens=max_tokens)
+
+    monkeypatch.setattr(generator_mod.PromptLookupIndex, "propose", recording_propose)
+
+    # What the ceiling becomes: the sizer sees the operator's number and
+    # returns the width the evidence supports, which is what turns into rows.
+    sized: list[tuple[int, int]] = []
+    real_width_cap = CopyDraftGate.width_cap
+
+    def recording_width_cap(self, proposed):
+        width = real_width_cap(self, proposed)
+        sized.append((proposed, width))
+        return width
+
+    monkeypatch.setattr(CopyDraftGate, "width_cap", recording_width_cap)
+
+    list(
+        mtp_generate_step(
+            mx.array([7, 8, 20, 21], dtype=mx.uint32),
+            _CacheAdvancingQwen35Model(
+                backbone_outputs=[0, 0, 0, 7, 8, 20, 21, 22],
+                mtp_outputs=[0, 0, 0, 99, 20, 21],
+            ),
+            max_tokens=99,
+            max_k=1,
+            disable_auto_k=True,
+            prompt_cache=[_CountingKVCache(), _CountingKVCache()],
+            accept_counter=MTPAcceptCounter(),
+        )
+    )
+
+    assert asked, "prompt lookup never consulted the index"
+    # Exactly what the operator asked for: 64, with 99 tokens of generation
+    # budget behind it. Anything smaller is a ceiling being applied twice.
+    assert max(asked) == 64, (
+        f"asked the index for up to {max(asked)} tokens against an operator "
+        "ceiling of 64; the ceiling belongs to the policy and the override, "
+        "not to the loop that consumes them"
+    )
+
+    # And a ceiling is still only a ceiling: every width that reached a
+    # verify came from the sizer, which has no acceptance evidence on this
+    # two-token match and hands back the probe width rather than the 64 rows
+    # the operator allowed.
+    assert sized, "the sizer was never consulted for a matched proposal"
+    for proposed, width in sized:
+        assert width <= min(proposed, COPY_DRAFT_PROBE_WIDTH), (proposed, width)
+
+
 def test_generator_prompt_lookup_verifies_prompt_continuation(monkeypatch):
     """A prompt suffix match bypasses MTP drafting but still uses target verify."""
     from vllm_mlx.spec_decode.mtp.accept_counter import MTPAcceptCounter
@@ -4788,11 +4905,28 @@ def test_promoted_ceiling_records_and_selects_deeper_depths_lazily():
 
 
 def _feed(gate, *, copy_rounds=(), base_rounds=()):
-    """Fold ``(committed, round_ms)`` rounds into the gate's two series."""
+    """Fold ``(committed, round_ms)`` rounds into the gate's two series.
+
+    A copy round that committed ``N`` tokens accepted ``N - 1`` copied rows
+    and then the bonus, so the sizing counts these fixtures report are
+    ``accepted = proposed = N - 1``: a block the target consumed end to end,
+    which is the shape a long match produces. A degenerate ``N = 0`` round --
+    one of the cases the gate has to ignore -- becomes a one-row block that
+    missed, which is the narrowest well-formed pair. The throughput tests
+    below read only the windowed rates, but the counts still have to be the
+    ones a real round of that size would carry.
+    """
     for committed, ms in base_rounds:
         gate.observe(is_copy_draft=False, committed=committed, round_ms=ms)
     for committed, ms in copy_rounds:
-        gate.observe(is_copy_draft=True, committed=committed, round_ms=ms)
+        accepted = max(0, committed - 1)
+        gate.observe(
+            is_copy_draft=True,
+            committed=committed,
+            round_ms=ms,
+            accepted=accepted,
+            proposed=max(1, accepted),
+        )
 
 
 def test_copy_draft_gate_stays_open_until_both_series_are_sampled():
@@ -4846,6 +4980,45 @@ def test_copy_draft_gate_admits_copy_drafts_that_win_on_throughput():
     assert gate.allow() is True
     assert gate.declines == 0
     assert gate.probes == 0
+
+
+def test_copy_draft_gate_is_not_flipped_by_one_missed_copy_draft():
+    """A copy-draft whose first row is wrong commits one token for a full wide
+    verify. That is a real outcome and the comparison should feel it -- but it
+    is one round among many, and smoothing the throughput series with the
+    acceptance model's alpha handed that single round the power to refuse the
+    next several. Measured on a Qwen3.8-27B-4bit rename turn that copy-drafts
+    win by more than 20%, an alpha of 0.3 refused 52 proposals.
+    """
+    from vllm_mlx.spec_decode.mtp.prompt_lookup import (
+        COPY_DRAFT_ACCEPTANCE_EWMA_ALPHA,
+        CopyDraftGate,
+    )
+
+    gate = CopyDraftGate()
+    # A turn copy-drafts are winning by the narrow margin production runs at:
+    # 0.025 committed tokens per ms against 0.020.
+    _feed(gate, copy_rounds=[(25, 1000.0)] * 5, base_rounds=[(2, 100.0)] * 5)
+    assert gate.allow() is True
+
+    # A wide block whose first row missed: one committed token for a verify
+    # the size of the ones above it.
+    gate.observe(
+        is_copy_draft=True, committed=1, round_ms=1000.0, accepted=0, proposed=24
+    )
+
+    copy_rate, base_rate = gate.rates()
+    assert copy_rate == pytest.approx(126 / 6000)
+    assert copy_rate > base_rate
+    assert gate.allow() is True
+    assert gate.declines == 0
+
+    # What the alpha this replaces would have made of the same sample. The
+    # counterfactual is computed rather than asserted as a constant, so
+    # re-smoothing ``rates`` in a later refactor cannot quietly pass here.
+    smoothed = 25 / 1000.0
+    smoothed += COPY_DRAFT_ACCEPTANCE_EWMA_ALPHA * (1 / 1000.0 - smoothed)
+    assert smoothed < base_rate
 
 
 def test_copy_draft_gate_probes_a_standing_refusal_with_exponential_backoff():
@@ -4938,11 +5111,15 @@ def test_generator_prices_both_round_kinds_into_the_copy_draft_gate(monkeypatch)
     seen: list[tuple[bool, int]] = []
     original = CopyDraftGate.observe
 
-    def _spy(self, *, is_copy_draft, committed, round_ms):
+    def _spy(self, *, is_copy_draft, committed, round_ms, **kwargs):
         seen.append((is_copy_draft, committed))
         assert round_ms > 0.0
         return original(
-            self, is_copy_draft=is_copy_draft, committed=committed, round_ms=round_ms
+            self,
+            is_copy_draft=is_copy_draft,
+            committed=committed,
+            round_ms=round_ms,
+            **kwargs,
         )
 
     monkeypatch.setattr(CopyDraftGate, "observe", _spy)
@@ -5007,3 +5184,733 @@ def test_generator_drops_copy_drafts_the_gate_refuses(monkeypatch):
     assert timing["prompt_lookup_ev_declines"] >= 1
     assert timing.get("prompt_lookup_proposals", 0.0) == 0.0
     assert timing.get("prompt_lookup_cache_fallthroughs", 0.0) == 0.0
+
+
+def test_copy_draft_observe_rejects_counts_that_cannot_describe_a_round():
+    """The accepted rows are a prefix of the proposed block.
+
+    Both numbers steer the next block's width now, so a pair that cannot have
+    happened is not a harmless log line: ``accepted > proposed`` reads as a
+    block the target consumed end to end and doubles the width off a
+    measurement that never occurred, and a negative acceptance drags the EWMA
+    below the floor the sizer assumes. The generator's own values are ordered
+    by construction -- the accept loop runs over the proposed rows and the EOS
+    cut only shortens it -- so a violation is a bug upstream, and the state it
+    would corrupt is worth more than the round it would cost.
+    """
+    from vllm_mlx.spec_decode.mtp.prompt_lookup import (
+        COPY_DRAFT_PROBE_WIDTH,
+        CopyDraftGate,
+    )
+
+    gate = CopyDraftGate()
+    for accepted, proposed in ((3, 2), (-1, 4), (0, -2)):
+        with pytest.raises(ValueError, match=r"prefix of the proposed block"):
+            gate.observe(
+                is_copy_draft=True,
+                committed=3,
+                round_ms=90.0,
+                accepted=accepted,
+                proposed=proposed,
+            )
+
+    # Nothing was folded: the sizer is still at the probe width.
+    assert gate.width_cap(31) == COPY_DRAFT_PROBE_WIDTH
+    # The boundary itself is a real round -- a block the match filled exactly.
+    gate.observe(is_copy_draft=True, committed=3, round_ms=90.0, accepted=2, proposed=2)
+
+
+def test_copy_draft_gate_forgets_a_verdict_older_than_its_window():
+    """A copy-rich opening must not pay for a copy-poor tail.
+
+    One answer can change register halfway through -- quote the prompt's code
+    while it edits, then write prose about it -- and the second half must be
+    able to refuse on its own evidence. A total over the whole turn cannot do
+    that: the counterfactual is computed in the test, and at these rates a
+    pooled accumulator would still be admitting proposals here.
+    """
+    from vllm_mlx.spec_decode.mtp.prompt_lookup import (
+        COPY_DRAFT_GATE_WINDOW,
+        CopyDraftGate,
+    )
+
+    gate = CopyDraftGate()
+    _feed(gate, base_rounds=[(2, 100.0)] * 5)
+    # 200 rounds of the shape a rename turn runs at: a wide block the match
+    # fills, 15 tokens for 400 ms against the baseline's 2 for 100.
+    for _ in range(200):
+        gate.observe(
+            is_copy_draft=True, committed=15, round_ms=400.0, accepted=14, proposed=14
+        )
+    assert gate.allow() is True
+
+    # The text stops quoting: the 8-gram still hits, but the continuation
+    # diverges on the first row, so the block commits one token.
+    losses = 0
+    while gate.allow():
+        gate.observe(
+            is_copy_draft=True, committed=1, round_ms=342.0, accepted=0, proposed=2
+        )
+        losses += 1
+        # A literal ceiling, independent of the constant under test, so an
+        # unbounded aggregate fails the assertion below with a number
+        # instead of looping until the pool happens to turn over.
+        if losses > 256:
+            break
+    assert losses <= COPY_DRAFT_GATE_WINDOW, (
+        f"still admitting proposals after {losses} losing rounds, which is "
+        f"longer than the {COPY_DRAFT_GATE_WINDOW}-round window that is "
+        "supposed to bound how long a stale verdict stands"
+    )
+    assert gate.declines >= 1
+
+    # What a total over the turn would have made of the same rounds: still
+    # comfortably above the baseline, so it would still be admitting. It
+    # takes ~240 losing rounds to drag this pool down to 0.02 -- over a
+    # minute of degraded generation.
+    _copy_rate, base_rate = gate.rates()
+    pooled = (15 * 200 + losses) / (400.0 * 200 + 342.0 * losses)
+    assert pooled > base_rate, (
+        f"a total over the whole turn would be at {pooled:.5f} tokens/ms "
+        f"against a baseline of {base_rate:.5f} after {losses} losing rounds, "
+        "so the refusal above has to come from the window rather than from "
+        "the aggregate having turned over on its own"
+    )
+
+
+def test_copy_draft_gate_window_holds_exactly_its_last_rounds():
+    """The comparison's state is bounded, and bounded at the declared length.
+
+    A gate lives per request, so unbounded per-round history is a leak in
+    proportion to concurrency as well as a verdict that cannot be revised.
+    Asserted through the rate rather than through the container: once a full
+    window of losing rounds has gone in, nothing older can still be in the
+    average, so the rate is exactly one losing round's rate.
+    """
+    from vllm_mlx.spec_decode.mtp.prompt_lookup import (
+        COPY_DRAFT_GATE_WINDOW,
+        CopyDraftGate,
+    )
+
+    gate = CopyDraftGate()
+    for _ in range(500):
+        gate.observe(
+            is_copy_draft=True, committed=15, round_ms=400.0, accepted=14, proposed=14
+        )
+    assert gate.rates()[0] == pytest.approx(15 / 400.0)
+
+    for _ in range(COPY_DRAFT_GATE_WINDOW):
+        gate.observe(
+            is_copy_draft=True, committed=1, round_ms=342.0, accepted=0, proposed=2
+        )
+    assert gate.rates()[0] == pytest.approx(1 / 342.0)
+
+
+def test_copy_draft_observe_rejects_a_copy_round_without_its_sizing_counts():
+    """Zero is a measurement, so it cannot double as a missing one.
+
+    ``accepted=0`` is a block whose first row missed -- the sizer folds it in
+    and narrows. If the argument defaulted to zero instead, a caller that
+    reported a copy-draft round the old three-argument way would feed the
+    sizer a total rejection every round and pin every later block at
+    ``COPY_DRAFT_MIN_WIDTH`` after ``COPY_DRAFT_GATE_MIN_SAMPLES`` of them,
+    losing throughput while every test stayed green. The counts are
+    therefore required for a copy-draft round and absent by default.
+    """
+    from vllm_mlx.spec_decode.mtp.prompt_lookup import (
+        COPY_DRAFT_PROBE_WIDTH,
+        CopyDraftGate,
+    )
+
+    gate = CopyDraftGate()
+    with pytest.raises(TypeError, match=r"accepted="):
+        gate.observe(is_copy_draft=True, committed=3, round_ms=90.0)
+    with pytest.raises(TypeError, match=r"proposed="):
+        gate.observe(is_copy_draft=True, committed=3, round_ms=90.0, accepted=2)
+    with pytest.raises(TypeError, match=r"accepted="):
+        gate.observe(is_copy_draft=True, committed=3, round_ms=90.0, proposed=2)
+
+    # A baseline round has no copied rows to report, so it stays the
+    # three-argument call the generator makes from two places.
+    gate.observe(is_copy_draft=False, committed=1, round_ms=90.0)
+
+    # And a rejected call folded nothing: the sizer is still unmeasured.
+    assert gate.width_cap(31) == COPY_DRAFT_PROBE_WIDTH
+
+
+def test_copy_draft_width_cap_probes_narrow_while_unmeasured():
+    """Nothing is known about how far the copies run until some have run, and
+    below the tile edge the rows are not cheap -- two rows cost a rounding
+    error over the round they replace where eight already spend three
+    quarters of a full-width block -- so the first blocks probe at two."""
+    from vllm_mlx.spec_decode.mtp.prompt_lookup import (
+        COPY_DRAFT_GATE_MIN_SAMPLES,
+        COPY_DRAFT_PROBE_WIDTH,
+        CopyDraftGate,
+    )
+
+    gate = CopyDraftGate()
+    assert gate.width_cap(31) == COPY_DRAFT_PROBE_WIDTH
+
+    for _ in range(COPY_DRAFT_GATE_MIN_SAMPLES - 1):
+        gate.observe(
+            is_copy_draft=True, committed=3, round_ms=300.0, accepted=2, proposed=2
+        )
+    assert gate.width_cap(31) == COPY_DRAFT_PROBE_WIDTH
+    # A ceiling below the probe width still wins: the sizer only narrows.
+    assert gate.width_cap(1) == 1
+
+
+def test_copy_draft_width_cap_narrows_to_measured_acceptance():
+    """The Qwen3.6-27B shape: copies that accept ~4 rows get a block sized
+    for ~4 rows, not the 31-row block the ladder would hand a long match."""
+    from vllm_mlx.spec_decode.mtp.prompt_lookup import CopyDraftGate
+
+    gate = CopyDraftGate()
+    for _ in range(6):
+        gate.observe(
+            is_copy_draft=True, committed=5, round_ms=117.0, accepted=4, proposed=7
+        )
+
+    # 4 accepted rows earn a 7-row block: 1.5x headroom plus the row that
+    # discovers the match ran further than the last ones did. The estimate is
+    # asserted through the width it produces rather than through an accessor
+    # of its own -- the width is what the generator consumes.
+    assert gate.width_cap(31) == 7
+    # The ladder keeps the ceiling -- measurement only ever narrows.
+    assert gate.width_cap(4) == 4
+
+
+def test_copy_draft_width_cap_stops_narrowing_inside_the_free_band():
+    """The Qwen3.8-27B shape: once the earned width reaches the band where
+    ``quantized_matmul`` has switched to the GEMM path, narrowing buys nothing
+    and can only truncate a match, so the whole ceiling is handed back.
+
+    This is the step that makes the ratchet terminate at the tile edge rather
+    than at 1.5x whatever the last blocks happened to accept -- which matters
+    because acceptance is censored by the width proposed, so a cap that
+    tracked it forever would never discover a longer match.
+    """
+    from vllm_mlx.spec_decode.mtp.prompt_lookup import CopyDraftGate
+
+    # ``proposed`` above ``accepted`` on every round: these are blocks the
+    # target cut short, which is the branch that reads the acceptance EWMA.
+    # Passing it explicitly keeps the test off the doubling path rather than
+    # relying on the default to keep it off.
+    gate = CopyDraftGate()
+    for _ in range(6):
+        gate.observe(
+            is_copy_draft=True,
+            committed=15,
+            round_ms=342.0,
+            accepted=14,
+            proposed=20,
+        )
+
+    assert gate.width_cap(31) == 31
+    assert gate.width_cap(16) == 16
+
+    # Just below the band it still narrows: 8 accepted rows earn 13, which is
+    # the floor itself, so the ceiling comes back; 7 earn 11, which does not.
+    edge = CopyDraftGate()
+    for _ in range(6):
+        edge.observe(
+            is_copy_draft=True,
+            committed=8,
+            round_ms=300.0,
+            accepted=7,
+            proposed=10,
+        )
+    assert edge.width_cap(31) == 11
+
+
+def test_copy_draft_width_doubles_while_the_block_comes_back_full():
+    """A block the target consumed end to end has not measured the match, it
+    has only proved the match runs at least that far -- so the estimate is a
+    floor and the only way to lift it is to widen. Doubling reaches the tile
+    edge in four steps off a two-row probe where 1.5x headroom would take
+    fifteen, and every step is paid for by the rows the step before delivered.
+    """
+    from vllm_mlx.spec_decode.mtp.prompt_lookup import CopyDraftGate
+
+    gate = CopyDraftGate()
+    for _ in range(5):
+        gate.observe(is_copy_draft=False, committed=2, round_ms=90.0)
+
+    widths = []
+    for _ in range(6):
+        width = gate.width_cap(31)
+        widths.append(width)
+        # The match never runs out: every proposed row is accepted.
+        gate.observe(
+            is_copy_draft=True,
+            committed=width + 1,
+            round_ms=70.0 + 9.0 * width,
+            accepted=width,
+            proposed=width,
+        )
+    assert widths == [2, 2, 2, 4, 8, 31]
+
+
+def test_copy_draft_width_climbs_one_tile_at_a_time():
+    """An operator ceiling above the first tile edge is reached in steps.
+
+    ``quantized_matmul`` charges a whole 32-row tile once one row lands in
+    it, so a block that ends just past an edge pays for rows nothing reaches:
+    at a ceiling of 64 the widths worth proposing are 31 and 63, and the jump
+    between them has to be earned the same way the first one was -- by a
+    block the target consumed end to end. Widening straight to the ceiling on
+    the strength of an eight-row match would buy the second tile for a single
+    row.
+    """
+    from vllm_mlx.spec_decode.mtp.prompt_lookup import (
+        COPY_DRAFT_TILE_ROWS,
+        CopyDraftGate,
+    )
+
+    gate = CopyDraftGate()
+    widths = []
+    for _ in range(7):
+        width = gate.width_cap(64)
+        widths.append(width)
+        # The match never runs out: every proposed row comes back accepted.
+        gate.observe(
+            is_copy_draft=True,
+            committed=width + 1,
+            round_ms=70.0 + 9.0 * width,
+            accepted=width,
+            proposed=width,
+        )
+
+    assert widths == [2, 2, 2, 4, 8, 31, 63], widths
+    # Nothing in between: every width past the free-width floor ends exactly
+    # at a tile boundary, so no block ever pays for a tile it does not fill.
+    for width in widths:
+        if width > COPY_DRAFT_TILE_ROWS:
+            assert (width + 1) % COPY_DRAFT_TILE_ROWS == 0, width
+
+
+def test_copy_draft_width_stops_doubling_on_the_first_short_block():
+    """The doubling is not a schedule, it is a response to a censored
+    measurement: the first block the target cuts short is a real measurement
+    of the match, and from there the width comes from that number."""
+    from vllm_mlx.spec_decode.mtp.prompt_lookup import CopyDraftGate
+
+    gate = CopyDraftGate()
+    for _ in range(5):
+        gate.observe(is_copy_draft=False, committed=2, round_ms=90.0)
+
+    # Three saturated probes, then a fourth block that only half fills.
+    for _ in range(3):
+        gate.observe(
+            is_copy_draft=True, committed=3, round_ms=88.0, accepted=2, proposed=2
+        )
+    assert gate.width_cap(31) == 4
+
+    gate.observe(
+        is_copy_draft=True, committed=3, round_ms=106.0, accepted=2, proposed=4
+    )
+    # Not saturated any more, so the width is 1.5x the measured acceptance
+    # plus the row that discovers a longer match -- not eight.
+    assert gate.width_cap(31) == 4
+
+
+def test_copy_draft_width_keeps_headroom_above_a_measured_short_block():
+    """A measured acceptance is a floor to build on, not a ceiling to sit at.
+
+    A block sized to exactly what the last ones accepted can never discover
+    that the match now runs further -- the measurement is censored by the
+    width that produced it -- so the sizer adds
+    ``COPY_DRAFT_WIDTH_HEADROOM`` and one row over the acceptance EWMA. This
+    is the branch the doubling in
+    ``test_copy_draft_width_doubles_while_the_block_comes_back_full`` hands
+    over to on the first short block, and it has to be able to climb back:
+    pinned here on a turn whose matches lengthen mid-answer, through to the
+    saturated block that hands the whole ceiling back.
+    """
+    from vllm_mlx.spec_decode.mtp.prompt_lookup import CopyDraftGate
+
+    gate = CopyDraftGate()
+    # Three eight-row blocks the match cut short at four rows: a real
+    # measurement, unlike a block that filled up.
+    for _ in range(3):
+        gate.observe(
+            is_copy_draft=True, committed=5, round_ms=110.0, accepted=4, proposed=8
+        )
+    # 1.5x four rows plus the row that looks past them. Sized to the
+    # measurement alone this would be 4 and the fifth row would be
+    # unreachable for the rest of the turn.
+    assert gate.width_cap(31) == 7
+    assert gate.width_cap(31) > 4
+
+    # The match lengthens -- a later paragraph quotes more of the prompt --
+    # and the blocks still come back short, so the width has to follow the
+    # acceptance up rather than wait for a saturated block.
+    widths = []
+    for _ in range(3):
+        gate.observe(
+            is_copy_draft=True, committed=7, round_ms=124.0, accepted=6, proposed=7
+        )
+        widths.append(gate.width_cap(31))
+    assert widths == sorted(widths), widths
+    assert widths[-1] > 7, widths
+
+    # And once a block does come back full, the estimate is a floor again:
+    # twice the last width lands inside the flat band, where narrowing buys
+    # nothing, so the ceiling comes back whole.
+    gate.observe(
+        is_copy_draft=True, committed=9, round_ms=132.0, accepted=8, proposed=8
+    )
+    assert gate.width_cap(31) == 31
+
+
+def test_copy_draft_width_narrows_on_the_first_short_block_after_a_full_ladder():
+    """A ladder that climbed to the tile edge must still fall off it at once.
+
+    The estimate the sizer narrows to is an average of *measurements*, and a
+    block the target consumed end to end is not one -- it says the match runs
+    at least this far, not how far. Averaging saturated widths in is what
+    makes the fall-back late: a ladder that reached 31 on full blocks leaves
+    the average at 31, so the first block that comes back three rows long
+    reads as 22 and still asks for a whole tile, for as many rounds as an
+    alpha-0.3 average needs to decay past the free-width floor. Each of those
+    rounds is a 31-row verify -- about four baseline rounds -- returning four
+    tokens.
+    """
+    from vllm_mlx.spec_decode.mtp.prompt_lookup import (
+        COPY_DRAFT_FREE_WIDTH_FLOOR,
+        CopyDraftGate,
+    )
+
+    gate = CopyDraftGate()
+    for _ in range(5):
+        gate.observe(is_copy_draft=False, committed=1, round_ms=67.0)
+
+    # Climb the ladder on blocks the target consumes end to end.
+    while gate.width_cap(31) < 31:
+        width = gate.width_cap(31)
+        gate.observe(
+            is_copy_draft=True,
+            committed=width + 1,
+            round_ms=70.0 + 9.0 * width,
+            accepted=width,
+            proposed=width,
+        )
+    assert gate.width_cap(31) == 31
+
+    # The match runs out: 3 of 31 rows accepted. That is the first actual
+    # measurement of this turn's match length, so it is the whole estimate.
+    gate.observe(
+        is_copy_draft=True, committed=4, round_ms=342.0, accepted=3, proposed=31
+    )
+    narrowed = gate.width_cap(31)
+    assert narrowed == 5, narrowed
+    # Below the free band, so the next verify is a cheap one rather than
+    # another full-tile block bought on a decaying average.
+    assert narrowed < COPY_DRAFT_FREE_WIDTH_FLOOR
+
+
+def test_copy_draft_width_needs_a_filled_tile_to_buy_the_next_one():
+    """Headroom above a short block stays inside that block's own tile.
+
+    Rows inside a tile the verify already pays for are free, which is why the
+    sizer hands back the whole tile once the evidence lands in the free band.
+    The first row of the *next* tile is not free -- it doubles the verify --
+    and 1.5x of a measured acceptance can land there on its own: a block that
+    accepted 21 of 31 measured a match that ended inside the first tile, and
+    1.5x of 21 is 32. Crossing an edge is earned by filling the tile below
+    it, never by extrapolating past it.
+    """
+    from vllm_mlx.spec_decode.mtp.prompt_lookup import (
+        COPY_DRAFT_TILE_ROWS,
+        CopyDraftGate,
+    )
+
+    gate = CopyDraftGate()
+    for _ in range(5):
+        gate.observe(is_copy_draft=False, committed=1, round_ms=67.0)
+    while gate.width_cap(64) < 31:
+        width = gate.width_cap(64)
+        gate.observe(
+            is_copy_draft=True,
+            committed=width + 1,
+            round_ms=70.0 + 9.0 * width,
+            accepted=width,
+            proposed=width,
+        )
+
+    # A long match that still ends inside the first tile, three times over so
+    # the average settles on it rather than on the ladder it came from.
+    for _ in range(3):
+        gate.observe(
+            is_copy_draft=True, committed=22, round_ms=342.0, accepted=21, proposed=31
+        )
+    held = gate.width_cap(64)
+    assert held == COPY_DRAFT_TILE_ROWS - 1, held
+
+    # Now a block that does fill the tile. That is the evidence the second
+    # tile was missing, and the width crosses on the next proposal.
+    gate.observe(
+        is_copy_draft=True, committed=32, round_ms=342.0, accepted=31, proposed=31
+    )
+    assert gate.width_cap(64) == 2 * COPY_DRAFT_TILE_ROWS - 1
+
+
+def test_copy_draft_width_never_pays_for_a_tile_it_cannot_fill():
+    """No ceiling, edge-aligned or not, can make the sizer buy a part tile.
+
+    The widths the sizer chooses are tile edges, but the ceiling it is
+    offered is an operator's number and need not be one. A ceiling of 32
+    bounds the request at a 33 row verify -- two tiles for one row past the
+    edge, very nearly double the wall time of the 31 row block it beats by a
+    single token. So the invariant is stated over every ceiling a caller can
+    pass, not over the family default: a returned width either ends exactly
+    at a tile edge or fits inside the first tile, where the rows are already
+    paid for.
+    """
+    from vllm_mlx.spec_decode.mtp.prompt_lookup import (
+        COPY_DRAFT_TILE_ROWS,
+        CopyDraftGate,
+    )
+
+    for ceiling in range(2, 4 * COPY_DRAFT_TILE_ROWS + 2):
+        gate = CopyDraftGate()
+        for _ in range(5):
+            gate.observe(is_copy_draft=False, committed=1, round_ms=67.0)
+        # Climb until the ladder stops moving: whatever width the ceiling
+        # settles the sizer on, it has to be one the verify fills.
+        seen = []
+        for _ in range(12):
+            width = gate.width_cap(ceiling)
+            seen.append(width)
+            assert width <= ceiling, (ceiling, width)
+            assert (
+                width < COPY_DRAFT_TILE_ROWS or (width + 1) % COPY_DRAFT_TILE_ROWS == 0
+            ), (ceiling, width, seen)
+            gate.observe(
+                is_copy_draft=True,
+                committed=width + 1,
+                round_ms=70.0 + 9.0 * width,
+                accepted=width,
+                proposed=width,
+            )
+
+    # And the step-down is a step down, not a collapse: a ceiling one row
+    # past the first edge settles on that edge rather than on a probe.
+    gate = CopyDraftGate()
+    for _ in range(5):
+        gate.observe(is_copy_draft=False, committed=1, round_ms=67.0)
+    for _ in range(12):
+        width = gate.width_cap(COPY_DRAFT_TILE_ROWS)
+        gate.observe(
+            is_copy_draft=True,
+            committed=width + 1,
+            round_ms=70.0 + 9.0 * width,
+            accepted=width,
+            proposed=width,
+        )
+    assert gate.width_cap(COPY_DRAFT_TILE_ROWS) == COPY_DRAFT_TILE_ROWS - 1
+
+
+def test_copy_draft_width_cap_never_collapses_below_a_usable_block():
+    """A run of fully rejected copies must not size the next block to zero
+    rows: whether copying is worth anything at all is the gate's call, and
+    the gate can still refuse."""
+    from vllm_mlx.spec_decode.mtp.prompt_lookup import (
+        COPY_DRAFT_MIN_WIDTH,
+        CopyDraftGate,
+    )
+
+    gate = CopyDraftGate()
+    for _ in range(10):
+        gate.observe(
+            is_copy_draft=True, committed=1, round_ms=342.0, accepted=0, proposed=2
+        )
+
+    assert gate.width_cap(31) == COPY_DRAFT_MIN_WIDTH
+    assert COPY_DRAFT_MIN_WIDTH >= 2
+
+
+def test_copy_draft_width_cap_never_exceeds_what_the_match_offers():
+    """The ceiling is the match, and the floor never reaches past it.
+
+    ``COPY_DRAFT_MIN_WIDTH`` exists so a run of rejections cannot size the
+    next block to zero rows. It must not turn a one-row match into a
+    two-row request: the caller slices the match by whatever comes back, so
+    a width past the end of the match is a width that claims rows nobody
+    found."""
+    from vllm_mlx.spec_decode.mtp.prompt_lookup import (
+        COPY_DRAFT_MIN_WIDTH,
+        CopyDraftGate,
+    )
+
+    gate = CopyDraftGate()
+    for _ in range(10):
+        gate.observe(
+            is_copy_draft=True, committed=1, round_ms=342.0, accepted=0, proposed=2
+        )
+
+    # Past the probe stage, where the estimate alone would floor at 2.
+    assert gate.width_cap(31) == COPY_DRAFT_MIN_WIDTH
+    for ceiling in range(1, 6):
+        assert gate.width_cap(ceiling) <= ceiling
+
+
+def test_generator_sizes_copy_drafts_through_the_gate(monkeypatch):
+    """The sizer is on the proposal path, not just available to it."""
+    import vllm_mlx.spec_decode.mtp.generator as generator_mod
+    from vllm_mlx.spec_decode.mtp.accept_counter import MTPAcceptCounter
+    from vllm_mlx.spec_decode.mtp.generator import mtp_generate_step
+    from vllm_mlx.spec_decode.mtp.prompt_lookup import CopyDraftGate
+
+    monkeypatch.setenv("RAPID_MLX_MTP_PROMPT_LOOKUP", "1")
+    monkeypatch.setenv("RAPID_MLX_MTP_PROMPT_LOOKUP_MIN_NGRAM", "2")
+    monkeypatch.setenv("RAPID_MLX_MTP_PROMPT_LOOKUP_MAX_NGRAM", "2")
+    monkeypatch.setenv("RAPID_MLX_MTP_PROMPT_LOOKUP_MAX_TOKENS", "2")
+    monkeypatch.setattr(
+        generator_mod, "_safe_prompt_lookup_draft_count", lambda _c, n, **_kw: n
+    )
+
+    asked: list[int] = []
+    monkeypatch.setattr(
+        CopyDraftGate,
+        "width_cap",
+        lambda _self, proposed: (asked.append(proposed), 1)[1],
+    )
+
+    # The sizer can only adapt on what the generator tells it afterwards, and
+    # a round that forgot to report its width would leave every unit test
+    # above green while adaptive sizing quietly stopped working. So record
+    # the feedback too, not just the request.
+    fed: list[tuple[int, int]] = []
+    real_observe = CopyDraftGate.observe
+
+    def recording_observe(self, *, is_copy_draft, committed, round_ms, **kw):
+        if is_copy_draft:
+            fed.append((kw.get("accepted", -1), kw.get("proposed", -1)))
+        return real_observe(
+            self,
+            is_copy_draft=is_copy_draft,
+            committed=committed,
+            round_ms=round_ms,
+            **kw,
+        )
+
+    monkeypatch.setattr(CopyDraftGate, "observe", recording_observe)
+
+    timing: dict[str, float] = {}
+    list(
+        mtp_generate_step(
+            mx.array([7, 8, 20, 21], dtype=mx.uint32),
+            _CacheAdvancingQwen35Model(
+                backbone_outputs=[0, 0, 0, 7, 8, 20, 21, 22],
+                mtp_outputs=[0, 0, 0, 99, 20, 21],
+            ),
+            max_tokens=3,
+            max_k=1,
+            disable_auto_k=True,
+            prompt_cache=[_CountingKVCache(), _CountingKVCache()],
+            accept_counter=MTPAcceptCounter(),
+            timing_stats=timing,
+        )
+    )
+
+    assert asked, "the sizer was never consulted"
+    assert timing["prompt_lookup_drafted_tokens"] == float(
+        timing["prompt_lookup_proposals"]
+    ), "a sizer answer of one row must draft exactly one row per proposal"
+
+    assert fed, "no copy-draft round reported back to the gate"
+    for accepted, proposed in fed:
+        # ``proposed`` is the width the round actually verified, which the
+        # mocked sizer pinned to one row -- not the ceiling the match offered.
+        assert proposed == 1, f"round verified 1 row but reported {proposed}"
+        # ``accepted`` is bounded by it: a row cannot be accepted twice, and
+        # a rejected block still has to say so rather than report nothing.
+        assert 0 <= accepted <= proposed, (
+            f"reported {accepted} accepted rows out of {proposed} verified"
+        )
+
+
+def test_family_injector_still_imports_without_mlx():
+    """``qwen3_5_inject`` must stay importable on a machine with no MLX.
+
+    Two test modules -- ``test_mtp_batched_family_capability`` and
+    ``test_mtp_self_contained_repo`` -- import it for pure AST and path
+    checks, and CI runs them on a hosted Linux lane where ``mlx`` is not
+    installed at all. A module-level import that reaches
+    ``spec_decode.mtp.generator`` (which imports ``mlx.core``) turns those
+    two files into collection errors on three Python versions. That is why
+    ``MAX_COPY_DRAFT_TOKENS`` lives in ``prompt_lookup``: the injector needs
+    the number, and this is the module that can hand it over without
+    dragging the array library in.
+
+    Run in a subprocess so blocking ``mlx`` cannot disturb this process's
+    already-imported modules.
+    """
+    import subprocess
+    import sys
+
+    program = textwrap.dedent(
+        """
+        import sys
+
+        class Blocker:
+            def find_spec(self, name, path=None, target=None):
+                if name == "mlx" or name.startswith("mlx."):
+                    raise ImportError("blocked: " + name)
+                return None
+
+        for name in [m for m in sys.modules if m.split(".")[0] in {"mlx", "vllm_mlx"}]:
+            del sys.modules[name]
+        sys.meta_path.insert(0, Blocker())
+
+        import vllm_mlx.spec_decode.mtp.qwen3_5_inject as inject
+        from vllm_mlx.spec_decode.mtp.prompt_lookup import MAX_COPY_DRAFT_TOKENS
+
+        assert MAX_COPY_DRAFT_TOKENS == 31, MAX_COPY_DRAFT_TOKENS
+        assert inject.MAX_COPY_DRAFT_TOKENS == MAX_COPY_DRAFT_TOKENS
+        print("ok")
+        """
+    )
+    done = subprocess.run(
+        [sys.executable, "-c", program], capture_output=True, text=True, timeout=120
+    )
+    assert done.returncode == 0, (
+        f"qwen3_5_inject no longer imports without MLX:\n{done.stdout}\n{done.stderr}"
+    )
+    assert done.stdout.strip().endswith("ok")
+
+
+def test_prompt_lookup_exports_everything_it_asks_callers_to_use():
+    """``__all__`` must name every public symbol the module actually offers.
+
+    The gate arrived as a module-level class with eight configuration
+    constants beside it, and the first version of that change left
+    ``__all__`` naming only the three original types. A wildcard import then
+    hands out a different surface than a direct one, and any generated API
+    inventory disagrees with what the generator and these tests import by
+    name. Pinning the two together means the next constant added here cannot
+    quietly fall out of the public list.
+    """
+    from vllm_mlx.spec_decode.mtp import prompt_lookup
+
+    # Defined here, not merely visible here: a name imported for internal use
+    # (``dataclass`` today) is not part of this module's surface. Modules are
+    # excluded explicitly because a module object carries no ``__module__``,
+    # so a future ``import bisect`` would otherwise read as public.
+    public = {
+        name
+        for name, value in vars(prompt_lookup).items()
+        if not name.startswith("_")
+        and not isinstance(value, types.ModuleType)
+        and getattr(value, "__module__", prompt_lookup.__name__)
+        == prompt_lookup.__name__
+    }
+    declared = set(prompt_lookup.__all__)
+    assert public - declared == set(), (
+        f"public but not exported: {sorted(public - declared)}"
+    )
+    assert declared - public == set(), (
+        f"exported but not defined here: {sorted(declared - public)}"
+    )

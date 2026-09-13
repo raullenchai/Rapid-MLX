@@ -53,7 +53,10 @@ from pathlib import Path
 from types import MappingProxyType
 from typing import Any
 
-from vllm_mlx.spec_decode.mtp.prompt_lookup import PromptLookupPolicy
+from vllm_mlx.spec_decode.mtp.prompt_lookup import (
+    MAX_COPY_DRAFT_TOKENS,
+    PromptLookupPolicy,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -979,11 +982,25 @@ def inject_mtp_support(
         # rows are the cheap part of the round, while prose (where almost
         # every proposal misses) stays inside noise. Editing tasks, which
         # is what a copy-draft exists for, gain a third to a half.
+        #
+        # max_tokens is ``prompt_lookup.MAX_COPY_DRAFT_TOKENS``: the widest
+        # proposal whose N+1 row verify still fits one 32-row
+        # ``quantized_matmul`` tile. Rows 13..32 cost within 3% of each
+        # other on this model, so anything below 31 pays a 32-row price and
+        # then throws the surplus rows away; row 33 costs 89% more. Raising
+        # this to 31 and letting ``CopyDraftGate`` widen each block from a
+        # two-row probe towards what the turn is actually accepting is
+        # worth, against lookup off, +5.0% / +22.6% / +46.6% wall on the
+        # three editing tasks and +0.4% on prose -- three reps per cell
+        # with off and on interleaved. The two copy-rich tasks hold their
+        # gain in every rep (spreads of 1.3% and 0.1%); the annotate and
+        # prose cells are host-noise dominated and move inside their own
+        # spread, worst single rep -3.1%.
         mtp_prompt_lookup_policy = PromptLookupPolicy(
             enabled_by_default=True,
             min_ngram=8,
             max_ngram=64,
-            max_tokens=16,
+            max_tokens=MAX_COPY_DRAFT_TOKENS,
         )
         batched_mtp_capability = BATCHED_MTP_CAPABILITY
         mtp_recursive_draft_depth = 2
