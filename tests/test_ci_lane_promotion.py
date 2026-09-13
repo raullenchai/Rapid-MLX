@@ -148,7 +148,13 @@ def _execute_promotion(
         check=True,
         env=os.environ | env | {"GITHUB_OUTPUT": str(output)},
     )
-    return output.read_text().strip()
+    full_gate = [
+        line
+        for line in output.read_text().splitlines()
+        if line.startswith("full_gate=")
+    ]
+    assert len(full_gate) == 1
+    return full_gate[0]
 
 
 def test_fork_cannot_claim_train_branch_promotion(tmp_path):

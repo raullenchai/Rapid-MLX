@@ -1,0 +1,72 @@
+# Trusted bridge between a Mergify candidate and the identical tree later
+# written to main. `workflow_run` loads this definition from the default branch;
+# never check out or execute the candidate in this privileged workflow.
+name: Queue tree attestation
+
+on:
+  workflow_run:
+    workflows: [rapid-mac CI]
+    types: [completed]
+
+permissions:
+  actions: read
+  contents: read
+  statuses: write
+
+concurrency:
+  group: queue-tree-attestation-${{ github.event.workflow_run.head_sha }}
+  cancel-in-progress: false
+
+jobs:
+  attest:
+    if: github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check out trusted default-branch verifier
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          # workflow_run's github.sha is the immutable default-branch commit
+          # whose trusted workflow definition is executing.
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      - name: Join exact candidate evidence
+        id: evidence
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          python scripts/queue_tree_evidence.py \
+            --repo "$GITHUB_REPOSITORY" \
+            create \
+            --source-run-id "${{ github.event.workflow_run.id }}" \
+            --attestation-run-id "$GITHUB_RUN_ID" \
+            --trusted-ref "$GITHUB_SHA" \
+            --manifest apps/rapid-mac/Tests/GUIGoldenFlows/journeys.yaml \
+            --output "$RUNNER_TEMP/queue-tree-evidence/evidence.json"
+
+      - name: Upload immutable evidence
+        if: steps.evidence.outputs.created == 'true'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        with:
+          name: queue-tree-evidence-${{ steps.evidence.outputs.candidate_sha }}
+          path: ${{ runner.temp }}/queue-tree-evidence/evidence.json
+          if-no-files-found: error
+          retention-days: 7
+
+      # Publish only after the artifact exists. The status is merely an index;
+      # consumers authenticate the target workflow_run and revalidate the
+      # artifact plus every source run/job before reusing it.
+      - name: Index attestation on candidate commit
+        if: steps.evidence.outputs.created == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CANDIDATE_SHA: ${{ steps.evidence.outputs.candidate_sha }}
+        run: |
+          gh api \
+            --method POST \
+            "repos/${GITHUB_REPOSITORY}/statuses/${CANDIDATE_SHA}" \
+            -f state=success \
+            -f context=queue-tree-evidence/mac \
+            -f description='Full candidate CI is reusable by this exact Git tree' \
+            -f target_url="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"

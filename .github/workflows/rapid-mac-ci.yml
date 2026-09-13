@@ -52,7 +52,84 @@ env:
   RAPID_MLX_TELEMETRY: "0"
 
 jobs:
+  # A successful Mergify candidate and the resulting squash commit have
+  # different commit SHAs but, by construction, the same Git tree. Reuse the
+  # candidate's authenticated full-Mac evidence on the final main push. Any
+  # missing, stale, malformed, or non-identical evidence becomes a cache miss
+  # and the ordinary full gate runs unchanged.
+  queue-tree-evidence:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      actions: read
+      contents: read
+    outputs:
+      reuse_mac: ${{ steps.validate.outputs.reuse || 'false' }}
+      candidate_sha: ${{ steps.discover.outputs.candidate_sha }}
+      attestation_run_id: ${{ steps.discover.outputs.attestation_run_id }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Discover identical-tree candidate
+        id: discover
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if [ "$GITHUB_EVENT_NAME" != push ] || [ "$GITHUB_REF" != refs/heads/main ]; then
+            echo 'found=false' >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          python scripts/queue_tree_evidence.py \
+            --repo "$GITHUB_REPOSITORY" \
+            discover --main-sha "$GITHUB_SHA" --wait-seconds 60
+
+      - name: Download trusted evidence artifact
+        if: steps.discover.outputs.found == 'true'
+        continue-on-error: true
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
+        with:
+          name: ${{ steps.discover.outputs.artifact_name }}
+          path: ${{ runner.temp }}/queue-tree-evidence
+          repository: ${{ github.repository }}
+          run-id: ${{ steps.discover.outputs.attestation_run_id }}
+          github-token: ${{ github.token }}
+
+      - name: Revalidate source runs and jobs
+        id: validate
+        if: always() && steps.discover.outputs.found == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          python scripts/queue_tree_evidence.py \
+            --repo "$GITHUB_REPOSITORY" \
+            validate \
+            --main-sha "$GITHUB_SHA" \
+            --candidate-sha "${{ steps.discover.outputs.candidate_sha }}" \
+            --candidate-tree "${{ steps.discover.outputs.candidate_tree }}" \
+            --attestation-run-id "${{ steps.discover.outputs.attestation_run_id }}" \
+            --mac-run-id "${{ steps.discover.outputs.mac_run_id }}" \
+            --evidence "$RUNNER_TEMP/queue-tree-evidence/evidence.json" \
+            --manifest apps/rapid-mac/Tests/GUIGoldenFlows/journeys.yaml
+
+      - name: Explain validation route
+        env:
+          REUSE_MAC: ${{ steps.validate.outputs.reuse || 'false' }}
+          CANDIDATE_SHA: ${{ steps.discover.outputs.candidate_sha }}
+          ATTESTATION_RUN_ID: ${{ steps.discover.outputs.attestation_run_id }}
+        run: |
+          if [ "$REUSE_MAC" = true ]; then
+            echo "Reusing full Mac evidence from candidate ${CANDIDATE_SHA} (attestation run ${ATTESTATION_RUN_ID})."
+          else
+            echo "No authoritative identical-tree evidence; run the ordinary full Mac gate."
+          fi
+
   changes:
+    needs: queue-tree-evidence
+    # Evidence lookup is an optimization, never a prerequisite. Even a job
+    # timeout or runner outage must route to the ordinary full gate.
+    if: always()
     runs-on: ubuntu-latest
     outputs:
       desktop: ${{ steps.policy.outputs.desktop }}
@@ -93,14 +170,26 @@ jobs:
             python scripts/classify_ci_changes.py \
               --paths-file /tmp/changed-paths \
               --github-output "$GITHUB_OUTPUT"
-            python scripts/select_gui_flows.py \
-              --paths-file /tmp/changed-paths \
-              --github-output "$GITHUB_OUTPUT"
             full_gate=false
+            is_mergify=false
             if [ "$HEAD_REPO" = "$REPO" ] && \
               { [[ "$HEAD_REF" == train/* ]] || \
                 [[ "$HEAD_REF" =~ ^mergify/merge-queue/[0-9a-f]{10}$ ]]; }; then
               full_gate=true
+            fi
+            if [ "$HEAD_REPO" = "$REPO" ] && \
+              [[ "$HEAD_REF" =~ ^mergify/merge-queue/[0-9a-f]{10}$ ]]; then
+              is_mergify=true
+            fi
+            if [ "$is_mergify" = true ]; then
+              # A reusable integration proof must cover the same complete GUI
+              # inventory that a main push would run, not only the source PR
+              # path-selected subset.
+              python3 scripts/select_gui_flows.py --github-output "$GITHUB_OUTPUT"
+            else
+              python scripts/select_gui_flows.py \
+                --paths-file /tmp/changed-paths \
+                --github-output "$GITHUB_OUTPUT"
             fi
             echo "full_gate=$full_gate" >> "$GITHUB_OUTPUT"
           fi
@@ -236,8 +325,12 @@ jobs:
             -q
 
   build:
-    needs: changes
-    if: needs.changes.outputs.desktop == 'true'
+    needs: [queue-tree-evidence, changes]
+    if: >-
+      always() &&
+      needs.changes.result == 'success' &&
+      needs.changes.outputs.desktop == 'true' &&
+      needs.queue-tree-evidence.outputs.reuse_mac != 'true'
     # Manzanita's pinned image provides macOS Sequoia, Xcode 16.4, and Swift
     # 6.1.2, matching Package.swift's Swift 6 toolchain requirement.
     runs-on: manzanita-standard
@@ -314,10 +407,13 @@ jobs:
   # next step (parallel journey shards) cheap without trusting a cache as test
   # evidence: the archive and its manifest are immutable outputs of this run.
   gui-app-build:
-    needs: changes
+    needs: [queue-tree-evidence, changes]
     if: >-
+      always() &&
+      needs.changes.result == 'success' &&
       needs.changes.outputs.desktop == 'true' &&
-      needs.changes.outputs.full_gate == 'true'
+      needs.changes.outputs.full_gate == 'true' &&
+      needs.queue-tree-evidence.outputs.reuse_mac != 'true'
     runs-on: macos-15
     timeout-minutes: 20
     defaults:
@@ -374,11 +470,16 @@ jobs:
   # preserves those properties, and the preflight below verifies them.
   gui-golden-flows:
     needs:
+      - queue-tree-evidence
       - changes
       - gui-app-build
     if: >-
+      always() &&
+      needs.changes.result == 'success' &&
+      needs.gui-app-build.result == 'success' &&
       needs.changes.outputs.desktop == 'true' &&
-      needs.changes.outputs.full_gate == 'true'
+      needs.changes.outputs.full_gate == 'true' &&
+      needs.queue-tree-evidence.outputs.reuse_mac != 'true'
     # Use the same pinned Swift 6 image as the build job.
     runs-on: manzanita-standard
     strategy:
@@ -777,6 +878,7 @@ jobs:
   # unlike workflow-level path filters. Ordinary PRs settle after the fast
   # Desktop lane; promoted and integration heads add the GUI golden-flow gate.
     needs:
+      - queue-tree-evidence
       - changes
       - accessibility-identifiers
       - accessibility-identifier-tests
@@ -797,6 +899,9 @@ jobs:
           BUILD: ${{ needs.build.result }}
           GUI_APP_BUILD: ${{ needs.gui-app-build.result }}
           GOLDEN_FLOWS: ${{ needs.gui-golden-flows.result }}
+          REUSE_MAC: ${{ needs.queue-tree-evidence.outputs.reuse_mac }}
+          EVIDENCE_CANDIDATE: ${{ needs.queue-tree-evidence.outputs.candidate_sha }}
+          EVIDENCE_RUN: ${{ needs.queue-tree-evidence.outputs.attestation_run_id }}
         run: |
           set -euo pipefail
           if [ "${{ needs.changes.result }}" != success ]; then
@@ -807,12 +912,24 @@ jobs:
             echo "Desktop lane not required for this PR"
             exit 0
           fi
-          for result in "$IDENTIFIERS" "$IDENTIFIER_TESTS" "$HARNESS_CONTRACTS" "$BUILD"; do
+          for result in "$IDENTIFIERS" "$IDENTIFIER_TESTS" "$HARNESS_CONTRACTS"; do
             if [ "$result" != success ]; then
               echo "A desktop PR gate failed: $result"
               exit 1
             fi
           done
+          if [ "$REUSE_MAC" = true ]; then
+            if [ "$BUILD" != skipped ] || [ "$GUI_APP_BUILD" != skipped ] || [ "$GOLDEN_FLOWS" != skipped ]; then
+              echo "Identical-tree reuse unexpectedly allocated a Mac lane"
+              exit 1
+            fi
+            echo "Full Mac gate reused from candidate $EVIDENCE_CANDIDATE (attestation run $EVIDENCE_RUN)"
+            exit 0
+          fi
+          if [ "$BUILD" != success ]; then
+            echo "Desktop build/test gate failed: $BUILD"
+            exit 1
+          fi
           if [ "$FULL_GATE" = true ]; then
             if [ "$GUI_APP_BUILD" != success ]; then
               echo "GUI app artifact build failed: $GUI_APP_BUILD"
