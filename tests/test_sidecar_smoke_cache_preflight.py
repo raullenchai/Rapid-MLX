@@ -122,9 +122,10 @@ def test_present_but_unreadable_file_fails_closed(
     pins = _MODULE.load_pins(_MANIFEST)
     for repository, revision, _ in pins.values():
         _populate(tmp_path, repository, revision)
-    blocked = _MODULE.snapshot_path(
-        tmp_path, pins["qwen"][0], pins["qwen"][1]
-    ) / "config.json"
+    blocked = (
+        _MODULE.snapshot_path(tmp_path, pins["qwen"][0], pins["qwen"][1])
+        / "config.json"
+    )
     original_probe = _MODULE.file_is_readable
     monkeypatch.setattr(
         _MODULE,
