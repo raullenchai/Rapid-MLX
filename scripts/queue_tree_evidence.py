@@ -25,11 +25,17 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-SCHEMA = "rapid-mlx/queue-tree-evidence/v1"
-MAC_CONTEXT = "queue-tree-evidence/mac"
+SCHEMAS = {
+    "mac": "rapid-mlx/queue-tree-evidence/mac/v1",
+    "ci": "rapid-mlx/queue-tree-evidence/ci/v1",
+}
+CONTEXTS = {scope: f"queue-tree-evidence/{scope}" for scope in SCHEMAS}
+MAC_CONTEXT = CONTEXTS["mac"]
 ATTESTATION_WORKFLOW = ".github/workflows/queue-tree-attestation.yml"
 MAC_WORKFLOW = "rapid-mac-ci.yml"
 MAC_WORKFLOW_PATH = f".github/workflows/{MAC_WORKFLOW}"
+CI_WORKFLOW = "ci.yml"
+CI_WORKFLOW_PATH = f".github/workflows/{CI_WORKFLOW}"
 CANDIDATE_RE = re.compile(r"^mergify/merge-queue/[0-9a-f]{10}$")
 SHA_RE = re.compile(r"^[0-9a-f]{40}$")
 RUN_URL_RE = re.compile(
@@ -42,6 +48,15 @@ MAC_CONTROL_PATHS = (
     "scripts/select_gui_flows.py",
     "apps/rapid-mac/Tests/GUIGoldenFlows/journeys.yaml",
 )
+CI_CONTROL_PATHS = (
+    ATTESTATION_WORKFLOW,
+    CI_WORKFLOW_PATH,
+    "scripts/queue_tree_evidence.py",
+    "scripts/classify_ci_changes.py",
+)
+WORKFLOWS = {"mac": MAC_WORKFLOW, "ci": CI_WORKFLOW}
+WORKFLOW_PATHS = {"mac": MAC_WORKFLOW_PATH, "ci": CI_WORKFLOW_PATH}
+CONTROL_PATHS = {"mac": MAC_CONTROL_PATHS, "ci": CI_CONTROL_PATHS}
 REQUIRED_MAC_JOBS = (
     "changes",
     "accessibility-identifiers",
@@ -51,6 +66,21 @@ REQUIRED_MAC_JOBS = (
     "gui-app-build",
     "desktop-tests",
 )
+REQUIRED_CI_JOBS = (
+    "changes",
+    "lint",
+    "merge-lane-mac",
+    "engine-contracts",
+    "mlx-bound-guard",
+    "type-check",
+    "test-apple-silicon",
+    "changed-lines-coverage",
+    "tests",
+)
+REQUIRED_CI_MATRIX_PREFIXES = {
+    "test-matrix (": 3,
+    "l1-smoke (": 5,
+}
 
 
 class EvidenceError(RuntimeError):
@@ -264,6 +294,27 @@ def _validate_mac_jobs(
     return selected
 
 
+def _validate_ci_jobs(
+    client: GitHubClient, run: dict[str, Any]
+) -> list[dict[str, Any]]:
+    jobs = _successful_jobs(client, run)
+    selected = [_require_unique_success(jobs, name) for name in REQUIRED_CI_JOBS]
+    for prefix, expected_count in REQUIRED_CI_MATRIX_PREFIXES.items():
+        matches = [job for job in jobs if str(job.get("name", "")).startswith(prefix)]
+        if len(matches) != expected_count:
+            raise EvidenceError(
+                f"expected {expected_count} successful jobs beginning {prefix!r}; "
+                f"found {len(matches)}"
+            )
+        if any(
+            job.get("status") != "completed" or job.get("conclusion") != "success"
+            for job in matches
+        ):
+            raise EvidenceError(f"CI matrix {prefix!r} did not fully succeed")
+        selected.extend(matches)
+    return selected
+
+
 def _run_summary(run: dict[str, Any], jobs: list[dict[str, Any]]) -> dict[str, Any]:
     return {
         "id": _field(run, "id", int),
@@ -283,11 +334,14 @@ def _run_summary(run: dict[str, Any], jobs: list[dict[str, Any]]) -> dict[str, A
 
 def create_evidence(
     client: GitHubClient,
+    scope: str,
     source_run_id: int,
     attestation_run_id: int,
     trusted_ref: str,
     manifest: Path,
 ) -> dict[str, Any]:
+    if scope not in SCHEMAS:
+        raise EvidenceError(f"unknown evidence scope: {scope!r}")
     _require_sha(trusted_ref)
     source = client.json(f"repos/{client.repo}/actions/runs/{source_run_id}")
     if not isinstance(source, dict):
@@ -299,8 +353,8 @@ def create_evidence(
         raise EvidenceError("source is not an exact Mergify candidate branch")
     if source.get("event") != "pull_request" or source.get("conclusion") != "success":
         raise EvidenceError("source candidate run is not a successful pull_request run")
-    if source.get("path") != MAC_WORKFLOW_PATH:
-        raise EvidenceError("source run is not the attested Mac CI workflow")
+    if source.get("path") != WORKFLOW_PATHS[scope]:
+        raise EvidenceError(f"source run is not the attested {scope} workflow")
     head_repo = source.get("head_repository")
     if not isinstance(head_repo, dict) or head_repo.get("full_name") != client.repo:
         raise EvidenceError("source candidate did not run from this repository")
@@ -329,41 +383,46 @@ def create_evidence(
             "candidate identity did not resolve to one trusted queue PR"
         )
 
+    control_paths = CONTROL_PATHS[scope]
     changed_controls = [
         path
-        for path in MAC_CONTROL_PATHS
+        for path in control_paths
         if _path_blob(client, sha, path) != _path_blob(client, trusted_ref, path)
     ]
     if changed_controls:
         raise EvidenceError(
-            "candidate changes its own Mac evidence controls: "
+            f"candidate changes its own {scope} evidence controls: "
             + ", ".join(changed_controls)
         )
 
-    mac_run = _latest_authoritative_run(client, MAC_WORKFLOW, sha, branch)
-    mac_jobs = _validate_mac_jobs(client, mac_run, _manifest_groups(manifest))
+    source_run = _latest_authoritative_run(client, WORKFLOWS[scope], sha, branch)
+    source_jobs = (
+        _validate_mac_jobs(client, source_run, _manifest_groups(manifest))
+        if scope == "mac"
+        else _validate_ci_jobs(client, source_run)
+    )
     return {
-        "schema": SCHEMA,
+        "schema": SCHEMAS[scope],
+        "scope": scope,
         "repository": client.repo,
         "candidate_sha": sha,
         "candidate_ref": branch,
         "candidate_tree": _tree_sha(client, sha),
         "candidate_pr": _field(matches[0], "number", int),
         "attestation_run_id": attestation_run_id,
-        "mac_controls": {
-            path: _path_blob(client, sha, path) for path in MAC_CONTROL_PATHS
-        },
-        "sources": {"mac": _run_summary(mac_run, mac_jobs)},
+        "controls": {path: _path_blob(client, sha, path) for path in control_paths},
+        "source": _run_summary(source_run, source_jobs),
     }
 
 
 @dataclass(frozen=True)
 class Discovery:
+    scope: str
     candidate_sha: str
     candidate_tree: str
     attestation_run_id: int
     artifact_name: str
-    mac_run_id: int
+    source_run_id: int
 
 
 @dataclass(frozen=True)
@@ -372,23 +431,25 @@ class DiscoveryProbe:
     retryable: bool
 
 
-def _recent_mac_runs(client: GitHubClient) -> list[dict[str, Any]]:
+def _recent_runs(client: GitHubClient, scope: str) -> list[dict[str, Any]]:
+    if scope not in SCHEMAS:
+        raise EvidenceError(f"unknown evidence scope: {scope!r}")
     page = client.json(
-        f"repos/{client.repo}/actions/workflows/{MAC_WORKFLOW}/runs",
+        f"repos/{client.repo}/actions/workflows/{WORKFLOWS[scope]}/runs",
         "event=pull_request",
         "per_page=100",
     )
     if not isinstance(page, dict) or not isinstance(page.get("workflow_runs"), list):
-        raise EvidenceError("recent Mac runs API returned a malformed page")
+        raise EvidenceError(f"recent {scope} runs API returned a malformed page")
     return [run for run in page["workflow_runs"] if isinstance(run, dict)]
 
 
-def discover(client: GitHubClient, main_sha: str) -> DiscoveryProbe:
+def discover(client: GitHubClient, scope: str, main_sha: str) -> DiscoveryProbe:
     main_tree = _tree_sha(client, main_sha)
     candidates = sorted(
         (
             run
-            for run in _recent_mac_runs(client)
+            for run in _recent_runs(client, scope)
             if run.get("conclusion") != "cancelled"
             and run.get("head_sha") != main_sha
             and isinstance(run.get("head_sha"), str)
@@ -415,28 +476,41 @@ def discover(client: GitHubClient, main_sha: str) -> DiscoveryProbe:
                 isinstance(page, list) for page in status_pages
             ):
                 raise EvidenceError("commit statuses API returned malformed pages")
-            statuses = [status for page in status_pages for status in page]
-            saw_attestation_status = False
-            for status in statuses:
-                if not isinstance(status, dict):
-                    continue
-                if (
-                    status.get("context") != MAC_CONTEXT
-                    or status.get("state") != "success"
-                ):
-                    continue
-                saw_attestation_status = True
+            statuses = sorted(
+                (status for page in status_pages for status in page),
+                key=lambda status: (
+                    status.get("id", 0)
+                    if isinstance(status, dict) and type(status.get("id")) is int
+                    else 0
+                ),
+                reverse=True,
+            )
+            matching_statuses = [
+                status
+                for status in statuses
+                if isinstance(status, dict) and status.get("context") == CONTEXTS[scope]
+            ]
+            if matching_statuses:
+                # A commit-status context is a mutable decision stream. Only
+                # its newest record is authoritative: accepting an older
+                # success after a newer failure would resurrect revoked
+                # evidence. A pending record may still settle during this
+                # main-push job's bounded discovery window.
+                status = matching_statuses[0]
+                state = status.get("state")
+                if state != "success":
+                    return DiscoveryProbe(None, state == "pending")
                 target = status.get("target_url")
                 if not isinstance(target, str) or not (
                     match := RUN_URL_RE.fullmatch(target)
                 ):
-                    continue
+                    return DiscoveryProbe(None, False)
                 if match.group("repo") != client.repo:
-                    continue
+                    return DiscoveryProbe(None, False)
                 run_id = int(match.group("run_id"))
                 attestation = client.json(f"repos/{client.repo}/actions/runs/{run_id}")
                 if not isinstance(attestation, dict):
-                    continue
+                    return DiscoveryProbe(None, False)
                 if (
                     attestation.get("path") != ATTESTATION_WORKFLOW
                     or attestation.get("event") != "workflow_run"
@@ -444,13 +518,14 @@ def discover(client: GitHubClient, main_sha: str) -> DiscoveryProbe:
                     or attestation.get("conclusion") != "success"
                     or attestation.get("repository", {}).get("full_name") != client.repo
                 ):
-                    continue
+                    return DiscoveryProbe(None, False)
                 return DiscoveryProbe(
                     Discovery(
+                        scope,
                         candidate_sha,
                         main_tree,
                         run_id,
-                        f"queue-tree-evidence-{candidate_sha}",
+                        f"queue-tree-evidence-{scope}-{candidate_sha}",
                         _field(run, "id", int),
                     ),
                     False,
@@ -458,7 +533,7 @@ def discover(client: GitHubClient, main_sha: str) -> DiscoveryProbe:
             # The newest successful run for this identical tree is the only
             # relevant candidate. Its attestation may still be starting; do
             # not burn API quota walking unrelated historical runs each poll.
-            return DiscoveryProbe(None, not saw_attestation_status)
+            return DiscoveryProbe(None, True)
         except EvidenceError as exc:
             print(
                 f"warning: ignoring candidate {candidate_sha}: {exc}", file=sys.stderr
@@ -475,18 +550,20 @@ def validate_evidence(
 ) -> None:
     if set(evidence) != {
         "schema",
+        "scope",
         "repository",
         "candidate_sha",
         "candidate_ref",
         "candidate_tree",
         "candidate_pr",
         "attestation_run_id",
-        "mac_controls",
-        "sources",
+        "controls",
+        "source",
     }:
         raise EvidenceError("evidence has unexpected or missing top-level fields")
     if (
-        evidence.get("schema") != SCHEMA
+        evidence.get("schema") != SCHEMAS[discovery.scope]
+        or evidence.get("scope") != discovery.scope
         or evidence.get("repository") != client.repo
         or evidence.get("candidate_sha") != discovery.candidate_sha
         or evidence.get("candidate_tree") != discovery.candidate_tree
@@ -498,63 +575,67 @@ def validate_evidence(
     if not isinstance(branch, str) or not CANDIDATE_RE.fullmatch(branch):
         raise EvidenceError("evidence contains an invalid candidate branch")
 
-    controls = evidence.get("mac_controls")
-    if not isinstance(controls, dict) or set(controls) != set(MAC_CONTROL_PATHS):
-        raise EvidenceError("evidence contains malformed Mac control identities")
-    for path in MAC_CONTROL_PATHS:
+    control_paths = CONTROL_PATHS[discovery.scope]
+    controls = evidence.get("controls")
+    if not isinstance(controls, dict) or set(controls) != set(control_paths):
+        raise EvidenceError(
+            f"evidence contains malformed {discovery.scope} control identities"
+        )
+    for path in control_paths:
         if controls[path] != _path_blob(client, main_sha, path):
-            raise EvidenceError(f"Mac control file changed after attestation: {path}")
-
-    sources = evidence.get("sources")
-    if not isinstance(sources, dict) or set(sources) != {"mac"}:
-        raise EvidenceError("evidence contains malformed source runs")
-    for key, path in (("mac", MAC_WORKFLOW_PATH),):
-        summary = sources[key]
-        if not isinstance(summary, dict):
-            raise EvidenceError(f"evidence source {key!r} is malformed")
-        run_id = summary.get("id")
-        if type(run_id) is not int:
-            raise EvidenceError(f"evidence source {key!r} has invalid run id")
-        if run_id != discovery.mac_run_id:
             raise EvidenceError(
-                "attested Mac run is not the latest non-cancelled candidate run"
+                f"{discovery.scope} control file changed after attestation: {path}"
             )
-        run = client.json(f"repos/{client.repo}/actions/runs/{run_id}")
-        if not isinstance(run, dict):
-            raise EvidenceError(f"source run {run_id} is malformed")
-        if (
-            run.get("path") != path
-            or run.get("head_sha") != discovery.candidate_sha
-            or run.get("head_branch") != branch
-            or run.get("event") != "pull_request"
-            or run.get("status") != "completed"
-            or run.get("conclusion") != "success"
-            or run.get("run_attempt") != summary.get("attempt")
-            or run.get("html_url") != summary.get("url")
-            or run.get("head_repository", {}).get("full_name") != client.repo
-        ):
-            raise EvidenceError(f"source run {run_id} no longer matches evidence")
-        current_jobs = _validate_mac_jobs(client, run, _manifest_groups(manifest))
-        recorded_jobs = summary.get("jobs")
-        if not isinstance(recorded_jobs, list):
-            raise EvidenceError(f"source run {run_id} has malformed recorded jobs")
-        for job in recorded_jobs:
-            if not isinstance(job, dict) or set(job) != {"id", "name", "conclusion"}:
-                raise EvidenceError(f"source run {run_id} has malformed recorded job")
-            _field(job, "id", int)
-            _field(job, "name", str)
-            _field(job, "conclusion", str)
-        current = sorted(
-            (job.get("id"), job.get("name"), job.get("conclusion"))
-            for job in current_jobs
+
+    summary = evidence.get("source")
+    if not isinstance(summary, dict):
+        raise EvidenceError("evidence source run is malformed")
+    run_id = summary.get("id")
+    if type(run_id) is not int:
+        raise EvidenceError("evidence source has invalid run id")
+    if run_id != discovery.source_run_id:
+        raise EvidenceError(
+            f"attested {discovery.scope} run is not the latest candidate run"
         )
-        recorded = sorted(
-            (job.get("id"), job.get("name"), job.get("conclusion"))
-            for job in recorded_jobs
-            if isinstance(job, dict)
-        )
-        if current != recorded:
-            raise EvidenceError(f"source run {run_id} jobs changed after attestation")
+    run = client.json(f"repos/{client.repo}/actions/runs/{run_id}")
+    if not isinstance(run, dict):
+        raise EvidenceError(f"source run {run_id} is malformed")
+    if (
+        run.get("path") != WORKFLOW_PATHS[discovery.scope]
+        or run.get("head_sha") != discovery.candidate_sha
+        or run.get("head_branch") != branch
+        or run.get("event") != "pull_request"
+        or run.get("status") != "completed"
+        or run.get("conclusion") != "success"
+        or run.get("run_attempt") != summary.get("attempt")
+        or run.get("html_url") != summary.get("url")
+        or run.get("head_repository", {}).get("full_name") != client.repo
+    ):
+        raise EvidenceError(f"source run {run_id} no longer matches evidence")
+    current_jobs = (
+        _validate_mac_jobs(client, run, _manifest_groups(manifest))
+        if discovery.scope == "mac"
+        else _validate_ci_jobs(client, run)
+    )
+    recorded_jobs = summary.get("jobs")
+    if not isinstance(recorded_jobs, list):
+        raise EvidenceError(f"source run {run_id} has malformed recorded jobs")
+    for job in recorded_jobs:
+        if not isinstance(job, dict) or set(job) != {"id", "name", "conclusion"}:
+            raise EvidenceError(f"source run {run_id} has malformed recorded job")
+        _field(job, "id", int)
+        _field(job, "name", str)
+        _field(job, "conclusion", str)
+    current = sorted(
+        (job.get("id"), job.get("name"), job.get("conclusion")) for job in current_jobs
+    )
+    recorded = sorted(
+        (job.get("id"), job.get("name"), job.get("conclusion"))
+        for job in recorded_jobs
+        if isinstance(job, dict)
+    )
+    if current != recorded:
+        raise EvidenceError(f"source run {run_id} jobs changed after attestation")
 
 
 def _write_output(**values: str | int | bool) -> None:
@@ -576,6 +657,7 @@ def _parser() -> argparse.ArgumentParser:
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     create = subparsers.add_parser("create")
+    create.add_argument("--scope", choices=sorted(SCHEMAS), required=True)
     create.add_argument("--source-run-id", type=int, required=True)
     create.add_argument("--attestation-run-id", type=int, required=True)
     create.add_argument("--trusted-ref", required=True)
@@ -583,15 +665,17 @@ def _parser() -> argparse.ArgumentParser:
     create.add_argument("--output", type=Path, required=True)
 
     find = subparsers.add_parser("discover")
+    find.add_argument("--scope", choices=sorted(SCHEMAS), required=True)
     find.add_argument("--main-sha", required=True)
     find.add_argument("--wait-seconds", type=int, default=0)
 
     validate = subparsers.add_parser("validate")
+    validate.add_argument("--scope", choices=sorted(SCHEMAS), required=True)
     validate.add_argument("--main-sha", required=True)
     validate.add_argument("--candidate-sha", required=True)
     validate.add_argument("--candidate-tree", required=True)
     validate.add_argument("--attestation-run-id", type=int, required=True)
-    validate.add_argument("--mac-run-id", type=int, required=True)
+    validate.add_argument("--source-run-id", type=int, required=True)
     validate.add_argument("--evidence", type=Path, required=True)
     validate.add_argument("--manifest", type=Path, required=True)
     return parser
@@ -606,6 +690,7 @@ def main() -> int:
         if args.command == "create":
             evidence = create_evidence(
                 client,
+                args.scope,
                 args.source_run_id,
                 args.attestation_run_id,
                 args.trusted_ref,
@@ -615,13 +700,18 @@ def main() -> int:
             args.output.write_text(
                 json.dumps(evidence, indent=2, sort_keys=True) + "\n"
             )
-            _write_output(created=True, candidate_sha=evidence["candidate_sha"])
+            _write_output(
+                created=True,
+                scope=args.scope,
+                candidate_sha=evidence["candidate_sha"],
+                artifact_name=f"queue-tree-evidence-{args.scope}-{evidence['candidate_sha']}",
+            )
             return 0
         if args.command == "discover":
             _require_sha(args.main_sha)
             deadline = time.monotonic() + args.wait_seconds
             while True:
-                probe = discover(client, args.main_sha)
+                probe = discover(client, args.scope, args.main_sha)
                 found = probe.evidence
                 if found is not None:
                     _write_output(
@@ -630,7 +720,7 @@ def main() -> int:
                         candidate_tree=found.candidate_tree,
                         attestation_run_id=found.attestation_run_id,
                         artifact_name=found.artifact_name,
-                        mac_run_id=found.mac_run_id,
+                        source_run_id=found.source_run_id,
                     )
                     return 0
                 if not probe.retryable or time.monotonic() >= deadline:
@@ -648,11 +738,12 @@ def main() -> int:
             if not isinstance(payload, dict):
                 raise EvidenceError("evidence artifact is not an object")
             discovery = Discovery(
+                args.scope,
                 args.candidate_sha,
                 args.candidate_tree,
                 args.attestation_run_id,
-                f"queue-tree-evidence-{args.candidate_sha}",
-                args.mac_run_id,
+                f"queue-tree-evidence-{args.scope}-{args.candidate_sha}",
+                args.source_run_id,
             )
             validate_evidence(client, args.main_sha, discovery, payload, args.manifest)
             _write_output(reuse=True)

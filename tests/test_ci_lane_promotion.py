@@ -31,6 +31,11 @@ def _job(workflow: Path, job: str) -> dict[str, object]:
     return yaml.safe_load(workflow.read_text())["jobs"][job]
 
 
+def _condition(workflow: Path, job: str) -> str:
+    """Normalize a folded YAML condition without weakening its operators."""
+    return " ".join(str(_job(workflow, job)["if"]).split())
+
+
 def _explicit_pytest_nodes(command: str) -> list[str] | None:
     """Return explicit test nodes, rejecting an unrecognised pytest launcher."""
     tokens = shlex.split(command)
@@ -369,13 +374,20 @@ def test_engine_jobs_follow_fail_closed_engine_classification():
     for job_name in ("engine-contracts", "type-check"):
         job = _job(ENGINE_WORKFLOW, job_name)
         assert job["needs"] == "changes"
-        assert str(job["if"]) == "needs.changes.outputs.engine == 'true'"
+        assert _condition(ENGINE_WORKFLOW, job_name) == (
+            "always() && needs.changes.result == 'success' && "
+            "needs.changes.outputs.engine == 'true' && "
+            "needs.changes.outputs.reuse_ci != 'true'"
+        )
 
     bound_guard = _job(ENGINE_WORKFLOW, "mlx-bound-guard")
     assert bound_guard["needs"] == "changes"
-    condition = str(bound_guard["if"])
-    assert "github.event_name == 'pull_request'" in condition
-    assert "needs.changes.outputs.engine == 'true'" in condition
+    assert _condition(ENGINE_WORKFLOW, "mlx-bound-guard") == (
+        "always() && needs.changes.result == 'success' && "
+        "github.event_name == 'pull_request' && "
+        "needs.changes.outputs.engine == 'true' && "
+        "needs.changes.outputs.reuse_ci != 'true'"
+    )
 
 
 def test_type_check_enforces_shrink_only_error_budget():

@@ -58,11 +58,13 @@ jobs:
   # missing, stale, malformed, or non-identical evidence becomes a cache miss
   # and the ordinary full gate runs unchanged.
   queue-tree-evidence:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
       actions: read
       contents: read
+      statuses: read
     outputs:
       reuse_mac: ${{ steps.validate.outputs.reuse || 'false' }}
       candidate_sha: ${{ steps.discover.outputs.candidate_sha }}
@@ -83,7 +85,7 @@ jobs:
           fi
           python scripts/queue_tree_evidence.py \
             --repo "$GITHUB_REPOSITORY" \
-            discover --main-sha "$GITHUB_SHA" --wait-seconds 60
+            discover --scope mac --main-sha "$GITHUB_SHA" --wait-seconds 60
 
       - name: Download trusted evidence artifact
         if: steps.discover.outputs.found == 'true'
@@ -105,11 +107,12 @@ jobs:
           python scripts/queue_tree_evidence.py \
             --repo "$GITHUB_REPOSITORY" \
             validate \
+            --scope mac \
             --main-sha "$GITHUB_SHA" \
             --candidate-sha "${{ steps.discover.outputs.candidate_sha }}" \
             --candidate-tree "${{ steps.discover.outputs.candidate_tree }}" \
             --attestation-run-id "${{ steps.discover.outputs.attestation_run_id }}" \
-            --mac-run-id "${{ steps.discover.outputs.mac_run_id }}" \
+            --source-run-id "${{ steps.discover.outputs.source_run_id }}" \
             --evidence "$RUNNER_TEMP/queue-tree-evidence/evidence.json" \
             --manifest apps/rapid-mac/Tests/GUIGoldenFlows/journeys.yaml
 
@@ -200,7 +203,10 @@ jobs:
   # own log instead of hiding at the bottom of a compile job.
   accessibility-identifiers:
     needs: changes
-    if: needs.changes.outputs.desktop == 'true'
+    if: >-
+      always() &&
+      needs.changes.result == 'success' &&
+      needs.changes.outputs.desktop == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -244,7 +250,10 @@ jobs:
   # network at all.
   accessibility-identifier-tests:
     needs: changes
-    if: needs.changes.outputs.desktop == 'true'
+    if: >-
+      always() &&
+      needs.changes.result == 'success' &&
+      needs.changes.outputs.desktop == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -283,7 +292,10 @@ jobs:
   #     disguised as a product defect.
   gui-harness-contracts:
     needs: changes
-    if: needs.changes.outputs.desktop == 'true'
+    if: >-
+      always() &&
+      needs.changes.result == 'success' &&
+      needs.changes.outputs.desktop == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:

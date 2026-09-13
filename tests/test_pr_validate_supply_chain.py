@@ -27,14 +27,18 @@ from scripts.pr_validate.steps.supply_chain import (
     _roster_only_workflows,
 )
 
-# HEAD content of the real workflow roster, read from the working tree. The
-# fixtures below are line-tuned to it (roster spans 432-487), so the pure
-# parser tests validate against the same ground truth the step reads at run
-# time. If the roster ever moves, these tests fail loudly and the fixtures
-# must be re-synced.
+# HEAD content of the real workflow roster, read from the working tree. Build
+# the fixture hunk line from its stable anchor so unrelated workflow sections
+# can move without turning this parser contract red.
 _REPO = Path(__file__).resolve().parents[1]
+_WORKFLOW_TEXT = (_REPO / ".github/workflows/ci.yml").read_text()
+_ROSTER_ANCHOR = next(
+    lineno
+    for lineno, line in enumerate(_WORKFLOW_TEXT.splitlines(), start=1)
+    if line.strip() == "tests/test_mllm_hybrid_probe.py \\"
+)
 _WORKFLOW_HEAD = {
-    ".github/workflows/ci.yml": (_REPO / ".github/workflows/ci.yml").read_text(),
+    ".github/workflows/ci.yml": _WORKFLOW_TEXT,
 }
 
 # The test file an external "I added a test" PR enrolls.
@@ -62,7 +66,7 @@ _ROSTER_ONLY_DIFF = f"""\
 index 1111111..2222222 100644
 --- a/.github/workflows/ci.yml
 +++ b/.github/workflows/ci.yml
-@@ -441 +441,2 @@
+@@ -{_ROSTER_ANCHOR} +{_ROSTER_ANCHOR},2 @@
              tests/test_mllm_hybrid_probe.py \\
 +            {_ENROLLED} \\
 """
@@ -77,7 +81,7 @@ index 1111111..2222222 100644
 @@ -80 +80 @@
 -            runs-on: ubuntu-latest
 +            runs-on: macos-14
-@@ -441 +441,2 @@
+@@ -{_ROSTER_ANCHOR} +{_ROSTER_ANCHOR},2 @@
              tests/test_mllm_hybrid_probe.py \\
 +            {_ENROLLED} \\
 """
@@ -105,7 +109,7 @@ index 1111111..2222222 100644
 +++ b/.github/workflows/ci.yml
 @@ -8 +8,0 @@
 --- --quiet-node
-@@ -441 +442,2 @@
+@@ -{_ROSTER_ANCHOR} +{_ROSTER_ANCHOR + 1},2 @@
              tests/test_mllm_hybrid_probe.py \\
 +            {_ENROLLED} \\
 """
@@ -124,7 +128,7 @@ diff --git a/.github/workflows/ci.yml b/.github/workflows/ci.yml
 index 1111111..2222222 100644
 --- a/.github/workflows/ci.yml
 +++ b/.github/workflows/ci.yml
-@@ -441 +441,2 @@
+@@ -{_ROSTER_ANCHOR} +{_ROSTER_ANCHOR},2 @@
              tests/test_mllm_hybrid_probe.py \\
 +            tests/test_existing.py \\
 """
@@ -173,7 +177,7 @@ _HUNK_BOUNDARY_DIFF = f"""\
 index 1111111..2222222 100644
 --- a/.github/workflows/ci.yml
 +++ b/.github/workflows/ci.yml
-@@ -441 +441,2 @@
+@@ -{_ROSTER_ANCHOR} +{_ROSTER_ANCHOR},2 @@
              tests/test_mllm_hybrid_probe.py \\
 +            {_OTHER_NEW} \\
 @@ -1 +2,2 @@
@@ -203,7 +207,7 @@ old mode 100644
 index 1111111..2222222 100644
 --- a/.github/workflows/ci.yml
 +++ b/.github/workflows/ci.yml
-@@ -441 +441,2 @@
+@@ -{_ROSTER_ANCHOR} +{_ROSTER_ANCHOR},2 @@
              tests/test_mllm_hybrid_probe.py \\
 +            {_ENROLLED} \\
 """
@@ -218,7 +222,7 @@ rename to .github/workflows/renamed.yml
 index 1111111..2222222 100644
 --- a/.github/workflows/ci.yml
 +++ b/.github/workflows/renamed.yml
-@@ -441 +441,2 @@
+@@ -{_ROSTER_ANCHOR} +{_ROSTER_ANCHOR},2 @@
              tests/test_mllm_hybrid_probe.py \\
 +            {_ENROLLED} \\
 """

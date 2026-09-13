@@ -5,7 +5,7 @@ name: Queue tree attestation
 
 on:
   workflow_run:
-    workflows: [rapid-mac CI]
+    workflows: [rapid-mac CI, CI]
     types: [completed]
 
 permissions:
@@ -35,10 +35,17 @@ jobs:
         id: evidence
         env:
           GH_TOKEN: ${{ github.token }}
+          SOURCE_WORKFLOW: ${{ github.event.workflow_run.name }}
         run: |
+          case "$SOURCE_WORKFLOW" in
+            "rapid-mac CI") scope=mac ;;
+            "CI") scope=ci ;;
+            *) echo "Unsupported source workflow: $SOURCE_WORKFLOW" >&2; exit 1 ;;
+          esac
           python scripts/queue_tree_evidence.py \
             --repo "$GITHUB_REPOSITORY" \
             create \
+            --scope "$scope" \
             --source-run-id "${{ github.event.workflow_run.id }}" \
             --attestation-run-id "$GITHUB_RUN_ID" \
             --trusted-ref "$GITHUB_SHA" \
@@ -49,7 +56,7 @@ jobs:
         if: steps.evidence.outputs.created == 'true'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
         with:
-          name: queue-tree-evidence-${{ steps.evidence.outputs.candidate_sha }}
+          name: ${{ steps.evidence.outputs.artifact_name }}
           path: ${{ runner.temp }}/queue-tree-evidence/evidence.json
           if-no-files-found: error
           retention-days: 7
@@ -62,11 +69,12 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           CANDIDATE_SHA: ${{ steps.evidence.outputs.candidate_sha }}
+          EVIDENCE_SCOPE: ${{ steps.evidence.outputs.scope }}
         run: |
           gh api \
             --method POST \
             "repos/${GITHUB_REPOSITORY}/statuses/${CANDIDATE_SHA}" \
             -f state=success \
-            -f context=queue-tree-evidence/mac \
-            -f description='Full candidate CI is reusable by this exact Git tree' \
+            -f context="queue-tree-evidence/${EVIDENCE_SCOPE}" \
+            -f description="Full candidate ${EVIDENCE_SCOPE} CI is reusable by this exact Git tree" \
             -f target_url="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
