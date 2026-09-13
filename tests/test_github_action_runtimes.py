@@ -6,9 +6,13 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
+import pytest
+
 ROOT = Path(__file__).resolve().parents[1]
 WORKFLOWS = ROOT / ".github" / "workflows"
-USES_RE = re.compile(r"uses:\s*(actions/[\w-]+)@([0-9a-f]{40})")
+# Capture every ref first. Restricting the regex to a SHA would make a mutable
+# tag invisible and could let another valid occurrence satisfy ``seen``.
+USES_RE = re.compile(r"uses:\s*(actions/[\w-]+)@([^\s#]+)")
 
 # These immutable SHAs were verified against the official action manifests;
 # each declares ``runs.using: node24``.  Updating one is an explicit dependency
@@ -21,17 +25,38 @@ NODE24_ACTIONS = {
 }
 
 
+def assert_reviewed_node24_refs(path: Path, text: str, seen: set[str]) -> None:
+    for action, ref in USES_RE.findall(text):
+        expected = NODE24_ACTIONS.get(action)
+        if expected is None:
+            continue
+        seen.add(action)
+        assert ref == expected, (
+            f"{path} uses unreviewed {action}@{ref}; "
+            f"expected reviewed Node 24 pin {expected}"
+        )
+
+
 def test_reviewed_node24_action_pins_are_used_consistently() -> None:
     seen: set[str] = set()
     for path in sorted(WORKFLOWS.glob("*.y*ml")):
-        for action, sha in USES_RE.findall(path.read_text()):
-            expected = NODE24_ACTIONS.get(action)
-            if expected is None:
-                continue
-            seen.add(action)
-            assert sha == expected, (
-                f"{path.relative_to(ROOT)} uses unreviewed {action}@{sha}; "
-                f"expected reviewed Node 24 pin {expected}"
-            )
+        assert_reviewed_node24_refs(path.relative_to(ROOT), path.read_text(), seen)
 
     assert seen == set(NODE24_ACTIONS)
+
+
+@pytest.mark.parametrize(
+    "ref",
+    (
+        "v7",
+        "043FB46D1A93C77AAE656E7C1C64A875D1FC6A0A",
+        "043fb46d1a93c77aae656e7c1c64a875d1fc6a0",
+    ),
+)
+def test_mutable_or_malformed_targeted_action_ref_fails(ref: str) -> None:
+    with pytest.raises(AssertionError, match="uses unreviewed actions/upload-artifact"):
+        assert_reviewed_node24_refs(
+            Path("workflow.yml"),
+            f"- uses: actions/upload-artifact@{ref}",
+            set(),
+        )
