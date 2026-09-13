@@ -334,9 +334,10 @@ def test_fresh_install_settles_transcript_before_structural_baseline():
     assert 'die "Jump to latest did not physically settle' in helper
 
     banner = fresh_install.index("wait_identifier TelemetryConsent.PostValueBanner")
+    idle = fresh_install.index('wait_send_idle "$OUT/post-value-consent-complete.json"')
     settle = fresh_install.index("settle_transcript_at_bottom")
     baseline = fresh_install.index("baseline fresh-install.post-value-consent")
-    assert banner < settle < baseline
+    assert banner < idle < settle < baseline
 
 
 def test_transcript_settler_waits_for_physical_scroll_stability(tmp_path):

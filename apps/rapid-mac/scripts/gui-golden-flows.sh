@@ -2079,6 +2079,13 @@ flow_fresh_install() {
     start_model
     send_prompt "Say hello in one short sentence." "post-value-consent"
     wait_identifier TelemetryConsent.PostValueBanner "$OUT/post-value-consent-visible.json"
+    # The first reply can expose its final text and the consent banner before
+    # the streaming task releases model residency.  A structural baseline
+    # taken in that interval records the transient disabled Unload control and
+    # flakes according to scheduler speed.  Prove the send state is idle, then
+    # recapture the still-visible invitation before comparing the steady UI.
+    wait_send_idle "$OUT/post-value-consent-complete.json"
+    wait_identifier TelemetryConsent.PostValueBanner "$OUT/post-value-consent-visible.json"
     # Streaming completion and scroll anchoring settle independently. Capture
     # the structural baseline only after the transcript reaches its stable tail.
     settle_transcript_at_bottom "$OUT/post-value-consent-visible.json" \

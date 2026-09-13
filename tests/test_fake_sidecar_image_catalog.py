@@ -15,8 +15,10 @@ Stdlib + bash only, so it runs on the Linux CI lane that never sees a Mac.
 
 import json
 import os
+import signal
 import socket
 import subprocess
+import sys
 import time
 import urllib.request
 from pathlib import Path
@@ -28,6 +30,70 @@ FAKE = ROOT / "apps/rapid-mac/scripts/fake-rapid-mlx.sh"
 GOLDEN_FLOWS = ROOT / "apps/rapid-mac/scripts/gui-golden-flows.sh"
 IMAGE_TAGS = {"[image:gen]", "[image:edit]", "[image:both]"}
 FIXTURE_IMAGE_TAG = "[image:both]"
+
+
+def test_serve_retires_when_desktop_supervisor_exits(tmp_path):
+    """A failed UI test must not leave a listener that poisons the next run."""
+    with socket.socket() as reservation:
+        reservation.bind(("127.0.0.1", 0))
+        port = reservation.getsockname()[1]
+
+    launcher_code = """
+import os, subprocess, sys
+fake, port = sys.argv[1:]
+env = dict(os.environ, RAPID_MLX_WATCHDOG_PPID=str(os.getpid()))
+child = subprocess.Popen(
+    [fake, "serve", "fake-image-alias", "--host", "127.0.0.1", "--port", port],
+    env=env,
+    stdout=subprocess.DEVNULL,
+    stderr=subprocess.DEVNULL,
+    start_new_session=True,
+)
+print(child.pid, flush=True)
+sys.stdin.buffer.read(1)
+"""
+    launcher = subprocess.Popen(
+        [sys.executable, "-c", launcher_code, str(FAKE), str(port)],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    assert launcher.stdout is not None
+    child_pid = int(launcher.stdout.readline().strip())
+    try:
+        deadline = time.monotonic() + 10
+        while time.monotonic() < deadline:
+            try:
+                with socket.create_connection(("127.0.0.1", port), timeout=0.2):
+                    break
+            except OSError:
+                if launcher.poll() is not None:
+                    pytest.fail("supervisor exited before the fake sidecar served")
+                time.sleep(0.05)
+        else:
+            pytest.fail("fake sidecar did not serve before supervisor retirement")
+
+        assert launcher.stdin is not None
+        launcher.stdin.close()
+        launcher.wait(timeout=5)
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline:
+            try:
+                os.kill(child_pid, 0)
+            except ProcessLookupError:
+                break
+            time.sleep(0.05)
+        else:
+            pytest.fail("fake sidecar survived its recorded Desktop supervisor")
+    finally:
+        if launcher.poll() is None:
+            launcher.terminate()
+            launcher.wait(timeout=5)
+        try:
+            os.kill(child_pid, signal.SIGTERM)
+        except ProcessLookupError:
+            pass
 
 
 # --- Mirrors of the Swift gates, byte-for-byte ---------------------------
