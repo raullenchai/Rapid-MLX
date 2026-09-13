@@ -50,15 +50,33 @@ child = subprocess.Popen(
     start_new_session=True,
 )
 print(child.pid, flush=True)
+sys.stdin.buffer.read(1)
 """
-    launcher = subprocess.run(
+    launcher = subprocess.Popen(
         [sys.executable, "-c", launcher_code, str(FAKE), str(port)],
-        capture_output=True,
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
         text=True,
-        check=True,
     )
-    child_pid = int(launcher.stdout.strip())
+    assert launcher.stdout is not None
+    child_pid = int(launcher.stdout.readline().strip())
     try:
+        deadline = time.monotonic() + 10
+        while time.monotonic() < deadline:
+            try:
+                with socket.create_connection(("127.0.0.1", port), timeout=0.2):
+                    break
+            except OSError:
+                if launcher.poll() is not None:
+                    pytest.fail("supervisor exited before the fake sidecar served")
+                time.sleep(0.05)
+        else:
+            pytest.fail("fake sidecar did not serve before supervisor retirement")
+
+        assert launcher.stdin is not None
+        launcher.stdin.close()
+        launcher.wait(timeout=5)
         deadline = time.monotonic() + 5
         while time.monotonic() < deadline:
             try:
@@ -69,6 +87,9 @@ print(child.pid, flush=True)
         else:
             pytest.fail("fake sidecar survived its recorded Desktop supervisor")
     finally:
+        if launcher.poll() is None:
+            launcher.terminate()
+            launcher.wait(timeout=5)
         try:
             os.kill(child_pid, signal.SIGTERM)
         except ProcessLookupError:
