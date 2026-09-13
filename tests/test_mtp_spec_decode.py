@@ -1836,6 +1836,105 @@ def test_inject_mtp_support_loads_synthetic_sidecar():
             )
 
 
+def _write_synthetic_sidecar(model, tmp_dir, contract=None):
+    """Persist ``model``'s freshly built MTP head as a loadable sidecar.
+
+    Returns the sidecar path. ``contract``, when given, is written beside
+    it as the ``mtp_contract`` of an ``mtplx_runtime.json`` manifest so the
+    test can pin a non-default runtime contract.
+    """
+    import json
+    from pathlib import Path
+
+    import mlx.core as _mx
+    from mlx.utils import tree_flatten
+
+    from vllm_mlx.spec_decode.mtp.head import build_mtp_module
+
+    args = model.args
+    template = build_mtp_module(args, int(args.mtp_num_hidden_layers))
+    _mx.eval(template.parameters())
+    sidecar = Path(tmp_dir) / "mtp.safetensors"
+    _mx.save_safetensors(str(sidecar), dict(tree_flatten(template.parameters())))
+    if contract is not None:
+        (Path(tmp_dir) / "mtplx_runtime.json").write_text(
+            json.dumps({"mtp_contract": contract}), encoding="utf-8"
+        )
+    return sidecar
+
+
+def test_return_hidden_hands_the_drafter_the_tensor_the_lm_head_scored():
+    """Default contract: the drafter sees the backbone's FINAL hidden state.
+
+    A Qwen3-Next-style MTP head is trained on whatever the target's own
+    output head consumes -- post-norm for this family (``TextModel.__call__``
+    ends in ``self.norm(...)``; vLLM's ``qwen3_next_mtp.py`` feeds
+    ``pre_fc_norm_hidden`` the same post-norm tensor its ``compute_logits``
+    scores). Handing the head the pre-norm hidden instead is silent: it
+    still drafts fluent tokens, they are just accepted less often, so no
+    functional test catches it -- only this identity does.
+    """
+    import mlx.core as _mx
+
+    from vllm_mlx.spec_decode.mtp.qwen3_5_inject import inject_mtp_support
+
+    try:
+        model = _build_tiny_qwen3_5_text_model()
+    except (TypeError, AttributeError) as exc:
+        pytest.skip(f"Qwen3.5 TextModelArgs schema mismatch: {exc}")
+
+    assert model.args.tie_word_embeddings is False, (
+        "this assertion re-scores through ``lm_head``; a tied checkpoint "
+        "would score through ``embed_tokens.as_linear`` instead"
+    )
+    assert inject_mtp_support(model, allow_random_init=True) is True
+
+    logits, hidden = model(_mx.array([[3, 7, 11]]), return_hidden=True)
+    _mx.eval(logits, hidden)
+
+    assert _mx.allclose(model.lm_head(hidden), logits, atol=1e-4, rtol=1e-4), (
+        "return_hidden must yield the tensor lm_head just scored; "
+        "re-scoring it through the same head has to reproduce the logits"
+    )
+
+
+def test_mtplx_manifest_can_still_pin_the_pre_norm_base_hidden():
+    """The escape hatch survives the default flip -- and proves it bites.
+
+    An artifact exported against the pre-norm hidden pins
+    ``base_hidden_variant`` in its manifest. Asserting BOTH that the
+    pinned hidden reproduces the logits only after the backbone norm AND
+    that it does not reproduce them without one is what makes the default
+    test above discriminating rather than vacuous.
+    """
+    import tempfile
+
+    import mlx.core as _mx
+
+    from vllm_mlx.spec_decode.mtp.qwen3_5_inject import inject_mtp_support
+
+    try:
+        model = _build_tiny_qwen3_5_text_model()
+    except (TypeError, AttributeError) as exc:
+        pytest.skip(f"Qwen3.5 TextModelArgs schema mismatch: {exc}")
+
+    with tempfile.TemporaryDirectory() as tmp:
+        sidecar = _write_synthetic_sidecar(
+            model, tmp, contract={"base_hidden_variant": "pre_norm"}
+        )
+        assert inject_mtp_support(model, mtp_sidecar=str(sidecar)) is True
+
+        logits, hidden = model(_mx.array([[3, 7, 11]]), return_hidden=True)
+        _mx.eval(logits, hidden)
+
+        assert _mx.allclose(
+            model.lm_head(model.model.norm(hidden)), logits, atol=1e-4, rtol=1e-4
+        ), "a pinned pre_norm hidden must be exactly the input to the backbone norm"
+        assert not _mx.allclose(model.lm_head(hidden), logits, atol=1e-4, rtol=1e-4), (
+            "pre-norm and post-norm hidden must be distinguishable at the head"
+        )
+
+
 def test_inject_mtp_support_refuses_synthetic_sidecar_missing_tensor():
     """Coverage check: dropping one required tensor must fail the inject.
 
