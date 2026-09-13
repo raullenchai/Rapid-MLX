@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -121,20 +122,30 @@ def test_present_but_unreadable_file_fails_closed(
     pins = _MODULE.load_pins(_MANIFEST)
     for repository, revision, _ in pins.values():
         _populate(tmp_path, repository, revision)
-    blocked = (
-        _MODULE.snapshot_path(tmp_path, pins["qwen"][0], pins["qwen"][1])
-        / "config.json"
+    blocked = _MODULE.snapshot_path(
+        tmp_path, pins["qwen"][0], pins["qwen"][1]
+    ) / "config.json"
+    original_probe = _MODULE.file_is_readable
+    monkeypatch.setattr(
+        _MODULE,
+        "file_is_readable",
+        lambda path: False if path == blocked else original_probe(path),
     )
-    original_open = Path.open
-
-    def deny_blocked_file(self: Path, *args: object, **kwargs: object):
-        if self == blocked:
-            raise PermissionError("blocked by host privacy policy")
-        return original_open(self, *args, **kwargs)
-
-    monkeypatch.setattr(Path, "open", deny_blocked_file)
     missing = _MODULE.missing_pins(pins, tmp_path)
     assert missing == [(pins["qwen"][0], pins["qwen"][1], ("config.json",))]
+
+
+def test_readability_probe_times_out_instead_of_hanging(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    candidate = tmp_path / "config.json"
+    candidate.write_text("stub")
+
+    def timeout(*args: object, **kwargs: object):
+        raise subprocess.TimeoutExpired(cmd="probe", timeout=5)
+
+    monkeypatch.setattr(_MODULE.subprocess, "run", timeout)
+    assert _MODULE.file_is_readable(candidate) is False
 
 
 @pytest.mark.parametrize(
