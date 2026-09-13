@@ -1,6 +1,7 @@
 import os
 import shlex
 import subprocess
+import time
 from pathlib import Path
 
 import pytest
@@ -106,7 +107,7 @@ def test_swift_failure_terminates_parallel_sidecar_process_group(
     sidecar.write_text(
         "#!/bin/bash\n"
         "set -eu\n"
-        "(while :; do sleep 1; done) &\n"
+        "(trap '' TERM; while :; do sleep 1; done) &\n"
         f"echo $! > {quoted_child_pid}\n"
         "wait\n"
     )
@@ -139,6 +140,14 @@ def test_swift_failure_terminates_parallel_sidecar_process_group(
     )
 
     assert result.returncode == 47, result.stdout + result.stderr
+    assert "ignored SIGTERM; sending SIGKILL" in result.stderr
     pid = int(child_pid.read_text())
-    with pytest.raises(ProcessLookupError):
-        os.kill(pid, 0)
+    deadline = time.monotonic() + 2
+    while time.monotonic() < deadline:
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            break
+        time.sleep(0.02)
+    else:
+        pytest.fail(f"sidecar grandchild {pid} survived process-group cleanup")

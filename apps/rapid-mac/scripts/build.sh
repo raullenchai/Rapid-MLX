@@ -43,19 +43,32 @@ SIDECAR_STAGE="$ROOT/build/sidecar-stage"
 SIDECAR_CACHE_STAMP="$SIDECAR_STAGE/.rapid-sidecar-cache-key"
 PARALLEL_SIDECAR_BUILD="${PARALLEL_SIDECAR_BUILD:-0}"
 SIDECAR_BUILD_PID=""
+SIDECAR_BUILD_PGID=""
 SIDECAR_BUILD_LOG=""
 SIDECAR_BUILD_READY=""
 SIDECAR_BUILD_STARTED=0
 
+terminate_parallel_sidecar_group() {
+    local pgid="$1"
+    [[ -n "$pgid" ]] || return 0
+    kill -TERM -- "-$pgid" 2>/dev/null || true
+    for _ in {1..40}; do
+        kill -0 -- "-$pgid" 2>/dev/null || return 0
+        sleep 0.05
+    done
+    echo "warning: sidecar process group $pgid ignored SIGTERM; sending SIGKILL" >&2
+    kill -KILL -- "-$pgid" 2>/dev/null || true
+}
+
 cleanup_parallel_sidecar() {
     local status=$?
+    if [[ -n "$SIDECAR_BUILD_PGID" ]]; then
+        # The launcher creates a dedicated session whose id matches its pid.
+        # Terminate the entire group so pip/build subprocesses cannot outlive
+        # an early Swift/app failure on a persistent runner.
+        terminate_parallel_sidecar_group "$SIDECAR_BUILD_PGID"
+    fi
     if [[ -n "$SIDECAR_BUILD_PID" ]]; then
-        if kill -0 "$SIDECAR_BUILD_PID" 2>/dev/null; then
-            # The launcher creates a dedicated session whose id matches its
-            # pid. Terminate the entire group so pip/build subprocesses cannot
-            # outlive an early Swift/app failure on a persistent runner.
-            kill -TERM -- "-$SIDECAR_BUILD_PID" 2>/dev/null || true
-        fi
         wait "$SIDECAR_BUILD_PID" 2>/dev/null || true
         if [[ -f "$SIDECAR_BUILD_LOG" ]]; then
             echo "==> sidecar build log (app build exited before join)"
@@ -118,6 +131,7 @@ if [[ "$PARALLEL_SIDECAR_BUILD" == "1" \
         echo "ERR: parallel sidecar process group was not ready within 5 seconds" >&2
         exit 1
     fi
+    SIDECAR_BUILD_PGID="$SIDECAR_BUILD_PID"
 fi
 
 cd "$ROOT"
@@ -457,15 +471,26 @@ else
         fi
         SIDECAR_BUILD_SECONDS=$((SECONDS - SIDECAR_BUILD_STARTED))
         SIDECAR_JOIN_SECONDS=$((SECONDS - SIDECAR_JOIN_STARTED))
-        SIDECAR_BUILD_PID=""
         rm -f "$SIDECAR_BUILD_READY"
         SIDECAR_BUILD_READY=""
         cat "$SIDECAR_BUILD_LOG"
         rm -f "$SIDECAR_BUILD_LOG"
         if [[ "$SIDECAR_BUILD_STATUS" -ne 0 ]]; then
+            terminate_parallel_sidecar_group "$SIDECAR_BUILD_PGID"
+            SIDECAR_BUILD_PID=""
+            SIDECAR_BUILD_PGID=""
             echo "ERR: parallel rapid-mlx sidecar build failed ($SIDECAR_BUILD_STATUS)" >&2
             exit "$SIDECAR_BUILD_STATUS"
         fi
+        if kill -0 -- "-$SIDECAR_BUILD_PGID" 2>/dev/null; then
+            terminate_parallel_sidecar_group "$SIDECAR_BUILD_PGID"
+            SIDECAR_BUILD_PID=""
+            SIDECAR_BUILD_PGID=""
+            echo "ERR: parallel sidecar launcher exited with live descendants" >&2
+            exit 1
+        fi
+        SIDECAR_BUILD_PID=""
+        SIDECAR_BUILD_PGID=""
         echo "::notice::parallel build timing: Swift ${SWIFT_BUILD_SECONDS}s; sidecar ${SIDECAR_BUILD_SECONDS}s; join wait ${SIDECAR_JOIN_SECONDS}s"
     elif [[ "$SIDECAR_CACHE_HIT" == "1" ]]; then
         echo "==> reusing cached rapid-mlx sidecar (${SIDECAR_SOURCE_SHA:0:12})"
