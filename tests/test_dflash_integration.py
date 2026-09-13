@@ -136,6 +136,25 @@ def _dflash_cli_args(**overrides):
     return SimpleNamespace(**data)
 
 
+def _resolve_dflash_cors_policy(monkeypatch, server, origins):
+    """Resolve the shared policy without mutating the process-global app.
+
+    These tests exercise the separate DFlash application's policy handoff.
+    Registering middleware on ``vllm_mlx.server.app`` is outside that scope and
+    becomes illegal once any earlier test has started the shared FastAPI app.
+    """
+    from fastapi import FastAPI
+
+    # Exercise the real resolver + middleware registration against an isolated
+    # app. The module-level app may already have served a request elsewhere in
+    # this process and Starlette correctly forbids mutating it after startup.
+    monkeypatch.setattr(server, "app", FastAPI())
+    server.configure_cors_from_env(origins)
+    policy = server.get_resolved_cors_policy()
+    assert policy is not None
+    return policy
+
+
 def test_speculative_config_dflash_normalizes_to_legacy_server_flag() -> None:
     from vllm_mlx.cli import (
         _normalize_speculative_config_or_exit,
@@ -1373,9 +1392,9 @@ def test_dflash_inherits_explicit_cors_policy(monkeypatch) -> None:
     monkeypatch.setenv("RAPID_MLX_CORS_ALLOW_HEADERS", "Content-Type")
     monkeypatch.setenv("RAPID_MLX_CORS_MAX_AGE", "17")
     monkeypatch.setenv("RAPID_MLX_CORS_ALLOW_CREDENTIALS", "false")
-    server.configure_cors_from_env(["https://console.example"])
-    policy = server.get_resolved_cors_policy()
-    assert policy is not None
+    policy = _resolve_dflash_cors_policy(
+        monkeypatch, server, ["https://console.example"]
+    )
 
     app = _build_app(
         model=MagicMock(),
@@ -1418,9 +1437,7 @@ def test_dflash_cors_wildcard_forces_credentials_off(monkeypatch) -> None:
     from vllm_mlx.speculative.dflash.server import _build_app
 
     monkeypatch.setenv("RAPID_MLX_CORS_ALLOW_CREDENTIALS", "true")
-    server.configure_cors_from_env(["*"])
-    policy = server.get_resolved_cors_policy()
-    assert policy is not None
+    policy = _resolve_dflash_cors_policy(monkeypatch, server, ["*"])
     assert policy.allow_credentials is False
 
     app = _build_app(
@@ -1445,6 +1462,23 @@ def test_dflash_cors_wildcard_forces_credentials_off(monkeypatch) -> None:
     )
     assert response.headers["Access-Control-Allow-Origin"] == "*"
     assert "Access-Control-Allow-Credentials" not in response.headers
+
+
+def test_dflash_cors_policy_resolution_does_not_touch_started_main_app(
+    monkeypatch,
+) -> None:
+    """A prior global-app client must not make DFlash policy tests/order fail."""
+    from vllm_mlx import server
+
+    started_stack = object()
+    monkeypatch.setattr(server.app, "middleware_stack", started_stack)
+    started_app = server.app
+    policy = _resolve_dflash_cors_policy(
+        monkeypatch, server, ["https://console.example"]
+    )
+
+    assert policy.origins == ("https://console.example",)
+    assert started_app.middleware_stack is started_stack
 
 
 @pytest.mark.parametrize(
