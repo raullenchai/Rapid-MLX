@@ -92,7 +92,10 @@ one authorization label after review and PR validation have converged:
 The managed queue never mixes the two labels in one batch. It collects up to
 four candidates of the same class and validates their combined tree once. The
 no-Mac queue waits at most five minutes to favor latency; the Mac-required queue
-waits at most 15 minutes to amortize scarce macOS capacity.
+waits at most 15 minutes to amortize scarce macOS capacity. The two classes are
+independent scheduling scopes: one no-Mac batch may validate while one Mac
+batch is running, but the `mac-required` scope has capacity one, so scarce
+macOS work never multiplies. The global speculative-check ceiling is two.
 
 The Linux `changes` classifier publishes exactly one successful lane marker per
 head: `merge-lane-no-mac` for the false/false state, or `merge-lane-mac` for the
@@ -153,8 +156,12 @@ The queue contract lives in `.mergify.yml`:
   does not reset terminal queue state and must not be used as a substitute;
 - an exact-head authorization status in both queue conditions, preventing a
   newly pushed head from racing asynchronous label revocation;
-- serial mode with one batch in flight, so speculative checks cannot multiply
-  scarce macOS capacity;
+- parallel mode with a global ceiling of two and a `mac-required` scope capacity
+  of one, so no-Mac work can pass a slow Mac batch without multiplying scarce
+  macOS capacity;
+- documentation-only changes carry no scope; any non-documentation file assigns
+  `mac-required`, matching the label policy's fail-closed boundary. Queue and CI
+  routing files are global barriers and serialize the train while policy changes;
 - separate no-Mac and Mac-required queues, each with mutually exclusive
   authorization labels;
 - up to four pull requests per batch, with five-minute and 15-minute maximum
@@ -240,7 +247,10 @@ repository permission.
    `merge-ready` to both within the fill window and verify one temporary batch
    PR contains both exact heads, runs each affected full lane once, reports all
    three required checks, and squash-merges both originals in order.
-7. Confirm a fork branch named like a queue branch does not receive promoted
+7. Run one `merge-ready` candidate beside one `merge-ready-mac` candidate.
+   Verify both temporary batches become active, no more than two total checks
+   run, and no more than one batch carrying `mac-required` runs at once.
+8. Confirm a fork branch named like a queue branch does not receive promoted
    lanes. Then remove the applicable ready label from a queued test PR and
    verify it leaves the queue without merging.
 

@@ -1,8 +1,41 @@
 merge_queue:
-  mode: serial
-  max_parallel_checks: 1
+  mode: parallel
+  # One Mac batch may run beside one no-Mac batch. The per-scope capacity
+  # below keeps the scarce Mac lane serialized inside this global budget.
+  max_parallel_checks: 2
   skip_intermediate_results: false
   status_comments: outcomes
+
+# A PR has the ``mac-required`` scope when any changed file is not part of the
+# exact documentation-only allowlist used by scripts/classify_ci_changes.py.
+# Documentation-only PRs deliberately carry no scope, so they share no queue
+# dependency with the Mac lane. Mixed docs+product changes still match the
+# product file and therefore consume the Mac scope.
+scopes:
+  source:
+    files:
+      mac-required:
+        include:
+          - "*"
+          - "**/*"
+        exclude:
+          - docs/**/*
+          - README.md
+          - AGENTS.md
+          - CONTRIBUTING.md
+          - CODE_OF_CONDUCT.md
+          - SECURITY.md
+          - LICENSE
+  capacities:
+    mac-required: 1
+  # Queue/workflow routing changes affect every candidate and must serialize
+  # as a barrier rather than racing the policy they modify.
+  barrier_files:
+    include:
+      - .mergify.yml
+      - .github/**/*
+      - scripts/classify_ci_changes.py
+      - tests/test_classify_ci_changes.py
 
 merge_protections_settings:
   auto_merge_conditions:

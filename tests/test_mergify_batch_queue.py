@@ -7,6 +7,8 @@ from pathlib import Path
 
 import yaml
 
+from scripts.classify_ci_changes import _DOC_FILES, _DOC_ROOTS
+
 ROOT = Path(__file__).resolve().parent.parent
 CONFIG = ROOT / ".mergify.yml"
 REQUIRED_CHECKS = {
@@ -34,8 +36,8 @@ def test_queue_batches_four_ready_prs_after_a_bounded_wait():
     queue = config["merge_queue"]
     rules = _rules_by_name("queue_rules")
 
-    assert queue["mode"] == "serial"
-    assert queue["max_parallel_checks"] == 1
+    assert queue["mode"] == "parallel"
+    assert queue["max_parallel_checks"] == 2
     assert queue["skip_intermediate_results"] is False
     assert set(rules) == {"no-mac-batch", "mac-batch"}
     assert rules["no-mac-batch"]["batch_size"] == 4
@@ -43,6 +45,30 @@ def test_queue_batches_four_ready_prs_after_a_bounded_wait():
     assert rules["mac-batch"]["batch_size"] == 4
     assert rules["mac-batch"]["batch_max_wait_time"] == "15 min"
     assert {rule["checks_timeout"] for rule in rules.values()} == {"90 min"}
+
+
+def test_no_mac_and_mac_batches_have_independent_bounded_scopes():
+    scopes = _config()["scopes"]
+    files = scopes["source"]["files"]["mac-required"]
+
+    assert files["include"] == ["*", "**/*"]
+    assert set(files["exclude"]) == {
+        *(f"{root}/**/*" for root in _DOC_ROOTS),
+        *_DOC_FILES,
+    }
+    assert scopes["capacities"] == {"mac-required": 1}
+    assert "default_capacity" not in scopes
+
+
+def test_queue_policy_changes_are_global_barriers():
+    barrier = _config()["scopes"]["barrier_files"]
+
+    assert set(barrier["include"]) == {
+        ".mergify.yml",
+        ".github/**/*",
+        "scripts/classify_ci_changes.py",
+        "tests/test_classify_ci_changes.py",
+    }
 
 
 def test_queue_revalidates_every_required_check_on_the_combined_batch():
