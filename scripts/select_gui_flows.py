@@ -41,6 +41,22 @@ FULL_SUITE_PREFIXES = (
     "tests/test_gui_golden_ci_coverage.py",
 )
 
+# Relative scheduling weights from the most recent complete candidate run.
+# They are hints, not timeouts or coverage policy: selected manifest groups
+# remain atomic and are packed across the provider's two available slots.
+# Keeping the slow chat group first avoids the 5–8 minute tail caused when it
+# waits behind several short groups. A new group must receive an explicit
+# weight so capacity planning cannot silently degrade.
+GUI_GROUP_WEIGHTS = {
+    "chat": 480,
+    "onboarding-settings": 240,
+    "images": 200,
+    "audio": 175,
+    "app-lifecycle": 120,
+    "models": 100,
+}
+GUI_LANE_COUNT = 2
+
 
 def _manifest() -> list[dict[str, object]]:
     """Read the routing fields without adding a network dependency to CI.
@@ -98,7 +114,7 @@ def all_flows() -> list[str]:
 
 
 def shard_matrix(flows: Iterable[str]) -> dict[str, list[dict[str, object]]]:
-    """Partition selected flows by their manifest group for a CI matrix."""
+    """Pack selected manifest groups into duration-balanced CI lanes."""
 
     selected = set(flows)
     journeys = _pr_journeys()
@@ -112,16 +128,35 @@ def shard_matrix(flows: Iterable[str]) -> dict[str, list[dict[str, object]]]:
         if name in selected:
             groups.setdefault(str(journey["group"]), []).append(name)
 
-    return {
-        "include": [
-            {
-                "group": group,
-                "gui_flows": json.dumps(group_flows, separators=(",", ":")),
-                "flow_count": len(group_flows),
-            }
-            for group, group_flows in sorted(groups.items())
+    unknown_groups = sorted(set(groups) - set(GUI_GROUP_WEIGHTS))
+    if unknown_groups:
+        raise ValueError(
+            "GUI groups need explicit scheduling weights: " + ", ".join(unknown_groups)
+        )
+
+    lane_count = min(GUI_LANE_COUNT, len(groups))
+    lanes: list[list[str]] = [[] for _ in range(lane_count)]
+    lane_weights = [0] * lane_count
+    for group in sorted(groups, key=lambda name: (-GUI_GROUP_WEIGHTS[name], name)):
+        lane = min(range(lane_count), key=lambda index: (lane_weights[index], index))
+        lanes[lane].append(group)
+        lane_weights[lane] += GUI_GROUP_WEIGHTS[group]
+
+    include: list[dict[str, object]] = []
+    for lane_groups in lanes:
+        lane_flows = [
+            str(journey["name"])
+            for journey in journeys
+            if str(journey["name"]) in selected and str(journey["group"]) in lane_groups
         ]
-    }
+        include.append(
+            {
+                "group": "+".join(sorted(lane_groups)),
+                "gui_flows": json.dumps(lane_flows, separators=(",", ":")),
+                "flow_count": len(lane_flows),
+            }
+        )
+    return {"include": include}
 
 
 def _matches(path: str, declared: str) -> bool:

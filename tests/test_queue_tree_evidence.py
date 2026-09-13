@@ -198,6 +198,35 @@ def test_create_rejects_partial_gui_matrix(tmp_path: Path):
         evidence.create_evidence(client, "mac", 10, 30, TRUSTED, _manifest(tmp_path))
 
 
+def test_create_rejects_malformed_gui_bundle(tmp_path: Path):
+    client = _configured_client()
+    client.job_records[10][-1]["name"] = (
+        'gui-golden-flows (chat+unknown, ["first","second"], 2)'
+    )
+
+    with pytest.raises(evidence.EvidenceError, match="malformed group bundle"):
+        evidence.create_evidence(client, "mac", 10, 30, TRUSTED, _manifest(tmp_path))
+
+
+def test_create_rejects_more_than_two_gui_lanes(tmp_path: Path):
+    manifest = tmp_path / "journeys.yaml"
+    manifest.write_text(
+        "version: 1\njourneys:\n"
+        "  - name: first\n    group: chat\n"
+        "  - name: second\n    group: images\n"
+        "  - name: third\n    group: models\n"
+    )
+    client = _configured_client()
+    client.job_records[10][-2:] = [
+        _job(10, 200, 'gui-golden-flows (chat, ["first"], 1)'),
+        _job(10, 201, 'gui-golden-flows (images, ["second"], 1)'),
+        _job(10, 202, 'gui-golden-flows (models, ["third"], 1)'),
+    ]
+
+    with pytest.raises(evidence.EvidenceError, match="expected 2, found 3"):
+        evidence.create_evidence(client, "mac", 10, 30, TRUSTED, manifest)
+
+
 def test_create_rejects_partial_engine_matrix(tmp_path: Path):
     client = _configured_client()
     client.job_records[20] = [
