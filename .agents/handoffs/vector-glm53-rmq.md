@@ -2,7 +2,7 @@
 
 - Receiving role: Atlas
 - Branch: `vector/glm53-rmq-mvp`
-- PR: not opened yet
+- PR: #3372
 - Host: Studio (M3 Ultra, 256 GB)
 
 ## Verified
