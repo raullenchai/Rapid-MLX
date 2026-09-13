@@ -47,12 +47,12 @@ class QuantSpec:
         return self.bits is not None
 
     def as_config(self) -> dict[str, int | str]:
-        if not self.quantized:
+        if self.bits is None or self.group_size is None or self.mode is None:
             raise ValueError("floating-point tensors have no quantization config")
         return {
-            "bits": int(self.bits),
-            "group_size": int(self.group_size),
-            "mode": str(self.mode),
+            "bits": self.bits,
+            "group_size": self.group_size,
+            "mode": self.mode,
         }
 
 
@@ -260,10 +260,12 @@ def plan_tensors(
         domain = fusion_domain(tensor.name)
         spec = _base_spec(tensor, config)
         if spec.quantized:
+            assert spec.bits is not None
             score = _score_for(tensor.name, domain, sensitivity)
-            spec = _q(_raised_bits(int(spec.bits), score), spec.reason)
+            spec = _q(_raised_bits(spec.bits, score), spec.reason)
             if domain is not None:
-                domain_bits[domain] = max(domain_bits.get(domain, 0), int(spec.bits))
+                assert spec.bits is not None
+                domain_bits[domain] = max(domain_bits.get(domain, 0), spec.bits)
         provisional.append(TensorPlan(tensor, spec, domain))
 
     result: list[TensorPlan] = []
@@ -288,8 +290,9 @@ def projected_storage_bytes(plan: Sequence[TensorPlan]) -> int:
             bytes_per = 4 if item.tensor.dtype.upper() == "F32" else 2
             total += params * bytes_per
             continue
-        bits = int(item.spec.bits)
-        groups = params // int(item.spec.group_size)
+        assert item.spec.bits is not None and item.spec.group_size is not None
+        bits = item.spec.bits
+        groups = params // item.spec.group_size
         total += math.ceil(params * bits / 8) + groups * 4
     return total
 

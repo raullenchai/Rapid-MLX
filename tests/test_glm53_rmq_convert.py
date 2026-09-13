@@ -3,10 +3,11 @@ from __future__ import annotations
 import importlib.util
 from pathlib import Path
 
-import mlx.core as mx
 import pytest
 
 from vllm_mlx.quantization.glm53_rmq import TensorDescriptor
+
+mx = pytest.importorskip("mlx.core")
 
 
 def _converter_module():
