@@ -533,6 +533,7 @@ jobs:
           app_tag: rapid-mac-v${{ needs.detect.outputs.version }}
           signed: ${{ secrets.MACOS_DEVID_CERT_P12_BASE64 != '' && secrets.MACOS_DEVID_CERT_PASSWORD != '' && secrets.AC_API_KEY_P8_BASE64 != '' && secrets.AC_API_KEY_ID != '' && secrets.AC_API_ISSUER_ID != '' }}
           require_signed: 'true'
+          parallel_sidecar_build: 'true'
           # Build the canonical Sparkle bytes here too. The protected tagged
           # lane promotes this exact signed/notarised bundle; it never rebuilds.
           publish_sparkle: 'true'

@@ -276,6 +276,7 @@ jobs:
           # lane closed rather than degrading to ad-hoc and publishing. Only a
           # branch workflow_dispatch dry-run (is_tag=false) stays ad-hoc-capable.
           require_signed: ${{ steps.appmeta.outputs.is_tag == 'true' }}
+          parallel_sidecar_build: ${{ steps.appmeta.outputs.is_tag == 'true' }}
           # Sparkle (zip + appcast) is built ONLY on real tag runs. A branch
           # workflow_dispatch dry-run derives the version from the source plist,
           # builds/uploads the (possibly ad-hoc) DMG + manifest, and skips

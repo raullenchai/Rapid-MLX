@@ -73,8 +73,10 @@ def test_signed_release_overlaps_sidecar_with_swift_and_joins_before_staging() -
     )
 
     assert build_step["env"]["PARALLEL_SIDECAR_BUILD"] == (
-        "${{ inputs.signed == 'true' && '1' || '0' }}"
+        "${{ inputs.parallel_sidecar_build == 'true' && inputs.signed == 'true' "
+        "&& '1' || '0' }}"
     )
+    assert action["inputs"]["parallel_sidecar_build"]["default"] == "false"
     start = text.index("starting signed sidecar build beside Swift compilation")
     swift = text.index('echo "==> swift build -c $CONFIG"')
     join = text.index("\njoin_parallel_sidecar\n")
