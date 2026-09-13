@@ -163,6 +163,13 @@ def test_post_task_records_request_and_server_metrics(use_budget: bool) -> None:
                     }
                 ],
                 "usage": {"prompt_tokens": 4, "completion_tokens": 5},
+                "timings": {
+                    "predicted_per_second": 13.5,
+                    "draft_kind": "mtp",
+                    "draft_rounds": 3,
+                    "draft_n": 6,
+                    "draft_n_accepted": 4,
+                },
             },
         )
 
@@ -187,4 +194,48 @@ def test_post_task_records_request_and_server_metrics(use_budget: bool) -> None:
     assert payload.get("thinking_budget") == (7 if use_budget else None)
     assert result["thinking_budget"] == (7 if use_budget else None)
     assert result["server_metrics"]["decode_tok_s"] == 12.5
+    assert result["response_timings"] == {
+        "predicted_per_second": 13.5,
+        "draft_kind": "mtp",
+        "draft_rounds": 3,
+        "draft_n": 6,
+        "draft_n_accepted": 4,
+    }
     assert result["reasoning"] == "r"
+
+
+def test_post_task_tolerates_missing_response_timings() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/metrics":
+            return httpx.Response(200, json={})
+        return httpx.Response(
+            200,
+            json={
+                "choices": [
+                    {
+                        "message": {"content": '{"answer": 42}'},
+                        "finish_reason": "stop",
+                    }
+                ],
+                "usage": {"prompt_tokens": 4, "completion_tokens": 5},
+            },
+        )
+
+    task = bench.Task(
+        "test",
+        "knowledge",
+        "prompt",
+        20,
+        7,
+        bench._grade_exact_json({"answer": 42}),
+    )
+    with httpx.Client(transport=httpx.MockTransport(handler)) as client:
+        result = bench._post_task(
+            client,
+            base_url="http://example.test/v1",
+            model="model",
+            task=task,
+            use_thinking_budget=False,
+        )
+
+    assert set(result["response_timings"].values()) == {None}

@@ -417,6 +417,9 @@ def _post_task(
     elapsed = time.perf_counter() - started
     response.raise_for_status()
     data = response.json()
+    response_timings = data.get("timings")
+    if not isinstance(response_timings, dict):
+        response_timings = {}
     server_metrics: dict[str, Any] = {}
     try:
         metrics_url = httpx.URL(base_url).copy_with(path="/metrics", query=None)
@@ -457,6 +460,16 @@ def _post_task(
         "finish_reason": choice.get("finish_reason"),
         "output": text,
         "reasoning": reasoning,
+        "response_timings": {
+            key: response_timings.get(key)
+            for key in (
+                "predicted_per_second",
+                "draft_kind",
+                "draft_rounds",
+                "draft_n",
+                "draft_n_accepted",
+            )
+        },
         "server_metrics": server_metrics,
         "grade": asdict(grade),
     }
