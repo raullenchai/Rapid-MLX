@@ -9,6 +9,7 @@ from pathlib import Path
 
 import pytest
 
+import scripts.check_release_ci as release_ci
 from scripts.check_release_ci import (
     ReleaseCIGateError,
     RequiredWorkflow,
@@ -46,7 +47,7 @@ def _mock_gh(
     *,
     ci_runs: list[dict],
     mac_runs: list[dict],
-    jobs: dict[int, list[dict]],
+    jobs: dict[int, list],
 ) -> Path:
     state = tmp_path / "state"
     state.mkdir()
@@ -67,7 +68,9 @@ def _mock_gh(
                 print((state / 'mac.json').read_text())
             elif '/actions/runs/' in url and url.endswith('/jobs'):
                 run_id = url.split('/actions/runs/', 1)[1].split('/', 1)[0]
-                print(json.dumps(json.loads((state / 'jobs.json').read_text())[run_id]))
+                payload = json.loads((state / 'jobs.json').read_text())[run_id]
+                pages = payload if payload and isinstance(payload[0], list) else [payload]
+                print(json.dumps([{{'jobs': jobs}} for jobs in pages]))
             else:
                 print('unexpected URL: ' + url, file=sys.stderr)
                 raise SystemExit(2)
@@ -101,7 +104,9 @@ def test_accepts_both_exact_sha_aggregate_facades(tmp_path: Path) -> None:
     assert "run 20" in messages[1]
 
 
-def test_red_required_facade_blocks_even_when_other_workflow_passes(tmp_path: Path) -> None:
+def test_red_required_facade_blocks_even_when_other_workflow_passes(
+    tmp_path: Path,
+) -> None:
     gh = _mock_gh(
         tmp_path,
         ci_runs=[_record(10)],
@@ -117,6 +122,27 @@ def test_red_required_facade_blocks_even_when_other_workflow_passes(tmp_path: Pa
             deadline_sec=0,
             sleep_sec=0,
         )
+
+
+def test_finds_required_facade_after_first_jobs_page(tmp_path: Path) -> None:
+    gh = _mock_gh(
+        tmp_path,
+        ci_runs=[_record(10)],
+        mac_runs=[_record(20)],
+        jobs={
+            10: [[{"name": "matrix", "conclusion": "success"}], _jobs("tests")],
+            20: _jobs("desktop-tests"),
+        },
+    )
+    messages = verify(
+        source_sha=SHA,
+        repo=REPO,
+        requirements=REQUIREMENTS,
+        gh=str(gh),
+        deadline_sec=0,
+        sleep_sec=0,
+    )
+    assert "run 10" in messages[0]
 
 
 def test_cancelled_duplicate_does_not_hide_earlier_success(tmp_path: Path) -> None:
@@ -137,14 +163,16 @@ def test_cancelled_duplicate_does_not_hide_earlier_success(tmp_path: Path) -> No
     assert "run 10" in messages[0]
 
 
-def test_only_cancelled_evidence_fails_closed(tmp_path: Path) -> None:
+def test_only_cancelled_evidence_waits_for_replacement_then_times_out(
+    tmp_path: Path,
+) -> None:
     gh = _mock_gh(
         tmp_path,
         ci_runs=[_record(10, conclusion="cancelled")],
         mac_runs=[_record(20)],
         jobs={20: _jobs("desktop-tests")},
     )
-    with pytest.raises(ReleaseCIGateError, match="every exact-SHA push run was cancelled"):
+    with pytest.raises(ReleaseCIGateError, match="timed out waiting") as exc:
         verify(
             source_sha=SHA,
             repo=REPO,
@@ -153,6 +181,7 @@ def test_only_cancelled_evidence_fails_closed(tmp_path: Path) -> None:
             deadline_sec=0,
             sleep_sec=0,
         )
+    assert "cancellation-only evidence" in str(exc.value)
 
 
 def test_completed_run_without_conclusion_fails_closed(tmp_path: Path) -> None:
@@ -209,8 +238,40 @@ def test_newer_success_is_not_blocked_by_older_active_duplicate(tmp_path: Path) 
     assert "run 12" in messages[0]
 
 
+def test_success_snapshot_is_reconfirmed_before_release(monkeypatch) -> None:
+    requirement = (RequiredWorkflow("ci.yml", "tests"),)
+    responses = iter(
+        [
+            ("success", "run 10 passed", 10),
+            ("wait", "run 11 is in_progress", 11),
+            ("success", "run 11 passed", 11),
+            ("success", "run 11 passed", 11),
+        ]
+    )
+    calls = 0
+
+    def fake_evaluate(*_args):
+        nonlocal calls
+        calls += 1
+        return next(responses)
+
+    monkeypatch.setattr(release_ci, "_evaluate", fake_evaluate)
+    messages = verify(
+        source_sha=SHA,
+        repo=REPO,
+        requirements=requirement,
+        deadline_sec=1,
+        sleep_sec=0,
+    )
+
+    assert messages == ["run 11 passed"]
+    assert calls == 4
+
+
 @pytest.mark.parametrize("bad_sha", ["abc", "A" * 40, "g" * 40])
-def test_invalid_source_sha_is_rejected_before_api(tmp_path: Path, bad_sha: str) -> None:
+def test_invalid_source_sha_is_rejected_before_api(
+    tmp_path: Path, bad_sha: str
+) -> None:
     with pytest.raises(ReleaseCIGateError, match="source SHA"):
         verify(
             source_sha=bad_sha,

@@ -143,16 +143,26 @@ def _aggregate_conclusion(
         repo,
         "api",
         f"repos/{repo}/actions/runs/{run.run_id}/jobs",
+        "--paginate",
+        "--slurp",
         "-X",
         "GET",
         "-f",
         "filter=latest",
         "-f",
         "per_page=100",
-        "--jq",
-        ".jobs",
     )
-    jobs = _json_array(raw, source=f"run {run.run_id} jobs API")
+    pages = _json_array(raw, source=f"run {run.run_id} jobs API pages")
+    jobs: list[dict] = []
+    for page in pages:
+        page_jobs = page.get("jobs")
+        if not isinstance(page_jobs, list) or not all(
+            isinstance(job, dict) for job in page_jobs
+        ):
+            raise ReleaseCIGateError(
+                f"run {run.run_id} jobs API returned a malformed page"
+            )
+        jobs.extend(page_jobs)
     matches = [job for job in jobs if job.get("name") == aggregate_job]
     if len(matches) != 1:
         raise ReleaseCIGateError(
@@ -169,17 +179,23 @@ def _aggregate_conclusion(
 
 def _evaluate(
     gh: str, repo: str, requirement: RequiredWorkflow, source_sha: str
-) -> tuple[str, str]:
+) -> tuple[str, str, int | None]:
     runs = _workflow_runs(gh, repo, requirement, source_sha)
     if not runs:
-        return "wait", f"{requirement.workflow}: exact-SHA push run not visible yet"
+        return (
+            "wait",
+            f"{requirement.workflow}: exact-SHA push run not visible yet",
+            None,
+        )
 
     relevant = [run for run in runs if run.conclusion != "cancelled"]
     if not relevant:
         newest = runs[0]
-        raise ReleaseCIGateError(
-            f"{requirement.workflow}: every exact-SHA push run was cancelled; "
-            f"latest is {newest.run_id} ({newest.url})"
+        return (
+            "wait",
+            f"{requirement.workflow}: cancellation-only evidence; waiting for a "
+            f"replacement after run {newest.run_id} ({newest.url})",
+            newest.run_id,
         )
 
     # GitHub can leave an older duplicate running after a newer run has
@@ -192,10 +208,9 @@ def _evaluate(
         return (
             "wait",
             f"{requirement.workflow}: run {newest.run_id} is {newest.status} ({newest.url})",
+            newest.run_id,
         )
-    conclusion = _aggregate_conclusion(
-        gh, repo, newest, requirement.aggregate_job
-    )
+    conclusion = _aggregate_conclusion(gh, repo, newest, requirement.aggregate_job)
     if conclusion != "success":
         raise ReleaseCIGateError(
             f"{requirement.workflow}: required aggregate {requirement.aggregate_job!r} "
@@ -205,6 +220,7 @@ def _evaluate(
         "success",
         f"{requirement.workflow}: {requirement.aggregate_job} passed in "
         f"run {newest.run_id} ({newest.url})",
+        newest.run_id,
     )
 
 
@@ -228,12 +244,27 @@ def verify(
     while True:
         waiting = False
         messages: list[str] = []
+        successful_run_ids: list[int | None] = []
         for requirement in requirements:
-            state, message = _evaluate(gh, repo, requirement, source_sha)
+            state, message, run_id = _evaluate(gh, repo, requirement, source_sha)
             messages.append(message)
+            successful_run_ids.append(run_id)
             waiting = waiting or state == "wait"
         if not waiting:
-            return messages
+            # A retry can appear after one workflow was read but before the
+            # other workflow finishes. Re-read the complete set and only
+            # accept two consecutive snapshots with the same authoritative
+            # run IDs. A changed/new active retry goes around the poll loop.
+            confirmed: list[str] = []
+            confirmed_ids: list[int | None] = []
+            for requirement in requirements:
+                state, message, run_id = _evaluate(gh, repo, requirement, source_sha)
+                confirmed.append(message)
+                confirmed_ids.append(run_id)
+                waiting = waiting or state == "wait"
+            if not waiting and confirmed_ids == successful_run_ids:
+                return confirmed
+            messages = confirmed
         if time.monotonic() >= deadline:
             raise ReleaseCIGateError(
                 "timed out waiting for exact-SHA release CI:\n- "
