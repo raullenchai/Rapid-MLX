@@ -157,6 +157,10 @@ ALLOWED_RAPID_MLX_ENV_VARS: frozenset[str] = frozenset(
         # fires, which tier engages — none of that changes. Read by
         # ``moe_fusion.fuse_gate_up()`` only.
         "RAPID_MLX_MOE_GATE_UP_FUSION",
+        # Opt-out of the bit-exact Qwen3.5-family MoE router-tail fusion.
+        # This changes only a launch-count optimization after model loading;
+        # it cannot select a model, parser, tier, or serving lane.
+        "RAPID_MLX_QWEN35_MOE_ROUTER",
         # Opt-in direct QSA block-sparse attention on an already-selected
         # Qwen4-Exp model. This changes only the prefill kernel after a measured
         # context crossover; model, parser, tier, and engine routing are

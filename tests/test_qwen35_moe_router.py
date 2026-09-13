@@ -5,9 +5,12 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
-import mlx.core as mx
-import mlx.nn as nn
 import pytest
+
+mx = pytest.importorskip("mlx.core")
+pytestmark = pytest.mark.requires_mlx
+
+import mlx.nn as nn
 
 import vllm_mlx.qwen35_moe_router as router
 
@@ -94,6 +97,10 @@ def test_install_honors_disable_switch(monkeypatch):
     monkeypatch.setenv("RAPID_MLX_QWEN35_MOE_ROUTER", "0")
     model = SimpleNamespace(named_modules=lambda: iter(()))
     assert router.install_qwen35_moe_router(model) == 0
+
+
+def test_install_ignores_non_module_model_placeholder():
+    assert router.install_qwen35_moe_router(object()) == 0
 
 
 def test_mllm_load_enrolls_qwen_moe_optimizations(monkeypatch):

@@ -210,11 +210,12 @@ def install_qwen35_moe_router(model: Any) -> int:
         vlm_block = getattr(vlm_qwen, "Qwen3_5MoeSparseMoeBlock", None)
         if vlm_block is not None:
             block_classes.append(vlm_block)
-    if not block_classes:
+    named_modules = getattr(model, "named_modules", None)
+    if not block_classes or not callable(named_modules):
         return 0
 
     blocks = [
-        module for _, module in model.named_modules() if type(module) in block_classes
+        module for _, module in named_modules() if type(module) in block_classes
     ]
     if not blocks:
         return 0
