@@ -107,12 +107,34 @@ def test_all_missing_are_reported_together(
         assert f"{repository}@{revision}" in error
 
 
-def test_all_present_pass_without_reading_model_files(tmp_path: Path) -> None:
+def test_all_present_and_readable_pass(tmp_path: Path) -> None:
     for repository, revision, _ in _MODULE.load_pins(_MANIFEST).values():
         _populate(tmp_path, repository, revision)
     assert (
         _MODULE.main(["--manifest", str(_MANIFEST), "--cache-root", str(tmp_path)]) == 0
     )
+
+
+def test_present_but_unreadable_file_fails_closed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    pins = _MODULE.load_pins(_MANIFEST)
+    for repository, revision, _ in pins.values():
+        _populate(tmp_path, repository, revision)
+    blocked = (
+        _MODULE.snapshot_path(tmp_path, pins["qwen"][0], pins["qwen"][1])
+        / "config.json"
+    )
+    original_open = Path.open
+
+    def deny_blocked_file(self: Path, *args: object, **kwargs: object):
+        if self == blocked:
+            raise PermissionError("blocked by host privacy policy")
+        return original_open(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "open", deny_blocked_file)
+    missing = _MODULE.missing_pins(pins, tmp_path)
+    assert missing == [(pins["qwen"][0], pins["qwen"][1], ("config.json",))]
 
 
 @pytest.mark.parametrize(
@@ -145,7 +167,7 @@ def test_partial_snapshot_fails_closed(
     )
     error = capsys.readouterr().err
     assert f"{pins['qwen'][0]}@{pins['qwen'][1]}" in error
-    assert f"missing: {damaged_file}" in error
+    assert f"unavailable: {damaged_file}" in error
 
 
 def test_present_pins_emit_workflow_outputs(tmp_path: Path) -> None:

@@ -98,10 +98,15 @@ def missing_pins(
         snapshot = snapshot_path(cache_root, repository, revision)
         missing_files: list[str] = []
         for file in files:
+            candidate = snapshot / file
             try:
-                # is_file follows the cache's blob symlinks. It catches both
-                # absent entries and evicted blobs without opening model data.
-                present = snapshot.is_dir() and (snapshot / file).is_file()
+                # Opening one byte catches macOS privacy/TCC denials on a
+                # warm-tier symlink. ``is_file`` alone can succeed while the
+                # release runner later blocks forever opening the same blob.
+                present = snapshot.is_dir() and candidate.is_file()
+                if present:
+                    with candidate.open("rb") as stream:
+                        stream.read(1)
             except OSError:
                 present = False
             if not present:
@@ -139,15 +144,15 @@ def main(argv: list[str] | None = None) -> int:
     if missing:
         print(
             f"sidecar cache preflight: FAIL: {len(missing)} immutable snapshot(s) "
-            f"missing from {cache_root}",
+            f"missing or unreadable in {cache_root}",
             file=sys.stderr,
         )
         for repository, revision, missing_files in missing:
             print(f"  - {repository}@{revision}", file=sys.stderr)
             for file in missing_files:
-                print(f"      missing: {file}", file=sys.stderr)
+                print(f"      unavailable: {file}", file=sys.stderr)
             print(
-                '    restore: python3 -c "from huggingface_hub import '
+                '    repair cache access, or restore: python3 -c "from huggingface_hub import '
                 f"snapshot_download; snapshot_download('{repository}', "
                 f"revision='{revision}')\"",
                 file=sys.stderr,
