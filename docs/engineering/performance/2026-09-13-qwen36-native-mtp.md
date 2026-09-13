@@ -8,6 +8,12 @@ Ship an explicit, greedy-only serial native-MTP backend for the exact
 `qwen3.6-35b-4bit` artifact pair. Keep it opt-in. Do not replace the standard
 server because the native serial path intentionally exposes fewer capabilities.
 
+The standard continuous-MTP server is separately qualified as the default
+text lane for this exact alias. It supports sampled generation, structured
+JSON, tools, cancellation, and concurrent scheduling. `--no-spec-decode`
+restores ordinary text decoding, while explicit `--mllm` selects the mutually
+exclusive vision lane.
+
 ## Environment
 
 - Mac Studio, Apple M3 Ultra, 28 CPU cores, 256 GB unified memory
@@ -61,6 +67,29 @@ Peak active memory increased from about 21.07 GB to 21.24 GB (approximately
 measured 1.52-1.54 seconds after warmup, or about 125 tok/s end to end. The
 standard Rapid MTP server completed the same request at 97.4 tok/s, so the
 native API path retained roughly 28% higher steady end-to-end throughput.
+
+### Standard server product gate
+
+The standard continuous-MTP server was then compared with the shipping
+ordinary server through five user-visible HTTP tasks at the same target and
+sidecar revisions. Each mode was warmed before measurement. Greedy tasks used
+fixed seeds; the creative task used `temperature=0.8` with a fixed seed.
+
+| Workload | Ordinary | Standard MTP | Outcome gate |
+|---|---:|---:|---|
+| Coding | 88.6 tok/s | 121.7 tok/s | coherent implementation; both runs reached the shared output cap |
+| Reasoning | 99.8 tok/s | 139.9 tok/s | correct answer and requested explanation |
+| Creative writing | 94.8 tok/s | 95.0 tok/s | clean, complete prose |
+| Strict JSON | 100.6 tok/s | 113.1 tok/s | valid JSON with the exact requested shape |
+| Tool arguments | 46.4 tok/s | 50.1 tok/s | valid `weather(city="Tokyo", unit="celsius")` call |
+
+This is a quality-and-speed gate, not a token-equality claim across unlike
+server configurations. The ordinary lane used its existing cache policy; the
+MTP lane requires BF16 KV cache and verifies every accepted token with the
+target. No evaluated workload regressed in throughput or task completion.
+Desktop therefore exposes the same choice honestly: the accelerated text lane
+is the qualified default, and turning MTP off restores photo input after the
+required process restart.
 
 ## Lifecycle and failure checks
 

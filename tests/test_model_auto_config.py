@@ -1182,7 +1182,7 @@ class TestVisibility:
         assert "no MTP/drafter" not in table
 
     def test_table_hybrid_sidecar_alias_spec_row_keeps_lane_split(self):
-        # Same contradiction, hybrid opt-in variant: ``qwen3.6-35b-4bit`` has a
+        # Same contradiction, hybrid default-on variant: ``qwen3.6-35b-4bit`` has a
         # registered sidecar AND a hybrid arch. ``disabled (hybrid
         # arch)`` is true of the STANDARD lane only — the row must say
         # so, because the MTP sidecar lane is available.
@@ -1191,9 +1191,9 @@ class TestVisibility:
         assert cfg.is_hybrid is True
         assert (cfg.mtp_draft_model or "").strip()
         table = format_profile_table("qwen3.6-35b-4bit", cfg)
-        assert "✗ off (MTP opt-in: --speculative-config)" in table
+        assert "✓ default-on (MTP)" in table
         assert "✗ disabled (hybrid arch)" not in table
-        assert "MTP path         : sidecar (opt-in: --speculative-config)" in table
+        assert "MTP path         : sidecar (default; --no-spec-decode off)" in table
         # codex r1: the Suffix-tier note must be sidecar-aware on the
         # hybrid branch too — bare "hybrid arch" would re-deny the lane
         # the Spec-decode row just acknowledged.
@@ -1355,8 +1355,10 @@ class TestVisibility:
         matched_allowed = {
             "native",
             "native (opt-in: --speculative-config)",
+            "native (default; --no-spec-decode off)",
             "sidecar",
             "sidecar (opt-in: --speculative-config)",
+            "sidecar (default; --no-spec-decode off)",
             "disabled",
         }
         probes = [

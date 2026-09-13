@@ -359,6 +359,8 @@
     "supports_spec_decode": false,
     "mtp_draft_model": "mlx-community/Qwen3.6-35B-A3B-MTP-4bit",
     "mtp_speculative_tokens": 2,
+    "mtp_continuous_batching_tier": "verified",
+    "mtp_default_enabled": true,
     "is_moe": true,
     "pflash_tier": "verified",
     "turboquant_tier": "k8v4_verified"

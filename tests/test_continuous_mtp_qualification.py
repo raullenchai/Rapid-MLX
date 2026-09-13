@@ -109,6 +109,7 @@ def _args(model: str, payload: str | None, *, force: bool = False) -> SimpleName
         ("qwen3.5-4b-4bit", "verified"),
         ("qwen3.5-9b-4bit", "verified"),
         ("qwen3.6-27b-4bit", "verified"),
+        ("qwen3.6-35b-4bit", "verified"),
         ("qwen3.8-27b-4bit", "verified"),
         ("qwen3.5-9b-8bit", "unknown"),
     ],
@@ -130,6 +131,29 @@ def test_alias_qualification_fails_closed_when_registry_raises(monkeypatch) -> N
     monkeypatch.setattr(model_aliases, "resolve_profile", _raise)
 
     assert cli._alias_continuous_mtp_tier("qwen3.5-9b-4bit") == "unknown"
+
+
+def test_qwen36_35b_qualified_mtp_is_the_text_server_default() -> None:
+    from vllm_mlx import cli
+
+    args = _args("qwen3.6-35b-4bit", None)
+    args.mllm = False
+    cli._normalize_speculative_config_or_exit(args)
+
+    assert args.spec_decode == "mtp"
+    assert args.mtp_continuous_batching is True
+    assert args.mtp_sidecar == "mlx-community/Qwen3.6-35B-A3B-MTP-4bit"
+
+
+def test_qwen36_35b_explicit_vision_lane_suppresses_only_auto_mtp() -> None:
+    from vllm_mlx import cli
+
+    args = _args("qwen3.6-35b-4bit", None)
+    args.mllm = True
+    cli._normalize_speculative_config_or_exit(args)
+
+    assert args.spec_decode == "none"
+    assert args.mtp_continuous_batching is False
 
 
 def test_serve_rejects_continuous_mtp_cache_conflict_before_scheduler(

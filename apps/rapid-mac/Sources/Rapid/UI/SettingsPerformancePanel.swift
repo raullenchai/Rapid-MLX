@@ -274,7 +274,9 @@ struct SettingsPerformancePanel: View {
                         : !kvCompatible
                             ? "MTP requires Engine default or Full precision (bf16) KV cache. It turns back on automatically when that cache mode is selected."
                         : preset?.method == .mtp
-                            ? "Enabled by default for qualified models. It improves concurrent generation speed; turning it off applies after a restart."
+                            ? preset?.isDefaultEnabled == true
+                                ? "Enabled by default for this qualified model. It accelerates text generation; turn it off and restart to use photo input."
+                                : "MTP accelerates text generation on this model; turn it off and restart to use photo input."
                             : "Off by default. It can improve generation speed on some Macs, but may be slower on others; accepted output remains token-exact.",
                     warns: false
                 )

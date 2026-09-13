@@ -133,7 +133,13 @@ struct SpawnArgumentsTests {
             forAlias: "qwen3.5-9b-4bit",
             speculativePreset: verified,
             existing: []
-        ) == verified.launchFlags)
+        ) == verified.launchFlags + ["--text-only"])
+        #expect(ServerManager.desktopCapabilityFlags(
+            forAlias: "qwen3.6-35b-4bit",
+            supportsImageInput: true,
+            speculativePreset: verified,
+            existing: []
+        ) == verified.launchFlags + ["--text-only"])
         #expect(ServerManager.desktopCapabilityFlags(
             forAlias: "qwen3.5-9b-8bit",
             speculativePreset: unqualified,
@@ -151,6 +157,25 @@ struct SpawnArgumentsTests {
             defaultPreset: unqualified,
             userOverrides: verified.launchFlags
         ))
+        #expect(ServerManager.speculativeTextLaneFlags(
+            requested: true,
+            existing: ["--mllm"] + verified.launchFlags
+        ) == verified.launchFlags + ["--text-only"])
+        #expect(ServerManager.speculativeTextLaneFlags(
+            requested: false,
+            existing: ["--mllm"]
+        ) == ["--mllm"])
+        #expect(ServerManager.speculativeTextLaneFlags(
+            requested: false,
+            supportsImageInput: true,
+            existing: ["--text-only", "--no-spec-decode"]
+        ) == ["--no-spec-decode", "--mllm"])
+        #expect(ServerManager.speculativeTextLaneFlags(
+            requested: false,
+            supportsImageInput: true,
+            userOverrides: ["--text-only", "--no-spec-decode"],
+            existing: ["--text-only", "--no-spec-decode"]
+        ) == ["--text-only", "--no-spec-decode"])
 
         let compressedOverrides = ServerManager.speculativeSafePerformanceOverrides(
             defaultPreset: verified,

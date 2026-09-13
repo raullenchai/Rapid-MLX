@@ -2867,9 +2867,18 @@ final class ServerManager {
             defaultPreset: catalogEntry?.speculativeDecodingPreset,
             userOverrides: safeUserOverrides
         )
-        let performanceFlags = Self.mergedPerformanceFlags(
+        let mergedPerformanceFlags = Self.mergedPerformanceFlags(
             recommended: desktopDefaults,
             userOverrides: compatibleUserOverrides
+        )
+        let performanceFlags = Self.speculativeTextLaneFlags(
+            requested: Self.speculativeDecodingRequested(
+                defaultPreset: catalogEntry?.speculativeDecodingPreset,
+                userOverrides: compatibleUserOverrides
+            ),
+            supportsImageInput: catalogSupportsImageInput,
+            userOverrides: safeUserOverrides,
+            existing: mergedPerformanceFlags
         )
         var extraFlags = performanceFlags
         extraFlags.append(contentsOf: Self.residentLaunchFlags(
@@ -4345,6 +4354,37 @@ final class ServerManager {
            !flags.contains("--speculative-config") {
             flags.append(contentsOf: speculativePreset?.launchFlags ?? [])
         }
+        return speculativeTextLaneFlags(
+            requested: speculativePreset?.isDefaultEnabled == true,
+            existing: flags
+        )
+    }
+
+    /// Speculative decoding and the process-wide vision lane are mutually
+    /// exclusive in the engine. Resolve that contract once for catalog
+    /// defaults and user overrides so Desktop never launches a contradictory
+    /// `--mllm --speculative-config` process. Text acceleration wins only when
+    /// it was actually requested; disabling it restores Desktop's normal
+    /// vision-by-default policy on the next restart.
+    nonisolated internal static func speculativeTextLaneFlags(
+        requested: Bool,
+        supportsImageInput: Bool = false,
+        userOverrides: [String] = [],
+        existing: [String]
+    ) -> [String] {
+        let modalityFlags: Set<String> = ["--mllm", "--no-mllm", "--text-only"]
+        if requested {
+            var flags = existing.filter { !modalityFlags.contains($0) }
+            flags.append("--text-only")
+            return flags
+        }
+        guard supportsImageInput,
+              existing.contains("--no-spec-decode"),
+              modalityFlags.isDisjoint(with: Set(userOverrides)) else {
+            return existing
+        }
+        var flags = existing.filter { !modalityFlags.contains($0) }
+        flags.append("--mllm")
         return flags
     }
 
