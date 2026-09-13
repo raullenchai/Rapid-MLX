@@ -258,38 +258,66 @@ _SOURCE = r"""
   }
   threadgroup_barrier(mem_flags::mem_threadgroup);
 
-  for (uint d = tid; d < (uint)DK; d += NT) {
-    T qv = static_cast<T>(sq[d]);
-    T kv = static_cast<T>(sk[d]);
-    sq_squared[d] = static_cast<T>(qv * qv);
-    sk_squared[d] = static_cast<T>(kv * kv);
-  }
-  threadgroup_barrier(mem_flags::mem_threadgroup);
+  if constexpr (Q35) {
+    // Qwen3.5-family uses mx.fast.rms_norm: float32 mean-of-squares and
+    // reciprocal sqrt, cast back to T, then separate q/k scaling in T.
+    if (simdgroup_index_in_threadgroup == 0u) {
+      float pq = 0.0f, pk = 0.0f;
+      uint base = 4u * lane;
+      for (int i = 0; i < 4; ++i) {
+        pq += sq[base + i] * sq[base + i];
+        pk += sk[base + i] * sk[base + i];
+      }
+      pq = simd_sum(pq);
+      pk = simd_sum(pk);
+      if (lane == 0u) {
+        shr[0] = metal::precise::rsqrt(pq / float(DK) + 1.0e-6f);
+        shr[1] = metal::precise::rsqrt(pk / float(DK) + 1.0e-6f);
+      }
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    T qscale = static_cast<T>(1.0f / float(DK));
+    T kscale = static_cast<T>(metal::precise::rsqrt(float(DK)));
+    for (uint d = tid; d < (uint)DK; d += NT) {
+      T q_normalized = static_cast<T>(sq[d] * shr[0]);
+      T k_normalized = static_cast<T>(sk[d] * shr[1]);
+      sq[d] = float(static_cast<T>(q_normalized * qscale));
+      sk[d] = float(static_cast<T>(k_normalized * kscale));
+    }
+  } else {
+    for (uint d = tid; d < (uint)DK; d += NT) {
+      T qv = static_cast<T>(sq[d]);
+      T kv = static_cast<T>(sk[d]);
+      sq_squared[d] = static_cast<T>(qv * qv);
+      sk_squared[d] = static_cast<T>(kv * kv);
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
 
-  if (simdgroup_index_in_threadgroup == 0u) {
-    T pq = static_cast<T>(0), pk = static_cast<T>(0);
-    uint base = 4u * lane;
-    for (int i = 0; i < 4; ++i) {
-      pq = static_cast<T>(sq_squared[base + i] + pq);
-      pk = static_cast<T>(sk_squared[base + i] + pk);
+    if (simdgroup_index_in_threadgroup == 0u) {
+      T pq = static_cast<T>(0), pk = static_cast<T>(0);
+      uint base = 4u * lane;
+      for (int i = 0; i < 4; ++i) {
+        pq = static_cast<T>(sq_squared[base + i] + pq);
+        pk = static_cast<T>(sk_squared[base + i] + pk);
+      }
+      pq = static_cast<T>(simd_sum(float(pq)));
+      pk = static_cast<T>(simd_sum(float(pk)));
+      if (lane == 0u) {
+        T eps = static_cast<T>(1.0e-6f);
+        T qdenom = pq + eps;
+        T kdenom = pk + eps;
+        shr[0] = float(static_cast<T>(metal::precise::rsqrt(qdenom)));
+        shr[1] = float(static_cast<T>(metal::precise::rsqrt(kdenom)));
+      }
     }
-    pq = static_cast<T>(simd_sum(float(pq)));
-    pk = static_cast<T>(simd_sum(float(pk)));
-    if (lane == 0u) {
-      T eps = static_cast<T>(1.0e-6f);
-      T qdenom = pq + eps;
-      T kdenom = pk + eps;
-      shr[0] = float(static_cast<T>(metal::precise::rsqrt(qdenom)));
-      shr[1] = float(static_cast<T>(metal::precise::rsqrt(kdenom)));
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    T qscale = static_cast<T>(0.08838834764831845f);
+    for (uint d = tid; d < (uint)DK; d += NT) {
+      T q_normalized = static_cast<T>(static_cast<T>(sq[d]) * static_cast<T>(shr[0]));
+      T k_normalized = static_cast<T>(static_cast<T>(sk[d]) * static_cast<T>(shr[1]));
+      sq[d] = float(static_cast<T>(q_normalized * qscale));
+      sk[d] = float(k_normalized);
     }
-  }
-  threadgroup_barrier(mem_flags::mem_threadgroup);
-  T qscale = static_cast<T>(0.08838834764831845f);
-  for (uint d = tid; d < (uint)DK; d += NT) {
-    T q_normalized = static_cast<T>(static_cast<T>(sq[d]) * static_cast<T>(shr[0]));
-    T k_normalized = static_cast<T>(static_cast<T>(sk[d]) * static_cast<T>(shr[1]));
-    sq[d] = float(static_cast<T>(q_normalized * qscale));
-    sk[d] = float(k_normalized);
   }
   threadgroup_barrier(mem_flags::mem_threadgroup);
 
@@ -331,8 +359,17 @@ _SOURCE = r"""
     normalized = norm_weight[d] * normalized;
     // Exhaustive bf16 sweep: the precise float32 sigmoid matches mx.sigmoid
     // on every finite bf16-valued gate; the fast form differs on ~1%.
-    float x = float(normalized) * mlx_sigmoid_precise<float>(float(z[hv * DV + d]));
-    output[hv * DV + d] = static_cast<T>(x);
+    if constexpr (Q35) {
+      // Match _precise_swiglu's operation order: form the float32 SiLU
+      // gate first, then multiply it by the normalized value.
+      float zg = float(z[hv * DV + d]);
+      float gate = zg * mlx_sigmoid_precise<float>(zg);
+      float x = gate * float(normalized);
+      output[hv * DV + d] = static_cast<T>(x);
+    } else {
+      float x = float(normalized) * mlx_sigmoid_precise<float>(float(z[hv * DV + d]));
+      output[hv * DV + d] = static_cast<T>(x);
+    }
   }
 """
 
@@ -361,7 +398,7 @@ def _kernel():
     )
 
 
-def qwen4_fused_gdn_decode(
+def fused_gdn_decode(
     qkv,
     z,
     beta,
@@ -375,13 +412,24 @@ def qwen4_fused_gdn_decode(
     norm_eps: float,
     *,
     threadgroup_y: int,
+    num_key_heads: int = NUM_KEY_HEADS,
+    num_value_heads: int = NUM_VALUE_HEADS,
+    key_head_dim: int = KEY_HEAD_DIM,
+    value_head_dim: int = VALUE_HEAD_DIM,
+    conv_kernel: int = CONV_KERNEL,
+    qwen35_semantics: bool = False,
 ):
-    """Run the fused graph after structural admission succeeds."""
+    """Run one qualified fused-GDN geometry and numerical specialization."""
     if threadgroup_y not in _THREADGROUP_Y_CANDIDATES:
         raise ValueError(
             f"unsupported threadgroup_y {threadgroup_y}; "
             f"expected one of {_THREADGROUP_Y_CANDIDATES}"
         )
+    if num_value_heads % num_key_heads != 0:
+        raise ValueError("num_value_heads must be divisible by num_key_heads")
+    key_dim = num_key_heads * key_head_dim
+    value_dim = num_value_heads * value_head_dim
+    conv_dim = 2 * key_dim + value_dim
     outputs = _kernel()(
         inputs=[
             qkv,
@@ -398,24 +446,57 @@ def qwen4_fused_gdn_decode(
         ],
         template=[
             ("T", qkv.dtype),
-            ("HK", NUM_KEY_HEADS),
-            ("HV", NUM_VALUE_HEADS),
-            ("DK", KEY_HEAD_DIM),
-            ("DV", VALUE_HEAD_DIM),
-            ("K", CONV_KERNEL),
+            ("HK", num_key_heads),
+            ("HV", num_value_heads),
+            ("DK", key_head_dim),
+            ("DV", value_head_dim),
+            ("K", conv_kernel),
             ("TY", threadgroup_y),
-            ("RATIO", NUM_VALUE_HEADS // NUM_KEY_HEADS),
+            ("RATIO", num_value_heads // num_key_heads),
+            ("Q35", qwen35_semantics),
         ],
-        grid=(32, threadgroup_y, NUM_VALUE_HEADS),
+        grid=(32, threadgroup_y, num_value_heads),
         threadgroup=(32, threadgroup_y, 1),
         output_shapes=[
-            (1, 1, VALUE_DIM),
-            (1, CONV_KERNEL - 1, CONV_DIM),
-            (1, NUM_VALUE_HEADS, VALUE_HEAD_DIM, KEY_HEAD_DIM),
+            (1, 1, value_dim),
+            (1, conv_kernel - 1, conv_dim),
+            (1, num_value_heads, value_head_dim, key_head_dim),
         ],
         output_dtypes=[qkv.dtype, qkv.dtype, mx.float32],
     )
     return tuple(outputs)
+
+
+def qwen4_fused_gdn_decode(
+    qkv,
+    z,
+    beta,
+    alpha,
+    conv_state,
+    conv_weight,
+    a_log,
+    dt_bias,
+    recurrent_state,
+    norm_weight,
+    norm_eps: float,
+    *,
+    threadgroup_y: int,
+):
+    """Run the original Qwen4 specialization after admission succeeds."""
+    return fused_gdn_decode(
+        qkv,
+        z,
+        beta,
+        alpha,
+        conv_state,
+        conv_weight,
+        a_log,
+        dt_bias,
+        recurrent_state,
+        norm_weight,
+        norm_eps,
+        threadgroup_y=threadgroup_y,
+    )
 
 
 def fused_gdn_runtime_supported() -> bool:
@@ -496,6 +577,7 @@ __all__ = [
     "FusedGdnAdmission",
     "admit_qwen4_fused_gdn_decode",
     "fused_gdn_runtime_supported",
+    "fused_gdn_decode",
     "probe_qwen4_fused_gdn_decode",
     "qwen4_fused_gdn_decode",
 ]
