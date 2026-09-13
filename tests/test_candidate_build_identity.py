@@ -77,11 +77,12 @@ def test_signed_release_overlaps_sidecar_with_swift_and_joins_before_staging() -
     )
     start = text.index("starting signed sidecar build beside Swift compilation")
     swift = text.index('echo "==> swift build -c $CONFIG"')
-    join = text.index('echo "==> waiting for parallel rapid-mlx sidecar"')
+    join = text.index("\njoin_parallel_sidecar\n")
+    assemble = text.index('echo "==> assembling Rapid-MLX Desktop.app"')
     stage = text.index(
         'cp -R "$SIDECAR_STAGE/rapid-mlx" "$CONTENTS/Resources/rapid-mlx"'
     )
-    assert start < swift < join < stage
+    assert start < swift < join < assemble < stage
     assert "parallel build timing: Swift" in text
 
 
@@ -153,3 +154,38 @@ def test_swift_failure_terminates_parallel_sidecar_process_group(
         time.sleep(0.02)
     else:
         pytest.fail(f"sidecar grandchild {pid} survived process-group cleanup")
+
+
+def test_parallel_sidecar_failure_is_propagated_before_app_assembly(
+    tmp_path: Path,
+) -> None:
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    sidecar = tmp_path / "failing-sidecar.sh"
+    sidecar.write_text("#!/bin/bash\nexit 63\n")
+    sidecar.chmod(0o755)
+    swift = bin_dir / "swift"
+    swift.write_text("#!/bin/bash\nexit 0\n")
+    swift.chmod(0o755)
+
+    env = os.environ | {
+        "PATH": f"{bin_dir}:{os.environ['PATH']}",
+        "PARALLEL_SIDECAR_BUILD": "1",
+        "CODESIGN_IDENTITY": "test identity",
+        "RAPID_SIDECAR_SCRIPT": str(sidecar),
+        "RAPID_MLX_ENGINE_ROOT": str(ROOT),
+        "RUNNER_TEMP": str(tmp_path),
+    }
+    result = subprocess.run(
+        ["bash", str(BUILD)],
+        cwd=BUILD.parent.parent,
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=10,
+        check=False,
+    )
+
+    assert result.returncode == 63, result.stdout + result.stderr
+    assert "parallel rapid-mlx sidecar build failed (63)" in result.stderr
+    assert "assembling Rapid-MLX Desktop.app" not in result.stdout

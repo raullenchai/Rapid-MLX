@@ -47,6 +47,7 @@ SIDECAR_BUILD_PGID=""
 SIDECAR_BUILD_LOG=""
 SIDECAR_BUILD_READY=""
 SIDECAR_BUILD_STARTED=0
+PARALLEL_SIDECAR_COMPLETE=0
 
 terminate_parallel_sidecar_group() {
     local pgid="$1"
@@ -79,6 +80,41 @@ cleanup_parallel_sidecar() {
     return "$status"
 }
 trap cleanup_parallel_sidecar EXIT
+
+join_parallel_sidecar() {
+    [[ -n "$SIDECAR_BUILD_PID" ]] || return 0
+    echo "==> waiting for parallel rapid-mlx sidecar"
+    SIDECAR_JOIN_STARTED=$SECONDS
+    if wait "$SIDECAR_BUILD_PID"; then
+        SIDECAR_BUILD_STATUS=0
+    else
+        SIDECAR_BUILD_STATUS=$?
+    fi
+    SIDECAR_BUILD_SECONDS=$((SECONDS - SIDECAR_BUILD_STARTED))
+    SIDECAR_JOIN_SECONDS=$((SECONDS - SIDECAR_JOIN_STARTED))
+    rm -f "$SIDECAR_BUILD_READY"
+    SIDECAR_BUILD_READY=""
+    cat "$SIDECAR_BUILD_LOG"
+    rm -f "$SIDECAR_BUILD_LOG"
+    if [[ "$SIDECAR_BUILD_STATUS" -ne 0 ]]; then
+        terminate_parallel_sidecar_group "$SIDECAR_BUILD_PGID"
+        SIDECAR_BUILD_PID=""
+        SIDECAR_BUILD_PGID=""
+        echo "ERR: parallel rapid-mlx sidecar build failed ($SIDECAR_BUILD_STATUS)" >&2
+        exit "$SIDECAR_BUILD_STATUS"
+    fi
+    if kill -0 -- "-$SIDECAR_BUILD_PGID" 2>/dev/null; then
+        terminate_parallel_sidecar_group "$SIDECAR_BUILD_PGID"
+        SIDECAR_BUILD_PID=""
+        SIDECAR_BUILD_PGID=""
+        echo "ERR: parallel sidecar launcher exited with live descendants" >&2
+        exit 1
+    fi
+    SIDECAR_BUILD_PID=""
+    SIDECAR_BUILD_PGID=""
+    PARALLEL_SIDECAR_COMPLETE=1
+    echo "::notice::parallel build timing: Swift ${SWIFT_BUILD_SECONDS}s; sidecar ${SIDECAR_BUILD_SECONDS}s; join wait ${SIDECAR_JOIN_SECONDS}s"
+}
 
 if [[ "$PARALLEL_SIDECAR_BUILD" == "1" \
     && "$SKIP_SIDECAR" != "1" \
@@ -140,6 +176,7 @@ SWIFT_BUILD_STARTED=$SECONDS
 swift build -c "$CONFIG"
 SWIFT_BUILD_SECONDS=$((SECONDS - SWIFT_BUILD_STARTED))
 echo "==> Swift compilation completed in ${SWIFT_BUILD_SECONDS}s"
+join_parallel_sidecar
 
 echo "==> assembling Rapid-MLX Desktop.app"
 rm -rf "$APP"
@@ -461,37 +498,8 @@ else
         # Python can't reliably do).
         SIDECAR_ARGS+=(--skip-codesign --skip-verify)
     fi
-    if [[ -n "$SIDECAR_BUILD_PID" ]]; then
-        echo "==> waiting for parallel rapid-mlx sidecar"
-        SIDECAR_JOIN_STARTED=$SECONDS
-        if wait "$SIDECAR_BUILD_PID"; then
-            SIDECAR_BUILD_STATUS=0
-        else
-            SIDECAR_BUILD_STATUS=$?
-        fi
-        SIDECAR_BUILD_SECONDS=$((SECONDS - SIDECAR_BUILD_STARTED))
-        SIDECAR_JOIN_SECONDS=$((SECONDS - SIDECAR_JOIN_STARTED))
-        rm -f "$SIDECAR_BUILD_READY"
-        SIDECAR_BUILD_READY=""
-        cat "$SIDECAR_BUILD_LOG"
-        rm -f "$SIDECAR_BUILD_LOG"
-        if [[ "$SIDECAR_BUILD_STATUS" -ne 0 ]]; then
-            terminate_parallel_sidecar_group "$SIDECAR_BUILD_PGID"
-            SIDECAR_BUILD_PID=""
-            SIDECAR_BUILD_PGID=""
-            echo "ERR: parallel rapid-mlx sidecar build failed ($SIDECAR_BUILD_STATUS)" >&2
-            exit "$SIDECAR_BUILD_STATUS"
-        fi
-        if kill -0 -- "-$SIDECAR_BUILD_PGID" 2>/dev/null; then
-            terminate_parallel_sidecar_group "$SIDECAR_BUILD_PGID"
-            SIDECAR_BUILD_PID=""
-            SIDECAR_BUILD_PGID=""
-            echo "ERR: parallel sidecar launcher exited with live descendants" >&2
-            exit 1
-        fi
-        SIDECAR_BUILD_PID=""
-        SIDECAR_BUILD_PGID=""
-        echo "::notice::parallel build timing: Swift ${SWIFT_BUILD_SECONDS}s; sidecar ${SIDECAR_BUILD_SECONDS}s; join wait ${SIDECAR_JOIN_SECONDS}s"
+    if [[ "$PARALLEL_SIDECAR_COMPLETE" == "1" ]]; then
+        echo "==> parallel rapid-mlx sidecar is ready"
     elif [[ "$SIDECAR_CACHE_HIT" == "1" ]]; then
         echo "==> reusing cached rapid-mlx sidecar (${SIDECAR_SOURCE_SHA:0:12})"
         echo "    set FORCE_SIDECAR_REBUILD=1 to rebuild Python dependencies"
