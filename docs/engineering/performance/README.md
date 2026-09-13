@@ -6,6 +6,7 @@ summary statistics, and limitations.
 
 ## Reports
 
+- [LTX-2.5 large-token dequantized matmul experiment](2026-09-13-ltx25-dequant-matmul.md)
 - [Qwen3.6-35B-A3B compiled decode replay qualification](2026-09-13-qwen36-compiled-decode.md)
 - [Qwen3.6-35B-A3B native text-cache qualification](2026-09-13-qwen36-mllm-native-text-cache.md)
 - [Qwen3.6-35B-A3B fused GDN decode qualification](2026-09-12-qwen36-35b-fused-gdn-decode.md)
