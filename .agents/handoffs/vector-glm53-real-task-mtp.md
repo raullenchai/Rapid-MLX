@@ -70,13 +70,23 @@ competitor-causal record merged in PR #3389.
   31.813 tok/s by 6.3% while retaining own-AR equivalence.
 - The cache-owned AR/MTP peak Metal readings were 184.147/188.499 GB, within
   the existing product qualification envelope.
+- #2234 later closed without merge. Current mlx-vlm main + #2206 + #2231,
+  without #2234, passed a clean 6/6 AR/MTP pair with complete reasoning/final
+  byte parity. Per-task ratios were 1.264x/1.234x/1.187x/1.323x/1.194x/1.070x
+  (1.214x median); median category throughput was 32.887 tok/s, 3.4% above the
+  31.813 tok/s same-width oMLX control. AR/MTP peak Metal was
+  184.141/188.432 GB. #2234's incremental first-run contribution was about
+  2.8%, so it is optional rather than a release dependency.
+- Same-load K=3 remained exact and had a 1.030x task median versus K=2, but
+  regressed coding/creative 3.6-3.7% while improving instruction/knowledge
+  7.4-8.6%. Keep K=2 qualified and pursue adaptive depth separately.
 - MTP long-context peak Metal memory was 188.679 GB versus 184.141 GB for AR.
 
 ## Unresolved
 
 - The post-0.7 GLM runtime is not in the currently pinned release dependency.
 - Rapid still pins a released mlx-vlm version without the qualified upstream
-  changes. PRs #2206, #2231, and #2234 are upstream-only, so no release
+  changes. PRs #2206 and #2231 are upstream-only, so no release
   dependency is available to integrate yet.
 - Creative prose still needs blind human review before any quality claim.
 - The Q4 target plus MTP reaches 188.679 GB peak Metal memory. The Studio had
@@ -89,7 +99,8 @@ Do not infer trajectory equivalence from oMLX's small throughput lead: even its
 same-width depth-1 path changed greedy reasoning and half the final answers.
 Do not vendor an ad-hoc subset of the upstream work. #2206 replaces the legacy
 speculative transaction and its own AR control must remain the equivalence
-oracle; #2231 and #2234 supply the Q4 strict-load and storage paths used here.
+oracle; #2231 supplies the required Q4 strict-load path. #2234 is closed and
+must not be treated as a release dependency.
 Do not transplant oMLX's older recurrent-slicing result without re-measuring
 current mlx-vlm; the optimized current kernel has a different crossover and
 did not preserve bit-exact state in the production-shape check.
@@ -97,7 +108,7 @@ did not preserve bit-exact state in the production-shape check.
 ## Next action
 
 Atlas should prefer the cache-owned #2206 route over the legacy #2232/#2233
-chain once a tagged mlx-vlm release contains #2206, #2231, and #2234. Re-run
+chain once a tagged mlx-vlm release contains #2206 and #2231. Re-run
 the six-task harness through Rapid and require 18/18 across three runs with
 same-release AR-exact reasoning/final output before enabling GLM MTP
 experimentally. The next backbone experiment should pursue a material

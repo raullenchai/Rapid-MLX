@@ -18,7 +18,112 @@ Rapid must not enable this path from the external number alone. The optimized
 implementation landed after the mlx-vlm v0.7.0 tag and changes a broad runtime
 surface. The exact 181.7 GB Rapid target is now present in the policy-controlled
 Hugging Face cache, and the K=0 production path has completed a paired server
-benchmark. K=1/2/3 MTP still requires the same full-model release gate.
+benchmark. A subsequent full-model K=1/2/3 campaign failed the release gate:
+the best paired gain was only 1.064x, K=3 regressed to 0.882x, and every MTP
+depth diverged from serial greedy output at token 109 on the qualification
+prompt. Keep that legacy injector disabled for this alias.
+
+### Subsequent cache-owned MTP qualification
+
+The rejection above describes Rapid's experimental injector and mlx-vlm main
+before the cache-owned MTP rebuild. It is historical evidence against reviving
+that implementation, not the final result for native MTP. A later campaign
+qualified mlx-vlm PR #2206 together with the strict Q4 head fix in #2231 and
+the gate/up storage fusion in #2234 on this same `76add2a` target and its
+target-matched 3.9 GB Q4 sidecar.
+
+Across coding, knowledge, math, exact instruction following, constrained
+creative writing, and a 3,126-token contract retrieval task, two consecutive
+MTP runs passed 12/12 and were byte-identical to each other. A same-branch AR
+control passed 6/6; MTP matched every complete AR reasoning and final response
+byte-for-byte. The paired per-task gains were 1.253x, 1.306x, 1.188x, 1.297x,
+1.179x, and 1.082x, for a 1.221x median. Median category throughput was 33.655
+tok/s, 5.8% above the 31.813 tok/s same-width oMLX comparison. Peak Metal was
+188.499 GB versus 184.147 GB for AR.
+
+This supersedes the earlier performance/parity rejection, but it does not make
+MTP current Rapid production behavior. The storage fusion PR #2234 was later
+closed without merge, so the release candidate was rebuilt from current
+mlx-vlm main plus #2206 and #2231 only. On a clean paired run, that candidate
+again passed 6/6 tasks and matched every complete AR reasoning and final
+response byte-for-byte. Per-task gains were 1.264x, 1.234x, 1.187x, 1.323x,
+1.194x, and 1.070x, for a 1.214x median. Median category throughput was 32.887
+tok/s, 3.4% above the 31.813 tok/s same-width oMLX comparison. Peak Metal was
+188.432 GB versus 184.141 GB for AR. Two additional MTP passes retained 12/12
+task and byte parity; their timing was excluded because concurrent pytest,
+Qwen3.6, and macOS media-analysis workloads started during measurement.
+
+The no-fusion result makes #2206 and #2231 the only upstream release
+dependencies. #2234 was worth about another 2.8% on the first clean run, but it
+is an optional follow-up rather than a blocker. The complete commands, task
+rubric, and artifacts are recorded in `2026-09-12-glm53-real-task-mtp.md`.
+
+## Same-artifact runtime comparison
+
+The public oMLX number uses a different oQ4e checkpoint. To isolate runtime
+from checkpoint layout, the exact Rapid alias snapshot was loaded by all three
+runtimes on the same M3 Ultra. Each 8K prefill row below used the same tokenizer,
+the same synthetic prompt ending in `Reply directly.`, eight output tokens,
+and a cleared prefix cache before each of three requests.
+
+| Runtime | Revision | 8K runs (tok/s) | Median | vs Rapid |
+| --- | --- | ---: | ---: | ---: |
+| Rapid | `e3bff770d` | 338.665 / 362.122 / 351.627 | **351.627** | 1.000x |
+| oMLX, native extensions enabled | `b390b31` | 342.244 / 342.754 / 367.160 | 342.754 | 0.975x |
+| mlx-vlm post-0.7 main | `d2a1434` | 336.226 / 337.128 / 337.491 | 337.128 | 0.959x |
+
+Thus Rapid is 2.6% faster than oMLX and 4.3% faster than mlx-vlm on the same
+uniform q4-g64 artifact. oMLX's published 449.6 tok/s at 32K is not evidence of
+a faster runtime on Rapid's artifact: the material variable is its 169 GiB,
+calibrated mixed-precision oQ4e layout. Its custom affine QMM, DSA scorer, and
+pooling kernels produced no end-to-end win in this controlled comparison.
+
+The same 512-token / 256-output deterministic filler produced a Rapid K=0
+median of 30.406 tok/s (30.827 / 30.352 / 30.406). Latest mlx-vlm measured
+29.016 tok/s at K=0 and 27.774 tok/s at K=3; its K=3 run accepted 106 of 197
+drafts (53.8%) and was 4.3% slower than its own baseline. The upstream 43.67
+tok/s result therefore depends on its reported 90.5% acceptance workload and
+must not be generalized to arbitrary chat/code prompts. These measurements
+predate #2206's cache-owned transaction; the six-task qualification above is
+the current decision evidence.
+
+### Full-model native-head qualification
+
+An experimental Rapid injector restored the real q4-g64 layer-45 head and
+added multi-boundary recurrent-cache snapshots. This was an in-memory spike;
+the code was discarded after it failed the gate. The paired batch-one greedy
+results were:
+
+| Depth | Baseline | MTP | Ratio | Acceptance | Greedy parity |
+| ---: | ---: | ---: | ---: | ---: | --- |
+| K=1 | 31.431 | 33.453 | 1.064x | 76.39% | fail at token 109 |
+| K=2 | 31.431 | 33.154 | 1.055x | 50.79% | fail at token 109 |
+| K=3 | 30.329 | 26.760 | 0.882x | 32.31% | fail at token 109 |
+
+The K=2 run proves the old one-token rollback limitation can be removed, but
+doing so is not itself the optimization: recursive draft quality falls with
+depth, while position-wise KDA snapshots add verifier dispatches. The first
+K=2 campaign increased active Metal memory from 165.385 to 171.098 GiB
+(+5.713 GiB) and peaked at 173.701 GiB. K=1 and K=2 reached the same first
+divergence, consistent with GLM's multi-token short-block numerical path rather
+than a K=2-only rollback bug.
+
+The next MTP attempt should use upstream's exact transactional verifier after
+it appears in a tagged mlx-vlm release. It must still re-run the workload gate;
+acceptance rate alone is not a release criterion.
+
+### oQ4e follow-up blocked by cache capacity
+
+`dfp-official/GLM-5.3-Flash-oQ4e-mtp` remains the strongest checkpoint-format
+follow-up for measuring quality retention and prefill throughput: it is
+calibrated mixed precision, preserves MTP, and is the artifact family behind
+oMLX's 482.3 / 443.2 / 449.6 tok/s published prefill results. It is no longer
+the blocker for proving a useful MTP runtime on the cached uniform-Q4 target.
+At the time of this campaign the policy-controlled Hugging Face volume had
+77 GiB free, while the repository reports approximately 182 GB. Per Studio
+storage policy no download was attempted, no other model was deleted, and no
+alternate cache path was used. Resume only when the normal HF cache has enough
+capacity.
 
 ## Current-revision production-path E2E
 
@@ -184,6 +289,15 @@ full heads-by-context intermediate. The published numbers use a different
 169 GiB oQ4e artifact, so they are architecture references rather than a fair
 Rapid throughput comparison.
 
+### Ollama
+
+Ollama 0.32.5 was checked on the same Studio, but no local Apple-resident
+GLM-5.3-Flash artifact was available for a same-host comparison. The official
+model page exposes only `glm-5.3-flash:cloud`, and `ollama list` contained no
+GLM-5.3 model. A request to that cloud tag would measure network and hosted
+service behavior rather than the local runtime, so no Ollama tok/s number is
+reported here.
+
 ## Local experiments and rejected shortcuts
 
 All timings below are fresh-process MLX measurements on Studio unless noted.
@@ -227,21 +341,28 @@ decision after upstream publishes a fixed revision.
 
 ## Implementation order and release gate
 
-1. Land the fail-closed compatibility seam.
-2. Pin a tagged mlx-vlm revision that contains the GLM rewrite, or vendor only
-   the GLM drafter/verifier after an Atlas dependency review.
-3. Restore the full target without redirecting the policy-controlled HF cache.
-4. Run paired server tests at K=0, K=1, K=2, and K=3 with identical prompts and
-   seeds; record decode tok/s, acceptance by position, TTFT, peak/active memory,
-   and token/text equality.
-5. Enable native MTP only if sustained batch-one decode is at least 1.10x with
-   exact greedy parity, no workload bucket below 0.95x, and no server lifecycle
-   regression. A default-on decision should require at least 1.20x.
+1. Keep the fail-closed compatibility seam already merged in Rapid.
+2. Wait for an mlx-vlm release containing #2206 and #2231; do not pin an
+   untagged commit or vendor a partial transaction. #2234 closed without merge
+   and is not required by the qualified no-fusion path.
+3. Update Rapid's dependency and connect the released cache-owned GLM MTP path
+   to the serving lane.
+4. Re-run the exact six-task gate through the Rapid OpenAI-compatible server,
+   with identical prompts and seeds; record decode tok/s, acceptance, TTFT,
+   peak/active memory, and complete reasoning/final equality.
+5. Enable native MTP only if the released integration retains the measured
+   1.10x minimum, exact greedy parity, no workload bucket below 0.95x, and no
+   server lifecycle regression. A default-on decision requires broader task
+   evidence in addition to the observed 1.221x six-task median.
 
 ## Primary references
 
 - <https://github.com/Blaizzy/mlx-vlm/pull/2127>
+- <https://github.com/Blaizzy/mlx-vlm/pull/2206>
+- <https://github.com/Blaizzy/mlx-vlm/pull/2231>
+- <https://github.com/Blaizzy/mlx-vlm/pull/2234>
 - <https://github.com/IngeniousIdiocy/ds4/blob/glm53-m3ultra/README.md>
 - <https://github.com/jundot/omlx/releases/tag/v0.6.4>
+- <https://ollama.com/library/glm-5.3-flash/tags>
 - <https://huggingface.co/incoai/GLM-5.3-Flash-DFlash2>
 - `docs/benchmarks/recent-large-models-m3-ultra.md`

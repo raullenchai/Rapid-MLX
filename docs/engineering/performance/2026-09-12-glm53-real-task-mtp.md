@@ -224,11 +224,12 @@ Two narrowly scoped Rapid spikes did not clear the performance gate:
   prefill preserved all task outputs but did not clear the product gate, so
   the spike was rejected rather than exposing a new runtime knob.
 
-### Accepted gate/up storage fusion
+### Qualified gate/up storage fusion (closed upstream)
 
-One backbone reduction did clear the gate and is proposed upstream as
-mlx-vlm PR #2234. GLM's eight routed experts previously read the same hidden
-vector and routing indices through separate gate and up gathered QMMs. The
+One backbone reduction did clear the gate and was proposed upstream as
+mlx-vlm PR #2234. That PR later closed without merge. GLM's eight routed
+experts previously read the same hidden vector and routing indices through
+separate gate and up gathered QMMs. The
 candidate stores their affine Q4 tensors gate-first in one
 `QuantizedSwitchLinear`, performs one gathered projection, and then splits the
 unchanged results before LimitedSwiGLU. Both raw per-expert target checkpoints
@@ -293,6 +294,36 @@ Future measurements on this target must check both competing model processes
 and memory pressure, and should use the shared large-model lock. Process
 isolation alone is not enough when inactive model pages still push the target
 over physical memory.
+
+### No-fusion release candidate
+
+After #2234 closed, the candidate was rebuilt from current mlx-vlm main plus
+#2206 and #2231 only. The target, sidecar, task prompts, seed, budgets, and
+block-total 2 setting were unchanged. One clean paired run passed 6/6 in both
+AR and MTP, with every complete reasoning and final response byte-identical:
+
+| Task | AR | MTP K=2 | Ratio |
+| --- | ---: | ---: | ---: |
+| Coding, hidden tests | 27.720 | 35.037 | 1.264x |
+| Closed-book knowledge | 26.642 | 32.878 | 1.234x |
+| Multi-step math | 26.338 | 31.255 | 1.187x |
+| Instruction following | 25.249 | 33.396 | 1.323x |
+| Creative constraints | 27.558 | 32.896 | 1.194x |
+| Long-context contract | 10.657 | 11.405 | 1.070x |
+
+The median paired gain was 1.214x and median category throughput was 32.887
+tok/s, 3.4% above the 31.813 tok/s same-width oMLX control. Peak Metal was
+184.141 GB for AR and 188.432 GB for MTP. Two additional K=2 runs retained
+12/12 task passes and complete byte parity, but their timing was excluded after
+concurrent pytest, Qwen3.6, and macOS media-analysis work started on the shared
+host. Thus #2234 supplied about another 2.8% in its first clean comparison,
+but is not required for the exact MTP gain.
+
+A same-load K=3 spike also passed 6/6 and remained byte-identical to K=2. Its
+median task throughput was 1.030x K=2, but coding and creative writing each
+regressed 3.6-3.7% while instruction and knowledge improved 7.4-8.6%. That
+mixed result is evidence for a future acceptance-aware depth controller, not
+for changing the qualified K=2 default.
 
 ## Reproduction
 
@@ -363,7 +394,7 @@ file-size, process-count, descriptor, and wall-time limits.
 
 The cache-owned transaction now exists upstream. Atlas should not vendor a
 partial copy or point a release at an untagged Git commit. Once mlx-vlm ships a
-release containing #2206, #2231, and #2234, update Rapid's pin, run this exact
+release containing #2206 and #2231, update Rapid's pin, run this exact
 six-task gate through the Rapid server, and only then enable GLM MTP. The
 legacy #2232/#2233 chain remains a smaller fallback if #2206 does not land.
 The next performance investigation should target exact backbone dispatch cost;
