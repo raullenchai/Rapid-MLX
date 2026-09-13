@@ -16,7 +16,8 @@ from __future__ import annotations
 import logging
 import os
 import sys
-from typing import Any
+from collections.abc import Callable
+from typing import Any, cast
 
 import mlx.core as mx
 
@@ -169,7 +170,7 @@ def _probe(num_experts: int, top_k: int, dtype: mx.Dtype) -> bool:
 def _patch_class(block_class: type) -> None:
     if getattr(block_class, "_rapid_qwen35_router_patched", False):
         return
-    original = block_class.__call__
+    original = cast(Callable[[Any, mx.array], mx.array], block_class.__call__)
 
     def patched(self, x: mx.array) -> mx.array:
         if not _eligible(x, self):
@@ -180,11 +181,12 @@ def _patch_class(block_class: type) -> None:
         routed = (routed * scores[..., None]).sum(axis=-2)
         shared = self.shared_expert(x)
         shared = mx.sigmoid(self.shared_expert_gate(x)) * shared
-        return routed + shared
+        return cast(mx.array, routed + shared)
 
-    block_class.__call__ = patched
-    block_class._rapid_qwen35_router_patched = True
-    block_class._rapid_qwen35_router_original_call = original
+    dynamic_class = cast(Any, block_class)
+    dynamic_class.__call__ = patched
+    dynamic_class._rapid_qwen35_router_patched = True
+    dynamic_class._rapid_qwen35_router_original_call = original
 
 
 def install_qwen35_moe_router(model: Any) -> int:
