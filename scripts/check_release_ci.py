@@ -51,7 +51,12 @@ def _validate_sha(value: str) -> None:
         )
 
 
-def _run_gh(gh: str, repo: str, *args: str) -> str:
+def _run_gh(
+    gh: str,
+    repo: str,
+    *args: str,
+    timeout_sec: float = 60,
+) -> str:
     env = dict(os.environ)
     env["GH_REPO"] = repo
     try:
@@ -59,7 +64,7 @@ def _run_gh(gh: str, repo: str, *args: str) -> str:
             [gh, *args],
             capture_output=True,
             text=True,
-            timeout=60,
+            timeout=timeout_sec,
             env=env,
             check=False,
         )
@@ -86,7 +91,11 @@ def _json_array(raw: str, *, source: str) -> list[dict]:
 
 
 def _workflow_runs(
-    gh: str, repo: str, requirement: RequiredWorkflow, source_sha: str
+    gh: str,
+    repo: str,
+    requirement: RequiredWorkflow,
+    source_sha: str,
+    api_timeout_sec: float,
 ) -> list[WorkflowRun]:
     raw = _run_gh(
         gh,
@@ -103,6 +112,7 @@ def _workflow_runs(
         "event=push",
         "-f",
         "per_page=30",
+        timeout_sec=api_timeout_sec,
     )
     pages = _json_array(raw, source=f"{requirement.workflow} runs API pages")
     records: list[dict] = []
@@ -153,8 +163,12 @@ def _workflow_runs(
 
 
 def _aggregate_conclusion(
-    gh: str, repo: str, run: WorkflowRun, aggregate_job: str
-) -> str | None:
+    gh: str,
+    repo: str,
+    run: WorkflowRun,
+    aggregate_job: str,
+    api_timeout_sec: float,
+) -> tuple[str, str | None]:
     raw = _run_gh(
         gh,
         repo,
@@ -168,6 +182,7 @@ def _aggregate_conclusion(
         "filter=all",
         "-f",
         "per_page=100",
+        timeout_sec=api_timeout_sec,
     )
     pages = _json_array(raw, source=f"run {run.run_id} jobs API pages")
     jobs: list[dict] = []
@@ -189,7 +204,7 @@ def _aggregate_conclusion(
     if attempts and max(attempts) > run.run_attempt:
         # The jobs endpoint observed the retry before the workflow-runs
         # endpoint did. Treat the snapshot as changing and poll again.
-        return None
+        return "wait", None
 
     matches = [
         job
@@ -198,7 +213,7 @@ def _aggregate_conclusion(
         and job.get("run_attempt") == run.run_attempt
     ]
     if not matches:
-        return None
+        return "missing", None
     if len(matches) != 1:
         raise ReleaseCIGateError(
             f"run {run.run_id} exposes {len(matches)} jobs named {aggregate_job!r}; "
@@ -207,16 +222,26 @@ def _aggregate_conclusion(
     job = matches[0]
     conclusion = job.get("conclusion")
     if job.get("status") != "completed" or conclusion is None:
-        return None
+        return "wait", None
     if not isinstance(conclusion, str):
         raise ReleaseCIGateError(f"run {run.run_id} aggregate has malformed conclusion")
-    return conclusion
+    return "done", conclusion
 
 
 def _evaluate(
-    gh: str, repo: str, requirement: RequiredWorkflow, source_sha: str
+    gh: str,
+    repo: str,
+    requirement: RequiredWorkflow,
+    source_sha: str,
+    api_timeout_sec: float,
 ) -> tuple[str, str, tuple[int, int] | None]:
-    runs = _workflow_runs(gh, repo, requirement, source_sha)
+    runs = _workflow_runs(
+        gh,
+        repo,
+        requirement,
+        source_sha,
+        api_timeout_sec,
+    )
     if not runs:
         return (
             "wait",
@@ -248,14 +273,29 @@ def _evaluate(
             f"{newest.run_attempt} is {newest.status} ({newest.url})",
             (newest.run_id, newest.run_attempt),
         )
-    conclusion = _aggregate_conclusion(gh, repo, newest, requirement.aggregate_job)
-    if conclusion is None:
+    aggregate_state, conclusion = _aggregate_conclusion(
+        gh,
+        repo,
+        newest,
+        requirement.aggregate_job,
+        api_timeout_sec,
+    )
+    if aggregate_state == "wait":
         return (
             "wait",
             f"{requirement.workflow}: run {newest.run_id} attempt "
             f"{newest.run_attempt} job snapshot is still changing ({newest.url})",
             (newest.run_id, newest.run_attempt),
         )
+    if aggregate_state == "missing":
+        return (
+            "missing",
+            f"{requirement.workflow}: run {newest.run_id} attempt "
+            f"{newest.run_attempt} has no {requirement.aggregate_job!r} facade "
+            f"({newest.url})",
+            (newest.run_id, newest.run_attempt),
+        )
+    assert conclusion is not None
     if conclusion != "success":
         raise ReleaseCIGateError(
             f"{requirement.workflow}: required aggregate {requirement.aggregate_job!r} "
@@ -289,9 +329,18 @@ def verify(
     while True:
         waiting = False
         messages: list[str] = []
+        states: list[str] = []
         successful_run_ids: list[tuple[int, int] | None] = []
         for requirement in requirements:
-            state, message, run_id = _evaluate(gh, repo, requirement, source_sha)
+            api_timeout_sec = max(1.0, min(60.0, deadline - time.monotonic()))
+            state, message, run_id = _evaluate(
+                gh,
+                repo,
+                requirement,
+                source_sha,
+                api_timeout_sec,
+            )
+            states.append(state)
             messages.append(message)
             successful_run_ids.append(run_id)
             waiting = waiting or state == "wait"
@@ -301,13 +350,36 @@ def verify(
             # accept two consecutive snapshots with the same authoritative
             # run IDs. A changed/new active retry goes around the poll loop.
             confirmed: list[str] = []
+            confirmed_states: list[str] = []
             confirmed_ids: list[tuple[int, int] | None] = []
             for requirement in requirements:
-                state, message, run_id = _evaluate(gh, repo, requirement, source_sha)
+                api_timeout_sec = max(
+                    1.0,
+                    min(60.0, deadline - time.monotonic()),
+                )
+                state, message, run_id = _evaluate(
+                    gh,
+                    repo,
+                    requirement,
+                    source_sha,
+                    api_timeout_sec,
+                )
+                confirmed_states.append(state)
                 confirmed.append(message)
                 confirmed_ids.append(run_id)
                 waiting = waiting or state == "wait"
-            if not waiting and confirmed_ids == successful_run_ids:
+            if (
+                not waiting
+                and confirmed_ids == successful_run_ids
+                and confirmed_states == states
+            ):
+                missing = [
+                    message
+                    for state, message in zip(confirmed_states, confirmed)
+                    if state == "missing"
+                ]
+                if missing:
+                    raise ReleaseCIGateError("\n".join(missing))
                 return confirmed
             messages = confirmed
         if time.monotonic() >= deadline:

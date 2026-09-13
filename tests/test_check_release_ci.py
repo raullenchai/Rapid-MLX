@@ -373,6 +373,26 @@ def test_new_attempt_seen_in_jobs_waits_for_workflow_snapshot(tmp_path: Path) ->
     assert "job snapshot is still changing" in str(exc.value)
 
 
+def test_stably_missing_required_facade_fails_without_deadline_wait(
+    tmp_path: Path,
+) -> None:
+    gh = _mock_gh(
+        tmp_path,
+        ci_runs=[_record(10)],
+        mac_runs=[_record(20)],
+        jobs={10: _jobs("unrelated-job"), 20: _jobs("desktop-tests")},
+    )
+    with pytest.raises(ReleaseCIGateError, match="has no 'tests' facade"):
+        verify(
+            source_sha=SHA,
+            repo=REPO,
+            requirements=REQUIREMENTS,
+            gh=str(gh),
+            deadline_sec=90,
+            sleep_sec=0,
+        )
+
+
 @pytest.mark.parametrize("bad_sha", ["abc", "A" * 40, "g" * 40])
 def test_invalid_source_sha_is_rejected_before_api(
     tmp_path: Path, bad_sha: str
