@@ -36,12 +36,14 @@ def test_changed_lines_gate_unions_linux_and_apple_coverage() -> None:
     apple = jobs["test-apple-silicon"]
     gate = jobs["changed-lines-coverage"]
 
-    assert "coverage-linux-${{ matrix.python-version }}.data" in text
+    assert (
+        "coverage-linux-${{ matrix.python-version }}-${{ matrix.shard }}.data" in text
+    )
     assert "coverage-apple.data" in text
     assert "--cov=vllm_mlx" in apple["steps"][-2]["run"]
     assert set(gate["needs"]) == {
         "changes",
-        "test-matrix",
+        "linux-coverage",
         "test-apple-silicon",
     }
 
@@ -52,6 +54,7 @@ def test_changed_lines_gate_unions_linux_and_apple_coverage() -> None:
     assert "--fail-under 100" in gate_run
 
     aggregate_needs = set(jobs["tests"]["needs"])
+    assert "linux-coverage" in aggregate_needs
     assert "changed-lines-coverage" in aggregate_needs
     aggregate_run = next(
         step["run"]
@@ -59,6 +62,7 @@ def test_changed_lines_gate_unions_linux_and_apple_coverage() -> None:
         if step.get("name") == "Check test results"
     )
     assert "needs.changed-lines-coverage.result" in aggregate_run
+    assert "needs.linux-coverage.result" in aggregate_run
 
     # Non-engine PRs return before inspecting the intentionally skipped union
     # job, preserving the path-aware required-check facade.
@@ -127,6 +131,21 @@ def test_linux_coverage_lane_declares_complete_ci_linux_discovery_surface() -> N
         '-m "not requires_mlx and not real_hf_cache and not requires_network '
         'and not slow and not integration and not needle"' in run
     )
+
+
+def test_linux_shard_planner_failure_cannot_fall_back_to_full_suite() -> None:
+    _, workflow = _workflow()
+    run = next(
+        step
+        for step in workflow["jobs"]["test-matrix"]["steps"]
+        if step.get("name") == "Run unit tests (no MLX required)"
+    )["run"]
+
+    assert run.startswith("set -euo pipefail\n")
+    assert "mapfile -t ordinary_ignores < <(" not in run
+    assert "mapfile -t headless_ignores < <(" not in run
+    assert '--shard-count 3 > "$ordinary_plan"' in run
+    assert '--shard-count 3 > "$headless_plan"' in run
 
 
 def test_apple_coverage_roster_contains_only_tracked_tests() -> None:
@@ -216,10 +235,9 @@ def test_bonsai_runtime_coverage_runs_on_apple_silicon() -> None:
 
 
 def test_coverage_data_is_commit_bound_and_fail_closed() -> None:
-    text, workflow = _workflow()
+    _, workflow = _workflow()
     jobs = workflow["jobs"]
 
-    assert text.count("coverage-${{ github.sha }}") == 4
     for job_name in ("test-matrix", "test-apple-silicon"):
         upload = next(
             step
@@ -227,8 +245,21 @@ def test_coverage_data_is_commit_bound_and_fail_closed() -> None:
             if step.get("name", "").startswith("Upload ")
             and "coverage data" in step.get("name", "").lower()
         )
+        assert "${{ github.sha }}" in upload["with"]["name"]
         assert upload["with"]["if-no-files-found"] == "error"
         assert upload["with"]["retention-days"] == 1
+
+    combined_upload = next(
+        step
+        for step in jobs["linux-coverage"]["steps"]
+        if step.get("name") == "Upload combined Linux coverage data"
+    )
+    assert combined_upload["with"]["name"] == "linux-coverage-${{ github.sha }}"
+    assert combined_upload["with"]["if-no-files-found"] == "error"
+    assert combined_upload["with"]["retention-days"] == 1
+    assert str(jobs["linux-coverage"]["steps"][0]["uses"]).startswith(
+        "actions/checkout@"
+    )
 
 
 def test_coverage_paths_are_portable_across_runner_operating_systems() -> None:

@@ -423,8 +423,10 @@ jobs:
       needs.changes.outputs.reuse_ci != 'true'
     runs-on: ubuntu-latest
     strategy:
+      fail-fast: false
       matrix:
         python-version: ["3.10", "3.11", "3.12"]
+        shard: [1, 2, 3]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
@@ -452,43 +454,91 @@ jobs:
 
       - name: Run unit tests (no MLX required)
         env:
-          COVERAGE_FILE: coverage-linux-${{ matrix.python-version }}.data
+          COVERAGE_FILE: coverage-linux-${{ matrix.python-version }}-${{ matrix.shard }}.data
+          CI_TEST_SHARD: ${{ matrix.shard }}
         # Ordinary unit tests are discovered by directory. MLX-bound modules
         # own a requires_mlx marker + collection guard. Tests that deliberately
         # consume a real HF cache or network are non-hermetic and stay outside
         # this hosted lane; live/integration tests and the isolated fake-MLX
         # process have stable directory boundaries.
         run: |
+          set -euo pipefail
+          ordinary_plan="$RUNNER_TEMP/ordinary-ignores.txt"
+          python scripts/ci_test_shard.py \
+            --suite ordinary \
+            --shard-index "$CI_TEST_SHARD" \
+            --shard-count 3 > "$ordinary_plan"
+          mapfile -t ordinary_ignores < "$ordinary_plan"
           pytest \
             tests \
+            "${ordinary_ignores[@]}" \
             --ignore=tests/integrations \
             --ignore=tests/headless_mlx \
             -m "not requires_mlx and not real_hf_cache and not requires_network and not slow and not integration and not needle" \
             -v --tb=short \
             --cov=vllm_mlx \
-            --cov-report=term-missing \
-            --cov-report=xml
+            --cov-report=term-missing
 
           # These lifecycle contracts install inert MLX modules before import.
           # A separate process prevents those fakes from contaminating normal
           # no-MLX discovery while preserving automatic enrollment by folder.
+          headless_plan="$RUNNER_TEMP/headless-ignores.txt"
+          python scripts/ci_test_shard.py \
+            --suite headless \
+            --shard-index "$CI_TEST_SHARD" \
+            --shard-count 3 > "$headless_plan"
+          mapfile -t headless_ignores < "$headless_plan"
           pytest \
             tests/headless_mlx \
+            "${headless_ignores[@]}" \
             -v --tb=short \
             --cov=vllm_mlx \
             --cov-append \
-            --cov-report=term-missing \
-            --cov-report=xml
+            --cov-report=term-missing
 
-      - name: Upload coverage
+      - name: Upload Linux shard coverage data
         if: matrix.python-version == '3.11'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        with:
+          name: linux-coverage-${{ github.sha }}-${{ matrix.shard }}
+          path: coverage-linux-3.11-${{ matrix.shard }}.data
+          if-no-files-found: error
+          retention-days: 1
+
+  linux-coverage:
+    needs: [changes, test-matrix]
+    if: >-
+      always() &&
+      needs.changes.result == 'success' &&
+      needs.changes.outputs.engine == 'true' &&
+      needs.changes.outputs.reuse_ci != 'true' &&
+      needs.test-matrix.result == 'success'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+
+      - name: Download all Python 3.11 shard coverage
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
+        with:
+          pattern: linux-coverage-${{ github.sha }}-*
+          path: coverage-data/linux-shards
+          merge-multiple: true
+
+      - name: Combine Linux shard coverage
+        run: |
+          set -euo pipefail
+          python -m pip install coverage
+          python -m coverage combine coverage-data/linux-shards/coverage-linux-3.11-*.data
+          mv .coverage coverage-linux-3.11.data
+          COVERAGE_FILE=coverage-linux-3.11.data python -m coverage xml -o coverage.xml
+
+      - name: Upload combined coverage to Codecov
         uses: codecov/codecov-action@b9fd7d16f6d7d1b5d2bec1a2887e65ceed900238  # v4
         with:
           file: ./coverage.xml
           fail_ci_if_error: false
 
-      - name: Upload Linux coverage data
-        if: matrix.python-version == '3.11'
+      - name: Upload combined Linux coverage data
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
         with:
           name: linux-coverage-${{ github.sha }}
@@ -637,7 +687,7 @@ jobs:
   changed-lines-coverage:
     needs:
       - changes
-      - test-matrix
+      - linux-coverage
       - test-apple-silicon
     if: >-
       always() &&
@@ -645,7 +695,7 @@ jobs:
       github.event_name == 'pull_request' &&
       needs.changes.outputs.engine == 'true' &&
       needs.changes.outputs.reuse_ci != 'true' &&
-      needs.test-matrix.result == 'success' &&
+      needs.linux-coverage.result == 'success' &&
       needs.test-apple-silicon.result == 'success'
     runs-on: ubuntu-latest
     steps:
@@ -778,6 +828,7 @@ jobs:
       - mlx-bound-guard
       - type-check
       - test-matrix
+      - linux-coverage
       - test-apple-silicon
       - changed-lines-coverage
       - l1-smoke
@@ -818,6 +869,10 @@ jobs:
           fi
           if [ "${{ needs.test-matrix.result }}" != "success" ]; then
             echo "Unit tests failed"
+            exit 1
+          fi
+          if [ "${{ needs.linux-coverage.result }}" != "success" ]; then
+            echo "Linux shard coverage merge failed"
             exit 1
           fi
           if [ "${{ needs.test-apple-silicon.result }}" != "success" ]; then

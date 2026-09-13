@@ -74,11 +74,12 @@ REQUIRED_CI_JOBS = (
     "mlx-bound-guard",
     "type-check",
     "test-apple-silicon",
+    "linux-coverage",
     "changed-lines-coverage",
     "tests",
 )
 REQUIRED_CI_MATRIX_PREFIXES = {
-    "test-matrix (": 3,
+    "test-matrix (": 9,
     "l1-smoke (": 5,
 }
 
