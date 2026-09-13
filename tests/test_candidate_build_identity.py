@@ -116,7 +116,9 @@ def test_swift_failure_terminates_parallel_sidecar_process_group(
     swift.write_text(
         "#!/bin/bash\n"
         "set -eu\n"
-        f"for _ in $(seq 1 100); do [[ -s {quoted_child_pid} ]] && exit 47; sleep 0.01; done\n"
+        "attempt=0\n"
+        f"while (( attempt < 100 )); do [[ -s {quoted_child_pid} ]] && exit 47; "
+        "attempt=$((attempt + 1)); sleep 0.01; done\n"
         "exit 48\n"
     )
     swift.chmod(0o755)
