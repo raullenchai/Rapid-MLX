@@ -392,7 +392,7 @@ jobs:
 
       - name: Upload Linux coverage data
         if: matrix.python-version == '3.11'
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
         with:
           name: linux-coverage-${{ github.sha }}
           path: coverage-linux-3.11.data
@@ -522,7 +522,7 @@ jobs:
             --cov-report=term-missing
 
       - name: Upload Apple Silicon coverage data
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
         with:
           name: apple-coverage-${{ github.sha }}
           path: coverage-apple.data
@@ -552,13 +552,13 @@ jobs:
         run: pip install coverage "diff-cover==8.0.3"
 
       - name: Download Linux coverage data
-        uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0  # v5
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
         with:
           name: linux-coverage-${{ github.sha }}
           path: coverage-data/linux
 
       - name: Download Apple Silicon coverage data
-        uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0  # v5
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
         with:
           name: apple-coverage-${{ github.sha }}
           path: coverage-data/apple
