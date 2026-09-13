@@ -38,7 +38,7 @@ CONFIG="${RAPID_BUILD_CONFIG:-release}"
 # build by the caller.
 ENGINE_ROOT="${RAPID_MLX_ENGINE_ROOT:-$(cd "$ROOT/../.." && pwd)}"
 SKIP_SIDECAR="${SKIP_SIDECAR:-0}"
-SIDECAR_SCRIPT="$ROOT/scripts/build-sidecar.sh"
+SIDECAR_SCRIPT="${RAPID_SIDECAR_SCRIPT:-$ROOT/scripts/build-sidecar.sh}"
 SIDECAR_STAGE="$ROOT/build/sidecar-stage"
 SIDECAR_CACHE_STAMP="$SIDECAR_STAGE/.rapid-sidecar-cache-key"
 PARALLEL_SIDECAR_BUILD="${PARALLEL_SIDECAR_BUILD:-0}"
@@ -50,7 +50,10 @@ cleanup_parallel_sidecar() {
     local status=$?
     if [[ -n "$SIDECAR_BUILD_PID" ]]; then
         if kill -0 "$SIDECAR_BUILD_PID" 2>/dev/null; then
-            kill "$SIDECAR_BUILD_PID" 2>/dev/null || true
+            # The launcher creates a dedicated session whose id matches its
+            # pid. Terminate the entire group so pip/build subprocesses cannot
+            # outlive an early Swift/app failure on a persistent runner.
+            kill -TERM -- "-$SIDECAR_BUILD_PID" 2>/dev/null || true
         fi
         wait "$SIDECAR_BUILD_PID" 2>/dev/null || true
         if [[ -f "$SIDECAR_BUILD_LOG" ]]; then
@@ -77,7 +80,9 @@ if [[ "$PARALLEL_SIDECAR_BUILD" == "1" \
     SIDECAR_BUILD_LOG="${RUNNER_TEMP:-$ROOT/build}/rapid-sidecar-build-$$.log"
     rm -rf "$SIDECAR_STAGE"
     echo "==> starting signed sidecar build beside Swift compilation"
-    bash "$SIDECAR_SCRIPT" \
+    python3 -c \
+        'import os, sys; os.setsid(); os.execvp(sys.argv[1], sys.argv[1:])' \
+        bash "$SIDECAR_SCRIPT" \
         --out "$SIDECAR_STAGE" \
         --developer-id "$CODESIGN_IDENTITY" \
         >"$SIDECAR_BUILD_LOG" 2>&1 &

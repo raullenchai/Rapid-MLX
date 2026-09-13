@@ -1,5 +1,8 @@
+import os
+import subprocess
 from pathlib import Path
 
+import pytest
 import yaml
 
 ROOT = Path(__file__).parents[1]
@@ -84,8 +87,56 @@ def test_parallel_sidecar_failure_and_early_app_exit_are_fail_closed() -> None:
     text = BUILD.read_text()
 
     assert "trap cleanup_parallel_sidecar EXIT" in text
-    assert 'kill "$SIDECAR_BUILD_PID"' in text
+    assert 'kill -TERM -- "-$SIDECAR_BUILD_PID"' in text
     assert 'wait "$SIDECAR_BUILD_PID"' in text
     assert 'if [[ "$SIDECAR_BUILD_STATUS" -ne 0 ]]' in text
     assert 'exit "$SIDECAR_BUILD_STATUS"' in text
     assert '"${CODESIGN_IDENTITY:--}" != "-"' in text
+
+
+def test_swift_failure_terminates_parallel_sidecar_process_group(
+    tmp_path: Path,
+) -> None:
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    child_pid = tmp_path / "child.pid"
+    sidecar = tmp_path / "fake-sidecar.sh"
+    sidecar.write_text(
+        "#!/bin/bash\n"
+        "set -eu\n"
+        "(while :; do sleep 1; done) &\n"
+        f"echo $! > {child_pid!s}\n"
+        "wait\n"
+    )
+    sidecar.chmod(0o755)
+    swift = bin_dir / "swift"
+    swift.write_text(
+        "#!/bin/bash\n"
+        "set -eu\n"
+        f"for _ in $(seq 1 100); do [[ -s {child_pid!s} ]] && exit 47; sleep 0.01; done\n"
+        "exit 48\n"
+    )
+    swift.chmod(0o755)
+
+    env = os.environ | {
+        "PATH": f"{bin_dir}:{os.environ['PATH']}",
+        "PARALLEL_SIDECAR_BUILD": "1",
+        "CODESIGN_IDENTITY": "test identity",
+        "RAPID_SIDECAR_SCRIPT": str(sidecar),
+        "RAPID_MLX_ENGINE_ROOT": str(ROOT),
+        "RUNNER_TEMP": str(tmp_path),
+    }
+    result = subprocess.run(
+        ["bash", str(BUILD)],
+        cwd=BUILD.parent.parent,
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=10,
+        check=False,
+    )
+
+    assert result.returncode == 47, result.stdout + result.stderr
+    pid = int(child_pid.read_text())
+    with pytest.raises(ProcessLookupError):
+        os.kill(pid, 0)
