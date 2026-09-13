@@ -129,6 +129,7 @@ def test_swift_failure_terminates_parallel_sidecar_process_group(
         "PARALLEL_SIDECAR_BUILD": "1",
         "CODESIGN_IDENTITY": "test identity",
         "RAPID_SIDECAR_SCRIPT": str(sidecar),
+        "RAPID_SIDECAR_STAGE": str(tmp_path / "sidecar-stage"),
         "RAPID_MLX_ENGINE_ROOT": str(ROOT),
         "RUNNER_TEMP": str(tmp_path),
     }
@@ -173,6 +174,7 @@ def test_parallel_sidecar_failure_is_propagated_before_app_assembly(
         "PARALLEL_SIDECAR_BUILD": "1",
         "CODESIGN_IDENTITY": "test identity",
         "RAPID_SIDECAR_SCRIPT": str(sidecar),
+        "RAPID_SIDECAR_STAGE": str(tmp_path / "sidecar-stage"),
         "RAPID_MLX_ENGINE_ROOT": str(ROOT),
         "RUNNER_TEMP": str(tmp_path),
     }
