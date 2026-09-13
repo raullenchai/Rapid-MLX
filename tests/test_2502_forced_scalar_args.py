@@ -184,9 +184,7 @@ class TestSalvageForcedScalarArguments:
         )
         assert _salvage_forced_scalar_arguments("weather", debris, [_WEATHER]) is None
         assert (
-            _salvage_forced_scalar_arguments(
-                "weather", json.dumps(debris), [_WEATHER]
-            )
+            _salvage_forced_scalar_arguments("weather", json.dumps(debris), [_WEATHER])
             is None
         )
         # The sentinel is independently disqualifying even if truncation drops
@@ -194,6 +192,14 @@ class TestSalvageForcedScalarArguments:
         assert (
             _salvage_forced_scalar_arguments(
                 "weather", "<malformed_json_arguments>truncated", [_WEATHER]
+            )
+            is None
+        )
+        # Registered wire markers are independently disqualifying.  This keeps
+        # the marker-registry arm covered even if the sentinel check changes.
+        assert (
+            _salvage_forced_scalar_arguments(
+                "weather", "truncated</parameter></function>", [_WEATHER]
             )
             is None
         )

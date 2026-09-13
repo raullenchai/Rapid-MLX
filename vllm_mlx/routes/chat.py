@@ -3093,8 +3093,7 @@ def _salvage_forced_scalar_arguments(
     # so every supported parser family fails closed here.  Ordinary strings
     # that merely discuss JSON or contain angle brackets remain salvageable.
     if isinstance(value, str) and (
-        "<malformed_json_arguments>" in value
-        or _contains_tool_wire_literal(value)
+        "<malformed_json_arguments>" in value or _contains_tool_wire_literal(value)
     ):
         return None
 
