@@ -98,6 +98,7 @@ cleanup_parallel_sidecar() {
         if [[ -f "$SIDECAR_BUILD_LOG" ]]; then
             echo "==> sidecar build log (app build exited before join)"
             cat "$SIDECAR_BUILD_LOG"
+            rm -f "$SIDECAR_BUILD_LOG"
         fi
     fi
     [[ -z "$SIDECAR_BUILD_READY" ]] || rm -f "$SIDECAR_BUILD_READY"

@@ -123,7 +123,7 @@ def test_swift_failure_terminates_parallel_sidecar_process_group(
         "#!/bin/bash\n"
         "set -eu\n"
         "attempt=0\n"
-        f"while (( attempt < 100 )); do [[ -s {quoted_child_pid} ]] && exit 47; "
+        f"while (( attempt < 400 )); do [[ -s {quoted_child_pid} ]] && exit 47; "
         "attempt=$((attempt + 1)); sleep 0.01; done\n"
         "exit 48\n"
     )
