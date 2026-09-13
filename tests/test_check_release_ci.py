@@ -87,8 +87,21 @@ def _mock_gh(
     return gh
 
 
-def _jobs(name: str, conclusion: str = "success") -> list[dict]:
-    return [{"name": name, "conclusion": conclusion}]
+def _jobs(
+    name: str,
+    conclusion: str | None = "success",
+    *,
+    run_attempt: int = 1,
+    status: str = "completed",
+) -> list[dict]:
+    return [
+        {
+            "name": name,
+            "run_attempt": run_attempt,
+            "status": status,
+            "conclusion": conclusion,
+        }
+    ]
 
 
 def test_accepts_both_exact_sha_aggregate_facades(tmp_path: Path) -> None:
@@ -136,7 +149,17 @@ def test_finds_required_facade_after_first_jobs_page(tmp_path: Path) -> None:
         ci_runs=[_record(10)],
         mac_runs=[_record(20)],
         jobs={
-            10: [[{"name": "matrix", "conclusion": "success"}], _jobs("tests")],
+            10: [
+                [
+                    {
+                        "name": "matrix",
+                        "run_attempt": 1,
+                        "status": "completed",
+                        "conclusion": "success",
+                    }
+                ],
+                _jobs("tests"),
+            ],
             20: _jobs("desktop-tests"),
         },
     )
@@ -320,6 +343,34 @@ def test_same_run_retry_attempt_invalidates_first_success_snapshot(monkeypatch) 
 
     assert messages == ["attempt 2 passed"]
     assert calls == 4
+
+
+def test_new_attempt_seen_in_jobs_waits_for_workflow_snapshot(tmp_path: Path) -> None:
+    gh = _mock_gh(
+        tmp_path,
+        ci_runs=[_record(10, run_attempt=1)],
+        mac_runs=[_record(20)],
+        jobs={
+            10: _jobs("tests", run_attempt=1)
+            + _jobs(
+                "matrix",
+                None,
+                run_attempt=2,
+                status="in_progress",
+            ),
+            20: _jobs("desktop-tests"),
+        },
+    )
+    with pytest.raises(ReleaseCIGateError, match="timed out waiting") as exc:
+        verify(
+            source_sha=SHA,
+            repo=REPO,
+            requirements=REQUIREMENTS,
+            gh=str(gh),
+            deadline_sec=0,
+            sleep_sec=0,
+        )
+    assert "job snapshot is still changing" in str(exc.value)
 
 
 @pytest.mark.parametrize("bad_sha", ["abc", "A" * 40, "g" * 40])

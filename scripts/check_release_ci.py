@@ -154,7 +154,7 @@ def _workflow_runs(
 
 def _aggregate_conclusion(
     gh: str, repo: str, run: WorkflowRun, aggregate_job: str
-) -> str:
+) -> str | None:
     raw = _run_gh(
         gh,
         repo,
@@ -165,7 +165,7 @@ def _aggregate_conclusion(
         "-X",
         "GET",
         "-f",
-        "filter=latest",
+        "filter=all",
         "-f",
         "per_page=100",
     )
@@ -180,17 +180,36 @@ def _aggregate_conclusion(
                 f"run {run.run_id} jobs API returned a malformed page"
             )
         jobs.extend(page_jobs)
-    matches = [job for job in jobs if job.get("name") == aggregate_job]
+
+    attempts = [job.get("run_attempt") for job in jobs]
+    if not all(type(attempt) is int for attempt in attempts):
+        raise ReleaseCIGateError(
+            f"run {run.run_id} jobs API returned a malformed run_attempt"
+        )
+    if attempts and max(attempts) > run.run_attempt:
+        # The jobs endpoint observed the retry before the workflow-runs
+        # endpoint did. Treat the snapshot as changing and poll again.
+        return None
+
+    matches = [
+        job
+        for job in jobs
+        if job.get("name") == aggregate_job
+        and job.get("run_attempt") == run.run_attempt
+    ]
+    if not matches:
+        return None
     if len(matches) != 1:
         raise ReleaseCIGateError(
             f"run {run.run_id} exposes {len(matches)} jobs named {aggregate_job!r}; "
             "expected exactly one required-check facade"
         )
-    conclusion = matches[0].get("conclusion")
+    job = matches[0]
+    conclusion = job.get("conclusion")
+    if job.get("status") != "completed" or conclusion is None:
+        return None
     if not isinstance(conclusion, str):
-        raise ReleaseCIGateError(
-            f"run {run.run_id} aggregate {aggregate_job!r} has no terminal conclusion"
-        )
+        raise ReleaseCIGateError(f"run {run.run_id} aggregate has malformed conclusion")
     return conclusion
 
 
@@ -230,6 +249,13 @@ def _evaluate(
             (newest.run_id, newest.run_attempt),
         )
     conclusion = _aggregate_conclusion(gh, repo, newest, requirement.aggregate_job)
+    if conclusion is None:
+        return (
+            "wait",
+            f"{requirement.workflow}: run {newest.run_id} attempt "
+            f"{newest.run_attempt} job snapshot is still changing ({newest.url})",
+            (newest.run_id, newest.run_attempt),
+        )
     if conclusion != "success":
         raise ReleaseCIGateError(
             f"{requirement.workflow}: required aggregate {requirement.aggregate_job!r} "
