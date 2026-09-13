@@ -6,8 +6,10 @@ Atlas, for runtime architecture and dependency integration.
 
 ## Branch
 
-`docs/glm53-followup-findings`, based on `origin/main@aa92dc238` after the
-competitor-causal record merged in PR #3389.
+Current handoff refresh: `docs/glm53-upstream-handoff`, based on
+`origin/main@6a4121d17` after benchmark-telemetry PR #3409 merged. Upstream
+implementation work is on mlx-vlm PR #2241 and the fork-only
+`experiment/glm53-cache-owned-ev-k23` spike.
 
 ## Verified facts
 
@@ -80,6 +82,30 @@ competitor-causal record merged in PR #3389.
 - Same-load K=3 remained exact and had a 1.030x task median versus K=2, but
   regressed coding/creative 3.6-3.7% while improving instruction/knowledge
   7.4-8.6%. Keep K=2 qualified and pursue adaptive depth separately.
+- A request-local K2/K3 gate retained K=3 except when a rolling 64-round
+  acceptance window fell below 65%. Two runs passed 12/12 with identical
+  decisions and byte-identical reasoning/final output. Category medians were
+  34.552 and 34.610 tok/s; paired task throughput improved 1.298x over the
+  26.490 tok/s same-branch AR control and exceeded the 31.813 tok/s same-width
+  oMLX control by 8.6% in the first run. The threshold remains a Q4-specific
+  experiment, not a generic default.
+- Launching the replay-head seed asynchronously before the verified block's
+  final yield improved the adaptive path by a further 1.016x paired median,
+  with all six task ratios at least 1.003x. Two repeats reached a 1.322x and
+  1.320x paired median over AR; both were 6/6, byte-identical, and had exactly
+  the same round/proposal/accept counters as the non-overlapped adaptive run.
+- The threshold-free, request-local EV controller reached a 34.725-34.785
+  tok/s category median with replay overlap and preserved 12/12 exact output,
+  but did not materially beat the simpler gate. A cross-request cost-EWMA
+  follow-up was rejected: identical coding requests changed from 199 to 250
+  rounds, and instruction throughput fell from 36.27 to 34.27 tok/s because
+  lazy replay cost was attributed across request boundaries.
+- Upstream mlx-vlm PR #2241 isolates replay overlap directly on #2206's head.
+  Fixed K=3 paired medians improved 1.011x and 1.005x in two runs with exact
+  output. Its exact head `b762dba5` is mergeable; 3,544 full-suite tests, 128
+  subtests, Ruff, and diff checks passed. Rapid PR #3409 merged response-level
+  speculative counters into the six-task artifact so future acceptance claims
+  remain reproducible.
 - MTP long-context peak Metal memory was 188.679 GB versus 184.141 GB for AR.
 
 ## Unresolved
@@ -88,6 +114,8 @@ competitor-causal record merged in PR #3389.
 - Rapid still pins a released mlx-vlm version without the qualified upstream
   changes. PRs #2206 and #2231 are upstream-only, so no release
   dependency is available to integrate yet.
+- #2241 is intentionally stacked on #2206's source branch and cannot be
+  retargeted to main until #2206's current conflict is resolved.
 - Creative prose still needs blind human review before any quality claim.
 - The Q4 target plus MTP reaches 188.679 GB peak Metal memory. The Studio had
   only 23 GiB of cache-volume headroom during the follow-up, so a complete new
@@ -111,7 +139,9 @@ Atlas should prefer the cache-owned #2206 route over the legacy #2232/#2233
 chain once a tagged mlx-vlm release contains #2206 and #2231. Re-run
 the six-task harness through Rapid and require 18/18 across three runs with
 same-release AR-exact reasoning/final output before enabling GLM MTP
-experimentally. The next backbone experiment should pursue a material
+experimentally. Include #2241's replay scheduling change when it is present in
+the tagged dependency; do not block the dependency update on the experimental
+K2/K3 controller. The next backbone experiment should pursue a material
 resident-size or dispatch reduction rather than another small graph compile;
 do not delete the only cached Q4 control to make room without explicit human
 authorization and a recovery plan.
