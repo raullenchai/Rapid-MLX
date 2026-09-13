@@ -6,7 +6,6 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-
 ROOT = Path(__file__).resolve().parents[1]
 WORKFLOWS = ROOT / ".github" / "workflows"
 USES_RE = re.compile(r"uses:\s*(actions/[\w-]+)@([0-9a-f]{40})")
