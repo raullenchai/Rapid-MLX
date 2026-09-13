@@ -144,13 +144,53 @@ and 5/6 across the three runs. Its creative score fell to 0.833 and then 0.667;
 the last run exhausted all 1,024 tokens. Despite temperature zero, every
 reasoning string differed from AR and three of six final answers differed in
 the first run. Output lengths also changed between repeated oMLX runs. Its log
-showed adaptive depth changes and a custom M=2..6 verify-QMM path; this report
-does not claim which one caused the trajectory drift.
+showed adaptive depth changes. oMLX also installs a custom verify-QMM route,
+but its source gates that route to M=3..6; the same-width depth-1 result below
+uses M=2 and therefore does not exercise that custom kernel.
 
-A same-width oMLX depth-1 run was attempted, but the Studio CI runner started a
-37 GB Qwen3.6-35B-8bit server during the suite. Throughput collapsed mid-run,
-so the complete artifact was marked contended and excluded rather than folded
-into the comparison.
+### Same-width oMLX control and causal split
+
+The same-width oMLX depth-1 rerun completed on an idle Studio. It uses one
+draft token plus the verifier bonus, matching the qualified Rapid block-total
+2 width. All six tasks passed, with a 31.813 tok/s median of category
+throughputs, 1.056x the Rapid candidate.
+
+| Task | oMLX AR, two-run mean | oMLX depth 1 | Depth-1 / own AR | Final equals own AR |
+| --- | ---: | ---: | ---: | --- |
+| Coding, hidden tests | 28.792 | 31.909 | 1.108x | no |
+| Closed-book knowledge | 27.775 | 33.917 | 1.221x | no |
+| Multi-step math | 27.513 | 32.228 | 1.171x | yes |
+| Instruction following | 26.248 | 31.717 | 1.208x | yes |
+| Creative constraints | 28.550 | 28.008 | 0.981x | no |
+| Long-context contract | 11.051 | 12.622 | 1.142x | yes |
+
+oMLX AR itself was deterministic: two consecutive warm runs produced identical
+reasoning and final output on all six tasks. Its AR median was 27.644 tok/s,
+1.050x mlx-vlm AR. Depth-1 MTP raised that to 31.813 tok/s, a 1.151x gain;
+Rapid's exact MTP raised its own AR from 26.322 to 30.132 tok/s, a comparable
+1.145x gain. The approximately 5% absolute oMLX lead therefore comes primarily
+from its different GLM backbone/runtime, not from deeper drafting.
+
+That speed is not trajectory-equivalent. Relative to oMLX's own deterministic
+AR, depth-1 changed all six reasoning strings and three of six final answers.
+All tasks passed in this single depth-1 run, but creative writing was also the
+only category slower than oMLX AR. The result supports investigating exact
+backbone dispatch cost; it does not support replacing the qualified Rapid
+transaction with oMLX's MTP path.
+
+### Rejected follow-up spikes
+
+Two narrowly scoped Rapid spikes did not clear the performance gate:
+
+- Adaptive block-total 3 started at 2 and expanded only after eight rounds
+  with at least 65% configured-prefix hits. One run remained 6/6 and AR-exact,
+  but its category median was 29.005 tok/s, 0.963x the qualified block-total 2
+  median. It was rejected without additional runs.
+- Compiling each GLM single-token FFN block remained AR-exact across 18/18
+  tasks. After both variants reached a steady warm state, the six category
+  differences versus an immediate uncompiled control were 0.0% to 0.8% and
+  did not establish a material sustained win. The apparent early gain was
+  consistent with lazy-kernel warm-up, so no runtime patch was proposed.
 
 ## Reproduction
 
@@ -195,6 +235,19 @@ python scripts/benchmark_glm53_real_tasks.py \
   --output /private/tmp/glm53-real-mtp-budget-positioned.json
 ```
 
+The oMLX comparison used commit `b390b31`, cache disabled, concurrency one,
+thinking enabled, and the same local target exposed as `glm53-target`. The AR
+control set `mtp_enabled=false`; the same-width run set `mtp_enabled=true` and
+`mtp_num_draft_tokens=1`. For each server mode, the same harness command was:
+
+```bash
+python scripts/benchmark_glm53_real_tasks.py \
+  --base-url http://127.0.0.1:8466/v1 \
+  --model glm53-target \
+  --label omlx-ar-or-depth1 \
+  --output /private/tmp/glm53-real-omlx.json
+```
+
 The comparator fails unless every baseline and candidate task passes, complete
 reasoning and output are identical, quality does not regress, and every task
 retains at least 95% of baseline end-to-end completion throughput.
@@ -210,6 +263,7 @@ The transaction and safe fallback now exist upstream. Atlas should not vendor a
 partial copy or point a release at an untagged Git commit. Once mlx-vlm ships a
 release containing #2231, #2232, and #2233, update Rapid's pin, run this exact
 six-task gate through the Rapid server, and only then enable GLM MTP. The next
-performance investigation should target exact verify/backbone dispatch cost;
-do not adopt oMLX's deeper/custom-QMM path without first recovering repeated
-temperature-zero determinism and 18/18 quality.
+performance investigation should target exact verify/backbone dispatch cost.
+The same-width result shows that deeper drafting is not the main competitor
+gap. Do not adopt a numerically different verify path without first recovering
+repeated temperature-zero determinism and 18/18 quality.

@@ -6,8 +6,8 @@ Atlas, for runtime architecture and dependency integration.
 
 ## Branch
 
-`docs/glm53-budget-mtp-qualification`, based on
-`origin/main@a42e5fbf8`.
+`docs/glm53-competitor-causal`, based on
+`origin/main@69cdecf7e` after qualification PR #3385 merged.
 
 ## Verified facts
 
@@ -31,6 +31,17 @@ Atlas, for runtime architecture and dependency integration.
 - oMLX depth-2 reached a 31.664 tok/s median of category medians, 1.051x the
   Rapid candidate, but passed only 6/6, 5/6, and 5/6 across repeated runs and
   changed temperature-zero outputs. Rapid remained 18/18 and AR-exact.
+- An idle-host, same-width oMLX depth-1 run reached 31.813 tok/s, 1.056x the
+  Rapid candidate. Against its own two-run deterministic AR control, oMLX MTP
+  gained 1.151x versus Rapid's comparable 1.145x gain. oMLX's approximately 5%
+  absolute lead is primarily its backbone/runtime baseline.
+- oMLX depth-1 changed 6/6 reasoning strings and 3/6 final answers relative to
+  its own AR. The custom verify-QMM is not the cause at depth 1 because its
+  implementation gates to M=3..6 while depth 1 verifies at M=2.
+- Adaptive Rapid block-total 3 was AR-exact but reached only 29.005 tok/s, or
+  0.963x the qualified block-total 2 median. A single-token FFN compile spike
+  was also AR-exact but converged within 0.0% to 0.8% of a warm uncompiled
+  control and was rejected as immaterial.
 - MTP long-context peak Metal memory was 188.679 GB versus 184.141 GB for AR.
 
 ## Unresolved
@@ -38,16 +49,14 @@ Atlas, for runtime architecture and dependency integration.
 - The post-0.7 GLM runtime is not in the currently pinned release dependency.
 - Rapid still pins a released mlx-vlm version without these three upstream
   changes. No release dependency is available to integrate yet.
-- A same-width oMLX depth-1 rerun is still needed on an idle Studio; the first
-  attempt was invalidated by a concurrent 37 GB CI inference server.
 - Creative prose still needs blind human review before any quality claim.
 
 ## Risks
 
-Do not infer quality from oMLX's small throughput lead: its deeper/custom verify
-path changed greedy trajectories and failed the creative task twice. Do not
-vendor only part of the upstream three-PR chain; strict loading, safe fallback,
-and positioned rollback are separate necessary pieces.
+Do not infer trajectory equivalence from oMLX's small throughput lead: even its
+same-width depth-1 path changed greedy reasoning and half the final answers.
+Do not vendor only part of the upstream three-PR chain; strict loading, safe
+fallback, and positioned rollback are separate necessary pieces.
 
 ## Next action
 
