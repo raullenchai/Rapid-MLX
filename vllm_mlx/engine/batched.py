@@ -1862,6 +1862,16 @@ class BatchedEngine(BaseEngine):
 
             self._model_load_executor.submit(fuse_gate_up, self._model).result()
 
+            # Collapse Qwen3.5-family short-row MoE top-k selection and score
+            # normalization into one launch.  The installer tags only the
+            # compatible blocks in this model after a real Metal parity probe;
+            # other MoE families and prefill widths keep their stock path.
+            from ..qwen35_moe_router import install_qwen35_moe_router
+
+            self._model_load_executor.submit(
+                install_qwen35_moe_router, self._model
+            ).result()
+
             # Fuse the four GatedDeltaNet input projections into one
             # quantized matmul at decode widths, byte-exact (see
             # vllm_mlx/gdn_in_proj_fusion.py; measured +2.0%/+0.9% decode
