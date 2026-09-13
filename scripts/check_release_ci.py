@@ -38,6 +38,7 @@ class RequiredWorkflow:
 @dataclass(frozen=True)
 class WorkflowRun:
     run_id: int
+    run_attempt: int
     status: str
     conclusion: str | None
     url: str
@@ -58,7 +59,7 @@ def _run_gh(gh: str, repo: str, *args: str) -> str:
             [gh, *args],
             capture_output=True,
             text=True,
-            timeout=120,
+            timeout=60,
             env=env,
             check=False,
         )
@@ -117,6 +118,7 @@ def _workflow_runs(
     runs: list[WorkflowRun] = []
     for record in records:
         run_id = record.get("id")
+        run_attempt = record.get("run_attempt")
         head_sha = record.get("head_sha")
         event = record.get("event")
         status = record.get("status")
@@ -124,6 +126,7 @@ def _workflow_runs(
         url = record.get("html_url")
         if (
             type(run_id) is not int
+            or type(run_attempt) is not int
             or not isinstance(head_sha, str)
             or not isinstance(event, str)
             or not isinstance(status, str)
@@ -141,8 +144,12 @@ def _workflow_runs(
         # Defend against an API/filter regression rather than trusting query
         # parameters for the release identity boundary.
         if head_sha == source_sha and event == "push":
-            runs.append(WorkflowRun(run_id, status, conclusion, url))
-    return sorted(runs, key=lambda run: run.run_id, reverse=True)
+            runs.append(WorkflowRun(run_id, run_attempt, status, conclusion, url))
+    return sorted(
+        runs,
+        key=lambda run: (run.run_id, run.run_attempt),
+        reverse=True,
+    )
 
 
 def _aggregate_conclusion(
@@ -189,7 +196,7 @@ def _aggregate_conclusion(
 
 def _evaluate(
     gh: str, repo: str, requirement: RequiredWorkflow, source_sha: str
-) -> tuple[str, str, int | None]:
+) -> tuple[str, str, tuple[int, int] | None]:
     runs = _workflow_runs(gh, repo, requirement, source_sha)
     if not runs:
         return (
@@ -204,8 +211,9 @@ def _evaluate(
         return (
             "wait",
             f"{requirement.workflow}: cancellation-only evidence; waiting for a "
-            f"replacement after run {newest.run_id} ({newest.url})",
-            newest.run_id,
+            f"replacement after run {newest.run_id} attempt {newest.run_attempt} "
+            f"({newest.url})",
+            (newest.run_id, newest.run_attempt),
         )
 
     # GitHub can leave an older duplicate running after a newer run has
@@ -217,8 +225,9 @@ def _evaluate(
     if newest.status != "completed":
         return (
             "wait",
-            f"{requirement.workflow}: run {newest.run_id} is {newest.status} ({newest.url})",
-            newest.run_id,
+            f"{requirement.workflow}: run {newest.run_id} attempt "
+            f"{newest.run_attempt} is {newest.status} ({newest.url})",
+            (newest.run_id, newest.run_attempt),
         )
     conclusion = _aggregate_conclusion(gh, repo, newest, requirement.aggregate_job)
     if conclusion != "success":
@@ -229,8 +238,8 @@ def _evaluate(
     return (
         "success",
         f"{requirement.workflow}: {requirement.aggregate_job} passed in "
-        f"run {newest.run_id} ({newest.url})",
-        newest.run_id,
+        f"run {newest.run_id} attempt {newest.run_attempt} ({newest.url})",
+        (newest.run_id, newest.run_attempt),
     )
 
 
@@ -254,7 +263,7 @@ def verify(
     while True:
         waiting = False
         messages: list[str] = []
-        successful_run_ids: list[int | None] = []
+        successful_run_ids: list[tuple[int, int] | None] = []
         for requirement in requirements:
             state, message, run_id = _evaluate(gh, repo, requirement, source_sha)
             messages.append(message)
@@ -266,7 +275,7 @@ def verify(
             # accept two consecutive snapshots with the same authoritative
             # run IDs. A changed/new active retry goes around the poll loop.
             confirmed: list[str] = []
-            confirmed_ids: list[int | None] = []
+            confirmed_ids: list[tuple[int, int] | None] = []
             for requirement in requirements:
                 state, message, run_id = _evaluate(gh, repo, requirement, source_sha)
                 confirmed.append(message)

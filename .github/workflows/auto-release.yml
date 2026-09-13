@@ -620,7 +620,7 @@ jobs:
       needs.detect.outputs.should_release == 'true'
       && needs.detect.outputs.dry_run != 'true'
     runs-on: ubuntu-latest
-    timeout-minutes: 95
+    timeout-minutes: 105
     permissions:
       actions: read
       contents: read
@@ -639,8 +639,20 @@ jobs:
             --require ci.yml:tests \
             --require rapid-mac-ci.yml:desktop-tests \
             --deadline-min 90 \
-            | tee release-final-ci.txt
-          cat release-final-ci.txt >> "$GITHUB_STEP_SUMMARY"
+            2>&1 | tee release-final-ci.txt
+
+      - name: Publish exact-SHA CI evidence
+        if: always()
+        run: |
+          {
+            echo "## Exact-SHA release CI"
+            echo ""
+            if [[ -f release-final-ci.txt ]]; then
+              cat release-final-ci.txt
+            else
+              echo "The coordinator stopped before producing evidence."
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
 
   # A dry run deliberately ends here: after both real pre-publication gates,
   # before release-prep, the protected rapid-mac-tag environment, or any tag /

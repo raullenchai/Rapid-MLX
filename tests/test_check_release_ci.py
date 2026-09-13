@@ -31,9 +31,11 @@ def _record(
     conclusion: str | None = "success",
     sha: str = SHA,
     event: str = "push",
+    run_attempt: int = 1,
 ) -> dict:
     return {
         "id": run_id,
+        "run_attempt": run_attempt,
         "head_sha": sha,
         "event": event,
         "status": status,
@@ -264,10 +266,10 @@ def test_success_snapshot_is_reconfirmed_before_release(monkeypatch) -> None:
     requirement = (RequiredWorkflow("ci.yml", "tests"),)
     responses = iter(
         [
-            ("success", "run 10 passed", 10),
-            ("wait", "run 11 is in_progress", 11),
-            ("success", "run 11 passed", 11),
-            ("success", "run 11 passed", 11),
+            ("success", "run 10 passed", (10, 1)),
+            ("wait", "run 11 is in_progress", (11, 1)),
+            ("success", "run 11 passed", (11, 1)),
+            ("success", "run 11 passed", (11, 1)),
         ]
     )
     calls = 0
@@ -287,6 +289,36 @@ def test_success_snapshot_is_reconfirmed_before_release(monkeypatch) -> None:
     )
 
     assert messages == ["run 11 passed"]
+    assert calls == 4
+
+
+def test_same_run_retry_attempt_invalidates_first_success_snapshot(monkeypatch) -> None:
+    requirement = (RequiredWorkflow("ci.yml", "tests"),)
+    responses = iter(
+        [
+            ("success", "attempt 1 passed", (10, 1)),
+            ("success", "attempt 2 passed", (10, 2)),
+            ("success", "attempt 2 passed", (10, 2)),
+            ("success", "attempt 2 passed", (10, 2)),
+        ]
+    )
+    calls = 0
+
+    def fake_evaluate(*_args):
+        nonlocal calls
+        calls += 1
+        return next(responses)
+
+    monkeypatch.setattr(release_ci, "_evaluate", fake_evaluate)
+    messages = verify(
+        source_sha=SHA,
+        repo=REPO,
+        requirements=requirement,
+        deadline_sec=1,
+        sleep_sec=0,
+    )
+
+    assert messages == ["attempt 2 passed"]
     assert calls == 4
 
 
