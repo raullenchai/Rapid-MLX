@@ -63,9 +63,13 @@ def _mock_gh(
             state = pathlib.Path({str(state)!r})
             url = sys.argv[2]
             if '/actions/workflows/ci.yml/runs' in url:
-                print((state / 'ci.json').read_text())
+                payload = json.loads((state / 'ci.json').read_text())
+                pages = payload if payload and isinstance(payload[0], list) else [payload]
+                print(json.dumps([{{'workflow_runs': runs}} for runs in pages]))
             elif '/actions/workflows/rapid-mac-ci.yml/runs' in url:
-                print((state / 'mac.json').read_text())
+                payload = json.loads((state / 'mac.json').read_text())
+                pages = payload if payload and isinstance(payload[0], list) else [payload]
+                print(json.dumps([{{'workflow_runs': runs}} for runs in pages]))
             elif '/actions/runs/' in url and url.endswith('/jobs'):
                 run_id = url.split('/actions/runs/', 1)[1].split('/', 1)[0]
                 payload = json.loads((state / 'jobs.json').read_text())[run_id]
@@ -149,6 +153,24 @@ def test_cancelled_duplicate_does_not_hide_earlier_success(tmp_path: Path) -> No
     gh = _mock_gh(
         tmp_path,
         ci_runs=[_record(11, conclusion="cancelled"), _record(10)],
+        mac_runs=[_record(20)],
+        jobs={10: _jobs("tests"), 20: _jobs("desktop-tests")},
+    )
+    messages = verify(
+        source_sha=SHA,
+        repo=REPO,
+        requirements=REQUIREMENTS,
+        gh=str(gh),
+        deadline_sec=0,
+        sleep_sec=0,
+    )
+    assert "run 10" in messages[0]
+
+
+def test_cancelled_first_page_does_not_hide_older_success(tmp_path: Path) -> None:
+    gh = _mock_gh(
+        tmp_path,
+        ci_runs=[[_record(11, conclusion="cancelled")], [_record(10)]],
         mac_runs=[_record(20)],
         jobs={10: _jobs("tests"), 20: _jobs("desktop-tests")},
     )

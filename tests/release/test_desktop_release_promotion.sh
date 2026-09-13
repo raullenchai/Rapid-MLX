@@ -31,6 +31,16 @@ ok()  { PASS=$((PASS + 1)); printf '  \033[32mPASS\033[0m %s\n' "$1"; }
 bad() { FAIL=$((FAIL + 1)); printf '  \033[31mFAIL\033[0m %s\n' "$1"; }
 contains() { if grep -qF -- "$2" <<<"$1"; then ok "$3"; else bad "$3"; printf '        want substring: %s\n        got:            %s\n' "$2" "$1"; fi; }
 lacks()    { if grep -qF -- "$2" <<<"$1"; then bad "$3"; else ok "$3"; fi; }
+order() {
+  local first second
+  first=$(grep -nF -- "$2" <<<"$1" | head -1 | cut -d: -f1 || true)
+  second=$(grep -nF -- "$3" <<<"$1" | head -1 | cut -d: -f1 || true)
+  if [[ -n "$first" && -n "$second" && "$first" -lt "$second" ]]; then
+    ok "$4"
+  else
+    bad "$4"
+  fi
+}
 
 A="1111111111111111111111111111111111111111"  # bump commit (candidate)
 B="2222222222222222222222222222222222222222"  # packaging fix that lands on main
@@ -375,6 +385,16 @@ contains "$RELEASE_IF" "needs: [detect, tier1-agent-gate, desktop-candidate-gate
   "environment-gated publication directly needs exact-SHA ordinary CI"
 contains "$RELEASE_IF" "needs.release-final-ci.result == 'success'" \
   "environment-gated publication reasserts exact-SHA ordinary CI success"
+TAG_JOB=$(sed -n '/^  release:/,$p' "$AUTO_RELEASE")
+contains "$TAG_JOB" "Re-query exact-SHA ordinary CI immediately before tag" \
+  "publication re-queries ordinary CI after human approval"
+contains "$TAG_JOB" '--require ci.yml:tests' \
+  "post-approval re-query requires the engine facade"
+contains "$TAG_JOB" '--require rapid-mac-ci.yml:desktop-tests' \
+  "post-approval re-query requires the Desktop facade"
+order "$TAG_JOB" "Re-query exact-SHA ordinary CI immediately before tag" \
+  "Tag the desktop app at the exact validated SHA" \
+  "post-approval ordinary CI re-query precedes the first tag claim"
 
 # ---------------------------------------------------------------------------
 echo "== 7b. normal workflow_dispatch retry after main drift (no bypass) =="

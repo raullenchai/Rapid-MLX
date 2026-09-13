@@ -262,7 +262,8 @@ print all of it — this exact SHA is what a reviewer approves.
    ▼
 release (environment: rapid-mac-tag — HUMAN APPROVAL on the printed SHA):
    re-verify live rapid-mac-tag protection, re-query live blockers + main head
-   (TOCTOU), then tag the desktop app at the exact validated SHA.
+   + exact-SHA ordinary CI (TOCTOU), then tag the desktop app at the exact
+   validated SHA.
    │
    ▼
 rapid-mac-v* tag fires rapid-mac-release.yml: re-runs the SAME shared

@@ -92,6 +92,8 @@ def _workflow_runs(
         repo,
         "api",
         f"repos/{repo}/actions/workflows/{requirement.workflow}/runs",
+        "--paginate",
+        "--slurp",
         "-X",
         "GET",
         "-f",
@@ -100,10 +102,18 @@ def _workflow_runs(
         "event=push",
         "-f",
         "per_page=30",
-        "--jq",
-        ".workflow_runs",
     )
-    records = _json_array(raw, source=f"{requirement.workflow} runs API")
+    pages = _json_array(raw, source=f"{requirement.workflow} runs API pages")
+    records: list[dict] = []
+    for page in pages:
+        page_runs = page.get("workflow_runs")
+        if not isinstance(page_runs, list) or not all(
+            isinstance(run, dict) for run in page_runs
+        ):
+            raise ReleaseCIGateError(
+                f"{requirement.workflow} runs API returned a malformed page"
+            )
+        records.extend(page_runs)
     runs: list[WorkflowRun] = []
     for record in records:
         run_id = record.get("id")

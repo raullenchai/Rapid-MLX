@@ -1019,6 +1019,23 @@ jobs:
             --release-sha "$RELEASE_SHA"
           echo "::notice::pre-tag main head $MAIN_SHA still equals the validated candidate ${ACCEPTED_SHA}"
 
+      # Human approval can take minutes or hours. A maintainer may have started
+      # a new ordinary-CI retry during that wait, so the completed dependency
+      # result is not sufficient at the irreversible-write cutoff. Re-read the
+      # same immutable-SHA facades immediately before claiming either tag.
+      - name: Re-query exact-SHA ordinary CI immediately before tag
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SOURCE_SHA: ${{ needs.release-prep.outputs.accepted_sha }}
+        run: |
+          set -euo pipefail
+          python3 scripts/check_release_ci.py \
+            --source-sha "$SOURCE_SHA" \
+            --repo "$GITHUB_REPOSITORY" \
+            --require ci.yml:tests \
+            --require rapid-mac-ci.yml:desktop-tests \
+            --deadline-min 90
+
       # The desktop tag claim. tag_desktop_app.sh requires ACCEPTED_SHA (the
       # exact candidate the pre-approval job printed) to equal RELEASE_SHA —
       # the same binding the reviewer verified — and prints the full SHA before
