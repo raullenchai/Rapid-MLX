@@ -1028,6 +1028,31 @@ def mtp_generate_step(
         elapsed = time.perf_counter() - _t0
         pending_draft_ms = elapsed * 1000.0
         _timing_add("draft_seconds", elapsed)
+        return _launch_drafts(result)
+
+    def _launch_drafts(result):
+        """Start the drafter's device work now instead of at the next verify.
+
+        The chain is built lazily, so nothing runs on the GPU until some
+        consumer materializes it -- and its only consumer is the NEXT round's
+        single ``mx.eval``.  Without this the drafter forward is issued after
+        the caller has finished the whole round's per-token work (detokenize,
+        stop-string scan, stream framing), with the GPU idle through all of
+        it.  Kicking it off here is Ollama's ``mlx.ScopedAsyncEval``
+        placement in ``x/mlxrunner/mtp.go``: the drafter runs while the host
+        drains the round, so its cost lands in the gap instead of on the
+        critical path.
+
+        Returns ``result`` unchanged so callers can wrap in place.
+        """
+        arrays = [
+            item
+            for group in result
+            for item in (group if isinstance(group, (list, tuple)) else [group])
+            if isinstance(item, mx.array)
+        ]
+        if arrays:
+            mx.async_eval(*arrays)
         return result
 
     def _prompt_lookup_drafts() -> list | None:
@@ -1090,49 +1115,60 @@ def mtp_generate_step(
             ntoks += 1
             main_tok_id = int(main_tok.item())
             _remember_generated(main_tok_id)
-            yield main_tok_id, main_lp, False
-            if ntoks >= max_tokens:
-                return
+            round_done = ntoks >= max_tokens
 
-            # Decide K for the NEXT round.
+            # Decide K for the NEXT round, and draft for it, BEFORE handing
+            # this round's token to the caller: the caller's per-token work
+            # runs inside our ``yield``, so the drafter forward launched here
+            # overlaps it instead of waiting behind it.
             #
-            # No drafter time is ever abandoned unaccounted. Drafting is the
-            # LAST thing a round does — strictly after this round's yield and
-            # its ``ntoks >= max_tokens`` return above (and, in the verify
-            # branch, after its EOS-cut / bonus / residual returns, which sit
-            # before their own tail draft). So a request that stops never
-            # produced the draft: max_tokens returns above before drafting,
-            # and a caller that stops pulling on EOS leaves the generator
-            # suspended AT the yield, before this line. When drafting DOES
-            # run, there is no yield between it and the consuming round's
-            # ``_record_round``, so the carried ``pending_draft_ms`` is always
-            # charged. (codex #1441: the "abandoned drafts" case cannot occur.)
-            next_k = (
-                _controller.pick_k()
-                if _select_k and _controller is not None
-                else max_k_effective
-            )
-
-            hidden_at_main = hidden[:, -1:, :]
-            lookup_drafts = _prompt_lookup_drafts()
-            if lookup_drafts is not None:
-                pending_drafts = lookup_drafts
-                pending_is_prompt_lookup = True
-            elif next_k >= 1:
-                # Chain-of-K: generate ``next_k`` drafts cascaded via
-                # MTP. next_k==1 is the plain single-draft path.
-                d_toks, d_lps, d_alps, d_xtcs = _draft_chain_timed(
-                    hidden_at_main, main_tok, prev_tokens, next_k
+            # Drafter time is charged at most once, never twice. The draft is
+            # only built when this round is not the last one, so max_tokens
+            # still never pays for a draft nobody verifies; a caller that
+            # abandons the generator at the yield below (EOS, disconnect)
+            # leaves one launched chain unconsumed and its carried
+            # ``pending_draft_ms`` unrecorded, which costs the cost model one
+            # sample at request end and can never double-charge a round
+            # (codex #1441 guarded the same invariant when drafting was the
+            # last thing a round did).
+            if not round_done:
+                next_k = (
+                    _controller.pick_k()
+                    if _select_k and _controller is not None
+                    else max_k_effective
                 )
-                pending_drafts = list(zip(d_toks, d_lps, d_alps, d_xtcs))
-                pending_is_prompt_lookup = False
-            else:
-                # Parking again: no draft. Next round enters this
-                # branch with ``pending_drafts is None`` and pays no
-                # drafter cost — the whole point of park.
-                pending_drafts = None
-                pending_is_prompt_lookup = False
-            y = mx.array([main_tok.item()], mx.uint32)
+
+                hidden_at_main = hidden[:, -1:, :]
+                lookup_drafts = _prompt_lookup_drafts()
+                if lookup_drafts is not None:
+                    pending_drafts = lookup_drafts
+                    pending_is_prompt_lookup = True
+                elif next_k >= 1:
+                    # Chain-of-K: generate ``next_k`` drafts cascaded via
+                    # MTP. next_k==1 is the plain single-draft path.
+                    d_toks, d_lps, d_alps, d_xtcs = _draft_chain_timed(
+                        hidden_at_main, main_tok, prev_tokens, next_k
+                    )
+                    pending_drafts = list(zip(d_toks, d_lps, d_alps, d_xtcs))
+                    pending_is_prompt_lookup = False
+                else:
+                    # Parking again: no draft. Next round enters this
+                    # branch with ``pending_drafts is None`` and pays no
+                    # drafter cost — the whole point of park.
+                    pending_drafts = None
+                    pending_is_prompt_lookup = False
+                y = mx.array([main_tok_id], mx.uint32)
+
+            # No guard rewind is needed around this yield the way the verify
+            # branch needs one for its emissions: ``_draft_chain_timed``
+            # already restores the transactional processors in a ``finally``,
+            # because draft-side interventions shape q(d) but only
+            # target-verified, delivered positions may advance processor
+            # state. So the caller is handed the state its own token
+            # committed even though drafting now runs first.
+            yield main_tok_id, main_lp, False
+            if round_done:
+                return
         else:
             # -------------------------------------------------------
             # Verify path with K = len(pending_drafts) drafts.
@@ -1336,10 +1372,44 @@ def mtp_generate_step(
                 verify_depth = len(accepts_for_record) if eos_cut else k_len
                 accept_counter.record_verify(verify_depth, accepted_count)
 
+            # Hold this round's emissions, hand them over only after the
+            # next chain is launched (see ``_launch_drafts``): the caller's
+            # per-token work runs inside our ``yield``, so drafting first
+            # overlaps the drafter forward with it instead of queueing the
+            # forward behind it on an idle GPU. Delivery order and the
+            # ``max_tokens`` cut are unchanged -- ``round_done`` stands in for
+            # the ``return`` each emission point used to take, so a capped
+            # round still skips the bonus / residual / drafter tail.
+            #
+            # Two pieces of state must advance in lockstep with DELIVERY
+            # rather than with this collection pass, because both outlive a
+            # caller that stops pulling mid-round:
+            #
+            # * The transactional processors. Each entry carries the snapshot
+            #   its position captured during verification and delivery
+            #   restores it just before the token goes out, so an abandoned
+            #   round leaves the guards at the last DELIVERED prefix.
+            #   Restores are absolute, so replaying them in order reproduces
+            #   the old per-yield walk even though the drafter below has
+            #   already run at the round's final state.
+            # * ``accept_counter``, which is a process-global metrics counter
+            #   shared by every request. Recording a whole round's accepts up
+            #   front would publish accepted-but-undelivered tokens as saved
+            #   ones whenever a caller stops early (stop string, disconnect),
+            #   so each entry carries the accounting its delivery owes and
+            #   the delivery loop runs it. The DEPTH CONTROLLER is not on this
+            #   path -- ``_record_round`` above already fed it the round's
+            #   outcome, before any of this -- so deferring the counter cannot
+            #   make ``pick_k`` read stale acceptance.
+            #
+            # ``_remember_generated`` deliberately stays here: it feeds this
+            # request's own prompt-lookup history, which dies with the
+            # generator, so an abandoned round cannot leak it anywhere.
+            emissions: list[tuple[int, Any, Any, bool, str | None]] = []
+            round_done = False
+
             # Emit the accepted drafts (capped at EOS position when set).
             for i in range(accepted_count):
-                _restore_processor_state(processor_position_states[i])
-                accept_counter.record_accept(tokens_saved=1)
                 ntoks += 1
                 draft_id = int(draft_ids[i])
                 _remember_generated(draft_id)
@@ -1348,9 +1418,12 @@ def mtp_generate_step(
                 # drafter row here leaks q(token) to API clients instead of the
                 # verified target p(token); the distributions legitimately
                 # differ on a probabilistically accepted proposal.
-                yield draft_id, lps[i], True
+                emissions.append(
+                    (draft_id, lps[i], processor_position_states[i], True, "accept")
+                )
                 if ntoks >= max_tokens:
-                    return
+                    round_done = True
+                    break
 
             if eos_cut:
                 # Emitted EOS via an accepted draft. Caller will detect
@@ -1359,115 +1432,157 @@ def mtp_generate_step(
                 # the un-emitted drafts past EOS still committed to it,
                 # but the request terminates here so the cache is
                 # discarded by the scheduler at request boundary.
-                return
+                round_done = True
 
-            if accepted_count == k_len:
-                # All K drafts accepted → emit the bonus token
-                # (target's prediction one past the last draft).
-                _clear_rollback()
-                if pending_is_prompt_lookup:
-                    _sync_prompt_lookup_history(hidden, y, drafts_arr, accepted_count)
-                ntoks += 1
-                _remember_generated(bonus_id)
-                _restore_processor_state(processor_position_states[k_len])
-                yield bonus_id, lps[k_len], False
-                if ntoks >= max_tokens:
-                    return
-                last_committed_tok_id = bonus_id
-                last_committed_hidden = hidden[:, k_len : k_len + 1, :]
-                y = mx.array([bonus_id], mx.uint32)
-            else:
-                # Reject at position ``accepted_count``. Emit target's
-                # pre-sampled residual there (byte-equal to the prior
-                # ``verify_pred.item()`` on greedy since residual ==
-                # target argmax at temp=0), and drop the remaining
-                # (k_len - accepted_count) unaccepted drafts from the
-                # caches.
-                n_to_drop = k_len - accepted_count
-                if pending_is_prompt_lookup:
-                    _rollback_draft(n_to_drop, verify_size=k_len + 1)
-                    _sync_prompt_lookup_history(hidden, y, drafts_arr, accepted_count)
-                else:
-                    _rollback_verify_round(n_to_drop, verify_size=k_len + 1)
-                accept_counter.record_reject()
-                if logits_processors and prev_tokens is not None:
-                    # Discard the ``n_to_drop`` rejected positions
-                    # from prev_tokens (they were appended by
-                    # _step_backbone during the batched verify).
-                    prev_tokens = prev_tokens[:-n_to_drop]
-
-                verify_tok_id = int(residual_ids[accepted_count])
-
-                ntoks += 1
-                _remember_generated(verify_tok_id)
-                _restore_processor_state(processor_position_states[accepted_count])
-                # ``lps[position]`` is the full target-model logprob row, not
-                # a scalar attached to the independently pre-sampled
-                # ``toks[position]``.  Indexing this row later with the emitted
-                # residual token therefore reports its target probability,
-                # while rejection sampling preserves the target marginal.
-                yield verify_tok_id, lps[accepted_count], False
-                if ntoks >= max_tokens:
-                    return
-                last_committed_tok_id = verify_tok_id
-                # hidden at position ``accepted_count`` is the state
-                # AFTER the last accepted draft (or after y when
-                # accepted_count=0) — this is what MTP conditions on
-                # for the next draft chain.
-                last_committed_hidden = hidden[
-                    :, accepted_count : accepted_count + 1, :
-                ]
-                y = mx.array([verify_tok_id], mx.uint32)
-
-            # Decide K for the next round BEFORE generating the
-            # next chain (a park decision skips drafter cost).
-            next_k = (
-                _controller.pick_k()
-                if _select_k and _controller is not None
-                else max_k_effective
-            )
-            lookup_drafts = _prompt_lookup_drafts()
-            if lookup_drafts is not None:
-                pending_drafts = lookup_drafts
-                pending_is_prompt_lookup = True
-            elif next_k >= 1:
-                # Chain-carry: on all-accept the mtp_cache must
-                # advance by one extra position for the just-accepted
-                # LAST draft so the head's attention sees it before
-                # predicting the next round's first draft. The old
-                # K=1 code did this via ``cache_commit`` on the
-                # single _step_mtp call, which batched
-                # ``(align_h=hidden_at_last_accepted_pre, align_tok=
-                # accepted_draft, next_id=bonus_tok)`` into one
-                # mtp_forward with 2 positions. We replicate here
-                # only when this round was all-accept — on partial
-                # accept the reject path already trims mtp_cache to
-                # ``accepted_count`` positions and the residual
-                # doesn't need a carry (its own hidden is what the
-                # first chain call conditions on).
+            if not round_done:
                 if accepted_count == k_len:
-                    # Position of last accepted draft is at index
-                    # ``accepted_count - 1`` in the k+1-length hidden.
-                    # For k_len=1 all-accept, this is hidden[:, 0:1].
-                    align_h = hidden[:, accepted_count - 1 : accepted_count, :]
-                    align_tok = draft_toks_arr[accepted_count - 1]
-                    cache_commit = (align_h, align_tok)
+                    # All K drafts accepted → emit the bonus token
+                    # (target's prediction one past the last draft).
+                    _clear_rollback()
+                    if pending_is_prompt_lookup:
+                        _sync_prompt_lookup_history(
+                            hidden, y, drafts_arr, accepted_count
+                        )
+                    ntoks += 1
+                    _remember_generated(bonus_id)
+                    emissions.append(
+                        (
+                            bonus_id,
+                            lps[k_len],
+                            processor_position_states[k_len],
+                            False,
+                            None,
+                        )
+                    )
+                    if ntoks >= max_tokens:
+                        round_done = True
+                    else:
+                        last_committed_tok_id = bonus_id
+                        last_committed_hidden = hidden[:, k_len : k_len + 1, :]
+                        y = mx.array([bonus_id], mx.uint32)
                 else:
-                    cache_commit = None
-                last_committed_tok = mx.array([last_committed_tok_id], mx.uint32)
-                d_toks, d_lps, d_alps, d_xtcs = _draft_chain_timed(
-                    last_committed_hidden,
-                    last_committed_tok,
-                    prev_tokens,
-                    next_k,
-                    cache_commit=cache_commit,
-                )
-                pending_drafts = list(zip(d_toks, d_lps, d_alps, d_xtcs))
-                pending_is_prompt_lookup = False
-            else:
-                pending_drafts = None
-                pending_is_prompt_lookup = False
+                    # Reject at position ``accepted_count``. Emit target's
+                    # pre-sampled residual there (byte-equal to the prior
+                    # ``verify_pred.item()`` on greedy since residual ==
+                    # target argmax at temp=0), and drop the remaining
+                    # (k_len - accepted_count) unaccepted drafts from the
+                    # caches.
+                    n_to_drop = k_len - accepted_count
+                    if pending_is_prompt_lookup:
+                        _rollback_draft(n_to_drop, verify_size=k_len + 1)
+                        _sync_prompt_lookup_history(
+                            hidden, y, drafts_arr, accepted_count
+                        )
+                    else:
+                        _rollback_verify_round(n_to_drop, verify_size=k_len + 1)
+                    if logits_processors and prev_tokens is not None:
+                        # Discard the ``n_to_drop`` rejected positions
+                        # from prev_tokens (they were appended by
+                        # _step_backbone during the batched verify).
+                        prev_tokens = prev_tokens[:-n_to_drop]
 
+                    verify_tok_id = int(residual_ids[accepted_count])
+
+                    ntoks += 1
+                    _remember_generated(verify_tok_id)
+                    # ``lps[position]`` is the full target-model logprob row,
+                    # not a scalar attached to the independently pre-sampled
+                    # ``toks[position]``.  Indexing this row later with the
+                    # emitted residual token therefore reports its target
+                    # probability, while rejection sampling preserves the
+                    # target marginal.
+                    emissions.append(
+                        (
+                            verify_tok_id,
+                            lps[accepted_count],
+                            processor_position_states[accepted_count],
+                            False,
+                            "reject",
+                        )
+                    )
+                    if ntoks >= max_tokens:
+                        round_done = True
+                    else:
+                        last_committed_tok_id = verify_tok_id
+                        # hidden at position ``accepted_count`` is the state
+                        # AFTER the last accepted draft (or after y when
+                        # accepted_count=0) — this is what MTP conditions on
+                        # for the next draft chain.
+                        last_committed_hidden = hidden[
+                            :, accepted_count : accepted_count + 1, :
+                        ]
+                        y = mx.array([verify_tok_id], mx.uint32)
+
+            if not round_done:
+                # The drafter reads processor state, so it has to see the
+                # round's last committed position -- the state the old
+                # per-yield walk left behind when it drafted last.
+                if emissions:
+                    _restore_processor_state(emissions[-1][2])
+                # Decide K for the next round BEFORE generating the
+                # next chain (a park decision skips drafter cost).
+                next_k = (
+                    _controller.pick_k()
+                    if _select_k and _controller is not None
+                    else max_k_effective
+                )
+                lookup_drafts = _prompt_lookup_drafts()
+                if lookup_drafts is not None:
+                    pending_drafts = lookup_drafts
+                    pending_is_prompt_lookup = True
+                elif next_k >= 1:
+                    # Chain-carry: on all-accept the mtp_cache must
+                    # advance by one extra position for the just-accepted
+                    # LAST draft so the head's attention sees it before
+                    # predicting the next round's first draft. The old
+                    # K=1 code did this via ``cache_commit`` on the
+                    # single _step_mtp call, which batched
+                    # ``(align_h=hidden_at_last_accepted_pre, align_tok=
+                    # accepted_draft, next_id=bonus_tok)`` into one
+                    # mtp_forward with 2 positions. We replicate here
+                    # only when this round was all-accept — on partial
+                    # accept the reject path already trims mtp_cache to
+                    # ``accepted_count`` positions and the residual
+                    # doesn't need a carry (its own hidden is what the
+                    # first chain call conditions on).
+                    if accepted_count == k_len:
+                        # Position of last accepted draft is at index
+                        # ``accepted_count - 1`` in the k+1-length hidden.
+                        # For k_len=1 all-accept, this is hidden[:, 0:1].
+                        align_h = hidden[:, accepted_count - 1 : accepted_count, :]
+                        align_tok = draft_toks_arr[accepted_count - 1]
+                        cache_commit = (align_h, align_tok)
+                    else:
+                        cache_commit = None
+                    last_committed_tok = mx.array([last_committed_tok_id], mx.uint32)
+                    d_toks, d_lps, d_alps, d_xtcs = _draft_chain_timed(
+                        last_committed_hidden,
+                        last_committed_tok,
+                        prev_tokens,
+                        next_k,
+                        cache_commit=cache_commit,
+                    )
+                    pending_drafts = list(zip(d_toks, d_lps, d_alps, d_xtcs))
+                    pending_is_prompt_lookup = False
+                else:
+                    pending_drafts = None
+                    pending_is_prompt_lookup = False
+
+            for (
+                _emit_tok_id,
+                _emit_lp,
+                _emit_state,
+                _emit_from_draft,
+                _emit_accounting,
+            ) in emissions:
+                _restore_processor_state(_emit_state)
+                if _emit_accounting == "accept":
+                    accept_counter.record_accept(tokens_saved=1)
+                elif _emit_accounting == "reject":
+                    accept_counter.record_reject()
+                yield _emit_tok_id, _emit_lp, _emit_from_draft
+            if round_done:
+                return
         block = ntoks // _CACHE_CLEAR_INTERVAL
         if block > last_cache_block:
             mx.clear_cache()
