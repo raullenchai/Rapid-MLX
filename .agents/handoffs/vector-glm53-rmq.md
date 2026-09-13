@@ -27,6 +27,9 @@
   decision to vendor it.
 - Tiny-fixture quality results validate numerics, not full-model intelligence.
 - Short-prompt prefill cost regresses when a separate drafter is loaded.
+- The two current E2E probes are decode diagnostics, not a realistic quality
+  suite. Coding execution, knowledge answer keys, instruction checks, blind
+  creative-writing review, and long-context tasks remain mandatory.
 
 ## Next action
 
