@@ -30,9 +30,67 @@ CONTENTS="$APP/Contents"
 
 CONFIG="${RAPID_BUILD_CONFIG:-release}"
 
+# A signed release spends roughly the same amount of time compiling Swift as it
+# does assembling and signing the Python sidecar.  They share only read-only
+# source inputs and write to disjoint staging directories, so the release action
+# may overlap them on the same trusted runner.  Local/ad-hoc builds retain the
+# serial path (and its sidecar cache) unless explicitly promoted to a signed
+# build by the caller.
+ENGINE_ROOT="${RAPID_MLX_ENGINE_ROOT:-$(cd "$ROOT/../.." && pwd)}"
+SKIP_SIDECAR="${SKIP_SIDECAR:-0}"
+SIDECAR_SCRIPT="$ROOT/scripts/build-sidecar.sh"
+SIDECAR_STAGE="$ROOT/build/sidecar-stage"
+SIDECAR_CACHE_STAMP="$SIDECAR_STAGE/.rapid-sidecar-cache-key"
+PARALLEL_SIDECAR_BUILD="${PARALLEL_SIDECAR_BUILD:-0}"
+SIDECAR_BUILD_PID=""
+SIDECAR_BUILD_LOG=""
+SIDECAR_BUILD_STARTED=0
+
+cleanup_parallel_sidecar() {
+    local status=$?
+    if [[ -n "$SIDECAR_BUILD_PID" ]]; then
+        if kill -0 "$SIDECAR_BUILD_PID" 2>/dev/null; then
+            kill "$SIDECAR_BUILD_PID" 2>/dev/null || true
+        fi
+        wait "$SIDECAR_BUILD_PID" 2>/dev/null || true
+        if [[ -f "$SIDECAR_BUILD_LOG" ]]; then
+            echo "==> sidecar build log (app build exited before join)"
+            cat "$SIDECAR_BUILD_LOG"
+        fi
+    fi
+    return "$status"
+}
+trap cleanup_parallel_sidecar EXIT
+
+if [[ "$PARALLEL_SIDECAR_BUILD" == "1" \
+    && "$SKIP_SIDECAR" != "1" \
+    && "${CODESIGN_IDENTITY:--}" != "-" ]]; then
+    if [[ ! -f "$SIDECAR_SCRIPT" ]]; then
+        echo "ERR: scripts/build-sidecar.sh missing: $SIDECAR_SCRIPT" >&2
+        exit 1
+    fi
+    if [[ ! -d "$ENGINE_ROOT" || ! -f "$ENGINE_ROOT/pyproject.toml" ]]; then
+        echo "ERR: rapid-mlx engine source missing: $ENGINE_ROOT" >&2
+        exit 1
+    fi
+    mkdir -p "$ROOT/build" "${RUNNER_TEMP:-$ROOT/build}"
+    SIDECAR_BUILD_LOG="${RUNNER_TEMP:-$ROOT/build}/rapid-sidecar-build-$$.log"
+    rm -rf "$SIDECAR_STAGE"
+    echo "==> starting signed sidecar build beside Swift compilation"
+    bash "$SIDECAR_SCRIPT" \
+        --out "$SIDECAR_STAGE" \
+        --developer-id "$CODESIGN_IDENTITY" \
+        >"$SIDECAR_BUILD_LOG" 2>&1 &
+    SIDECAR_BUILD_PID=$!
+    SIDECAR_BUILD_STARTED=$SECONDS
+fi
+
 cd "$ROOT"
 echo "==> swift build -c $CONFIG"
+SWIFT_BUILD_STARTED=$SECONDS
 swift build -c "$CONFIG"
+SWIFT_BUILD_SECONDS=$((SECONDS - SWIFT_BUILD_STARTED))
+echo "==> Swift compilation completed in ${SWIFT_BUILD_SECONDS}s"
 
 echo "==> assembling Rapid-MLX Desktop.app"
 rm -rf "$APP"
@@ -294,9 +352,6 @@ fi
 # the same location; we compute it here too so the preflight check and
 # the cache-key/version derivation below agree with what the sidecar
 # build will actually pip-install.
-ENGINE_ROOT="${RAPID_MLX_ENGINE_ROOT:-$(cd "$ROOT/../.." && pwd)}"
-SKIP_SIDECAR="${SKIP_SIDECAR:-0}"
-SIDECAR_SCRIPT="$ROOT/scripts/build-sidecar.sh"
 if [[ "$SKIP_SIDECAR" == "1" ]]; then
     echo "==> SKIPPING sidecar bundling (SKIP_SIDECAR=1)"
 elif [[ ! -f "$SIDECAR_SCRIPT" ]]; then
@@ -313,8 +368,6 @@ elif [[ ! -d "$ENGINE_ROOT" || ! -f "$ENGINE_ROOT/pyproject.toml" ]]; then
     echo "     or set SKIP_SIDECAR=1 for a dev build without a bundled engine." >&2
     exit 1
 else
-    SIDECAR_STAGE="$ROOT/build/sidecar-stage"
-    SIDECAR_CACHE_STAMP="$SIDECAR_STAGE/.rapid-sidecar-cache-key"
     FORCE_SIDECAR_REBUILD="${FORCE_SIDECAR_REBUILD:-0}"
     SIDECAR_CACHE_KEY=""
     SIDECAR_CACHE_HIT=0
@@ -359,7 +412,25 @@ else
         # Python can't reliably do).
         SIDECAR_ARGS+=(--skip-codesign --skip-verify)
     fi
-    if [[ "$SIDECAR_CACHE_HIT" == "1" ]]; then
+    if [[ -n "$SIDECAR_BUILD_PID" ]]; then
+        echo "==> waiting for parallel rapid-mlx sidecar"
+        SIDECAR_JOIN_STARTED=$SECONDS
+        if wait "$SIDECAR_BUILD_PID"; then
+            SIDECAR_BUILD_STATUS=0
+        else
+            SIDECAR_BUILD_STATUS=$?
+        fi
+        SIDECAR_BUILD_SECONDS=$((SECONDS - SIDECAR_BUILD_STARTED))
+        SIDECAR_JOIN_SECONDS=$((SECONDS - SIDECAR_JOIN_STARTED))
+        SIDECAR_BUILD_PID=""
+        cat "$SIDECAR_BUILD_LOG"
+        rm -f "$SIDECAR_BUILD_LOG"
+        if [[ "$SIDECAR_BUILD_STATUS" -ne 0 ]]; then
+            echo "ERR: parallel rapid-mlx sidecar build failed ($SIDECAR_BUILD_STATUS)" >&2
+            exit "$SIDECAR_BUILD_STATUS"
+        fi
+        echo "::notice::parallel build timing: Swift ${SWIFT_BUILD_SECONDS}s; sidecar ${SIDECAR_BUILD_SECONDS}s; join wait ${SIDECAR_JOIN_SECONDS}s"
+    elif [[ "$SIDECAR_CACHE_HIT" == "1" ]]; then
         echo "==> reusing cached rapid-mlx sidecar (${SIDECAR_SOURCE_SHA:0:12})"
         echo "    set FORCE_SIDECAR_REBUILD=1 to rebuild Python dependencies"
     else

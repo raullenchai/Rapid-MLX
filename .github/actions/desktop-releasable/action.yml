@@ -214,6 +214,9 @@ runs:
         SPARKLE_PUBLIC_ED_KEY: ${{ inputs.signed == 'true' && inputs.SPARKLE_PUBLIC_ED_KEY || '' }}
         RAPID_CANDIDATE_IDENTITY: ${{ inputs.candidate_identity }}
         SIGNED: ${{ inputs.signed }}
+        # Release builds have a fresh sidecar stage and a trusted signing
+        # identity, so overlap that independent work with Swift compilation.
+        PARALLEL_SIDECAR_BUILD: ${{ inputs.signed == 'true' && '1' || '0' }}
       shell: bash
       run: |
         set -euo pipefail

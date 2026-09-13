@@ -56,3 +56,36 @@ def test_build_script_validates_and_embeds_separate_candidate_key() -> None:
     for version_key in ("CFBundleVersion", "CFBundleShortVersionString"):
         assert f"plutil -insert {version_key}" not in text
         assert f"plutil -replace {version_key}" not in text
+
+
+def test_signed_release_overlaps_sidecar_with_swift_and_joins_before_staging() -> None:
+    text = BUILD.read_text()
+    action = yaml.safe_load(ACTION.read_text())
+    build_step = next(
+        step
+        for step in action["runs"]["steps"]
+        if step.get("name") == "Build + sign Rapid-MLX Desktop.app"
+    )
+
+    assert build_step["env"]["PARALLEL_SIDECAR_BUILD"] == (
+        "${{ inputs.signed == 'true' && '1' || '0' }}"
+    )
+    start = text.index("starting signed sidecar build beside Swift compilation")
+    swift = text.index('echo "==> swift build -c $CONFIG"')
+    join = text.index('echo "==> waiting for parallel rapid-mlx sidecar"')
+    stage = text.index(
+        'cp -R "$SIDECAR_STAGE/rapid-mlx" "$CONTENTS/Resources/rapid-mlx"'
+    )
+    assert start < swift < join < stage
+    assert "parallel build timing: Swift" in text
+
+
+def test_parallel_sidecar_failure_and_early_app_exit_are_fail_closed() -> None:
+    text = BUILD.read_text()
+
+    assert "trap cleanup_parallel_sidecar EXIT" in text
+    assert 'kill "$SIDECAR_BUILD_PID"' in text
+    assert 'wait "$SIDECAR_BUILD_PID"' in text
+    assert 'if [[ "$SIDECAR_BUILD_STATUS" -ne 0 ]]' in text
+    assert 'exit "$SIDECAR_BUILD_STATUS"' in text
+    assert '"${CODESIGN_IDENTITY:--}" != "-"' in text
