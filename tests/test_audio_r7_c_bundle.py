@@ -9,9 +9,9 @@ Three findings:
   in the upsample interpolation produces ``noise_amp`` shape
   ``(1, 36600, 1)`` while ``sine_waves`` is ``(1, 36900, 9)`` —
   ``noise = noise_amp * mx.random.normal(sine_waves.shape)`` then
-  raises ``[broadcast_shapes] ... cannot be broadcast``. ``mlx-audio
-  ==0.4.3`` does NOT have the regression. Fix pins the dep to
-  ``<0.4.4``. The catch-all also now logs the FULL traceback at
+  raises ``[broadcast_shapes] ... cannot be broadcast``. The original
+  fix pinned below 0.4.4; the current supported line starts at 0.5.3,
+  where the regression is fixed. The catch-all also logs the FULL traceback at
   ``exception`` level so future incidents are diagnosable from the
   operator log (the pre-fix log had only the leaf message).
 
@@ -543,19 +543,18 @@ class TestSpeechCatchAllShape:
 
 
 # ---------------------------------------------------------------------------
-# R7-H3 — pyproject pins mlx-audio<0.4.4
+# R7-H3 — pyproject excludes the broken mlx-audio line
 # ---------------------------------------------------------------------------
 
 
 class TestMlxAudioVersionPin:
-    """The R7-H3 fix is upstream — mlx-audio 0.4.4 broke
-    ``istftnet.SineGen``. Pin the dep below 0.4.4 in pyproject.toml so
-    a fresh ``pip install rapid-mlx[audio]`` doesn't pull the broken
-    release. The test parses pyproject.toml verbatim so a future
-    contributor that loosens the bound trips CI.
+    """The supported line contains both the Kokoro and Silero fixes.
+
+    The test parses pyproject.toml verbatim so a future contributor cannot
+    silently re-admit the broken 0.4.x releases or an unqualified new major.
     """
 
-    def test_mlx_audio_upper_bound_pins_below_0_4_4(self):
+    def test_mlx_audio_pin_starts_at_qualified_0_5_3_line(self):
         from pathlib import Path
 
         try:
@@ -572,13 +571,19 @@ class TestMlxAudioVersionPin:
             f"Expected exactly one mlx-audio pin, found {mlx_audio_specs}"
         )
         spec = mlx_audio_specs[0]
-        # Both the floor AND the upper-bound matter. The floor is
-        # historical; the upper-bound is the R7-H3 fix.
-        assert "<0.4.4" in spec, (
-            f"R7-H3 regression: mlx-audio must be pinned ``<0.4.4`` to "
-            f"avoid the istftnet SineGen broadcast_shapes regression. "
-            f"Current pin: {spec!r}"
+        assert ">=0.5.3" in spec and "<0.6" in spec, (
+            "mlx-audio must retain the qualified 0.5.3 minor line for the "
+            f"Kokoro and Silero fixes; current pin: {spec!r}"
         )
+
+    def test_installed_audio_runtime_contains_silero_vad(self):
+        import importlib.util
+
+        if importlib.util.find_spec("mlx_audio") is None:
+            pytest.skip("audio extra is not installed in this test lane")
+        assert (
+            importlib.util.find_spec("mlx_audio.vad.models.silero_vad") is not None
+        ), "the supported mlx-audio runtime must include the Silero VAD architecture"
 
 
 # ---------------------------------------------------------------------------

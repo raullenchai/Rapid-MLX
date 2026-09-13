@@ -89,7 +89,7 @@ REQUIRED_TEST_PACKAGES: tuple[tuple[str, str, str], ...] = (
     ),
     (
         "mlx_audio",
-        "mlx-audio>=0.2.9,<0.4.4; platform_system == 'Darwin'",
+        "mlx-audio>=0.5.3,<0.6; platform_system == 'Darwin'",
         "audio route tests expect mlx-audio importability",
     ),
 )
@@ -175,7 +175,7 @@ TRUSTED_TEST_PINS: tuple[str, ...] = (
     "aiohttp>=3.9.0,<4",
     "pillow>=10.0.0,<13",
     "mlx-vlm>=0.6.3,<0.7; platform_system == 'Darwin'",
-    "mlx-audio>=0.2.9,<0.4.4; platform_system == 'Darwin'",
+    "mlx-audio>=0.5.3,<0.6; platform_system == 'Darwin'",
 )
 
 

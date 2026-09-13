@@ -29,7 +29,7 @@ def test_audio_desktop_extra_stays_bounded() -> None:
     names = {_dependency_name(spec) for spec in specs}
 
     assert names == {"mlx-audio", "soundfile"}
-    assert "mlx-audio>=0.2.9,<0.4.4" in specs
+    assert "mlx-audio>=0.5.3,<0.6" in specs
     assert "soundfile>=0.12.0" in specs
 
 

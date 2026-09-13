@@ -242,7 +242,7 @@ all = [
     "mlx-embeddings>=0.1.0",
     # dflash (text-only path covered by mlx-vlm above; listed for clarity)
     # audio
-    "mlx-audio>=0.2.9,<0.4.4",
+    "mlx-audio>=0.5.3,<0.6",
     "f5-tts-mlx==0.2.6",
     "sounddevice>=0.4.0",
     "soundfile>=0.12.0",
@@ -303,7 +303,7 @@ test = [
     "aiohttp>=3.9.0",
     "pillow>=10.0.0",
     "mlx-vlm==0.6.17; platform_system == 'Darwin'",
-    "mlx-audio>=0.2.9,<0.4.4; platform_system == 'Darwin'",
+    "mlx-audio>=0.5.3,<0.6; platform_system == 'Darwin'",
     # Powers the property-based invariant suite in tests/property/ — encodes
     # numeric/validation invariants over the whole input space (e.g. the
     # #1208-class quantized-KV round-trip bounds) that example tests can't.
@@ -402,7 +402,7 @@ dev = [
     "aiohttp>=3.9.0",
     "pillow>=10.0.0",
     "mlx-vlm==0.6.17; platform_system == 'Darwin'",
-    "mlx-audio>=0.2.9,<0.4.4; platform_system == 'Darwin'",
+    "mlx-audio>=0.5.3,<0.6; platform_system == 'Darwin'",
     # Mirror of the [test] entry — keep `dev` a strict superset of `test`
     # (enforced by tests/test_pr_validate_test_env.py).
     "hypothesis>=6.100.0",
@@ -437,19 +437,11 @@ guided = [
 ]
 # Audio dependencies for TTS/STT (mlx-audio)
 audio = [
-    # R7-H3 (Bo 0.8.8 dogfood): pin BELOW 0.4.4. The 0.4.4 release
-    # regressed ``mlx_audio.tts.models.kokoro.istftnet.SineGen`` so the
-    # internal interpolation step produces an off-by-one length mismatch
-    # versus the noise tensor — every Kokoro request ends with
-    # ``[broadcast_shapes] Shapes (1,36600,1) and (1,36900,9) cannot be
-    # broadcast`` deep inside the istftnet generator. The rapid-mlx
-    # route's catch-all collapsed that into the opaque ``No audio
-    # generated`` 500 (the chunk loop swallowed the upstream raise).
-    # 0.4.3 (and earlier) does NOT have the regression — the same
-    # request returns a 73 KB WAV. Cap the upper bound until upstream
-    # ships a fix so every fresh ``pip install rapid-mlx[audio]``
-    # works out of the box.
-    "mlx-audio>=0.2.9,<0.4.4",
+    # 0.5.3 is the first qualified release that includes the Silero VAD
+    # architecture used by Rapid's Whisper silence guard and also contains
+    # the fix for the 0.4.4 Kokoro istftnet length regression. Keep a minor
+    # cap so audio runtime/API changes are adopted deliberately.
+    "mlx-audio>=0.5.3,<0.6",
     # F5-TTS (pure-MLX, no torch): EN+ZH multilingual + zero-shot voice cloning.
     # Fills the Chinese expressive/cloneable TTS gap. Standalone package (not an
     # mlx_audio family) — wired directly in audio/tts.py's `f5` branch.
@@ -500,7 +492,7 @@ audio = [
 # less capable while preventing the signed app from absorbing llvmlite,
 # spaCy, espeak, and language dictionaries it cannot drive from its UI.
 audio-desktop = [
-    "mlx-audio>=0.2.9,<0.4.4",
+    "mlx-audio>=0.5.3,<0.6",
     # vllm_mlx.audio.tts encodes the in-memory result with libsndfile.
     "soundfile>=0.12.0",
 ]
