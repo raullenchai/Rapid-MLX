@@ -1868,7 +1868,7 @@ class BatchedEngine(BaseEngine):
             # other MoE families and prefill widths keep their stock path.
             from ..qwen35_moe_router import install_qwen35_moe_router
 
-            self._model_load_executor.submit(
+            self._model_load_executor.submit(  # type: ignore[attr-defined]
                 install_qwen35_moe_router, self._model
             ).result()
 

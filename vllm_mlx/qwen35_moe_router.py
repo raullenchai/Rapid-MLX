@@ -214,9 +214,7 @@ def install_qwen35_moe_router(model: Any) -> int:
     if not block_classes or not callable(named_modules):
         return 0
 
-    blocks = [
-        module for _, module in named_modules() if type(module) in block_classes
-    ]
+    blocks = [module for _, module in named_modules() if type(module) in block_classes]
     if not blocks:
         return 0
     signatures = {

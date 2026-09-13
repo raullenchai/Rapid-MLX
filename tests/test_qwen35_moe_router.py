@@ -3,6 +3,8 @@
 
 from __future__ import annotations
 
+import builtins
+import sys
 from types import SimpleNamespace
 
 import pytest
@@ -44,6 +46,15 @@ def test_kernel_matches_argpartition_tie_order():
     mx.eval(expected_i, expected_s, actual_i, actual_s)
     assert mx.array_equal(actual_i, expected_i)
     assert mx.array_equal(actual_s, expected_s)
+
+
+def test_probe_rejects_a_numerically_different_kernel(monkeypatch):
+    def wrong(probs, top_k):
+        shape = (*probs.shape[:-1], top_k)
+        return mx.zeros(shape, dtype=mx.uint32), mx.zeros(shape, dtype=probs.dtype)
+
+    monkeypatch.setattr(router, "fused_router_topk", wrong)
+    assert not router._probe(256, 8, mx.bfloat16)
 
 
 def test_eligibility_is_model_local_and_decode_only():
@@ -101,6 +112,95 @@ def test_install_honors_disable_switch(monkeypatch):
 
 def test_install_ignores_non_module_model_placeholder():
     assert router.install_qwen35_moe_router(object()) == 0
+
+
+def test_install_fails_closed_without_metal(monkeypatch):
+    monkeypatch.setattr(mx.metal, "is_available", lambda: False)
+    assert router.install_qwen35_moe_router(object()) == 0
+
+
+def test_install_fails_closed_when_text_backend_class_is_unavailable(monkeypatch):
+    original_import = builtins.__import__
+
+    def rejecting_import(name, *args, **kwargs):
+        if name == "mlx_lm.models.qwen3_next":
+            raise ImportError("backend class unavailable")
+        return original_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", rejecting_import)
+    monkeypatch.delitem(
+        sys.modules, "mlx_vlm.models.qwen3_5_moe.language", raising=False
+    )
+    model = SimpleNamespace(named_modules=lambda: iter(()))
+    assert router.install_qwen35_moe_router(model) == 0
+
+
+def test_install_enrolls_already_loaded_vision_backend_class(monkeypatch):
+    class VisionBlock:
+        pass
+
+    block = VisionBlock()
+    block.num_experts = 256
+    block.top_k = 8
+    block.norm_topk_prob = True
+    module = SimpleNamespace(Qwen3_5MoeSparseMoeBlock=VisionBlock)
+    monkeypatch.setitem(sys.modules, "mlx_vlm.models.qwen3_5_moe.language", module)
+    monkeypatch.setattr(router, "_probe", lambda *args: True)
+    monkeypatch.setattr(router, "_patch_class", lambda _cls: None)
+    model = SimpleNamespace(named_modules=lambda: iter((("mlp", block),)))
+
+    assert router.install_qwen35_moe_router(model) == 1
+    assert getattr(block, router._TAG)
+
+
+@pytest.mark.parametrize("probe_result", [False, RuntimeError("probe failed")])
+def test_install_fails_closed_when_parity_probe_does_not_pass(
+    monkeypatch, probe_result
+):
+    from mlx_lm.models.qwen3_next import Qwen3NextSparseMoeBlock
+
+    block = Qwen3NextSparseMoeBlock.__new__(Qwen3NextSparseMoeBlock)
+    nn.Module.__init__(block)
+    block.num_experts = 256
+    block.top_k = 8
+    block.norm_topk_prob = True
+    model = SimpleNamespace(named_modules=lambda: iter((("mlp", block),)))
+
+    def probe(*args):
+        if isinstance(probe_result, Exception):
+            raise probe_result
+        return probe_result
+
+    monkeypatch.setattr(router, "_probe", probe)
+    assert router.install_qwen35_moe_router(model) == 0
+    assert not getattr(block, router._TAG, False)
+
+
+def test_patched_class_keeps_stock_fallback_and_matches_fused_composition(monkeypatch):
+    class Block:
+        def __call__(self, x):
+            return "stock"
+
+    block = Block()
+    block.num_experts = 256
+    block.top_k = 8
+    block.norm_topk_prob = True
+    block.sharding_group = None
+    setattr(block, router._TAG, True)
+    block.gate = lambda x: mx.zeros((*x.shape[:-1], 256), dtype=x.dtype)
+    block.switch_mlp = lambda x, indices: mx.ones((*x.shape[:-1], 8, 2), dtype=x.dtype)
+    block.shared_expert = lambda x: mx.ones((*x.shape[:-1], 2), dtype=x.dtype)
+    block.shared_expert_gate = lambda x: mx.zeros((*x.shape[:-1], 2), dtype=x.dtype)
+    indices = mx.zeros((1, 1, 8), dtype=mx.uint32)
+    scores = mx.full((1, 1, 8), 0.125, dtype=mx.bfloat16)
+    monkeypatch.setattr(router, "fused_router_topk", lambda *_: (indices, scores))
+
+    router._patch_class(Block)
+    assert block(mx.zeros((1, 9, 2), dtype=mx.bfloat16)) == "stock"
+    output = block(mx.zeros((1, 1, 2), dtype=mx.bfloat16))
+    mx.eval(output)
+    assert mx.array_equal(output, mx.full((1, 1, 2), 1.5, dtype=mx.bfloat16))
+    router._patch_class(Block)
 
 
 def test_mllm_load_enrolls_qwen_moe_optimizations(monkeypatch):
