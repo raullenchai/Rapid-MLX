@@ -3083,6 +3083,20 @@ def _salvage_forced_scalar_arguments(
     if isinstance(value, float) and not math.isfinite(value):
         return None
 
+    # A parser-wire fragment is not a user scalar.  Small models sometimes
+    # recover from a malformed forced-call body by emitting the body itself as
+    # a quoted value, for example ``<malformed_json_arguments>...`` followed by
+    # ``</parameter></function>``.  The single-property salvage above would
+    # otherwise wrap that protocol debris as ``{"city": "..."}``; it then
+    # satisfies JSON Schema's plain ``string`` type and is returned as an
+    # executable 200 response.  Reuse the route's complete wire-marker registry
+    # so every supported parser family fails closed here.  Ordinary strings
+    # that merely discuss JSON or contain angle brackets remain salvageable.
+    if isinstance(value, str) and (
+        "<malformed_json_arguments>" in value or _contains_tool_wire_literal(value)
+    ):
+        return None
+
     # Type-match gate: the scalar must fit the single required property's type.
     if ptype == "string":
         if isinstance(value, (str,)) and not isinstance(value, bool):

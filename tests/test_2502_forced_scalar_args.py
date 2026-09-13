@@ -173,6 +173,45 @@ class TestSalvageForcedScalarArguments:
             == '{"url": "https://example.com"}'
         )
 
+    def test_parser_wire_fragment_never_salvages_as_user_string(self):
+        # MZR-3 dogfood: Qwen3.5-4B deterministically emitted this recovery
+        # sentinel after a malformed named forced call.  It is valid JSON once
+        # quoted, and ``string`` accepts it, but it is parser protocol debris —
+        # never an executable city argument.
+        debris = (
+            '<malformed_json_arguments>{"name": "weather", "arguments": 0}\n'
+            "</parameter>\n</function>"
+        )
+        assert _salvage_forced_scalar_arguments("weather", debris, [_WEATHER]) is None
+        assert (
+            _salvage_forced_scalar_arguments("weather", json.dumps(debris), [_WEATHER])
+            is None
+        )
+        # The sentinel is independently disqualifying even if truncation drops
+        # every closing wire marker.
+        assert (
+            _salvage_forced_scalar_arguments(
+                "weather", "<malformed_json_arguments>truncated", [_WEATHER]
+            )
+            is None
+        )
+        # Registered wire markers are independently disqualifying.  This keeps
+        # the marker-registry arm covered even if the sentinel check changes.
+        assert (
+            _salvage_forced_scalar_arguments(
+                "weather", "truncated</parameter></function>", [_WEATHER]
+            )
+            is None
+        )
+
+    def test_angle_bracket_prose_without_wire_marker_still_salvages(self):
+        # Keep the gate tied to known parser markers, not arbitrary angle
+        # brackets that can be legitimate user data.
+        value = "temperature < 20 C"
+        assert _salvage_forced_scalar_arguments("weather", value, [_WEATHER]) == (
+            '{"city": "temperature < 20 C"}'
+        )
+
     def test_unknown_tool_never_guesses(self):
         assert _salvage_forced_scalar_arguments("other", "x", [_WEATHER]) is None
 
@@ -354,6 +393,15 @@ class TestRepairForcedCallArgumentsScalar:
         tc = _call("1")
         err = _repair_forced_call_arguments([tc], "", "ping", [_no_required_schema()])
         assert err is None
+        assert tc.function.arguments == "{}"
+
+    def test_parser_wire_fragment_fails_closed_instead_of_becoming_argument(self):
+        tc = _call(
+            '<malformed_json_arguments>{"name":"weather","arguments":0}'
+            "</parameter></function>"
+        )
+        err = _repair_forced_call_arguments([tc], "", "weather", [_WEATHER])
+        assert err is not None
         assert tc.function.arguments == "{}"
 
 
