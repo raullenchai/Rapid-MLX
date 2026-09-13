@@ -1,10 +1,12 @@
 # SPDX-License-Identifier: Apache-2.0
 """Fuse Qwen3.5-family GatedDeltaNet single-token decode on Metal.
 
-The input projections remain owned by :mod:`gdn_in_proj_fusion`.  This module
-collapses the remaining causal convolution, Q/K normalization, recurrent
-update, and gated RMSNorm into one launch.  The output projection stays on the
-stock path.
+For text-only models, the input projections remain owned by
+:mod:`gdn_in_proj_fusion`.  Vision-capable wrappers may retain their four stock
+input projections.  This module collapses the remaining causal convolution,
+Q/K normalization, recurrent update, and gated RMSNorm into one launch; it
+does not duplicate or replace the vision wrapper's projection weights.  The
+output projection stays on the stock path.
 
 Enrollment is model-local and fail-closed.  A real Metal probe must reproduce
 the stock output, convolution cache, and FP32 recurrent state bit-for-bit
@@ -16,6 +18,7 @@ from __future__ import annotations
 
 import logging
 import os
+import sys
 from collections.abc import Callable
 from threading import Lock
 from typing import Any, cast
@@ -253,13 +256,73 @@ def _eligible(self: Any, inputs: mx.array, mask: Any, cache: Any) -> bool:
             and cache[0] is not None
             and cache[1] is not None
             and getattr(cache, "lengths", None) is None
+            and getattr(cache, "left_padding", None) is None
             and getattr(self, "sharding_group", None) is None
             and not self.training
-            and hasattr(self, "in_proj_fused")
+            and (hasattr(self, "in_proj_fused") or _has_split_projections(self))
             and _shape(cache[0]) == (1, _CONV_KERNEL - 1, _CONV_DIM)
             and cache[0].dtype == mx.bfloat16
             and _shape(cache[1])
             == (1, _NUM_VALUE_HEADS, _VALUE_HEAD_DIM, _KEY_HEAD_DIM)
+            and cache[1].dtype == mx.float32
+        )
+    except Exception:
+        return False
+
+
+def _has_split_projections(layer: Any) -> bool:
+    expected_rows = {
+        "in_proj_qkv": _CONV_DIM,
+        "in_proj_z": _VALUE_DIM,
+        "in_proj_b": _NUM_VALUE_HEADS,
+        "in_proj_a": _NUM_VALUE_HEADS,
+    }
+    try:
+        return all(
+            callable(getattr(layer, name))
+            and _shape(getattr(layer, name).weight)[:1] == (rows,)
+            for name, rows in expected_rows.items()
+        )
+    except Exception:
+        return False
+
+
+def _project_inputs(layer: Any, inputs: mx.array):
+    if hasattr(layer, "in_proj_fused"):
+        from .gdn_in_proj_fusion import _fused_projections
+
+        return _fused_projections(layer, inputs)
+    return (
+        layer.in_proj_qkv(inputs),
+        layer.in_proj_z(inputs),
+        layer.in_proj_b(inputs),
+        layer.in_proj_a(inputs),
+    )
+
+
+def _projected_eligible(
+    layer: Any,
+    qkv: mx.array,
+    z: mx.array,
+    beta: mx.array,
+    alpha: mx.array,
+    cache: Any,
+) -> bool:
+    expected = (
+        (qkv, (1, 1, _CONV_DIM)),
+        (z, (1, 1, _VALUE_DIM)),
+        (beta, (1, 1, _NUM_VALUE_HEADS)),
+        (alpha, (1, 1, _NUM_VALUE_HEADS)),
+    )
+    try:
+        return bool(
+            all(_shape(value) == shape for value, shape in expected)
+            and all(value.dtype == mx.bfloat16 for value, _ in expected)
+            and layer.conv1d.weight.dtype == mx.bfloat16
+            and layer.dt_bias.dtype == mx.bfloat16
+            and layer.norm.weight.dtype == mx.bfloat16
+            and layer.A_log.dtype in (mx.bfloat16, mx.float32)
+            and cache[0].dtype == mx.bfloat16
             and cache[1].dtype == mx.float32
         )
     except Exception:
@@ -275,9 +338,9 @@ def _patch_class(gdn_class: type) -> None:
         if not _eligible(self, inputs, mask, cache):
             return original(self, inputs, mask, cache)
         try:
-            from .gdn_in_proj_fusion import _fused_projections
-
-            qkv, z, beta, alpha = _fused_projections(self, inputs)
+            qkv, z, beta, alpha = _project_inputs(self, inputs)
+            if not _projected_eligible(self, qkv, z, beta, alpha, cache):
+                return original(self, inputs, mask, cache)
             output, conv_state, recurrent_state = fused_gdn_decode(
                 qkv,
                 z,
@@ -329,7 +392,7 @@ def _structurally_eligible(layer: Any) -> bool:
                 _CONV_KERNEL,
             )
             and layer.hidden_size == 2048
-            and hasattr(layer, "in_proj_fused")
+            and (hasattr(layer, "in_proj_fused") or _has_split_projections(layer))
             and _shape(layer.conv1d.weight) == (_CONV_DIM, _CONV_KERNEL, 1)
             and _shape(layer.A_log) == (_NUM_VALUE_HEADS,)
             and _shape(layer.dt_bias) == (_NUM_VALUE_HEADS,)
@@ -343,16 +406,30 @@ def install_qwen35_fused_gdn_decode(model: Any) -> int:
     """Enroll exact Qwen3.5-family GDN layers and return their count."""
     if os.environ.get("RAPID_MLX_QWEN35_FUSED_GDN_DECODE", "1") == "0":
         return 0
+    families: list[type] = []
     try:
         from mlx_lm.models.qwen3_5 import GatedDeltaNet
+    except Exception:
+        pass
+    else:
+        families.append(GatedDeltaNet)
 
-        layers = [
-            module
-            for _, module in model.named_modules()
-            if type(module) is GatedDeltaNet and _structurally_eligible(module)
-        ]
+    vlm_qwen = sys.modules.get("mlx_vlm.models.qwen3_5.language")
+    if vlm_qwen is not None:
+        vlm_class = getattr(vlm_qwen, "Qwen3_5GatedDeltaNet", None)
+        if isinstance(vlm_class, type):
+            families.append(vlm_class)
+
+    try:
+        modules = [module for _, module in model.named_modules()]
     except Exception:
         return 0
+    layers = [
+        module
+        for module in modules
+        if any(type(module) is family for family in families)
+        and _structurally_eligible(module)
+    ]
     if not layers:
         return 0
     try:
@@ -366,7 +443,9 @@ def install_qwen35_fused_gdn_decode(model: Any) -> int:
     if threadgroup_y is None:
         logger.warning("Qwen3.5 fused GDN parity probe failed; using stock decode")
         return 0
-    _patch_class(GatedDeltaNet)
+    for family in families:
+        if any(type(layer) is family for layer in layers):
+            _patch_class(family)
     for layer in layers:
         setattr(layer, _TAG, True)
         layer._rapid_qwen35_fused_gdn_threadgroup_y = threadgroup_y

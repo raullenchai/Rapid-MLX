@@ -17,15 +17,17 @@ was subsequently rebased onto `main` after #3381 landed.
 ## Decision
 
 Ship a default-on, fail-closed Metal specialization for the Qwen3.5-family
-GatedDeltaNet recurrence at single-token text decode. It combines causal
-convolution and cache shift, Q/K normalization, gated-delta state update, and
-gated RMSNorm. The already-qualified fused input projection feeds the kernel;
-the quantized output projection remains stock.
+GatedDeltaNet recurrence at single-token decode. It combines causal convolution
+and cache shift, Q/K normalization, gated-delta state update, and gated RMSNorm.
+The text-only path feeds it from the already-qualified fused input projection;
+the default vision-capable wrapper retains its stock split input projections.
+The quantized output projection remains stock on both paths.
 
 Only BF16 `(batch=1, length=1)` inputs with initialized, non-ragged caches and
 the qualified 16-key-head / 32-value-head / 128-dimension / four-tap geometry
-are eligible. Prefill, batching, masks, training, sharding, MTP verification,
-unknown geometry, and failed probes remain stock. Set
+are eligible. Split projection output geometry is validated before enrollment.
+Prefill, batching, masks, left-padded or length-tracked caches, training,
+sharding, MTP verification, unknown geometry, and failed probes remain stock. Set
 `RAPID_MLX_QWEN35_FUSED_GDN_DECODE=0` to disable.
 
 ## Numerical qualification
@@ -46,6 +48,8 @@ sigmoid edge value that distinguishes fast and precise exponential forms.
 Additional real-weight evidence:
 
 - 32 sequential single-layer steps had exact output and both cache slots;
+- the same 32-step output, BF16 convolution cache, and FP32 recurrent-state
+  audit passed bit-for-bit on the checkpoint's vision-capable language model;
 - a 20-token whole-model audit compared every eligible layer at every decode
   transition and found no output or state difference;
 - five complete greedy chat-template cases emitted the same token sequence
@@ -73,6 +77,16 @@ The median of the six paired speedup ratios was **1.117x (+11.7%)**; the mean
 was **1.117x (+11.7%)**. Compared with the pre-optimization checkpoint path of
 about 89 tok/s, the combined gate/up, router, projection, and recurrence work
 now reaches about 128 tok/s, roughly **+44%** end to end on this host.
+
+The catalog alias selects the vision-capable loader by default, so that route
+was also measured through the HTTP chat API with a 31-token prompt and 256-token
+greedy output, prefix caching disabled, and one request at a time. After one
+warmup request, the stock route's warm median was 62.3 tok/s and the fused route
+reached 79.1 tok/s: **1.270x (+27.0%)**. Five HTTP cases covering coding,
+creative writing, reasoning, compact JSON, and tool-call formatting produced
+identical response SHA-256 digests with the optimization enabled and disabled.
+This result qualifies the default user path; it does not include input-
+projection fusion for the vision-capable wrapper.
 
 ## Rejected experiments
 

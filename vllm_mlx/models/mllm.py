@@ -1617,9 +1617,17 @@ class MLXMultimodalLM:
                 fuse_gate_up(self.model)
 
             if config_model_type == "qwen3_5_moe":
+                from ..qwen35_fused_gdn_decode import (
+                    install_qwen35_fused_gdn_decode,
+                )
                 from ..qwen35_moe_router import install_qwen35_moe_router
 
                 install_qwen35_moe_router(self.model)
+                # The multimodal wrapper owns a separate Qwen GDN class from
+                # mlx-lm. Enroll its qualified single-token recurrence too so
+                # the catalog's default vision-capable lane receives the same
+                # exact decode optimization as explicit text-only serving.
+                install_qwen35_fused_gdn_decode(self.model)
 
             # Augment the wrapped tokenizer's EOS set with the chat-
             # template terminator ids from ``generation_config.json``.
