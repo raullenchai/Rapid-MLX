@@ -171,6 +171,15 @@ def _python_code(text: str) -> str | None:
 
 
 def _safe_python(tree: ast.AST) -> str | None:
+    if isinstance(tree, ast.Module):
+        for statement in tree.body:
+            is_docstring = (
+                isinstance(statement, ast.Expr)
+                and isinstance(statement.value, ast.Constant)
+                and isinstance(statement.value.value, str)
+            )
+            if not isinstance(statement, ast.FunctionDef) and not is_docstring:
+                return f"forbidden top-level syntax: {type(statement).__name__}"
     for node in ast.walk(tree):
         if isinstance(node, _FORBIDDEN_NODES):
             return f"forbidden syntax: {type(node).__name__}"
@@ -178,6 +187,12 @@ def _safe_python(tree: ast.AST) -> str | None:
             return f"forbidden dunder name: {node.id}"
         if isinstance(node, ast.Attribute) and node.attr.startswith("__"):
             return f"forbidden dunder attribute: {node.attr}"
+        if (
+            isinstance(node, ast.Constant)
+            and isinstance(node.value, int)
+            and abs(node.value) > 10_000_000
+        ):
+            return "forbidden oversized integer literal"
         if isinstance(node, ast.Call) and isinstance(node.func, ast.Name):
             if node.func.id in _FORBIDDEN_CALLS:
                 return f"forbidden call: {node.func.id}"

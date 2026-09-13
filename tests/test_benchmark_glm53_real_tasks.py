@@ -65,6 +65,18 @@ def test_coding_grader_rejects_unsafe_or_hanging_code() -> None:
             "def coalesce_intervals(intervals):\n    return open('/tmp/x')"
         ).detail
     )
+    assert (
+        "forbidden top-level"
+        in bench._grade_interval_code(
+            "print('side effect')\ndef coalesce_intervals(intervals):\n    return []"
+        ).detail
+    )
+    assert (
+        "oversized"
+        in bench._grade_interval_code(
+            "def coalesce_intervals(intervals):\n    return [0] * 1000000000"
+        ).detail
+    )
 
 
 def test_coding_grader_fails_closed_without_apple_sandbox(monkeypatch) -> None:
