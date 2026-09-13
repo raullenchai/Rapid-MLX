@@ -1603,19 +1603,23 @@ class MLXMultimodalLM:
                 if isinstance(self.config, dict)
                 else getattr(self.config, "model_type", None)
             )
-            if config_model_type == "glm5_next":
-                # Keep GLM's MLLM lane at parity with BatchedEngine's text
-                # lane: collapse each eligible MoE gate/up pair into one
-                # gather_qmm. GLM-5.3-Flash always routes through this wrapper,
-                # so without this step its 42 sparse expert layers issue an
-                # extra quantized projection for every generated token. Keep
-                # the first rollout architecture-scoped; other MoE VLMs need
-                # their own real-model qualification before enrollment.
+            if config_model_type in {"glm5_next", "qwen3_5_moe"}:
+                # Keep qualified MLLM MoE lanes at parity with BatchedEngine's
+                # text lane: collapse each eligible gate/up pair into one
+                # gather_qmm. GLM-5.3-Flash and Qwen3.5-family MoE both route
+                # through this wrapper, so otherwise every sparse layer issues
+                # an extra quantized projection for every generated token.
+                # Other MoE VLMs still need real-model qualification.
                 # Server use runs this method on the model-owning mllm-step
                 # worker, preserving the stream contract from #170.
                 from ..moe_fusion import fuse_gate_up
 
                 fuse_gate_up(self.model)
+
+            if config_model_type == "qwen3_5_moe":
+                from ..qwen35_moe_router import install_qwen35_moe_router
+
+                install_qwen35_moe_router(self.model)
 
             # Augment the wrapped tokenizer's EOS set with the chat-
             # template terminator ids from ``generation_config.json``.
