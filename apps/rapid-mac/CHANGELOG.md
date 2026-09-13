@@ -23,6 +23,21 @@ can actually understand.
   Updates install silently in the background, so until now the only sign that
   anything had changed was the version number in the status bar.
 
+### Changed
+- **Editing code in a chat decodes up to twice as fast.** When a reply
+  reuses text that is already in the conversation, such as a function you
+  asked to rename, annotate, or fix, the engine now copies that text
+  forward in blocks and only verifies it instead of generating it token by
+  token. This works at the app's normal sampling temperature and on every
+  turn of a conversation, not only the first; a rename or bug-fix turn on
+  Qwen3.5/3.8 measured 71–99% of copied tokens accepted and 1.6–2× faster
+  decoding, while replies with nothing to copy are unchanged. It rides on
+  MTP, which is on by default for Qwen3.8-27B and a Performance-panel
+  switch for Qwen3.5-4B.
+  ([#3388](https://github.com/raullenchai/Rapid-MLX/pull/3388),
+  [#3398](https://github.com/raullenchai/Rapid-MLX/pull/3398),
+  [#3417](https://github.com/raullenchai/Rapid-MLX/pull/3417))
+
 ### Fixed
 - Document follow-ups now reject malformed retrieval cursors instead of
   silently reading from the beginning and returning a plausible wrong page.
