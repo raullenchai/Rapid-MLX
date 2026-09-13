@@ -350,13 +350,31 @@ contains "$CAND_NEEDS" "needs: detect" \
 lacks "$CAND_NEEDS" "tier1-agent-gate" \
   "desktop-candidate-gate does NOT wait on the Tier-1 gate"
 PREP_NEEDS=$(sed -n '/^  release-prep:/,/^    if:/p' "$AUTO_RELEASE")
-contains "$PREP_NEEDS" "needs: [detect, tier1-agent-gate, desktop-candidate-gate]" \
-  "release-prep needs AND requires BOTH the Tier-1 gate and the desktop candidate gate"
+contains "$PREP_NEEDS" "needs: [detect, tier1-agent-gate, desktop-candidate-gate, release-final-ci]" \
+  "release-prep needs Tier-1, desktop candidate, and exact-SHA ordinary CI"
 RELPREP_IF=$(sed -n '/^  release-prep:/,/runs-on:/p' "$AUTO_RELEASE")
 contains "$RELPREP_IF" "needs.tier1-agent-gate.result == 'success'" \
   "release-prep requires Tier-1 success (or force)"
 contains "$RELPREP_IF" "needs.desktop-candidate-gate.result == 'success'" \
   "release-prep requires desktop-candidate success"
+contains "$RELPREP_IF" "needs.release-final-ci.result == 'success'" \
+  "release-prep requires exact-SHA ordinary CI success"
+FINAL_CI=$(sed -n '/^  release-final-ci:/,/^  dry-run-summary:/p' "$AUTO_RELEASE")
+contains "$FINAL_CI" "needs: detect" \
+  "exact-SHA ordinary CI starts in parallel after detect"
+contains "$FINAL_CI" "actions: read" \
+  "exact-SHA ordinary CI has read-only workflow access"
+contains "$FINAL_CI" '--require ci.yml:tests' \
+  "exact-SHA ordinary CI requires the engine facade"
+contains "$FINAL_CI" '--require rapid-mac-ci.yml:desktop-tests' \
+  "exact-SHA ordinary CI requires the Desktop facade"
+contains "$FINAL_CI" "needs.detect.outputs.dry_run != 'true'" \
+  "pre-bump dry runs do not wait for unavailable push-run evidence"
+RELEASE_IF=$(sed -n '/^  release:/,/runs-on:/p' "$AUTO_RELEASE")
+contains "$RELEASE_IF" "needs: [detect, tier1-agent-gate, desktop-candidate-gate, release-final-ci, release-prep]" \
+  "environment-gated publication directly needs exact-SHA ordinary CI"
+contains "$RELEASE_IF" "needs.release-final-ci.result == 'success'" \
+  "environment-gated publication reasserts exact-SHA ordinary CI success"
 
 # ---------------------------------------------------------------------------
 echo "== 7b. normal workflow_dispatch retry after main drift (no bypass) =="
