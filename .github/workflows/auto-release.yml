@@ -609,6 +609,51 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
+  # The bump push starts ordinary CI, rapid-mac CI and this workflow at the
+  # same time.  Join their required-check facades by immutable source SHA so a
+  # release-specific smoke/candidate success cannot publish while the same
+  # commit is red in the normal engine or Desktop gate.  This gate runs in
+  # parallel with both expensive release gates and normally adds no latency.
+  release-final-ci:
+    needs: detect
+    if: >-
+      needs.detect.outputs.should_release == 'true'
+      && needs.detect.outputs.dry_run != 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 105
+    permissions:
+      actions: read
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+
+      - name: Require exact-SHA engine and Desktop aggregate checks
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SOURCE_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          python3 scripts/check_release_ci.py \
+            --source-sha "$SOURCE_SHA" \
+            --repo "$GITHUB_REPOSITORY" \
+            --require ci.yml:tests \
+            --require rapid-mac-ci.yml:desktop-tests \
+            --deadline-min 90 \
+            2>&1 | tee release-final-ci.txt
+
+      - name: Publish exact-SHA CI evidence
+        if: always()
+        run: |
+          {
+            echo "## Exact-SHA release CI"
+            echo ""
+            if [[ -f release-final-ci.txt ]]; then
+              cat release-final-ci.txt
+            else
+              echo "The coordinator stopped before producing evidence."
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
   # A dry run deliberately ends here: after both real pre-publication gates,
   # before release-prep, the protected rapid-mac-tag environment, or any tag /
   # Release / updater write. Keep a final fail-closed job so the run conclusion
@@ -667,7 +712,7 @@ jobs:
   #    an exact SHA that is already printed, never one that only appears after
   #    approval (#2301, release-safety review).
   release-prep:
-    needs: [detect, tier1-agent-gate, desktop-candidate-gate]
+    needs: [detect, tier1-agent-gate, desktop-candidate-gate, release-final-ci]
     if: >-
       !cancelled()
       && needs.detect.result == 'success'
@@ -675,6 +720,7 @@ jobs:
       && needs.detect.outputs.dry_run != 'true'
       && (needs.detect.outputs.force == 'true' || needs.tier1-agent-gate.result == 'success')
       && needs.desktop-candidate-gate.result == 'success'
+      && needs.release-final-ci.result == 'success'
     runs-on: ubuntu-latest
     # The live release-blocker query reads the repo's open ``release-blocker``
     # issues, so this job needs read access to issues (in addition to checkout).
@@ -862,7 +908,7 @@ jobs:
   #    that accepted SHA, waits for the exact tagged Desktop workflow and DMG
   #    publication to succeed, and only then publishes the engine.
   release:
-    needs: [detect, tier1-agent-gate, desktop-candidate-gate, release-prep]
+    needs: [detect, tier1-agent-gate, desktop-candidate-gate, release-final-ci, release-prep]
     if: >-
       !cancelled()
       && needs.detect.result == 'success'
@@ -870,6 +916,7 @@ jobs:
       && needs.detect.outputs.dry_run != 'true'
       && (needs.detect.outputs.force == 'true' || needs.tier1-agent-gate.result == 'success')
       && needs.desktop-candidate-gate.result == 'success'
+      && needs.release-final-ci.result == 'success'
       && needs.release-prep.result == 'success'
     runs-on: ubuntu-latest
     # Human-authorization gate for the production desktop tag claim (contract #5).
@@ -983,6 +1030,23 @@ jobs:
             --accepted-sha "$ACCEPTED_SHA" \
             --release-sha "$RELEASE_SHA"
           echo "::notice::pre-tag main head $MAIN_SHA still equals the validated candidate ${ACCEPTED_SHA}"
+
+      # Human approval can take minutes or hours. A maintainer may have started
+      # a new ordinary-CI retry during that wait, so the completed dependency
+      # result is not sufficient at the irreversible-write cutoff. Re-read the
+      # same immutable-SHA facades immediately before claiming either tag.
+      - name: Re-query exact-SHA ordinary CI immediately before tag
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SOURCE_SHA: ${{ needs.release-prep.outputs.accepted_sha }}
+        run: |
+          set -euo pipefail
+          python3 scripts/check_release_ci.py \
+            --source-sha "$SOURCE_SHA" \
+            --repo "$GITHUB_REPOSITORY" \
+            --require ci.yml:tests \
+            --require rapid-mac-ci.yml:desktop-tests \
+            --deadline-min 90
 
       # The desktop tag claim. tag_desktop_app.sh requires ACCEPTED_SHA (the
       # exact candidate the pre-approval job printed) to equal RELEASE_SHA —
