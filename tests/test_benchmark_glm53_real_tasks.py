@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import shutil
 import sys
 from pathlib import Path
 
@@ -30,6 +31,10 @@ def test_exact_json_grader_rejects_prose_and_extra_keys() -> None:
     assert not grader('{"answer": 42, "comment": "ok"}').passed
 
 
+@pytest.mark.skipif(
+    shutil.which("sandbox-exec") is None,
+    reason="successful code execution requires the macOS sandbox",
+)
 def test_coding_grader_executes_hidden_cases() -> None:
     good = """```python
 def coalesce_intervals(intervals):
