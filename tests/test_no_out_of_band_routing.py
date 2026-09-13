@@ -164,6 +164,11 @@ ALLOWED_RAPID_MLX_ENV_VARS: frozenset[str] = frozenset(
         # Opt-out of the bit-exact Qwen3.5-family GDN decode kernel. It changes
         # only the implementation of an already-selected model's recurrence.
         "RAPID_MLX_QWEN35_FUSED_GDN_DECODE",
+        # Opt-out of eager decoder-layer submission for the qualified
+        # Qwen3.5-family 35B-A3B shape. It changes only when an already-built
+        # lazy graph is handed to Metal; model, parser, tier, and lane stay the
+        # same, and the returned array is unchanged.
+        "RAPID_MLX_QWEN35_EAGER_LAYER_DISPATCH",
         # Opt-in direct QSA block-sparse attention on an already-selected
         # Qwen4-Exp model. This changes only the prefill kernel after a measured
         # context crossover; model, parser, tier, and engine routing are

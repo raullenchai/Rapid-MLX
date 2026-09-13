@@ -58,6 +58,9 @@ from ..patches.deepseek_v32_indexer_gate import (
 from ..patches.mla_absorbed_verify import (
     install_mla_absorbed_verify as _install_mla_absorbed_verify,
 )
+from ..patches.qwen3_5_eager_dispatch import (
+    install_qwen3_5_eager_dispatch as _install_qwen3_5_eager_dispatch,
+)
 from ..patches.qwen3_5_norm_shift import (
     install_qwen3_5_norm_shift_fix as _install_qwen3_5_norm_shift_fix,
 )
@@ -65,6 +68,7 @@ from ..patches.qwen3_5_norm_shift import (
 # The installers run below the import block so no module-level import
 # follows an executable statement (E402).
 _install_dsv32_indexer_gate()
+_install_qwen3_5_eager_dispatch()
 _install_qwen3_5_norm_shift_fix()
 _install_mla_absorbed_verify()
 
