@@ -107,16 +107,21 @@ def _mac_jobs() -> list[dict[str, Any]]:
 
 
 def _ci_jobs() -> list[dict[str, Any]]:
-    names = list(evidence.REQUIRED_CI_JOBS) + [
-        "test-matrix (3.10)",
-        "test-matrix (3.11)",
-        "test-matrix (3.12)",
-        "l1-smoke (first)",
-        "l1-smoke (second)",
-        "l1-smoke (third)",
-        "l1-smoke (fourth)",
-        "l1-smoke (fifth)",
-    ]
+    names = (
+        list(evidence.REQUIRED_CI_JOBS)
+        + [
+            f"test-matrix ({version}, {shard})"
+            for version in ("3.10", "3.11", "3.12")
+            for shard in (1, 2, 3)
+        ]
+        + [
+            "l1-smoke (first)",
+            "l1-smoke (second)",
+            "l1-smoke (third)",
+            "l1-smoke (fourth)",
+            "l1-smoke (fifth)",
+        ]
+    )
     return [_job(20, 200 + index, name) for index, name in enumerate(names)]
 
 
@@ -196,10 +201,10 @@ def test_create_rejects_partial_gui_matrix(tmp_path: Path):
 def test_create_rejects_partial_engine_matrix(tmp_path: Path):
     client = _configured_client()
     client.job_records[20] = [
-        job for job in client.job_records[20] if job["name"] != "test-matrix (3.12)"
+        job for job in client.job_records[20] if job["name"] != "test-matrix (3.12, 3)"
     ]
 
-    with pytest.raises(evidence.EvidenceError, match="expected 3 successful jobs"):
+    with pytest.raises(evidence.EvidenceError, match="expected 9 successful jobs"):
         evidence.create_evidence(client, "ci", 20, 30, TRUSTED, _manifest(tmp_path))
 
 
