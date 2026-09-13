@@ -48,6 +48,27 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlsplit
 
 
+def _start_parent_watchdog():
+    """Mirror the production sidecar's orphan-reaping contract in GUI tests."""
+    raw_parent = os.environ.get("RAPID_MLX_WATCHDOG_PPID", "")
+    try:
+        expected_parent = int(raw_parent)
+    except ValueError:
+        return
+    if expected_parent <= 1:
+        return
+
+    def watch():
+        while os.getppid() == expected_parent:
+            time.sleep(0.1)
+        # The Desktop supervisor is gone.  Avoid Python shutdown machinery:
+        # another request thread may be blocked inside a deliberately held
+        # test response, and the production contract is immediate retirement.
+        os._exit(0)
+
+    threading.Thread(target=watch, name="parent-watchdog", daemon=True).start()
+
+
 if sys.argv[1:] == ["launch", "list", "--json"]:
     print(json.dumps([
         {"id": "cline", "name": "Cline", "kind": "config_writer", "config_path": "~/.config/Code/User/globalStorage/saoudrizwan.claude-dev/settings/cline_mcp_settings.json"},
@@ -1392,6 +1413,11 @@ def main():
                     stream.write(f"{args.alias}\n")
         _emit_catalog(args.subcommand, args.alias)
         sys.exit(0)
+
+    # The production sidecar retires itself when its Desktop supervisor dies.
+    # Keep the fixture faithful so a failed/crashed XCUITest cannot poison the
+    # next job with an orphan listener.
+    _start_parent_watchdog()
 
     # XCUITest cleanup must not depend on reaching the later readiness event:
     # record ownership as soon as this process commits to the long-lived serve

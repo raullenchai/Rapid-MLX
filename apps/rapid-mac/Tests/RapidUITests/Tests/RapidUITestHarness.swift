@@ -163,7 +163,11 @@ final class RapidUITestHarness {
         return (descriptor, Int(UInt16(bigEndian: address.sin_port)))
     }
 
-    init(testName: String, fakeSettings: [String: String]) throws {
+    init(
+        testName: String,
+        fakeSettings: [String: String],
+        sidecarAlias explicitSidecarAlias: String? = nil
+    ) throws {
         let reservedPort = try Self.reserveLoopbackPort()
         var reservationTransferred = false
         defer {
@@ -187,9 +191,11 @@ final class RapidUITestHarness {
         eventLog = testHome.appendingPathComponent("fake-events.jsonl")
         sidecarPIDFile = testHome.appendingPathComponent("fake-sidecar.pid")
         dropEventFile = testHome.appendingPathComponent("xcui-drop-event.txt")
-        sidecarAlias = fakeSettings["FAKE_VISION_CHAT"] == "1"
-            ? "qwen3-vl-2b-4bit"
-            : "fake-alias"
+        sidecarAlias = explicitSidecarAlias ?? (
+            fakeSettings["FAKE_VISION_CHAT"] == "1"
+                ? "qwen3-vl-2b-4bit"
+                : "fake-alias"
+        )
 
         var config = fakeSettings
         config["FAKE_EVENT_LOG"] = eventLog.path
@@ -240,6 +246,7 @@ final class RapidUITestHarness {
 
     func shutDown() {
         app.terminate()
+        _ = app.wait(for: .notRunning, timeout: 5)
         releasePortReservation()
         terminateFakeSidecars()
         restorePasteboardIfOwned()

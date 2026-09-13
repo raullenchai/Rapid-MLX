@@ -15,8 +15,10 @@ Stdlib + bash only, so it runs on the Linux CI lane that never sees a Mac.
 
 import json
 import os
+import signal
 import socket
 import subprocess
+import sys
 import time
 import urllib.request
 from pathlib import Path
@@ -28,6 +30,49 @@ FAKE = ROOT / "apps/rapid-mac/scripts/fake-rapid-mlx.sh"
 GOLDEN_FLOWS = ROOT / "apps/rapid-mac/scripts/gui-golden-flows.sh"
 IMAGE_TAGS = {"[image:gen]", "[image:edit]", "[image:both]"}
 FIXTURE_IMAGE_TAG = "[image:both]"
+
+
+def test_serve_retires_when_desktop_supervisor_exits(tmp_path):
+    """A failed UI test must not leave a listener that poisons the next run."""
+    with socket.socket() as reservation:
+        reservation.bind(("127.0.0.1", 0))
+        port = reservation.getsockname()[1]
+
+    launcher_code = """
+import os, subprocess, sys
+fake, port = sys.argv[1:]
+env = dict(os.environ, RAPID_MLX_WATCHDOG_PPID=str(os.getpid()))
+child = subprocess.Popen(
+    [fake, "serve", "fake-image-alias", "--host", "127.0.0.1", "--port", port],
+    env=env,
+    stdout=subprocess.DEVNULL,
+    stderr=subprocess.DEVNULL,
+    start_new_session=True,
+)
+print(child.pid, flush=True)
+"""
+    launcher = subprocess.run(
+        [sys.executable, "-c", launcher_code, str(FAKE), str(port)],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    child_pid = int(launcher.stdout.strip())
+    try:
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline:
+            try:
+                os.kill(child_pid, 0)
+            except ProcessLookupError:
+                break
+            time.sleep(0.05)
+        else:
+            pytest.fail("fake sidecar survived its recorded Desktop supervisor")
+    finally:
+        try:
+            os.kill(child_pid, signal.SIGTERM)
+        except ProcessLookupError:
+            pass
 
 
 # --- Mirrors of the Swift gates, byte-for-byte ---------------------------

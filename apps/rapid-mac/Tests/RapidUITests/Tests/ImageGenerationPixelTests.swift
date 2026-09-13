@@ -1,9 +1,16 @@
 import AppKit
-import Darwin
 import XCTest
 
 @MainActor
 final class ImageGenerationPixelTests: XCTestCase {
+    private var activeHarness: RapidUITestHarness?
+
+    override func tearDown() {
+        activeHarness?.shutDown()
+        activeHarness = nil
+        super.tearDown()
+    }
+
     func testMemoryConfirmationRetriesAreSpacedBoundedAndRearmed() {
         var policy = MemoryConfirmationRetryPolicy()
 
@@ -28,55 +35,18 @@ final class ImageGenerationPixelTests: XCTestCase {
 
     func testTwoImageRendersDrawDistinctThumbnailPixels() throws {
         continueAfterFailure = false
-        let testHome = FileManager.default.temporaryDirectory
-            .appendingPathComponent("rapid-xcui-\(UUID().uuidString)", isDirectory: true)
-        try FileManager.default.createDirectory(at: testHome, withIntermediateDirectories: true)
-        defer { try? FileManager.default.removeItem(at: testHome) }
-
-        let rapidMacRoot = URL(fileURLWithPath: #filePath)
-            .deletingLastPathComponent() // Tests
-            .deletingLastPathComponent() // RapidUITests
-            .deletingLastPathComponent() // Tests
-            .deletingLastPathComponent() // rapid-mac
-        let fakeSidecar = rapidMacRoot.appendingPathComponent("scripts/fake-rapid-mlx.sh").path
-        let appURL = rapidMacRoot.appendingPathComponent("build/Rapid-MLX Desktop.app")
-        let eventLog = testHome.appendingPathComponent("fake-events.jsonl")
-        // ServerManager deliberately sanitizes arbitrary FAKE_* variables
-        // before spawning a sidecar. The fake's checked-in config file is the
-        // durable channel shared with the AX GoldenFlow harness.
-        let fakeConfig: [String: String] = [
-            "FAKE_EVENT_LOG": eventLog.path,
-            "FAKE_IMAGE_STEPS": "8",
-            "FAKE_IMAGE_STEP_MS": "300",
-        ]
-        let fakeConfigData = try JSONSerialization.data(withJSONObject: fakeConfig)
-        try fakeConfigData.write(to: testHome.appendingPathComponent(".rapid-golden-fake.json"))
-        XCTAssertTrue(FileManager.default.isExecutableFile(atPath: fakeSidecar))
-        XCTAssertTrue(FileManager.default.fileExists(atPath: appURL.path))
-        let app = XCUIApplication(url: appURL)
-        app.launchArguments += [
-            "-com.rapidmlx.rapid.telemetry.enabled", "false",
-        ]
-        app.launchEnvironment = [
-            "HOME": testHome.path,
-            "CFFIXED_USER_HOME": testHome.path,
-            "RAPID_BIN": fakeSidecar,
-            "FAKE_EVENT_LOG": eventLog.path,
-            "FAKE_IMAGE_STEPS": "8",
-            "FAKE_IMAGE_STEP_MS": "300",
-            // This XCUITest runs immediately before the AX GoldenFlows in CI.
-            // Keep its fake away from the product's canonical :8000 and from
-            // the operator-ownership regression fixture exercised there.
-            "RAPID_DESKTOP_PORT": "65000",
-            "RAPID_DESKTOP_NO_PORT_SWEEP": "1",
-        ]
-        app.launch()
-        defer {
-            app.terminate()
-            terminateFakeSidecars(recordedIn: eventLog, alias: "fake-image-alias")
-        }
-        XCTAssertTrue(app.windows["Rapid-MLX"].waitForExistence(timeout: 20))
-        dismissFirstRunIfNeeded(in: app)
+        let harness = try RapidUITestHarness(
+            testName: "image-generation-pixels",
+            fakeSettings: [
+                "FAKE_IMAGE_STEPS": "8",
+                "FAKE_IMAGE_STEP_MS": "300",
+            ],
+            sidecarAlias: "fake-image-alias"
+        )
+        activeHarness = harness
+        harness.launch()
+        let app = harness.app
+        let eventLog = harness.eventLog
         let images = element("Sidebar.Images", in: app)
         XCTAssertTrue(images.waitForExistence(timeout: 10))
         images.click()
@@ -90,21 +60,7 @@ final class ImageGenerationPixelTests: XCTestCase {
             picker.label.contains("fake-image-alias")
         })
 
-        let readiness = element("Readiness.Action", in: app)
-        XCTAssertTrue(readiness.waitForExistence(timeout: 20))
-        readiness.click()
-        let memoryConfirmation = element("MemoryWarning.Confirm", in: app)
-        var memoryConfirmationPolicy = MemoryConfirmationRetryPolicy()
-        XCTAssertTrue(waitUntil(timeout: 30) {
-            let serverStarted = {
-                guard let events = try? String(contentsOf: eventLog, encoding: .utf8) else { return false }
-                return events.contains(#""event": "server_started""#)
-                && events.contains(#""alias": "fake-image-alias""#)
-            }
-            if serverStarted() { return true }
-            memoryConfirmationPolicy.follow(memoryConfirmation)
-            return serverStarted()
-        })
+        harness.startModel()
 
         let prompt = element("Images.Prompt", in: app)
         XCTAssertTrue(prompt.waitForExistence(timeout: 20))
@@ -151,53 +107,6 @@ final class ImageGenerationPixelTests: XCTestCase {
             meanSquaredDistance.squareRoot(), 10,
             "The two records exist but their rendered thumbnail interiors are indistinguishable"
         )
-    }
-
-    /// XCUITest termination does not guarantee that an app-owned child has
-    /// exited before the next workflow step starts. Reap only the exact fake
-    /// PIDs recorded by this test, after verifying their command still names
-    /// this fixture alias; this is both deterministic and PID-reuse safe.
-    private func terminateFakeSidecars(recordedIn eventLog: URL, alias: String) {
-        guard let text = try? String(contentsOf: eventLog, encoding: .utf8) else { return }
-        let pids: Set<Int32> = Set(text.split(separator: "\n").compactMap { line in
-            guard let data = line.data(using: .utf8),
-                  let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-                  object["event"] as? String == "server_started",
-                  object["alias"] as? String == alias,
-                  let pid = object["pid"] as? NSNumber else { return nil }
-            return pid.int32Value
-        })
-
-        for pid in pids where processCommand(pid: pid).contains("serve \(alias)") {
-            Darwin.kill(pid, SIGTERM)
-            for _ in 0..<20 where Darwin.kill(pid, 0) == 0 {
-                Thread.sleep(forTimeInterval: 0.05)
-            }
-            if Darwin.kill(pid, 0) == 0,
-               processCommand(pid: pid).contains("serve \(alias)") {
-                Darwin.kill(pid, SIGKILL)
-            }
-        }
-    }
-
-    private func processCommand(pid: Int32) -> String {
-        let process = Process()
-        let output = Pipe()
-        process.executableURL = URL(fileURLWithPath: "/bin/ps")
-        process.arguments = ["-p", String(pid), "-o", "command="]
-        process.standardOutput = output
-        process.standardError = FileHandle.nullDevice
-        guard (try? process.run()) != nil else { return "" }
-        process.waitUntilExit()
-        return String(
-            data: output.fileHandleForReading.readDataToEndOfFile(),
-            encoding: .utf8
-        ) ?? ""
-    }
-
-    private func dismissFirstRunIfNeeded(in app: XCUIApplication) {
-        let skip = element("Quickstart.Skip", in: app)
-        if skip.waitForExistence(timeout: 10) { skip.click() }
     }
 
     private func element(_ identifier: String, in app: XCUIApplication) -> XCUIElement {
