@@ -285,7 +285,7 @@ jobs:
       # failing on an empty artifact dir.
       - name: Upload Desktop test hang sample
         if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
         with:
           name: desktop-test-hang-sample-${{ github.sha }}
           path: apps/rapid-mac/build/desktop-hang-artifacts
@@ -347,7 +347,7 @@ jobs:
             --output "$ARTIFACT_DIR/manifest.json"
 
       - name: Upload commit-bound GUI app
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
         with:
           name: rapid-gui-app-${{ github.sha }}
           path: ${{ runner.temp }}/gui-app-artifact
@@ -422,7 +422,7 @@ jobs:
           scripts/mac-ci-ax-preflight.sh "$RUNNER_TEMP/rapid-ax"
 
       - name: Download commit-bound GUI app
-        uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0  # v5
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
         with:
           name: rapid-gui-app-${{ github.sha }}
           path: ${{ runner.temp }}/gui-app-artifact
@@ -471,7 +471,7 @@ jobs:
 
       - name: Upload XCUITest evidence
         if: steps.xcui.outcome == 'failure' || steps.chat_xcui.outcome == 'failure'
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
         with:
           name: rapid-xcui-evidence-${{ matrix.group }}
           path: ${{ runner.temp }}/Rapid*UITests.xcresult
@@ -740,7 +740,7 @@ jobs:
       # baseline needs to review the diff.
       - name: Upload AX evidence
         if: failure()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
         with:
           name: gui-golden-flow-evidence-${{ matrix.group }}
           # Both halves: the failing flow's own dumps, and the full

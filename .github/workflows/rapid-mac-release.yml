@@ -198,7 +198,7 @@ jobs:
         # (see publish-updater-fallback), so the notes have to outlive this
         # job. They are also the manifest's ``notes`` field, which mirror-dist
         # used to read back off the created release.
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
         with:
           name: rapid-mac-release-notes
           path: ${{ runner.temp }}/release-notes.md
@@ -323,7 +323,7 @@ jobs:
           fi
 
       - name: Upload workflow artifact (DMG + manifest)
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
         with:
           name: rapid-mlx-desktop-dmg
           path: |
@@ -349,7 +349,7 @@ jobs:
 
       - name: Upload candidate-labelled tester DMG
         if: steps.appmeta.outputs.is_tag != 'true'
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
         with:
           name: rapid-mlx-desktop-${{ steps.appmeta.outputs.candidate_identity }}
           path: ${{ env.CANDIDATE_DMG }}
@@ -364,7 +364,7 @@ jobs:
         # if-no-files-found with nothing to upload. This keeps the manual
         # dispatch dry-run working as before.
         if: steps.appmeta.outputs.is_tag == 'true' && env.SIGNED == 'true'
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
         with:
           name: rapid-mac-sparkle-update
           path: |
@@ -437,7 +437,7 @@ jobs:
           echo "version=${TAG#rapid-mac-v}" >> "$GITHUB_OUTPUT"
 
       - name: Download exact SHA-labelled pre-tag candidate
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093  # v4
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
         with:
           name: rapid-mlx-desktop-pre-tag-candidate-${{ inputs.promote_sha }}
           path: candidate
@@ -507,7 +507,7 @@ jobs:
             candidate/rapid-mlx-desktop.dmg
 
       - name: Promote exact DMG + manifest bytes into this run
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
         with:
           name: rapid-mlx-desktop-dmg
           path: |
@@ -517,7 +517,7 @@ jobs:
           retention-days: 7
 
       - name: Promote exact release-note bytes into this run
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
         with:
           name: rapid-mac-release-notes
           path: candidate/release-notes.md
@@ -525,7 +525,7 @@ jobs:
           retention-days: 7
 
       - name: Promote exact Sparkle bytes into this run
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
         with:
           name: rapid-mac-sparkle-update
           path: |
@@ -596,20 +596,20 @@ jobs:
               && inputs.promote_sha != ''))
     steps:
       - name: Download the notarised DMG artifact
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093  # v4
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
         with:
           name: rapid-mlx-desktop-dmg
           path: dist
 
       - name: Download the staged release notes
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093  # v4
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
         with:
           name: rapid-mac-release-notes
           path: notes
 
       - name: Download the signed Sparkle update
         if: needs.desktop-ready.outputs.signed == 'true'
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093  # v4
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
         with:
           name: rapid-mac-sparkle-update
           path: sparkle
@@ -706,7 +706,7 @@ jobs:
             dist/latest.json >/dev/null
 
       - name: Stage updater manifest for serialized publication
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
         with:
           name: rapid-mac-update-manifest
           path: dist/latest.json
@@ -714,7 +714,7 @@ jobs:
 
       - name: Stage Sparkle appcast for serialized publication
         if: needs.desktop-ready.outputs.signed == 'true'
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
         with:
           name: rapid-mac-sparkle-appcast
           path: sparkle/appcast.xml
@@ -750,26 +750,26 @@ jobs:
           poll-interval-seconds: 10
 
       - name: Download staged updater manifest
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093  # v4
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
         with:
           name: rapid-mac-update-manifest
           path: dist
 
       - name: Download DMG for stable compatibility alias
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093  # v4
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
         with:
           name: rapid-mlx-desktop-dmg
           path: dist-dmg
 
       - name: Download the staged release notes
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093  # v4
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
         with:
           name: rapid-mac-release-notes
           path: notes
 
       - name: Download staged Sparkle appcast
         if: needs.desktop-ready.outputs.signed == 'true'
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093  # v4
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
         with:
           name: rapid-mac-sparkle-appcast
           path: sparkle
