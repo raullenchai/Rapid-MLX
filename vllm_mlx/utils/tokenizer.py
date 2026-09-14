@@ -977,7 +977,14 @@ def _is_vendored_arch_model(model_name: str) -> bool:
 
 
 def _uses_rapid_owned_runtime(model_name: str) -> bool:
-    """Return whether repo Python must be ignored for this architecture."""
+    """Return whether repo Python must be ignored for this architecture.
+
+    A checkpoint declaration is untrusted.  Only grant the bypass after the
+    matching reviewed module is actually available and registered; otherwise
+    fail closed before any loader can fall back to checkpoint-owned code.
+    """
+    import sys
+
     model_path = Path(model_name)
     if not model_path.is_dir():
         return False
@@ -986,7 +993,25 @@ def _uses_rapid_owned_runtime(model_name: str) -> bool:
             config = json.load(config_file)
     except (OSError, TypeError, ValueError):
         return False
-    return config.get("model_type") in _RAPID_OWNED_RUNTIME_MODEL_TYPES
+    model_type = config.get("model_type")
+    if model_type not in _RAPID_OWNED_RUNTIME_MODEL_TYPES:
+        return False
+
+    module_name = f"mlx_lm.models.{model_type}"
+    module_available = sys.modules.get(module_name) is not None
+    if not module_available:
+        try:
+            import importlib.util as _importlib_util
+
+            module_available = _importlib_util.find_spec(module_name) is not None
+        except (ImportError, ValueError):
+            module_available = False
+    if model_type not in _VENDORED_MODEL_TYPES or not module_available:
+        raise RuntimeError(
+            f"Rapid-owned runtime for {model_type!r} is unavailable; "
+            "refusing to execute checkpoint-owned model code"
+        )
+    return True
 
 
 def _post_load_ubc_evict(model_name: str) -> None:
@@ -1883,6 +1908,7 @@ def _load_with_tokenizer_fallback(model_name: str, *, enable_dspark: bool = Fals
     # nests the transformer under ``model`` and renames shared-expert
     # projections, so mlx-lm would otherwise apply the global MXFP4 default to
     # MXFP8 attention tensors and reject their packed shapes.
+    _register_vendored_archs()
     model_config = _deepseek_v4_quantization_override(
         model_path, enable_dspark=enable_dspark
     )

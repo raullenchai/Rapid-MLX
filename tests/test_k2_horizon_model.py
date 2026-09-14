@@ -200,9 +200,43 @@ def test_repo_code_trust_boundary_is_scoped_to_rapid_owned_k2(tmp_path):
     other_dir.mkdir()
     (other_dir / "config.json").write_text(json.dumps({"model_type": "deepseek_v4"}))
 
+    tokenizer._register_vendored_archs()
     assert tokenizer._uses_rapid_owned_runtime(str(k2_dir)) is True
     assert tokenizer._uses_rapid_owned_runtime(str(other_dir)) is False
     assert tokenizer._uses_rapid_owned_runtime("org/not-cached") is False
+
+
+def test_public_loader_fails_closed_when_k2_registration_is_unavailable(
+    tmp_path, monkeypatch
+):
+    """An untrusted model_type declaration cannot grant a validation bypass."""
+    from vllm_mlx.utils import tokenizer
+
+    model_root = tmp_path / "untrusted-k2"
+    model_root.mkdir()
+    (model_root / "config.json").write_text(
+        json.dumps(
+            {
+                **TINY,
+                "model_file": "../outside.py",
+                "auto_map": {"AutoModel": "model.CustomModel"},
+            }
+        )
+    )
+    (tmp_path / "outside.py").write_text("raise AssertionError('must not run')\n")
+
+    monkeypatch.setattr(
+        tokenizer, "_VENDORED_MODEL_TYPES", set(tokenizer._VENDORED_MODEL_TYPES)
+    )
+    tokenizer._VENDORED_MODEL_TYPES.discard("k2_horizon")
+    monkeypatch.delitem(sys.modules, "mlx_lm.models.k2_horizon", raising=False)
+    monkeypatch.setattr(tokenizer, "_register_vendored_archs", lambda: None)
+    loader = MagicMock(side_effect=AssertionError("loader must not run"))
+    monkeypatch.setattr(tokenizer, "_load_model_with_fallback_impl", loader)
+
+    with pytest.raises(RuntimeError, match="refusing to execute checkpoint-owned"):
+        tokenizer.load_model_with_fallback(str(model_root))
+    loader.assert_not_called()
 
 
 def test_vendored_load_ignores_checkpoint_owned_model_code(tmp_path, monkeypatch):
