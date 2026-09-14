@@ -35,8 +35,11 @@ at `d22f2b6` in the `ltx-2-mlx` repository. Rapid documentation branch:
 - A zero-shot 768x512 / 1536-token hummingbird probe also improved and
   preserved its moving subject. The measured stage-2 projection is about
   32.7 seconds to 22 seconds, or 1.5x for stage 2 at 25 frames.
-- A frozen 100-trajectory scale run is now capturing 80 train / 20
-  prompt-disjoint validation items across 468/1536/3072-token buckets.
+- The frozen 100-trajectory scale capture completed: 700/700 components,
+  80 train / 20 prompt-disjoint validation items across 468/1536/3072-token
+  buckets. The source set is archived on the Studio dataset tier.
+- A 200-step rank-8 Q/K/V mixed-bucket run is active on MZR-3. Validation is
+  excluded from training and checkpoint selection until paired evaluation.
 - The implementation now includes resumable BF16 trajectory capture, the
   terminal strategy, checkpoint schedule/LoRA-scale metadata, paired latent
   evaluation, and paired MP4 rendering. Full tests pass: 616 passed,
@@ -63,9 +66,9 @@ model. More aggressive `3 + 1` or `2 + 1` schedules are research tiers.
 
 ## Next action
 
-Vector should finish the active 100-trajectory capture, verify all 700
-components, archive the source set to the Studio dataset tier, and train the
-rank-8 progressive objective. Include decoded small-subject, speech, impact,
+Vector should finish the active 200-step rank-8 progressive run and evaluate
+every 20-step checkpoint on the frozen validation split. Include decoded
+small-subject, speech, impact,
 and synchronization review. If the scaled adapter still drops semantic
 detail, escalate to full-model or
 smaller-architecture student distillation. Atlas should review fast-tier and

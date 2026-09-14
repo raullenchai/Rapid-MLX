@@ -152,7 +152,7 @@ took about 32.7 seconds at this shape; two project to about 22 seconds. This
 demonstrates resolution transfer and a 1.5x stage-2 gain, not yet a
 241-frame end-to-end claim.
 
-## Scaled qualification in progress
+## Scaled qualification
 
 Runtime-port commit `c475352` freezes a 100-trajectory manifest with 40 train
 and 10 prompt-disjoint validation prompts, two seeds each. It allocates 60
@@ -160,12 +160,17 @@ items at 468 tokens, 30 at 1536, and 10 at 3072. The checked-in capture path
 is resumable by global manifest index, and a split tool hard-links complete
 components without duplicating storage.
 
-Capture began on MZR-3 on 2026-09-14 at
-`/private/tmp/LTX-progressive-scale.zv79Uv`. A fail-closed supervisor advances
-only at exact 420/630/700 component-file milestones. The first item was
-verified at shape `[468, 128]`, latent dimensions `[13, 6, 6]`, sigma
-`0.909375`, and manifest seed 1000. Training must not begin until all 700 files
-pass completeness validation.
+Capture completed on MZR-3 on 2026-09-14 at
+`/private/tmp/LTX-progressive-scale.zv79Uv`. The fail-closed supervisor passed
+the exact 420/630/700 component-file milestones. Prompt-disjoint split views
+contain 560 train and 140 validation components. The 700-file, 1.3 GiB source
+set is archived at
+`/Volumes/RTL-2T/datasets/ltx-stage2-distillation/progressive-scale-2026-09-14/`.
+
+A 200-step rank-8 Q/K/V mixed-bucket run started against the 80-item training
+split. Checkpoints are written every 20 steps. The validation split remains
+outside the trainer and will be used only for paired latent evaluation and
+decoded quality review after training.
 
 ## Reproduction
 
