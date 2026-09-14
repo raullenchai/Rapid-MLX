@@ -115,7 +115,9 @@ def test_tiny_forward_and_incremental_cache_match_full_prefill():
 
     assert full.shape == (1, 4, 64)
     assert all(piece.shape == (1, 1, 64) for piece in pieces)
-    assert mx.allclose(full[:, -1, :], pieces[-1][:, -1, :], rtol=1e-4, atol=1e-4).item()
+    assert mx.allclose(
+        full[:, -1, :], pieces[-1][:, -1, :], rtol=1e-4, atol=1e-4
+    ).item()
 
 
 def test_group_rms_norm_matches_grouped_reference_not_global_rms():

@@ -108,7 +108,9 @@ class ModelArgs(BaseModelArgs):
         if self.head_dim < 1:
             raise ValueError("head_dim must be positive")
         if self.hidden_act != "silu":
-            raise ValueError(f"unsupported hidden_act {self.hidden_act!r}; expected 'silu'")
+            raise ValueError(
+                f"unsupported hidden_act {self.hidden_act!r}; expected 'silu'"
+            )
         if self.num_experts or self.mova_num_experts:
             raise ValueError("K2 Horizon MoE/MoVA checkpoints are not supported")
         if self.query_key_norm:
@@ -174,15 +176,21 @@ class Attention(nn.Module):
 
     def __call__(self, x, mask=None, cache=None):
         batch, length, _ = x.shape
-        queries = self.q_proj(x).reshape(
-            batch, length, self.n_heads, self.head_dim
-        ).transpose(0, 2, 1, 3)
-        keys = self.k_proj(x).reshape(
-            batch, length, self.n_kv_heads, self.head_dim
-        ).transpose(0, 2, 1, 3)
-        values = self.v_proj(x).reshape(
-            batch, length, self.n_kv_heads, self.head_dim
-        ).transpose(0, 2, 1, 3)
+        queries = (
+            self.q_proj(x)
+            .reshape(batch, length, self.n_heads, self.head_dim)
+            .transpose(0, 2, 1, 3)
+        )
+        keys = (
+            self.k_proj(x)
+            .reshape(batch, length, self.n_kv_heads, self.head_dim)
+            .transpose(0, 2, 1, 3)
+        )
+        values = (
+            self.v_proj(x)
+            .reshape(batch, length, self.n_kv_heads, self.head_dim)
+            .transpose(0, 2, 1, 3)
+        )
         offset = cache.offset if cache is not None else 0
         queries = self.rope(queries, offset=offset)
         keys = self.rope(keys, offset=offset)
@@ -243,7 +251,9 @@ class K2HorizonModel(nn.Module):
         )
 
     def __call__(self, inputs, cache=None, input_embeddings=None):
-        hidden = self.embed_tokens(inputs) if input_embeddings is None else input_embeddings
+        hidden = (
+            self.embed_tokens(inputs) if input_embeddings is None else input_embeddings
+        )
         if cache is None:
             cache = [None] * len(self.layers)
         mask = create_attention_mask(hidden, cache[0])
