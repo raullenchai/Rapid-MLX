@@ -1,5 +1,34 @@
 import Foundation
 
+@MainActor
+protocol AgentRuntimeTransport: Sendable {
+    func create(
+        goal: String,
+        model: String?,
+        toolNames: [String]?,
+        execution: AgentExecutionMode,
+        bearerToken: String?
+    ) async throws -> AgentRunView
+
+    func get(runID: String, bearerToken: String?) async throws -> AgentRunView
+    func events(runID: String, after: Int, bearerToken: String?) async throws -> AgentEventsView
+    func resolveApproval(
+        runID: String,
+        callID: String,
+        approved: Bool,
+        bearerToken: String?
+    ) async throws -> AgentRunView
+    func submitToolResult(
+        runID: String,
+        callID: String,
+        content: String,
+        isError: Bool,
+        executed: Bool,
+        bearerToken: String?
+    ) async throws -> AgentRunView
+    func cancel(runID: String, bearerToken: String?) async throws -> AgentRunView
+}
+
 enum AgentRuntimeFeatureConfig {
     static let enabledKey = "Rapid.experimental.agentRuntimeEnabled"
     static let defaultEnabled = false
@@ -381,3 +410,5 @@ final class AgentRuntimeClient: Sendable {
         return "Rapid Agent Runtime request failed (HTTP \(status))."
     }
 }
+
+extension AgentRuntimeClient: AgentRuntimeTransport {}
