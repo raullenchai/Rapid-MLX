@@ -267,3 +267,33 @@ copied without deletion to
 `/Volumes/RTL-2T/scratch-archive/LTX-MZR3-20260914/`; source and archive file
 counts and byte totals match for all three directories. The remote originals
 remain intact pending explicit cleanup authorization.
+
+## Complete-noise Stage-1 coupling (2026-09-14)
+
+The first `lane` coupling was found to leave hidden target randomness: a coarse
+`0 -> 3` student re-injected original lane 0, while the teacher path also drew
+independent lanes 1 and 2. This can force an MSE student toward conditional
+mean outputs even though the transition remains nominally stochastic.
+
+Upstream `abbbe6b` adds a separate `span-v2` coupling. For each coarse
+transition it propagates and combines every covered fine-step noise lane using
+the ancestral Euler input/noise coefficients, then scales that aggregate for
+the coarse step. This exactly preserves accumulated random forcing when
+teacher denoised predictions are held fixed; it does not claim equivalence of
+the nonlinear teacher drift. Training and runtime use the same coupling and
+still perform only four Stage-1 model evaluations.
+
+The v2 artifact contract is explicit and fail closed. It carries the complete
+fine sigma schedule and contiguous spans `[[0,3],[3,5],[5,7],[7,8]]`, requires
+a durable span-v2 curriculum marker, and cannot be relabeled as the v1
+single-lane capability. The standard path and existing v1 package behavior are
+unchanged. Upstream `dcc65a5` routes the qualification runner through the
+selected coupling; the complete suite passes 729 tests with 22 skips.
+
+MZR-3 is running the terminal Stage-2 curriculum and its queued blind suite.
+The Stage-1 queue now runs the v1 `0 -> 3` pilot, then the otherwise identical
+span-v2 pilot. Span-v2 advances to the full four-transition curriculum only if
+both held-out mean modalities improve at least 10% and no paired sample
+regresses more than 5%; a gate rejection falls back to lane v1. This is only a
+compute gate. Decoded multi-seed motion, detail, diversity, audio, and sync
+remain the product gate.

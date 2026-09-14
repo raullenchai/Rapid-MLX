@@ -125,6 +125,14 @@ requirements, it carries the complete schedule
 when their base model, revision, transformer file, and configuration digest
 match exactly.
 
+A separate `ltx_stage1_compressed_span_v2` capability corrects the v1
+single-lane limitation without changing evaluation count. It carries the
+complete original sigma schedule and contiguous fine-step spans
+`[[0,3],[3,5],[5,7],[7,8]]`; runtime derives one coefficient-weighted aggregate
+noise tensor per coarse step. Its package builder requires explicit span-v2
+curriculum provenance. Missing spans, schedule disagreement, v1/v2 relabeling,
+or mixed coupling metadata fail before model mutation.
+
 Metadata, tensor names, tensor shapes, schedule monotonicity, and base identity
 must all validate before model mutation. Missing, malformed, or incompatible
 metadata fails closed. Standard generation remains available; the runtime must

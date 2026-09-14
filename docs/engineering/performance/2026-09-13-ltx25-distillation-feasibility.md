@@ -181,6 +181,27 @@ supervisor requires each final checkpoint before launching the next shape.
 The validation split remains outside training and will be used only for paired
 latent evaluation and decoded review.
 
+## Stage-1 complete-noise correction
+
+The initial compressed Stage-1 prototype selected only the first seeded noise
+lane in each coarse span. For `0 -> 3`, teacher lanes 1 and 2 therefore remained
+unobserved target randomness, a plausible source of conditional-mean blur and
+motion loss.
+
+The `span-v2` prototype instead combines all covered fine lanes with their
+ancestral Euler propagation coefficients. Under fixed denoised predictions,
+one coarse injection reproduces the exact accumulated stochastic forcing of
+the fine path. The model drift is nonlinear, so this is a better coupling, not
+an analytical proof of equal samples. It costs no additional transformer
+evaluation and preserves the projected `4 + 1` timing.
+
+The implementation uses a distinct package capability with a full reference
+sigma table, contiguous noise spans, curriculum provenance, and fail-closed
+runtime validation. The v1 path and the standard eight-step sampler remain
+unchanged. At upstream `dcc65a5`, all 729 tests pass with 22 skipped. MZR-3 is
+running matched v1/v2 first-transition pilots before committing compute to the
+full four-transition curriculum.
+
 ## Reproduction
 
 Model: `MrMofer/ltx-2.5-mlx-q8`, revision
@@ -195,3 +216,4 @@ workspace packages on `PYTHONPATH`.
 - [LTX-2 official trainer configuration](https://github.com/Lightricks/LTX-2/blob/main/packages/ltx-trainer/docs/configuration-reference.md)
 - [Progressive Distillation for Fast Sampling of Diffusion Models](https://arxiv.org/abs/2202.00512)
 - [DOLLAR: Few-Step Video Generation via Distillation and Latent Reward Optimization](https://arxiv.org/abs/2412.15689)
+- [SCott: Accelerating Diffusion Models with Stochastic Consistency Distillation](https://arxiv.org/abs/2403.01505)
