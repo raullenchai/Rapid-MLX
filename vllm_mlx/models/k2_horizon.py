@@ -108,6 +108,11 @@ class ModelArgs(BaseModelArgs):
                 "num_attention_heads must be a multiple of num_key_value_heads"
             )
         if self.head_dim is None:
+            if self.hidden_size % self.num_attention_heads:
+                raise ValueError(
+                    "hidden_size must be divisible by num_attention_heads "
+                    "when head_dim is omitted"
+                )
             self.head_dim = self.hidden_size // self.num_attention_heads
         if self.head_dim < 1:
             raise ValueError("head_dim must be positive")

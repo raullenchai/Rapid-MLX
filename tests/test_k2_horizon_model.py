@@ -89,6 +89,15 @@ def test_yarn_rope_metadata_is_preserved_without_nested_theta():
     [
         ({"num_hidden_layers": 0}, "num_hidden_layers"),
         ({"num_key_value_heads": 3}, "multiple"),
+        (
+            {
+                "hidden_size": 36,
+                "num_attention_heads": 5,
+                "num_key_value_heads": 5,
+                "head_dim": None,
+            },
+            "divisible by num_attention_heads",
+        ),
         ({"hidden_act": "gelu"}, "hidden_act"),
         ({"layernorm_num_groups": 3}, "divisible"),
         ({"num_experts": 8}, "MoE/MoVA"),
