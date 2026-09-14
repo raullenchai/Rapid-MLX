@@ -4,7 +4,6 @@
 import importlib
 import json
 import sys
-import types
 from pathlib import Path
 from unittest.mock import MagicMock
 
@@ -185,13 +184,19 @@ def test_registration_uses_rapid_adapter_and_is_idempotent(monkeypatch):
 
 def test_registration_defers_to_future_native_module(monkeypatch):
     tokenizer = _reset_registration(monkeypatch)
-    native = types.ModuleType("mlx_lm.models.k2_horizon")
-    native.__spec__ = importlib.util.spec_from_loader(
+    native_spec = importlib.util.spec_from_loader(
         "mlx_lm.models.k2_horizon", loader=None
     )
-    monkeypatch.setitem(sys.modules, "mlx_lm.models.k2_horizon", native)
+    real_find_spec = importlib.util.find_spec
+
+    def find_spec(name, *args, **kwargs):
+        if name == "mlx_lm.models.k2_horizon":
+            return native_spec
+        return real_find_spec(name, *args, **kwargs)
+
+    monkeypatch.setattr(importlib.util, "find_spec", find_spec)
     tokenizer._register_vendored_archs()
-    assert sys.modules["mlx_lm.models.k2_horizon"] is native
+    assert "mlx_lm.models.k2_horizon" not in sys.modules
     assert "k2_horizon" in tokenizer._VENDORED_MODEL_TYPES
 
 
