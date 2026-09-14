@@ -38,8 +38,12 @@ at `d22f2b6` in the `ltx-2-mlx` repository. Rapid documentation branch:
 - The frozen 100-trajectory scale capture completed: 700/700 components,
   80 train / 20 prompt-disjoint validation items across 468/1536/3072-token
   buckets. The source set is archived on the Studio dataset tier.
-- A 200-step rank-8 Q/K/V mixed-bucket run is active on MZR-3. Validation is
-  excluded from training and checkpoint selection until paired evaluation.
+- A shuffled mixed-shape training process was OS-terminated before checkpoint
+  without traceback, consistent with compiled graph/allocation accumulation.
+  Training now uses separate 468/1536/3072 processes (100/50/16 steps) with
+  checkpoint handoff and descending learning rates. The 468 stage is stable
+  through step 5 at 12.63 seconds/step. A fail-closed supervisor owns stage
+  transitions. Validation remains excluded until paired evaluation.
 - The implementation now includes resumable BF16 trajectory capture, the
   terminal strategy, checkpoint schedule/LoRA-scale metadata, paired latent
   evaluation, and paired MP4 rendering. Full tests pass: 616 passed,
