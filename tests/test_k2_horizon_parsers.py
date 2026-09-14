@@ -344,11 +344,22 @@ def test_streaming_redacts_reasoning_between_tool_groups():
         + "private retry</ifm|think_faster>Visible between"
         + _group(_xml_call("lookup"))
     )
-    delta = parser.extract_tool_calls_streaming("", output, output, request=_request())
-    assert delta is not None
-    assert delta["content"] == "Visible between"
-    assert len(delta["tool_calls"]) == 2
-    assert all(len(call["id"]) == len("call_") + 32 for call in delta["tool_calls"])
+    content: list[str] = []
+    calls: list[dict] = []
+    previous = ""
+    for char in output:
+        current = previous + char
+        delta = parser.extract_tool_calls_streaming(
+            previous, current, char, request=_request()
+        )
+        previous = current
+        if delta:
+            content.append(delta.get("content") or "")
+            calls.extend(delta.get("tool_calls") or [])
+    content.append(parser.flush_held_content(output))
+    assert "".join(content) == "Visible between"
+    assert len(calls) == 2
+    assert all(len(call["id"]) == len("call_") + 32 for call in calls)
 
 
 def test_streaming_tool_choice_none_strips_envelope_incrementally():

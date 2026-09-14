@@ -298,7 +298,12 @@ class K2HorizonToolParser(ToolParser):
 
         start = current_text.find(self.GROUP_START, self._content_upto)
         if start < 0:
-            if not self._input_reasoning_sanitized and not self._tool_group_seen:
+            if self._tool_group_seen:
+                # K2 may open another private reasoning lane between tool
+                # groups. Once any group has appeared, hold trailing bytes
+                # until a closer, another group, or EOF establishes visibility.
+                return None
+            if not self._input_reasoning_sanitized:
                 # Direct parser callers have not passed through K2's
                 # implicit-reasoning parser. Hold the prefix until a closer
                 # proves which bytes are visible; K2 always primes reasoning.
@@ -377,7 +382,9 @@ class K2HorizonToolParser(ToolParser):
 
     def flush_held_content(self, full_text: str) -> str:
         if self.has_pending_tool_call(full_text):
-            return full_text[self._content_upto :]
+            return self._visible_prefix(full_text[self._content_upto :])
+        if self._tool_group_seen:
+            return self._visible_prefix(full_text[self._content_upto :])
         if not self._input_reasoning_sanitized and not self._tool_group_seen:
             remaining = full_text[self._content_upto :]
             if not any(marker in remaining for marker in self.REASONING_ENDS):
