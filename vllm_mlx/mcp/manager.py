@@ -5,6 +5,7 @@ MCP Client Manager for handling multiple MCP server connections.
 
 import asyncio
 import logging
+from contextlib import asynccontextmanager
 from typing import Any
 
 from .client import MCPClient
@@ -41,6 +42,9 @@ class MCPClientManager:
         self._clients: dict[str, MCPClient] = {}
         self._started = False
         self._lock = asyncio.Lock()
+        self._lease_condition = asyncio.Condition(self._lock)
+        self._active_tool_leases = 0
+        self._generation_mutation_waiters = 0
 
         # Create clients for each server
         for name, server_config in config.servers.items():
@@ -51,13 +55,54 @@ class MCPClientManager:
         """Check if manager has been started."""
         return self._started
 
+    def _generation_condition(self) -> asyncio.Condition:
+        """Lazily provide lease state for older test/embedding constructors."""
+
+        condition = getattr(self, "_lease_condition", None)
+        if condition is None:
+            condition = asyncio.Condition(self._lock)
+            self._lease_condition = condition
+            self._active_tool_leases = 0
+            self._generation_mutation_waiters = 0
+        return condition
+
+    @asynccontextmanager
+    async def tool_generation_lease(self):
+        """Prevent stop/reconnect/refresh from mutating a dispatched target."""
+
+        condition = self._generation_condition()
+        async with condition:
+            await condition.wait_for(lambda: self._generation_mutation_waiters == 0)
+            self._active_tool_leases += 1
+        try:
+            yield
+        finally:
+            async with condition:
+                self._active_tool_leases -= 1
+                if self._active_tool_leases == 0:
+                    condition.notify_all()
+
+    @asynccontextmanager
+    async def _generation_mutation(self):
+        """Serialize mutations after all concurrent tool leases drain."""
+
+        condition = self._generation_condition()
+        async with condition:
+            self._generation_mutation_waiters += 1
+            try:
+                await condition.wait_for(lambda: self._active_tool_leases == 0)
+                yield
+            finally:
+                self._generation_mutation_waiters -= 1
+                condition.notify_all()
+
     async def start(self):
         """
         Start the manager and connect to all enabled servers.
 
         Connections are made in parallel for faster startup.
         """
-        async with self._lock:
+        async with self._generation_mutation():
             if self._started:
                 return
 
@@ -97,7 +142,7 @@ class MCPClientManager:
 
     async def stop(self):
         """Stop the manager and disconnect from all servers."""
-        async with self._lock:
+        async with self._generation_mutation():
             if not self._started:
                 return
 
@@ -179,9 +224,10 @@ class MCPClientManager:
         against the SAME (server, tool) split :meth:`execute_tool` dispatches
         on — otherwise the route would validate one name and run another.
         """
-        server_name, tool_name, _ = openai_call_to_mcp(
+        parsed_server, tool_name, _ = openai_call_to_mcp(
             {"function": {"name": full_name, "arguments": "{}"}}
         )
+        server_name: str | None = parsed_server
         # If no server prefix, try to find the tool by bare name.
         if not server_name:
             server_name = self._find_tool_server(full_name)
@@ -283,13 +329,14 @@ class MCPClientManager:
 
     async def refresh_tools(self):
         """Refresh tools from all connected servers."""
-        tasks = [
-            client.refresh_tools()
-            for client in self._clients.values()
-            if client.is_connected
-        ]
-        if tasks:
-            await asyncio.gather(*tasks, return_exceptions=True)
+        async with self._generation_mutation():
+            tasks = [
+                client.refresh_tools()
+                for client in self._clients.values()
+                if client.is_connected
+            ]
+            if tasks:
+                await asyncio.gather(*tasks, return_exceptions=True)
 
     async def reconnect(self, server_name: str | None = None):
         """
@@ -298,13 +345,14 @@ class MCPClientManager:
         Args:
             server_name: Specific server to reconnect, or None for all
         """
-        if server_name:
-            client = self._clients.get(server_name)
-            if client:
-                await client.disconnect()
-                await client.connect()
-        else:
-            # Reconnect all
-            for client in self._clients.values():
-                await client.disconnect()
-                await client.connect()
+        async with self._generation_mutation():
+            if server_name:
+                client = self._clients.get(server_name)
+                if client:
+                    await client.disconnect()
+                    await client.connect()
+            else:
+                # Reconnect all
+                for client in self._clients.values():
+                    await client.disconnect()
+                    await client.connect()

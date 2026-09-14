@@ -51,7 +51,6 @@ vllm_mlx/kernels/turboquant_fused.py 5
 vllm_mlx/launch/_common.py 1
 vllm_mlx/launch/cli.py 9
 vllm_mlx/mcp/executor.py 1
-vllm_mlx/mcp/manager.py 1
 vllm_mlx/mcp/security.py 1
 vllm_mlx/mcp/tools.py 1
 vllm_mlx/memory_cache.py 19

@@ -701,6 +701,10 @@ async def lifespan(app: FastAPI):
     """FastAPI lifespan for startup/shutdown events."""
     global _engine, _mcp_manager, _primary_model_lifecycle
 
+    from .routes.agents import start_agent_service_lifecycle
+
+    start_agent_service_lifecycle()
+
     # Install process-death observability BEFORE any executor is created.
     # Two complementary mechanisms (codex r3 NIT clarification):
     #
@@ -1000,8 +1004,10 @@ async def lifespan(app: FastAPI):
     # ``is_enabled()``-gated and ``@_safe`` → a no-op when telemetry is off
     # and never masks the failure.
     try:
+        from .routes.agents import close_agent_service
         from .routes.video import shutdown_video_jobs
 
+        await close_agent_service()
         await shutdown_video_jobs()
 
         if _primary_model_lifecycle is not None:
@@ -3183,6 +3189,7 @@ async def reload_mcp(config_path: str | None = None) -> str | None:
 # Route modules — imported after all server globals are defined to avoid
 # circular imports (route modules import verify_api_key etc. from this module)
 # =============================================================================
+from .routes.agents import router as _agents_router
 from .routes.anthropic import router as _anthropic_router
 
 # Task #292: ``_audio_router`` is no longer registered at import time —
@@ -3216,6 +3223,7 @@ app.include_router(_metrics_router)
 # latter cannot consume ``residency`` as an ordinary model id.
 app.include_router(_residency_router)
 app.include_router(_models_router)
+app.include_router(_agents_router)
 app.include_router(_chat_router)
 app.include_router(_completions_router)
 app.include_router(_anthropic_router)

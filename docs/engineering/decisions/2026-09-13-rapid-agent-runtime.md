@@ -112,6 +112,23 @@ These omissions are architectural boundaries, not a roadmap promise.
    of MiniCPM5 to the primary recommendation is a measured catalog change, not
    an architectural default.
 
+The server adapter implements step 2 through `/v1/agent/runs`. It keeps at
+most 32 process-local runs, expires terminal runs after 15 minutes, calls the
+existing Chat Completions function directly, and projects only the existing MCP
+registry. Because MCP does not standardize risk metadata, an operator must list
+an exact namespaced tool in that server's `agent_read_only_tools` before Rapid will execute it
+without per-call approval. Client execution mode exposes the same transient
+pending call and typed result boundary needed by step 3; it does not admit
+client-authored tool schemas, risk labels, or event summaries.
+The adapter snapshots the MCP manager/executor generation per run, so a reload
+cannot redirect a call validated against an old schema or risk declaration to
+a replacement tool with the same name. MiniCPM's tighter profile is resolved
+from the known catalog identity or the exact loaded 2B architecture shape plus
+its native parser, not from a mutable served name or local directory spelling.
+Each run also binds the concrete model-registry entry (or single engine)
+selected at creation. A later model unload/replacement fails the run instead of
+falling back to a different default under the old profile and tool snapshot.
+
 ## Consequences
 
 The first kernel adds no dependency and no idle process. Model-specific tuning

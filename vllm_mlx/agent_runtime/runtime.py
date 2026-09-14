@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import weakref
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
@@ -451,6 +452,23 @@ class AgentRuntime:
         object.__setattr__(run, "visible_tools", ())
         _append_event(run, "run.cancelled", now=self._clock())
         self._call_counts_by_run.pop(id(run), None)
+
+    @_serialized
+    def fail(self, run: AgentRun, code: str) -> None:
+        """Fail a live run with a stable, non-sensitive adapter error code."""
+
+        if not re.fullmatch(r"[a-z][a-z0-9_]{0,127}", code):
+            raise AgentRuntimeError(
+                "failure code must be 1-128 lowercase ASCII letters, digits, or underscores"
+            )
+        if run.status in {
+            AgentRunStatus.COMPLETED,
+            AgentRunStatus.FAILED,
+            AgentRunStatus.CANCELLED,
+        }:
+            raise AgentRuntimeError("terminal run cannot be failed again")
+        self._live_state(run)
+        self._fail(run, code)
 
     @staticmethod
     def ledger_context(run: AgentRun) -> str:

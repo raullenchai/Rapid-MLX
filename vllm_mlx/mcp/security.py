@@ -20,6 +20,59 @@ from typing import Any
 
 logger = logging.getLogger(__name__)
 
+_SENSITIVE_KEY_WORDS = {
+    "apikey",
+    "auth",
+    "authorization",
+    "bearer",
+    "cookie",
+    "credential",
+    "jwt",
+    "key",
+    "passphrase",
+    "passwd",
+    "password",
+    "privatekey",
+    "pwd",
+    "secret",
+    "sessionid",
+    "token",
+}
+_SENSITIVE_KEY_PAIRS = {
+    ("access", "key"),
+    ("api", "key"),
+    ("client", "secret"),
+    ("private", "key"),
+    ("refresh", "token"),
+    ("session", "id"),
+}
+
+
+def is_sensitive_argument_key(key: str) -> bool:
+    """Recognize credential keys across snake, kebab, dotted, and camel case."""
+
+    words = [
+        word.lower()
+        for word in re.findall(
+            r"[A-Z]+(?=[A-Z][a-z]|\d|\b)|[A-Z]?[a-z]+|\d+",
+            re.sub(r"[_.-]+", " ", key),
+        )
+    ]
+    collapsed = "".join(words)
+    # Preserve the pre-existing conservative substring policy. False-positive
+    # redaction is preferable to leaking a credential under a novel spelling.
+    if any(
+        marker in key.casefold()
+        for marker in ("password", "token", "secret", "credential", "auth")
+    ):
+        return True
+    if collapsed in _SENSITIVE_KEY_WORDS or any(
+        word in _SENSITIVE_KEY_WORDS for word in words
+    ):
+        return True
+    return any(pair in _SENSITIVE_KEY_PAIRS for pair in zip(words, words[1:]))
+
+
 # Whitelist of allowed MCP server commands
 # These are well-known, trusted MCP server executables
 ALLOWED_COMMANDS: set[str] = {
@@ -640,16 +693,11 @@ class ToolSandbox:
 
     def _sanitize_arguments_for_log(self, arguments: dict[str, Any]) -> dict[str, Any]:
         """Sanitize arguments for logging (redact sensitive data)."""
-        sensitive_keys = {"password", "token", "secret", "key", "credential", "auth"}
 
         def sanitize(obj: Any) -> Any:
             if isinstance(obj, dict):
                 return {
-                    k: (
-                        "[REDACTED]"
-                        if any(s in k.lower() for s in sensitive_keys)
-                        else sanitize(v)
-                    )
+                    k: ("[REDACTED]" if is_sensitive_argument_key(k) else sanitize(v))
                     for k, v in obj.items()
                 }
             elif isinstance(obj, list):

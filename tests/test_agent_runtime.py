@@ -49,6 +49,7 @@ def test_minicpm_profile_is_alias_and_repo_aware():
         "minicpm5-2b-4bit",
         "openbmb/MiniCPM5-2B-MLX",
         "mlx-community/MiniCPM5_2B_8bit",
+        "mlx-community/MiniCPM5-2B-4bit",
     ):
         profile = resolve_agent_profile(model)
         assert profile.name == "minicpm5-2b"
@@ -56,6 +57,39 @@ def test_minicpm_profile_is_alias_and_repo_aware():
         assert profile.max_tool_rounds == 8
 
     assert resolve_agent_profile("qwen3.5-4b-4bit").name == "default"
+
+
+def test_minicpm_profile_uses_exact_loaded_metadata_for_custom_local_paths():
+    config = {
+        "model_type": "llama",
+        "hidden_size": 2048,
+        "intermediate_size": 6144,
+        "num_hidden_layers": 42,
+        "num_attention_heads": 16,
+        "num_key_value_heads": 2,
+        "vocab_size": 130560,
+    }
+
+    assert (
+        resolve_agent_profile(
+            "/models/my-local-copy",
+            model_config=config,
+            tool_call_parser="minicpm",
+        ).name
+        == "minicpm5-2b"
+    )
+    assert (
+        resolve_agent_profile(
+            "/models/my-local-copy",
+            model_config=config,
+            tool_call_parser="hermes",
+        ).name
+        == "default"
+    )
+    unverified = resolve_agent_profile("/models/minicpm5-2b-copy")
+    assert unverified.name == "default-conservative"
+    assert unverified.max_visible_tools == 6
+    assert unverified.max_tool_rounds == 8
 
 
 def test_run_identity_and_profile_are_immutable_after_creation():
@@ -77,6 +111,35 @@ def test_tool_arguments_are_json_only_at_the_wire_boundary():
 def test_tool_risk_is_required_at_registry_boundary():
     with pytest.raises(ValidationError, match="risk"):
         ToolSpec(name="unclassified")
+
+
+def test_adapter_can_fail_a_live_run_with_a_stable_code():
+    runtime = _runtime()
+    run = runtime.create_run(model="minicpm5-2b-4bit", goal="Do the task")
+
+    runtime.fail(run, "model_request_failed")
+
+    assert run.status is AgentRunStatus.FAILED
+    assert run.failure_code == "model_request_failed"
+    assert run.events[-1].type == "run.failed"
+
+
+@pytest.mark.parametrize("code", ["", "Has Caps", "contains-secret/path", "a" * 129])
+def test_adapter_failure_codes_are_safe_for_events(code):
+    runtime = _runtime()
+    run = runtime.create_run(model="model", goal="Do the task")
+
+    with pytest.raises(AgentRuntimeError, match="failure code"):
+        runtime.fail(run, code)
+
+
+def test_adapter_cannot_replace_a_terminal_outcome():
+    runtime = _runtime()
+    run = runtime.create_run(model="model", goal="Do the task")
+    runtime.cancel(run)
+
+    with pytest.raises(AgentRuntimeError, match="terminal run"):
+        runtime.fail(run, "late_failure")
 
 
 def test_tool_parameters_must_be_a_valid_json_schema():

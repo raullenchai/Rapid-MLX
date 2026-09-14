@@ -17,9 +17,11 @@ import os
 import threading
 import uuid
 from collections.abc import AsyncIterator
+from contextlib import contextmanager
+from contextvars import ContextVar
 from functools import lru_cache
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 from fastapi import HTTPException
 from starlette.requests import Request
@@ -2826,10 +2828,43 @@ def _extract_token_logprob(
 
 # ── Engine / validation ────────────────────────────────────────────
 
+_expected_model_generation: ContextVar[Any | None] = ContextVar(
+    "expected_model_generation", default=None
+)
+
+
+@contextmanager
+def bind_model_generation(generation: Any):
+    """Bind one agent turn to the model/engine generation chosen at run start."""
+
+    token = _expected_model_generation.set(generation)
+    try:
+        yield
+    finally:
+        _expected_model_generation.reset(token)
+
 
 def get_engine(model_name: str | None = None) -> BaseEngine:
     """Get the engine for a model, routing by name in multi-model mode."""
     cfg = get_config()
+    expected = _expected_model_generation.get()
+    if expected is not None:
+        if cfg.model_registry and hasattr(expected, "model_name"):
+            try:
+                return cast(
+                    BaseEngine, cfg.model_registry.get_engine_if_entry(expected)
+                )
+            except KeyError as exc:
+                raise HTTPException(
+                    status_code=503,
+                    detail="Agent run model generation is no longer available",
+                ) from exc
+        if cfg.engine is expected:
+            return cast(BaseEngine, expected)
+        raise HTTPException(
+            status_code=503,
+            detail="Agent run model generation is no longer available",
+        )
     if cfg.model_registry:
         try:
             return cfg.model_registry.get_engine(model_name)

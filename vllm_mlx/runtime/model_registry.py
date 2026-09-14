@@ -164,6 +164,21 @@ class ModelRegistry:
 
         raise KeyError(f"Model '{model_name}' not found")
 
+    def get_engine_if_entry(self, expected: ModelEntry) -> object:
+        """Return only the engine owned by this exact registry generation.
+
+        Long-lived agent runs use this instead of name lookup so an unload or
+        replacement cannot silently redirect a later turn to the new default.
+        The returned object is the pinned entry's engine even if its aliases
+        were reassigned after the entry was captured.
+        """
+
+        if self._entries.get(expected.model_name) is not expected:
+            raise KeyError("Model generation is no longer registered")
+        if self.on_engine_access is not None:
+            self.on_engine_access(expected.model_name)
+        return expected.engine
+
     def get_entry(self, model_name: str | None = None) -> ModelEntry:
         """Get the full ModelEntry (engine + metadata) for a model name."""
         if not self._entries:

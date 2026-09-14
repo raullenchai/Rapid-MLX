@@ -40,6 +40,7 @@ GPU acceleration to local AI workloads by integrating:
 - [Reasoning Models](guides/reasoning.md)
 - [Tool Calling](guides/tool-calling.md)
 - [MCP & Tool Calling](guides/mcp-tools.md)
+- [Rapid Agent Runtime](guides/agent-runtime.md)
 - [Continuous Batching](guides/continuous-batching.md)
 - [AI Client Compatibility](guides/ai-clients.md)
 - [SDK Compatibility Notes](guides/sdk-compat.md)

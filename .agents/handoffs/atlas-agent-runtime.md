@@ -1,9 +1,9 @@
 # Atlas handoff — Rapid Agent Runtime
 
 - **Owner:** Atlas
-- **Branch:** `atlas/minicpm-agent-runtime-p0`
-- **Base:** `origin/main` after MiniCPM harness qualification PR #3425
-- **Status:** P0 kernel and architecture contract implemented; server adapter is next
+- **Branch:** `atlas/agent-server-adapter`
+- **Base:** `origin/main` after merged runtime kernel PR #3439
+- **Status:** Server adapter implemented and under validation; Desktop adapter is next
 
 ## Verified facts
 
@@ -45,16 +45,38 @@ framework to the runtime kernel.
 
 ## Next concrete action
 
-Add the authenticated Server adapter as a separate PR: a bounded in-memory run store,
-create/get/events/approval/result/cancel endpoints, and a model-turn adapter
-over the existing generation path. Do not expose endpoints until a created run
-can make progress end to end. Follow with a Desktop client migration behind a
-rollback feature flag, then physical 8 GB / 16 GB qualification.
+After this branch merges, add the Desktop client adapter behind a rollback
+feature flag. It should consume `/v1/agent/runs` plus the shared event schema,
+reuse the existing approval UI and tool executors, and post typed results back
+to the server. Follow with physical 8 GB / 16 GB qualification.
+
+## Server adapter facts
+
+- The server reuses the production non-streaming Chat Completions function
+  in-process; there is no loopback HTTP request or second inference stack.
+- The store is bounded to 32 runs, retains completed runs for 15 minutes, and
+  never evicts active work. Shutdown cancels runs before MCP and engine teardown.
+- Server and client execution modes share one reducer. Client mode is the
+  narrow handoff Desktop needs; clients cannot submit tool definitions, risk
+  labels, or event summaries.
+- MCP has no standard risk metadata. Only exact tools in the operator-owned
+  `agent_read_only_tools` config are automatic; every other call pauses for
+  exact-ID approval and still passes the existing MCP sandbox before execution.
+- A custom served name or arbitrary local directory cannot widen the MiniCPM
+  profile: selection uses catalog identity or exact loaded architecture
+  metadata plus the native parser, while inference uses the public served name.
+- Each run pins the MCP manager/executor generation that advertised its tools;
+  hot reload cannot redirect an old validated call to a replacement registry.
+- Each run binds its concrete model-registry entry (or single engine); an
+  unload/replacement fails instead of switching to a new default mid-run.
+- Model goals, raw call arguments, results, and final output are kept only in
+  the live adapter. The event API carries redacted metadata and monotonic cursors.
 
 ## Risks
 
-- Model generation is still route-owned; extracting a reusable internal
-  generation service is preferable to making an in-process HTTP call.
+- Model generation is still route-owned. The adapter calls that function
+  directly; a later extraction is warranted only if another internal consumer
+  appears.
 - P0 deliberately makes no crash-durability claim. A process restart terminates
   in-flight runs; durable recovery would require a separate reviewed replay and
   migration design.
