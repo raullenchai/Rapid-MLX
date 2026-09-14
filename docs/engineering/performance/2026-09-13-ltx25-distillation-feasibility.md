@@ -202,6 +202,12 @@ unchanged. At upstream `dcc65a5`, all 729 tests pass with 22 skipped. MZR-3 is
 running matched v1/v2 first-transition pilots before committing compute to the
 full four-transition curriculum.
 
+The coupling arithmetic is not a material runtime cost. On the M3 Ultra Studio
+with MLX 0.32.0, 30 materialized calls at video/audio shapes `(1, 3072, 128)`
+and `(1, 126, 128)` averaged 0.407 ms for a legacy lane and 0.592 ms for the
+three-lane `0 -> 3` span, a 0.185 ms delta. This is a primitive microbenchmark,
+not an end-to-end result.
+
 ## Reproduction
 
 Model: `MrMofer/ltx-2.5-mlx-q8`, revision
