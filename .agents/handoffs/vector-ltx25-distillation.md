@@ -184,3 +184,11 @@ took 12.42 and 11.22 seconds, and decode/mux took 5.9 seconds. Output SHA-256 is
 This verifies package validation and runtime lifecycle, not the 2x or quality
 gate. System swap was 203.25 MiB after the preceding ten-case capture and must
 be reported rather than described as zero-swap.
+
+The 40-step deterministic Stage-1 `0.725 -> 0` endpoint probe completed in
+11.8 minutes at 19.79 GiB peak. On two prompt-disjoint 3072-token trajectories,
+it improved video MSE only 3.62% and audio MSE only 3.18% versus the unadapted
+one-evaluation base; evaluation latency was unchanged (6.00 versus 6.05
+seconds). This is insufficient evidence to expand or productize terminal
+endpoint regression. Keep it as a negative/weak capacity result and continue
+with the queued noise-coupled non-terminal transition.
