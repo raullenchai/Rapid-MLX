@@ -59,6 +59,18 @@ _SHUTDOWN_JOIN_SECONDS = 30.0
 _BUILTIN_CALCULATE = "rapid__calculate"
 _BUILTIN_BATCH_READ_ONLY = "rapid__batch_read_only"
 
+_CALCULATE_PARAMETERS = {
+    "type": "object",
+    "properties": {
+        "expressions": {
+            "type": "string",
+            "minLength": 2,
+            "maxLength": 16_384,
+        }
+    },
+    "required": ["expressions"],
+    "additionalProperties": False,
+}
 _CALCULATE_SPEC = ToolSpec(
     name=_BUILTIN_CALCULATE,
     description=(
@@ -67,21 +79,22 @@ _CALCULATE_SPEC = ToolSpec(
         'arithmetic strings, for example {"total":"12+8"}. Use this for '
         "every total, average, difference, percentage, or other arithmetic."
     ),
-    parameters={
-        "type": "object",
-        "properties": {
-            "expressions": {
-                "type": "string",
-                "minLength": 2,
-                "maxLength": 16_384,
-            }
-        },
-        "required": ["expressions"],
-        "additionalProperties": False,
-    },
+    parameters_json=json.dumps(_CALCULATE_PARAMETERS),
     risk=ToolRisk.READ_ONLY,
 )
 
+_BATCH_READ_ONLY_PARAMETERS = {
+    "type": "object",
+    "properties": {
+        "calls": {
+            "type": "string",
+            "minLength": 2,
+            "maxLength": 65_536,
+        }
+    },
+    "required": ["calls"],
+    "additionalProperties": False,
+}
 _BATCH_READ_ONLY_SPEC = ToolSpec(
     name=_BUILTIN_BATCH_READ_ONLY,
     description=(
@@ -90,18 +103,7 @@ _BATCH_READ_ONLY_SPEC = ToolSpec(
         "fields. Prefer this when several files or sources must be inspected; "
         "every nested tool must already be declared read-only."
     ),
-    parameters={
-        "type": "object",
-        "properties": {
-            "calls": {
-                "type": "string",
-                "minLength": 2,
-                "maxLength": 65_536,
-            }
-        },
-        "required": ["calls"],
-        "additionalProperties": False,
-    },
+    parameters_json=json.dumps(_BATCH_READ_ONLY_PARAMETERS),
     risk=ToolRisk.READ_ONLY,
 )
 
@@ -537,7 +539,10 @@ class MCPToolRegistry:
         try:
             validator_type = validators.validator_for(_CALCULATE_SPEC.parameters)
             validator_type(_CALCULATE_SPEC.parameters).validate(call.arguments)
-            expressions = json.loads(call.arguments["expressions"])
+            encoded_expressions = call.arguments.get("expressions")
+            if not isinstance(encoded_expressions, str):
+                raise TypeError("expressions must be a JSON string")
+            expressions = json.loads(encoded_expressions)
             if not isinstance(expressions, dict) or not 1 <= len(expressions) <= 16:
                 raise ValueError("expressions must be a bounded object")
             if not all(
@@ -582,7 +587,10 @@ class MCPToolRegistry:
         try:
             validator_type = validators.validator_for(_BATCH_READ_ONLY_SPEC.parameters)
             validator_type(_BATCH_READ_ONLY_SPEC.parameters).validate(call.arguments)
-            calls = json.loads(call.arguments["calls"])
+            encoded_calls = call.arguments.get("calls")
+            if not isinstance(encoded_calls, str):
+                raise TypeError("calls must be a JSON string")
+            calls = json.loads(encoded_calls)
             if not isinstance(calls, list) or not 1 <= len(calls) <= 8:
                 raise ValueError("calls must be a bounded array")
             for index, item in enumerate(calls):
