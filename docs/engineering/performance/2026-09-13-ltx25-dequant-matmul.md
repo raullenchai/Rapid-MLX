@@ -72,7 +72,10 @@ failed to improve the real workload: 269.4 seconds for 121 frames versus the
 
 ## Decision boundary
 
-Keep the feature opt-in until it is benchmarked on at least the target M3
-Ultra configuration and one additional MLX version. After the upstream PR is
-merged, Rapid may update `LTX25_RUNTIME_COMMIT`. Atlas owns the decision to
-enable the environment variable automatically for qualified hardware.
+Rapid pins the exact experimental runtime commit so the release contains the
+capability, while keeping it opt-in until it is benchmarked on at least the
+target M3 Ultra configuration and one additional MLX version. The temporary
+pin uses the maintainer-controlled `raullenchai/ltx-2-mlx` fork because the
+upstream PR is still open; switch the repository back after upstream merge.
+Atlas owns the decision to enable the environment variable automatically for
+qualified hardware.
