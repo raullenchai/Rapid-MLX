@@ -74,13 +74,7 @@ def _approval_argument_summary(value: Any, *, key: str = "") -> Any:
                 remaining[0] -= 1
                 raw_key = str(nested_key)
                 if is_sensitive_argument_key(raw_key):
-                    display_key = (
-                        raw_key
-                        if len(raw_key) <= 128
-                        and re.fullmatch(r"[A-Za-z_][A-Za-z0-9_.-]*", raw_key)
-                        else f"[redacted-key-{index}]"
-                    )
-                    summarized[display_key] = "[redacted]"
+                    summarized[f"[redacted-key-{index}]"] = "[redacted]"
                 else:
                     display_key = (
                         raw_key if len(raw_key) <= 128 else f"[key-{index}-truncated]"
