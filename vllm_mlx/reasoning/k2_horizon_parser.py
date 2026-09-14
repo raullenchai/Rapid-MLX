@@ -153,5 +153,9 @@ class K2HorizonReasoningParser(ReasoningParser):
         return DeltaMessage(**{lane: held})
 
     def is_open_in_think(self, accumulated_text: str) -> bool:
+        for start, _end in self.EFFORT_TOKENS:
+            if accumulated_text.startswith(start):
+                generated = accumulated_text[len(start) :]
+                return self._first_boundary(generated) is None
         text = self._strip_generated_start(accumulated_text)
         return self._first_boundary(text) is None and bool(text)

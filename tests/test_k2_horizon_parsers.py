@@ -111,6 +111,14 @@ def test_reasoning_parser_stays_active_for_lowest_effort_compatibility():
     assert K2HorizonReasoningParser.sanitize_when_thinking_disabled is True
 
 
+@pytest.mark.parametrize("start,end", K2HorizonReasoningParser.EFFORT_TOKENS)
+def test_reasoning_open_state_includes_a_bare_generated_start(start, end):
+    parser = K2HorizonReasoningParser()
+    assert parser.is_open_in_think(start)
+    assert parser.is_open_in_think(f"{start}plan")
+    assert not parser.is_open_in_think(f"{start}plan{end}")
+
+
 def _group(*calls: str, prefix="", suffix="") -> str:
     return prefix + "<ifm|tool_calls>" + "".join(calls) + "</ifm|tool_calls>" + suffix
 
