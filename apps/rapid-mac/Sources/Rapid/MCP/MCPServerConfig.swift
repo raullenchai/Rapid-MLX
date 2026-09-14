@@ -1,5 +1,15 @@
 import Foundation
 
+private struct MCPConsentFingerprint: Encodable {
+    let transport: MCPServerConfig.Transport
+    let command: String?
+    let args: [String]
+    let env: [String: String]
+    let url: String?
+    let agentReadOnlyTools: [String]
+    let agentLocalChangeTools: [String]
+}
+
 /// One MCP server entry, as it round-trips through `~/.config/rapid-mlx/mcp.json`.
 ///
 /// Mirrors the engine's `MCPServerConfig` (`vllm_mlx/mcp/types.py`) field for
@@ -100,25 +110,28 @@ struct MCPServerConfig: Codable, Equatable, Hashable, Sendable, Identifiable {
         return true
     }
 
-    /// A stable string of this connector's execution identity — transport,
-    /// command, arguments, environment, URL. Two configs with the same
-    /// fingerprint run the same code; a change means consent must be
-    /// re-established. Used to catch hand-edits to the config file, which never
-    /// pass through the in-app edit path. Not cryptographic — only needs to
-    /// change when the execution identity does.
+    /// A stable string of this connector's execution and Agent-policy identity.
+    /// A change to code, transport, or exact risk declarations means consent
+    /// must be re-established. Used to catch hand-edits to the config file,
+    /// which never pass through the in-app edit path. Not cryptographic — only
+    /// needs to change when the consent-relevant identity does.
     var executionFingerprint: String {
-        let envPart = env.sorted { $0.key < $1.key }
-            .map { "\($0.key)=\($0.value)" }
-            .joined(separator: ",")
-        return [
-            transport.rawValue,
-            command ?? "",
-            args.joined(separator: "\u{1}"),
-            envPart,
-            url ?? "",
-            agentReadOnlyTools.sorted().joined(separator: "\u{1}"),
-            agentLocalChangeTools.sorted().joined(separator: "\u{1}"),
-        ].joined(separator: "\u{2}")
+        let payload = MCPConsentFingerprint(
+            transport: transport,
+            command: command,
+            args: args,
+            env: env,
+            url: url,
+            agentReadOnlyTools: agentReadOnlyTools.sorted(),
+            agentLocalChangeTools: agentLocalChangeTools.sorted()
+        )
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
+        // Every field above is a Foundation-native scalar/collection, so
+        // encoding cannot fail. A structured encoding avoids delimiter
+        // collisions between distinct argument or policy arrays.
+        let data = try! encoder.encode(payload)
+        return String(decoding: data, as: UTF8.self)
     }
 
     /// True when `other` would launch or reach a different program than `self`

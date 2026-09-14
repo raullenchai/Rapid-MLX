@@ -432,6 +432,24 @@ final class MCPConnectorsTests {
         #expect(!approval.isGranted("fs__read_file"))
     }
 
+    @Test("Consent fingerprints cannot collide through separator characters")
+    func consentFingerprintUsesStructuredEncoding() {
+        let embeddedSeparator = MCPServerConfig(
+            name: "fs",
+            command: "npx",
+            args: ["alpha\u{1}beta"],
+            agentReadOnlyTools: ["fs__one\u{1}fs__two"]
+        )
+        let separateValues = MCPServerConfig(
+            name: "fs",
+            command: "npx",
+            args: ["alpha", "beta"],
+            agentReadOnlyTools: ["fs__one", "fs__two"]
+        )
+
+        #expect(embeddedSeparator.executionFingerprint != separateValues.executionFingerprint)
+    }
+
     @Test("Auto-approve mode skips the prompt entirely")
     func autoApproveSkipsPrompt() async {
         let store = makeApproval()
