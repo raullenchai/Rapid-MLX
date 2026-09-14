@@ -2106,8 +2106,11 @@ def _is_tool_response_message(message) -> bool:
 
 def _assistant_reasoning_for_template(message: dict) -> str:
     """The reasoning the template would render for ``message`` live."""
+    # Mirrors Qwen3.5's template: a string ``reasoning_content`` is used as
+    # is (an empty string renders an empty block), and only a non-string
+    # field falls back to the ``<think>`` span in ``content``.
     reasoning = message.get("reasoning_content")
-    if isinstance(reasoning, str) and reasoning.strip():
+    if isinstance(reasoning, str):
         return reasoning.strip()
     content = message.get("content")
     if isinstance(content, list) and _is_text_only_content_array(content):
@@ -2138,15 +2141,20 @@ def _rendered_row_starts(prompt: str) -> list[int]:
         search = index + len(_ROW_START)
 
 
-def _row_opens_with_think_block(prompt: str, body: int, end: int) -> bool:
-    """True when the row body spanning ``body:end`` already carries a complete
-    rendered block (``<think>\n…\n</think>\n\n``) — the live rendering.
-    Content that merely begins with the literal, or an unclosed block, does
-    not count. ``end`` is the next structural row start (or the prompt end),
-    so terminator literals quoted inside the body cannot cut the row short."""
-    if not prompt.startswith("<think>\n", body):
-        return False
-    return "\n</think>\n\n" in prompt[body:end]
+def _last_query_index(messages: list) -> int:
+    """Index of the last user row that is a real query, exactly as Qwen3.5's
+    template computes ``ns.last_query_index``: the template renders every
+    assistant row *after* it live (with its ``<think>`` block) and every
+    row at or before it as history (without)."""
+    for index in range(len(messages) - 1, -1, -1):
+        message = messages[index]
+        if (
+            isinstance(message, dict)
+            and message.get("role") == "user"
+            and not _is_tool_response_message(message)
+        ):
+            return index
+    return len(messages) - 1
 
 
 def _retain_tool_loop_think_blocks(prompt: str, messages: list) -> str:
@@ -2155,9 +2163,10 @@ def _retain_tool_loop_think_blocks(prompt: str, messages: list) -> str:
     Every assistant row that is followed by a tool response was rendered
     with its ``<think>`` block when it was the live turn. Give the same row
     the same block once it is history, so the tool round's prompt stays a
-    byte prefix of the next turn's. Rows the template already rendered with
-    a block (the live loop) and rows not followed by a tool response are
-    left exactly as rendered.
+    byte prefix of the next turn's. Which rows the template rendered live is
+    decided the way the template decides it (``_last_query_index``), never
+    by inspecting the rendered text; those rows and rows not followed by a
+    tool response are left exactly as rendered.
 
     Rows are located structurally (``_rendered_row_starts``) and the
     rendered row sequence must agree with ``messages`` — the same number of
@@ -2165,12 +2174,16 @@ def _retain_tool_loop_think_blocks(prompt: str, messages: list) -> str:
     response row right after each row that gets a block. Any disagreement
     returns the prompt untouched rather than editing the wrong row.
     """
+    live_after = _last_query_index(messages)
     assistants: list[tuple[dict, bool]] = []
     for index, message in enumerate(messages):
         if not isinstance(message, dict) or message.get("role") != "assistant":
             continue
         following = messages[index + 1] if index + 1 < len(messages) else None
-        assistants.append((message, _is_tool_response_message(following)))
+        # Rows the template rendered live already carry their block.
+        assistants.append(
+            (message, index <= live_after and _is_tool_response_message(following))
+        )
     if not any(followed for _, followed in assistants):
         return prompt
     starts = _rendered_row_starts(prompt)
@@ -2191,8 +2204,7 @@ def _retain_tool_loop_think_blocks(prompt: str, messages: list) -> str:
     edits: list[tuple[int, str]] = []
     for row, (message, followed) in zip(assistant_rows, assistants):
         body = starts[row] + len(_ASSISTANT_ROW_START)
-        end = starts[row + 1] if row + 1 < len(starts) else len(prompt)
-        if not followed or _row_opens_with_think_block(prompt, body, end):
+        if not followed:
             continue
         if row + 1 >= len(starts) or not any(
             prompt.startswith(marker, starts[row + 1])

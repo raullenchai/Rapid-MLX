@@ -6,14 +6,17 @@ wrapper gives those rows one stable rendering."""
 
 from __future__ import annotations
 
-import glob
-import os
+import json
+import pathlib
 
+import jinja2
+import jinja2.sandbox
 import pytest
 
 from vllm_mlx.utils.chat_template import (
     _assistant_reasoning_for_template,
     _is_tool_response_message,
+    _last_query_index,
     _render_chat_template,
     _retain_tool_loop_think_blocks,
     _template_drops_think_from_tool_loop_history,
@@ -26,7 +29,7 @@ from vllm_mlx.utils.chat_template import (
 _QWEN35_LIKE = r"""{%- set ns = namespace(multi_step_tool=true, last_query_index=messages|length - 1) -%}
 {%- for message in messages[::-1] -%}
     {%- set index = (messages|length - 1) - loop.index0 -%}
-    {%- if ns.multi_step_tool and message.role == "user" and not (message.content.startswith('<tool_response>') and message.content.endswith('</tool_response>')) -%}
+    {%- if ns.multi_step_tool and message.role == "user" and not ((message.content|trim).startswith('<tool_response>') and (message.content|trim).endswith('</tool_response>')) -%}
         {%- set ns.multi_step_tool = false -%}
         {%- set ns.last_query_index = index -%}
     {%- endif -%}
@@ -36,7 +39,13 @@ _QWEN35_LIKE = r"""{%- set ns = namespace(multi_step_tool=true, last_query_index
     {%- if message.role == "system" or message.role == "user" -%}
         {{- '<|im_start|>' + message.role + '\n' + content + '<|im_end|>\n' -}}
     {%- elif message.role == "assistant" -%}
-        {%- set reasoning_content = message.reasoning_content if message.reasoning_content is string else '' -%}
+        {%- set reasoning_content = '' -%}
+        {%- if message.reasoning_content is string -%}
+            {%- set reasoning_content = message.reasoning_content -%}
+        {%- elif '</think>' in content -%}
+            {%- set reasoning_content = content.split('</think>')[0].rstrip('\n').split('<think>')[-1].lstrip('\n') -%}
+            {%- set content = content.split('</think>')[-1].lstrip('\n') -%}
+        {%- endif -%}
         {%- set reasoning_content = reasoning_content|trim -%}
         {%- if loop.index0 > ns.last_query_index -%}
             {{- '<|im_start|>' + message.role + '\n<think>\n' + reasoning_content + '\n</think>\n\n' + content -}}
@@ -234,13 +243,24 @@ class TestRetain:
             == "plan"
         )
         assert _assistant_reasoning_for_template({"role": "assistant"}) == ""
-        # An empty reasoning_content does not hide a think span in content,
-        # matching the template (which renders the span it finds in content).
+        # Qwen3.5's template uses any *string* reasoning_content verbatim —
+        # an empty one renders an empty block and never falls back to the
+        # span in content; only a missing / non-string field does.
         assert (
             _assistant_reasoning_for_template(
                 {
                     "role": "assistant",
                     "reasoning_content": "",
+                    "content": "<think>\nfrom content\n</think>\n\nanswer",
+                }
+            )
+            == ""
+        )
+        assert (
+            _assistant_reasoning_for_template(
+                {
+                    "role": "assistant",
+                    "reasoning_content": None,
                     "content": "<think>\nfrom content\n</think>\n\nanswer",
                 }
             )
@@ -330,40 +350,60 @@ class TestRetain:
             "<|im_start|>assistant\n<think>\n\n</think>\n\n<|im_end|>\n<|im_start|>tool\n"
         )
 
-    def test_content_that_merely_starts_with_the_literal_still_gets_a_block(self):
-        messages = [
+    def test_live_rows_are_decided_by_message_position_not_rendered_text(self):
+        """The template renders every assistant row after the last real user
+        query live. A history row whose *content* happens to open with a
+        complete think block still gets the live block in front; a live row
+        is never touched, whatever its body looks like."""
+        history_with_block = [
+            {"role": "user", "content": "find x"},
             {
                 "role": "assistant",
-                "content": "<think>unclosed musings",
+                "content": "<think>\nin content\n</think>\n\nlooking",
+                "reasoning_content": "",
                 "tool_calls": [],
             },
             {"role": "tool", "content": "ok"},
             {"role": "user", "content": "next"},
         ]
         prompt = (
-            "<|im_start|>assistant\n<think>unclosed musings<|im_end|>\n"
+            "<|im_start|>user\nfind x<|im_end|>\n"
+            "<|im_start|>assistant\n<think>\nin content\n</think>\n\nlooking<|im_end|>\n"
             "<|im_start|>user\n<tool_response>\nok\n</tool_response><|im_end|>\n"
             "<|im_start|>user\nnext<|im_end|>\n"
         )
-        assert _retain_tool_loop_think_blocks(prompt, messages).startswith(
-            "<|im_start|>assistant\n<think>\n\n</think>\n\n<think>unclosed musings<|im_end|>"
-        )
-        # A row that already opens with a complete block is the live render.
-        live = (
-            "<|im_start|>assistant\n<think>\nplan\n</think>\n\n<|im_end|>\n"
+        assert _retain_tool_loop_think_blocks(prompt, history_with_block) == (
+            "<|im_start|>user\nfind x<|im_end|>\n"
+            "<|im_start|>assistant\n<think>\n\n</think>\n\n"
+            "<think>\nin content\n</think>\n\nlooking<|im_end|>\n"
             "<|im_start|>user\n<tool_response>\nok\n</tool_response><|im_end|>\n"
             "<|im_start|>user\nnext<|im_end|>\n"
         )
-        assert _retain_tool_loop_think_blocks(live, messages) == live
-        # A terminator literal quoted inside the live reasoning does not cut
-        # the row short: the block is still recognised as complete.
-        quoted_end = (
-            "<|im_start|>assistant\n<think>\nsaw '<|im_end|>\n' in the log\n</think>\n\n"
-            "<|im_end|>\n"
+        live = history_with_block[:3]
+        live_prompt = (
+            "<|im_start|>user\nfind x<|im_end|>\n"
+            "<|im_start|>assistant\n<think>\n\n</think>\n\n"
+            "<think>\nin content\n</think>\n\nlooking<|im_end|>\n"
             "<|im_start|>user\n<tool_response>\nok\n</tool_response><|im_end|>\n"
-            "<|im_start|>user\nnext<|im_end|>\n"
+            "<|im_start|>assistant\n<think>\n\n</think>\n\n"
         )
-        assert _retain_tool_loop_think_blocks(quoted_end, messages) == quoted_end
+        assert _retain_tool_loop_think_blocks(live_prompt, live) == live_prompt
+
+    def test_last_query_index_mirrors_the_template(self):
+        assert _last_query_index([{"role": "user", "content": "q"}]) == 0
+        assert (
+            _last_query_index(
+                [
+                    {"role": "user", "content": "q"},
+                    {"role": "assistant", "content": ""},
+                    {"role": "tool", "content": "ok"},
+                    {"role": "user", "content": " <tool_response>ok</tool_response> "},
+                ]
+            )
+            == 0
+        )
+        # No real query at all (the template raises here): every row is history.
+        assert _last_query_index([{"role": "assistant", "content": "x"}]) == 0
 
 
 class TestWrapper:
@@ -435,19 +475,38 @@ class TestWrapper:
         )
 
 
-_QWEN35_SNAPSHOTS = sorted(
-    glob.glob(
-        os.path.expanduser(
-            "~/.cache/huggingface/hub/models--mlx-community--Qwen3.5-4B-MLX-4bit/snapshots/*"
-        )
-    )
+_QWEN35_TEMPLATE = (
+    pathlib.Path(__file__).parent / "fixtures" / "qwen35_chat_template.jinja"
 )
 
 
-@pytest.mark.skipif(not _QWEN35_SNAPSHOTS, reason="Qwen3.5-4B snapshot not cached")
+class _Qwen35Applicator:
+    """Renders the real Qwen3.5 ``chat_template.jinja`` (checked in under
+    ``tests/fixtures``) with the same Jinja environment transformers builds,
+    so the parity assertions run in CI without a Hugging Face cache."""
+
+    def __init__(self):
+        self.chat_template = _QWEN35_TEMPLATE.read_text()
+
+        def raise_exception(message):
+            raise jinja2.exceptions.TemplateError(message)
+
+        env = jinja2.sandbox.ImmutableSandboxedEnvironment(
+            trim_blocks=True,
+            lstrip_blocks=True,
+            extensions=["jinja2.ext.loopcontrols"],
+        )
+        env.filters["tojson"] = lambda x, **kw: json.dumps(x, ensure_ascii=False, **kw)
+        env.globals["raise_exception"] = raise_exception
+        self._template = env.from_string(self.chat_template)
+
+    def apply_chat_template(self, messages, **kwargs):
+        kwargs.setdefault("add_generation_prompt", True)
+        return self._template.render(messages=messages, **kwargs)
+
+
 def test_real_qwen35_template_tool_round_is_a_prefix_of_the_next_turn():
-    transformers = pytest.importorskip("transformers")
-    tokenizer = transformers.AutoTokenizer.from_pretrained(_QWEN35_SNAPSHOTS[0])
+    tokenizer = _Qwen35Applicator()
     assert _template_drops_think_from_tool_loop_history(tokenizer)
     tools = [
         {
@@ -473,3 +532,128 @@ def test_real_qwen35_template_tool_round_is_a_prefix_of_the_next_turn():
     )
     raw_next = _render_chat_template(tokenizer, _next_turn(), **kwargs)
     assert not raw_next.startswith(tool_round)
+
+
+_TOOLS = [
+    {
+        "type": "function",
+        "function": {
+            "name": "web_search",
+            "description": "Search",
+            "parameters": {"type": "object", "properties": {"q": {"type": "string"}}},
+        },
+    }
+]
+
+
+def _tool_call_row(**extra):
+    return {
+        "role": "assistant",
+        "content": extra.pop("content", ""),
+        "tool_calls": [
+            {
+                "id": "call_1",
+                "type": "function",
+                "function": {"name": "web_search", "arguments": {"q": "x"}},
+            }
+        ],
+        **extra,
+    }
+
+
+@pytest.mark.parametrize(
+    "assistant_row, tool_row",
+    [
+        pytest.param(_tool_call_row(), {"role": "tool", "content": "ok"}, id="plain"),
+        pytest.param(
+            _tool_call_row(reasoning_content=""),
+            {"role": "tool", "content": "ok"},
+            id="empty-reasoning-field",
+        ),
+        pytest.param(
+            _tool_call_row(
+                reasoning_content="",
+                content="<think>\nignored by the template\n</think>\n\nlet me look",
+            ),
+            {"role": "tool", "content": "ok"},
+            id="empty-field-beats-content-span",
+        ),
+        pytest.param(
+            _tool_call_row(content="<think>\nfrom content\n</think>\n\nlet me look"),
+            {"role": "tool", "content": "ok"},
+            id="span-in-content",
+        ),
+        pytest.param(
+            _tool_call_row(
+                content=[{"type": "text", "text": "<think>\nparts\n</think>"}]
+            ),
+            {"role": "tool", "content": "ok"},
+            id="text-part-array",
+        ),
+        pytest.param(
+            _tool_call_row(),
+            {"role": "user", "content": "  <tool_response>\nok\n</tool_response>\n"},
+            id="whitespace-padded-user-tool-response",
+        ),
+        pytest.param(
+            _tool_call_row(),
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "<tool_response>\nok\n"},
+                    {"type": "text", "text": "</tool_response>"},
+                ],
+            },
+            id="text-part-user-tool-response",
+        ),
+    ],
+)
+def test_real_qwen35_template_history_rows_match_their_live_render(
+    assistant_row, tool_row
+):
+    """For every row shape the template accepts, the tool round's prompt
+    stays a byte prefix of the next turn's — i.e. the block we retain is
+    exactly the block the template rendered live."""
+    tokenizer = _Qwen35Applicator()
+    kwargs = dict(tools=_TOOLS, enable_thinking=False, model_name="qwen3.5-4b")
+    history = [
+        {"role": "system", "content": "sys"},
+        {"role": "user", "content": "find x"},
+        assistant_row,
+        tool_row,
+    ]
+    tool_round = apply_chat_template(
+        tokenizer, history, add_generation_prompt=False, **kwargs
+    )
+    next_turn = apply_chat_template(
+        tokenizer,
+        history
+        + [
+            {"role": "assistant", "content": "done"},
+            {"role": "user", "content": "more"},
+        ],
+        **kwargs,
+    )
+    assert next_turn.startswith(tool_round)
+    # The live render itself is never edited.
+    assert tool_round == _render_chat_template(
+        tokenizer, history, add_generation_prompt=False, **kwargs
+    )
+
+
+def test_real_qwen35_template_leaves_plain_user_rows_alone():
+    """A user row that is *not* a tool response (even one mentioning the
+    tags mid-text) keeps the raw render: no block is inserted."""
+    tokenizer = _Qwen35Applicator()
+    kwargs = dict(tools=_TOOLS, enable_thinking=False, model_name="qwen3.5-4b")
+    history = [
+        {"role": "user", "content": "find x"},
+        {"role": "assistant", "content": "I looked"},
+        {
+            "role": "user",
+            "content": "the log says <tool_response>x</tool_response> then more",
+        },
+    ]
+    assert apply_chat_template(tokenizer, history, **kwargs) == _render_chat_template(
+        tokenizer, history, **kwargs
+    )
