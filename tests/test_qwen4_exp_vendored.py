@@ -1422,6 +1422,80 @@ def test_qsa_sparse_scores_use_one_reference_batched_matmul(monkeypatch):
             (args.indexer_head_dim, 3),
         )
     ]
+    assert qwen4_exp.qwen4_qsa_stage1_stats(indexer) == {
+        "route_constructions": 0,
+        "declines": 1,
+        "decline_reasons": {"disabled": 1},
+    }
+
+
+def test_qsa_stage1_route_bypasses_reference_matmul(monkeypatch):
+    args = _args(
+        indexer_budget=2,
+        indexer_compress_ratio=2,
+        rope_parameters={"rope_theta": 10_000_000, "partial_rotary_factor": 0.5},
+    )
+    indexer = QSAIndexer(args)
+    cache = QSAIndexCache(compress_ratio=2)
+    observed = []
+
+    monkeypatch.setattr(qwen4_exp, "qsa_stage1_decline_reason", lambda *a, **k: None)
+    monkeypatch.setattr(qwen4_exp, "qsa_stage1_supported", lambda *a, **k: True)
+
+    def fake_select(query, pooled, positions, *, block_topk, compress_ratio):
+        observed.append(
+            (query.shape, pooled.shape, positions.shape, block_topk, compress_ratio)
+        )
+        return mx.zeros((1, query.shape[1], block_topk), dtype=mx.uint32)
+
+    monkeypatch.setattr(qwen4_exp, "qsa_stage1_select", fake_select)
+    monkeypatch.setattr(
+        qwen4_exp.mx,
+        "matmul",
+        lambda *a, **k: pytest.fail("eager score matmul must not run"),
+    )
+    selected = indexer(
+        mx.zeros((1, 6, args.hidden_size), dtype=mx.bfloat16),
+        cache,
+        physical_kv_length=6,
+    )
+    assert selected is not None
+    mx.eval(selected.token_indices, selected.valid)
+    assert observed == [
+        ((1, 6, 2, args.indexer_head_dim), (1, 3, args.indexer_head_dim), (1, 6), 1, 2)
+    ]
+    assert indexer.stage1_route_constructions == 1
+    assert indexer.stage1_declines == 0
+    assert qwen4_exp.qwen4_qsa_stage1_stats(indexer) == {
+        "route_constructions": 1,
+        "declines": 0,
+        "decline_reasons": {},
+    }
+
+
+def test_qsa_stage1_unsupported_layout_falls_back_and_records_reason(monkeypatch):
+    args = _args(
+        indexer_budget=2,
+        indexer_compress_ratio=2,
+        rope_parameters={"rope_theta": 10_000_000, "partial_rotary_factor": 0.5},
+    )
+    indexer = QSAIndexer(args)
+    cache = QSAIndexCache(compress_ratio=2)
+    monkeypatch.setattr(qwen4_exp, "qsa_stage1_decline_reason", lambda *a, **k: None)
+    monkeypatch.setattr(qwen4_exp, "qsa_stage1_supported", lambda *a, **k: False)
+
+    selected = indexer(
+        mx.zeros((1, 6, args.hidden_size), dtype=mx.bfloat16),
+        cache,
+        physical_kv_length=6,
+    )
+    assert selected is not None
+    mx.eval(selected.token_indices, selected.valid)
+    assert qwen4_exp.qwen4_qsa_stage1_stats(indexer) == {
+        "route_constructions": 0,
+        "declines": 1,
+        "decline_reasons": {"unsupported layout": 1},
+    }
 
 
 def test_qsa_indexer_fail_closed_internal_invariants():
@@ -1790,6 +1864,9 @@ def test_qwen4_state_cache_rejects_incomplete_or_invalid_boundaries():
 
 
 def test_qwen4_verify_block_matches_tokenwise_forward():
+    # Keep this numerical parity check independent of random allocations made
+    # by earlier Metal tests in the full suite.
+    mx.random.seed(0)
     args = _ple_args()
     model = Model(ModelArgs(model_type="qwen4_exp", text_config=asdict(args)))
     block_cache = model.make_cache()

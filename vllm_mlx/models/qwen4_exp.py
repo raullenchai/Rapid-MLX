@@ -46,6 +46,11 @@ from ..kernels.qsa_indexed_splitk import (  # noqa: E402
     indexed_splitk_decline_reason,
     indexed_splitk_layout_supported,
 )
+from ..kernels.qsa_stage1 import (  # noqa: E402
+    qsa_stage1_decline_reason,
+    qsa_stage1_select,
+    qsa_stage1_supported,
+)
 from ..kernels.qwen4_fused_gdn_decode import (  # noqa: E402
     admit_qwen4_fused_gdn_decode,
     fused_gdn_runtime_supported,
@@ -987,6 +992,15 @@ class QSAIndexer(nn.Module):
         )
         self.q_layernorm = ZeroCenteredRMSNorm(self.head_dim, eps=args.rms_norm_eps)
         self.k_layernorm = ZeroCenteredRMSNorm(self.head_dim, eps=args.rms_norm_eps)
+        self.stage1_route_constructions = 0
+        self.stage1_declines = 0
+        self.stage1_decline_reasons: dict[str, int] = {}
+
+    def _record_stage1_decline(self, reason: str) -> None:
+        self.stage1_declines += 1
+        self.stage1_decline_reasons[reason] = (
+            self.stage1_decline_reasons.get(reason, 0) + 1
+        )
 
     def __call__(
         self,
@@ -1070,30 +1084,56 @@ class QSAIndexer(nn.Module):
         for batch_index in range(batch):
             input_start, valid_length = valid_spans[batch_index]
             available_blocks = cache._compressed_counts[batch_index]
+            query_indices = mx.arange(length, dtype=mx.int32)
+            logical_positions = offsets[batch_index] + query_indices - input_start
             selected_blocks = None
             if available_blocks > self.block_topk:
                 keys = cache.keys_for_blocks(batch_index, available_blocks)
-                # Preserve the reference's single batched matmul and FP32
-                # reduction. Per-token matmuls choose a different Metal
-                # accumulation kernel and can perturb the top-k boundary.
-                scores = mx.matmul(
-                    query[batch_index].transpose(1, 0, 2),
-                    keys.T,
+                stage1_decline = qsa_stage1_decline_reason(
+                    length,
+                    physical_kv_length,
+                    batch_size=batch,
+                    training=bool(self.training),
                 )
-                scores = mx.sum(
-                    mx.maximum(scores.astype(mx.float32), 0), axis=0
-                ) / math.sqrt(self.head_dim)
-                query_ends = offsets[batch_index] + mx.arange(length) - input_start + 1
-                complete_counts = mx.maximum(query_ends // self.compress_ratio, 0)
-                valid_blocks = (
-                    mx.arange(available_blocks)[None, :] < complete_counts[:, None]
-                )
-                scores = mx.where(valid_blocks, scores, -mx.inf)
-                selected_blocks = mx.argpartition(
-                    scores, kth=-self.block_topk, axis=-1
-                )[..., -self.block_topk :].astype(mx.int32)
-            query_indices = mx.arange(length, dtype=mx.int32)
-            logical_positions = offsets[batch_index] + query_indices - input_start
+                if stage1_decline is None and not qsa_stage1_supported(
+                    query[batch_index : batch_index + 1],
+                    keys[None],
+                    logical_positions[None],
+                    block_topk=self.block_topk,
+                    compress_ratio=self.compress_ratio,
+                ):
+                    stage1_decline = "unsupported layout"
+                if stage1_decline is None:
+                    selected_blocks = qsa_stage1_select(
+                        query[batch_index : batch_index + 1],
+                        keys[None],
+                        logical_positions[None],
+                        block_topk=self.block_topk,
+                        compress_ratio=self.compress_ratio,
+                    )[0].astype(mx.int32)
+                    self.stage1_route_constructions += 1
+                else:
+                    # Preserve the reference's single batched matmul and FP32
+                    # reduction. Per-token matmuls choose a different Metal
+                    # accumulation kernel and can perturb the top-k boundary.
+                    scores = mx.matmul(
+                        query[batch_index].transpose(1, 0, 2),
+                        keys.T,
+                    )
+                    scores = mx.sum(
+                        mx.maximum(scores.astype(mx.float32), 0), axis=0
+                    ) / math.sqrt(self.head_dim)
+                    complete_counts = mx.maximum(
+                        (logical_positions + 1) // self.compress_ratio, 0
+                    )
+                    valid_blocks = (
+                        mx.arange(available_blocks)[None, :] < complete_counts[:, None]
+                    )
+                    scores = mx.where(valid_blocks, scores, -mx.inf)
+                    selected_blocks = mx.argpartition(
+                        scores, kth=-self.block_topk, axis=-1
+                    )[..., -self.block_topk :].astype(mx.int32)
+                    self._record_stage1_decline(stage1_decline)
             complete_counts = mx.maximum(
                 (logical_positions + 1) // self.compress_ratio, 0
             )
@@ -1432,6 +1472,25 @@ def qwen4_qsa_indexed_splitk_stats(model: nn.Module) -> dict[str, Any]:
         stats["route_constructions"] += module.indexed_splitk_route_constructions
         stats["declines"] += module.indexed_splitk_declines
         for reason, count in module.indexed_splitk_decline_reasons.items():
+            stats["decline_reasons"][reason] = (
+                stats["decline_reasons"].get(reason, 0) + count
+            )
+    return stats
+
+
+def qwen4_qsa_stage1_stats(model: nn.Module) -> dict[str, Any]:
+    """Aggregate fused QSA selector constructions and fallback reasons."""
+    stats: dict[str, Any] = {
+        "route_constructions": 0,
+        "declines": 0,
+        "decline_reasons": {},
+    }
+    for _, module in model.named_modules():
+        if not isinstance(module, QSAIndexer):
+            continue
+        stats["route_constructions"] += module.stage1_route_constructions
+        stats["declines"] += module.stage1_declines
+        for reason, count in module.stage1_decline_reasons.items():
             stats["decline_reasons"][reason] = (
                 stats["decline_reasons"].get(reason, 0) + count
             )

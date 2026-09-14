@@ -172,6 +172,7 @@ def test_qwen4_fused_gdn_coverage_runs_on_apple_silicon() -> None:
     assert "tests/test_qwen35_fused_gdn_decode.py" in apple_run
     assert "tests/test_qsa_block_sparse.py" in apple_run
     assert "tests/test_qsa_indexed_splitk.py" in apple_run
+    assert "tests/test_qsa_stage1.py" in apple_run
 
 
 def test_qwen36_dual_lane_coverage_runs_on_apple_silicon() -> None:

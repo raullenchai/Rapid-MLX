@@ -557,6 +557,8 @@ vllm_mlx = [
     "templates/*.jinja",
     "agents/profiles/*.yaml",
     "kernels/*.metal",
+    # Adapted Qwen4 stage-one selector license must ship with the Python file.
+    "kernels/LICENSE-QSA-STAGE1",
     # Integration tests bundled inside the package so `rapid-mlx agents
     # <name> --test` works on pip/brew installs (the source layout keeps
     # them at tests/integrations/, mirrored here via symlinks). Without

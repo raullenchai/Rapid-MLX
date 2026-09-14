@@ -179,6 +179,11 @@ ALLOWED_RAPID_MLX_ENV_VARS: frozenset[str] = frozenset(
         # unqualified query shapes, MLX builds, and Metal architectures remain
         # on the existing dense attention implementation.
         "RAPID_MLX_QSA_INDEXED_SPLITK",
+        # Opt-in exact radix selector for QSA stage one on an already-selected
+        # Qwen4-Exp model. It replaces only mx.argpartition after producing the
+        # same scores; model, parser, serving lane, and emitted block set remain
+        # unchanged. Unqualified shapes and machines retain the eager selector.
+        "RAPID_MLX_QSA_STAGE1",
         # Opt-in absorbed MLA factorization for short verification blocks on
         # an already-selected MLA model. This changes only the attention math
         # path after a measured cache crossover; it cannot select a model,

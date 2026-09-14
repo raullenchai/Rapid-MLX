@@ -32,6 +32,13 @@ project (https://github.com/vllm-project/vllm).
 Vendored third-party source
 ===========================
 
+The Qwen4/Qwen3.8 stage-one QSA selector in
+`vllm_mlx/kernels/qsa_stage1.py` is adapted from
+https://github.com/pierre427/mlx-lm-unified at commit
+685dff6c1ee602f1bae2e51c758a3b07f593a0c2. Its radix-selection design is
+adapted from MTPLX PR #397. The file is licensed under the MIT License;
+see `vllm_mlx/kernels/LICENSE-QSA-STAGE1`.
+
 The following directories contain third-party source redistributed inside this
 repository. Each keeps its upstream license text alongside the code.
 
