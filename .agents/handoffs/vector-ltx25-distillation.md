@@ -103,10 +103,19 @@ proposed in
 The upstream feasibility branch now includes a hardware-agnostic, fail-closed
 checkpoint validator at `396667f`. It binds the adapter to an external artifact
 digest, exact base model/revision, transformer/config fingerprint, runtime
-contract, schedule, qualification revision, and LoRA tensor shapes. The full
-upstream suite passes: 637 tests passed and 22 skipped.
+contract, schedule, qualification revision, and LoRA tensor shapes. Commit
+`c0da6b6` adds the student-first/clean-base-correction lifecycle plus an
+experimental manifest-gated CLI entry; `7d4a37d` adds deterministic package
+creation. The full upstream suite passes: 644 tests passed and 22 skipped.
+
+A scratch product-format adapter was generated on MZR-3 with SHA-256
+`ace51ca8f4d3de9e26099331cac319702bf09bca2b294da8c473c067b43fea05`.
+It validated against base revision
+`f1b56e7dc89f71a9af2cddac787b89ed22a8b7fc`; it is not a publishable artifact.
+The runtime smoke supervisor waits for the active qualification capture to
+release MZR-3 rather than contaminating its timings.
 
 Atlas disposition is required for the proposed public
 `generation_mode=standard|fast` control and any default-on policy. Vector's
-next backend action is to add the upstream stage-2-only adapter lifecycle while
-the frozen ten-case, ten-second multi-prompt capture runs on MZR-3.
+next backend action is to inspect the runtime smoke result and render the frozen
+ten-case, ten-second teacher/student blind suite when capture completes.

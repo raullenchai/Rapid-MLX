@@ -139,10 +139,18 @@ The upstream base-bound validator landed on the feasibility branch at
 rank/alpha, exact base identity and immutable revision, transformer filename
 and config fingerprint, runtime-contract major, qualification revision, and
 LoRA pair shapes before mutation. It contains no hardware-name selection and
-passes the full upstream suite (637 passed, 22 skipped).
+contains no hardware-name selection.
 
-Before Rapid implementation, the upstream runtime still needs a production
-inference entry point and stage-2-only adapter lifecycle. The accepted adapter
-then needs complete contract metadata and an immutable model-repository
-revision. Upload, release, default changes, and public API disposition require
-explicit human and Atlas authorization.
+The stage-2-only runtime lifecycle and experimental CLI entry landed at
+`c0da6b6`. The first transition loads the validated student, materializes its
+video and audio outputs, releases it, and reloads the clean base for the final
+correction. Standard mode is unchanged; fast mode rejects schedule overrides,
+teacher capture, and unqualified additional-LoRA composition. Commit `7d4a37d`
+adds the deterministic model-package builder. The full upstream suite passes
+at that commit (644 passed, 22 skipped).
+
+The accepted adapter still needs completed multi-prompt qualification and an
+immutable published model-repository revision before Rapid integration. A
+scratch package has been produced for runtime smoke testing only; upload,
+release, default changes, and public API disposition require explicit human
+and Atlas authorization.
