@@ -212,18 +212,16 @@ The upstream base-bound validator landed on the feasibility branch at
 `396667f`. It checks the external artifact digest, capability and schedule,
 rank/alpha, exact base identity and immutable revision, transformer filename
 and config fingerprint, runtime-contract major, qualification revision, and
-LoRA pair shapes before mutation. It contains no hardware-name selection and
-contains no hardware-name selection.
+LoRA pair shapes before mutation. It contains no hardware-name selection.
 
 The stage-2-only runtime lifecycle and experimental CLI entry landed at
 `c0da6b6`. The first transition loads the validated student, materializes its
 video and audio outputs, releases it, and reloads the clean base for the final
 correction. Standard mode is unchanged; fast mode rejects schedule overrides,
 teacher capture, and unqualified additional-LoRA composition. Commit `7d4a37d`
-adds the deterministic model-package builder. The full upstream suite passes
-at the current evaluation commit `a1213c9` (651 passed, 22 skipped). Commit
-`e3beea8` adds a resumable, deterministically blinded Stage-2 qualification
-renderer; it does not change inference behavior.
+adds the deterministic model-package builder. Commit `e3beea8` adds a
+resumable, deterministically blinded Stage-2 qualification renderer; it does
+not change inference behavior.
 
 The product contract now also has a separate qualified-terminal capability at
 upstream commit `280acb0`. A `ltx_stage2_terminal_v1` artifact declares the
@@ -239,6 +237,17 @@ an exact ancestral target inverse, noise-coupled Stage-1 training, and paired
 evaluation. The first stochastic pilot compresses original boundaries `0 -> 3`
 while explicitly re-injecting original noise lane 0. The full upstream suite at
 that point passes 659 tests with 22 skips.
+
+The progressive Stage-2 ten-case suite has completed at 768x512, 241 frames,
+24 fps, with 48 kHz stereo audio. Its anonymous means are SSIM 0.924042, PSNR
+32.504 dB, and audio APSNR 167.519 dB; these are diagnostics while human blind
+judgments remain pending. Review caught a prompt-label permutation caused by
+mixing filesystem discovery order with a separately sorted filename list.
+Upstream `b2054aa` now sorts dataset discovery deterministically and derives
+render positions and review metadata from the same dataset instance. The A/B
+media and anonymous metrics were unaffected, and the exported index was
+corrected from the captured original order. The full upstream suite at
+`b2054aa` passes 700 tests with 22 skips.
 
 Path analysis over eight training and two prompt-disjoint validation
 trajectories independently selected the same four-evaluation boundaries on
