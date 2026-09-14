@@ -255,6 +255,13 @@ ALLOWED_RAPID_MLX_ENV_VARS: frozenset[str] = frozenset(
         # either way, so it cannot change which model, parser, tier or lane
         # serves the request.
         "RAPID_MLX_MTP_PROMPT_LOOKUP_SAMPLED",
+        # Prefix-cache tuning for hybrid models: how many recurrent-state
+        # checkpoints a stored entry keeps and how far apart they are. They
+        # only change how much of an already-selected model's cached prefix
+        # a divergent prompt can resume from, never which model, parser,
+        # tier or lane serves the request (0 disables recording).
+        "RAPID_MLX_HYBRID_CHECKPOINT_MAX",
+        "RAPID_MLX_HYBRID_CHECKPOINT_STRIDE",
         "RAPID_MLX_MTP_PROMPT_LOOKUP_MAX_TOKENS",
         "RAPID_MLX_MTP_PROMPT_LOOKUP_MIN_NGRAM",
         "RAPID_MLX_MTP_PROMPT_LOOKUP_MAX_NGRAM",

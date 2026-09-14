@@ -36,6 +36,13 @@ from collections import OrderedDict
 from dataclasses import dataclass
 from typing import Any
 
+from .hybrid_state_checkpoints import (
+    achievable_position,
+    checkpoint_bytes,
+    is_recurrent_layer,
+    restore_recurrent_layer,
+)
+
 logger = logging.getLogger(__name__)
 
 # Constants
@@ -892,7 +899,9 @@ def estimate_kv_cache_memory(cache: list[Any]) -> int:
     if not cache:
         return 0
 
-    total_bytes = 0
+    # Recurrent-state checkpoints ride on hybrid layers (shared, never
+    # duplicated across copies) and are charged to the entry that holds them.
+    total_bytes = checkpoint_bytes(cache)
 
     for layer_cache in cache:
         if layer_cache is None:
@@ -1364,6 +1373,49 @@ def _trim_cache_offset(cache: list[Any], trim_by: int) -> list[Any] | None:
                 # Preserve the established path for all other wrappers.
                 trimmed.append(copy.deepcopy(layer_cache))
     return trimmed
+
+
+def _snap_hybrid_trim(
+    cache: list[Any], entry_len: int, target_len: int
+) -> tuple[list[Any], int] | None:
+    """Rewind a hybrid entry to its newest recurrent-state checkpoint at or
+    below ``target_len``.
+
+    KV layers rewind exactly (``_trim_cache_offset`` shares their arrays);
+    recurrent layers are restored from the checkpoint recorded at that
+    position, so the returned cache is byte-identical to a cold prefill of
+    the first ``position`` tokens. Returns ``(cache, position)`` or ``None``
+    when no common checkpoint exists (the caller then falls back to a cold
+    prefill, exactly as before checkpoints existed).
+    """
+    if target_len <= 0 or entry_len <= 0:
+        return None
+    # Only ``ArraysCache``-shaped layers carry checkpoints. Any other layer
+    # that forbids trimming (a trim-liar class, a wrapper, an unknown shape)
+    # keeps the pre-checkpoint refusal: a snap must never trim a layer it
+    # cannot restore.
+    if any(
+        _layer_forbids_trim(layer) and not is_recurrent_layer(layer)
+        for layer in cache
+        if layer is not None
+    ):
+        return None
+    position = achievable_position(cache, min(target_len, entry_len))
+    if position <= 0:
+        return None
+    trim_by = entry_len - position
+    kv_only = [None if is_recurrent_layer(layer) else layer for layer in cache]
+    trimmed = _trim_cache_offset(kv_only, trim_by) if trim_by > 0 else list(kv_only)
+    if trimmed is None:
+        return None
+    for i, layer in enumerate(cache):
+        if not is_recurrent_layer(layer):
+            continue
+        restored = restore_recurrent_layer(layer, position)
+        if restored is None:
+            return None
+        trimmed[i] = restored
+    return trimmed, position
 
 
 def _needs_kv_trim(layer: Any) -> bool:
@@ -2030,6 +2082,22 @@ class MemoryAwarePrefixCache:
             has_non_trimmable = any(_layer_forbids_trim(lc) for lc in best_super.cache)
 
             if excess > 0 and has_non_trimmable:
+                snapped = _snap_hybrid_trim(best_super.cache, n_cached, n_requested)
+                if snapped is not None and snapped[1] > best_length:
+                    snapped_cache, position = snapped
+                    self._entries.move_to_end(best_super.tokens)
+                    self._stats.hits += 1
+                    self._stats.tokens_saved += position
+                    self._last_match_type = "supersequence"
+                    logger.info(
+                        "[cache_fetch] supersequence snapped to checkpoint: "
+                        "requested=%d entry_len=%d resumed_at=%d",
+                        n_requested,
+                        n_cached,
+                        position,
+                    )
+                    snapped_cache = self._decompress_cache(snapped_cache)
+                    return snapped_cache, tokens[position:]
                 logger.debug(
                     "[cache_fetch] supersequence match skipped: "
                     "non-trimmable cache layers (hybrid model)"
@@ -2141,6 +2209,25 @@ class MemoryAwarePrefixCache:
                 )
 
             if has_non_trimmable:
+                snapped = _snap_hybrid_trim(
+                    best_lcp_entry.cache, len(best_lcp_entry.tokens), best_lcp_length
+                )
+                if snapped is not None:
+                    snapped_cache, position = snapped
+                    self._entries.move_to_end(best_lcp_entry.tokens)
+                    self._stats.hits += 1
+                    self._stats.tokens_saved += position
+                    self._last_match_type = "lcp"
+                    logger.info(
+                        "[cache_fetch] LCP snapped to checkpoint: shared=%d "
+                        "entry_len=%d resumed_at=%d remaining=%d",
+                        best_lcp_length,
+                        len(best_lcp_entry.tokens),
+                        position,
+                        len(tokens) - position,
+                    )
+                    snapped_cache = self._decompress_cache(snapped_cache)
+                    return snapped_cache, tokens[position:]
                 logger.info(
                     "[cache_fetch] LCP unavailable: shared=%d entry_len=%d "
                     "requested_len=%d non_trimmable=True",

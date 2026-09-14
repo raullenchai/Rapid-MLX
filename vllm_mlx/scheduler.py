@@ -122,6 +122,21 @@ def _read_kv_dims(model):
 
 
 from .gdn_prefill import install as install_gdn_prefill_kernel
+from .hybrid_state_checkpoints import (  # noqa: E402
+    attach_checkpoints as _attach_state_checkpoints,
+)
+from .hybrid_state_checkpoints import (  # noqa: E402
+    checkpoint_max as _state_checkpoint_max,
+)
+from .hybrid_state_checkpoints import (  # noqa: E402
+    checkpoint_stride as _state_checkpoint_stride,
+)
+from .hybrid_state_checkpoints import (  # noqa: E402
+    collect_checkpoints as _collect_state_checkpoints,
+)
+from .hybrid_state_checkpoints import (  # noqa: E402
+    record_checkpoints as _record_state_checkpoints,
+)
 from .memory_cache import MemoryAwarePrefixCache, MemoryCacheConfig  # noqa: E402
 from .paged_cache import PagedCacheManager
 from .pflash import PFlashConfig, compress_request_tokens
@@ -3861,6 +3876,10 @@ class Scheduler:
         # Mapping between our request IDs and BatchGenerator UIDs
         self.request_id_to_uid: dict[str, int] = {}
         self.uid_to_request_id: dict[int, str] = {}
+        # Per-uid recurrent-state checkpoints recorded at prefill chunk
+        # boundaries (hybrid models); attached to the cache before it is
+        # stored so a later divergent prompt can resume from a checkpoint.
+        self._hybrid_checkpoints: dict[int, list[Any]] = {}
         # Uids admitted to mlx-lm but not yet promoted out of prompt
         # processing. The opt-in admission policy uses this public-response-
         # driven mirror to avoid filling mlx-lm's private FIFO ahead of its
@@ -4990,6 +5009,95 @@ class Scheduler:
 
         return _prompt_cache_save
 
+    def _hybrid_checkpoints_enabled(self) -> bool:
+        """Checkpoints are only worth recording when hybrid entries are kept."""
+        if self.memory_aware_cache is None:
+            return False
+        if int(getattr(self.config, "hybrid_cache_entries", 0) or 0) <= 0:
+            return False
+        return _state_checkpoint_max() > 0
+
+    def _seed_hybrid_checkpoints(self, uid: int, cache: list[Any] | None) -> None:
+        """Carry the checkpoints of a restored prefix into the live request."""
+        if not cache or not self._hybrid_checkpoints_enabled():
+            return
+        holders = _collect_state_checkpoints(cache)
+        if any(h is not None for h in holders):
+            self._hybrid_checkpoints[uid] = holders
+
+    def _attach_hybrid_checkpoints(
+        self,
+        uid: int | None,
+        cache: list[Any] | None,
+        *,
+        length: int | None = None,
+    ) -> None:
+        """Attach the uid's checkpoints to ``cache`` before it is stored.
+        ``length`` is the token length the entry is stored at; checkpoints
+        past it (recorded from the tail the entry does not keep) are dropped.
+        """
+        holders = self._hybrid_checkpoints.get(uid) if uid is not None else None
+        if holders and cache:
+            _attach_state_checkpoints(cache, holders, max_position=length)
+
+    def _record_hybrid_checkpoints(self, prompt_responses) -> None:
+        """Record recurrent state at each prefill chunk boundary (#hybrid ckpt).
+
+        Uses the public ``BatchGenerator.extract_cache`` API on the chunk
+        responses mlx-lm 0.31+ returns, so no model or cache class is
+        patched. A response's ``progress[0]`` is the number of prompt tokens
+        the batch has processed for that uid, so the absolute position is
+        ``cached_tokens + progress[0]``. The prompt end itself is covered by
+        the boundary / prompt-cache-save entries and is skipped here.
+        """
+        if not prompt_responses or not self._hybrid_checkpoints_enabled():
+            return
+        batch_generator = self.batch_generator
+        if batch_generator is None:
+            return
+        stride = _state_checkpoint_stride()
+        for resp in prompt_responses:
+            if getattr(resp, "end_of_prompt", False):
+                continue
+            progress = getattr(resp, "progress", None)
+            if not (isinstance(progress, tuple) and progress):
+                continue
+            request_id = self.uid_to_request_id.get(resp.uid)
+            request = self.requests.get(request_id) if request_id else None
+            if request is None or _pflash_compressed(request):
+                continue
+            position = int(request.cached_tokens or 0) + int(progress[0])
+            holders = self._hybrid_checkpoints.get(resp.uid)
+            if holders:
+                newest = max(
+                    (h.positions[-1] for h in holders if h is not None and h.positions),
+                    default=0,
+                )
+                if position - newest < stride:
+                    continue
+            try:
+                extracted = batch_generator.extract_cache([resp.uid])
+            except Exception as exc:
+                logger.debug("[hybrid_checkpoint] extract_cache failed: %s", exc)
+                continue
+            payload = extracted.get(resp.uid)
+            if not (isinstance(payload, tuple) and len(payload) == 2):
+                continue
+            cache = payload[0]
+            if not cache:
+                continue
+            if holders is None:
+                holders = [None] * len(cache)
+            if len(holders) != len(cache):
+                continue
+            if _record_state_checkpoints(cache, holders, position):
+                self._hybrid_checkpoints[resp.uid] = holders
+                logger.debug(
+                    "[hybrid_checkpoint] uid=%s recorded position=%d",
+                    resp.uid,
+                    position,
+                )
+
     def _snapshot_promoted_prompts(self, prompt_responses) -> None:
         """Snapshot prompt-only cache for sequences just promoted to generation.
 
@@ -5026,6 +5134,7 @@ class Scheduler:
             # snapshot — skip silently.
             if isinstance(payload, tuple) and len(payload) == 2:
                 cache, _tokens = payload
+                self._attach_hybrid_checkpoints(uid, cache)
                 try:
                     self._prompt_cache_save_cb(uid, cache)
                 except Exception as exc:
@@ -5160,6 +5269,7 @@ class Scheduler:
             reconstructed = self._reconstruct_cache_from_states(states)
             if not reconstructed:
                 continue
+            self._attach_hybrid_checkpoints(uid, reconstructed, length=prefix_boundary)
 
             prefix_tokens = list(request.prompt_token_ids[:prefix_boundary])
             _t0 = _time.monotonic()
@@ -7945,6 +8055,7 @@ class Scheduler:
                 self.batch_generator.remove([uid])
                 removed_from_batch = True
             del self.uid_to_request_id[uid]
+            self._hybrid_checkpoints.pop(uid, None)
             # #558 PR-3: drop the aborted uid's grammar processor state (the
             # uid is already out of the batch via ``remove`` above).
             self._forget_uid_grammar(uid)
@@ -8624,6 +8735,7 @@ class Scheduler:
 
             if uids:
                 uid = uids[0]
+                self._seed_hybrid_checkpoints(uid, cache_to_use)
                 if shortest_tail:
                     self._commit_waiting_selection(request, selection_forced)
                 self.request_id_to_uid[request.request_id] = uid
@@ -9050,6 +9162,9 @@ class Scheduler:
                                     )
                             else:
                                 # Standard cache stores object references
+                                self._attach_hybrid_checkpoints(
+                                    getattr(request, "batch_uid", None), raw_cache
+                                )
                                 request._extracted_cache = raw_cache
                     except Exception as e:
                         logger.debug(f"Failed to extract cache for {request_id}: {e}")
@@ -9408,6 +9523,7 @@ class Scheduler:
                 uid = self.request_id_to_uid[request_id]
                 if uid in self.uid_to_request_id:
                     del self.uid_to_request_id[uid]
+                self._hybrid_checkpoints.pop(uid, None)
                 # #558 PR-3: drop the finished uid's grammar processor state so
                 # it can't linger and re-map onto a reused uid (the uid is
                 # already out of the batch by the time cleanup runs).
@@ -9631,6 +9747,7 @@ class Scheduler:
                         ):
                             self._shortest_tail_runtime_supported = True
                             self._record_prompt_promotions(prompt_responses)
+                        self._record_hybrid_checkpoints(prompt_responses)
                         self._snapshot_promoted_prompts(prompt_responses)
                         # issue #427: per-message boundary snapshot for
                         # multi-turn hybrid workloads (segment finished
