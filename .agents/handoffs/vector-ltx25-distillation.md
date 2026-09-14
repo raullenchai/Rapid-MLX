@@ -5,8 +5,9 @@ Date: 2026-09-13
 Owner / host: Vector / MZR-3
 
 Runtime feasibility branch: `raullenchai:vector/ltx25-distillation-feasibility`
-at `09b625a` in the `ltx-2-mlx` repository. Rapid documentation branch:
-`raullenchai/LTX`, PR #3438.
+at `b2054aa` in the `ltx-2-mlx` repository. Rapid design branch:
+`design/ltx25-portable-fast-stage2`. PR #3438 remains the separate marginal
+dequantization release work and must not absorb this unqualified model path.
 
 ## Verified facts
 
@@ -242,3 +243,14 @@ training phase. A later supervisor will advance the Stage-1 `0 -> 3` pilot to
 the complete four-transition curriculum only if both mean modalities improve
 at least 10% and no held-out sample regresses more than 5%; that is a compute
 gate, not a product-quality gate.
+
+The first exported blind bundle exposed a review-metadata indexing defect:
+rendering used `PrecomputedDataset` filesystem discovery order while prompt
+labels came from a separately sorted filename list. The A/B videos and
+anonymous metrics were valid, but prompt/stress labels were permuted. Upstream
+`b2054aa` makes dataset discovery deterministic and derives both render
+positions and review metadata from the same dataset instance. The bundle's
+index was repaired from the captured original dataset order, the prior index
+was retained on MZR-3 as `review-index.pre-index-fix.json`, and the future
+terminal blind supervisor is verified to run `b2054aa`. The full upstream
+suite passes 700 tests with 22 skips.
