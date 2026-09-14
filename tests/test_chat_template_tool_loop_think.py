@@ -330,6 +330,32 @@ class TestRetain:
             "<|im_start|>assistant\n<think>\n\n</think>\n\n<|im_end|>\n<|im_start|>tool\n"
         )
 
+    def test_content_that_merely_starts_with_the_literal_still_gets_a_block(self):
+        messages = [
+            {
+                "role": "assistant",
+                "content": "<think>unclosed musings",
+                "tool_calls": [],
+            },
+            {"role": "tool", "content": "ok"},
+            {"role": "user", "content": "next"},
+        ]
+        prompt = (
+            "<|im_start|>assistant\n<think>unclosed musings<|im_end|>\n"
+            "<|im_start|>user\n<tool_response>\nok\n</tool_response><|im_end|>\n"
+            "<|im_start|>user\nnext<|im_end|>\n"
+        )
+        assert _retain_tool_loop_think_blocks(prompt, messages).startswith(
+            "<|im_start|>assistant\n<think>\n\n</think>\n\n<think>unclosed musings<|im_end|>"
+        )
+        # A row that already opens with a complete block is the live render.
+        live = (
+            "<|im_start|>assistant\n<think>\nplan\n</think>\n\n<|im_end|>\n"
+            "<|im_start|>user\n<tool_response>\nok\n</tool_response><|im_end|>\n"
+            "<|im_start|>user\nnext<|im_end|>\n"
+        )
+        assert _retain_tool_loop_think_blocks(live, messages) == live
+
 
 class TestWrapper:
     def test_tool_round_prompt_becomes_a_prefix_of_the_next_turn(self):
@@ -400,9 +426,11 @@ class TestWrapper:
         )
 
 
-_QWEN35_SNAPSHOTS = glob.glob(
-    os.path.expanduser(
-        "~/.cache/huggingface/hub/models--mlx-community--Qwen3.5-4B-MLX-4bit/snapshots/*"
+_QWEN35_SNAPSHOTS = sorted(
+    glob.glob(
+        os.path.expanduser(
+            "~/.cache/huggingface/hub/models--mlx-community--Qwen3.5-4B-MLX-4bit/snapshots/*"
+        )
     )
 )
 
