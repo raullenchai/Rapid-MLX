@@ -1524,9 +1524,10 @@ async def test_pinned_mcp_untyped_transport_failure_stays_unknown():
     class Client:
         is_connected = True
         tools = [tool]
+        error: BaseException = RuntimeError("private post-dispatch failure")
 
         async def call_tool(self, *_args, **_kwargs):
-            raise RuntimeError("private post-dispatch failure")
+            raise self.error
 
     class Manager:
         config = SimpleNamespace(agent_read_only_tools=[], default_timeout=30.0)
@@ -1542,8 +1543,19 @@ async def test_pinned_mcp_untyped_transport_failure_stays_unknown():
         async def tool_generation_lease(self):
             yield
 
+    manager = Manager()
+    pinned = _PinnedMCPManager(manager)
     with pytest.raises(RuntimeError, match="private post-dispatch failure"):
-        await _PinnedMCPManager(Manager()).execute_tool("same__tool", {})
+        await pinned.execute_tool("same__tool", {})
+
+    manager.client.error = asyncio.CancelledError()
+    with pytest.raises(asyncio.CancelledError):
+        await pinned.execute_tool("same__tool", {})
+
+    manager.client.error = AgentToolExecutionError(executed=False)
+    with pytest.raises(AgentToolExecutionError) as typed:
+        await pinned.execute_tool("same__tool", {})
+    assert typed.value.executed is False
 
 
 def test_mcp_snapshot_and_listing_map_manager_failures():
@@ -2149,6 +2161,7 @@ async def test_drive_cancellation_and_stale_state_guards(monkeypatch):
     ]
     assert completed[-1].data["result"]["executed"] is None
     await cancelled_service._drive(entry, call=call)
+    entry.cancel_requested = True
     await cancelled_service._drive(entry)
 
     approval_service = AgentServerService(
