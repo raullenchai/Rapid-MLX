@@ -639,6 +639,11 @@ def _resolve_model_path(model_name: str) -> Path | None:
 # silently short-circuits (which would push users into an opaque later
 # model-load error instead of surfacing the actual registration failure).
 _VENDORED_MODEL_TYPES: set[str] = {"deepseek_v4"}
+# Model types whose executable architecture is intentionally owned by Rapid.
+# Keep this separate from ``_VENDORED_MODEL_TYPES``: several older adapters
+# still rely on checkpoint-specific loading behavior and must not inherit the
+# stricter "weights/tokenizer only" trust boundary implicitly.
+_RAPID_OWNED_RUNTIME_MODEL_TYPES: frozenset[str] = frozenset({"k2_horizon"})
 
 
 def _register_vendored_archs() -> None:
@@ -969,6 +974,19 @@ def _is_vendored_arch_model(model_name: str) -> bool:
     except Exception as e:
         logger.debug(f"_is_vendored_arch_model({model_name}) failed: {e}")
         return False
+
+
+def _uses_rapid_owned_runtime(model_name: str) -> bool:
+    """Return whether repo Python must be ignored for this architecture."""
+    model_path = Path(model_name)
+    if not model_path.is_dir():
+        return False
+    try:
+        with open(model_path / "config.json") as config_file:
+            config = json.load(config_file)
+    except (OSError, TypeError, ValueError):
+        return False
+    return config.get("model_type") in _RAPID_OWNED_RUNTIME_MODEL_TYPES
 
 
 def _post_load_ubc_evict(model_name: str) -> None:
@@ -1319,7 +1337,7 @@ def load_model_with_fallback(
             model_name = str(resolved_snapshot)
 
     # ``mlx_lm.load`` may import config.json::model_file. Validate ordinary
-    # local checkpoints before any loader runs. Rapid-vendored architectures
+    # local checkpoints before any loader runs. Rapid-owned architectures
     # deliberately ignore repo-owned model code: their lower-level load path
     # overlays ``model_file`` / ``auto_map`` to None and executes only the
     # reviewed runtime shipped in this package. A Hugging Face cache snapshot's
@@ -1327,8 +1345,8 @@ def load_model_with_fallback(
     # so applying the ordinary containment gate here would reject a safe
     # vendored load before that override can take effect.
     _register_vendored_archs()
-    vendored_arch = _is_vendored_arch_model(model_name)
-    if not vendored_arch:
+    rapid_owned_runtime = _uses_rapid_owned_runtime(model_name)
+    if not rapid_owned_runtime:
         validate_local_model_file(model_name)
 
     tokenizer_config, trust_remote_code = apply_remote_code_policy(tokenizer_config)
@@ -1339,7 +1357,7 @@ def load_model_with_fallback(
     # downloaded and run. This turns silent code execution into an informed
     # choice; opt out process-wide with RAPID_MLX_TRUST_REMOTE_CODE=0 (see
     # BatchedEngine). A probe failure is silent — never breaks loading.
-    if not vendored_arch and _model_requires_remote_code(model_name):
+    if not rapid_owned_runtime and _model_requires_remote_code(model_name):
         if trust_remote_code:
             logger.warning(
                 "Security: model %r declares auto_map (custom Python code). "
@@ -1868,7 +1886,7 @@ def _load_with_tokenizer_fallback(model_name: str, *, enable_dspark: bool = Fals
     model_config = _deepseek_v4_quantization_override(
         model_path, enable_dspark=enable_dspark
     )
-    if _is_vendored_arch_model(str(model_path)):
+    if _uses_rapid_owned_runtime(str(model_path)):
         # A vendored architecture is an explicit trust boundary: weights and
         # tokenizer assets come from the checkpoint, executable model code
         # comes from Rapid. ``mlx_lm.utils.load_model`` otherwise gives the

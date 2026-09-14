@@ -184,6 +184,21 @@ def test_adapter_has_no_mlx_vlm_import():
     assert "from mlx_vlm" not in source
 
 
+def test_repo_code_trust_boundary_is_scoped_to_rapid_owned_k2(tmp_path):
+    from vllm_mlx.utils import tokenizer
+
+    k2_dir = tmp_path / "k2"
+    k2_dir.mkdir()
+    (k2_dir / "config.json").write_text(json.dumps(TINY))
+    other_dir = tmp_path / "existing-vendored-family"
+    other_dir.mkdir()
+    (other_dir / "config.json").write_text(json.dumps({"model_type": "deepseek_v4"}))
+
+    assert tokenizer._uses_rapid_owned_runtime(str(k2_dir)) is True
+    assert tokenizer._uses_rapid_owned_runtime(str(other_dir)) is False
+    assert tokenizer._uses_rapid_owned_runtime("org/not-cached") is False
+
+
 def test_vendored_load_ignores_checkpoint_owned_model_code(tmp_path, monkeypatch):
     """K2 weights must execute Rapid's reviewed runtime, not repo Python."""
     from vllm_mlx.utils import tokenizer
