@@ -199,7 +199,7 @@ def test_cache_shape_must_match_layer_count():
         model(mx.array([[1]]), cache=[None])
 
 
-def test_repo_code_trust_boundary_is_scoped_to_rapid_owned_k2(tmp_path):
+def test_repo_code_trust_boundary_is_scoped_to_rapid_owned_k2(tmp_path, monkeypatch):
     from vllm_mlx.utils import tokenizer
 
     k2_dir = tmp_path / "k2"
@@ -216,7 +216,13 @@ def test_repo_code_trust_boundary_is_scoped_to_rapid_owned_k2(tmp_path):
     assert tokenizer._uses_rapid_owned_runtime(str(k2_dir)) is True
     assert tokenizer._uses_rapid_owned_runtime(str(other_dir)) is False
     assert tokenizer._uses_rapid_owned_runtime(str(scalar_dir)) is False
-    assert tokenizer._uses_rapid_owned_runtime("org/not-cached") is False
+
+    monkeypatch.setattr(
+        tokenizer,
+        "_read_model_config_json",
+        lambda model_name: TINY if model_name == "org/not-cached" else None,
+    )
+    assert tokenizer._uses_rapid_owned_runtime("org/not-cached") is True
 
 
 def test_public_loader_fails_closed_when_k2_registration_is_unavailable(
@@ -252,8 +258,8 @@ def test_public_loader_fails_closed_when_k2_registration_is_unavailable(
     loader.assert_not_called()
 
 
-def test_vendored_load_ignores_checkpoint_owned_model_code(tmp_path, monkeypatch):
-    """K2 weights must execute Rapid's reviewed runtime, not repo Python."""
+def test_public_eager_loader_ignores_checkpoint_owned_model_code(tmp_path, monkeypatch):
+    """The public eager path must execute Rapid's runtime, not repo Python."""
     from vllm_mlx.utils import tokenizer
 
     (tmp_path / "config.json").write_text(
@@ -287,9 +293,63 @@ def test_vendored_load_ignores_checkpoint_owned_model_code(tmp_path, monkeypatch
     )
     monkeypatch.setattr(tokenizer, "repair_byte_level_decoder", lambda *_: None)
 
-    tokenizer._register_vendored_archs()
-    model, returned_tokenizer = tokenizer._load_with_tokenizer_fallback(str(tmp_path))
+    model, returned_tokenizer = tokenizer.load_model_with_fallback(str(tmp_path))
     assert model is fake_model
     assert returned_tokenizer is fake_tokenizer
     assert captured["model_file"] is None
     assert captured["auto_map"] is None
+
+
+@pytest.mark.parametrize("remote", [False, True], ids=["local", "first-remote-load"])
+def test_public_lazy_loader_ignores_checkpoint_owned_model_code(
+    tmp_path, monkeypatch, remote
+):
+    """The primary mlx-lm entry point receives the same safe config overlay."""
+    from vllm_mlx.utils import tokenizer
+
+    (tmp_path / "config.json").write_text(
+        json.dumps(
+            {
+                **TINY,
+                "model_file": "model.py",
+                "auto_map": {"AutoModel": "model.CustomModel"},
+            }
+        )
+    )
+    (tmp_path / "model.py").write_text("raise AssertionError('must not run')\n")
+
+    requested = "publisher/k2-horizon" if remote else str(tmp_path)
+    if remote:
+        monkeypatch.setattr(tokenizer, "_local_snapshot_if_cached", lambda name: name)
+        monkeypatch.setattr(
+            tokenizer,
+            "_resolve_model_path",
+            lambda name: tmp_path if name == requested else Path(name),
+        )
+
+    captured = {}
+    fake_model = MagicMock()
+    fake_tokenizer = MagicMock()
+    fake_tokenizer.chat_template = "template"
+
+    def fake_load(_path, *, model_config=None, **_kwargs):
+        captured.update(model_config or {})
+        if (
+            captured.get("model_file") is not None
+            or captured.get("auto_map") is not None
+        ):
+            raise AssertionError("checkpoint-owned code was not suppressed")
+        return fake_model, fake_tokenizer
+
+    monkeypatch.setattr("mlx_lm.load", fake_load)
+    monkeypatch.setattr(tokenizer, "_try_inject_mtp_post_load", lambda *_: None)
+    monkeypatch.setattr(
+        tokenizer, "augment_eos_token_ids_from_generation_config", lambda *_: None
+    )
+    monkeypatch.setattr(tokenizer, "repair_byte_level_decoder", lambda *_: None)
+    monkeypatch.setattr(tokenizer, "_post_load_ubc_evict", lambda *_: None)
+
+    model, returned_tokenizer = tokenizer.load_model_with_fallback(requested, lazy=True)
+    assert model is fake_model
+    assert returned_tokenizer is fake_tokenizer
+    assert captured == {"model_file": None, "auto_map": None}

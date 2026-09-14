@@ -985,14 +985,7 @@ def _uses_rapid_owned_runtime(model_name: str) -> bool:
     """
     import sys
 
-    model_path = Path(model_name)
-    if not model_path.is_dir():
-        return False
-    try:
-        with open(model_path / "config.json") as config_file:
-            config = json.load(config_file)
-    except (OSError, TypeError, ValueError):
-        return False
+    config = _read_model_config_json(model_name)
     if not isinstance(config, dict):
         return False
     model_type = config.get("model_type")
@@ -1014,6 +1007,19 @@ def _uses_rapid_owned_runtime(model_name: str) -> bool:
             "refusing to execute checkpoint-owned model code"
         )
     return True
+
+
+def _rapid_owned_model_config(model_name: str) -> dict | None:
+    """Return the fail-closed config overlay for a reviewed runtime.
+
+    ``mlx_lm.load`` and its lower-level ``load_model`` entry point both give
+    checkpoint metadata an opportunity to select repository-owned Python.
+    Suppress those selectors at every loader boundary once the architecture
+    has been matched to a registered Rapid-owned implementation.
+    """
+    if not _uses_rapid_owned_runtime(model_name):
+        return None
+    return {"model_file": None, "auto_map": None}
 
 
 def _post_load_ubc_evict(model_name: str) -> None:
@@ -1372,7 +1378,8 @@ def load_model_with_fallback(
     # so applying the ordinary containment gate here would reject a safe
     # vendored load before that override can take effect.
     _register_vendored_archs()
-    rapid_owned_runtime = _uses_rapid_owned_runtime(model_name)
+    rapid_owned_model_config = _rapid_owned_model_config(model_name)
+    rapid_owned_runtime = rapid_owned_model_config is not None
     if not rapid_owned_runtime:
         validate_local_model_file(model_name)
 
@@ -1419,6 +1426,7 @@ def load_model_with_fallback(
         result = _mlx_lm_load(
             model_name,
             tokenizer_config=tokenizer_config,
+            model_config=rapid_owned_model_config,
             lazy=True,
             return_config=return_config,
         )
@@ -1468,7 +1476,14 @@ def load_model_with_fallback(
         # actually used for.
         _post_load_ubc_evict(model_name)
         return (*result, str(model_name)) if return_source else result
-    if enable_dspark:
+    if rapid_owned_runtime:
+        result = _load_model_with_fallback_impl(
+            model_name,
+            tokenizer_config,
+            enable_dspark=enable_dspark,
+            model_config=rapid_owned_model_config,
+        )
+    elif enable_dspark:
         result = _load_model_with_fallback_impl(
             model_name, tokenizer_config, enable_dspark=True
         )
@@ -1662,6 +1677,7 @@ def _load_model_with_fallback_impl(
     tokenizer_config: dict = None,
     *,
     enable_dspark: bool = False,
+    model_config: dict | None = None,
 ):
     """Inner load implementation — kept separate so the public wrapper can
     install a try/finally for the Defect 4 UBC eviction without rewriting
@@ -1683,7 +1699,11 @@ def _load_model_with_fallback_impl(
         logger.info(
             f"Model {model_name} requires tokenizer fallback, loading directly..."
         )
-        return _load_with_tokenizer_fallback(model_name, enable_dspark=enable_dspark)
+        return _load_with_tokenizer_fallback(
+            model_name,
+            enable_dspark=enable_dspark,
+            model_config=model_config,
+        )
 
     # Vendored architectures (e.g. deepseek_v4) — transformers' AutoConfig
     # doesn't know about them, so mlx-lm's high-level load() blows up
@@ -1694,7 +1714,11 @@ def _load_model_with_fallback_impl(
             f"Model {model_name} uses a vendored architecture, "
             "skipping AutoConfig path and loading directly..."
         )
-        return _load_with_tokenizer_fallback(model_name, enable_dspark=enable_dspark)
+        return _load_with_tokenizer_fallback(
+            model_name,
+            enable_dspark=enable_dspark,
+            model_config=model_config,
+        )
 
     # Gemma 4: mlx-lm 0.31+ supports it natively. Only use our wrapper
     # for older mlx-lm versions that lack gemma4 model support. Several
@@ -1731,7 +1755,11 @@ def _load_model_with_fallback_impl(
             return load_gemma4_text(model_name, tokenizer_config)
         try:
             # Try native mlx-lm load first (0.31+)
-            model, tokenizer = load(model_name, tokenizer_config=tokenizer_config)
+            model, tokenizer = load(
+                model_name,
+                tokenizer_config=tokenizer_config,
+                model_config=model_config,
+            )
             logger.info("Gemma 4 loaded natively via mlx-lm")
             if not getattr(tokenizer, "chat_template", None):
                 mp = _resolve_model_path(model_name)
@@ -1764,7 +1792,11 @@ def _load_model_with_fallback_impl(
             return load_gemma4_text(model_name, tokenizer_config)
 
     try:
-        model, tokenizer = load(model_name, tokenizer_config=tokenizer_config)
+        model, tokenizer = load(
+            model_name,
+            tokenizer_config=tokenizer_config,
+            model_config=model_config,
+        )
         # mlx_lm.load() succeeds but sanitize() may have silently
         # stripped mtp.* weights.  Check if the config declares MTP
         # layers and the model came back without a .mtp attribute;
@@ -1890,7 +1922,12 @@ def _try_inject_mtp_post_load(model, model_name):
             )
 
 
-def _load_with_tokenizer_fallback(model_name: str, *, enable_dspark: bool = False):
+def _load_with_tokenizer_fallback(
+    model_name: str,
+    *,
+    enable_dspark: bool = False,
+    model_config: dict | None = None,
+):
     """Load model with fallback tokenizer for non-standard models like Nemotron."""
     from mlx_lm.utils import load_model
 
@@ -1911,9 +1948,10 @@ def _load_with_tokenizer_fallback(model_name: str, *, enable_dspark: bool = Fals
     # projections, so mlx-lm would otherwise apply the global MXFP4 default to
     # MXFP8 attention tensors and reject their packed shapes.
     _register_vendored_archs()
-    model_config = _deepseek_v4_quantization_override(
+    detected_model_config = _deepseek_v4_quantization_override(
         model_path, enable_dspark=enable_dspark
     )
+    model_config = {**(detected_model_config or {}), **(model_config or {})}
     if _uses_rapid_owned_runtime(str(model_path)):
         # A vendored architecture is an explicit trust boundary: weights and
         # tokenizer assets come from the checkpoint, executable model code
@@ -1921,7 +1959,7 @@ def _load_with_tokenizer_fallback(model_name: str, *, enable_dspark: bool = Fals
         # checkpoint's ``model_file`` precedence over its registered
         # ``model_type`` module, silently defeating that boundary.
         model_config = {
-            **(model_config or {}),
+            **model_config,
             "model_file": None,
             "auto_map": None,
         }
