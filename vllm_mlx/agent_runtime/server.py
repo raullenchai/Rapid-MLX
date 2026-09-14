@@ -918,9 +918,10 @@ class AgentServerService:
                 try:
                     await asyncio.shield(task)
                 except asyncio.CancelledError:
-                    current = asyncio.current_task()
-                    cancelling = getattr(current, "cancelling", None)
-                    if callable(cancelling) and cancelling():
+                    # shield leaves the child running when the caller is
+                    # cancelled. This task-state check is stable on every
+                    # supported Python version, unlike Task.cancelling().
+                    if not task.done():
                         raise
                     async with entry.lock:
                         self._record_unknown_server_outcome(entry)
