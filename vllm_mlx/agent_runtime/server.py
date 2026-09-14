@@ -1299,16 +1299,30 @@ class AgentServerService:
                 )
             selected = [available[name] for name in names]
         else:
-            selected = [
+            # Built-ins are opportunistic helpers, not a reason to hide an
+            # operator's existing MCP surface. Fill the model's bounded tool
+            # budget with connector tools using the established read-first
+            # order, then use any remaining capacity for Rapid helpers.
+            connector_tools = [
                 tool
-                for tool in sorted(
-                    available.values(),
+                for tool in available.values()
+                if tool.name not in {_BUILTIN_CALCULATE, _BUILTIN_BATCH_READ_ONLY}
+            ]
+            helpers = [
+                available[name]
+                for name in (_BUILTIN_CALCULATE, _BUILTIN_BATCH_READ_ONLY)
+                if name in available
+            ]
+            selected = (
+                sorted(
+                    connector_tools,
                     key=lambda item: (
                         item.risk is not ToolRisk.READ_ONLY,
                         item.name,
                     ),
-                )[:required_limit]
-            ]
+                )
+                + helpers
+            )[:required_limit]
         if len(selected) > required_limit:
             raise AgentToolSelectionError(
                 f"model profile permits at most {required_limit} tools"

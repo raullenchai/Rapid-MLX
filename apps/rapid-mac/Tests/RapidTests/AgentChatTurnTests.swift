@@ -128,6 +128,11 @@ struct AgentChatTurnTests {
         let fallback = AgentFailurePresentation.message(for: "future_server_code")
         #expect(fallback == "Rapid couldn’t complete the agent task. Try again or split it into smaller steps.")
         #expect(!fallback.contains("future_server_code"))
+
+        let invalid = AgentFailurePresentation.message(for: "invalid_tool_arguments")
+        #expect(invalid.contains("latest requested action"))
+        #expect(invalid.contains("wasn’t run"))
+        #expect(!invalid.contains("No action"))
     }
 
     @Test("Approval presentation uses only the bounded redacted summary")

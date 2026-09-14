@@ -11,9 +11,9 @@ enum AgentFailurePresentation {
         case "tool_call_during_final_synthesis":
             return "Rapid reached this model’s action limit before it could finish. Try splitting the request into two smaller steps."
         case "parallel_tool_call_limit_exceeded":
-            return "The model tried to run several actions at once. No action was run; try the request again."
+            return "The model requested several actions at once. Those requested actions weren’t run; try again."
         case "unadvertised_tool_call", "invalid_tool_arguments", "reused_tool_call_id":
-            return "The model requested an action Rapid couldn’t safely run. No action was taken; try again."
+            return "Rapid couldn’t safely run the latest requested action. It wasn’t run; try again."
         case "model_request_failed", "empty_model_turn":
             return "The model stopped before finishing. Try again."
         case "agent_adapter_cancelled", "agent_adapter_failure":

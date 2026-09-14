@@ -950,6 +950,26 @@ def test_tool_selection_is_exact_bounded_and_read_first_by_default():
         service._select_tools([tool.name for tool in tools], profile, registry)
 
 
+def test_automatic_helpers_never_displace_existing_connector_tools():
+    connector_tools = [
+        ToolSpec(name=f"connector_{index}", risk=ToolRisk.READ_ONLY)
+        for index in range(6)
+    ]
+    helpers = [
+        ToolSpec(name="rapid__calculate", risk=ToolRisk.READ_ONLY),
+        ToolSpec(name="rapid__batch_read_only", risk=ToolRisk.READ_ONLY),
+    ]
+    registry = FakeRegistry((*helpers, *connector_tools))
+    service = AgentServerService(registry=registry)
+    profile = resolve_agent_profile("minicpm5-2b-4bit")
+
+    selected = service._select_tools(None, profile, registry)
+
+    assert [tool.name for tool in selected] == [
+        f"connector_{index}" for index in range(6)
+    ]
+
+
 @pytest.mark.parametrize(
     ("name", "declared", "risk"),
     [
