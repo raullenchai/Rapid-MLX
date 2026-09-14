@@ -209,11 +209,28 @@ class K2HorizonToolParser(ToolParser):
         )
         return prefix[boundary + len(marker) :]
 
+    @classmethod
+    def _without_tool_groups(cls, text: str) -> str:
+        """Remove native tool envelopes when this request forbids execution."""
+        start = text.find(cls.GROUP_START)
+        if start < 0:
+            return text
+        parts = [cls._visible_prefix(text[:start])]
+        cursor = start
+        while cursor >= 0:
+            end = text.find(cls.GROUP_END, cursor + len(cls.GROUP_START))
+            if end < 0:
+                break
+            end += len(cls.GROUP_END)
+            next_start = text.find(cls.GROUP_START, end)
+            parts.append(text[end : next_start if next_start >= 0 else None])
+            cursor = next_start
+        return "".join(parts)
+
     def extract_tool_calls(
         self, model_output: str, request: dict[str, Any] | None = None
     ) -> ExtractedToolCallInformation:
-        if self._request_value(request, "tool_choice") == "none":
-            return ExtractedToolCallInformation(False, [], model_output)
+        suppress_calls = self._request_value(request, "tool_choice") == "none"
         start = model_output.find(self.GROUP_START)
         if start < 0:
             return ExtractedToolCallInformation(False, [], model_output)
@@ -223,6 +240,9 @@ class K2HorizonToolParser(ToolParser):
         while cursor >= 0:
             end = model_output.find(self.GROUP_END, cursor + len(self.GROUP_START))
             if end < 0:
+                if suppress_calls:
+                    content = self._without_tool_groups(model_output)
+                    return ExtractedToolCallInformation(False, [], content or None)
                 return ExtractedToolCallInformation(
                     False, [], self._visible_prefix(model_output)
                 )
@@ -230,6 +250,9 @@ class K2HorizonToolParser(ToolParser):
             try:
                 calls.extend(self._parse_group(model_output[cursor:end], request))
             except (json.JSONDecodeError, TypeError, ValueError):
+                if suppress_calls:
+                    content = self._without_tool_groups(model_output)
+                    return ExtractedToolCallInformation(False, [], content or None)
                 return ExtractedToolCallInformation(
                     False, [], self._visible_prefix(model_output)
                 )
@@ -239,6 +262,8 @@ class K2HorizonToolParser(ToolParser):
             )
             cursor = next_start
         content = "".join(content_parts)
+        if suppress_calls:
+            return ExtractedToolCallInformation(False, [], content or None)
         return ExtractedToolCallInformation(True, calls, content or None)
 
     @staticmethod
@@ -265,10 +290,7 @@ class K2HorizonToolParser(ToolParser):
             current_token_ids,
             delta_token_ids,
         )
-        if self._request_value(request, "tool_choice") == "none":
-            addition = current_text[self._content_upto :]
-            self._content_upto = len(current_text)
-            return {"content": addition} if addition else None
+        suppress_calls = self._request_value(request, "tool_choice") == "none"
 
         start = current_text.find(self.GROUP_START, self._content_upto)
         if start < 0:
@@ -297,8 +319,12 @@ class K2HorizonToolParser(ToolParser):
             try:
                 calls.extend(self._parse_group(current_text[cursor:end], request))
             except (json.JSONDecodeError, TypeError, ValueError):
-                addition = current_text[initial_upto:end]
-                self._content_upto = end
+                if suppress_calls:
+                    addition = self._without_tool_groups(current_text[initial_upto:])
+                    self._content_upto = len(current_text)
+                else:
+                    addition = self._visible_prefix(current_text[initial_upto:end])
+                    self._content_upto = end
                 return {"content": addition} if addition else None
 
             next_start = current_text.find(self.GROUP_START, end)
@@ -319,6 +345,9 @@ class K2HorizonToolParser(ToolParser):
             return {"content": prefix} if prefix else None
 
         content = "".join(content_parts)
+        if suppress_calls:
+            self._tool_group_seen = True
+            return {"content": content} if content else None
         first_index = self._next_tool_index
         self._next_tool_index += len(calls)
         self._tool_group_seen = True

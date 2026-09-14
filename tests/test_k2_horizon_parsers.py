@@ -223,12 +223,29 @@ def test_malformed_call_never_exposes_prompt_primed_reasoning():
     assert result.content == _group(_xml_call("unknown"))
 
 
+def test_streaming_malformed_call_never_exposes_prompt_primed_reasoning():
+    parser = K2HorizonToolParser()
+    output = "private plan</ifm|think>" + _group(_xml_call("unknown"))
+    delta = parser.extract_tool_calls_streaming("", output, output, request=_request())
+    assert delta == {"content": _group(_xml_call("unknown"))}
+
+
 def test_named_choice_rejects_other_declared_tool():
     result = K2HorizonToolParser().extract_tool_calls(
         _group(_xml_call("ping")),
         _request(tool_choice={"type": "function", "function": {"name": "lookup"}}),
     )
     assert not result.tools_called
+
+
+def test_tool_choice_none_strips_native_envelope_without_dispatch():
+    result = K2HorizonToolParser().extract_tool_calls(
+        _group(_xml_call("ping"), prefix="Visible before ", suffix=" after"),
+        _request(tool_choice="none"),
+    )
+    assert not result.tools_called
+    assert result.tool_calls == []
+    assert result.content == "Visible before  after"
 
 
 def test_tool_call_without_declared_tools_fails_closed():
@@ -307,6 +324,30 @@ def test_streaming_parses_two_complete_groups_in_one_chunk():
         "ping",
         "lookup",
     ]
+
+
+def test_streaming_tool_choice_none_strips_envelope_incrementally():
+    parser = K2HorizonToolParser()
+    parser.set_reasoning_sanitized(True)
+    output = _group(_xml_call("ping"), prefix="Before ", suffix=" after")
+    content: list[str] = []
+    calls: list[dict] = []
+    previous = ""
+    for char in output:
+        current = previous + char
+        delta = parser.extract_tool_calls_streaming(
+            previous,
+            current,
+            char,
+            request=_request(tool_choice="none"),
+        )
+        previous = current
+        if delta:
+            content.append(delta.get("content") or "")
+            calls.extend(delta.get("tool_calls") or [])
+    content.append(parser.flush_held_content(output))
+    assert "".join(content) == "Before  after"
+    assert calls == []
 
 
 def test_partial_marker_flushes_without_silent_byte_loss():
