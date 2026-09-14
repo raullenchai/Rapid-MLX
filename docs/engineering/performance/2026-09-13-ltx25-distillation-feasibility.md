@@ -130,6 +130,43 @@ that capacity alone is not the fix. Detailed metrics and paired MP4s are recorde
 `123/strategy/2026-09-13-ltx-stage2-distillation-pilot-results.md` outside this
 repository.
 
+## Progressive 3 -> 2 result
+
+A controlled follow-up kept the same 8/4 split and rank-8 Q/K/V adapter but
+changed the target to the teacher state at sigma `0.421875`. The product
+candidate performs a learned `0.909375 -> 0.421875` jump and retains the
+unchanged base model for `0.421875 -> 0`.
+
+At step 50, held-out video MSE improved from `0.029600` to `0.023035`
+(-22.2%) and audio MSE from `0.037557` to `0.014525` (-61.3%). Video/audio
+cosine reached `0.981379` / `0.993464`. Paired decodes retained the bee,
+fireworks, dog, and locomotive subjects and coarse motion. Visible detail and
+trajectory differences remain, so the adapter passes the direction gate but
+not the release-quality gate.
+
+The same adapter was tested zero-shot at 768x512, 25 frames (1536 video
+tokens) on a new hummingbird prompt. Video MSE improved
+`0.025395 -> 0.022698`; audio MSE improved `0.021937 -> 0.010367`, and the
+decoded subject and hovering motion were preserved. Three stage-2 evaluations
+took about 32.7 seconds at this shape; two project to about 22 seconds. This
+demonstrates resolution transfer and a 1.5x stage-2 gain, not yet a
+241-frame end-to-end claim.
+
+## Scaled qualification in progress
+
+Runtime-port commit `c475352` freezes a 100-trajectory manifest with 40 train
+and 10 prompt-disjoint validation prompts, two seeds each. It allocates 60
+items at 468 tokens, 30 at 1536, and 10 at 3072. The checked-in capture path
+is resumable by global manifest index, and a split tool hard-links complete
+components without duplicating storage.
+
+Capture began on MZR-3 on 2026-09-14 at
+`/private/tmp/LTX-progressive-scale.zv79Uv`. A fail-closed supervisor advances
+only at exact 420/630/700 component-file milestones. The first item was
+verified at shape `[468, 128]`, latent dimensions `[13, 6, 6]`, sigma
+`0.909375`, and manifest seed 1000. Training must not begin until all 700 files
+pass completeness validation.
+
 ## Reproduction
 
 Model: `MrMofer/ltx-2.5-mlx-q8`, revision

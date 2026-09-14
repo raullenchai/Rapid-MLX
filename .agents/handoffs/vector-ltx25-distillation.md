@@ -5,7 +5,7 @@ Date: 2026-09-13
 Owner / host: Vector / MZR-3
 
 Runtime feasibility branch: `raullenchai:vector/ltx25-distillation-feasibility`
-at `cc6924f` in the `ltx-2-mlx` repository. Rapid documentation branch:
+at `d22f2b6` in the `ltx-2-mlx` repository. Rapid documentation branch:
 `raullenchai/LTX`, PR #3438.
 
 ## Verified facts
@@ -29,24 +29,32 @@ at `cc6924f` in the `ltx-2-mlx` repository. Rapid documentation branch:
 - A rank-32 broad-target control on the same split peaked at 24.22 GiB but
   regressed video MSE 10.6% below the unadapted baseline and produced a
   blurrier decode. Rank alone does not solve the small-data direct-jump issue.
+- Progressive `3 -> 2` reverses the semantic failure: the bee and all four
+  held-out subjects remain present. At step 50, video/audio MSE improve
+  22.2%/61.3% versus the unadapted transition. Visible differences remain.
+- A zero-shot 768x512 / 1536-token hummingbird probe also improved and
+  preserved its moving subject. The measured stage-2 projection is about
+  32.7 seconds to 22 seconds, or 1.5x for stage 2 at 25 frames.
+- A frozen 100-trajectory scale run is now capturing 80 train / 20
+  prompt-disjoint validation items across 468/1536/3072-token buckets.
 - The implementation now includes resumable BF16 trajectory capture, the
   terminal strategy, checkpoint schedule/LoRA-scale metadata, paired latent
-  evaluation, and paired MP4 rendering. Full non-slow tests pass: 611 passed,
+  evaluation, and paired MP4 rendering. Full tests pass: 616 passed,
   22 skipped.
 
 ## Recommendation
 
-Continue qualifying a deterministic stage-2 `3 -> 1` terminal-latent
-student using a 468/1536/3072-token curriculum. Expand capacity and data before
-product integration. If it becomes perceptually
-non-inferior, progressively distill ancestral stage 1 from eight to four
+Continue qualifying the deterministic stage-2 `3 -> 2` progressive student
+using the frozen 468/1536/3072-token curriculum. Keep rank 8 until scaled
+train/validation evidence demonstrates capacity underfit. If it becomes
+perceptually non-inferior, progressively distill ancestral stage 1 from eight to four
 evaluations. This targets `4 + 1`, roughly 1.9-2.1x by the current timing
 model. More aggressive `3 + 1` or `2 + 1` schedules are research tiers.
 
 ## Risks and unresolved questions
 
-- LoRA capacity may be insufficient for one-step stage 2; rank and target
-  coverage must be expanded based on the pilot, not assumed.
+- LoRA capacity may still be insufficient at production motion diversity;
+  expand rank and target coverage only from scaled underfit evidence.
 - Stage-1 ancestral noise coupling requires a separate progressive-
   distillation implementation.
 - "No quality loss" must be a predeclared perceptual non-inferiority gate;
@@ -55,9 +63,10 @@ model. More aggressive `3 + 1` or `2 + 1` schedules are research tiers.
 
 ## Next action
 
-Vector should collect at least 100 trajectories, run rank-8/rank-32 controls,
-and compare direct `3 -> 1` against progressive `3 -> 2 -> 1`. Include decoded
-small-subject, speech, impact, and synchronization review. If the larger
-adapter still drops semantic detail, escalate to full-model or
+Vector should finish the active 100-trajectory capture, verify all 700
+components, archive the source set to the Studio dataset tier, and train the
+rank-8 progressive objective. Include decoded small-subject, speech, impact,
+and synchronization review. If the scaled adapter still drops semantic
+detail, escalate to full-model or
 smaller-architecture student distillation. Atlas should review fast-tier and
 default policy only after a pilot clears the quality gate.
