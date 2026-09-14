@@ -48,6 +48,43 @@ transition pilot, but deterministic endpoint regression is only a capacity
 probe: distributional and decoded blind evaluation must reject blur, motion
 collapse, or reduced diversity before any four-step schedule is proposed.
 
+## Stage-1 distillation method decision
+
+The first `8 -> 7` final-pair pilot intentionally minimizes endpoint latent
+error. It is cheap enough to answer whether a rank-8 adapter can represent one
+compressed transition, but its target includes ancestral noise that is not
+recoverable from the input state alone. A model trained only with per-sample
+endpoint MSE may therefore learn a conditional mean, reduce diversity, and
+blur motion even when held-out MSE improves. That result must not advance to a
+product checkpoint on metric evidence alone.
+
+If that pilot fails decoded motion or diversity, the next implementation is a
+noise-controlled stochastic-consistency objective inspired by SCott. Training
+must condition or couple the student transition to the teacher's stochastic
+path and preserve an explicit sampling-strength control. This is the smallest
+method change that directly addresses the ancestral mismatch rather than
+adding LoRA rank to the wrong objective.
+
+If stochastic consistency preserves motion but still narrows the decoded
+distribution, escalate to distribution-level video distillation: a DOLLAR-like
+combination of consistency and variational score distillation, or DMD-style
+distribution matching. These require additional score-model or adversarial
+training machinery and are second-line work, not a reason to weaken the
+quality gate.
+
+Primary method references:
+
+- SCott, stochastic consistency distillation for SDE samplers:
+  <https://arxiv.org/abs/2403.01505>
+- DOLLAR, few-step video distillation with consistency and variational score
+  objectives: <https://arxiv.org/abs/2412.15689>
+- Distribution Matching Distillation: <https://arxiv.org/abs/2311.18828>
+
+For every method, acceptance requires decoded prompt-disjoint comparisons of
+subject identity, fine detail, temporal motion, motion amplitude, diversity
+across seeds, audio content, and synchronization. Latent MSE, cosine similarity,
+and runtime are diagnostics, not substitutes for blind non-inferiority.
+
 ## Artifact contract
 
 The accepted adapter should ship inside an immutable model revision beside the
@@ -169,7 +206,9 @@ video and audio outputs, releases it, and reloads the clean base for the final
 correction. Standard mode is unchanged; fast mode rejects schedule overrides,
 teacher capture, and unqualified additional-LoRA composition. Commit `7d4a37d`
 adds the deterministic model-package builder. The full upstream suite passes
-at that commit (644 passed, 22 skipped).
+at the current evaluation commit `a1213c9` (651 passed, 22 skipped). Commit
+`e3beea8` adds a resumable, deterministically blinded Stage-2 qualification
+renderer; it does not change inference behavior.
 
 The accepted adapter still needs completed multi-prompt qualification and an
 immutable published model-repository revision before Rapid integration. A

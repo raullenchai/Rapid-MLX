@@ -134,3 +134,18 @@ pilot as a capacity and failure-mode probe. Do not productize it unless decoded
 motion/diversity and prompt-disjoint blind tests pass; if it averages stochastic
 targets into blur, move to explicitly noise-coupled or distributional
 distillation rather than tuning around the failure.
+
+Commit `a1213c9` adds held-out student-versus-base evaluation, and `e3beea8`
+adds resumable deterministic A/B rendering for the ten-case Stage-2 suite. The
+full upstream suite passes at 651 tests with 22 skips. MZR-3 is executing the
+qualification capture, product-runtime smoke, Stage-1 train/validation capture,
+40-step endpoint pilot, held-out evaluation, and blind Stage-2 render as one
+fail-closed serialized chain.
+
+The method escalation is now explicit. Endpoint regression remains a cheap
+rank/capacity probe only. If decoded motion or multi-seed diversity regresses,
+Vector should implement a SCott-inspired noise-controlled stochastic-consistency
+transition next. If that still narrows the decoded distribution, escalate to a
+DOLLAR-like consistency plus variational-score objective (or DMD-style
+distribution matching). Do not compensate for the wrong objective merely by
+increasing adapter rank, and do not use latent MSE as a release gate.
