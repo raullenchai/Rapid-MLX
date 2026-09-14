@@ -175,3 +175,12 @@ its basename-keyed clone cache selected an unrelated `ltx-2-mlx` checkout.
 It posted no review comment. Harbor/Atlas should repair both authentication and
 repo-qualified review worktree selection before treating that review gate as
 satisfied.
+
+The manifest-gated product smoke completed on MZR-3. It generated a 768x512,
+25-frame, 24 fps H.264 stream plus 48 kHz stereo AAC through the actual CLI in
+70.3 seconds. Stage 1 took about 29 seconds, the two fast Stage-2 evaluations
+took 12.42 and 11.22 seconds, and decode/mux took 5.9 seconds. Output SHA-256 is
+`23d7e0332f9514f4551f1eb3a53a305bea6dd96c422311e1a7bed10cefec02dc`.
+This verifies package validation and runtime lifecycle, not the 2x or quality
+gate. System swap was 203.25 MiB after the preceding ten-case capture and must
+be reported rather than described as zero-swap.
