@@ -88,11 +88,11 @@ class K2HorizonReasoningParser(ReasoningParser):
         boundary = self._first_boundary(text)
         if boundary is not None:
             index, marker = boundary
-            reasoning = text[:index].strip() or None
+            reasoning = text[:index] or None
             content_start = (
                 index if marker == self.TOOL_CALLS_START else index + len(marker)
             )
-            content = text[content_start:].strip() or None
+            content = text[content_start:] or None
             return reasoning, content
         # K2's template always primes one of the three reasoning lanes. Its
         # compatibility handling for ``enable_thinking=False`` merely selects
@@ -100,7 +100,7 @@ class K2HorizonReasoningParser(ReasoningParser):
         # truncated before a boundary, fail closed as reasoning instead of
         # exposing an unfinished private trace as answer content.
         del enable_thinking
-        return text.strip() or None, None
+        return text or None, None
 
     def extract_reasoning_streaming(
         self,

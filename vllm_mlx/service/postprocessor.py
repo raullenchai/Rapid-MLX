@@ -397,6 +397,12 @@ class StreamingPostProcessor:
             reset_parser = getattr(self.tool_parser, "reset", None)
             if callable(reset_parser):
                 reset_parser()
+        if self.tool_parser is not None:
+            set_reasoning_sanitized = getattr(
+                self.tool_parser, "set_reasoning_sanitized", None
+            )
+            if callable(set_reasoning_sanitized):
+                set_reasoning_sanitized(self.reasoning_parser is not None)
 
         # ``tool_choice="none"`` forbids tool calls this turn (OpenAI
         # contract). The tool parser still RUNS — that is what strips wire

@@ -63,6 +63,14 @@ def test_reasoning_hands_tool_group_to_content():
     )
 
 
+def test_reasoning_preserves_visible_whitespace_verbatim():
+    parser = K2HorizonReasoningParser()
+    assert parser.extract_reasoning(" private plan </ifm|think>\n  answer  \n") == (
+        " private plan ",
+        "\n  answer  \n",
+    )
+
+
 def test_reasoning_truncated_implicit_thought_fails_closed():
     parser = K2HorizonReasoningParser()
     for compatibility_flag in (True, False, None):
@@ -254,14 +262,39 @@ def test_streaming_complete_group_hides_prompt_primed_reasoning(closer):
     output = _group(
         _xml_call("ping"), prefix=f"private plan{closer}", suffix="Visible suffix"
     )
+    content: list[str] = []
+    calls: list[dict] = []
+    previous = ""
+    for char in output:
+        current = previous + char
+        delta = parser.extract_tool_calls_streaming(
+            previous, current, char, request=_request()
+        )
+        previous = current
+        if delta:
+            content.append(delta.get("content") or "")
+            calls.extend(delta.get("tool_calls") or [])
+    content.append(parser.flush_held_content(output))
+    assert "".join(content) == "Visible suffix"
+    assert len(calls) == 1
+
+
+def test_streaming_parses_two_complete_groups_in_one_chunk():
+    parser = K2HorizonToolParser()
+    output = _group(_xml_call("ping")) + " between " + _group(_xml_call("lookup"))
     delta = parser.extract_tool_calls_streaming("", output, output, request=_request())
     assert delta is not None
-    assert delta["content"] == "Visible suffix"
-    assert len(delta["tool_calls"]) == 1
+    assert delta["content"] == " between "
+    assert [call["index"] for call in delta["tool_calls"]] == [0, 1]
+    assert [call["function"]["name"] for call in delta["tool_calls"]] == [
+        "ping",
+        "lookup",
+    ]
 
 
 def test_partial_marker_flushes_without_silent_byte_loss():
     parser = K2HorizonToolParser()
+    parser.set_reasoning_sanitized(True)
     text = "ordinary <ifm|tool_"
     previous = ""
     emitted: list[str] = []

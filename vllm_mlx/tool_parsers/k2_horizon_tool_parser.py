@@ -40,12 +40,19 @@ class K2HorizonToolParser(ToolParser):
     )
 
     def __init__(self, tokenizer=None):
+        self._input_reasoning_sanitized = False
         super().__init__(tokenizer)
         self.reset()
+
+    def set_reasoning_sanitized(self, value: bool) -> None:
+        """Declare that the upstream reasoning parser owns IFM redaction."""
+        self._input_reasoning_sanitized = bool(value)
 
     def reset(self) -> None:
         super().reset()
         self._content_upto = 0
+        self._next_tool_index = 0
+        self._tool_group_seen = False
 
     @staticmethod
     def _request_value(request: dict[str, Any] | None, key: str, default=None):
@@ -252,6 +259,11 @@ class K2HorizonToolParser(ToolParser):
 
         start = current_text.find(self.GROUP_START, self._content_upto)
         if start < 0:
+            if not self._input_reasoning_sanitized and not self._tool_group_seen:
+                # Direct parser callers have not passed through K2's
+                # implicit-reasoning parser. Hold the prefix until a closer
+                # proves which bytes are visible; K2 always primes reasoning.
+                return None
             pending = current_text[self._content_upto :]
             held = self._partial_overlap(pending, self.GROUP_START)
             end = len(current_text) - held
@@ -259,25 +271,49 @@ class K2HorizonToolParser(ToolParser):
             self._content_upto = end
             return {"content": addition} if addition else None
 
-        prefix = current_text[self._content_upto : start]
-        end = current_text.find(self.GROUP_END, start + len(self.GROUP_START))
-        if end < 0:
-            self._content_upto = start
+        initial_upto = self._content_upto
+        content_parts = [self._visible_prefix(current_text[self._content_upto : start])]
+        calls: list[dict[str, Any]] = []
+        cursor = start
+        while cursor >= 0:
+            end = current_text.find(self.GROUP_END, cursor + len(self.GROUP_START))
+            if end < 0:
+                self._content_upto = cursor
+                break
+            end += len(self.GROUP_END)
+            try:
+                calls.extend(self._parse_group(current_text[cursor:end], request))
+            except (json.JSONDecodeError, TypeError, ValueError):
+                addition = current_text[initial_upto:end]
+                self._content_upto = end
+                return {"content": addition} if addition else None
+
+            next_start = current_text.find(self.GROUP_START, end)
+            if next_start >= 0:
+                content_parts.append(current_text[end:next_start])
+                cursor = next_start
+                continue
+
+            trailing = current_text[end:]
+            held = self._partial_overlap(trailing, self.GROUP_START)
+            visible_end = len(current_text) - held
+            content_parts.append(current_text[end:visible_end])
+            self._content_upto = visible_end
+            break
+
+        if not calls:
+            prefix = "".join(content_parts)
             return {"content": prefix} if prefix else None
-        end += len(self.GROUP_END)
-        try:
-            calls = self._parse_group(current_text[start:end], request)
-        except (json.JSONDecodeError, TypeError, ValueError):
-            addition = current_text[self._content_upto : end]
-            self._content_upto = end
-            return {"content": addition} if addition else None
-        content = self._visible_prefix(prefix) + current_text[end:]
-        self._content_upto = len(current_text)
+
+        content = "".join(content_parts)
+        first_index = self._next_tool_index
+        self._next_tool_index += len(calls)
+        self._tool_group_seen = True
         return {
             "content": content or None,
             "tool_calls": [
                 {
-                    "index": index,
+                    "index": first_index + index,
                     "id": call["id"],
                     "type": "function",
                     "function": {
@@ -296,5 +332,10 @@ class K2HorizonToolParser(ToolParser):
     def flush_held_content(self, full_text: str) -> str:
         if self.has_pending_tool_call(full_text):
             return full_text[self._content_upto :]
+        if not self._input_reasoning_sanitized and not self._tool_group_seen:
+            remaining = full_text[self._content_upto :]
+            if not any(marker in remaining for marker in self.REASONING_ENDS):
+                return ""
+            return self._visible_prefix(remaining)
         held = self._partial_overlap(full_text[self._content_upto :], self.GROUP_START)
         return full_text[-held:] if held else ""
