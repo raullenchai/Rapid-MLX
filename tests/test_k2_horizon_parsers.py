@@ -65,10 +65,13 @@ def test_reasoning_hands_tool_group_to_content():
 
 def test_reasoning_truncated_implicit_thought_fails_closed():
     parser = K2HorizonReasoningParser()
-    assert parser.extract_reasoning("private plan", enable_thinking=True) == (
-        "private plan",
-        None,
-    )
+    for compatibility_flag in (True, False, None):
+        assert parser.extract_reasoning(
+            "private plan", enable_thinking=compatibility_flag
+        ) == (
+            "private plan",
+            None,
+        )
 
 
 def test_reasoning_stream_character_boundaries_do_not_leak_markers():

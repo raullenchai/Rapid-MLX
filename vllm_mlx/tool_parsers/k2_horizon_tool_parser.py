@@ -33,13 +33,10 @@ class K2HorizonToolParser(ToolParser):
         re.DOTALL,
     )
     CALL_RE = re.compile(r"<ifm\|tool_call>(.*?)</ifm\|tool_call>", re.DOTALL)
-    REASONING_ENDS = tuple(
-        end
-        for end in (
-            "</ifm|think>",
-            "</ifm|think_fast>",
-            "</ifm|think_faster>",
-        )
+    REASONING_ENDS = (
+        "</ifm|think>",
+        "</ifm|think_fast>",
+        "</ifm|think_faster>",
     )
 
     def __init__(self, tokenizer=None):

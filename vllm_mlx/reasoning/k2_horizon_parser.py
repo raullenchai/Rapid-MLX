@@ -94,9 +94,13 @@ class K2HorizonReasoningParser(ReasoningParser):
             )
             content = text[content_start:].strip() or None
             return reasoning, content
-        if enable_thinking is True:
-            return text.strip() or None, None
-        return None, text
+        # K2's template always primes one of the three reasoning lanes. Its
+        # compatibility handling for ``enable_thinking=False`` merely selects
+        # the lowest effort; it does not turn reasoning off. If generation is
+        # truncated before a boundary, fail closed as reasoning instead of
+        # exposing an unfinished private trace as answer content.
+        del enable_thinking
+        return text.strip() or None, None
 
     def extract_reasoning_streaming(
         self,
