@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Explicit serial server for the qualified native Qwen3.6 MTP runtime."""
+"""Explicit serial server for qualified native-MTP runtimes."""
 
 from __future__ import annotations
 
@@ -16,12 +16,13 @@ logger = logging.getLogger(__name__)
 
 
 def _validate_greedy_request(request: Any) -> None:
-    temperature = getattr(request, "temperature", None)
-    if temperature not in (None, 0, 0.0):
-        raise HTTPException(
-            status_code=400,
-            detail="Native MTP currently supports greedy decoding only; set temperature=0.",
-        )
+    """Reject parameters the serial path would otherwise silently ignore.
+
+    Non-greedy sampling is valid, but it runs autoregressively: the qualified
+    MTP equivalence contract is greedy-only.  ``_generation_kwargs`` below
+    removes the drafter for those requests instead of turning Desktop's normal
+    temperature into a user-visible 400.
+    """
     unsupported = {}
     repetition_penalty = getattr(request, "repetition_penalty", None)
     if repetition_penalty not in (None, 1, 1.0):
@@ -104,14 +105,24 @@ def run_native_mtp_server(
     model, processor, runtime = _dflash_executor.submit(_load_all).result()
 
     def _generation_kwargs(*, max_tokens: int, temperature: float, top_p: float):
-        return {
+        kwargs = {
             "max_tokens": max_tokens,
             "temperature": temperature,
             "top_p": top_p,
-            "draft_model": runtime.drafter,
-            "draft_kind": runtime.kind,
-            "draft_block_size": runtime.block_size,
         }
+        if temperature in (0, 0.0):
+            kwargs.update(
+                draft_model=runtime.drafter,
+                draft_kind=runtime.kind,
+                draft_block_size=runtime.block_size,
+            )
+        else:
+            logger.info(
+                "Native MTP is greedy-only; using autoregressive decode for "
+                "temperature=%s",
+                temperature,
+            )
+        return kwargs
 
     app = _build_app(
         model=model,

@@ -127,6 +127,11 @@ and GLM drafter architecture used for qualification.
   GLM-5 parser treats the template-primed prefix as reasoning until
   `</think>`; a live request returned exactly `STREAM_OK` as content, kept the
   trace only in `reasoning_content`, and completed with `[DONE]`.
+- The qualified Q4 sidecar is now public at
+  `rapid-mlx/GLM-5.3-Flash-MTP-4bit@e9d62773d3e5272fb298830e8e06fadc4137ae2c`.
+  Its 4,183,323,401-byte safetensors file has SHA-256
+  `369cf9c0f9cdf3ae5f1b9f72d3db8e65ad3026b8e416b8de5618e9117d3f00ca`.
+  The activation branch pins both it and the target by immutable revision.
 
 ## Unresolved
 
@@ -137,10 +142,8 @@ and GLM drafter architecture used for qualification.
 - The Rapid serial-server thinking-budget fix is independently releasable, but
   GLM MTP capability metadata must remain disabled until a tagged mlx-vlm
   release contains the qualified cache-owned runtime and Q4 head loader.
-- The qualified 3.9 GiB Q4 drafter is currently local. Do not enable the alias
-  until an immutable public sidecar revision (or a reviewed, durable embedded
-  extraction design) exists; a machine-local path cannot be a CLI/Desktop
-  product contract.
+- The immutable sidecar gate is cleared. Runtime availability is now the only
+  external activation blocker.
 - #2241 is intentionally stacked on #2206's source branch and cannot be
   retargeted to main until #2206's current conflict is resolved.
 - Creative prose still needs blind human review before any quality claim.
@@ -162,12 +165,11 @@ did not preserve bit-exact state in the production-shape check.
 
 ## Next action
 
-Atlas should review the Rapid-owned transaction boundary, then wait for a
-tagged mlx-vlm release containing the required structural seams and a public,
-revision-pinned Q4 sidecar. Re-run the six-task harness through the released
-dependency and require 18/18 across three runs before flipping
-`supports_native_mtp` for the GLM alias; that single alias flag and shared
-server route delivers the same backend to CLI and Desktop. Include #2241's
-replay scheduling change when released, but do not block on experimental K2/K3
+Atlas should wait for a tagged mlx-vlm release containing the required
+structural seams, update the exact dependency pin, and re-run the six-task
+harness through that released wheel. The alias activation is already
+fail-closed: an older runtime keeps an unflagged serve on AR, while an explicit
+native request fails before loading either checkpoint. Include #2241's replay
+scheduling change when released, but do not block on experimental K2/K3
 adaptation. Do not delete the cached Q4 control without explicit human
 authorization and a recovery plan.

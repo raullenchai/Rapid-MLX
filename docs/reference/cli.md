@@ -440,6 +440,11 @@ rapid-mlx serve <mtp-eligible-qwen-checkpoint> \
 rapid-mlx serve qwen3.6-35b-4bit \
   --speculative-config '{"method":"mtp","backend":"native"}'
 
+# GLM-5.3 selects its immutable native-MTP pair automatically when the
+# qualified optional runtime is installed; this forces plain AR if desired.
+rapid-mlx serve glm5.3-flash-4bit
+rapid-mlx serve glm5.3-flash-4bit --no-spec-decode
+
 # MTP with a sidecar head: serve a FULL base checkpoint and pass the head
 # repo in the `model` field. The `*-mtp-4bit` aliases are sidecar HEADS
 # (~246 MB, model_type qwen3_5_mtp) — do NOT serve them directly.

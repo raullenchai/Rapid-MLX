@@ -44,6 +44,7 @@ def test_available_payload_shape() -> None:
         "is_moe",
         "supports_spec_decode",
         "supports_native_mtp",
+        "native_mtp_draft_model",
         "mtp_draft_model",
         "mtp_speculative_tokens",
         "modality",

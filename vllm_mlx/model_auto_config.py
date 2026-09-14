@@ -2336,11 +2336,13 @@ def _serve_mtp_default_on(model_path: str) -> bool:
         from .cli import (
             _alias_continuous_mtp_tier,
             _alias_mtp_default_enabled,
+            _alias_native_mtp_capable,
         )
     except Exception:  # noqa: BLE001 - degraded import must fail closed
         return False
-    if _alias_continuous_mtp_tier(model_path) != "verified":
-        return False
+    if not _alias_native_mtp_capable(model_path):
+        if _alias_continuous_mtp_tier(model_path) != "verified":
+            return False
     return _alias_mtp_default_enabled(model_path)
 
 

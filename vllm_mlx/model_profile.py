@@ -171,12 +171,17 @@ class ModelProfile:
     # phi, ...) are safe.
     supports_spec_decode: bool = True
     # Optional, bench-verified MTP preset. Presence takes precedence over the
-    # generic suffix preset in catalog/UI surfaces; the target alias remains
-    # opt-in and the engine never enables it automatically.
+    # generic suffix preset in catalog/UI surfaces. ``mtp_default_enabled``
+    # below controls whether a qualified alias is automatic or opt-in.
     # Native MTP is separate from ``supports_spec_decode``: a hybrid model may
     # disable the generic suffix/draft verifier while its model-specific MTP
     # injector remains valid.
     supports_native_mtp: bool = False
+    # Immutable sidecar used by the serial native-MTP backend.  This is
+    # deliberately separate from ``mtp_draft_model``: that field belongs to
+    # the batched injector, while native MTP owns a different cache/runtime
+    # transaction and must never be routed there accidentally.
+    native_mtp_draft_model: str | None = None
     mtp_draft_model: str | None = None
     mtp_speculative_tokens: int = 3
     # Continuous self-MTP is qualified per concrete target artifact rather
