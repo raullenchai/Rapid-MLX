@@ -5,7 +5,7 @@ Date: 2026-09-13
 Owner / host: Vector / MZR-3
 
 Runtime feasibility branch: `raullenchai:vector/ltx25-distillation-feasibility`
-at `b2054aa` in the `ltx-2-mlx` repository. Rapid design branch:
+at `14a0cb9` in the `ltx-2-mlx` repository. Rapid design branch:
 `design/ltx25-portable-fast-stage2`. PR #3438 remains the separate marginal
 dequantization release work and must not absorb this unqualified model path.
 
@@ -253,4 +253,17 @@ positions and review metadata from the same dataset instance. The bundle's
 index was repaired from the captured original dataset order, the prior index
 was retained on MZR-3 as `review-index.pre-index-fix.json`, and the future
 terminal blind supervisor is verified to run `b2054aa`. The full upstream
-suite passes 700 tests with 22 skips.
+suite passes 711 tests with 22 skips at `14a0cb9`.
+
+Subsequent hardening adds an index-paired Stage-2 student/base diagnostic
+report, fail-closed metadata validation for resumed terminal curriculum
+checkpoints, and index-paired Stage-1 pilot gating. The latter prevents a
+changed dataset export order from silently approving the full curriculum.
+The terminal 468-token phase completed 100 steps in 20.4 minutes at 19.8 GB
+peak and handed its step-100 adapter to the 1536-token phase successfully.
+
+MZR-3 has 9.5 GiB free during this run. Three completed, inactive pilots were
+copied without deletion to
+`/Volumes/RTL-2T/scratch-archive/LTX-MZR3-20260914/`; source and archive file
+counts and byte totals match for all three directories. The remote originals
+remain intact pending explicit cleanup authorization.
