@@ -136,10 +136,12 @@ curl -sS http://127.0.0.1:8000/v1/agent/runs/RUN_ID/approval \
 ```
 
 Use `approved:false` to deny it. Rapid records the action as unexecuted and
-finishes with `Action not approved. No changes were made.` It does not ask the
-model to reinterpret the refusal, so compact models cannot leak planning text
-or imply the action happened. A stale or wrong call ID returns HTTP 409 and
-cannot release an action.
+finishes with `That action wasn’t approved, so it wasn’t run.` This wording is
+scoped to the pending action because earlier approved actions in the same run
+may already have completed. Rapid does not ask the model to reinterpret the
+refusal, so compact models cannot leak planning text or imply the pending
+action happened. A stale or wrong call ID returns HTTP 409 and cannot release
+an action.
 
 After `approved:true`, a client-executed run moves to
 `awaiting_tool_result` and only then exposes the original arguments. This

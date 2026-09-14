@@ -22,18 +22,14 @@ def validate_agent_tool_declarations(value: Any, *, field_name: str) -> list[str
     if not isinstance(value, list) or not all(
         isinstance(tool, str) and "__" in tool for tool in value
     ):
-        raise ValueError(
-            f"'{field_name}' must be a list of namespaced tool strings"
-        )
+        raise ValueError(f"'{field_name}' must be a list of namespaced tool strings")
     return list(value)
 
 
 def validate_agent_read_only_tools(value: Any) -> list[str]:
     """Backward-compatible validator for the existing public setting."""
 
-    return validate_agent_tool_declarations(
-        value, field_name="agent_read_only_tools"
-    )
+    return validate_agent_tool_declarations(value, field_name="agent_read_only_tools")
 
 
 def select_server_map(data: dict[str, Any]) -> dict[str, Any]:
@@ -161,9 +157,7 @@ class MCPServerConfig:
                     f"MCP server '{self.name}': {field_name} must use "
                     f"the '{self.name}__' namespace"
                 )
-        overlap = set(self.agent_read_only_tools) & set(
-            self.agent_local_change_tools
-        )
+        overlap = set(self.agent_read_only_tools) & set(self.agent_local_change_tools)
         if overlap:
             raise ValueError(
                 f"MCP server '{self.name}': agent tool declarations overlap: "

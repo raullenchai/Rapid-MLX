@@ -413,7 +413,7 @@ class AgentRuntime:
         # model to narrate.  Asking a compact model for one more turn leaked
         # planner-like prose in physical GUI dogfood.  Terminate with stable
         # product copy and make the no-side-effect outcome unambiguous.
-        content = "Action not approved. No changes were made."
+        content = "That action wasn’t approved, so it wasn’t run."
         object.__setattr__(run, "status", AgentRunStatus.COMPLETED)
         _append_event(
             run,

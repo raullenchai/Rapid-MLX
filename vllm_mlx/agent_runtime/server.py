@@ -509,6 +509,12 @@ class MCPToolRegistry:
                 "MCP registry is unavailable"
             ) from exc
         for tool in available_tools:
+            if tool.full_name in {_BUILTIN_CALCULATE, _BUILTIN_BATCH_READ_ONLY}:
+                logger.warning(
+                    "Agent runtime skipped MCP tool %r because its name is reserved",
+                    tool.full_name,
+                )
+                continue
             if not _OPENAI_TOOL_NAME.fullmatch(tool.full_name):
                 logger.warning(
                     "Agent runtime skipped incompatible MCP tool %r", tool.full_name
@@ -563,14 +569,11 @@ class MCPToolRegistry:
         available = {
             tool.name: tool
             for tool in self.list_tools()
-            if tool.risk is ToolRisk.READ_ONLY
-            and tool.name != _BUILTIN_BATCH_READ_ONLY
+            if tool.risk is ToolRisk.READ_ONLY and tool.name != _BUILTIN_BATCH_READ_ONLY
         }
         nested_calls: list[AgentToolCall] = []
         try:
-            validator_type = validators.validator_for(
-                _BATCH_READ_ONLY_SPEC.parameters
-            )
+            validator_type = validators.validator_for(_BATCH_READ_ONLY_SPEC.parameters)
             validator_type(_BATCH_READ_ONLY_SPEC.parameters).validate(call.arguments)
             for index, item in enumerate(call.arguments["calls"]):
                 spec = available[item["name"]]
@@ -593,19 +596,33 @@ class MCPToolRegistry:
             )
 
         results = await asyncio.gather(*(self.execute(item) for item in nested_calls))
-        content = json.dumps(
-            [
+        payload: dict[str, Any] = {
+            "results": [
                 {
                     "name": nested.name,
                     "content": result.content,
                     "is_error": result.is_error,
+                    "truncated": False,
                 }
                 for nested, result in zip(nested_calls, results, strict=True)
             ],
-            ensure_ascii=False,
-        )
+            "truncated": False,
+        }
+        content = json.dumps(payload, ensure_ascii=False)
         if len(content) > _MAX_TOOL_RESULT_CHARS:
-            content = content[:_MAX_TOOL_RESULT_CHARS] + "\n[batch result truncated by Rapid]"
+            # Keep the result valid JSON. JSON escaping can expand one input
+            # character by up to six characters (for example a control byte),
+            # so divide by eight and retain room for names and structure.
+            per_result_chars = max(
+                256,
+                (_MAX_TOOL_RESULT_CHARS - 4096) // (8 * len(nested_calls)),
+            )
+            for item in payload["results"]:
+                if len(item["content"]) > per_result_chars:
+                    item["content"] = item["content"][:per_result_chars]
+                    item["truncated"] = True
+                    payload["truncated"] = True
+            content = json.dumps(payload, ensure_ascii=False)
         return AgentToolResult(
             call_id=call.id,
             content=content,

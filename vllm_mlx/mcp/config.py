@@ -217,9 +217,7 @@ def validate_config(data: dict[str, Any], tolerant: bool = False) -> MCPConfig:
         tool for server in servers.values() for tool in server.agent_read_only_tools
     ]
     agent_local_change_tools = [
-        tool
-        for server in servers.values()
-        for tool in server.agent_local_change_tools
+        tool for server in servers.values() for tool in server.agent_local_change_tools
     ]
 
     return MCPConfig(

@@ -230,7 +230,7 @@ async def test_denial_finishes_without_another_model_turn_or_execution():
     done = await wait_for_status(service, created.id, AgentRunStatus.COMPLETED)
 
     assert registry.calls == []
-    assert done.output == "Action not approved. No changes were made."
+    assert done.output == "That action wasn’t approved, so it wasn’t run."
     assert len(driver.requests) == 1
 
 
@@ -1227,6 +1227,7 @@ def test_mcp_projection_uses_declared_risk_and_skips_unsupported_schemas():
         get_all_tools=lambda: [
             MCPTool("files", "read_file", "read", {"type": "object"}),
             MCPTool("files", "write_file", "write", {"type": "object"}),
+            MCPTool("rapid", "calculate", "reserved", {"type": "object"}),
             MCPTool("refs", "search", "bad", {"$ref": "#/$defs/x"}),
             MCPTool("bad.server", "tool", "bad name", {"type": "object"}),
         ],
@@ -2050,20 +2051,83 @@ async def test_builtin_batch_runs_only_read_only_tools():
         )
     )
     assert completed.is_error is False
-    assert [item["content"] for item in json.loads(completed.content)] == [
+    payload = json.loads(completed.content)
+    assert payload["truncated"] is False
+    assert [item["content"] for item in payload["results"]] == [
         '{"a": "5"}',
         '{"b": "2"}',
     ]
 
-    rejected = await registry.execute(
+    executed = []
+
+    class ObservedRegistry(MCPToolRegistry):
+        def list_tools(self):
+            return [
+                ToolSpec(name="rapid__calculate", risk=ToolRisk.READ_ONLY),
+                ToolSpec(name="rapid__batch_read_only", risk=ToolRisk.READ_ONLY),
+                ToolSpec(name="files__write_file", risk=ToolRisk.LOCAL_CHANGE),
+            ]
+
+        async def execute(self, nested_call):
+            if nested_call.name == "rapid__batch_read_only":
+                return await super().execute(nested_call)
+            executed.append(nested_call.name)
+            return AgentToolResult(
+                call_id=nested_call.id,
+                content="unexpected",
+                executed=True,
+            )
+
+    rejected = await ObservedRegistry(manager=None, executor=None, pinned=True).execute(
         AgentToolCall(
             id="batch-side-effect",
             name="rapid__batch_read_only",
-            arguments={"calls": [{"name": "files__write_file", "arguments": {}}]},
+            arguments={
+                "calls": [
+                    {
+                        "name": "rapid__calculate",
+                        "arguments": {"expressions": {"x": "1 + 1"}},
+                    },
+                    {"name": "files__write_file", "arguments": {}},
+                ]
+            },
         )
     )
     assert rejected.is_error is True
     assert rejected.executed is False
+    assert executed == []
+
+
+@pytest.mark.asyncio
+async def test_builtin_batch_truncation_remains_valid_json():
+    class LargeReadRegistry(MCPToolRegistry):
+        def list_tools(self):
+            return [
+                ToolSpec(name="rapid__batch_read_only", risk=ToolRisk.READ_ONLY),
+                ToolSpec(name="files__read_file", risk=ToolRisk.READ_ONLY),
+            ]
+
+        async def execute(self, nested_call):
+            if nested_call.name == "rapid__batch_read_only":
+                return await super().execute(nested_call)
+            return AgentToolResult(
+                call_id=nested_call.id,
+                content="\u0000" * 240_000,
+                executed=True,
+            )
+
+    result = await LargeReadRegistry(manager=None, executor=None, pinned=True).execute(
+        AgentToolCall(
+            id="large-batch",
+            name="rapid__batch_read_only",
+            arguments={"calls": [{"name": "files__read_file", "arguments": {}}]},
+        )
+    )
+
+    payload = json.loads(result.content)
+    assert len(result.content) <= 240_000
+    assert payload["truncated"] is True
+    assert payload["results"][0]["truncated"] is True
 
 
 @pytest.mark.asyncio

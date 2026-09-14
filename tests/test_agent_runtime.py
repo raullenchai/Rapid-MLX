@@ -435,7 +435,7 @@ def test_external_side_effect_denial_finishes_with_deterministic_copy():
     assert run.status is AgentRunStatus.COMPLETED
     assert run.pending_call is None
     assert denied is not None
-    assert denied.final_content == "Action not approved. No changes were made."
+    assert denied.final_content == "That action wasn’t approved, so it wasn’t run."
     assert run.events[-3].type == "approval.resolved"
     assert run.events[-2].data["result"]["is_error"] is True
     assert run.events[-2].data["result"]["safe_summary"] == (
