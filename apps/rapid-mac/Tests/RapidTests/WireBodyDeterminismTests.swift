@@ -224,7 +224,7 @@ struct WireBodyDeterminismTests {
 /// therefore write to (and consume) different slots instead of clobbering each
 /// other. The store is boxed behind a lock because the write happens on the
 /// loading thread and the read on the caller's.
-private final class WireBodyCaptureProtocol: URLProtocol, @unchecked Sendable {
+final class WireBodyCaptureProtocol: URLProtocol, @unchecked Sendable {
     private final class Store: @unchecked Sendable {
         private let lock = NSLock()
         private var bodies: [String: Data] = [:]

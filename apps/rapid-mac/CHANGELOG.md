@@ -39,6 +39,13 @@ can actually understand.
   [#3417](https://github.com/raullenchai/Rapid-MLX/pull/3417))
 
 ### Fixed
+- **A web search no longer makes the whole conversation start over.** On the
+  turn that used a tool, the app added its "use only the tool result" rules to
+  the very top of the prompt and removed them again on the next message. The
+  engine reuses a conversation only while its beginning is unchanged, so every
+  tool call re-read the entire conversation twice — 20 seconds each on a long
+  one with a 27B model. The rules now travel with the message that asked, and
+  the beginning of the conversation stays put.
 - Document follow-ups now reject malformed retrieval cursors instead of
   silently reading from the beginning and returning a plausible wrong page.
 - **Searching a document no longer reports a false "nothing found".** Asking

@@ -2490,6 +2490,18 @@ final class ChatViewModel {
         // is cancelled, or comes back empty — a wrong-but-present answer beats
         // a blank message.
         var draftBeforeCorrection: String?
+        // ONE instant for the whole turn, shared by the date row and the
+        // clock trailer of every round. codex caught that two `Date()` calls
+        // can straddle local midnight, which would have the same request
+        // asserting "Today is the 11th" in its system row and "sent … the
+        // 12th" on its newest message. Taking it once per TURN rather than
+        // per round matters for the prefix cache too: the clock stamp is
+        // minute-granular, and a tool loop whose rounds straddle a minute
+        // boundary would otherwise grow an "answering now" line on the
+        // newest user row mid-loop and re-prefill everything behind it
+        // (measured on Qwen3.8-27B: the third round resumed from the 1547-
+        // token boundary instead of the 2054-token entry of the round before).
+        let requestInstant = Date()
 
         while toolExecutionsLeft > 0 || documentReadsLeft > 0 || isFinalSynthesisRound {
             toolRounds += 1
@@ -2533,32 +2545,23 @@ final class ChatViewModel {
             let definitions = isFinalSynthesisRound
                 ? []
                 : ChatViewModel.wireDefinitions(forAlias: wireAlias, enabled: offered)
-            // Ambient anti-confabulation guidance, prepended for the wire body
-            // only (never appended to the transcript) so the user's history
-            // stays prose-only. Skipped when no tools are advertised and — the
-            // point of #1549 — on rounds that carry no tool result for it to
-            // talk about. Existing/custom instructions are merged into the
-            // same system row below.
-            let ambientPreamble = !definitions.isEmpty
-                && ChatViewModel.carriesToolResultForThisTurn(history)
-                ? ChatViewModel.toolGuidancePreamble
-                : nil
-            // ONE instant for the whole assembly, shared with the clock
-            // trailer below. codex caught that two `Date()` calls can straddle
-            // local midnight, which would have the same request asserting
-            // "Today is the 11th" in its system row and "sent … the 12th" on
-            // its newest message.
-            let requestInstant = Date()
             // Inserted BEFORE the trim so its tokens are inside the budget the
             // trim works to, not added on top of a body already sized to fill
             // the window.
             history = ChatViewModel.addingInstructionLayers(
                 to: history,
-                ambientPreamble: ambientPreamble,
                 dateContext: ChatViewModel.currentDateContext(now: requestInstant),
                 memoryContext: memoryContext,
                 global: globalInstruction,
                 conversation: conversationInstruction
+            )
+            // First of the two guidance passes: stamped BEFORE the trim so
+            // the guidance rows count toward the budget the trim works to.
+            // The clock trailer below rewrites every user row's trailer, and
+            // the second pass re-stamps the trimmed history behind it.
+            history = ChatViewModel.stampingToolGuidance(
+                on: history,
+                toolsAdvertised: !definitions.isEmpty
             )
             // v0.5.11 / issue #363: silent context-window trim against the
             // engine-reported window (captured on the last profile fetch),
@@ -2574,23 +2577,6 @@ final class ChatViewModel {
                 history,
                 contextWindow: ctxWindow
             )
-            // The trim drops the oldest rows to fit and deliberately preserves
-            // a leading system row, so on an over-budget turn it can carry the
-            // preamble through while taking the tool result it describes. That
-            // puts "your only source of truth is the tool result" on the wire
-            // with no tool result behind it — #1549 again, just needing a long
-            // enough conversation to reach. If the evidence didn't survive,
-            // neither does the instruction.
-            if let ambientPreamble,
-                !ChatViewModel.carriesToolResultForThisTurn(history)
-            {
-                history = ChatViewModel.removingLeadingSystemComponent(
-                    ambientPreamble,
-                    from: history
-                )
-            }
-            // Add this after the ambient/evidence consistency check above so
-            // combining the two system instructions cannot defeat that guard.
             if isFinalSynthesisRound {
                 history = ChatViewModel.addingToolBudgetSynthesisPreamble(to: history)
             }
@@ -2614,6 +2600,15 @@ final class ChatViewModel {
             history = ChatViewModel.stampingClockContext(
                 on: history,
                 answeringAt: requestInstant
+            )
+            // Second guidance pass, on the TRIMMED history and behind the
+            // clock trailer: a trim that dropped the evidence drops the
+            // instruction with it (#1549). Stamped on user rows rather than
+            // the system row so the prompt stays append-only across the tool
+            // round and every turn after it — see ``stampingToolGuidance``.
+            history = ChatViewModel.stampingToolGuidance(
+                on: history,
+                toolsAdvertised: !definitions.isEmpty
             )
             // Whether any document extract survived onto THIS request, read
             // off the same array that is about to be encoded. The
@@ -2948,7 +2943,7 @@ final class ChatViewModel {
     /// Asking the whole transcript instead means a single weather lookup
     /// re-arms the preamble for every ordinary question that follows it —
     /// #1549 again, wearing a longer conversation.
-    static func carriesToolResultForThisTurn(_ history: [ChatMessage]) -> Bool {
+    nonisolated static func carriesToolResultForThisTurn(_ history: [ChatMessage]) -> Bool {
         let start =
             history.lastIndex { $0.role == .user }
             .map { history.index(after: $0) } ?? history.startIndex
@@ -2992,24 +2987,98 @@ final class ChatViewModel {
         }
     }
 
-    static func ambientSystemMessages(
-        historyOpensWithSystem: Bool,
-        toolsAdvertised: Bool,
-        toolResultPresent: Bool
+    /// Ride the anti-confabulation guidance on user rows as a wire-only
+    /// trailer, never on the system row.
+    ///
+    /// The system row is the first thing in every request and the engine's
+    /// prefix cache reuses a stored prompt only up to the first differing
+    /// token. Putting ~400 tokens of guidance at its head on the round that
+    /// carries a tool result, and taking them out again on the next turn,
+    /// rewrote the head of the prompt twice per tool call, so a single web
+    /// search cost the WHOLE conversation two cold prefills (0.14.1 on
+    /// Qwen3.8-27B with a 5.7k-token conversation: ~20 s each, against 1.5 s
+    /// for an append-only turn).
+    ///
+    /// Every user row whose turn (the rows up to the next user message)
+    /// holds a tool result carries the guidance, and keeps carrying it on
+    /// later turns — like the clock trailer, the stamp is a pure function of
+    /// the row's own turn, so the bytes of a row never change once the turn
+    /// behind it is complete. Stamping only the newest row was measured on
+    /// Qwen3.8-27B (Studio, 2026-09-13): the tool round resumed from the
+    /// boundary before that row (486 of 2033 tokens prefilled), but the next
+    /// turn diverged again exactly where the trailer had been removed and
+    /// re-prefilled 1982 tokens, because the engine keeps only eight
+    /// non-trimmable (hybrid) entries and the one older boundary that could
+    /// have served it was already evicted by the tool loop's own requests.
+    ///
+    /// The price of persistence is ~400 tokens of history per tool-bearing
+    /// turn (the trim counts them, see below). Against the alternative —
+    /// re-prefilling the whole conversation on the turn after every tool
+    /// call — it is the cheaper side by a wide margin: a 5.7k-token 27B
+    /// conversation re-prefilled costs ~20 s, while 400 extra history tokens
+    /// prefill in well under a second and sit inside a 32k+ window. The
+    /// guidance text itself says it binds only the message it rides and
+    /// that later messages without their own tool result are answered
+    /// normally, so an old stamp is a faithful record of that turn's prompt,
+    /// not a live instruction.
+    ///
+    /// Same gate as before (#1549): tools must be advertised, and a row is
+    /// only stamped when its own turn holds a tool result. The stamp is
+    /// REBUILT, not appended: any guidance already in a row's trailer is
+    /// removed first, so the function is idempotent, and a row keeps the
+    /// guidance only while the gate still holds for it — when the tools are
+    /// withdrawn (the final synthesis round, a tool toggled off) the text
+    /// claiming tool access leaves every row, not just the newest one.
+    ///
+    /// Called twice per round: once BEFORE ``trimMessagesForContextWindow``
+    /// so the ~400 tokens per stamped row count toward the context budget,
+    /// and once after the clock trailer on the trimmed history, so evidence
+    /// the trim dropped takes its instruction with it. The second pass can
+    /// only remove guidance the first pass added, so the trimmed request
+    /// never exceeds the budget the trim worked to.
+    nonisolated static func stampingToolGuidance(
+        on messages: [ChatMessage],
+        toolsAdvertised: Bool
     ) -> [ChatMessage] {
-        guard !historyOpensWithSystem, toolsAdvertised, toolResultPresent else {
-            return []
+        var result = messages
+        let userIndices = result.indices.filter { result[$0].role == .user }
+        for (n, index) in userIndices.enumerated() {
+            let pristine = strippingToolGuidance(from: result[index].wireSuffix)
+            let turnEnd = n + 1 < userIndices.count ? userIndices[n + 1] : result.endIndex
+            let earned = toolsAdvertised
+                && result[result.index(after: index)..<turnEnd].contains(where: { $0.role == .tool })
+            result[index].wireSuffix = earned
+                ? [pristine, toolGuidance].compactMap { $0 }.joined(separator: "\n\n")
+                : pristine
         }
-        return [ChatMessage(role: .system, content: toolGuidancePreamble, status: .complete)]
+        return result
     }
 
-    /// Merge current-date context, ambient, pre-existing, global, and
-    /// conversation layers into one leading system row. Local chat templates
-    /// often reject a second system message, so every caller must go through
-    /// this transformation.
+    /// The trailer without the guidance component ``stampingToolGuidance``
+    /// adds (and without the separator that joined it), or nil when nothing
+    /// else was there.
+    nonisolated static func strippingToolGuidance(from suffix: String?) -> String? {
+        guard var remaining = suffix else { return nil }
+        // Only the terminal component this function joined: a trailer that
+        // merely mentions the text elsewhere is not ours to edit.
+        if remaining.hasSuffix("\n\n" + toolGuidance) {
+            remaining.removeLast(toolGuidance.count + 2)
+        } else if remaining == toolGuidance {
+            remaining = ""
+        }
+        return remaining.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? nil : remaining
+    }
+
+    /// Merge current-date context, pre-existing, global, and conversation
+    /// layers into one leading system row. Local chat templates often reject
+    /// a second system message, so every caller must go through this
+    /// transformation. Nothing request-scoped belongs here: the row is the
+    /// head of every prompt, and any byte that changes between two turns
+    /// costs the engine's prefix cache the whole conversation (that is why
+    /// the wall clock rides each user row and the tool guidance rides the
+    /// newest one — ``stampingClockContext``, ``stampingToolGuidance``).
     nonisolated static func addingInstructionLayers(
         to messages: [ChatMessage],
-        ambientPreamble: String?,
         dateContext: String? = nil,
         memoryContext: String? = nil,
         global: String,
@@ -3017,11 +3086,7 @@ final class ChatViewModel {
     ) -> [ChatMessage] {
         var result = messages
         let existing = result.first?.role == .system ? result.removeFirst().content : nil
-        // The ambient preamble stays the LEADING component (so
-        // ``removingLeadingSystemComponent`` can strip it when context
-        // trimming drops the tool result that armed it); the date context
-        // rides below it because it is valid regardless of tool presence.
-        var parts = [ambientPreamble, dateContext, existing]
+        var parts = [dateContext, existing]
             .compactMap { $0.flatMap(normalizedInstruction) }
         if let memoryContext, let memory = normalizedInstruction(memoryContext) {
             parts.append(memory)
@@ -3060,7 +3125,6 @@ final class ChatViewModel {
     ) -> String {
         addingInstructionLayers(
             to: [],
-            ambientPreamble: nil,
             // The preview shows what actually goes on the wire: the system
             // row carries the DATE only. The wall clock rides each user turn
             // as a wire-only trailer (``stampingClockContext``), so quoting it
@@ -3283,31 +3347,11 @@ final class ChatViewModel {
         return result
     }
 
-    /// Remove an exact first component from the merged system row. Used when
-    /// context trimming drops the tool evidence that armed ambient guidance.
-    nonisolated static func removingLeadingSystemComponent(
-        _ component: String,
-        from messages: [ChatMessage]
-    ) -> [ChatMessage] {
-        var result = messages
-        guard result.first?.role == .system,
-              let normalized = normalizedInstruction(component)
-        else { return result }
-        let separator = "\n\n"
-        let prefix = normalized + separator
-        if result[0].content == normalized {
-            result.removeFirst()
-        } else if result[0].content.hasPrefix(prefix) {
-            result[0].content.removeFirst(prefix.count)
-        }
-        return result
-    }
-
     nonisolated static func normalizedInstruction(_ value: String) -> String? {
         CustomInstructionsConfig.normalized(value)
     }
 
-    static let toolGuidancePreamble: String = """
+    nonisolated static let toolGuidance: String = """
 You have access to tools that fetch real-time information. When you use one of these tools, follow these rules — they OVERRIDE your training data:
 
 1. Your ONLY source of truth for this turn is the tool result text. If a fact is not in the tool result, you DO NOT KNOW IT for the purposes of this answer. Your training data on this topic is OUT OF DATE and MUST NOT be used.
@@ -3326,7 +3370,7 @@ You have access to tools that fetch real-time information. When you use one of t
 
 8. If a tool result is an error, refusal, or user decline, state the reason written in that result. Never replace it with a different explanation, and never claim the tool lacks a capability unless the result itself says so.
 
-These rules apply to every tool, not just web search.
+These rules apply to every tool, not just web search. They bind the answer to THIS message and the tool results fetched for it. A later message that has no tool result of its own is answered normally; the tool results above remain ordinary conversation context for it.
 """
 
     /// Failure-specific instruction for the one correction round the tool loop

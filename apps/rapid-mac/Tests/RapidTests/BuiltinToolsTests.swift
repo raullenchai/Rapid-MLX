@@ -238,18 +238,29 @@ final class BuiltinToolsTests {
 
     // MARK: - Ambient guidance
 
-    @Test("The anti-confabulation preamble rides along once a tool result is in play")
+    private static func toolTurn(_ text: String = "weather in Tokyo?") -> [ChatMessage] {
+        [
+            ChatMessage(role: .system, content: "[CURRENT DATE]\nToday is Friday.", status: .complete),
+            ChatMessage(role: .user, content: text, status: .complete),
+            ChatMessage(role: .assistant, toolCalls: [ToolCall(id: "w1", name: "weather", arguments: "{}")]),
+            ChatMessage(role: .tool, content: "{\"temp_c\": 29.2}", toolCallID: "w1"),
+        ]
+    }
+
+    @Test("The anti-confabulation guidance rides the newest user row once a tool result is in play")
     func ambientGuidanceGatedOnToolResult() {
-        let withResult = ChatViewModel.ambientSystemMessages(
-            historyOpensWithSystem: false,
-            toolsAdvertised: true,
-            toolResultPresent: true
-        )
-        #expect(withResult.count == 1)
-        #expect(withResult.first?.role == .system)
-        #expect(withResult.first?.content == ChatViewModel.toolGuidancePreamble)
-        #expect(withResult.first?.content.contains("state the reason written in that result") == true)
-        #expect(withResult.first?.content.contains("never claim the tool lacks a capability") == true)
+        let turn = Self.toolTurn()
+        let stamped = ChatViewModel.stampingToolGuidance(on: turn, toolsAdvertised: true)
+        // The system row is untouched: the guidance must never move the head
+        // of the prompt, or the engine re-prefills the whole conversation.
+        #expect(stamped[0] == turn[0])
+        #expect(stamped[1].content == "weather in Tokyo?")
+        #expect(stamped[1].wireSuffix == ChatViewModel.toolGuidance)
+        #expect(stamped[1].modelContent.hasSuffix(ChatViewModel.toolGuidance))
+        #expect(stamped[2] == turn[2])
+        #expect(stamped[3] == turn[3])
+        #expect(ChatViewModel.toolGuidance.contains("state the reason written in that result"))
+        #expect(ChatViewModel.toolGuidance.contains("never claim the tool lacks a capability"))
     }
 
     @Test("A tool merely being advertised does not summon the preamble (#1549)")
@@ -260,11 +271,8 @@ final class BuiltinToolsTests {
         // absent from "the tool result" was unknown to it — with no tool result
         // in context. The shipped starter answered "I don't have access to
         // current or external data" to *what is the capital of France?*.
-        #expect(ChatViewModel.ambientSystemMessages(
-            historyOpensWithSystem: false,
-            toolsAdvertised: true,
-            toolResultPresent: false
-        ).isEmpty)
+        let plain = Array(Self.toolTurn().prefix(2))
+        #expect(ChatViewModel.stampingToolGuidance(on: plain, toolsAdvertised: true) == plain)
     }
 
     @Test("A stale tool result cannot re-bind the model once the tool is gone")
@@ -273,11 +281,8 @@ final class BuiltinToolsTests {
         // tool in Settings. Re-asserting "your only source of truth is the tool
         // result" would then pin the model to a result it can no longer
         // refresh, which is the same failure wearing older evidence.
-        #expect(ChatViewModel.ambientSystemMessages(
-            historyOpensWithSystem: false,
-            toolsAdvertised: false,
-            toolResultPresent: true
-        ).isEmpty)
+        let turn = Self.toolTurn()
+        #expect(ChatViewModel.stampingToolGuidance(on: turn, toolsAdvertised: false) == turn)
     }
 
     @Test("A tool result only counts for the turn it belongs to")
@@ -313,14 +318,16 @@ final class BuiltinToolsTests {
         #expect(ChatViewModel.carriesToolResultForThisTurn([msg(.tool, "{}")]))
     }
 
-    @Test("No second system row is injected when the transcript already opens with one")
-    func ambientGuidanceDefersToExistingSystemRow() {
-        // Two competing system messages is a documented chat-template foot-gun.
-        #expect(ChatViewModel.ambientSystemMessages(
-            historyOpensWithSystem: true,
-            toolsAdvertised: true,
-            toolResultPresent: true
-        ).isEmpty)
+    @Test("The guidance never adds a row: the message count and the system row are unchanged")
+    func ambientGuidanceNeverAddsARow() {
+        // Two competing system messages is a documented chat-template
+        // foot-gun, and a new row anywhere would move the prompt bytes behind
+        // it. The guidance only extends the newest user row's wire trailer.
+        let turn = Self.toolTurn()
+        let stamped = ChatViewModel.stampingToolGuidance(on: turn, toolsAdvertised: true)
+        #expect(stamped.count == turn.count)
+        #expect(stamped.map(\.role) == turn.map(\.role))
+        #expect(stamped.filter { $0.role == .system } == turn.filter { $0.role == .system })
     }
 }
 

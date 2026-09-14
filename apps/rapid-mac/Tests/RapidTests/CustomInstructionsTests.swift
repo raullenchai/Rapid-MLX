@@ -57,20 +57,18 @@ struct CustomInstructionsTests {
         let user = ChatMessage(role: .user, content: "Hello", status: .complete)
         let result = ChatViewModel.addingInstructionLayers(
             to: [user],
-            ambientPreamble: nil,
             global: " \n ",
             conversation: ""
         )
         #expect(result == [user])
     }
 
-    @Test("Ambient, existing, global, and conversation layers share one ordered system row")
+    @Test("Existing, global, and conversation layers share one ordered system row")
     func layersMergeInOrder() {
         let existing = ChatMessage(role: .system, content: "App system", status: .complete)
         let user = ChatMessage(role: .user, content: "Hello", status: .complete)
         let result = ChatViewModel.addingInstructionLayers(
             to: [existing, user],
-            ambientPreamble: "Ambient",
             global: "  Global  ",
             conversation: "Conversation\n"
         )
@@ -79,8 +77,6 @@ struct CustomInstructionsTests {
         #expect(result.first?.role == .system)
         #expect(
             result.first?.content == """
-            Ambient
-
             App system
 
             [GLOBAL USER INSTRUCTIONS]
@@ -194,7 +190,6 @@ struct CustomInstructionsTests {
     func conversationLayerHasExplicitPrecedence() {
         let result = ChatViewModel.addingInstructionLayers(
             to: [ChatMessage(role: .user, content: "Test", status: .complete)],
-            ambientPreamble: nil,
             global: "Reply only in Simplified Chinese.",
             conversation: "Reply only in English."
         )
@@ -250,21 +245,6 @@ struct CustomInstructionsTests {
                 "If they conflict with the global user instructions above, follow THESE conversation instructions."
             )
         )
-    }
-
-    @Test("Removing ambient guidance preserves every user-authored layer")
-    func ambientRemovalPreservesCustomLayers() {
-        let merged = ChatViewModel.addingInstructionLayers(
-            to: [ChatMessage(role: .user, content: "Hello", status: .complete)],
-            ambientPreamble: "Ambient",
-            global: "Global",
-            conversation: "Conversation"
-        )
-        let result = ChatViewModel.removingLeadingSystemComponent("Ambient", from: merged)
-        #expect(result.first?.content.hasPrefix("[GLOBAL USER INSTRUCTIONS]") == true)
-        #expect(result.first?.content.contains("Global") == true)
-        #expect(result.first?.content.contains("[CONVERSATION INSTRUCTIONS") == true)
-        #expect(result.first?.content.contains("Conversation") == true)
     }
 
     @Test("Conversation instructions persist and restore with their own chat")
@@ -332,7 +312,6 @@ struct CustomInstructionsTests {
 
         let wire = ChatViewModel.addingInstructionLayers(
             to: [ChatMessage(role: .user, content: "Next turn", status: .complete)],
-            ambientPreamble: nil,
             global: model.customInstructions.global,
             conversation: model.conversationInstructions
         )

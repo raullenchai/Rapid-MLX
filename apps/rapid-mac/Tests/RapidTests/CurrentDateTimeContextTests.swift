@@ -297,7 +297,6 @@ struct CurrentDateTimeContextTests {
         )
         let result = ChatViewModel.addingInstructionLayers(
             to: [restored, user],
-            ambientPreamble: nil,
             dateContext: dateContext,
             global: "",
             conversation: ""

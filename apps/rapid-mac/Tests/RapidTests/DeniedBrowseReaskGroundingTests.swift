@@ -45,12 +45,9 @@ struct DeniedBrowseReaskGroundingTests {
             ChatMessage(role: .tool, content: "Web search via DuckDuckGo: <real headlines here>", toolCallID: "w1"),
         ]
         #expect(ChatViewModel.carriesToolResultForThisTurn(synthesisRound) == true)
-        let ambient = ChatViewModel.ambientSystemMessages(
-            historyOpensWithSystem: false,
-            toolsAdvertised: true,
-            toolResultPresent: ChatViewModel.carriesToolResultForThisTurn(synthesisRound)
-        )
-        #expect(ambient.count == 1)
-        #expect(ambient.first?.content == ChatViewModel.toolGuidancePreamble)
+        let stamped = ChatViewModel.stampingToolGuidance(on: synthesisRound, toolsAdvertised: true)
+        let newestUser = stamped.last { $0.role == .user }
+        #expect(newestUser?.wireSuffix == ChatViewModel.toolGuidance)
+        #expect(stamped.filter { $0.role == .system } == synthesisRound.filter { $0.role == .system })
     }
 }
