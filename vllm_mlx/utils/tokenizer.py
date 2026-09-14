@@ -918,6 +918,36 @@ def _register_vendored_archs() -> None:
         else:
             _VENDORED_MODEL_TYPES.add("qwen4_exp")
 
+    if "mlx_lm.models.k2_horizon" not in sys.modules:
+        # K2 Horizon dense text models use Rapid's standard language lane.
+        # Keep the adapter independent of mlx-vlm and defer automatically when
+        # mlx-lm grows a native module.
+        import importlib.util as _importlib_util
+
+        _k2_native_spec = None
+        try:
+            _k2_native_spec = _importlib_util.find_spec("mlx_lm.models.k2_horizon")
+        except (ImportError, ValueError):
+            _k2_native_spec = None
+
+        if _k2_native_spec is None:
+            try:
+                from ..models import k2_horizon as _k2_horizon
+
+                sys.modules.setdefault("mlx_lm.models.k2_horizon", _k2_horizon)
+            except Exception as e:
+                logger.warning(
+                    "k2_horizon Rapid adapter failed to register — "
+                    "K2 Horizon dense checkpoints will not load until resolved: %s",
+                    e,
+                )
+            else:
+                _VENDORED_MODEL_TYPES.add("k2_horizon")
+        else:
+            _VENDORED_MODEL_TYPES.add("k2_horizon")
+    elif sys.modules.get("mlx_lm.models.k2_horizon") is not None:
+        _VENDORED_MODEL_TYPES.add("k2_horizon")
+
 
 def _is_vendored_arch_model(model_name: str) -> bool:
     """Return True if model's config.json declares a model_type we vendor."""
