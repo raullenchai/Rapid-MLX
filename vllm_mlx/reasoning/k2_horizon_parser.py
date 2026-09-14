@@ -48,30 +48,40 @@ class K2HorizonReasoningParser(ReasoningParser):
         self._buffer = ""
         self._finished = False
         self._at_start = True
+        self._expected_end: str | None = None
 
     @classmethod
-    def _strip_generated_start(cls, text: str) -> str:
-        for start, _end in cls.EFFORT_TOKENS:
+    def _split_generated_start(cls, text: str) -> tuple[str, str | None]:
+        for start, end in cls.EFFORT_TOKENS:
             if text.startswith(start):
-                return text[len(start) :]
-        return text
+                return text[len(start) :], end
+        return text, None
 
     @classmethod
-    def _first_boundary(cls, text: str) -> tuple[int, str] | None:
-        candidates = [
-            (text.find(end), end)
-            for _start, end in cls.EFFORT_TOKENS
-            if text.find(end) >= 0
-        ]
+    def _first_boundary(
+        cls, text: str, expected_end: str | None = None
+    ) -> tuple[int, str] | None:
+        endings = (
+            [expected_end]
+            if expected_end is not None
+            else [end for _start, end in cls.EFFORT_TOKENS]
+        )
+        candidates = [(text.find(end), end) for end in endings if text.find(end) >= 0]
         tool_at = text.find(cls.TOOL_CALLS_START)
         if tool_at >= 0:
             candidates.append((tool_at, cls.TOOL_CALLS_START))
         return min(candidates, default=None, key=lambda item: item[0])
 
     @classmethod
-    def _partial_boundary_overlap(cls, text: str) -> int:
+    def _partial_boundary_overlap(
+        cls, text: str, expected_end: str | None = None
+    ) -> int:
         overlap = 0
-        markers = [end for _start, end in cls.EFFORT_TOKENS]
+        markers = (
+            [expected_end]
+            if expected_end is not None
+            else [end for _start, end in cls.EFFORT_TOKENS]
+        )
         markers.append(cls.TOOL_CALLS_START)
         for marker in markers:
             for size in range(1, min(len(text), len(marker) - 1) + 1):
@@ -84,8 +94,8 @@ class K2HorizonReasoningParser(ReasoningParser):
         model_output: str,
         enable_thinking: bool | None = None,
     ) -> tuple[str | None, str | None]:
-        text = self._strip_generated_start(model_output)
-        boundary = self._first_boundary(text)
+        text, expected_end = self._split_generated_start(model_output)
+        boundary = self._first_boundary(text, expected_end)
         if boundary is not None:
             index, marker = boundary
             reasoning = text[:index] or None
@@ -118,15 +128,19 @@ class K2HorizonReasoningParser(ReasoningParser):
             if any(start.startswith(self._buffer) for start in starts):
                 if self._buffer not in starts:
                     return None
+                self._expected_end = next(
+                    end for start, end in self.EFFORT_TOKENS if start == self._buffer
+                )
                 self._buffer = ""
             else:
-                for start in starts:
+                for start, end in self.EFFORT_TOKENS:
                     if self._buffer.startswith(start):
                         self._buffer = self._buffer[len(start) :]
+                        self._expected_end = end
                         break
             self._at_start = False
 
-        boundary = self._first_boundary(self._buffer)
+        boundary = self._first_boundary(self._buffer, self._expected_end)
         if boundary is not None:
             index, marker = boundary
             reasoning = self._buffer[:index]
@@ -138,7 +152,7 @@ class K2HorizonReasoningParser(ReasoningParser):
             self._finished = True
             return DeltaMessage(reasoning=reasoning or None, content=content or None)
 
-        held = self._partial_boundary_overlap(self._buffer)
+        held = self._partial_boundary_overlap(self._buffer, self._expected_end)
         sendable = len(self._buffer) - held
         reasoning = self._buffer[:sendable]
         self._buffer = self._buffer[sendable:]
@@ -153,9 +167,9 @@ class K2HorizonReasoningParser(ReasoningParser):
         return DeltaMessage(**{lane: held})
 
     def is_open_in_think(self, accumulated_text: str) -> bool:
-        for start, _end in self.EFFORT_TOKENS:
+        for start, end in self.EFFORT_TOKENS:
             if accumulated_text.startswith(start):
                 generated = accumulated_text[len(start) :]
-                return self._first_boundary(generated) is None
-        text = self._strip_generated_start(accumulated_text)
+                return self._first_boundary(generated, end) is None
+        text, _expected_end = self._split_generated_start(accumulated_text)
         return self._first_boundary(text) is None and bool(text)

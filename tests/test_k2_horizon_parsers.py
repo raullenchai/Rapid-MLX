@@ -2,6 +2,7 @@
 """Protocol contracts for K2 Horizon reasoning and tool output."""
 
 import json
+from copy import deepcopy
 from unittest.mock import MagicMock
 
 import pytest
@@ -39,7 +40,7 @@ TOOLS = [
 
 def _request(wire_format="xml", tool_choice="auto"):
     return {
-        "tools": TOOLS,
+        "tools": deepcopy(TOOLS),
         "tool_choice": tool_choice,
         "chat_template_kwargs": {"tool_call_format": wire_format},
     }
@@ -117,6 +118,16 @@ def test_reasoning_open_state_includes_a_bare_generated_start(start, end):
     assert parser.is_open_in_think(start)
     assert parser.is_open_in_think(f"{start}plan")
     assert not parser.is_open_in_think(f"{start}plan{end}")
+
+
+def test_reasoning_mismatched_generated_closer_fails_closed():
+    parser = K2HorizonReasoningParser()
+    output = "<ifm|think>private</ifm|think_faster>not visible"
+    assert parser.extract_reasoning(output) == (
+        "private</ifm|think_faster>not visible",
+        None,
+    )
+    assert parser.is_open_in_think(output)
 
 
 def _group(*calls: str, prefix="", suffix="") -> str:
@@ -283,6 +294,22 @@ def test_typed_argument_must_match_declared_schema():
         "</ifm|tool_call>"
     )
     result = K2HorizonToolParser().extract_tool_calls(output, _request("xml_typed"))
+    assert not result.tools_called
+    assert result.content == output
+
+
+@pytest.mark.parametrize(
+    "arguments",
+    [{"unexpected": "value"}, {}],
+    ids=["additional-properties", "required"],
+)
+def test_declared_json_schema_contract_fails_closed(arguments):
+    request = _request("json")
+    request["tools"][0]["function"]["parameters"].update(
+        {"additionalProperties": False, "required": ["query"]}
+    )
+    output = _group(_json_call("lookup", arguments))
+    result = K2HorizonToolParser().extract_tool_calls(output, request)
     assert not result.tools_called
     assert result.content == output
 

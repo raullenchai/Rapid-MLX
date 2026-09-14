@@ -111,6 +111,31 @@ class K2HorizonToolParser(ToolParser):
         return properties if isinstance(properties, dict) else {}
 
     @classmethod
+    def _validate_argument_contract(
+        cls,
+        name: str,
+        arguments: dict[str, Any],
+        request: dict[str, Any] | None,
+    ) -> None:
+        function = cls._declared_tools(request).get(name, {})
+        parameters = function.get("parameters") if isinstance(function, dict) else None
+        if not isinstance(parameters, dict):
+            return
+        properties = parameters.get("properties")
+        properties = properties if isinstance(properties, dict) else {}
+        if parameters.get("additionalProperties") is False:
+            unknown = set(arguments) - set(properties)
+            if unknown:
+                raise ValueError("undeclared IFM tool argument")
+        required = parameters.get("required", [])
+        if isinstance(required, list):
+            missing = {
+                key for key in required if isinstance(key, str) and key not in arguments
+            }
+            if missing:
+                raise ValueError("missing required IFM tool argument")
+
+    @classmethod
     def _parse_call(
         cls, body: str, request: dict[str, Any] | None, wire_format: str
     ) -> tuple[str, dict[str, Any]]:
@@ -123,10 +148,12 @@ class K2HorizonToolParser(ToolParser):
                 raise ValueError("invalid IFM JSON call")
             name = cls._validate_name(payload.get("name"), request)
             props = cls._properties(name, request)
-            return name, {
+            coerced = {
                 key: _coerce_schema_value(value, props.get(key))
                 for key, value in arguments.items()
             }
+            cls._validate_argument_contract(name, coerced, request)
+            return name, coerced
 
         first_arg = body.find(cls.ARG_KEY_START)
         if first_arg < 0:
@@ -166,6 +193,7 @@ class K2HorizonToolParser(ToolParser):
             cursor = match.end()
         if cursor == first_arg or body[cursor:].strip():
             raise ValueError("malformed IFM argument tags")
+        cls._validate_argument_contract(name, arguments, request)
         return name, arguments
 
     @classmethod
