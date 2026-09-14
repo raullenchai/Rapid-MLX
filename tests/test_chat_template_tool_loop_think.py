@@ -13,6 +13,7 @@ import pytest
 
 from vllm_mlx.utils.chat_template import (
     _assistant_reasoning_for_template,
+    _is_tool_response_message,
     _render_chat_template,
     _retain_tool_loop_think_blocks,
     _template_drops_think_from_tool_loop_history,
@@ -198,6 +199,46 @@ class TestRetain:
         prompt = "<|im_start|>assistant\n<|im_end|>\n<|im_start|>user\n<tool_response>\nok\n</tool_response><|im_end|>\n"
         assert _retain_tool_loop_think_blocks(prompt, messages).startswith(
             "<|im_start|>assistant\n<think>\n\n</think>\n\n<|im_end|>"
+        )
+
+    def test_tool_response_detection_covers_every_row_shape(self):
+        assert not _is_tool_response_message("not a dict")
+        assert _is_tool_response_message({"role": "tool", "content": "x"})
+        assert not _is_tool_response_message({"role": "assistant", "content": ""})
+        assert not _is_tool_response_message({"role": "user", "content": None})
+        assert not _is_tool_response_message({"role": "user", "content": "hello"})
+        assert _is_tool_response_message(
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "<tool_response>\nok"},
+                    {"type": "text", "text": "</tool_response>"},
+                ],
+            }
+        )
+        assert not _is_tool_response_message(
+            {"role": "user", "content": [{"type": "image_url", "image_url": {}}]}
+        )
+
+    def test_reasoning_is_read_from_text_part_arrays(self):
+        assert (
+            _assistant_reasoning_for_template(
+                {
+                    "role": "assistant",
+                    "content": [
+                        {"type": "text", "text": "<think>\nplan\n</think>"},
+                        {"type": "text", "text": "\n\nanswer"},
+                    ],
+                }
+            )
+            == "plan"
+        )
+        assert _assistant_reasoning_for_template({"role": "assistant"}) == ""
+        assert (
+            _assistant_reasoning_for_template(
+                {"role": "assistant", "reasoning_content": " why "}
+            )
+            == "why"
         )
 
 
