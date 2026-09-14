@@ -150,6 +150,16 @@ def test_xml_default_parses_multiple_calls_and_schema_types():
     assert json.loads(result.tool_calls[0]["arguments"]) == {"query": "123", "limit": 3}
 
 
+def test_nonstreaming_parses_multiple_groups_without_markup_leak():
+    output = _group(_xml_call("ping"), prefix="Before ", suffix=" between ") + _group(
+        _xml_call("lookup"), suffix=" after"
+    )
+    result = K2HorizonToolParser().extract_tool_calls(output, _request())
+    assert result.tools_called
+    assert result.content == "Before  between  after"
+    assert [call["name"] for call in result.tool_calls] == ["ping", "lookup"]
+
+
 @pytest.mark.parametrize(
     "closer",
     ["</ifm|think>", "</ifm|think_fast>", "</ifm|think_faster>"],
@@ -204,6 +214,13 @@ def test_malformed_or_mismatched_calls_fail_closed_as_content(output):
     result = K2HorizonToolParser().extract_tool_calls(output, _request())
     assert not result.tools_called
     assert result.content == output
+
+
+def test_malformed_call_never_exposes_prompt_primed_reasoning():
+    output = "private plan</ifm|think>" + _group(_xml_call("unknown"))
+    result = K2HorizonToolParser().extract_tool_calls(output, _request())
+    assert not result.tools_called
+    assert result.content == _group(_xml_call("unknown"))
 
 
 def test_named_choice_rejects_other_declared_tool():

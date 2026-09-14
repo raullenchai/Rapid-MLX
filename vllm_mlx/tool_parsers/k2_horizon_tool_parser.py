@@ -217,15 +217,28 @@ class K2HorizonToolParser(ToolParser):
         start = model_output.find(self.GROUP_START)
         if start < 0:
             return ExtractedToolCallInformation(False, [], model_output)
-        end = model_output.find(self.GROUP_END, start + len(self.GROUP_START))
-        if end < 0:
-            return ExtractedToolCallInformation(False, [], model_output)
-        end += len(self.GROUP_END)
-        try:
-            calls = self._parse_group(model_output[start:end], request)
-        except (json.JSONDecodeError, TypeError, ValueError):
-            return ExtractedToolCallInformation(False, [], model_output)
-        content = self._visible_prefix(model_output[:start]) + model_output[end:]
+        content_parts = [self._visible_prefix(model_output[:start])]
+        calls: list[dict[str, Any]] = []
+        cursor = start
+        while cursor >= 0:
+            end = model_output.find(self.GROUP_END, cursor + len(self.GROUP_START))
+            if end < 0:
+                return ExtractedToolCallInformation(
+                    False, [], self._visible_prefix(model_output)
+                )
+            end += len(self.GROUP_END)
+            try:
+                calls.extend(self._parse_group(model_output[cursor:end], request))
+            except (json.JSONDecodeError, TypeError, ValueError):
+                return ExtractedToolCallInformation(
+                    False, [], self._visible_prefix(model_output)
+                )
+            next_start = model_output.find(self.GROUP_START, end)
+            content_parts.append(
+                model_output[end : next_start if next_start >= 0 else None]
+            )
+            cursor = next_start
+        content = "".join(content_parts)
         return ExtractedToolCallInformation(True, calls, content or None)
 
     @staticmethod
