@@ -61,7 +61,7 @@ struct SidecarBuildScriptTests {
         let script = try String(contentsOf: Self.scriptURL, encoding: .utf8)
         let constraints = try String(contentsOf: Self.constraintsURL, encoding: .utf8)
 
-        #expect(constraints.contains("mlx-vlm==0.6.17"))
+        #expect(constraints.contains("mlx-vlm==0.7.1"))
         #expect(constraints.contains("sentencepiece==0.2.2"),
                 "SD3.5's T5 tokenizer dependency must not float in signed builds.")
         #expect(!script.contains("'mlx-vlm>=0.6.3,!=0.6.4,<0.7'"),

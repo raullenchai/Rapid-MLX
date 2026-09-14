@@ -412,6 +412,35 @@ The product pair is immutable:
   `369cf9c0f9cdf3ae5f1b9f72d3db8e65ad3026b8e416b8de5618e9117d3f00ca`
 - speculative setting: one drafted token (`block_size=2`)
 
+### Tagged-runtime product activation (2026-09-14)
+
+Official mlx-vlm 0.7.1 ships the corrected GLM target implementation, temporal
+cache transaction primitives, and the MTP checkpoint loader. It does not ship
+the complete stateless request-owned drafter from #2206 or the quantized
+`lm_head` namespace sanitizer from #2231. Rapid therefore pins the official
+0.7.1 wheel and owns two narrow compatibility seams: a stateless drafter call
+adapter and the existing target-load sanitizer. The proposal, verification,
+rollback, reasoning-budget policy, immutable pair gate, and AR fallback remain
+Rapid-owned. No Git dependency or upstream merge is required.
+
+An offline product-path smoke used the cached target and sidecar above through
+Rapid's OpenAI-compatible server on the same Studio host. The first 96-token
+request took 28.91 seconds including compile. A warm 192-token request took
+7.13 seconds (26.9 end-to-end output tok/s). After final review corrected the
+legacy wheel's forced-close sequence to match AR exactly, a constrained coding
+request with a 64-token reasoning budget returned 382 completion tokens in
+12.552 seconds (30.43 end-to-end output tok/s), HTTP 200 with
+`finish_reason=stop`. It produced a complete, correct O(n) monotonic-deque
+implementation and a bounded two-sentence proof. This smoke confirms the
+tagged wheel's load, request shaping, reasoning/content separation, bounded
+thinking, and MTP generation path; the six-task paired +34.1% result above
+remains the quantitative performance and quality qualification.
+
+The mlx-vlm 0.7.1 upgrade also changes APC's default disk policy. Rapid keeps
+its bounded exact MLLM cache memory-only unless the operator explicitly sets
+`APC_DISK_ENABLED`, avoiding a silent persistent cache in the user's home
+directory.
+
 ## Reproduction
 
 Start post-0.7 mlx-vlm once without a drafter and once with the target-matched
@@ -483,15 +512,10 @@ file-size, process-count, descriptor, and wall-time limits.
 
 ## Next engineering gate
 
-Rapid now owns the complete proposal/verification/cache transaction, but still
-requires mlx-vlm's GLM model/cache protocol and drafter architecture. Do not
-point a release at an untagged Git commit. The alias now declares the immutable
-target/sidecar pair, but the current released dependency fails the structural
-probe and therefore serves AR. Once a tagged mlx-vlm release exposes those
-seams, update the dependency and repeat the gate through its wheel; the same
-runtime probe will then activate MTP for CLI and Desktop together. The legacy
-#2232/#2233 chain remains a smaller fallback if #2206 does not land.
-The next performance investigation should target exact backbone dispatch cost;
-the same-width result shows that deeper drafting is not the main competitor
-gap. Do not adopt a numerically different verify path without first recovering
-repeated temperature-zero determinism and 18/18 quality.
+The tagged-runtime activation removes the release blocker: the qualified alias
+now activates the same native MTP server for CLI and Desktop, while sampled or
+structurally incompatible requests retain AR. The next performance
+investigation should target exact backbone dispatch cost; the same-width result
+shows that deeper drafting is not the main competitor gap. Do not adopt a
+numerically different verify path without first recovering repeated
+temperature-zero determinism and 18/18 quality.

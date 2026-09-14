@@ -700,9 +700,9 @@ class DiffusionEngine(BaseEngine):
         try:
             import mlx.core as mx
 
-            # ``is_diffusion_model`` first appears in mlx-vlm 0.6.17, which is
-            # the ONLY version this runtime supports: rapid-mlx pins
-            # ``mlx-vlm==0.6.17`` in every vision extra (pyproject.toml), the
+            # ``is_diffusion_model`` is present in mlx-vlm 0.7.1, which is the
+            # ONLY version this runtime supports: rapid-mlx pins
+            # ``mlx-vlm==0.7.1`` in every vision extra (pyproject.toml), the
             # doctor gate enforces it, and ``models/mllm.py``
             # ``VALIDATED_MLX_VLM_VERSION`` hard-refuses any other installed
             # version at import. So an unconditional import here is safe by
@@ -719,7 +719,7 @@ class DiffusionEngine(BaseEngine):
                 "dependencies. Install the vision stack: "
                 "`pip install 'rapid-mlx[vision]'` (or, pinned to stay "
                 "compatible with rapid-mlx's transformers pin, "
-                "`pip install 'mlx-vlm==0.6.17'`). "
+                "`pip install 'mlx-vlm==0.7.1'`). "
                 f"Underlying error: {e}"
             )
             self._ready.set()
@@ -728,7 +728,7 @@ class DiffusionEngine(BaseEngine):
         try:
             logger.info(f"Loading DiffusionEngine model: {self._model_name}")
             model, processor = load(self._model_name)
-            # mlx-vlm >= 0.6.17 routes diffusion detection through
+            # The qualified mlx-vlm 0.7.1 routes diffusion detection through
             # ``is_diffusion_model`` (the deprecated
             # ``diffusion_generation_family`` now returns a generic
             # ``"diffusion"`` and never the block-canvas family name this

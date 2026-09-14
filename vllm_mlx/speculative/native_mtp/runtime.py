@@ -10,13 +10,19 @@ from importlib.util import find_spec
 from typing import Any
 
 logger = logging.getLogger(__name__)
-QUALIFIED_MLX_VLM_VERSION = "0.6.17"
-GLM_CACHE_RUNTIME_LABEL = "post-0.7 cache-owned GLM runtime"
+QUALIFIED_MLX_VLM_VERSION = "0.7.1"
+GLM_CACHE_RUNTIME_LABEL = "cache-owned GLM runtime"
 
 
 def have_glm_cache_runtime() -> bool:
     """Probe the exact cache/model seams Rapid's GLM transaction requires."""
     try:
+        from .glm5_compat import (
+            _is_stateless_drafter,
+            install_glm5_mtp_compatibility,
+        )
+
+        install_glm5_mtp_compatibility()
         from mlx_vlm.generate import ar
         from mlx_vlm.models.cache import ArraysCache, PoolingCache
         from mlx_vlm.models.glm5_next import language
@@ -37,6 +43,7 @@ def have_glm_cache_runtime() -> bool:
         )
         return (
             _has_native_glm5_next_runtime(language)
+            and _is_stateless_drafter(Glm5NextMTPDraftModel)
             and all(hasattr(ArraysCache, name) for name in cache_methods)
             and all(hasattr(PoolingCache, name) for name in cache_methods)
             and all(

@@ -713,9 +713,20 @@ class MLLMBatchGenerator:
 
                 mode = _apc.model_apc_mode(self.language_model)
                 if mode == "exact":
-                    self._prefix_cache = _apc.from_env(
-                        overrides={"enabled": True, "num_blocks": 0}
-                    )
+                    # mlx-vlm 0.7.1 enables APC's persistent disk tier by
+                    # default.  Rapid's exact MLLM snapshots can be large and
+                    # historically lived only inside the bounded in-process
+                    # cache, so do not start writing a new home-directory
+                    # cache merely because the dependency was upgraded.  An
+                    # operator can still opt in explicitly through APC's
+                    # documented environment switch.
+                    apc_overrides: dict[str, Any] = {
+                        "enabled": True,
+                        "num_blocks": 0,
+                    }
+                    if "APC_DISK_ENABLED" not in os.environ:
+                        apc_overrides["disk_enabled"] = False
+                    self._prefix_cache = _apc.from_env(overrides=apc_overrides)
                     self._prefix_cache_mode = mode
                     self._configure_exact_cache_capacity(self._prefix_cache)
                     self._prefix_cache_extra_hash = _apc.semantic_extra_hash(

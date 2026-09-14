@@ -141,8 +141,9 @@ def test_desktop_sidecar_uses_validated_mlx_vlm_bound():
 
     desktop_spec = matches[0]
     # Both surfaces deliberately pin one validated version. A range here caused
-    # fresh pip installs to backtrack to 0.6.3 while Desktop stayed on 0.6.17.
-    assert desktop_spec.specifier == Requirement("mlx-vlm==0.6.17").specifier
+    # fresh pip installs to backtrack to 0.6.3 while Desktop stayed on its
+    # validated exact pin.
+    assert desktop_spec.specifier == Requirement("mlx-vlm==0.7.1").specifier
     assert vision_specs[0].specifier == desktop_spec.specifier
 
 

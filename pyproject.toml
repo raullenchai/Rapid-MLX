@@ -166,7 +166,7 @@ vision = [
     # A floating 0.6.x range backtracks to 0.6.3 under older Transformers
     # constraints and can also advance CLI users beyond the Desktop's validated
     # lane. Updating this exact pin is a gated coherence event (#1248).
-    "mlx-vlm==0.6.17",
+    "mlx-vlm==0.7.1",
     "opencv-python>=4.8.0",
     "torch>=2.3.0",
     "torchvision>=0.18.0",
@@ -180,7 +180,7 @@ vision = [
 # the vision extras do. Only enable if you serve a DFlash-eligible alias
 # (e.g. qwen3.5-27b-8bit) with --speculative-config '{"method":"dflash"}'.
 dflash = [
-    "mlx-vlm==0.6.17",
+    "mlx-vlm==0.7.1",
 ]
 # MTP (Multi-Token Prediction) speculative decoding — Gemma 4 external
 # assistant path via ``--speculative-config '{"method":"mtp","model":"<path>"}'``.
@@ -200,7 +200,7 @@ dflash = [
 mtp = [
     # Required by the explicit native-MTP backend. Keep this exact pin aligned
     # with the signed Desktop sidecar and the vision/DFlash extras.
-    "mlx-vlm==0.6.17",
+    "mlx-vlm==0.7.1",
     "pillow>=10.0.0",
 ]
 # Embedding endpoint
@@ -224,7 +224,7 @@ chat = [
 # pip install .[all] and editable installs.
 all = [
     # vision
-    "mlx-vlm==0.6.17",
+    "mlx-vlm==0.7.1",
     "opencv-python>=4.8.0",
     "torch>=2.3.0",
     "torchvision>=0.18.0",
@@ -296,7 +296,7 @@ test = [
     # ``pytest tests/`` without hand-installed local extras.
     "aiohttp>=3.9.0",
     "pillow>=10.0.0",
-    "mlx-vlm==0.6.17; platform_system == 'Darwin'",
+    "mlx-vlm==0.7.1; platform_system == 'Darwin'",
     "mlx-audio>=0.5.3,<0.6; platform_system == 'Darwin'",
     # Powers the property-based invariant suite in tests/property/ — encodes
     # numeric/validation invariants over the whole input space (e.g. the
@@ -395,7 +395,7 @@ dev = [
     'tomli>=2.0.1; python_version < "3.11"',
     "aiohttp>=3.9.0",
     "pillow>=10.0.0",
-    "mlx-vlm==0.6.17; platform_system == 'Darwin'",
+    "mlx-vlm==0.7.1; platform_system == 'Darwin'",
     "mlx-audio>=0.5.3,<0.6; platform_system == 'Darwin'",
     # Mirror of the [test] entry — keep `dev` a strict superset of `test`
     # (enforced by tests/test_pr_validate_test_env.py).
@@ -516,7 +516,7 @@ image = [
     "mflux>=0.19.0,<0.20; platform_system == 'Darwin' and python_version >= '3.11'",
     # HiDream-O1 reuses the exact Qwen3-VL runtime already validated and
     # bundled by Desktop. Keep this pin coherent with [vision]/the sidecar.
-    "mlx-vlm==0.6.17; platform_system == 'Darwin' and python_version >= '3.11'",
+    "mlx-vlm==0.7.1; platform_system == 'Darwin' and python_version >= '3.11'",
     # The vendored SDXL backend needs Pillow for PNG encoding. Keep this direct
     # because SDXL and SD3.5 also work on Rapid's Python 3.10 floor without
     # mflux. SD3.5's reviewed local T5 tokenizer additionally needs

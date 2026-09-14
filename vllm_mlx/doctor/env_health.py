@@ -180,7 +180,7 @@ _SUPPORTED_VERSIONS: dict[str, str] = {
     "mlx": ">=0.32.1,<0.33",
     "mlx-lm": ">=0.31.3,<0.32",
     "transformers": ">=5.0.0,!=5.13.0,<5.16",
-    "mlx-vlm": "==0.6.17",
+    "mlx-vlm": "==0.7.1",
 }
 
 # Each tuple: (distribution, label, install hint). Missing optionals are ⚠
