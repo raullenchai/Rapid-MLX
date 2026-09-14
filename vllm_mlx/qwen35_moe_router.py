@@ -21,6 +21,8 @@ from typing import Any, cast
 
 import mlx.core as mx
 
+from .compiled_precision import gate_sigmoid
+
 logger = logging.getLogger(__name__)
 
 _KERNEL = None
@@ -180,7 +182,7 @@ def _patch_class(block_class: type) -> None:
         routed = self.switch_mlp(x, indices)
         routed = (routed * scores[..., None]).sum(axis=-2)
         shared = self.shared_expert(x)
-        shared = mx.sigmoid(self.shared_expert_gate(x)) * shared
+        shared = gate_sigmoid(self.shared_expert_gate(x)) * shared
         return cast(mx.array, routed + shared)
 
     dynamic_class = cast(Any, block_class)

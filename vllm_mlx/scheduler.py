@@ -4951,6 +4951,25 @@ class Scheduler:
 
         install_singleton_cache_fastpath()
 
+        # Whole-step replay removes per-token Python graph construction for the
+        # exact Qwen3.6-35B ordinary text lane. It is intentionally mutually
+        # exclusive with speculation and live KV quantization. The installer
+        # also rejects shared multimodal wrappers whose lane-local Python state
+        # cannot be captured safely.
+        if (
+            getattr(self.config, "spec_decode", "none") == "none"
+            and self._live_kv_quant is None
+            and not self.config.enable_suffix_decoding
+        ):
+            from .compiled_decode import install_compiled_decode
+
+            install_compiled_decode(
+                bg,
+                self.model,
+                model_name=getattr(self, "_model_name", None)
+                or getattr(self.config, "model_name", None),
+            )
+
         return bg
 
     def _make_prompt_cache_save_callback(self):

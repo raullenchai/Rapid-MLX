@@ -55,6 +55,9 @@ REQUIRED_DATA_FILES: list[tuple[str, str, str]] = [
         "kernels/LICENSE-QSA-STAGE1",
         "kernels/LICENSE-QSA-STAGE1",
     ),
+    # Shape-stable compiled decode adapts MIT-licensed cache/replay design;
+    # every redistributed wheel must retain the corresponding license text.
+    ("vllm_mlx", "COMPILED_DECODE_LICENSE", "COMPILED_DECODE_LICENSE"),
 ]
 
 

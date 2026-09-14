@@ -552,6 +552,8 @@ vllm_mlx = [
     # column in `rapid-mlx models` and the size line in `rapid-mlx info`.
     # Regenerate with scripts/gen_model_sizes.py when aliases change.
     "model_sizes.json",
+    # Compiled decode cache/replay includes adapted MIT-licensed design.
+    "COMPILED_DECODE_LICENSE",
     # Canonical Google Gemma 4 chat templates used to repair stale converted
     # checkpoints without a network fetch at serve time.
     "templates/*.jinja",

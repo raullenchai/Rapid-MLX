@@ -26,6 +26,13 @@ _QUALIFIED_NUM_EXPERTS = 256
 _QUALIFIED_TOP_K = 8
 _LOCK = threading.Lock()
 _INSTALLED = False
+
+
+def _not_compiling() -> bool:
+    return False
+
+
+_in_compiled_decode = _not_compiling
 _ENABLED = (
     os.environ.get("RAPID_MLX_QWEN35_EAGER_LAYER_DISPATCH", "1").strip().lower()
     not in _FALSE_VALUES
@@ -47,7 +54,7 @@ def _is_qualified_layer(layer) -> bool:
 
 def install_qwen3_5_eager_dispatch() -> None:
     """Install the inference-only Qwen3.5 decoder-layer submission hook."""
-    global _INSTALLED
+    global _INSTALLED, _in_compiled_decode
 
     with _LOCK:
         if _INSTALLED:
@@ -55,9 +62,12 @@ def install_qwen3_5_eager_dispatch() -> None:
         try:
             import mlx.core as mx
             from mlx_lm.models import qwen3_5 as q
+
+            from ..compiled_precision import in_compiled_decode
         except ImportError:  # pragma: no cover - optional on non-Mac installs
             logger.debug("Qwen3.5 eager dispatch unavailable; skipping install")
             return
+        _in_compiled_decode = in_compiled_decode
 
         if getattr(q, "_RAPID_MLX_EAGER_LAYER_DISPATCH_INSTALLED", False):
             _INSTALLED = True
@@ -75,6 +85,7 @@ def install_qwen3_5_eager_dispatch() -> None:
             rows = int(shape[0]) * int(shape[1]) if len(shape) >= 2 else None
             if (
                 _ENABLED
+                and not _in_compiled_decode()
                 and rows is not None
                 and rows <= _MAX_ROWS
                 and _is_qualified_layer(self)

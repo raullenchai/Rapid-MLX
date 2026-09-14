@@ -115,6 +115,18 @@ def _is_singleton_passthrough_layer(cache_obj: Any) -> bool:
 
 def _promote_layer(cache_obj: Any) -> Any:
     """Convert a singleton layer to its batched form (idempotent)."""
+    # Lazy import keeps this module usable without loading the optional replay
+    # implementation until a cache actually presents its private marker.
+    if getattr(cache_obj, "_rapid_shape_stable_kv", False):
+        from .compiled_decode import ShapeStableKVCache
+
+        if type(cache_obj) is not ShapeStableKVCache:
+            return cache_obj
+        # Compiled replay owns fixed-shape singleton slabs. Its conversion
+        # drains any submitted graph before exposing an ordinary KVCache to
+        # the stock B>1 merge transaction.
+        eager = cache_obj.to_kv_cache()
+        return type(eager).merge([eager])
     sub = getattr(cache_obj, "caches", None)
     if isinstance(sub, (list, tuple)):
         converted = [_promote_layer(c) for c in sub]

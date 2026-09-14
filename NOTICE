@@ -42,6 +42,11 @@ see `vllm_mlx/kernels/LICENSE-QSA-STAGE1`.
 The following directories contain third-party source redistributed inside this
 repository. Each keeps its upstream license text alongside the code.
 
+* vllm_mlx/compiled_decode.py and vllm_mlx/compiled_precision.py
+  Shape-stable cache/replay and precision-routing design adapted under the
+  MIT License — Copyright © 2023 Apple Inc.
+  See vllm_mlx/COMPILED_DECODE_LICENSE.
+
 * videox_fun_mlx/
   CogVideoX-Fun MLX runtime. Vendored from
   https://github.com/dgrauet/VideoX-Fun-mlx at commit
