@@ -55,13 +55,20 @@ def select_server_map(data: dict[str, Any]) -> dict[str, Any]:
             "standard 'mcpServers' key and ignoring 'servers'."
         )
     elif not has_standard and not has_legacy:
-        # Preserve the historical single-server form when that server is
-        # literally named "agent". No new top-level setting may reserve it.
+        # Preserve the historical flat server-map form when one of its
+        # servers is literally named "agent".  ``agent`` is only the
+        # disambiguating sentinel here: once recognized, every non-setting
+        # sibling remains part of that legacy map.  Returning only the
+        # sentinel would silently discard valid sibling servers.
         legacy_agent = data.get("agent")
         if isinstance(legacy_agent, dict) and any(
             key in legacy_agent for key in ("command", "url", "transport")
         ):
-            return {"agent": legacy_agent}
+            return {
+                key: value
+                for key, value in data.items()
+                if key not in _KNOWN_SETTING_KEYS
+            }
         # Warn only when there's an unrecognized top-level key — a likely
         # mistyped server map (e.g. "mcp_servers", "Servers") that would
         # otherwise silently load nothing. A config with only recognized
