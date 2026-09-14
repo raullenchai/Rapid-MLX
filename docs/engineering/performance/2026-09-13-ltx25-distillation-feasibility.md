@@ -167,10 +167,19 @@ contain 560 train and 140 validation components. The 700-file, 1.3 GiB source
 set is archived at
 `/Volumes/RTL-2T/datasets/ltx-stage2-distillation/progressive-scale-2026-09-14/`.
 
-A 200-step rank-8 Q/K/V mixed-bucket run started against the 80-item training
-split. Checkpoints are written every 20 steps. The validation split remains
-outside the trainer and will be used only for paired latent evaluation and
-decoded quality review after training.
+An initial 200-step run shuffled all three shapes in one process and was
+terminated by the OS before its first checkpoint, without a Python traceback.
+Memory returned immediately after exit. The working diagnosis is accumulated
+compiled graphs/allocations across changing shapes, not a single-shape OOM;
+3072-token backward had already passed independently at 31.63 GiB.
+
+Training therefore uses separate processes as a true curriculum: 100 steps at
+468 tokens, 50 at 1536, and 16 at 3072, carrying the rank-8 Q/K/V checkpoint
+forward and resetting the optimizer at lower learning rates. The 468 stage is
+stable through step 5 at 12.63 seconds/step and loss `0.1746`. A fail-closed
+supervisor requires each final checkpoint before launching the next shape.
+The validation split remains outside training and will be used only for paired
+latent evaluation and decoded review.
 
 ## Reproduction
 
