@@ -243,6 +243,26 @@ final class ChatViewModel {
 
     private var inflight: Task<Void, Never>?
 
+    /// A server-owned Agent Runtime turn projected into this transcript.
+    /// Chat remains the sole owner of message/history state while the runtime
+    /// owns planning, approvals, tools, and execution. The cancellation hook
+    /// lets every existing conversation transition stop the remote run through
+    /// the same ``cancelInflightWork`` funnel used by ordinary streaming.
+    private struct ExternalTurn {
+        let placeholderID: UUID
+        let epoch: Int
+        let alias: String
+        let cancel: @MainActor () -> Void
+    }
+
+    private var externalTurn: ExternalTurn?
+
+    /// Transcript ownership is distinct from the observed server phase. A
+    /// terminal server update can arrive one SwiftUI delivery turn before the
+    /// view projects it into Chat, so teardown must consult this source of
+    /// truth rather than only `AgentSessionController.isActive`.
+    var hasActiveAgentTurn: Bool { externalTurn != nil }
+
     /// The title / follow-up completions. One handle for both arms, so one
     /// `cancel()` stops everything this model started on its own account.
     private var backgroundAssist: Task<Void, Never>?
@@ -470,6 +490,7 @@ final class ChatViewModel {
     private func cancelInflightWork() {
         inflight?.cancel()
         inflight = nil
+        cancelExternalTurn(requestRemoteCancellation: true)
         backgroundAssist?.cancel()
         backgroundAssist = nil
         // The rail belongs to the assist, so it is torn down with it. Keeping
@@ -1260,6 +1281,108 @@ final class ChatViewModel {
             supportsImageInput: resolvedImageCapability,
             imageMessageID: imageAttachments.isEmpty ? nil : user.id
         )
+    }
+
+    /// Open one transcript turn whose execution is owned by the Python Agent
+    /// Runtime. This intentionally mirrors only Chat's message lifecycle; it
+    /// does not duplicate the runtime state machine in Swift.
+    @discardableResult
+    func beginAgentTurn(
+        _ text: String,
+        alias: String,
+        onCancel: @escaping @MainActor () -> Void
+    ) -> Bool {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty, !isStreaming else { return false }
+
+        cancelInflightWork()
+        let user = ChatMessage(role: .user, content: trimmed, status: .complete)
+        _ = appendMessage(user)
+        persistActive()
+
+        let placeholder = ChatMessage(role: .assistant, status: .streaming)
+        _ = appendMessage(placeholder)
+        lastError = nil
+        lastFailureKind = nil
+        lastFailureAlias = nil
+        lastTurnAlias = alias
+        externalTurn = ExternalTurn(
+            placeholderID: placeholder.id,
+            epoch: conversationEpoch,
+            alias: alias,
+            cancel: onCancel
+        )
+        isStreaming = true
+        return true
+    }
+
+    /// Commit the server-owned run's final answer into the existing assistant
+    /// placeholder, preserving the same persistence and background-memory
+    /// behavior as an ordinary local chat completion.
+    func completeAgentTurn(_ output: String) {
+        guard let turn = currentExternalTurn() else { return }
+        guard let index = messages.firstIndex(where: { $0.id == turn.placeholderID }) else {
+            externalTurn = nil
+            isStreaming = false
+            return
+        }
+        var message = messages[index]
+        message.content = output.trimmingCharacters(in: .whitespacesAndNewlines)
+        if message.content.isEmpty { message.content = "Task completed." }
+        message.status = .complete
+        updateMessage(at: index, with: message)
+        externalTurn = nil
+        onProductValueDelivered(.chatReply)
+        isStreaming = false
+    }
+
+    /// Surface a runtime/transport failure on the placeholder belonging to the
+    /// same conversation epoch. Raw tool output stays server-side.
+    func failAgentTurn(_ message: String) {
+        guard let turn = currentExternalTurn() else { return }
+        let display = message.trimmingCharacters(in: .whitespacesAndNewlines)
+        let fallback = "The agent task could not be completed."
+        if let index = messages.firstIndex(where: { $0.id == turn.placeholderID }) {
+            var placeholder = messages[index]
+            placeholder.content = display.isEmpty ? fallback : display
+            placeholder.status = .failed
+            updateMessage(at: index, with: placeholder)
+        }
+        lastError = display.isEmpty ? fallback : display
+        lastFailureKind = .requestFailed
+        lastFailureAlias = turn.alias
+        externalTurn = nil
+        isStreaming = false
+    }
+
+    /// Finalize a server-originated cancellation without sending another
+    /// cancellation request. User-initiated Stop enters through
+    /// ``cancelInflightWork`` and requests remote cancellation exactly once.
+    func cancelAgentTurnFromServer() {
+        cancelExternalTurn(requestRemoteCancellation: false)
+    }
+
+    private func currentExternalTurn() -> ExternalTurn? {
+        guard let turn = externalTurn else { return nil }
+        guard turn.epoch == conversationEpoch else {
+            externalTurn = nil
+            turn.cancel()
+            return nil
+        }
+        return turn
+    }
+
+    private func cancelExternalTurn(requestRemoteCancellation: Bool) {
+        guard let turn = externalTurn else { return }
+        externalTurn = nil
+        if turn.epoch == conversationEpoch,
+           let index = messages.firstIndex(where: { $0.id == turn.placeholderID }) {
+            var placeholder = messages[index]
+            Self.finaliseCancellation(message: &placeholder)
+            updateMessage(at: index, with: placeholder)
+        }
+        if turn.epoch == conversationEpoch { isStreaming = false }
+        if requestRemoteCancellation { turn.cancel() }
     }
 
     /// Test seam for lifecycle assertions that need the current turn to be
