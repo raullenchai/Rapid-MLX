@@ -104,6 +104,13 @@ The digest cannot live inside the file it authenticates without becoming
 self-referential; runtime validates the external manifest digest before reading
 or fusing the adapter.
 
+The manifest and adapter metadata must also bind the actual transformer content
+SHA-256, not only its configuration and a self-declared revision. For Hugging
+Face snapshots the runtime may use the immutable LFS `blobs/<sha256>` object
+name, avoiding a multi-gigabyte startup read; ordinary local files must be
+hashed incrementally. The manifest value, adapter metadata, resolved
+transformer content, and a composed Stage-1/Stage-2 pair must all agree.
+
 The current research metadata (`distillation`, `stage2_sigma`,
 `stage2_target_sigma`, and `stage2_steps`) is necessary but insufficient for
 automatic product activation because it does not bind the adapter to an exact
@@ -259,6 +266,13 @@ corrected from the captured original order. The full upstream suite at
 `fee2f51` passes 714 tests with 22 skips. That revision also validates source
 checkpoint provenance before packaging and rejects non-qualified Stage-2
 schedules at runtime.
+
+Upstream `2a7685b` adds transformer-content binding. A real package build
+against the MZR-3 Hugging Face snapshot completed in 0.43 seconds and resolved
+the transformer identity to LFS object
+`98d4c4d08ecd9e8d6cf1a836240a13bfc9d01e8e9ddc42a238e29e67229cf670`
+without scanning the weight file. The complete suite passes 718 tests with 22
+skips.
 
 Path analysis over eight training and two prompt-disjoint validation
 trajectories independently selected the same four-evaluation boundaries on
