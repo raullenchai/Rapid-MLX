@@ -1512,7 +1512,7 @@ async def test_pinned_mcp_targets_fail_closed_on_lookup_errors():
 
 
 @pytest.mark.asyncio
-async def test_pinned_mcp_dispatch_failure_is_known_executed():
+async def test_pinned_mcp_untyped_transport_failure_stays_unknown():
     from contextlib import asynccontextmanager
     from types import SimpleNamespace
 
@@ -1542,9 +1542,8 @@ async def test_pinned_mcp_dispatch_failure_is_known_executed():
         async def tool_generation_lease(self):
             yield
 
-    with pytest.raises(AgentToolExecutionError) as captured:
+    with pytest.raises(RuntimeError, match="private post-dispatch failure"):
         await _PinnedMCPManager(Manager()).execute_tool("same__tool", {})
-    assert captured.value.executed is True
 
 
 def test_mcp_snapshot_and_listing_map_manager_failures():

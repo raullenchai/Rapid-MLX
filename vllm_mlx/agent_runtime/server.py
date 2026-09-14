@@ -286,8 +286,12 @@ class _PinnedMCPManager:
                 raise
             except AgentToolExecutionError:
                 raise
-            except Exception as exc:
-                raise AgentToolExecutionError(executed=True) from exc
+            except Exception:
+                # Entering call_tool does not prove that bytes reached the
+                # remote server: connect/write failures can still be
+                # pre-dispatch. Preserve unknown unless the client supplies a
+                # typed AgentToolExecutionError with explicit accounting.
+                raise
 
 
 def classify_mcp_tool(name: str, *, declared_read_only: Sequence[str] = ()) -> ToolRisk:
