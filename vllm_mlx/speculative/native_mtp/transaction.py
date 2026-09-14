@@ -15,9 +15,87 @@ single-row greedy lane qualified by Rapid's real-task suite.
 from __future__ import annotations
 
 from collections.abc import Iterable
+from contextvars import ContextVar
 from dataclasses import dataclass
-from functools import partial
+from functools import partial, wraps
 from typing import Any
+
+_LEGACY_PROCESSORS: ContextVar[tuple[Any, ...]] = ContextVar(
+    "rapid_glm_mtp_legacy_processors", default=()
+)
+_LEGACY_TOKEN_CONTEXT: ContextVar[list[list[int]] | None] = ContextVar(
+    "rapid_glm_mtp_legacy_token_context", default=None
+)
+
+
+def _last_sequence(tokens, sequence) -> int:
+    for start in range(len(tokens) - len(sequence), -1, -1):
+        if tokens[start : start + len(sequence)] == sequence:
+            return start
+    return -1
+
+
+class _ThinkingBudgetLogitsProcessor:
+    """Reproduce 0.7.1's reasoning close from immutable committed context."""
+
+    def __init__(self, criteria, prompt_length: int):
+        self.budget = int(criteria.thinking_budget)
+        if self.budget < 0:
+            raise ValueError("thinking_budget must be non-negative")
+        self.start_ids = [int(criteria.thinking_start_token_id)]
+        self.end_ids = [int(criteria.thinking_end_token_id)]
+        forced = getattr(criteria, "_forced_sequence", None)
+        self.forced_ids = [int(token) for token in (forced or self.end_ids)]
+        self.prompt_length = int(prompt_length)
+        self.preopened = bool(criteria.prompt_preopens_thinking)
+
+    def __call__(self, tokens, logits):
+        mx = _mx()
+        context = tokens.tolist()
+        if self.preopened:
+            # The released criteria initializes ``in_thinking`` from the
+            # prompt but does not replay prompt tokens through its counter.
+            first = self.prompt_length
+            if _last_sequence(context[first:], self.end_ids) >= 0:
+                return logits
+        else:
+            start = _last_sequence(context, self.start_ids)
+            if start < 0:
+                return logits
+            if _last_sequence(context[start:], self.end_ids) >= 0:
+                return logits
+            first = start + len(self.start_ids)
+
+        # mlx-vlm 0.7.1 lets the token that takes the count over budget land,
+        # then replaces subsequent samples with its forced sequence (normally
+        # newline, then </think>). Derive the forced cursor from committed
+        # positions so verifier retries cannot advance mutable policy state.
+        forced_index = len(context) - first - (self.budget + 1)
+        if forced_index < 0 or forced_index >= len(self.forced_ids):
+            return logits
+        forced_id = self.forced_ids[forced_index]
+        return mx.where(
+            mx.arange(logits.shape[-1]) == forced_id,
+            mx.zeros_like(logits),
+            -mx.inf,
+        )
+
+
+def _thinking_budget_policy(criteria, prompt_length: int):
+    if criteria is None or not getattr(criteria, "enable_thinking", False):
+        return None
+    factory = getattr(criteria, "make_logits_processor", None)
+    if callable(factory):
+        return factory(prompt_length)
+    required = (
+        "thinking_budget",
+        "thinking_start_token_id",
+        "thinking_end_token_id",
+        "prompt_preopens_thinking",
+    )
+    if all(hasattr(criteria, name) for name in required):
+        return _ThinkingBudgetLogitsProcessor(criteria, prompt_length)
+    return None
 
 
 def _mx():
@@ -339,6 +417,14 @@ class SpeculativePrefill:
     def finish(self, output, first_bonus=None):
         if not self.kwargs:
             return output
+        # mlx-vlm 0.7.1 constructs this helper without prompt tokens and does
+        # not call ``start``. Its GLM policy consequently disables chunked MTP
+        # prefill; ``run_speculative_rounds`` below receives the complete
+        # prompt/hidden pair and creates request-owned state in one pass.
+        # A future upstream shell that supplies tokens and calls ``start``
+        # retains the incremental path without another compatibility fork.
+        if self.state is None:
+            return output
         self.state.bonus = first_bonus.reshape(-1, 1)
         self.state.prefill(
             self.tokens[:, self.consumed :], output.hidden_states[-1], self.forward
@@ -464,6 +550,10 @@ def run_speculative_rounds(
         raise ValueError("Rapid native MTP supports greedy MTP without logprobs only.")
     first = int(first_token.item())
     yield first, None
+    if logits_processors is None:
+        logits_processors = list(_LEGACY_PROCESSORS.get())
+    if token_context is None:
+        token_context = _LEGACY_TOKEN_CONTEXT.get()
     target = getattr(model, "language_model", model)
     eos = getattr(target.config, "eos_token_id", None)
     eos = {eos} if isinstance(eos, int) else set(eos or [])
@@ -506,6 +596,57 @@ def install_generation_hooks() -> None:
     )
     if not all(hasattr(ar, name) for name in required):
         raise RuntimeError("mlx-vlm does not expose the qualified generation seam.")
+    released_generate_step = ar.generate_step
+    if not getattr(released_generate_step, "_RAPID_GLM_MTP_CONTEXT", False):
+
+        @wraps(released_generate_step)
+        def generate_step(*args, **kwargs):
+            """Carry policy state omitted by mlx-vlm 0.7.1's MTP call."""
+            drafter = kwargs.get("draft_model")
+            if not (
+                kwargs.get("draft_kind") == "mtp"
+                and getattr(type(drafter), "_RAPID_STATELESS_GLM_MTP", False)
+            ):
+                yield from released_generate_step(*args, **kwargs)
+                return
+            input_ids = args[0] if args else kwargs.get("input_ids")
+            processors = list(kwargs.get("logits_processors") or [])
+            criteria = kwargs.get("thinking_budget_criteria")
+            if criteria is not None and input_ids is not None:
+                policy = _thinking_budget_policy(criteria, input_ids.size)
+                if policy is not None:
+                    processors.append(policy)
+                kwargs["thinking_budget_criteria"] = None
+            kwargs["logits_processors"] = processors
+            context = None if input_ids is None else input_ids.tolist()
+            processor_token = _LEGACY_PROCESSORS.set(tuple(processors))
+            context_token = _LEGACY_TOKEN_CONTEXT.set(context)
+            try:
+                yield from released_generate_step(*args, **kwargs)
+            finally:
+                _LEGACY_PROCESSORS.reset(processor_token)
+                _LEGACY_TOKEN_CONTEXT.reset(context_token)
+
+        generate_step.__dict__["_RAPID_GLM_MTP_CONTEXT"] = True
+        ar.generate_step = generate_step
+
+    # mlx-vlm's public ``stream_generate`` keeps the function imported in
+    # ``generate.dispatch``. Updating only ``generate.ar`` changes the globals
+    # used inside the old function, but does not wrap its entry and therefore
+    # loses reasoning-budget context before speculative rounds. Do this even
+    # on an idempotent install in case dispatch was imported after the first.
+    active_generate_step = ar.generate_step
+    original_generate_step = getattr(
+        active_generate_step, "__wrapped__", active_generate_step
+    )
+    try:
+        from mlx_vlm.generate import dispatch
+
+        if getattr(dispatch, "generate_step", None) is original_generate_step:
+            dispatch.generate_step = active_generate_step
+    except ImportError:
+        pass
+
     ar.SpeculativePrefill = SpeculativePrefill
     ar.run_speculative_rounds = run_speculative_rounds
     ar.speculative_prefill_kwargs = speculative_prefill_kwargs

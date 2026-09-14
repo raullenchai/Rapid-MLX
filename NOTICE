@@ -103,8 +103,9 @@ repository. Each keeps its upstream license text alongside the code.
   bffd4856a4504b76a242536f2dd356093c8e2e92.
   Licensed under the MIT License.
 
-* vllm_mlx/speculative/native_mtp/transaction.py
-  Cache-owned MTP transaction adapted from the mlx-vlm implementation in
+* vllm_mlx/speculative/native_mtp/transaction.py and glm5_compat.py
+  Cache-owned MTP transaction and stateless GLM drafter adapter adapted from
+  the mlx-vlm implementation in
   https://github.com/Blaizzy/mlx-vlm/pull/2206.
   Licensed under the MIT License.
 

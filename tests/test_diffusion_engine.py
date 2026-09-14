@@ -2348,7 +2348,7 @@ class TestMlxVlmImportContract:
         # codex pr_validate r7 BLOCKING #3 (FALSE positive): codex
         # flagged ``tokenizer.stopping_criteria.reset(eos_id)`` as
         # passing a scalar where mlx-vlm allegedly wanted a list.
-        # The mlx-vlm contract (utils.py:1921 in 0.6.3 install) is:
+        # The mlx-vlm contract (utils.py in the pinned install) is:
         #
         #     def reset(self, eos_token_ids: List[int] = None):
         #         ...
@@ -2377,12 +2377,13 @@ class TestMlxVlmImportContract:
         sc = StoppingCriteria(eos_token_ids=[7], tokenizer=_StubTok())
         # The exact call shape diffusion_lane.py:1007 uses.
         sc.reset(42)
-        # After the scalar → list normalisation, the new list MUST
-        # contain only the value we passed.
-        assert sc.eos_token_ids == [42], (
+        # After scalar → list normalisation, the requested EOS is retained
+        # alongside tokenizer-defined additional stop tokens.  mlx-vlm 0.7.1
+        # deliberately preserves those additional markers across reset().
+        assert sc.eos_token_ids == [42, 3], (
             f"mlx-vlm StoppingCriteria.reset(scalar) no longer "
-            f"normalises to a single-item list; eos_token_ids="
-            f"{sc.eos_token_ids}. diffusion_lane.py:1007 needs to "
+            f"preserves the requested and tokenizer-defined IDs; eos_token_ids="
+            f"{sc.eos_token_ids}. diffusion_lane.py:1496 needs to "
             "update to match the new contract."
         )
 

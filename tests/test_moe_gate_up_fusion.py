@@ -12,6 +12,7 @@ kill-switch.
 
 from __future__ import annotations
 
+import inspect
 import weakref
 
 import pytest
@@ -148,11 +149,13 @@ class TestRewriteSemantics:
         assert moe_fusion.fuse_gate_up(Dense()) == 0
 
     def test_mllm_wrapper_applies_fusion_after_load(self, monkeypatch):
-        """The VLM lane must not leave eligible MoE projections unfused.
+        """The VLM lane must not leave eligible legacy projections unfused.
 
         GLM-5.3-Flash is forced through ``MLXMultimodalLM``. Before this
         regression guard, only the text BatchedEngine called ``fuse_gate_up``
         after loading, so all 42 GLM sparse layers missed the optimization.
+        mlx-vlm 0.7.1 owns an equivalent exact gate/up fast path and expands
+        the SwitchGLU call contract; Rapid must leave that class untouched.
         """
         import mlx_vlm
         import mlx_vlm.utils
@@ -188,9 +191,18 @@ class TestRewriteSemantics:
         wrapper = mllm.MLXMultimodalLM("unit-test/glm5-next")
         wrapper.load()
 
-        assert hasattr(model.layers[0], "gate_up_proj")
-        assert not hasattr(model.layers[0], "gate_proj")
-        assert not hasattr(model.layers[0], "up_proj")
+        layer = model.layers[0]
+        if moe_fusion._supports_fused_call_contract(type(layer)):
+            assert hasattr(layer, "gate_up_proj")
+            assert not hasattr(layer, "gate_proj")
+            assert not hasattr(layer, "up_proj")
+        else:
+            assert "exact_affine_switch_gate_up" in inspect.getsource(
+                type(layer).__call__
+            )
+            assert not hasattr(layer, "gate_up_proj")
+            assert hasattr(layer, "gate_proj")
+            assert hasattr(layer, "up_proj")
 
     def test_mlx_vlm_family_is_byte_identical(self):
         model = TinyVLMMoE(n_layers=1)
@@ -198,7 +210,8 @@ class TestRewriteSemantics:
         x, inds = _decode_inputs()
         before = _run_all(model, x, inds)[0]
 
-        assert moe_fusion.fuse_gate_up(model) == 1
+        compatible = moe_fusion._supports_fused_call_contract(type(model.layers[0]))
+        assert moe_fusion.fuse_gate_up(model) == int(compatible)
         after = _run_all(model, x, inds)[0]
 
         assert bool(mx.array_equal(before, after))
@@ -209,7 +222,8 @@ class TestRewriteSemantics:
         x, inds = _decode_inputs(tokens=40)
         before = _run_all(model, x, inds)[0]
 
-        assert moe_fusion.fuse_gate_up(model) == 1
+        compatible = moe_fusion._supports_fused_call_contract(type(model.layers[0]))
+        assert moe_fusion.fuse_gate_up(model) == int(compatible)
         after = _run_all(model, x, inds)[0]
 
         assert bool(mx.array_equal(before, after))

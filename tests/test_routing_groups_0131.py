@@ -55,7 +55,7 @@ def _fake_mlx_vlm_ge_016(monkeypatch):
     monkeypatch.setattr(
         md,
         "version",
-        lambda name: "0.6.17" if name == "mlx-vlm" else _orig_version(name),
+        lambda name: "0.7.1" if name == "mlx-vlm" else _orig_version(name),
     )
     # Ensure the MLLM runtime is "supported" under the faked version so the
     # only thing keeping the model off the MLLM lane is our fix.

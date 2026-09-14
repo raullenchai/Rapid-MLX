@@ -1951,8 +1951,16 @@ def test_generator_enables_exact_apc_from_pinned_runtime(monkeypatch):
     from mlx_vlm import apc
 
     manager = _ExactPrefixCache()
+    seen_overrides = None
+
+    def _from_env(*, overrides):
+        nonlocal seen_overrides
+        seen_overrides = overrides
+        return manager
+
+    monkeypatch.delenv("APC_DISK_ENABLED", raising=False)
     monkeypatch.setattr(apc, "model_apc_mode", lambda _model: "exact")
-    monkeypatch.setattr(apc, "from_env", lambda *, overrides: manager)
+    monkeypatch.setattr(apc, "from_env", _from_env)
     monkeypatch.setattr(apc, "semantic_extra_hash", lambda **_kwargs: 41)
 
     gen = _make_generator(_RecordingModel())
@@ -1960,6 +1968,35 @@ def test_generator_enables_exact_apc_from_pinned_runtime(monkeypatch):
         assert gen._prefix_cache is manager
         assert gen._prefix_cache_mode == "exact"
         assert gen._prefix_cache_extra_hash == 41
+        assert seen_overrides == {
+            "enabled": True,
+            "num_blocks": 0,
+            "disk_enabled": False,
+        }
+    finally:
+        gen.close()
+
+
+def test_generator_preserves_explicit_apc_disk_setting(monkeypatch):
+    from mlx_vlm import apc
+
+    manager = _ExactPrefixCache()
+    seen_overrides = None
+
+    def _from_env(*, overrides):
+        nonlocal seen_overrides
+        seen_overrides = overrides
+        return manager
+
+    monkeypatch.setenv("APC_DISK_ENABLED", "1")
+    monkeypatch.setattr(apc, "model_apc_mode", lambda _model: "exact")
+    monkeypatch.setattr(apc, "from_env", _from_env)
+    monkeypatch.setattr(apc, "semantic_extra_hash", lambda **_kwargs: 41)
+
+    gen = _make_generator(_RecordingModel())
+    try:
+        assert gen._prefix_cache is manager
+        assert seen_overrides == {"enabled": True, "num_blocks": 0}
     finally:
         gen.close()
 
@@ -2186,7 +2223,9 @@ def _make_real_apc_generator(monkeypatch, *, entries: int | None = None):
     else:
         monkeypatch.setenv("APC_EXACT_CACHE_ENTRIES", str(entries))
     gen = MLLMBatchGenerator.__new__(MLLMBatchGenerator)
-    gen._prefix_cache = apc.from_env(overrides={"enabled": True, "num_blocks": 0})
+    gen._prefix_cache = apc.from_env(
+        overrides={"enabled": True, "num_blocks": 0, "disk_enabled": False}
+    )
     gen._prefix_cache_mode = "exact"
     gen._prefix_cache_extra_hash = 17
     gen._prefix_cache_hits = 0
@@ -2365,7 +2404,7 @@ def test_exact_cache_capacity_stays_at_mlx_vlm_default_without_a_byte_budget(
 
     apc = pytest.importorskip("mlx_vlm.apc")
     default = apc.from_env(
-        overrides={"enabled": True, "num_blocks": 0}
+        overrides={"enabled": True, "num_blocks": 0, "disk_enabled": False}
     )._exact_cache_max
 
     def _boom(self):

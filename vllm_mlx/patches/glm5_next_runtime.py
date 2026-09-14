@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """Correctness overlay for the released GLM-5 Next text runtime.
 
-mlx-vlm 0.6.17 contains the initial GLM-5 Next implementation, but its text
+mlx-vlm 0.7.1 contains the GLM-5 Next implementation, but its text
 stack still inherits unclamped DeepSeek MLPs, bf16 router math, and two norm
 epsilons from the parent architecture. Those are not interchangeable with the
 GLM checkpoint contract. This module installs the architecture-owned variants

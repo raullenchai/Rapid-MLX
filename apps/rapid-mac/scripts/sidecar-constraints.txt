@@ -1,7 +1,7 @@
 # Release-tested versions shared by candidate-wheel and Desktop sidecar builds.
 mlx==0.32.2
 transformers==5.15.1
-mlx-vlm==0.6.17
+mlx-vlm==0.7.1
 mlx-audio==0.5.3
 mflux==0.19.0
 sentencepiece==0.2.2

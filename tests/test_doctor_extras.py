@@ -110,10 +110,10 @@ def test_anthropic_sdk_check_gone_even_when_installed():
 
 
 def test_dflash_row_ok_when_mlx_vlm_is_validated_version():
-    """``mlx-vlm == 0.6.17`` exactly → ✓ DFlash row."""
+    """``mlx-vlm == 0.7.1`` exactly → ✓ DFlash row."""
 
     def fake_ver(dist: str, runtime=None) -> str | None:
-        return "0.6.17" if dist == "mlx-vlm" else "1.0.0"
+        return "0.7.1" if dist == "mlx-vlm" else "1.0.0"
 
     with (
         mock.patch.object(eh, "_safe_version", side_effect=fake_ver),
@@ -127,7 +127,7 @@ def test_dflash_row_ok_when_mlx_vlm_is_validated_version():
         f"got rows: {[c.label for c in section.checks]}"
     )
     assert dflash.status is eh.CheckStatus.OK, (
-        f"DFlash row should be OK at mlx-vlm 0.6.17; got {dflash.status!r}"
+        f"DFlash row should be OK at mlx-vlm 0.7.1; got {dflash.status!r}"
     )
     assert "0.5.0+" in dflash.label and "dflash extras" in dflash.label
 

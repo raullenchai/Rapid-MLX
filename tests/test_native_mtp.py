@@ -120,10 +120,10 @@ def test_native_mtp_runtime_probe_is_exact_version(monkeypatch) -> None:
     from vllm_mlx.speculative.native_mtp import runtime
 
     monkeypatch.setattr(runtime, "find_spec", lambda _name: object())
-    monkeypatch.setattr(runtime, "version", lambda _name: "0.6.17")
+    monkeypatch.setattr(runtime, "version", lambda _name: "0.7.1")
     assert runtime.have_runtime() is True
 
-    monkeypatch.setattr(runtime, "version", lambda _name: "0.6.18")
+    monkeypatch.setattr(runtime, "version", lambda _name: "0.7.0")
     assert runtime.have_runtime() is False
 
     monkeypatch.setattr(
@@ -282,7 +282,14 @@ def test_glm_runtime_structural_probe_and_fail_closed(monkeypatch) -> None:
     drafters.__path__ = []
     drafters.load_drafter = object()
     mtp = ModuleType("mlx_vlm.speculative.drafters.glm5_next_mtp")
-    mtp.Glm5NextMTPDraftModel = object()
+    mtp.Glm5NextMTPDraftModel = type(
+        "Glm5NextMTPDraftModel", (), {"_RAPID_STATELESS_GLM_MTP": True}
+    )
+    compat = ModuleType("vllm_mlx.speculative.native_mtp.glm5_compat")
+    compat.install_glm5_mtp_compatibility = lambda: False
+    compat._is_stateless_drafter = lambda drafter_type: bool(
+        getattr(drafter_type, "_RAPID_STATELESS_GLM_MTP", False)
+    )
     for name, module in {
         "mlx_vlm": root,
         "mlx_vlm.generate": generate,
@@ -294,6 +301,7 @@ def test_glm_runtime_structural_probe_and_fail_closed(monkeypatch) -> None:
         "mlx_vlm.speculative": speculative,
         "mlx_vlm.speculative.drafters": drafters,
         "mlx_vlm.speculative.drafters.glm5_next_mtp": mtp,
+        "vllm_mlx.speculative.native_mtp.glm5_compat": compat,
     }.items():
         monkeypatch.setitem(sys.modules, name, module)
     monkeypatch.setattr(glm_patch, "_has_native_glm5_next_runtime", lambda _mod: True)
@@ -311,6 +319,33 @@ def test_glm_runtime_structural_probe_and_fail_closed(monkeypatch) -> None:
 
     monkeypatch.setattr(builtins, "__import__", fail_import)
     assert runtime.have_glm_cache_runtime() is False
+
+
+def test_qualified_glm_release_gets_rapid_stateless_adapter() -> None:
+    from importlib.metadata import PackageNotFoundError, version
+
+    from vllm_mlx.speculative.native_mtp import runtime
+
+    try:
+        installed = version("mlx-vlm")
+    except PackageNotFoundError:
+        pytest.skip("mlx-vlm optional runtime is not installed")
+    if installed != runtime.QUALIFIED_MLX_VLM_VERSION:
+        pytest.skip(f"test requires mlx-vlm {runtime.QUALIFIED_MLX_VLM_VERSION}")
+
+    assert runtime.have_glm_cache_runtime() is True
+
+    from mlx_vlm.speculative.drafters.glm5_next_mtp import (
+        Glm5NextMTPDraftModel,
+        Model,
+    )
+
+    assert Glm5NextMTPDraftModel is Model
+    assert Glm5NextMTPDraftModel._RAPID_STATELESS_GLM_MTP is True
+
+    from mlx_vlm.generate import ar, dispatch
+
+    assert dispatch.generate_step is ar.generate_step
 
 
 def test_load_glm_runtime_installs_rapid_hooks(monkeypatch) -> None:
@@ -638,6 +673,73 @@ def test_native_mtp_server_builds_qualified_serial_app(monkeypatch) -> None:
                 "timeout_keep_alive": 30,
             },
         )
+    ]
+
+
+def test_native_mtp_server_sanitizes_glm_target_before_load(monkeypatch) -> None:
+    from vllm_mlx.speculative.native_mtp import server as native_server
+
+    class ImmediateExecutor:
+        def submit(self, fn, *args, **kwargs):
+            future = concurrent.futures.Future()
+            future.set_result(fn(*args, **kwargs))
+            return future
+
+    events = []
+    runtime_patch = ModuleType("vllm_mlx.patches.glm5_next_runtime")
+    runtime_patch.install_glm5_next_runtime_fix = lambda: events.append("sanitize")
+    monkeypatch.setitem(
+        sys.modules, "vllm_mlx.patches.glm5_next_runtime", runtime_patch
+    )
+
+    mlx_vlm = ModuleType("mlx_vlm")
+
+    def _load(repo, revision):
+        events.append(("load", repo, revision))
+        return "model", "processor"
+
+    mlx_vlm.load = _load
+    monkeypatch.setitem(sys.modules, "mlx_vlm", mlx_vlm)
+    uvicorn = ModuleType("uvicorn")
+    uvicorn.run = lambda *_args, **_kwargs: None
+    monkeypatch.setitem(sys.modules, "uvicorn", uvicorn)
+
+    drafter = SimpleNamespace(bind=lambda _model: None)
+    runtime = SimpleNamespace(
+        drafter=drafter,
+        kind="mtp",
+        block_size=2,
+        algorithm="mtp",
+        drafter_repo=GLM53_FLASH_4BIT.drafter_repo,
+        target_revision=GLM53_FLASH_4BIT.target_revision,
+        drafter_revision=GLM53_FLASH_4BIT.drafter_revision,
+    )
+    monkeypatch.setattr(native_server, "load_runtime", lambda *args, **kwargs: runtime)
+
+    dflash_server = ModuleType("vllm_mlx.speculative.dflash.server")
+    dflash_server._dflash_executor = ImmediateExecutor()
+    dflash_server._build_app = lambda **_kwargs: "app"
+    monkeypatch.setitem(
+        sys.modules, "vllm_mlx.speculative.dflash.server", dflash_server
+    )
+
+    native_server.run_native_mtp_server(
+        pair=GLM53_FLASH_4BIT,
+        host="127.0.0.1",
+        port=8766,
+        served_model_name="glm5.3-flash-4bit",
+        default_max_tokens=192,
+        cors_origins=[],
+        uvicorn_log_level="warning",
+    )
+
+    assert events == [
+        "sanitize",
+        (
+            "load",
+            GLM53_FLASH_4BIT.target_repo,
+            GLM53_FLASH_4BIT.target_revision,
+        ),
     ]
 
 

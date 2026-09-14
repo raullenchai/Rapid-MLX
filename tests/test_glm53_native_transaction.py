@@ -89,6 +89,8 @@ def fake_mx(monkeypatch):
         concatenate=np.concatenate,
         argmax=np.argmax,
         take_along_axis=np.take_along_axis,
+        where=np.where,
+        inf=np.inf,
         int32=np.int32,
         async_eval=lambda *_args: None,
     )
@@ -339,6 +341,9 @@ def test_speculative_prefill_lifecycle(fake_cache_types, fake_mx) -> None:
     passthrough.append(output)
     assert passthrough.finish(output) is output
 
+    released_shell = transaction.SpeculativePrefill("mtp", _Draft(), tokens=None)
+    assert released_shell.finish(output) is output
+
     tokens = np.array([[1, 2, 3]], dtype=np.int32)
     drafter = _Draft()
     prefill = transaction.SpeculativePrefill("mtp", drafter, tokens=tokens)
@@ -370,6 +375,53 @@ def test_accepted_greedy_applies_processors_and_stops_on_mismatch(fake_mx) -> No
         [2, 5]
     ]
     assert calls == [[1], [1, 2]]
+
+
+def test_legacy_thinking_budget_policy_is_speculation_safe(fake_mx) -> None:
+    criteria = SimpleNamespace(
+        enable_thinking=True,
+        thinking_budget=2,
+        thinking_start_token_id=8,
+        thinking_end_token_id=7,
+        _forced_sequence=[6, 7],
+        prompt_preopens_thinking=True,
+    )
+    policy = transaction._thinking_budget_policy(criteria, prompt_length=3)
+    scores = np.zeros((1, 10), dtype=np.float32)
+    assert policy(np.array([1, 2, 3, 4]), scores) is scores
+    assert policy(np.array([1, 2, 3, 4, 5]), scores) is scores
+
+    forced_newline = policy(np.array([1, 2, 3, 4, 5, 9]), scores)
+    assert forced_newline[0, 6] == 0
+    assert np.isneginf(forced_newline[0, 7])
+
+    forced_end = policy(np.array([1, 2, 3, 4, 5, 9, 6]), scores)
+    assert forced_end[0, 7] == 0
+    assert np.isneginf(forced_end[0, 6])
+
+    # Re-evaluating an uncommitted verifier prefix has no mutable cursor, and
+    # an already committed terminator leaves subsequent answer logits alone.
+    np.testing.assert_array_equal(
+        policy(np.array([1, 2, 3, 4, 5, 9]), scores), forced_newline
+    )
+    assert policy(np.array([1, 2, 3, 4, 5, 9, 6, 7]), scores) is scores
+
+
+def test_legacy_thinking_budget_policy_starts_at_emitted_opener(fake_mx) -> None:
+    criteria = SimpleNamespace(
+        enable_thinking=True,
+        thinking_budget=1,
+        thinking_start_token_id=8,
+        thinking_end_token_id=7,
+        _forced_sequence=[6, 7],
+        prompt_preopens_thinking=False,
+    )
+    policy = transaction._thinking_budget_policy(criteria, prompt_length=2)
+    scores = np.zeros((1, 10), dtype=np.float32)
+    assert policy(np.array([1, 2, 8, 4]), scores) is scores
+    assert policy(np.array([1, 2, 8, 4, 5]), scores)[0, 6] == 0
+    assert policy(np.array([1, 2, 8, 4, 5, 6]), scores)[0, 7] == 0
+    assert policy(np.array([1, 2, 8, 4, 5, 6, 7]), scores) is scores
 
 
 class _RoundState:
@@ -624,7 +676,17 @@ def test_generation_hook_replaces_only_speculative_seams(monkeypatch) -> None:
     generate = ModuleType("mlx_vlm.generate")
     generate.__path__ = []
     ar = ModuleType("mlx_vlm.generate.ar")
-    original_generate_step = object()
+    captured = []
+
+    def original_generate_step(*_args, **_kwargs):
+        captured.append(
+            (
+                transaction._LEGACY_PROCESSORS.get(),
+                transaction._LEGACY_TOKEN_CONTEXT.get(),
+            )
+        )
+        yield 7
+
     ar.generate_step = original_generate_step
     ar.SpeculativePrefill = object()
     ar.run_speculative_rounds = object()
@@ -636,10 +698,95 @@ def test_generation_hook_replaces_only_speculative_seams(monkeypatch) -> None:
 
     transaction.install_generation_hooks()
 
-    assert ar.generate_step is original_generate_step
+    assert ar.generate_step is not original_generate_step
+    assert ar.generate_step.__wrapped__ is original_generate_step
     assert ar.SpeculativePrefill is transaction.SpeculativePrefill
     assert ar.run_speculative_rounds is transaction.run_speculative_rounds
     assert ar.speculative_prefill_kwargs is transaction.speculative_prefill_kwargs
+
+    class Criteria:
+        enable_thinking = True
+
+        def make_logits_processor(self, prompt_size):
+            assert prompt_size == 2
+            return "budget-policy"
+
+    drafter = type("Drafter", (), {"_RAPID_STATELESS_GLM_MTP": True})()
+    assert list(
+        ar.generate_step(
+            np.array([[1, 2]]),
+            draft_model=drafter,
+            draft_kind="mtp",
+            thinking_budget_criteria=Criteria(),
+        )
+    ) == [7]
+    assert captured == [(("budget-policy",), [[1, 2]])]
+    assert transaction._LEGACY_PROCESSORS.get() == ()
+    assert transaction._LEGACY_TOKEN_CONTEXT.get() is None
+
+
+def test_thinking_budget_policy_edge_paths(fake_mx) -> None:
+    disabled = SimpleNamespace(enable_thinking=False)
+    incomplete = SimpleNamespace(enable_thinking=True)
+    assert transaction._thinking_budget_policy(None, 0) is None
+    assert transaction._thinking_budget_policy(disabled, 0) is None
+    assert transaction._thinking_budget_policy(incomplete, 0) is None
+
+    with pytest.raises(ValueError, match="non-negative"):
+        transaction._ThinkingBudgetLogitsProcessor(
+            SimpleNamespace(
+                thinking_budget=-1,
+                thinking_start_token_id=1,
+                thinking_end_token_id=2,
+                prompt_preopens_thinking=False,
+            ),
+            0,
+        )
+
+    criteria = SimpleNamespace(
+        thinking_budget=1,
+        thinking_start_token_id=1,
+        thinking_end_token_id=2,
+        prompt_preopens_thinking=False,
+    )
+    processor = transaction._ThinkingBudgetLogitsProcessor(criteria, 0)
+    logits = np.zeros((1, 8), dtype=np.float32)
+    assert processor(np.array([[7]]), logits) is logits
+
+    criteria.prompt_preopens_thinking = True
+    processor = transaction._ThinkingBudgetLogitsProcessor(criteria, 1)
+    assert processor(np.array([[7, 2]]), logits) is logits
+
+
+def test_generation_hook_passes_non_glm_requests_and_updates_dispatch(
+    monkeypatch,
+) -> None:
+    root = ModuleType("mlx_vlm")
+    root.__path__ = []
+    generate = ModuleType("mlx_vlm.generate")
+    generate.__path__ = []
+    ar = ModuleType("mlx_vlm.generate.ar")
+    dispatch = ModuleType("mlx_vlm.generate.dispatch")
+
+    def original_generate_step(*_args, **_kwargs):
+        yield 9
+
+    ar.generate_step = original_generate_step
+    dispatch.generate_step = original_generate_step
+    ar.SpeculativePrefill = object()
+    ar.run_speculative_rounds = object()
+    ar.speculative_prefill_kwargs = object()
+    generate.ar = ar
+    generate.dispatch = dispatch
+    monkeypatch.setitem(sys.modules, "mlx_vlm", root)
+    monkeypatch.setitem(sys.modules, "mlx_vlm.generate", generate)
+    monkeypatch.setitem(sys.modules, "mlx_vlm.generate.ar", ar)
+    monkeypatch.setitem(sys.modules, "mlx_vlm.generate.dispatch", dispatch)
+
+    transaction.install_generation_hooks()
+
+    assert list(ar.generate_step(draft_kind=None)) == [9]
+    assert dispatch.generate_step is ar.generate_step
 
 
 def test_generation_hook_fails_closed_without_complete_seam(monkeypatch) -> None:

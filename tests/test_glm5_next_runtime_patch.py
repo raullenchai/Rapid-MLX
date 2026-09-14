@@ -144,6 +144,9 @@ def test_installer_applies_glm_math_without_changing_shared_models() -> None:
 
     from vllm_mlx.patches import glm5_next_runtime as patch
 
+    if patch._has_native_glm5_next_runtime(language):
+        pytest.skip("the pinned runtime already owns the corrected GLM math")
+
     def config(*, attention="linear_attention", mlp="sparse"):
         return language.TextConfig(
             model_type="glm5_next_text",
@@ -349,13 +352,14 @@ def test_installer_defers_to_complete_native_runtime() -> None:
     )
     missing = object()
     saved = {name: getattr(language, name, missing) for name in native_names}
-    sparse_attention = language.Glm5NextSparseAttention
+    sparse_attention = getattr(language, "Glm5NextSparseAttention", missing)
     marker = getattr(language, "_RAPID_MLX_RUNTIME_FIX_INSTALLED", None)
     marker_existed = hasattr(language, "_RAPID_MLX_RUNTIME_FIX_INSTALLED")
     patch._INSTALLED = False
 
     try:
-        del language.Glm5NextSparseAttention
+        if sparse_attention is not missing:
+            del language.Glm5NextSparseAttention
         for name in native_names:
             setattr(language, name, object)
 
@@ -363,7 +367,8 @@ def test_installer_defers_to_complete_native_runtime() -> None:
         assert patch.is_installed() is True
         assert language._RAPID_MLX_RUNTIME_FIX_INSTALLED is True
     finally:
-        language.Glm5NextSparseAttention = sparse_attention
+        if sparse_attention is not missing:
+            language.Glm5NextSparseAttention = sparse_attention
         for name, value in saved.items():
             if value is missing:
                 delattr(language, name)

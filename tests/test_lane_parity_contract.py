@@ -197,7 +197,7 @@ def test_routes_normalize_sampling_before_lane_dispatch(
         (
             False,
             None,
-            "0.6.17",
+            "0.7.1",
             False,
             False,
             64.0,
@@ -207,7 +207,7 @@ def test_routes_normalize_sampling_before_lane_dispatch(
         (
             True,
             None,
-            "0.6.17",
+            "0.7.1",
             False,
             False,
             64.0,
@@ -237,7 +237,7 @@ def test_routes_normalize_sampling_before_lane_dispatch(
         (
             True,
             "arrays",
-            "0.6.17",
+            "0.7.1",
             False,
             False,
             64.0,
@@ -247,7 +247,7 @@ def test_routes_normalize_sampling_before_lane_dispatch(
         (
             True,
             "arrays",
-            "0.6.17",
+            "0.7.1",
             True,
             False,
             8.0,
@@ -267,7 +267,7 @@ def test_routes_normalize_sampling_before_lane_dispatch(
         (
             True,
             None,
-            "0.6.17",
+            "0.7.1",
             True,
             True,
             64.0,
@@ -277,7 +277,7 @@ def test_routes_normalize_sampling_before_lane_dispatch(
         (
             True,
             None,
-            "0.6.17",
+            "0.7.1",
             True,
             False,
             64.0,

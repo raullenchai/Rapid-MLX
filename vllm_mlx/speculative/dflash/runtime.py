@@ -4,7 +4,7 @@
 mlx-vlm implements DFlash drafter loading
 (``load_drafter``), the per-step draft-verify-walk loop
 (``_dflash_rounds``), and hidden-state capture on Qwen3.5/3.6 language
-models. Version 0.6.17 adds DFlash2 under the same dispatch kind. We don't
+models. DFlash2 is exposed under the same dispatch kind. We don't
 vendor any of that — the dedicated DFlash server calls into it. This module is
 the import boundary so the dependency stays optional
 (``pip install rapid-mlx[dflash]``).

@@ -84,6 +84,16 @@ def run_native_mtp_server(
 
     def _load_all():
         started = time.perf_counter()
+        if pair.drafter_model_type == "glm5_next_mtp":
+            # The official 0.7.1 target runtime is complete, but its released
+            # loader predates mlx-vlm#2231 and otherwise leaves quantized
+            # lm_head scales/biases under the wrong prefix. Install Rapid's
+            # narrow sanitizer before model construction.
+            from vllm_mlx.patches.glm5_next_runtime import (
+                install_glm5_next_runtime_fix,
+            )
+
+            install_glm5_next_runtime_fix()
         model, processor = load(pair.target_repo, revision=pair.target_revision)
         runtime = load_runtime(
             pair.drafter_repo,
