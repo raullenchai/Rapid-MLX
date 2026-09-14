@@ -1033,26 +1033,41 @@ class MLLMBatchGenerator:
 
     def _configure_exact_cache_capacity(self, cache: Any) -> None:
         """Raise mlx-vlm's exact-entry LRU to the lane default and adopt the
-        engine-wide prefix-cache byte budget for those entries."""
-        entries = self._resolve_exact_cache_entries()
-        if hasattr(cache, "_exact_cache_max"):
-            cache._exact_cache_max = entries
-        else:
-            logger.debug(
-                "[mllm_apc] manager has no _exact_cache_max; keeping its default"
-            )
+        engine-wide prefix-cache byte budget for those entries.
+
+        The larger entry count is only safe under a byte budget: when none
+        can be computed (or the manager does not expose the store the budget
+        walks), mlx-vlm's own capacity is kept unless the operator asked for
+        a count explicitly via ``APC_EXACT_CACHE_ENTRIES``."""
         try:
             from .memory_cache import MemoryCacheConfig
 
-            self._prefix_cache_max_bytes = int(
-                MemoryCacheConfig().compute_memory_limit()
+            self._prefix_cache_max_bytes = max(
+                0, int(MemoryCacheConfig().compute_memory_limit())
             )
-        except Exception as exc:  # pragma: no cover - defensive
-            logger.debug("[mllm_apc] no byte budget for exact entries: %s", exc)
+        except Exception as exc:
+            logger.warning("[mllm_apc] no byte budget for exact entries: %s", exc)
             self._prefix_cache_max_bytes = 0
+        if self._exact_entries(cache) is None:
+            logger.warning(
+                "[mllm_apc] %s does not expose mlx-vlm's exact entry store; "
+                "checkpoint resume and the byte budget are disabled",
+                type(cache).__name__,
+            )
+        explicit = (os.environ.get("APC_EXACT_CACHE_ENTRIES") or "").strip()
+        budgeted = self._prefix_cache_max_bytes > 0 and (
+            self._exact_entries(cache) is not None
+        )
+        if not hasattr(cache, "_exact_cache_max"):
+            logger.debug(
+                "[mllm_apc] manager has no _exact_cache_max; keeping its default"
+            )
+            return
+        if budgeted or explicit:
+            cache._exact_cache_max = self._resolve_exact_cache_entries()
         logger.info(
             "MLLMBatchGenerator: exact prefix cache keeps up to %d entries within %.1f GB",
-            entries,
+            int(cache._exact_cache_max),
             self._prefix_cache_max_bytes / (1 << 30),
         )
 

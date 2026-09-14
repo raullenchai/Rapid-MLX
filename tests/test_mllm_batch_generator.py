@@ -2355,6 +2355,43 @@ def test_exact_cache_capacity_defaults_to_eight_and_honours_env(monkeypatch):
     assert MLLMBatchGenerator._resolve_exact_cache_entries() == 8
 
 
+def test_exact_cache_capacity_stays_at_mlx_vlm_default_without_a_byte_budget(
+    monkeypatch, caplog
+):
+    """Eight unbudgeted 375 MB snapshots would be a memory-pressure bug, so a
+    failed budget computation keeps mlx-vlm's own capacity (unless the
+    operator asked for a count explicitly)."""
+    from vllm_mlx import memory_cache
+
+    apc = pytest.importorskip("mlx_vlm.apc")
+    default = apc.from_env(
+        overrides={"enabled": True, "num_blocks": 0}
+    )._exact_cache_max
+
+    def _boom(self):
+        raise RuntimeError("no device memory info")
+
+    monkeypatch.setattr(memory_cache.MemoryCacheConfig, "compute_memory_limit", _boom)
+    with caplog.at_level("WARNING", logger="vllm_mlx.mllm_batch_generator"):
+        gen = _make_real_apc_generator(monkeypatch)
+    assert gen._prefix_cache_max_bytes == 0
+    assert gen._prefix_cache._exact_cache_max == default
+    assert "no byte budget for exact entries" in caplog.text
+
+    gen = _make_real_apc_generator(monkeypatch, entries=5)
+    assert gen._prefix_cache._exact_cache_max == 5
+
+    # A manager without the expected store layout is called out loudly.
+    class _Foreign:
+        _exact_cache_max = 2
+
+    foreign = _Foreign()
+    with caplog.at_level("WARNING", logger="vllm_mlx.mllm_batch_generator"):
+        gen._configure_exact_cache_capacity(foreign)
+    assert "does not expose mlx-vlm's exact entry store" in caplog.text
+    gen._configure_exact_cache_capacity(object())
+
+
 def test_exact_cache_byte_budget_evicts_oldest_entries_first(monkeypatch):
     gen = _make_real_apc_generator(monkeypatch)
     _store_entry_with_checkpoints(gen, list(range(100)), [40, 80])
