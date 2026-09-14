@@ -2138,16 +2138,15 @@ def _rendered_row_starts(prompt: str) -> list[int]:
         search = index + len(_ROW_START)
 
 
-def _row_opens_with_think_block(prompt: str, body: int) -> bool:
-    """True when the row body at ``body`` already carries a complete rendered
-    block (``<think>\n…\n</think>\n\n`` before the row closes) — the live
-    rendering. Content that merely begins with the literal, or an unclosed
-    block, does not count."""
+def _row_opens_with_think_block(prompt: str, body: int, end: int) -> bool:
+    """True when the row body spanning ``body:end`` already carries a complete
+    rendered block (``<think>\n…\n</think>\n\n``) — the live rendering.
+    Content that merely begins with the literal, or an unclosed block, does
+    not count. ``end`` is the next structural row start (or the prompt end),
+    so terminator literals quoted inside the body cannot cut the row short."""
     if not prompt.startswith("<think>\n", body):
         return False
-    end = prompt.find(_ROW_END, body)
-    row = prompt[body:] if end < 0 else prompt[body:end]
-    return "\n</think>\n\n" in row
+    return "\n</think>\n\n" in prompt[body:end]
 
 
 def _retain_tool_loop_think_blocks(prompt: str, messages: list) -> str:
@@ -2192,7 +2191,8 @@ def _retain_tool_loop_think_blocks(prompt: str, messages: list) -> str:
     edits: list[tuple[int, str]] = []
     for row, (message, followed) in zip(assistant_rows, assistants):
         body = starts[row] + len(_ASSISTANT_ROW_START)
-        if not followed or _row_opens_with_think_block(prompt, body):
+        end = starts[row + 1] if row + 1 < len(starts) else len(prompt)
+        if not followed or _row_opens_with_think_block(prompt, body, end):
             continue
         if row + 1 >= len(starts) or not any(
             prompt.startswith(marker, starts[row + 1])

@@ -355,6 +355,15 @@ class TestRetain:
             "<|im_start|>user\nnext<|im_end|>\n"
         )
         assert _retain_tool_loop_think_blocks(live, messages) == live
+        # A terminator literal quoted inside the live reasoning does not cut
+        # the row short: the block is still recognised as complete.
+        quoted_end = (
+            "<|im_start|>assistant\n<think>\nsaw '<|im_end|>\n' in the log\n</think>\n\n"
+            "<|im_end|>\n"
+            "<|im_start|>user\n<tool_response>\nok\n</tool_response><|im_end|>\n"
+            "<|im_start|>user\nnext<|im_end|>\n"
+        )
+        assert _retain_tool_loop_think_blocks(quoted_end, messages) == quoted_end
 
 
 class TestWrapper:
