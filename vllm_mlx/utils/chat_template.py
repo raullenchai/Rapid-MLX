@@ -2061,6 +2061,12 @@ _TOOL_LOOP_THINK_LIVE_LITERAL = (
     "'\\n<think>\\n' + reasoning_content + '\\n</think>\\n\\n' + content"
 )
 _ASSISTANT_ROW_START = "<|im_start|>assistant\n"
+_ROW_START = "<|im_start|>"
+_ROW_END = "<|im_end|>\n"
+_TOOL_RESPONSE_ROW_STARTS = (
+    "<|im_start|>user\n<tool_response>",
+    "<|im_start|>tool\n",
+)
 
 
 def _template_drops_think_from_tool_loop_history(
@@ -2117,6 +2123,21 @@ def _assistant_reasoning_for_template(message: dict) -> str:
     return ""
 
 
+def _rendered_row_starts(prompt: str) -> list[int]:
+    """Offsets of every ``<|im_start|>`` that opens a rendered row: the very
+    first byte, or right after a row terminator. Role markers quoted inside a
+    message body are not preceded by a terminator and are left alone."""
+    starts: list[int] = []
+    search = 0
+    while True:
+        index = prompt.find(_ROW_START, search)
+        if index < 0:
+            return starts
+        if index == 0 or prompt.startswith(_ROW_END, index - len(_ROW_END)):
+            starts.append(index)
+        search = index + len(_ROW_START)
+
+
 def _retain_tool_loop_think_blocks(prompt: str, messages: list) -> str:
     """Render history tool-loop assistant rows the way they rendered live.
 
@@ -2126,6 +2147,12 @@ def _retain_tool_loop_think_blocks(prompt: str, messages: list) -> str:
     byte prefix of the next turn's. Rows the template already rendered with
     a block (the live loop) and rows not followed by a tool response are
     left exactly as rendered.
+
+    Rows are located structurally (``_rendered_row_starts``) and the
+    rendered row sequence must agree with ``messages`` — the same number of
+    assistant rows (plus at most the trailing generation prompt) and a tool
+    response row right after each row that gets a block. Any disagreement
+    returns the prompt untouched rather than editing the wrong row.
     """
     assistants: list[tuple[dict, bool]] = []
     for index, message in enumerate(messages):
@@ -2135,21 +2162,45 @@ def _retain_tool_loop_think_blocks(prompt: str, messages: list) -> str:
         assistants.append((message, _is_tool_response_message(following)))
     if not any(followed for _, followed in assistants):
         return prompt
+    starts = _rendered_row_starts(prompt)
+    assistant_rows = [
+        row
+        for row, start in enumerate(starts)
+        if prompt.startswith(_ASSISTANT_ROW_START, start)
+    ]
+    # A trailing generation prompt is an assistant row that never closes.
+    if (
+        assistant_rows
+        and assistant_rows[-1] == len(starts) - 1
+        and _ROW_END not in prompt[starts[assistant_rows[-1]] :]
+    ):
+        assistant_rows.pop()
+    if len(assistant_rows) != len(assistants):
+        return prompt
+    edits: list[tuple[int, str]] = []
+    for row, (message, followed) in zip(assistant_rows, assistants):
+        body = starts[row] + len(_ASSISTANT_ROW_START)
+        if not followed or prompt.startswith("<think>", body):
+            continue
+        if row + 1 >= len(starts) or not any(
+            prompt.startswith(marker, starts[row + 1])
+            for marker in _TOOL_RESPONSE_ROW_STARTS
+        ):
+            return prompt
+        edits.append(
+            (
+                body,
+                "<think>\n"
+                + _assistant_reasoning_for_template(message)
+                + "\n</think>\n\n",
+            )
+        )
     pieces: list[str] = []
     cursor = 0
-    row = 0
-    for match in re.finditer(re.escape(_ASSISTANT_ROW_START), prompt):
-        if row >= len(assistants):
-            break
-        message, followed = assistants[row]
-        row += 1
-        if not followed or prompt.startswith("<think>", match.end()):
-            continue
-        pieces.append(prompt[cursor : match.end()])
-        pieces.append(
-            "<think>\n" + _assistant_reasoning_for_template(message) + "\n</think>\n\n"
-        )
-        cursor = match.end()
+    for at, block in edits:
+        pieces.append(prompt[cursor:at])
+        pieces.append(block)
+        cursor = at
     pieces.append(prompt[cursor:])
     return "".join(pieces)
 
