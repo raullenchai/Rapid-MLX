@@ -1292,7 +1292,12 @@
     "mtp_default_enabled": true,
     "supports_dflash": false,
     "min_memory_gb": 192,
-    "experimental": true
+    "experimental": true,
+    "recommended_sampling": {
+      "temperature": 0.0,
+      "top_p": 1.0,
+      "repetition_penalty": 1.0
+    }
   },
   "glm4.5-air-4bit": {
     "hf_path": "mlx-community/GLM-4.5-Air-4bit",
