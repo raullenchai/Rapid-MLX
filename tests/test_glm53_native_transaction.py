@@ -725,6 +725,70 @@ def test_generation_hook_replaces_only_speculative_seams(monkeypatch) -> None:
     assert transaction._LEGACY_TOKEN_CONTEXT.get() is None
 
 
+def test_thinking_budget_policy_edge_paths(fake_mx) -> None:
+    disabled = SimpleNamespace(enable_thinking=False)
+    incomplete = SimpleNamespace(enable_thinking=True)
+    assert transaction._thinking_budget_policy(None, 0) is None
+    assert transaction._thinking_budget_policy(disabled, 0) is None
+    assert transaction._thinking_budget_policy(incomplete, 0) is None
+
+    with pytest.raises(ValueError, match="non-negative"):
+        transaction._ThinkingBudgetLogitsProcessor(
+            SimpleNamespace(
+                thinking_budget=-1,
+                thinking_start_token_id=1,
+                thinking_end_token_id=2,
+                prompt_preopens_thinking=False,
+            ),
+            0,
+        )
+
+    criteria = SimpleNamespace(
+        thinking_budget=1,
+        thinking_start_token_id=1,
+        thinking_end_token_id=2,
+        prompt_preopens_thinking=False,
+    )
+    processor = transaction._ThinkingBudgetLogitsProcessor(criteria, 0)
+    logits = np.zeros((1, 8), dtype=np.float32)
+    assert processor(np.array([[7]]), logits) is logits
+
+    criteria.prompt_preopens_thinking = True
+    processor = transaction._ThinkingBudgetLogitsProcessor(criteria, 1)
+    assert processor(np.array([[7, 2]]), logits) is logits
+
+
+def test_generation_hook_passes_non_glm_requests_and_updates_dispatch(
+    monkeypatch,
+) -> None:
+    root = ModuleType("mlx_vlm")
+    root.__path__ = []
+    generate = ModuleType("mlx_vlm.generate")
+    generate.__path__ = []
+    ar = ModuleType("mlx_vlm.generate.ar")
+    dispatch = ModuleType("mlx_vlm.generate.dispatch")
+
+    def original_generate_step(*_args, **_kwargs):
+        yield 9
+
+    ar.generate_step = original_generate_step
+    dispatch.generate_step = original_generate_step
+    ar.SpeculativePrefill = object()
+    ar.run_speculative_rounds = object()
+    ar.speculative_prefill_kwargs = object()
+    generate.ar = ar
+    generate.dispatch = dispatch
+    monkeypatch.setitem(sys.modules, "mlx_vlm", root)
+    monkeypatch.setitem(sys.modules, "mlx_vlm.generate", generate)
+    monkeypatch.setitem(sys.modules, "mlx_vlm.generate.ar", ar)
+    monkeypatch.setitem(sys.modules, "mlx_vlm.generate.dispatch", dispatch)
+
+    transaction.install_generation_hooks()
+
+    assert list(ar.generate_step(draft_kind=None)) == [9]
+    assert dispatch.generate_step is ar.generate_step
+
+
 def test_generation_hook_fails_closed_without_complete_seam(monkeypatch) -> None:
     root = ModuleType("mlx_vlm")
     root.__path__ = []
