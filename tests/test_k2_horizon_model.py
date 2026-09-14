@@ -199,10 +199,14 @@ def test_repo_code_trust_boundary_is_scoped_to_rapid_owned_k2(tmp_path):
     other_dir = tmp_path / "existing-vendored-family"
     other_dir.mkdir()
     (other_dir / "config.json").write_text(json.dumps({"model_type": "deepseek_v4"}))
+    scalar_dir = tmp_path / "invalid-scalar-config"
+    scalar_dir.mkdir()
+    (scalar_dir / "config.json").write_text(json.dumps(["k2_horizon"]))
 
     tokenizer._register_vendored_archs()
     assert tokenizer._uses_rapid_owned_runtime(str(k2_dir)) is True
     assert tokenizer._uses_rapid_owned_runtime(str(other_dir)) is False
+    assert tokenizer._uses_rapid_owned_runtime(str(scalar_dir)) is False
     assert tokenizer._uses_rapid_owned_runtime("org/not-cached") is False
 
 

@@ -993,6 +993,8 @@ def _uses_rapid_owned_runtime(model_name: str) -> bool:
             config = json.load(config_file)
     except (OSError, TypeError, ValueError):
         return False
+    if not isinstance(config, dict):
+        return False
     model_type = config.get("model_type")
     if model_type not in _RAPID_OWNED_RUNTIME_MODEL_TYPES:
         return False
