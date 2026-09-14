@@ -36,6 +36,13 @@ def _validate_greedy_request(request: Any) -> None:
             status_code=400,
             detail=f"Native MTP does not support sampling penalties: {names}.",
         )
+    if getattr(request, "logprobs", None) not in (None, False) or getattr(
+        request, "top_logprobs", None
+    ) not in (None, 0):
+        raise HTTPException(
+            status_code=400,
+            detail="Native MTP does not support logprobs.",
+        )
 
 
 def run_native_mtp_server(
@@ -82,6 +89,7 @@ def run_native_mtp_server(
             target_revision=pair.target_revision,
             drafter_revision=pair.drafter_revision,
             block_size=pair.block_size,
+            expected_model_type=pair.drafter_model_type,
         )
         # The request-time MTP reset also binds, but doing it here turns an
         # incompatible target/sidecar pair into a deterministic startup error

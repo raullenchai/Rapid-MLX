@@ -237,6 +237,7 @@ The largest and most self-contained components:
 | TurboQuant Metal kernels | https://github.com/arozanov/turboquant-mlx | Apache-2.0 | `vllm_mlx/kernels/turboquant_fused.metal` |
 | GLM-5 Next image processor | https://github.com/jundot/omlx (`c520d7e`) | Apache-2.0 | `vllm_mlx/patches/glm5_next_processor.py` |
 | GLM-5 Next text runtime | https://github.com/Blaizzy/mlx-vlm (`f9e2c50`, `bffd485`) | MIT | `vllm_mlx/patches/glm5_next_runtime.py` |
+| Cache-owned MTP transaction | https://github.com/Blaizzy/mlx-vlm (PR #2206) | MIT | `vllm_mlx/speculative/native_mtp/transaction.py` |
 | Gemma 4 model classes | https://github.com/Blaizzy/mlx-vlm (v0.6.3) | MIT | `vllm_mlx/models/gemma4_vendored/` |
 | Hunyuan 3 model class | https://github.com/ml-explore/mlx-lm (PR #1211) | MIT | `vllm_mlx/models/hy_v3.py` |
 | DeepSeek V4 model classes | https://github.com/ml-explore/mlx-lm (`_ds4` branch, © Apple Inc.) | MIT | `vllm_mlx/models/deepseek_v4.py`, `deepseek_v4_cache.py`, `deepseek_v4_hyper_connection.py`, `deepseek_v4_switch.py` |

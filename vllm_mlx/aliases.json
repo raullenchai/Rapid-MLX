@@ -1280,7 +1280,7 @@
   "glm5.3-flash-4bit": {
     "hf_path": "Vontra/GLM-5.3-Flash-MLX-4bit-MTP",
     "tool_call_parser": "glm47",
-    "reasoning_parser": "glm4",
+    "reasoning_parser": "glm5",
     "is_hybrid": true,
     "is_hybrid_explicit": true,
     "is_moe": true,

@@ -18,6 +18,7 @@ class NativeMTPPair:
     drafter_revision: str
     draft_tokens: int
     block_size: int
+    drafter_model_type: str
 
 
 QWEN36_35B_4BIT = NativeMTPPair(
@@ -27,6 +28,7 @@ QWEN36_35B_4BIT = NativeMTPPair(
     drafter_revision="0295b81421bf4d0fccca9a7c0fcfb1418dda3516",
     draft_tokens=2,
     block_size=3,
+    drafter_model_type="qwen3_5_mtp",
 )
 
 

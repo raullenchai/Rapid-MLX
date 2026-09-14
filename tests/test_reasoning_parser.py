@@ -1207,3 +1207,65 @@ class TestGlm4Parser:
         # And after reset, the no-tags-yet branch fires again as content
         result = parser.extract_reasoning_streaming("", "fresh", "fresh")
         assert result is not None and result.content == "fresh"
+
+
+class TestGlm5Parser:
+    """GLM-5.3 starts inside ``<think>`` via its chat template."""
+
+    @pytest.fixture
+    def parser(self):
+        from vllm_mlx.reasoning import get_parser
+
+        parser = get_parser("glm5")()
+        parser.configure_request(prompt_thinking_active=True)
+        return parser
+
+    def test_registry_includes_glm5(self):
+        from vllm_mlx.reasoning import list_parsers
+
+        assert "glm5" in list_parsers()
+
+    def test_implicit_close_splits_non_streaming(self, parser):
+        reasoning, content = parser.extract_reasoning(
+            "inspect the constraint</think>STREAM_OK",
+            prompt_thinking_active=True,
+        )
+        assert reasoning == "inspect the constraint"
+        assert content == "STREAM_OK"
+
+    def test_streaming_routes_prefix_to_reasoning(self, parser):
+        tokens = ["inspect ", "the constraint", "</think>", "STREAM_OK"]
+        accumulated = ""
+        reasoning_parts: list[str] = []
+        content_parts: list[str] = []
+        for token in tokens:
+            previous = accumulated
+            accumulated += token
+            message = parser.extract_reasoning_streaming(previous, accumulated, token)
+            if message is None:
+                continue
+            if message.reasoning:
+                reasoning_parts.append(message.reasoning)
+            if message.content:
+                content_parts.append(message.content)
+
+        assert "".join(reasoning_parts) == "inspect the constraint"
+        assert "".join(content_parts) == "STREAM_OK"
+
+    def test_no_prompt_priming_keeps_plain_non_streaming_content(self):
+        from vllm_mlx.reasoning import get_parser
+
+        parser = get_parser("glm5")()
+        parser.configure_request(prompt_thinking_active=False)
+        reasoning, content = parser.extract_reasoning(
+            "plain answer", prompt_thinking_active=False
+        )
+        assert reasoning is None
+        assert content == "plain answer"
+
+    def test_prompt_primed_truncated_output_stays_in_reasoning(self, parser):
+        reasoning, content = parser.extract_reasoning(
+            "unfinished private thought", prompt_thinking_active=True
+        )
+        assert reasoning == "unfinished private thought"
+        assert content is None

@@ -23,6 +23,33 @@ _LOCK = threading.Lock()
 _INSTALLED = False
 
 
+def _install_quantized_lm_head_sanitize() -> bool:
+    """Remap every quantized output-head tensor, not only its packed weight.
+
+    mlx-vlm#2231 fixes this upstream.  Keeping the tiny compatibility overlay
+    here lets Rapid pair the cache-owned #2206 runtime with Q4 checkpoints
+    without depending on the two pull requests landing in lockstep.
+    """
+    from mlx_vlm.models.glm5_next import glm5_next
+
+    model = glm5_next.Model
+    if getattr(model, "_RAPID_QUANTIZED_LM_HEAD_SANITIZE", False):
+        return False
+    released_sanitize = model.sanitize
+
+    def sanitize(self, weights):
+        remapped = {}
+        for key, value in weights.items():
+            if key.startswith("lm_head."):
+                key = "language_model." + key
+            remapped[key] = value
+        return released_sanitize(self, remapped)
+
+    model.sanitize = sanitize
+    model._RAPID_QUANTIZED_LM_HEAD_SANITIZE = True
+    return True
+
+
 def _has_native_glm5_next_runtime(language: Any) -> bool:
     """Return whether mlx-vlm already owns the corrected GLM implementation.
 
@@ -88,6 +115,7 @@ def install_glm5_next_runtime_fix() -> bool:
         from mlx_vlm.models.glm5_next import language
 
         if _has_native_glm5_next_runtime(language):
+            _install_quantized_lm_head_sanitize()
             language._RAPID_MLX_RUNTIME_FIX_INSTALLED = True
             _INSTALLED = True
             return False
@@ -208,6 +236,7 @@ def install_glm5_next_runtime_fix() -> bool:
         language.Glm5NextLinearAttention = Glm5NextLinearAttention
         language.LanguageModel.sanitize = patched_sanitize
         language.LanguageModel.cast_predicate = property(cast_predicate)
+        _install_quantized_lm_head_sanitize()
         language._RAPID_MLX_RUNTIME_FIX_INSTALLED = True
         _INSTALLED = True
         return True
@@ -218,6 +247,7 @@ def is_installed() -> bool:
 
 
 __all__ = [
+    "_install_quantized_lm_head_sanitize",
     "install_glm5_next_runtime_fix",
     "is_installed",
 ]

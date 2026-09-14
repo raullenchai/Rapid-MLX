@@ -86,6 +86,17 @@ def test_native_mtp_rejects_sampling_penalties(penalty: dict[str, float]) -> Non
     assert exc_info.value.status_code == 400
 
 
+@pytest.mark.parametrize(
+    "field,value",
+    [("logprobs", True), ("top_logprobs", 2)],
+)
+def test_native_mtp_rejects_logprobs(field: str, value: object) -> None:
+    request = SimpleNamespace(temperature=0, **{field: value})
+    with pytest.raises(HTTPException, match="logprobs") as exc_info:
+        _validate_greedy_request(request)
+    assert exc_info.value.status_code == 400
+
+
 def test_native_mtp_runtime_probe_is_exact_version(monkeypatch) -> None:
     from vllm_mlx.speculative.native_mtp import runtime
 
@@ -188,6 +199,131 @@ def test_load_native_mtp_runtime_validates_architecture_and_block(monkeypatch) -
             drafter_revision="b" * 40,
             block_size=3,
         )
+
+
+def test_glm_runtime_fails_before_resolving_sidecar(monkeypatch) -> None:
+    from vllm_mlx.speculative.native_mtp import runtime
+
+    drafter = SimpleNamespace(
+        config=SimpleNamespace(model_type="glm5_next_mtp", block_size=2)
+    )
+    _fake_mlx_vlm_modules(monkeypatch, drafter)
+    monkeypatch.setattr(runtime, "have_glm_cache_runtime", lambda: False)
+    sys.modules["mlx_vlm.utils"].get_model_path = lambda *_args, **_kwargs: (
+        _ for _ in ()
+    ).throw(AssertionError("must not resolve or download sidecar"))
+
+    with pytest.raises(RuntimeError, match="cache-owned GLM runtime"):
+        runtime.load_runtime(
+            "org/glm-drafter",
+            target_revision="a" * 40,
+            drafter_revision="b" * 40,
+            block_size=2,
+            expected_model_type="glm5_next_mtp",
+        )
+
+
+def test_glm_runtime_structural_probe_and_fail_closed(monkeypatch) -> None:
+    from vllm_mlx.patches import glm5_next_runtime as glm_patch
+    from vllm_mlx.speculative.native_mtp import runtime
+
+    root = ModuleType("mlx_vlm")
+    root.__path__ = []
+    generate = ModuleType("mlx_vlm.generate")
+    generate.__path__ = []
+    ar = ModuleType("mlx_vlm.generate.ar")
+    for name in (
+        "generate_step",
+        "SpeculativePrefill",
+        "run_speculative_rounds",
+        "speculative_prefill_kwargs",
+    ):
+        setattr(ar, name, object())
+    generate.ar = ar
+    models = ModuleType("mlx_vlm.models")
+    models.__path__ = []
+    cache = ModuleType("mlx_vlm.models.cache")
+    methods = (
+        "start_speculation",
+        "validate_speculation",
+        "commit_speculation",
+        "abort_speculation",
+    )
+    arrays = type("ArraysCache", (), {name: lambda self: None for name in methods})
+    pooling = type("PoolingCache", (), {name: lambda self: None for name in methods})
+    cache.ArraysCache = arrays
+    cache.PoolingCache = pooling
+    glm = ModuleType("mlx_vlm.models.glm5_next")
+    glm.__path__ = []
+    language = ModuleType("mlx_vlm.models.glm5_next.language")
+    glm.language = language
+    speculative = ModuleType("mlx_vlm.speculative")
+    speculative.__path__ = []
+    drafters = ModuleType("mlx_vlm.speculative.drafters")
+    drafters.__path__ = []
+    drafters.load_drafter = object()
+    mtp = ModuleType("mlx_vlm.speculative.drafters.glm5_next_mtp")
+    mtp.Glm5NextMTPDraftModel = object()
+    for name, module in {
+        "mlx_vlm": root,
+        "mlx_vlm.generate": generate,
+        "mlx_vlm.generate.ar": ar,
+        "mlx_vlm.models": models,
+        "mlx_vlm.models.cache": cache,
+        "mlx_vlm.models.glm5_next": glm,
+        "mlx_vlm.models.glm5_next.language": language,
+        "mlx_vlm.speculative": speculative,
+        "mlx_vlm.speculative.drafters": drafters,
+        "mlx_vlm.speculative.drafters.glm5_next_mtp": mtp,
+    }.items():
+        monkeypatch.setitem(sys.modules, name, module)
+    monkeypatch.setattr(glm_patch, "_has_native_glm5_next_runtime", lambda _mod: True)
+
+    assert runtime.have_glm_cache_runtime() is True
+    delattr(ar, "run_speculative_rounds")
+    assert runtime.have_glm_cache_runtime() is False
+
+    real_import = builtins.__import__
+
+    def fail_import(name, *args, **kwargs):
+        if name == "mlx_vlm.generate":
+            raise RuntimeError("broken runtime")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", fail_import)
+    assert runtime.have_glm_cache_runtime() is False
+
+
+def test_load_glm_runtime_installs_rapid_hooks(monkeypatch) -> None:
+    from vllm_mlx.speculative.native_mtp import runtime, transaction
+
+    drafter = SimpleNamespace(
+        config=SimpleNamespace(model_type="glm5_next_mtp", block_size=2)
+    )
+    _fake_mlx_vlm_modules(monkeypatch, drafter)
+    monkeypatch.setattr(runtime, "have_glm_cache_runtime", lambda: True)
+    installed = []
+    monkeypatch.setattr(
+        transaction, "install_generation_hooks", lambda: installed.append(True)
+    )
+    loaded = runtime.load_runtime(
+        "org/glm-drafter",
+        target_revision="a" * 40,
+        drafter_revision="b" * 40,
+        block_size=2,
+        expected_model_type="glm5_next_mtp",
+    )
+    assert loaded.model_type == "glm5_next_mtp"
+    assert installed == [True]
+
+
+def test_native_mtp_stats_ignore_non_list_counters() -> None:
+    from vllm_mlx.speculative.native_mtp.runtime import NativeMTPRuntime
+
+    drafter = SimpleNamespace(accept_lens=None, draft_lens=(1, 2))
+    runtime = NativeMTPRuntime(drafter, "repo", "target", "draft", 3)
+    runtime.reset_accept_lens()
+    assert runtime.accept_lens_snapshot() == []
 
 
 def test_serve_native_mtp_helper_routes_exact_pair(monkeypatch) -> None:

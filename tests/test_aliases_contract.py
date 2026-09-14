@@ -2081,7 +2081,7 @@ def test_glm_5_3_flash_alias_is_experimental_and_fails_closed() -> None:
     assert profile.supports_native_mtp is False
     assert profile.supports_dflash is False
     assert profile.tool_call_parser == "glm47"
-    assert profile.reasoning_parser == "glm4"
+    assert profile.reasoning_parser == "glm5"
     assert profile.recommended_sampling is None
     assert detect_model_config(alias) == profile
     assert detect_model_config(profile.hf_path) == profile

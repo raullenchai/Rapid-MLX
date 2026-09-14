@@ -6,9 +6,10 @@ Atlas, for runtime architecture and dependency integration.
 
 ## Branch
 
-Current handoff refresh: `vector/glm53-release-gate`, based on
-`origin/main@321afa3fc`. Upstream implementation work remains on mlx-vlm PR
-#2206 plus #2231 and the fork-only cache-owned adaptive/replay experiments.
+Current implementation: `vector/glm53-native-runtime-v1`, based on
+`origin/main@12fbee034`. Rapid now owns the narrow cache transaction and
+generation-hook seam; mlx-vlm PR #2206 still supplies the model/cache protocol
+and GLM drafter architecture used for qualification.
 
 ## Verified facts
 
@@ -118,6 +119,14 @@ Current handoff refresh: `vector/glm53-release-gate`, based on
   contracted from a truncated 1,024 tokens to a passing 388-token completion.
   A cap without a duplicate `enable_thinking=true` now opts into bounded
   thinking, while an explicit false value and `--no-thinking` remain dominant.
+- Rapid's own transaction passed two further six-task server runs (12/12),
+  byte-identical to the same AR control. Run-2 task gains were
+  1.405x/1.377x/1.306x/1.390x/1.285x/1.106x, a 1.341x paired median. Median
+  category throughput repeated at 35.544 and 35.541 tok/s.
+- Streaming dogfood found and fixed the GLM-4/GLM-5 protocol mismatch. The new
+  GLM-5 parser treats the template-primed prefix as reasoning until
+  `</think>`; a live request returned exactly `STREAM_OK` as content, kept the
+  trace only in `reasoning_content`, and completed with `[DONE]`.
 
 ## Unresolved
 
@@ -128,6 +137,10 @@ Current handoff refresh: `vector/glm53-release-gate`, based on
 - The Rapid serial-server thinking-budget fix is independently releasable, but
   GLM MTP capability metadata must remain disabled until a tagged mlx-vlm
   release contains the qualified cache-owned runtime and Q4 head loader.
+- The qualified 3.9 GiB Q4 drafter is currently local. Do not enable the alias
+  until an immutable public sidecar revision (or a reviewed, durable embedded
+  extraction design) exists; a machine-local path cannot be a CLI/Desktop
+  product contract.
 - #2241 is intentionally stacked on #2206's source branch and cannot be
   retargeted to main until #2206's current conflict is resolved.
 - Creative prose still needs blind human review before any quality claim.
@@ -149,13 +162,12 @@ did not preserve bit-exact state in the production-shape check.
 
 ## Next action
 
-Atlas should prefer the cache-owned #2206 route over the legacy #2232/#2233
-chain once a tagged mlx-vlm release contains #2206 and #2231. Re-run
-the six-task harness through Rapid and require 18/18 across three runs with
-same-release AR-exact reasoning/final output before enabling GLM MTP
-experimentally. Include #2241's replay scheduling change when it is present in
-the tagged dependency; do not block the dependency update on the experimental
-K2/K3 controller. The next backbone experiment should pursue a material
-resident-size or dispatch reduction rather than another small graph compile;
-do not delete the only cached Q4 control to make room without explicit human
+Atlas should review the Rapid-owned transaction boundary, then wait for a
+tagged mlx-vlm release containing the required structural seams and a public,
+revision-pinned Q4 sidecar. Re-run the six-task harness through the released
+dependency and require 18/18 across three runs before flipping
+`supports_native_mtp` for the GLM alias; that single alias flag and shared
+server route delivers the same backend to CLI and Desktop. Include #2241's
+replay scheduling change when released, but do not block on experimental K2/K3
+adaptation. Do not delete the cached Q4 control without explicit human
 authorization and a recovery plan.

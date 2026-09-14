@@ -25,10 +25,11 @@ thinking_budget is not supported with speculative decoding in the server.
 ```
 
 This was a product-quality blocker, not benchmark noise. A follow-up
-transactional implementation now passes the budgeted gate, preserves every AR
-byte, and keeps a measured 1.145x median task-throughput gain. It is proposed
-upstream in mlx-vlm PRs #2231, #2232, and #2233; it is not Rapid production
-behavior until those changes are released and Rapid updates its dependency.
+transactional implementation passed the budgeted gate and preserved every AR
+byte. The later Rapid-owned cache transaction raised the repeated paired
+median to 1.341x while keeping 12/12 task outputs exact. It remains disabled in
+the product until a released mlx-vlm exposes the required model/cache seams and
+an immutable public Q4 sidecar is available.
 
 ## Environment
 
@@ -362,6 +363,43 @@ from 26.58 to 35.09 tok/s. This is an integration qualification for the
 candidate checkout, not authorization to pin an untagged dependency or enable
 the GLM alias's MTP capability in a release.
 
+### Rapid-owned transaction gate
+
+Rapid then took ownership of the narrow proposal/verification/cache-transaction
+seam while retaining mlx-vlm's model loader and ordinary GLM forward pass. The
+implementation is restricted to singleton greedy decoding, rejects sampling,
+penalties, batching, and logprobs, and rolls back both append-only and temporal
+caches when a request stops between accepted tokens. Runtime activation is
+structurally gated on the complete cache-owned GLM model/cache protocol rather
+than inferred from a version string.
+
+Two consecutive six-task runs through Rapid's serial OpenAI-compatible server
+passed 12/12. Both reproduced the AR control's complete reasoning and final
+content byte-for-byte. The second run measured:
+
+| Task | Rapid AR | Rapid-owned MTP K=2 | Ratio |
+| --- | ---: | ---: | ---: |
+| Coding, hidden tests | 27.55 | 38.70 | 1.405x |
+| Closed-book knowledge | 26.61 | 36.63 | 1.377x |
+| Multi-step math | 26.56 | 34.68 | 1.306x |
+| Instruction following | 25.69 | 35.71 | 1.390x |
+| Creative constraints | 27.52 | 35.37 | 1.285x |
+| Long-context contract | 10.62 | 11.74 | 1.106x |
+
+The paired median was 1.341x (+34.1%), with every task improving. Median
+category throughput was 35.541 tok/s in run 2 versus 35.544 tok/s in run 1,
+showing 0.01% repeat drift. The results exceed the original +20-30% delivery
+target without adopting a numerically different verifier.
+
+Live streaming dogfood also found a separate user-visible defect. GLM-5.3's
+template primes ``<think>`` in the prompt, but the GLM-4 parser treats output
+before an emitted opener as public content. The old route therefore streamed
+the thought trace into the answer until the model generated ``</think>``. A
+dedicated GLM-5 parser now holds all prefix bytes in ``reasoning_content``
+until the close. The live regression request reconstructed exactly
+``content=STREAM_OK`` with the full trace isolated in ``reasoning_content`` and
+a terminal ``[DONE]`` event.
+
 ## Reproduction
 
 Start post-0.7 mlx-vlm once without a drafter and once with the target-matched
@@ -433,11 +471,13 @@ file-size, process-count, descriptor, and wall-time limits.
 
 ## Next engineering gate
 
-The cache-owned transaction now exists upstream. Atlas should not vendor a
-partial copy or point a release at an untagged Git commit. Once mlx-vlm ships a
-release containing #2206 and #2231, update Rapid's pin, run this exact
-six-task gate through the Rapid server, and only then enable GLM MTP. The
-legacy #2232/#2233 chain remains a smaller fallback if #2206 does not land.
+Rapid now owns the complete proposal/verification/cache transaction, but still
+requires mlx-vlm's GLM model/cache protocol and drafter architecture. Do not
+point a release at an untagged Git commit or enable the alias against the
+current 0.6.17 pin. Once a tagged mlx-vlm release exposes those structural
+seams and a revision-pinned public Q4 sidecar exists, update the dependency,
+repeat the gate, and enable the alias for CLI and Desktop together. The legacy
+#2232/#2233 chain remains a smaller fallback if #2206 does not land.
 The next performance investigation should target exact backbone dispatch cost;
 the same-width result shows that deeper drafting is not the main competitor
 gap. Do not adopt a numerically different verify path without first recovering

@@ -10,6 +10,7 @@ from types import SimpleNamespace
 import pytest
 
 from vllm_mlx.patches.glm5_next_runtime import (
+    _install_quantized_lm_head_sanitize,
     _keep_glm5_next_fp32,
     _projection_quantization_is_homogeneous,
 )
@@ -88,6 +89,50 @@ def test_fp32_state_allowlist_is_narrow() -> None:
     assert _keep_glm5_next_fp32("model.layers.0.self_attn.A_log")
     assert _keep_glm5_next_fp32("model.layers.0.self_attn.dt_bias")
     assert not _keep_glm5_next_fp32("model.layers.0.self_attn.q_proj.weight")
+
+
+@pytest.mark.requires_mlx
+def test_quantized_lm_head_sanitize_remaps_every_tensor() -> None:
+    from mlx_vlm.models.glm5_next import glm5_next
+
+    model = glm5_next.Model
+    original = model.sanitize
+    marker = getattr(model, "_RAPID_QUANTIZED_LM_HEAD_SANITIZE", None)
+    marker_existed = hasattr(model, "_RAPID_QUANTIZED_LM_HEAD_SANITIZE")
+    captured = {}
+
+    def released_sanitize(_self, weights):
+        captured.update(weights)
+        return weights
+
+    try:
+        model.sanitize = released_sanitize
+        if marker_existed:
+            del model._RAPID_QUANTIZED_LM_HEAD_SANITIZE
+        assert _install_quantized_lm_head_sanitize() is True
+        assert _install_quantized_lm_head_sanitize() is False
+        result = model.sanitize(
+            object(),
+            {
+                "lm_head.weight": "weight",
+                "lm_head.scales": "scales",
+                "lm_head.biases": "biases",
+                "vision_tower.weight": "vision",
+            },
+        )
+        assert result == {
+            "language_model.lm_head.weight": "weight",
+            "language_model.lm_head.scales": "scales",
+            "language_model.lm_head.biases": "biases",
+            "vision_tower.weight": "vision",
+        }
+        assert captured == result
+    finally:
+        model.sanitize = original
+        if marker_existed:
+            model._RAPID_QUANTIZED_LM_HEAD_SANITIZE = marker
+        elif hasattr(model, "_RAPID_QUANTIZED_LM_HEAD_SANITIZE"):
+            del model._RAPID_QUANTIZED_LM_HEAD_SANITIZE
 
 
 @pytest.mark.requires_mlx

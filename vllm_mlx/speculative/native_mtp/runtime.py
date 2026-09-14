@@ -11,6 +11,46 @@ from typing import Any
 
 logger = logging.getLogger(__name__)
 QUALIFIED_MLX_VLM_VERSION = "0.6.17"
+GLM_CACHE_RUNTIME_LABEL = "post-0.7 cache-owned GLM runtime"
+
+
+def have_glm_cache_runtime() -> bool:
+    """Probe the exact cache/model seams Rapid's GLM transaction requires."""
+    try:
+        from mlx_vlm.generate import ar
+        from mlx_vlm.models.cache import ArraysCache, PoolingCache
+        from mlx_vlm.models.glm5_next import language
+        from mlx_vlm.speculative.drafters import load_drafter  # noqa: F401
+        from mlx_vlm.speculative.drafters.glm5_next_mtp import (  # noqa: F401
+            Glm5NextMTPDraftModel,
+        )
+
+        from vllm_mlx.patches.glm5_next_runtime import (
+            _has_native_glm5_next_runtime,
+        )
+
+        cache_methods = (
+            "start_speculation",
+            "validate_speculation",
+            "commit_speculation",
+            "abort_speculation",
+        )
+        return (
+            _has_native_glm5_next_runtime(language)
+            and all(hasattr(ArraysCache, name) for name in cache_methods)
+            and all(hasattr(PoolingCache, name) for name in cache_methods)
+            and all(
+                hasattr(ar, name)
+                for name in (
+                    "generate_step",
+                    "SpeculativePrefill",
+                    "run_speculative_rounds",
+                    "speculative_prefill_kwargs",
+                )
+            )
+        )
+    except Exception:  # noqa: BLE001 - optional runtime must fail closed
+        return False
 
 
 def have_runtime() -> bool:
@@ -32,6 +72,7 @@ class NativeMTPRuntime:
     target_revision: str
     drafter_revision: str
     block_size: int
+    model_type: str = "qwen3_5_mtp"
     kind: str = "mtp"
     algorithm: str = "mtp"
 
@@ -52,8 +93,9 @@ def load_runtime(
     target_revision: str,
     drafter_revision: str,
     block_size: int,
+    expected_model_type: str = "qwen3_5_mtp",
 ) -> NativeMTPRuntime:
-    """Load one immutable Qwen3.5-family MTP sidecar through mlx-vlm."""
+    """Load one qualified MTP sidecar through mlx-vlm's compatible loader."""
 
     try:
         from mlx_vlm.speculative.drafters import load_drafter
@@ -64,12 +106,19 @@ def load_runtime(
             f"mlx-vlm {QUALIFIED_MLX_VLM_VERSION}; install rapid-mlx[mtp]"
         ) from exc
 
+    # Fail before resolving the sidecar path: ``get_model_path`` may download
+    # gigabytes, and a structurally incompatible runtime can never use them.
+    if expected_model_type == "glm5_next_mtp" and not have_glm_cache_runtime():
+        raise RuntimeError(
+            f"GLM native MTP requires the qualified {GLM_CACHE_RUNTIME_LABEL}"
+        )
+
     source = str(get_model_path(drafter_repo, revision=drafter_revision))
     drafter, kind = load_drafter(source, kind="mtp")
     model_type = getattr(getattr(drafter, "config", None), "model_type", None)
-    if kind != "mtp" or model_type != "qwen3_5_mtp":
+    if kind != "mtp" or model_type != expected_model_type:
         raise RuntimeError(
-            "native MTP sidecar architecture mismatch: expected qwen3_5_mtp"
+            f"native MTP sidecar architecture mismatch: expected {expected_model_type}"
         )
     configured_block = int(getattr(drafter.config, "block_size", 0) or 0)
     if configured_block != block_size:
@@ -77,6 +126,10 @@ def load_runtime(
             "native MTP sidecar block-size mismatch: "
             f"expected {block_size}, got {configured_block}"
         )
+    if expected_model_type == "glm5_next_mtp":
+        from .transaction import install_generation_hooks
+
+        install_generation_hooks()
     logger.info(
         "Loaded native MTP sidecar %s@%s (block=%d)",
         drafter_repo,
@@ -89,12 +142,15 @@ def load_runtime(
         target_revision=target_revision,
         drafter_revision=drafter_revision,
         block_size=block_size,
+        model_type=expected_model_type,
     )
 
 
 __all__ = [
     "NativeMTPRuntime",
     "QUALIFIED_MLX_VLM_VERSION",
+    "GLM_CACHE_RUNTIME_LABEL",
     "have_runtime",
+    "have_glm_cache_runtime",
     "load_runtime",
 ]
