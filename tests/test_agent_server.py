@@ -220,6 +220,7 @@ async def test_denial_becomes_tool_observation_and_does_not_execute():
     waiting = await wait_for_status(
         service, created.id, AgentRunStatus.AWAITING_APPROVAL
     )
+    assert service._entry(created.id).task is None
     assert waiting.pending_action is not None
     assert waiting.pending_action.arguments == {}
     assert waiting.pending_action.approval_summary == {"body": "no"}
@@ -250,6 +251,7 @@ async def test_client_mode_releases_call_then_accepts_one_matching_result():
     waiting = await wait_for_status(
         service, created.id, AgentRunStatus.AWAITING_TOOL_RESULT
     )
+    assert service._entry(created.id).task is None
 
     assert waiting.pending_action is not None
     assert waiting.pending_action.approval_required is False

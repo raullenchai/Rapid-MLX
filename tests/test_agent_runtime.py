@@ -85,6 +85,7 @@ def test_minicpm_profile_uses_exact_loaded_metadata_for_custom_local_paths():
         ).name
         == "default"
     )
+    assert resolve_agent_profile("/models/minicpm5-2b-copy").name == "default"
 
 
 def test_run_identity_and_profile_are_immutable_after_creation():

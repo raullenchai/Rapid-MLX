@@ -1149,6 +1149,9 @@ class AgentServerService:
                     if entry.run.status is AgentRunStatus.AWAITING_APPROVAL:
                         entry.pending_action = turn.tool_calls[0]
                         entry.pending_risk = entry.run.pending_risk
+                        # Park atomically before exposing the approval state;
+                        # approve() may schedule the continuation immediately.
+                        entry.task = None
                         return
                     if output is None or output.call is None:
                         raise AgentRunConflictError(
@@ -1157,6 +1160,7 @@ class AgentServerService:
                     entry.pending_action = output.call
                     entry.pending_risk = entry.run.pending_risk
                     if entry.settings.execution == "client":
+                        entry.task = None
                         return
                     next_call = output.call
         except asyncio.CancelledError:

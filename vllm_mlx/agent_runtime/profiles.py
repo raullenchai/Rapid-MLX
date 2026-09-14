@@ -22,6 +22,15 @@ DEFAULT_PROFILE = AgentProfile(
     repeated_call_limit=2,
 )
 
+_MINICPM5_2B_CATALOG_IDENTITIES = frozenset(
+    {
+        "minicpm5-2b-4bit",
+        "openbmb/minicpm5-2b",
+        "openbmb/minicpm5-2b-mlx",
+        "mlx-community/minicpm5-2b-8bit",
+    }
+)
+
 
 def _is_minicpm5_2b_config(config: dict[str, Any] | None) -> bool:
     """Recognize the released dense 2B checkpoint from loaded metadata.
@@ -56,7 +65,7 @@ def resolve_agent_profile(
     """Return budgets from catalog identity or exact loaded-model metadata."""
 
     normalized = model.casefold().replace("_", "-")
-    if "minicpm5-2b" in normalized or (
+    if normalized in _MINICPM5_2B_CATALOG_IDENTITIES or (
         tool_call_parser == "minicpm" and _is_minicpm5_2b_config(model_config)
     ):
         return MINICPM5_2B_PROFILE
