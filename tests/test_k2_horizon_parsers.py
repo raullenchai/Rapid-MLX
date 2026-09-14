@@ -2,11 +2,13 @@
 """Protocol contracts for K2 Horizon reasoning and tool output."""
 
 import json
+from unittest.mock import MagicMock
 
 import pytest
 
 from vllm_mlx.reasoning import get_parser
 from vllm_mlx.reasoning.k2_horizon_parser import K2HorizonReasoningParser
+from vllm_mlx.service.postprocessor import StreamingPostProcessor
 from vllm_mlx.tool_parsers import ToolParserManager
 from vllm_mlx.tool_parsers.k2_horizon_tool_parser import K2HorizonToolParser
 
@@ -94,6 +96,10 @@ def test_reasoning_parser_is_registered():
     assert get_parser("k2_horizon") is K2HorizonReasoningParser
 
 
+def test_reasoning_parser_stays_active_for_lowest_effort_compatibility():
+    assert K2HorizonReasoningParser.sanitize_when_thinking_disabled is True
+
+
 def _group(*calls: str, prefix="", suffix="") -> str:
     return prefix + "<ifm|tool_calls>" + "".join(calls) + "</ifm|tool_calls>" + suffix
 
@@ -131,6 +137,28 @@ def test_xml_default_parses_multiple_calls_and_schema_types():
     assert result.content == "Before  after"
     assert [call["name"] for call in result.tool_calls] == ["lookup", "ping"]
     assert json.loads(result.tool_calls[0]["arguments"]) == {"query": "123", "limit": 3}
+
+
+@pytest.mark.parametrize(
+    "closer",
+    ["</ifm|think>", "</ifm|think_fast>", "</ifm|think_faster>"],
+)
+def test_tool_call_hides_prompt_primed_reasoning_prefix(closer):
+    result = K2HorizonToolParser().extract_tool_calls(
+        _group(_xml_call("ping"), prefix=f"private plan{closer}"),
+        _request(),
+    )
+    assert result.tools_called
+    assert result.content is None
+
+
+def test_tool_call_preserves_plain_visible_prefix_without_reasoning_boundary():
+    result = K2HorizonToolParser().extract_tool_calls(
+        _group(_xml_call("ping"), prefix="Visible preface. "),
+        _request(),
+    )
+    assert result.tools_called
+    assert result.content == "Visible preface. "
 
 
 @pytest.mark.parametrize(
@@ -212,6 +240,48 @@ def test_partial_marker_flushes_without_silent_byte_loss():
             emitted.append(delta.get("content") or "")
     emitted.append(parser.flush_held_content(text))
     assert "".join(emitted) == text
+
+
+def test_streaming_low_effort_compatibility_separates_reasoning_and_tool_call():
+    """K2 ignores enable_thinking=False; the stream must still be sanitized."""
+    cfg = MagicMock()
+    cfg.engine = None
+    cfg.reasoning_parser_name = None
+    cfg.reasoning_parser = K2HorizonReasoningParser()
+    cfg.tool_call_parser = None
+    cfg.tool_parser_instance = K2HorizonToolParser()
+    cfg.enable_auto_tool_choice = True
+    processor = StreamingPostProcessor(
+        cfg,
+        tools_requested=True,
+        enable_thinking=False,
+        request=_request(),
+    )
+    processor.reset()
+
+    output = "private plan</ifm|think_faster>" + _group(_xml_call("ping"))
+    reasoning: list[str] = []
+    content: list[str] = []
+    calls: list[dict] = []
+    for char in output:
+        chunk = MagicMock()
+        chunk.new_text = char
+        chunk.finished = False
+        chunk.channel = None
+        chunk.finish_reason = None
+        chunk.tool_calls = None
+        for event in processor.process_chunk(chunk):
+            if event.type == "reasoning":
+                reasoning.append(event.reasoning)
+            elif event.type == "content":
+                content.append(event.content)
+            elif event.type == "tool_call":
+                calls.extend(event.tool_calls)
+
+    assert "".join(reasoning) == "private plan"
+    assert "".join(content) == ""
+    assert len(calls) == 1
+    assert calls[0]["function"]["name"] == "ping"
 
 
 def test_tool_parser_is_registered():

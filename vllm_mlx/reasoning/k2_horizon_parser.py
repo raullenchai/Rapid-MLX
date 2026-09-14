@@ -21,6 +21,11 @@ class K2HorizonReasoningParser(ReasoningParser):
     )
     TOOL_CALLS_START = "<ifm|tool_calls>"
     implicit_reasoning_until_close = True
+    # K2's template has no true no-reasoning mode: an OpenAI-compatible
+    # ``enable_thinking=false`` request is rendered with the model's lowest
+    # native effort instead.  Keep the parser active so that prompt-primed
+    # reasoning cannot leak into ``delta.content`` on that compatibility path.
+    sanitize_when_thinking_disabled = True
 
     def __init__(self, tokenizer=None):
         super().__init__(tokenizer)

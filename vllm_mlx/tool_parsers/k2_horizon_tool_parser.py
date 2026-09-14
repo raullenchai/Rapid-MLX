@@ -33,6 +33,14 @@ class K2HorizonToolParser(ToolParser):
         re.DOTALL,
     )
     CALL_RE = re.compile(r"<ifm\|tool_call>(.*?)</ifm\|tool_call>", re.DOTALL)
+    REASONING_ENDS = tuple(
+        end
+        for end in (
+            "</ifm|think>",
+            "</ifm|think_fast>",
+            "</ifm|think_faster>",
+        )
+    )
 
     def __init__(self, tokenizer=None):
         super().__init__(tokenizer)
@@ -166,6 +174,24 @@ class K2HorizonToolParser(ToolParser):
             )
         return calls
 
+    @classmethod
+    def _visible_prefix(cls, prefix: str) -> str:
+        """Drop K2's prompt-primed reasoning before a native tool group.
+
+        The opening think marker is part of the rendered assistant prefix and
+        therefore is not present in generated text.  The closing marker is the
+        only trustworthy boundary available to the non-streaming tool parser.
+        Plain prose without a protocol closer remains visible.
+        """
+        boundaries = [prefix.rfind(marker) for marker in cls.REASONING_ENDS]
+        boundary = max(boundaries, default=-1)
+        if boundary < 0:
+            return prefix
+        marker = next(
+            marker for marker in cls.REASONING_ENDS if prefix.rfind(marker) == boundary
+        )
+        return prefix[boundary + len(marker) :]
+
     def extract_tool_calls(
         self, model_output: str, request: dict[str, Any] | None = None
     ) -> ExtractedToolCallInformation:
@@ -182,7 +208,7 @@ class K2HorizonToolParser(ToolParser):
             calls = self._parse_group(model_output[start:end], request)
         except (json.JSONDecodeError, TypeError, ValueError):
             return ExtractedToolCallInformation(False, [], model_output)
-        content = model_output[:start] + model_output[end:]
+        content = self._visible_prefix(model_output[:start]) + model_output[end:]
         return ExtractedToolCallInformation(True, calls, content or None)
 
     @staticmethod
