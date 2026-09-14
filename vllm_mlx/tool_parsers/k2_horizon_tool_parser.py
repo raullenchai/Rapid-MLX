@@ -87,7 +87,7 @@ class K2HorizonToolParser(ToolParser):
         if not isinstance(name, str) or not name or any(ch.isspace() for ch in name):
             raise ValueError("invalid IFM tool name")
         declared = cls._declared_tools(request)
-        if declared and name not in declared:
+        if name not in declared:
             raise ValueError("unknown IFM tool name")
         named = cls._named_choice(request)
         if named is not None and name != named:
@@ -140,6 +140,19 @@ class K2HorizonToolParser(ToolParser):
             if wire_format == "xml_typed" and not explicit_type:
                 raise ValueError("missing IFM argument type")
             schema = props.get(key)
+            if explicit_type and isinstance(schema, dict):
+                explicit_base = explicit_type.split("[", 1)[0].lower()
+                declared_type = schema.get("type")
+                declared_types = (
+                    {declared_type}
+                    if isinstance(declared_type, str)
+                    else set(declared_type)
+                    if isinstance(declared_type, list)
+                    and all(isinstance(value, str) for value in declared_type)
+                    else set()
+                )
+                if declared_types and explicit_base not in declared_types:
+                    raise ValueError("IFM argument type contradicts tool schema")
             if schema is None and explicit_type:
                 schema = {"type": explicit_type.split("[", 1)[0].lower()}
             arguments[key] = _coerce_schema_value(match.group(3), schema)
@@ -260,7 +273,7 @@ class K2HorizonToolParser(ToolParser):
             return {"content": addition} if addition else None
         self._content_upto = end
         return {
-            "content": prefix or None,
+            "content": self._visible_prefix(prefix) or None,
             "tool_calls": [
                 {
                     "index": index,

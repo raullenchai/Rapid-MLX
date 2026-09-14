@@ -206,6 +206,26 @@ def test_named_choice_rejects_other_declared_tool():
     assert not result.tools_called
 
 
+def test_tool_call_without_declared_tools_fails_closed():
+    output = _group(_xml_call("ping"))
+    result = K2HorizonToolParser().extract_tool_calls(output, {"tools": []})
+    assert not result.tools_called
+    assert result.content == output
+
+
+def test_typed_argument_must_match_declared_schema():
+    output = _group(
+        "<ifm|tool_call>lookup"
+        "<ifm|arg_key>limit</ifm|arg_key>"
+        "<ifm|arg_type>string</ifm|arg_type>"
+        "<ifm|arg_value>2</ifm|arg_value>"
+        "</ifm|tool_call>"
+    )
+    result = K2HorizonToolParser().extract_tool_calls(output, _request("xml_typed"))
+    assert not result.tools_called
+    assert result.content == output
+
+
 def test_streaming_emits_prefix_once_and_call_on_close():
     parser = K2HorizonToolParser()
     request = _request()
@@ -226,6 +246,16 @@ def test_streaming_emits_prefix_once_and_call_on_close():
     assert len(calls) == 1
     assert calls[0]["function"]["name"] == "lookup"
     assert json.loads(calls[0]["function"]["arguments"]) == {"limit": 3}
+
+
+@pytest.mark.parametrize("closer", K2HorizonToolParser.REASONING_ENDS)
+def test_streaming_complete_group_hides_prompt_primed_reasoning(closer):
+    parser = K2HorizonToolParser()
+    output = _group(_xml_call("ping"), prefix=f"private plan{closer}")
+    delta = parser.extract_tool_calls_streaming("", output, output, request=_request())
+    assert delta is not None
+    assert delta["content"] is None
+    assert len(delta["tool_calls"]) == 1
 
 
 def test_partial_marker_flushes_without_silent_byte_loss():
