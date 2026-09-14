@@ -145,6 +145,7 @@ from .prefix_cache import (
     PrefixCacheManager,
     validate_paged_cache_capability,
 )
+from .prompt_host_cache import PromptHostCache
 from .repetition_guard import (
     AgentRepetitionLogitsProcessor,
     detect_repeated_token_suffix,
@@ -3822,6 +3823,9 @@ class Scheduler:
         """
         self.model = model
         self.tokenizer = tokenizer
+        # BatchedEngine replaces this with its shared render+token cache.
+        # Direct EngineCore users still receive exact worker-side token reuse.
+        self.prompt_host_cache = PromptHostCache()
         # Derived from the weights once, on the first segmented prefill.
         self._prefill_tile_rows_cached: int | None = None
         self.config = config or SchedulerConfig()
@@ -7307,6 +7311,45 @@ class Scheduler:
             return 0
         return paged.release_pressure_blocks(max_blocks=max_blocks)
 
+    def _encode_prompt_string(self, prompt: str) -> list[int]:
+        """Tokenize on the MLX worker and reuse exact immutable host results."""
+
+        tokenizer = self.tokenizer
+        if hasattr(tokenizer, "encode"):
+            encoder = tokenizer
+        elif hasattr(tokenizer, "tokenizer") and hasattr(tokenizer.tokenizer, "encode"):
+            encoder = tokenizer.tokenizer
+        else:
+            raise AttributeError(
+                f"Tokenizer {type(tokenizer)} has no 'encode' method. "
+                "Continuous batching requires a tokenizer with encode support."
+            )
+
+        host_cache: PromptHostCache | None = getattr(self, "prompt_host_cache", None)
+        if host_cache is None or not host_cache.enabled:
+            return [int(token) for token in encoder.encode(prompt)]
+        base_tokenizer = getattr(encoder, "_tokenizer", encoder)
+        init_kwargs = getattr(base_tokenizer, "init_kwargs", {}) or {}
+        fingerprint = host_cache.fingerprint(
+            {
+                "schema": 1,
+                "kind": "tokens",
+                "model": getattr(self.config, "model_name", ""),
+                "tokenizer": (
+                    f"{type(base_tokenizer).__module__}."
+                    f"{type(base_tokenizer).__qualname__}:{id(base_tokenizer)}"
+                ),
+                "revision": str(init_kwargs.get("_commit_hash", "") or ""),
+                "prompt": prompt,
+            }
+        )
+        cached = host_cache.get_tokens(fingerprint)
+        if cached is not None:
+            return cached
+        tokens = [int(token) for token in encoder.encode(prompt)]
+        host_cache.put_tokens(fingerprint, tokens)
+        return tokens
+
     def add_request(self, request: Request) -> None:
         """
         Add a new request to the scheduler.
@@ -7351,21 +7394,7 @@ class Scheduler:
         # Tokenize if needed
         if request.prompt_token_ids is None:
             if isinstance(request.prompt, str):
-                # Handle both tokenizers and processors (for MLLM models)
-                if hasattr(self.tokenizer, "encode"):
-                    request.prompt_token_ids = self.tokenizer.encode(request.prompt)
-                elif hasattr(self.tokenizer, "tokenizer") and hasattr(
-                    self.tokenizer.tokenizer, "encode"
-                ):
-                    # Processor wraps tokenizer (e.g., Qwen3VLProcessor)
-                    request.prompt_token_ids = self.tokenizer.tokenizer.encode(
-                        request.prompt
-                    )
-                else:
-                    raise AttributeError(
-                        f"Tokenizer {type(self.tokenizer)} has no 'encode' method. "
-                        "Continuous batching requires a tokenizer with encode support."
-                    )
+                request.prompt_token_ids = self._encode_prompt_string(request.prompt)
             else:
                 request.prompt_token_ids = list(request.prompt)
             request.num_prompt_tokens = len(request.prompt_token_ids)

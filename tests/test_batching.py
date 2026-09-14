@@ -119,8 +119,12 @@ class TestRequest:
 
 def test_batched_engine_routes_cache_operations_to_active_backend():
     from vllm_mlx.engine.batched import BatchedEngine
+    from vllm_mlx.prompt_host_cache import PromptHostCache
 
     engine = BatchedEngine.__new__(BatchedEngine)
+    engine._prompt_host_cache = PromptHostCache(enabled=True)
+    fingerprint = engine._prompt_host_cache.fingerprint({"prompt": "retained"})
+    assert engine._prompt_host_cache.put_render(fingerprint, "retained")
     mllm = MagicMock()
     mllm.get_cache_stats.return_value = {"hits": 2}
     mllm.clear_prefix_cache.return_value = True
@@ -129,6 +133,8 @@ def test_batched_engine_routes_cache_operations_to_active_backend():
 
     assert engine.get_cache_stats() == {"hits": 2}
     assert engine.clear_prefix_cache(reset_stats=False) is True
+    assert engine._prompt_host_cache.stats()["entries"] == 0
+    assert engine._prompt_host_cache.stats()["invalidations"] == 1
     mllm.clear_prefix_cache.assert_called_once_with(reset_stats=False)
 
     text_engine = MagicMock()
@@ -142,6 +148,162 @@ def test_batched_engine_routes_cache_operations_to_active_backend():
     engine._engine = None
     assert engine.get_cache_stats() is None
     assert engine.clear_prefix_cache() is False
+
+
+def test_prompt_host_cache_covers_engine_lifecycle_and_stats(monkeypatch):
+    from vllm_mlx.engine.batched import BatchedEngine
+    from vllm_mlx.prompt_host_cache import PromptHostCache
+
+    engine = BatchedEngine.__new__(BatchedEngine)
+    engine._model_name = "test-model"
+    engine._is_mllm = False
+    engine._loaded = True
+    engine._stream_interval = 1
+    engine._mllm_scheduler = None
+    engine._engine = None
+    engine._prompt_host_cache = PromptHostCache(enabled=True)
+    fingerprint = engine._prompt_host_cache.fingerprint({"prompt": "retained"})
+    assert engine._prompt_host_cache.put_render(fingerprint, "retained")
+
+    scheduler = SimpleNamespace(prompt_host_cache=None)
+    engine._bind_prompt_host_cache(
+        SimpleNamespace(engine=SimpleNamespace(scheduler=scheduler))
+    )
+    assert scheduler.prompt_host_cache is engine._prompt_host_cache
+    assert engine.get_stats()["prompt_host_cache"]["entries"] == 1
+
+    engine._abort_all_guided_requests = lambda: None
+    engine._model_load_executor = None
+    engine._start_time = 1.0
+    engine._model = object()
+    engine._tokenizer = object()
+    engine._processor = object()
+    engine._mllm_instance = object()
+    engine._engine_started = True
+    engine._mllm_native_text_engine = True
+    asyncio.run(engine.stop())
+
+    assert engine._prompt_host_cache.stats()["entries"] == 0
+    assert engine._prompt_host_cache.stats()["stores"] == 0
+
+
+def test_scheduler_prompt_encoding_cache_and_fallbacks():
+    from vllm_mlx.prompt_host_cache import PromptHostCache
+
+    class _Tokenizer:
+        init_kwargs = {"_commit_hash": "revision-v1"}
+
+        def __init__(self):
+            self.encode_calls = 0
+
+        def encode(self, prompt):
+            self.encode_calls += 1
+            return [ord(char) for char in prompt]
+
+    tokenizer = _Tokenizer()
+    scheduler = Scheduler.__new__(Scheduler)
+    scheduler.tokenizer = tokenizer
+    scheduler.config = SimpleNamespace(model_name="test-model")
+    scheduler.prompt_host_cache = PromptHostCache(enabled=True)
+
+    first = scheduler._encode_prompt_string("abc")
+    first.append(999)
+    assert scheduler._encode_prompt_string("abc") == [97, 98, 99]
+    assert tokenizer.encode_calls == 1
+
+    wrapped = _Tokenizer()
+    scheduler.tokenizer = SimpleNamespace(tokenizer=wrapped)
+    assert scheduler._encode_prompt_string("wrapped") == [ord(c) for c in "wrapped"]
+
+    scheduler.prompt_host_cache = PromptHostCache(enabled=False)
+    assert scheduler._encode_prompt_string("fresh") == [ord(c) for c in "fresh"]
+
+    scheduler.tokenizer = object()
+    with pytest.raises(AttributeError, match="has no 'encode' method"):
+        scheduler._encode_prompt_string("invalid")
+
+
+@pytest.mark.asyncio
+async def test_text_and_shared_engine_paths_bind_prompt_host_cache(monkeypatch):
+    import vllm_mlx.engine_core as engine_core
+    import vllm_mlx.gdn_in_proj_fusion as gdn_fusion
+    import vllm_mlx.moe_fusion as moe_fusion
+    import vllm_mlx.qwen35_fused_gdn_decode as fused_gdn
+    import vllm_mlx.qwen35_moe_router as moe_router
+    import vllm_mlx.runtime.cache as runtime_cache
+    import vllm_mlx.utils.tokenizer as tokenizer_utils
+    from vllm_mlx.engine.batched import BatchedEngine
+
+    starts = []
+
+    class _FakeScheduler:
+        def __init__(self):
+            self.prompt_host_cache = None
+
+        def preflight_metal_admission(self):
+            return None
+
+    class _FakeLoop:
+        def __init__(self):
+            self.scheduler = _FakeScheduler()
+
+        async def start(self, executor=None):
+            starts.append(executor)
+
+    class _FakeAsyncEngineCore:
+        def __init__(self, *, model, tokenizer, config, executor=None):
+            self.model = model
+            self.tokenizer = tokenizer
+            self.config = config
+            self.executor = executor
+            self.engine = _FakeLoop()
+
+    model = object()
+    tokenizer = object()
+    monkeypatch.setattr(
+        tokenizer_utils,
+        "load_model_with_fallback",
+        lambda *_args, **_kwargs: (model, tokenizer, "test-snapshot"),
+    )
+    monkeypatch.setattr(moe_fusion, "fuse_gate_up", lambda _model: None)
+    monkeypatch.setattr(moe_router, "install_qwen35_moe_router", lambda _model: None)
+    monkeypatch.setattr(gdn_fusion, "fuse_gdn_in_proj", lambda _model: None)
+    monkeypatch.setattr(
+        fused_gdn, "install_qwen35_fused_gdn_decode", lambda _model: None
+    )
+    monkeypatch.setattr(
+        runtime_cache, "pin_prefix_cache_identity", lambda *_a, **_k: None
+    )
+    monkeypatch.setattr(engine_core, "AsyncEngineCore", _FakeAsyncEngineCore)
+
+    engine = BatchedEngine(
+        "test-model",
+        force_text=True,
+        chat_template_id="test-template",
+    )
+    monkeypatch.setattr(engine, "_install_resolved_metal_budget", lambda: None)
+    monkeypatch.setattr(engine, "_run_metal_admission_preflight", lambda: None)
+
+    await engine._start_llm()
+    assert (
+        engine._engine.engine.scheduler.prompt_host_cache is engine._prompt_host_cache
+    )
+    assert starts == [engine._model_load_executor]
+
+    engine._is_mllm = True
+    engine._processor = SimpleNamespace(tokenizer=tokenizer)
+    await engine._start_qwen36_native_text_engine(model)
+    assert (
+        engine._engine.engine.scheduler.prompt_host_cache is engine._prompt_host_cache
+    )
+    assert starts == [engine._model_load_executor, engine._model_load_executor]
+
+    engine._model_load_executor.shutdown(wait=True)
+    engine._model_load_executor = None
+    await engine._inject_shared_model(model, tokenizer, start_engine=False)
+    assert (
+        engine._engine.engine.scheduler.prompt_host_cache is engine._prompt_host_cache
+    )
 
 
 class TestSamplingParams:

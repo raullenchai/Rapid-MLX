@@ -35,6 +35,7 @@ from ..api.utils import (
     validate_serving_lane_reason,
 )
 from ..output_router import Channel, OutputRouter
+from ..prompt_host_cache import PromptHostCache
 from ..utils.chat_template import apply_chat_template as shared_apply_chat_template
 from .base import BaseEngine, GenerationOutput
 
@@ -1102,6 +1103,10 @@ class BatchedEngine(BaseEngine):
         # The MLLM lane has no text EngineCore/model_config to query. Set this
         # from the loaded language backbone's concrete cache probe instead.
         self._mllm_is_hybrid: bool | None = None
+        # Exact CPU-side render/tokenization reuse.  This is deliberately
+        # independent from device prefix state: model reload clears it and an
+        # uncertain input identity simply misses.
+        self._prompt_host_cache = PromptHostCache()
         self._loaded = False
         self._engine_started = False  # Track if engine loop is running
         self._start_time: float | None = None
@@ -1132,6 +1137,14 @@ class BatchedEngine(BaseEngine):
         self._guided_abort_events: dict[str, threading.Event] = {}
         self._guided_owner_tasks: dict[str, asyncio.Task] = {}
         self._guided_stopping = False
+
+    def _bind_prompt_host_cache(self, async_engine: Any) -> None:
+        """Share the host cache with a concrete scheduler when one exists."""
+
+        scheduler = getattr(getattr(async_engine, "engine", None), "scheduler", None)
+        host_cache: PromptHostCache | None = getattr(self, "_prompt_host_cache", None)
+        if scheduler is not None and host_cache is not None:
+            scheduler.prompt_host_cache = host_cache
 
     @property
     def model_name(self) -> str:
@@ -1976,6 +1989,7 @@ class BatchedEngine(BaseEngine):
             return
 
         self._engine = candidate
+        self._bind_prompt_host_cache(candidate)
         self._mllm_native_text_engine = True
         self._engine_started = True
         logger.info(
@@ -2186,6 +2200,7 @@ class BatchedEngine(BaseEngine):
             tokenizer=self._tokenizer,
             config=engine_config,
         )
+        self._bind_prompt_host_cache(self._engine)
 
         # #2858 acceptance: a model must not report healthy while every
         # request deterministically 503s under the resolved cap. The
@@ -2399,6 +2414,9 @@ class BatchedEngine(BaseEngine):
         self._tokenizer = None
         self._processor = None
         self._mllm_instance = None
+        prompt_host_cache = getattr(self, "_prompt_host_cache", None)
+        if prompt_host_cache is not None:
+            prompt_host_cache.clear(reset_stats=True)
         self._loaded = False
         self._engine_started = False
         self._mllm_native_text_engine = False
@@ -2586,7 +2604,50 @@ class BatchedEngine(BaseEngine):
         # the shared function will fall back to plain-text formatting when
         # apply_chat_template is missing.
         applicator = template_applicator or self.tokenizer
-        return shared_apply_chat_template(
+        template = getattr(applicator, "chat_template", None)
+        template_identity = (
+            template
+            if isinstance(template, str)
+            else (
+                f"{getattr(template, '__module__', '')}."
+                f"{getattr(template, '__qualname__', type(template).__qualname__)}:"
+                f"{id(template)}"
+                if callable(template)
+                else None
+            )
+        )
+        host_cache: PromptHostCache | None = getattr(self, "_prompt_host_cache", None)
+        render_fingerprint = (
+            host_cache.fingerprint(
+                {
+                    "schema": 1,
+                    "kind": "render",
+                    "model": self._model_name,
+                    "applicator": (
+                        f"{type(applicator).__module__}."
+                        f"{type(applicator).__qualname__}:{id(applicator)}"
+                    ),
+                    "template": template_identity,
+                    "messages": messages,
+                    "tools": tools,
+                    "num_images": num_images,
+                    "enable_thinking": enable_thinking,
+                    "add_generation_prompt": add_generation_prompt,
+                    "chat_template_kwargs": chat_template_kwargs,
+                }
+            )
+            if host_cache is not None and host_cache.enabled
+            else None
+        )
+        cached_prompt = (
+            host_cache.get_render(render_fingerprint)
+            if host_cache is not None
+            else None
+        )
+        if cached_prompt is not None:
+            return cached_prompt
+
+        prompt = shared_apply_chat_template(
             applicator,
             messages,
             tools=tools,
@@ -2595,6 +2656,9 @@ class BatchedEngine(BaseEngine):
             add_generation_prompt=add_generation_prompt,
             chat_template_kwargs=chat_template_kwargs,
         )
+        if host_cache is not None:
+            host_cache.put_render(render_fingerprint, prompt)
+        return prompt
 
     @staticmethod
     def _prepare_mllm_messages(
@@ -4169,6 +4233,9 @@ class BatchedEngine(BaseEngine):
             "loaded": self._loaded,
             "stream_interval": self._stream_interval,
         }
+        prompt_host_cache = getattr(self, "_prompt_host_cache", None)
+        if prompt_host_cache is not None:
+            stats["prompt_host_cache"] = prompt_host_cache.stats()
 
         if self._mllm_scheduler:
             mllm_stats = self._mllm_scheduler.get_stats()
@@ -4248,10 +4315,16 @@ class BatchedEngine(BaseEngine):
         return None
 
     def clear_prefix_cache(self, *, reset_stats: bool = True) -> bool:
-        """Clear reusable text prefix KV state while keeping weights loaded."""
+        """Clear reusable prompt state while keeping weights loaded."""
         cleared = False
+        prompt_host_cache = getattr(self, "_prompt_host_cache", None)
+        if prompt_host_cache is not None:
+            cleared = prompt_host_cache.clear(reset_stats=reset_stats) > 0
         if self._mllm_scheduler:
-            cleared = self._mllm_scheduler.clear_prefix_cache(reset_stats=reset_stats)
+            cleared = (
+                self._mllm_scheduler.clear_prefix_cache(reset_stats=reset_stats)
+                or cleared
+            )
         if self._engine:
             cleared = (
                 self._engine.clear_prefix_cache(reset_stats=reset_stats) or cleared
@@ -4785,6 +4858,7 @@ class BatchedEngine(BaseEngine):
             tokenizer=self._tokenizer,
             config=engine_config,
         )
+        self._bind_prompt_host_cache(self._engine)
 
         # Only start engine loop if requested
         if start_engine:

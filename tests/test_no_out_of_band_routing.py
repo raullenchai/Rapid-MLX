@@ -188,6 +188,11 @@ ALLOWED_RAPID_MLX_ENV_VARS: frozenset[str] = frozenset(
         # same scores; model, parser, serving lane, and emitted block set remain
         # unchanged. Unqualified shapes and machines retain the eager selector.
         "RAPID_MLX_QSA_STAGE1",
+        # Opt-out of exact CPU-side chat-render and tokenization reuse. This
+        # changes only whether immutable host results are retained in a bounded
+        # LRU after model selection; it cannot select a model, parser, tier, or
+        # serving lane.
+        "RAPID_MLX_PROMPT_HOST_CACHE",
         # Opt-in absorbed MLA factorization for short verification blocks on
         # an already-selected MLA model. This changes only the attention math
         # path after a measured cache crossover; it cannot select a model,
