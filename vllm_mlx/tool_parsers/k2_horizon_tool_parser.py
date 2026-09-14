@@ -271,9 +271,10 @@ class K2HorizonToolParser(ToolParser):
             addition = current_text[self._content_upto : end]
             self._content_upto = end
             return {"content": addition} if addition else None
-        self._content_upto = end
+        content = self._visible_prefix(prefix) + current_text[end:]
+        self._content_upto = len(current_text)
         return {
-            "content": self._visible_prefix(prefix) or None,
+            "content": content or None,
             "tool_calls": [
                 {
                     "index": index,

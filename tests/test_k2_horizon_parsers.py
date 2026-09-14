@@ -251,10 +251,12 @@ def test_streaming_emits_prefix_once_and_call_on_close():
 @pytest.mark.parametrize("closer", K2HorizonToolParser.REASONING_ENDS)
 def test_streaming_complete_group_hides_prompt_primed_reasoning(closer):
     parser = K2HorizonToolParser()
-    output = _group(_xml_call("ping"), prefix=f"private plan{closer}")
+    output = _group(
+        _xml_call("ping"), prefix=f"private plan{closer}", suffix="Visible suffix"
+    )
     delta = parser.extract_tool_calls_streaming("", output, output, request=_request())
     assert delta is not None
-    assert delta["content"] is None
+    assert delta["content"] == "Visible suffix"
     assert len(delta["tool_calls"]) == 1
 
 
