@@ -42,6 +42,9 @@ class MCPClientManager:
         self._clients: dict[str, MCPClient] = {}
         self._started = False
         self._lock = asyncio.Lock()
+        self._lease_condition = asyncio.Condition(self._lock)
+        self._active_tool_leases = 0
+        self._generation_mutation_waiters = 0
 
         # Create clients for each server
         for name, server_config in config.servers.items():
@@ -52,12 +55,46 @@ class MCPClientManager:
         """Check if manager has been started."""
         return self._started
 
+    def _generation_condition(self) -> asyncio.Condition:
+        """Lazily provide lease state for older test/embedding constructors."""
+
+        condition = getattr(self, "_lease_condition", None)
+        if condition is None:
+            condition = asyncio.Condition(self._lock)
+            self._lease_condition = condition
+            self._active_tool_leases = 0
+            self._generation_mutation_waiters = 0
+        return condition
+
     @asynccontextmanager
     async def tool_generation_lease(self):
         """Prevent stop/reconnect/refresh from mutating a dispatched target."""
 
-        async with self._lock:
+        condition = self._generation_condition()
+        async with condition:
+            await condition.wait_for(lambda: self._generation_mutation_waiters == 0)
+            self._active_tool_leases += 1
+        try:
             yield
+        finally:
+            async with condition:
+                self._active_tool_leases -= 1
+                if self._active_tool_leases == 0:
+                    condition.notify_all()
+
+    @asynccontextmanager
+    async def _generation_mutation(self):
+        """Serialize mutations after all concurrent tool leases drain."""
+
+        condition = self._generation_condition()
+        async with condition:
+            self._generation_mutation_waiters += 1
+            try:
+                await condition.wait_for(lambda: self._active_tool_leases == 0)
+                yield
+            finally:
+                self._generation_mutation_waiters -= 1
+                condition.notify_all()
 
     async def start(self):
         """
@@ -65,7 +102,7 @@ class MCPClientManager:
 
         Connections are made in parallel for faster startup.
         """
-        async with self._lock:
+        async with self._generation_mutation():
             if self._started:
                 return
 
@@ -105,7 +142,7 @@ class MCPClientManager:
 
     async def stop(self):
         """Stop the manager and disconnect from all servers."""
-        async with self._lock:
+        async with self._generation_mutation():
             if not self._started:
                 return
 
@@ -292,7 +329,7 @@ class MCPClientManager:
 
     async def refresh_tools(self):
         """Refresh tools from all connected servers."""
-        async with self._lock:
+        async with self._generation_mutation():
             tasks = [
                 client.refresh_tools()
                 for client in self._clients.values()
@@ -308,7 +345,7 @@ class MCPClientManager:
         Args:
             server_name: Specific server to reconnect, or None for all
         """
-        async with self._lock:
+        async with self._generation_mutation():
             if server_name:
                 client = self._clients.get(server_name)
                 if client:

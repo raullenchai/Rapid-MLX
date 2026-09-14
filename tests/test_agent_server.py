@@ -1393,9 +1393,10 @@ async def test_pinned_mcp_dispatch_leases_generation_until_call_finishes():
     from vllm_mlx.mcp.manager import MCPClientManager
     from vllm_mlx.mcp.types import MCPTool, MCPToolResult
 
-    call_started = asyncio.Event()
+    both_calls_started = asyncio.Event()
     release_call = asyncio.Event()
     events = []
+    started_count = 0
     tool = MCPTool("same", "tool", "tool", {"type": "object"})
 
     class Client:
@@ -1403,8 +1404,11 @@ async def test_pinned_mcp_dispatch_leases_generation_until_call_finishes():
         tools = [tool]
 
         async def call_tool(self, *_args, **_kwargs):
+            nonlocal started_count
             events.append("call-started")
-            call_started.set()
+            started_count += 1
+            if started_count == 2:
+                both_calls_started.set()
             await release_call.wait()
             events.append("call-finished")
             return MCPToolResult("same__tool", "ok")
@@ -1417,10 +1421,15 @@ async def test_pinned_mcp_dispatch_leases_generation_until_call_finishes():
 
     class Manager:
         tool_generation_lease = MCPClientManager.tool_generation_lease
+        _generation_condition = MCPClientManager._generation_condition
+        _generation_mutation = MCPClientManager._generation_mutation
         reconnect = MCPClientManager.reconnect
 
         def __init__(self):
             self._lock = asyncio.Lock()
+            self._lease_condition = asyncio.Condition(self._lock)
+            self._active_tool_leases = 0
+            self._generation_mutation_waiters = 0
             self.config = SimpleNamespace(
                 agent_read_only_tools=[], default_timeout=30.0
             )
@@ -1434,19 +1443,28 @@ async def test_pinned_mcp_dispatch_leases_generation_until_call_finishes():
 
     manager = Manager()
     pinned = _PinnedMCPManager(manager)
-    execution = asyncio.create_task(pinned.execute_tool("same__tool", {}))
-    await call_started.wait()
+    executions = [
+        asyncio.create_task(pinned.execute_tool("same__tool", {})) for _ in range(2)
+    ]
+    await asyncio.wait_for(both_calls_started.wait(), timeout=0.5)
 
     reconnection = asyncio.create_task(manager.reconnect("same"))
     await asyncio.sleep(0)
-    assert events == ["call-started"]
+    assert events == ["call-started", "call-started"]
 
     release_call.set()
-    result = await execution
+    results = await asyncio.gather(*executions)
     await reconnection
 
-    assert result.content == "ok"
-    assert events == ["call-started", "call-finished", "disconnect", "connect"]
+    assert [result.content for result in results] == ["ok", "ok"]
+    assert events == [
+        "call-started",
+        "call-started",
+        "call-finished",
+        "call-finished",
+        "disconnect",
+        "connect",
+    ]
 
 
 @pytest.mark.asyncio
@@ -1489,6 +1507,42 @@ async def test_pinned_mcp_targets_fail_closed_on_lookup_errors():
 
     manager.get_client = broken_lookup
     assert pinned.resolve_tool_target("same__tool") == (None, "same__tool")
+
+
+@pytest.mark.asyncio
+async def test_pinned_mcp_dispatch_failure_is_known_executed():
+    from contextlib import asynccontextmanager
+    from types import SimpleNamespace
+
+    from vllm_mlx.agent_runtime.server import _PinnedMCPManager
+    from vllm_mlx.mcp.types import MCPTool
+
+    tool = MCPTool("same", "tool", "tool", {"type": "object"})
+
+    class Client:
+        is_connected = True
+        tools = [tool]
+
+        async def call_tool(self, *_args, **_kwargs):
+            raise RuntimeError("private post-dispatch failure")
+
+    class Manager:
+        config = SimpleNamespace(agent_read_only_tools=[], default_timeout=30.0)
+        client = Client()
+
+        def get_all_tools(self):
+            return [tool]
+
+        def get_client(self, _name):
+            return self.client
+
+        @asynccontextmanager
+        async def tool_generation_lease(self):
+            yield
+
+    with pytest.raises(AgentToolExecutionError) as captured:
+        await _PinnedMCPManager(Manager()).execute_tool("same__tool", {})
+    assert captured.value.executed is True
 
 
 def test_mcp_snapshot_and_listing_map_manager_failures():
@@ -1873,6 +1927,16 @@ async def test_mcp_result_shapes_and_execution_exception_are_audited():
     manager.result = MCPToolResult("tool", "x" * 250_000)
     truncated = await MCPToolRegistry().execute(call)
     assert truncated.content.endswith("[tool result truncated by Rapid]")
+
+    class Unserializable:
+        def __str__(self):
+            raise RuntimeError("private serialization detail")
+
+    manager.result = MCPToolResult("tool", Unserializable())
+    serialization_failure = await MCPToolRegistry().execute(call)
+    assert serialization_failure.executed is True
+    assert serialization_failure.is_error is True
+    assert "private serialization detail" not in serialization_failure.content
 
     manager.result = RuntimeError("private exception")
     uncertain = await MCPToolRegistry().execute(call)

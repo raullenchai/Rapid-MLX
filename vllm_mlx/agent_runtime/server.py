@@ -282,11 +282,18 @@ class _PinnedMCPManager:
             if target is None:
                 raise AgentToolExecutionError(executed=False)
             _, bare_name, client, _ = target
-            return await client.call_tool(
-                bare_name,
-                arguments,
-                timeout=self.config.default_timeout,
-            )
+            try:
+                return await client.call_tool(
+                    bare_name,
+                    arguments,
+                    timeout=self.config.default_timeout,
+                )
+            except asyncio.CancelledError:
+                raise
+            except AgentToolExecutionError:
+                raise
+            except Exception as exc:
+                raise AgentToolExecutionError(executed=True) from exc
 
 
 def classify_mcp_tool(name: str, *, declared_read_only: Sequence[str] = ()) -> ToolRisk:
@@ -568,21 +575,31 @@ class MCPToolRegistry:
                 executed=None,
                 safe_summary="Tool execution outcome is unknown; do not retry automatically.",
             )
+        serialization_failed = False
+        try:
+            if result.is_error:
+                content = result.error_message or "Tool execution failed."
+            elif isinstance(result.content, str):
+                content = result.content
+            else:
+                content = json.dumps(result.content, ensure_ascii=False, default=str)
+        except Exception:
+            serialization_failed = True
+            content = "Tool executed, but its result could not be serialized."
+        result_is_error = bool(result.is_error) or serialization_failed
         audit_recorded = self._record_execution(
             executor.sandbox,
             bare_name,
             server_name,
             call.arguments,
-            success=not result.is_error,
-            error_message=("tool returned an error" if result.is_error else None),
+            success=not result_is_error,
+            error_message=(
+                "tool result serialization failed"
+                if serialization_failed
+                else ("tool returned an error" if result.is_error else None)
+            ),
             execution_time_ms=(time.monotonic() - started) * 1000,
         )
-        if result.is_error:
-            content = result.error_message or "Tool execution failed."
-        elif isinstance(result.content, str):
-            content = result.content
-        else:
-            content = json.dumps(result.content, ensure_ascii=False, default=str)
         if len(content) > _MAX_TOOL_RESULT_CHARS:
             content = (
                 content[:_MAX_TOOL_RESULT_CHARS] + "\n[tool result truncated by Rapid]"
@@ -590,7 +607,7 @@ class MCPToolRegistry:
         return AgentToolResult(
             call_id=call.id,
             content=content,
-            is_error=bool(result.is_error),
+            is_error=result_is_error,
             executed=True,
             safe_summary=(
                 "Tool execution completed, but its MCP audit record could not be written."
