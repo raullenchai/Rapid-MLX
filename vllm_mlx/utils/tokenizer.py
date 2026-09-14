@@ -1423,13 +1423,15 @@ def load_model_with_fallback(
         tokenizer_config = _neutralize_unbundled_template_types(
             model_name, tokenizer_config or {}
         )
-        result = _mlx_lm_load(
-            model_name,
-            tokenizer_config=tokenizer_config,
-            model_config=rapid_owned_model_config,
-            lazy=True,
-            return_config=return_config,
-        )
+        lazy_load_kwargs = {
+            "tokenizer_config": tokenizer_config,
+            "lazy": True,
+            "return_config": return_config,
+        }
+        if rapid_owned_model_config is not None:
+            # Older supported mlx-lm versions do not accept model_config.
+            lazy_load_kwargs["model_config"] = rapid_owned_model_config
+        result = _mlx_lm_load(model_name, **lazy_load_kwargs)
         model, tokenizer = result[0], result[1]
 
         # The four fixups below are pure post-load tokenizer/generation-

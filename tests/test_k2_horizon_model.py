@@ -267,31 +267,29 @@ def test_public_loader_fails_closed_when_k2_registration_is_unavailable(
 
 
 def test_public_eager_loader_ignores_checkpoint_owned_model_code(tmp_path, monkeypatch):
-    """The public eager path must execute Rapid's runtime, not repo Python."""
+    """The real eager loader must execute Rapid's runtime, not repo Python."""
+    from mlx.utils import tree_flatten
+
     from vllm_mlx.utils import tokenizer
 
-    (tmp_path / "config.json").write_text(
-        json.dumps(
-            {
-                **TINY,
-                "model_file": "model.py",
-                "auto_map": {"AutoModel": "model.CustomModel"},
-            }
-        )
-    )
+    checkpoint_config = {
+        **TINY,
+        "model_file": "model.py",
+        "auto_map": {"AutoModel": "model.CustomModel"},
+    }
+    (tmp_path / "config.json").write_text(json.dumps(checkpoint_config))
     (tmp_path / "model.py").write_text("raise AssertionError('must not execute')\n")
     (tmp_path / "tokenizer.json").write_text("{}")
 
-    captured = {}
-    fake_model = object()
-
-    def fake_load_model(path: Path, *, model_config=None, **_kwargs):
-        captured.update(model_config or {})
-        return fake_model, {}
+    source_model = k2_horizon.Model(k2_horizon.ModelArgs.from_dict(checkpoint_config))
+    mx.eval(source_model.parameters())
+    mx.save_safetensors(
+        str(tmp_path / "model.safetensors"),
+        dict(tree_flatten(source_model.parameters())),
+    )
 
     fake_tokenizer = MagicMock()
     fake_tokenizer.chat_template = "template"
-    monkeypatch.setattr("mlx_lm.utils.load_model", fake_load_model)
     monkeypatch.setattr("tokenizers.Tokenizer.from_file", lambda _path: MagicMock())
     monkeypatch.setattr(
         "transformers.PreTrainedTokenizerFast", lambda **_kwargs: fake_tokenizer
@@ -302,10 +300,8 @@ def test_public_eager_loader_ignores_checkpoint_owned_model_code(tmp_path, monke
     monkeypatch.setattr(tokenizer, "repair_byte_level_decoder", lambda *_: None)
 
     model, returned_tokenizer = tokenizer.load_model_with_fallback(str(tmp_path))
-    assert model is fake_model
+    assert isinstance(model, k2_horizon.Model)
     assert returned_tokenizer is fake_tokenizer
-    assert captured["model_file"] is None
-    assert captured["auto_map"] is None
 
 
 @pytest.mark.parametrize("remote", [False, True], ids=["local", "first-remote-load"])
