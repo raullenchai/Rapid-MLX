@@ -23,6 +23,14 @@ DEFAULT_PROFILE = AgentProfile(
     repeated_call_limit=2,
 )
 
+CONSERVATIVE_LOCAL_PROFILE = AgentProfile(
+    name="default-conservative",
+    max_visible_tools=6,
+    max_tool_rounds=8,
+    repeated_call_limit=2,
+    max_output_tokens=900,
+)
+
 _MINICPM5_2B_CATALOG_IDENTITIES = frozenset(
     {
         "minicpm5-2b-4bit",
@@ -77,4 +85,8 @@ def resolve_agent_profile(
         tool_call_parser == "minicpm" and _is_minicpm5_2b_config(model_config)
     ):
         return MINICPM5_2B_PROFILE
+    if "minicpm5-2b" in normalized:
+        # Preserve the old conservative limits for local names without
+        # granting them a verified MiniCPM identity.
+        return CONSERVATIVE_LOCAL_PROFILE
     return DEFAULT_PROFILE
