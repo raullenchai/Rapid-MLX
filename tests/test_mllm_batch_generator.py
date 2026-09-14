@@ -2432,3 +2432,104 @@ def test_text_prefill_checkpoints_continue_from_a_resumed_snapshot(monkeypatch):
     assert holder.positions == (15,)
     assert holder.arrays_at(15)[0].tolist() == [[15.0, 15.0]]
     assert cache[0].cache[0].tolist() == [[20.0, 20.0]]
+
+
+def test_exact_prefix_helpers_refuse_foreign_or_unmatched_entries(monkeypatch):
+    """Every early exit the snapshot helpers take when mlx-vlm's exact store
+    is absent, holds no matching entry, or the store itself declines."""
+    gen = _make_real_apc_generator(monkeypatch)
+    cache = gen._prefix_cache
+    _store_entry_with_checkpoints(gen, list(range(100)), [40, 80])
+
+    # A manager without an in-memory exact store is left alone.
+    assert gen._exact_entries(object()) is None
+    assert gen._stored_entry_checkpoints(object(), list(range(100)), 17) is None
+    holders = [None, object()]
+    gen._attach_stored_checkpoints(
+        object(), list(range(100)), holders, extra_hash=17, prefix_len=100
+    )
+
+    # No entry for these tokens / this extra hash.
+    lock, entries = gen._exact_entries(cache)
+    assert gen._find_exact_entry(entries, list(range(50)), 17) is None
+    assert gen._find_exact_entry(entries, list(range(100)), 18) is None
+    assert gen._stored_entry_checkpoints(cache, list(range(50)), 17) is None
+    gen._attach_stored_checkpoints(
+        cache, list(range(50)), holders, extra_hash=17, prefix_len=50
+    )
+    assert (
+        gen._snap_exact_text_prefix(cache, list(range(101)), 18, min_position=0) is None
+    )
+    (entry,) = _stored_entries(gen)
+    assert len(entries) == 1
+
+    # A store refusal (too short for mlx-vlm's minimum) attaches nothing.
+    request = _make_ids_request(4)
+    request.full_prompt_token_ids = [1, 2, 3, 4]
+    request.hybrid_checkpoints = holders
+    gen._store_exact_text_prefix(request, _hybrid_cache(4, state_tag=4.0), prefix_len=4)
+    assert len(entries) == 1
+
+
+def test_exact_prefix_snap_scans_whole_prefix_and_honours_min_position(monkeypatch):
+    gen = _make_real_apc_generator(monkeypatch)
+    cache = gen._prefix_cache
+    _store_entry_with_checkpoints(gen, list(range(100)), [40, 80])
+
+    # The stored entry is a strict prefix of the prompt: the fast full-slice
+    # comparison finds the common prefix without a token walk.
+    snapped = gen._snap_exact_text_prefix(cache, list(range(120)), 17, min_position=0)
+    assert snapped is not None
+    assert snapped[1] == 80
+    # Nothing beyond min_position to gain: refused.
+    assert (
+        gen._snap_exact_text_prefix(cache, list(range(120)), 17, min_position=80)
+        is None
+    )
+    assert (
+        gen._snap_exact_text_prefix(cache, list(range(120)), 17, min_position=99)
+        is None
+    )
+    # Diverges at 50: the common prefix itself is below min_position.
+    diverged = list(range(50)) + [999] * 70
+    assert gen._snap_exact_text_prefix(cache, diverged, 17, min_position=60) is None
+
+
+def test_exact_prefix_snap_refuses_when_rewind_or_clone_fails(monkeypatch):
+    import mlx_vlm.apc_adapters as adapters
+
+    gen = _make_real_apc_generator(monkeypatch)
+    cache = gen._prefix_cache
+    _store_entry_with_checkpoints(gen, list(range(100)), [40, 80])
+    full_ids = list(range(90)) + [999] * 10
+
+    monkeypatch.setattr(adapters, "clone_cache_entry", lambda *a, **k: None)
+    assert gen._snap_exact_text_prefix(cache, full_ids, 17, min_position=0) is None
+    monkeypatch.undo()
+
+    monkeypatch.setattr(
+        MLLMBatchGenerator, "_rewind_exact_entry", staticmethod(lambda *_: None)
+    )
+    assert gen._snap_exact_text_prefix(cache, full_ids, 17, min_position=0) is None
+
+
+def test_rewind_exact_entry_refuses_layers_it_cannot_rewind():
+    from mlx_vlm.models.cache import KVCache
+
+    rewind = MLLMBatchGenerator._rewind_exact_entry
+
+    # Recurrent layer without a checkpoint at the position.
+    cache = _hybrid_cache(100, state_tag=100.0)
+    assert rewind(cache, 50) is None
+
+    # Unknown / non-pageable layer.
+    assert rewind([object()], 0) is None
+
+    # A KV layer that is shorter than the requested position.
+    assert rewind([cache[0]], 150) is None
+
+    # A KV layer whose trim gives back fewer tokens than asked.
+    stubborn = KVCache()
+    stubborn.update_and_fetch(mx.zeros((1, 1, 100, 4)), mx.zeros((1, 1, 100, 4)))
+    stubborn.trim = lambda n: 0
+    assert rewind([stubborn], 50) is None

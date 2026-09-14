@@ -21,6 +21,7 @@ import inspect
 import logging
 import os
 import time
+from collections import OrderedDict
 from collections.abc import Callable
 from contextlib import contextmanager
 from dataclasses import dataclass, field
@@ -1056,17 +1057,17 @@ class MLLMBatchGenerator:
         )
 
     @staticmethod
-    def _exact_entries(cache: Any) -> tuple[Any, dict[Any, Any]] | None:
+    def _exact_entries(cache: Any) -> tuple[Any, OrderedDict[Any, Any]] | None:
         """mlx-vlm's ``(lock, in-memory exact entries)``; None for other managers."""
         entries = getattr(cache, "_exact_cache", None)
         lock = getattr(cache, "lock", None)
-        if not isinstance(entries, dict) or lock is None:
+        if not isinstance(entries, OrderedDict) or lock is None:
             return None
         return lock, entries
 
     @staticmethod
     def _find_exact_entry(
-        entries: dict[Any, Any], token_ids: Any, extra_hash: int
+        entries: OrderedDict[Any, Any], token_ids: Any, extra_hash: int
     ) -> Any:
         wanted = tuple(int(t) for t in token_ids)
         for entry in entries.values():
@@ -1251,10 +1252,7 @@ class MLLMBatchGenerator:
         conservative for a budget."""
         total = checkpoint_bytes(stored)
         for layer in stored:
-            try:
-                total += int(getattr(layer, "nbytes", 0) or 0)
-            except (TypeError, ValueError):
-                continue
+            total += int(getattr(layer, "nbytes", 0) or 0)
         return total
 
     def _enforce_exact_cache_budget(self, cache: Any) -> None:
