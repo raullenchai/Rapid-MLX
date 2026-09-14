@@ -156,14 +156,28 @@ an open-source license; review the checkpoint's `LICENSE.md` before use,
 especially its commercial-use and generated-content disclosure terms.
 
 ```bash
-git clone --branch ltx25 https://github.com/MrMoferFRAN/ltx-2-mlx.git
-git -C ltx-2-mlx checkout 57952288076766abe27dda3a774b2c24f7346977
+git clone --branch vector/ltx25-dequant-matmul https://github.com/raullenchai/ltx-2-mlx.git
+git -C ltx-2-mlx checkout 15ae0280cb3b2372db9399484ba3944ed0316bb6
 uv sync --project ltx-2-mlx
 brew install ffmpeg
 
 RAPID_MLX_LTX25_RUNTIME="$PWD/ltx-2-mlx/.venv/bin/ltx-2-mlx" \
   rapid-mlx serve ltx-2.5-mlx-q8
 ```
+
+The pinned runtime includes an experimental large-token Q8 dispatch that is
+disabled by default. On an M4 Pro 48 GB host, enabling it reduced measured
+LTX-2.5 end-to-end latency by 4.1–4.5% without changing memory use or output
+stream contracts:
+
+```bash
+LTX2_DEQUANT_MATMUL_MIN_TOKENS=1024 \
+  RAPID_MLX_LTX25_RUNTIME="$PWD/ltx-2-mlx/.venv/bin/ltx-2-mlx" \
+  rapid-mlx serve ltx-2.5-mlx-q8
+```
+
+Keep the switch opt-in: its crossover depends on the Apple GPU and MLX
+version, and broader visual qualification is still in progress.
 
 Rapid uses the executable only to locate and verify the source checkout: it
 must be the expected workspace entry point, with a tracked lockfile and the
