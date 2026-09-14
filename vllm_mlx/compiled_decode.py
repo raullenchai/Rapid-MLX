@@ -19,7 +19,16 @@ from importlib.metadata import PackageNotFoundError, version
 from typing import Any
 
 import mlx.core as mx
-from mlx_lm.models.cache import ArraysCache, KVCache, _BaseCache
+
+# MUST install the MLX hardware-compat shim before importing any ``mlx_lm``
+# submodule. ``mlx_lm.__init__`` imports its generation module, which captures
+# a thread-local GPU stream at import time; that stream is unusable on M5
+# single-stream GPUs unless the compatibility wrapper is already active.
+from . import _mlx_compat as _mlx_compat
+
+_mlx_compat.install()
+
+from mlx_lm.models.cache import ArraysCache, KVCache, _BaseCache  # noqa: E402
 
 from .compiled_precision import (
     compiled_decode_precision,
