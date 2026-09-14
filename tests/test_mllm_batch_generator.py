@@ -2311,6 +2311,30 @@ def test_exact_prefix_hit_seeds_the_snapshot_checkpoints(monkeypatch):
     ]
 
 
+def test_exact_prefix_snap_drops_checkpoints_past_the_resume_position(monkeypatch):
+    """Checkpoints recorded beyond the divergence carry the *old* prompt's
+    recurrent state; the resumed request must not inherit them."""
+    gen = _make_real_apc_generator(monkeypatch)
+    _store_entry_with_checkpoints(gen, list(range(100)), [40, 80, 95])
+    request = _make_ids_request(100)
+    request.input_ids = mx.array(list(range(90)) + [999] * 10, dtype=mx.int32)
+    warm = gen._lookup_exact_text_prefix(request)
+    assert warm is not None
+    assert request.cached_tokens == 80
+    assert [h.positions if h else None for h in request.hybrid_checkpoints] == [
+        None,
+        (40, 80),
+    ]
+    # Storing the resumed prompt keeps only checkpoints the new prompt owns.
+    request.full_prompt_token_ids = list(range(90)) + [999] * 10
+    gen._store_exact_text_prefix(request, warm, prefix_len=100)
+    from vllm_mlx.hybrid_state_checkpoints import collect_checkpoints
+
+    stored = [e for e in _stored_entries(gen) if e.token_ids[-1] == 999]
+    assert len(stored) == 1
+    assert collect_checkpoints(stored[0].prompt_cache)[1].positions == (40, 80)
+
+
 def test_exact_prefix_snap_refuses_without_a_common_checkpoint(monkeypatch):
     gen = _make_real_apc_generator(monkeypatch)
     _store_entry_with_checkpoints(gen, list(range(100)), [95])
