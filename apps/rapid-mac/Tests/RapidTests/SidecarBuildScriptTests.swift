@@ -176,8 +176,8 @@ struct SidecarBuildScriptTests {
                 "The smoke must cover the resampler after SciPy trimming.")
         #expect(script.contains("TTSEngine.__new__(TTSEngine).to_bytes"),
                 "The smoke must encode a WAV after scipy.io has been trimmed.")
-        #expect(script.contains(#"-not -name qwen3_tts -not -name __pycache__"#),
-                "Only model-family directories outside Qwen3 TTS may be removed.")
+        #expect(script.contains(#"-not -name qwen3_tts -not -name chatterbox -not -name __pycache__"#),
+                "Qwen3 TTS and its mlx-audio 0.5.3 Chatterbox codec closure must survive trimming.")
         #expect(!script.contains(#"rm -rf "$STAGE/site-packages/mlx_audio/tts/models""#),
                 "The trim must never remove the complete TTS model directory.")
         #expect(script.contains(#"MACHO_BASELINE_COUNT="${MACHO_BASELINE_COUNT:-173}""#),

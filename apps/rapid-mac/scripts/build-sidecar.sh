@@ -928,13 +928,15 @@ rm -rf \
 # mlx-audio ships implementations for dozens of TTS families. The desktop
 # picker deliberately exposes only Qwen3 CustomVoice: it offers real named
 # preset speakers without the large Kokoro G2P or F5 cloning dependency
-# stacks. Drop the other family implementations so the release stays below
-# the app's 500 MiB envelope; shared TTS utilities and Qwen3's codec modules
-# remain intact.
+# stacks. mlx-audio 0.5.3's Qwen3 speech tokenizer imports the shared codec
+# registry, whose StepAudio2 implementation reuses Chatterbox's S3Gen
+# transformer blocks. Keep that transitive runtime closure even though
+# Chatterbox is not exposed in the Desktop picker. Drop the remaining family
+# implementations so the release stays below the app's 500 MiB envelope.
 if [ -d "$STAGE/site-packages/mlx_audio/tts/models" ]; then
     find "$STAGE/site-packages/mlx_audio/tts/models" \
         -mindepth 1 -maxdepth 1 -type d \
-        -not -name qwen3_tts -not -name __pycache__ \
+        -not -name qwen3_tts -not -name chatterbox -not -name __pycache__ \
         -prune -exec rm -rf {} +
 fi
 
