@@ -1250,6 +1250,7 @@ class MLLMBatchGenerator:
             warm.append(cloned)
         if eval_targets:
             mx.eval(eval_targets)
+        holders = collect_checkpoints(rewound)
         # Promote only a snapshot that actually served: a candidate whose
         # rewind or clone failed must not keep displacing usable entries.
         with lock:
@@ -1257,7 +1258,6 @@ class MLLMBatchGenerator:
             if served is not None and served is entry:
                 entries.move_to_end(key)
                 served.last_used = time.time()
-        holders = collect_checkpoints(rewound)
         return (
             warm,
             position,

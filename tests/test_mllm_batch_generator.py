@@ -2564,9 +2564,10 @@ def test_exact_prefix_snap_refuses_when_rewind_or_clone_fails(monkeypatch):
     _store_entry_with_checkpoints(gen, list(range(100)), [40, 80])
     full_ids = list(range(90)) + [999] * 10
 
+    real_clone = adapters.clone_cache_entry
     monkeypatch.setattr(adapters, "clone_cache_entry", lambda *a, **k: None)
     assert gen._snap_exact_text_prefix(cache, full_ids, 17, min_position=0) is None
-    monkeypatch.undo()
+    monkeypatch.setattr(adapters, "clone_cache_entry", real_clone)
 
     monkeypatch.setattr(
         MLLMBatchGenerator, "_rewind_exact_entry", staticmethod(lambda *_: None)
@@ -2586,10 +2587,11 @@ def test_exact_prefix_snap_promotes_only_a_snapshot_that_served(monkeypatch):
     assert order_before == [0, 100]
     full_ids = list(range(90)) + [999] * 10
 
+    real_clone = adapters.clone_cache_entry
     monkeypatch.setattr(adapters, "clone_cache_entry", lambda *a, **k: None)
     assert gen._snap_exact_text_prefix(cache, full_ids, 17, min_position=0) is None
     assert [e.token_ids[0] for e in _stored_entries(gen)] == [0, 100]
-    monkeypatch.undo()
+    monkeypatch.setattr(adapters, "clone_cache_entry", real_clone)
 
     snapped = gen._snap_exact_text_prefix(cache, full_ids, 17, min_position=0)
     assert snapped is not None and snapped[1] == 80
