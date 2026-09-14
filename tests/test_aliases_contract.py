@@ -1669,6 +1669,14 @@ _CURATED_RECOMMENDED_SAMPLING: dict[str, dict[str, float]] = {
     "glm4.5-air-4bit": {"temperature": 0.6, "top_p": 0.95},
     # GLM-4.7-Flash ships temperature=1.0 upstream; we add only top_p.
     "glm4.7-9b-4bit": {"top_p": 0.95},
+    # Native MTP is qualified on greedy decode. These values also neutralize
+    # Desktop's generic repetition penalty, which the serial runtime cannot
+    # apply without changing the qualified target distribution.
+    "glm5.3-flash-4bit": {
+        "temperature": 0.0,
+        "top_p": 1.0,
+        "repetition_penalty": 1.0,
+    },
 }
 
 
@@ -2105,7 +2113,11 @@ def test_glm_5_3_flash_alias_declares_qualified_native_mtp() -> None:
     assert profile.supports_dflash is False
     assert profile.tool_call_parser == "glm47"
     assert profile.reasoning_parser == "glm5"
-    assert profile.recommended_sampling is None
+    assert dict(profile.recommended_sampling or ()) == {
+        "temperature": 0.0,
+        "top_p": 1.0,
+        "repetition_penalty": 1.0,
+    }
     assert detect_model_config(alias) == profile
     assert detect_model_config(profile.hf_path) == profile
 

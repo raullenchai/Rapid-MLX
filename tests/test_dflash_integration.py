@@ -539,6 +539,7 @@ def test_build_app_returns_fastapi_app() -> None:
     routes = {r.path for r in app.routes if hasattr(r, "path")}
     assert "/healthz" in routes
     assert "/v1/models" in routes
+    assert "/v1/models/{model_id:path}" in routes
     assert "/v1/chat/completions" in routes
 
 
@@ -583,6 +584,11 @@ def test_healthz_and_models_routes() -> None:
     body = r.json()
     assert body["object"] == "list"
     assert body["data"][0]["id"] == "qwen3.5-27b-8bit"
+
+    r = client.get("/v1/models/qwen3.5-27b-8bit")
+    assert r.status_code == 200
+    assert r.json()["id"] == "qwen3.5-27b-8bit"
+    assert client.get("/v1/models/not-the-loaded-model").status_code == 404
 
 
 def test_run_dflash_server_wires_security_configuration(monkeypatch) -> None:
@@ -648,6 +654,8 @@ def test_run_dflash_server_wires_security_configuration(monkeypatch) -> None:
     assert client.get("/healthz").status_code == 200
     assert client.get("/v1/models").status_code == 401
     assert client.get("/v1/models", headers=auth).status_code == 200
+    assert client.get("/v1/models/qwen3.5-27b-8bit").status_code == 401
+    assert client.get("/v1/models/qwen3.5-27b-8bit", headers=auth).status_code == 200
 
     # The first request reaches DFlash's normal validation path (empty
     # messages -> 400) and therefore consumes the one-request rate budget;

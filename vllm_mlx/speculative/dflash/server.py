@@ -829,6 +829,27 @@ def _build_app(
             ]
         )
 
+    @app.get(
+        "/v1/models/{model_id:path}",
+        dependencies=[Depends(_verify_api_key_with_bearer_challenge)],
+    )
+    async def retrieve_model(model_id: str) -> ModelInfo:
+        """Return the loaded model's Rapid profile extensions.
+
+        The serial speculative server is a complete alternate application,
+        so it does not inherit the main server's model routes. Desktop reads
+        this endpoint after readiness to apply the alias's calibrated sampling
+        defaults; without it, a native-MTP model starts successfully but the
+        GUI keeps its generic non-greedy defaults and silently misses the
+        accelerated path (or receives an honest 400 for an unsupported
+        repetition penalty).
+        """
+        if model_id != served_model_name:
+            raise HTTPException(status_code=404, detail="Model not found")
+        from ...routes.models import _build_model_info
+
+        return _build_model_info(model_id)
+
     # codex round-3 #3: auth + rate-limit for this route are enforced in
     # ``_DFlashAdmissionMiddleware`` BEFORE the admission slot is reserved and
     # before the body is read — NOT as route dependencies here. Keeping them
