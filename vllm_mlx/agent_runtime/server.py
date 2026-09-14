@@ -931,12 +931,9 @@ class AgentServerService:
             if entry.task is not None and not entry.task.done()
         }
         if generation_tasks:
-            done, pending = await asyncio.wait(
+            _, pending = await asyncio.wait(
                 generation_tasks, timeout=_SHUTDOWN_JOIN_SECONDS
             )
-            for task in done:
-                if not task.cancelled():
-                    task.exception()
             if pending:
                 for task in pending:
                     task.cancel()

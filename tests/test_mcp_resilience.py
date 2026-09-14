@@ -457,3 +457,52 @@ def test_failed_connect_closes_the_captured_stderr_file(monkeypatch):
     assert client_obj._state == MCPServerState.ERROR
     assert client_obj._stderr_file is None
     assert handle.closed
+
+
+@pytest.mark.asyncio
+async def test_manager_resolution_refresh_and_reconnect_paths():
+    from types import SimpleNamespace
+
+    from vllm_mlx.mcp.manager import MCPClientManager
+    from vllm_mlx.mcp.types import MCPTool
+
+    events = []
+
+    class Client:
+        def __init__(self, name, connected=True):
+            self.name = name
+            self.is_connected = connected
+            self.tools = [MCPTool(name, "tool", "tool", {"type": "object"})]
+
+        async def refresh_tools(self):
+            events.append((self.name, "refresh"))
+
+        async def disconnect(self):
+            events.append((self.name, "disconnect"))
+
+        async def connect(self):
+            events.append((self.name, "connect"))
+
+    manager = object.__new__(MCPClientManager)
+    manager.config = SimpleNamespace(default_timeout=30.0)
+    manager._lock = asyncio.Lock()
+    manager._clients = {
+        "one": Client("one"),
+        "two": Client("two", connected=False),
+    }
+
+    assert manager.resolve_tool_target("one__tool") == ("one", "tool")
+    assert manager.resolve_tool_target("tool") == ("one", "tool")
+    await manager.refresh_tools()
+    assert events == [("one", "refresh")]
+
+    await manager.reconnect("one")
+    await manager.reconnect()
+    assert events[1:] == [
+        ("one", "disconnect"),
+        ("one", "connect"),
+        ("one", "disconnect"),
+        ("one", "connect"),
+        ("two", "disconnect"),
+        ("two", "connect"),
+    ]

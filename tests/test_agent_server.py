@@ -549,6 +549,14 @@ async def test_cancel_returns_existing_terminal_outcome_without_500():
     failed_after_cancel = await failed_service.cancel(failed.id)
     assert failed_after_cancel.status is AgentRunStatus.FAILED
 
+    cancelled_task = asyncio.create_task(asyncio.sleep(60))
+    failed_entry = failed_service._entry(failed.id)
+    failed_entry.task = cancelled_task
+    failed_entry.tool_in_flight = True
+    cancelled_task.cancel()
+    still_failed = await failed_service.cancel(failed.id)
+    assert still_failed.status is AgentRunStatus.FAILED
+
 
 @pytest.mark.asyncio
 async def test_cancel_racing_approval_never_schedules_side_effect():
@@ -584,6 +592,57 @@ async def test_cancel_racing_approval_never_schedules_side_effect():
 
     assert cancelled.status is AgentRunStatus.CANCELLED
     assert registry.calls == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("approved", [True, False])
+async def test_approval_maps_missing_runtime_payload(monkeypatch, approved):
+    call = AgentToolCall(id="call-send", name=SEND.name, arguments={"body": "x"})
+    service = AgentServerService(
+        registry=FakeRegistry((SEND,)),
+        chat_driver=ScriptedDriver(AgentModelTurn(tool_calls=[call])),
+    )
+    created = await service.create(AgentRunCreateRequest(goal="send"), model="model")
+    waiting = await wait_for_status(
+        service, created.id, AgentRunStatus.AWAITING_APPROVAL
+    )
+    monkeypatch.setattr(
+        service._runtime, "resolve_approval", lambda *_args, **_kw: None
+    )
+
+    expected = "approved action payload" if approved else "denial observation"
+    with pytest.raises(AgentRunConflictError, match=expected):
+        await service.approve(
+            created.id,
+            AgentApprovalRequest(
+                call_id=waiting.pending_action.call_id, approved=approved
+            ),
+        )
+
+
+@pytest.mark.asyncio
+async def test_client_result_rejects_cancellation_in_progress():
+    call = AgentToolCall(id="call-read", name=READ.name, arguments={"path": "x"})
+    service = AgentServerService(
+        registry=FakeRegistry((READ,)),
+        chat_driver=ScriptedDriver(AgentModelTurn(tool_calls=[call])),
+    )
+    created = await service.create(
+        AgentRunCreateRequest(goal="read", execution="client"), model="model"
+    )
+    waiting = await wait_for_status(
+        service, created.id, AgentRunStatus.AWAITING_TOOL_RESULT
+    )
+    service._entry(created.id).cancel_requested = True
+    with pytest.raises(AgentRunConflictError, match="cancellation"):
+        await service.submit_result(
+            created.id,
+            AgentToolResultRequest(
+                call_id=waiting.pending_action.call_id,
+                content="result",
+                executed=True,
+            ),
+        )
 
 
 @pytest.mark.asyncio
@@ -891,6 +950,16 @@ def test_approval_summary_bounds_depth_items_keys_and_text():
     assert "x" * 257 not in encoded
     assert "k" * 129 not in encoded
     assert len(encoded) < 12_000
+
+    assert _approval_argument_summary("secret", key="api_token") == "[redacted]"
+    many_fields = _approval_argument_summary({str(index): index for index in range(40)})
+    assert many_fields["[truncated]"] == "additional fields omitted"
+
+
+def test_minicpm_shape_rejects_missing_metadata():
+    from vllm_mlx.agent_runtime.profiles import _is_minicpm5_2b_config
+
+    assert _is_minicpm5_2b_config(None) is False
 
 
 @pytest.mark.asyncio
@@ -1283,6 +1352,129 @@ async def test_pinned_mcp_dispatch_leases_generation_until_call_finishes():
 
 
 @pytest.mark.asyncio
+async def test_pinned_mcp_targets_fail_closed_on_lookup_errors():
+    from contextlib import asynccontextmanager
+    from types import SimpleNamespace
+
+    from vllm_mlx.agent_runtime.server import _PinnedMCPManager
+    from vllm_mlx.mcp.types import MCPTool
+
+    tool = MCPTool("same", "tool", "tool", {"type": "object"})
+
+    class Client:
+        is_connected = True
+        tools = [tool]
+
+    class Manager:
+        config = SimpleNamespace(agent_read_only_tools=[], default_timeout=30.0)
+        client = Client()
+
+        def get_all_tools(self):
+            return [tool]
+
+        def get_client(self, _name):
+            return self.client
+
+        @asynccontextmanager
+        async def tool_generation_lease(self):
+            yield
+
+    manager = Manager()
+    pinned = _PinnedMCPManager(manager)
+    assert pinned.resolve_tool_target("missing") == (None, "missing")
+    assert pinned.get_client("missing") is None
+    with pytest.raises(AgentToolExecutionError):
+        await pinned.execute_tool("missing", {})
+
+    def broken_lookup(_name):
+        raise RuntimeError("lookup failed")
+
+    manager.get_client = broken_lookup
+    assert pinned.resolve_tool_target("same__tool") == (None, "same__tool")
+
+
+def test_mcp_snapshot_and_listing_map_manager_failures():
+    from types import SimpleNamespace
+
+    from vllm_mlx.agent_runtime.server import AgentToolRegistryUnavailableError
+    from vllm_mlx.config import reset_config
+
+    class BrokenManager:
+        config = SimpleNamespace(agent_read_only_tools=[], default_timeout=30.0)
+
+        def get_all_tools(self):
+            raise RuntimeError("registry failed")
+
+    cfg = reset_config()
+    cfg.mcp_manager = BrokenManager()
+    with pytest.raises(AgentToolRegistryUnavailableError):
+        MCPToolRegistry().snapshot()
+
+    registry = MCPToolRegistry(manager=BrokenManager(), executor=None, pinned=True)
+    with pytest.raises(AgentToolRegistryUnavailableError):
+        registry.list_tools()
+    reset_config()
+
+
+@pytest.mark.asyncio
+async def test_mcp_bare_and_dispatch_failure_paths_are_audited():
+    from types import SimpleNamespace
+
+    from vllm_mlx.config import reset_config
+
+    audited = []
+
+    class Sandbox:
+        def validate_tool_execution(self, *_args):
+            return None
+
+        def record_execution(self, *args, **kwargs):
+            audited.append((args, kwargs))
+
+    class MissingBareManager:
+        def resolve_tool_target(self, _name):
+            return None, "bare"
+
+    cfg = reset_config()
+    cfg.mcp_manager = MissingBareManager()
+    cfg.mcp_executor = SimpleNamespace(sandbox=Sandbox())
+    bare = await MCPToolRegistry().execute(
+        AgentToolCall(id="bare", name="bare", arguments={})
+    )
+    assert bare.executed is False
+    assert audited[-1][0][:2] == ("bare", "unknown")
+
+    class BrokenClientManager:
+        def resolve_tool_target(self, _name):
+            return "server", "tool"
+
+        def get_client(self, _name):
+            raise RuntimeError("client lookup failed")
+
+    cfg.mcp_manager = BrokenClientManager()
+    unavailable = await MCPToolRegistry().execute(
+        AgentToolCall(id="client", name="server__tool", arguments={})
+    )
+    assert unavailable.executed is False
+
+    class RejectedDispatchManager:
+        def resolve_tool_target(self, _name):
+            return "server", "tool"
+
+        async def execute_tool(self, *_args):
+            raise AgentToolExecutionError(executed=True)
+
+    cfg.mcp_manager = RejectedDispatchManager()
+    rejected = await MCPToolRegistry().execute(
+        AgentToolCall(id="dispatch", name="server__tool", arguments={})
+    )
+    assert rejected.executed is True
+    assert rejected.is_error is True
+    assert audited[-1][1]["error_message"] == "MCP dispatch rejected"
+    reset_config()
+
+
+@pytest.mark.asyncio
 async def test_run_never_switches_to_replacement_model_generation():
     from vllm_mlx.config import reset_config
     from vllm_mlx.runtime.model_registry import ModelEntry, ModelRegistry
@@ -1346,6 +1538,33 @@ async def test_run_never_switches_to_replacement_model_generation():
 
     assert failed.failure_code == "agent_adapter_failure"
     assert seen_engines == [first_engine]
+    reset_config()
+
+
+def test_exact_model_generation_access_and_single_engine_binding():
+    from fastapi import HTTPException
+
+    from vllm_mlx.config import reset_config
+    from vllm_mlx.runtime.model_registry import ModelEntry, ModelRegistry
+    from vllm_mlx.service.helpers import bind_model_generation, get_engine
+
+    accessed = []
+    engine = object()
+    entry = ModelEntry(engine=engine, model_name="model", model_path="/model")
+    registry = ModelRegistry()
+    registry.on_engine_access = accessed.append
+    registry.add(entry, is_default=True)
+    assert registry.get_engine_if_entry(entry) is engine
+    assert accessed == ["model"]
+
+    cfg = reset_config()
+    cfg.engine = engine
+    cfg.model_registry = None
+    with bind_model_generation(engine):
+        assert get_engine("model") is engine
+    with bind_model_generation(object()), pytest.raises(HTTPException) as raised:
+        get_engine("model")
+    assert raised.value.status_code == 503
     reset_config()
 
 
@@ -1688,6 +1907,95 @@ async def test_schedule_rejects_parallel_driver_for_same_run():
     with pytest.raises(AgentRunConflictError, match="already has work"):
         service._schedule(entry)
     await service.cancel(created.id)
+
+    entry.cancel_requested = True
+    with pytest.raises(AgentRunConflictError, match="cancellation"):
+        service._schedule(entry)
+
+
+@pytest.mark.asyncio
+async def test_drive_cancellation_and_stale_state_guards(monkeypatch):
+    class CancelledRegistry(FakeRegistry):
+        async def execute(self, _call):
+            raise asyncio.CancelledError
+
+    call = AgentToolCall(id="call", name=READ.name, arguments={"path": "x"})
+    cancelled_service = AgentServerService(
+        registry=CancelledRegistry((READ,)),
+        chat_driver=ScriptedDriver(AgentModelTurn(tool_calls=[call])),
+    )
+    created = await cancelled_service.create(
+        AgentRunCreateRequest(goal="read"), model="model"
+    )
+    entry = cancelled_service._entry(created.id)
+    with pytest.raises(asyncio.CancelledError):
+        await entry.task
+    assert entry.tool_in_flight is False
+    await cancelled_service.cancel(created.id)
+    await cancelled_service._drive(entry, call=call)
+    await cancelled_service._drive(entry)
+
+    approval_service = AgentServerService(
+        registry=FakeRegistry((SEND,)),
+        chat_driver=ScriptedDriver(
+            AgentModelTurn(
+                tool_calls=[
+                    AgentToolCall(
+                        id="approval", name=SEND.name, arguments={"body": "x"}
+                    )
+                ]
+            )
+        ),
+    )
+    approval_run = await approval_service.create(
+        AgentRunCreateRequest(goal="send"), model="model"
+    )
+    await wait_for_status(
+        approval_service, approval_run.id, AgentRunStatus.AWAITING_APPROVAL
+    )
+    await approval_service._drive(approval_service._entry(approval_run.id))
+
+    invalid_service = AgentServerService(
+        registry=FakeRegistry(()),
+        chat_driver=ScriptedDriver(AgentModelTurn(content="answer")),
+    )
+    monkeypatch.setattr(
+        invalid_service._runtime, "accept_model_turn", lambda *_args: None
+    )
+    invalid = await invalid_service.create(
+        AgentRunCreateRequest(goal="answer"), model="model"
+    )
+    failed = await wait_for_status(invalid_service, invalid.id, AgentRunStatus.FAILED)
+    assert failed.failure_code == "agent_adapter_failure"
+
+
+@pytest.mark.asyncio
+async def test_drive_discards_result_if_run_became_terminal():
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    class SlowRegistry(FakeRegistry):
+        async def execute(self, call):
+            started.set()
+            await release.wait()
+            return AgentToolResult(
+                call_id=call.id,
+                content="late",
+                safe_summary="late",
+            )
+
+    call = AgentToolCall(id="call", name=READ.name, arguments={"path": "x"})
+    service = AgentServerService(
+        registry=SlowRegistry((READ,)),
+        chat_driver=ScriptedDriver(AgentModelTurn(tool_calls=[call])),
+    )
+    created = await service.create(AgentRunCreateRequest(goal="read"), model="model")
+    await started.wait()
+    entry = service._entry(created.id)
+    service._runtime.cancel(entry.run)
+    release.set()
+    await entry.task
+    assert entry.run.status is AgentRunStatus.CANCELLED
 
 
 @pytest.mark.asyncio

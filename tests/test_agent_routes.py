@@ -192,6 +192,28 @@ async def test_chat_driver_rejects_unsuccessful_or_ambiguous_response(monkeypatc
             AgentRunCreateRequest(goal="x"),
         )
 
+    filtered = ChatCompletionResponse(
+        model="served",
+        choices=[
+            ChatCompletionChoice(
+                message=AssistantMessage(content="filtered"),
+                finish_reason="content_filter",
+            )
+        ],
+    )
+
+    async def invalid_finish(*_args):
+        return Response(content=filtered.model_dump_json(exclude_none=True))
+
+    monkeypatch.setattr(chat_routes, "create_chat_completion", invalid_finish)
+    with pytest.raises(AgentServerError, match="invalid finish reason"):
+        await generate_chat_turn(
+            "served",
+            [{"role": "user", "content": "x"}],
+            [],
+            AgentRunCreateRequest(goal="x"),
+        )
+
 
 class _RouteService:
     def __init__(self):
@@ -475,6 +497,64 @@ async def test_single_model_metadata_is_cached_per_engine_generation(monkeypatch
         "model_type": "llama"
     }
     assert reads == ["/model", "/model"]
+
+
+@pytest.mark.asyncio
+async def test_registry_entry_metadata_is_cached(monkeypatch):
+    from types import SimpleNamespace
+
+    reads = []
+    entry = SimpleNamespace(model_path="/model")
+
+    def read(path):
+        reads.append(path)
+        return SimpleNamespace(config={"model_type": "llama"})
+
+    monkeypatch.setattr(agent_routes, "read_model_metadata", read)
+    first = await agent_routes._entry_model_config(entry)
+    second = await agent_routes._entry_model_config(entry)
+    assert first == second == {"model_type": "llama"}
+    assert reads == ["/model"]
+
+
+def test_agent_create_maps_registry_lookup_and_single_metadata_failures(monkeypatch):
+    class MissingRegistry:
+        def __contains__(self, _name):
+            return True
+
+        def get_entry(self, _name):
+            raise KeyError("missing generation")
+
+    cfg = reset_config()
+    cfg.model_name = "known"
+    cfg.model_registry = MissingRegistry()
+    app = FastAPI()
+    app.include_router(agent_routes.router)
+    with TestClient(app) as client:
+        missing = client.post("/v1/agent/runs", json={"goal": "x"})
+    assert missing.status_code == 404
+
+    cfg.model_registry = None
+    cfg.model_path = "/models/unreadable"
+
+    def fail_read(_path):
+        raise ValueError("private parse detail")
+
+    monkeypatch.setattr(agent_routes, "read_model_metadata", fail_read)
+    with TestClient(app) as client:
+        unavailable = client.post("/v1/agent/runs", json={"goal": "x"})
+    assert unavailable.status_code == 503
+    assert "private parse detail" not in unavailable.text
+    reset_config()
+
+
+def test_http_error_maps_registry_unavailable_to_503():
+    from vllm_mlx.agent_runtime.server import AgentToolRegistryUnavailableError
+
+    error = agent_routes._http_error(
+        AgentToolRegistryUnavailableError("registry unavailable")
+    )
+    assert error.status_code == 503
 
 
 def test_agent_http_surface_maps_success_and_stable_failures(monkeypatch):
