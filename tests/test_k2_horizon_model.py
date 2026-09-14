@@ -108,6 +108,14 @@ def test_yarn_rope_metadata_is_preserved_without_nested_theta():
         ({"rope_head_dim": 4}, "partial rotary"),
         ({"use_sliding_window": True}, "sliding"),
         ({"rope_parameters": []}, "rope_parameters"),
+        (
+            {"rope_parameters": {"rope_type": "default", "factor": 2.0}},
+            "scaling metadata",
+        ),
+        (
+            {"rope_parameters": {"rope_type": "default", "type": "yarn"}},
+            "conflicting rope types",
+        ),
     ],
 )
 def test_unsupported_checkpoint_geometry_fails_closed(override, match):

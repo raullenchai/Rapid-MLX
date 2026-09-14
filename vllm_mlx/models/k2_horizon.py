@@ -74,15 +74,27 @@ class ModelArgs(BaseModelArgs):
             if not isinstance(rope, dict):
                 raise ValueError("rope_parameters must be an object")
             rope = dict(rope)
-            rope_type = rope.get("rope_type") or rope.get("type") or "default"
+            rope_type = rope.pop("rope_type", None)
+            legacy_rope_type = rope.pop("type", None)
+            if (
+                rope_type is not None
+                and legacy_rope_type is not None
+                and rope_type != legacy_rope_type
+            ):
+                raise ValueError("rope_parameters declares conflicting rope types")
+            rope_type = rope_type or legacy_rope_type or "default"
             config["rope_theta"] = rope.pop(
                 "rope_theta", config.get("rope_theta", cls.rope_theta)
             )
             if rope_type == "default":
+                if rope:
+                    raise ValueError(
+                        "default rope_parameters contains scaling metadata: "
+                        f"{', '.join(sorted(rope))}"
+                    )
                 config["rope_scaling"] = None
             else:
                 rope["rope_type"] = rope_type
-                rope.pop("type", None)
                 config["rope_scaling"] = rope
         return super().from_dict(config)
 
