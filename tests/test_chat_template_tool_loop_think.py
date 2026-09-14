@@ -234,6 +234,28 @@ class TestRetain:
             == "plan"
         )
         assert _assistant_reasoning_for_template({"role": "assistant"}) == ""
+        # An empty reasoning_content does not hide a think span in content,
+        # matching the template (which renders the span it finds in content).
+        assert (
+            _assistant_reasoning_for_template(
+                {
+                    "role": "assistant",
+                    "reasoning_content": "",
+                    "content": "<think>\nfrom content\n</think>\n\nanswer",
+                }
+            )
+            == "from content"
+        )
+        assert (
+            _assistant_reasoning_for_template(
+                {
+                    "role": "assistant",
+                    "reasoning_content": "field wins",
+                    "content": "<think>\nfrom content\n</think>\n\nanswer",
+                }
+            )
+            == "field wins"
+        )
         assert (
             _assistant_reasoning_for_template(
                 {"role": "assistant", "reasoning_content": " why "}

@@ -2107,7 +2107,7 @@ def _is_tool_response_message(message) -> bool:
 def _assistant_reasoning_for_template(message: dict) -> str:
     """The reasoning the template would render for ``message`` live."""
     reasoning = message.get("reasoning_content")
-    if isinstance(reasoning, str):
+    if isinstance(reasoning, str) and reasoning.strip():
         return reasoning.strip()
     content = message.get("content")
     if isinstance(content, list) and _is_text_only_content_array(content):
