@@ -173,7 +173,7 @@ async def create_agent_run(request: AgentRunCreateRequest) -> AgentRunView:
 @router.get("/runs/{run_id}", response_model=AgentRunView)
 async def get_agent_run(run_id: str) -> AgentRunView:
     try:
-        return get_agent_service().get(run_id)
+        return await get_agent_service().get(run_id)
     except (AgentRunNotFoundError, AgentRunCapacityError) as exc:
         raise _http_error(exc) from exc
 
@@ -183,7 +183,7 @@ async def get_agent_events(
     run_id: str, after: int = Query(default=0, ge=0)
 ) -> AgentEventsView:
     try:
-        return get_agent_service().events(run_id, after=after)
+        return await get_agent_service().events(run_id, after=after)
     except (AgentRunNotFoundError, AgentRunCapacityError) as exc:
         raise _http_error(exc) from exc
 

@@ -90,7 +90,7 @@ async def wait_for_status(
     *statuses: AgentRunStatus,
 ):
     for _ in range(100):
-        view = service.get(run_id)
+        view = await service.get(run_id)
         if view.status in statuses:
             return view
         await asyncio.sleep(0)
@@ -110,7 +110,7 @@ async def test_direct_answer_completes_without_tools_and_keeps_output_out_of_eve
     assert done.profile == "minicpm5-2b"
     assert done.output == "Done."
     assert done.pending_action is None
-    wire = service.events(done.id).model_dump_json()
+    wire = (await service.events(done.id)).model_dump_json()
     assert "private goal" not in wire
     assert "Done." not in wire
 
@@ -159,7 +159,7 @@ async def test_server_mode_executes_read_only_tool_and_attaches_transient_ledger
     assert second_history[-1]["role"] == "tool"
     assert "[Rapid task state]" in second_history[-1]["content"]
     assert "Inspect private.txt" in second_history[-1]["content"]
-    events_wire = service.events(done.id).model_dump_json()
+    events_wire = (await service.events(done.id)).model_dump_json()
     assert "private.txt" not in events_wire
 
 
@@ -186,7 +186,7 @@ async def test_side_effect_waits_for_exact_approval_before_server_execution():
     assert waiting.pending_action.arguments == {}
     assert waiting.pending_action.approval_summary == {"body": "private message"}
     assert waiting.pending_action.approval_required is True
-    assert "private message" not in service.events(created.id).model_dump_json()
+    assert "private message" not in (await service.events(created.id)).model_dump_json()
 
     with pytest.raises(AgentRunConflictError, match="does not match"):
         await service.approve(
@@ -271,7 +271,7 @@ async def test_client_mode_releases_call_then_accepts_one_matching_result():
     done = await wait_for_status(service, created.id, AgentRunStatus.COMPLETED)
 
     assert done.output == "Client result used."
-    event_json = service.events(done.id).model_dump_json()
+    event_json = (await service.events(done.id)).model_dump_json()
     assert "client secret result" not in event_json
     assert "Client tool was not executed." in event_json
 
@@ -340,7 +340,7 @@ async def test_cancel_after_client_action_release_records_unknown_outcome():
 
     assert cancelled.status is AgentRunStatus.CANCELLED
     assert cancelled.pending_action is None
-    events = service.events(created.id).events
+    events = (await service.events(created.id)).events
     assert [event.type for event in events[-2:]] == [
         "tool.completed",
         "run.cancelled",
@@ -363,9 +363,9 @@ async def test_close_after_client_action_release_records_unknown_outcome():
 
     await service.close()
 
-    closed = service.get(created.id)
+    closed = await service.get(created.id)
     assert closed.status is AgentRunStatus.CANCELLED
-    events = service.events(created.id).events
+    events = (await service.events(created.id)).events
     assert [event.type for event in events[-2:]] == [
         "tool.completed",
         "run.cancelled",
@@ -409,7 +409,7 @@ async def test_capacity_never_evicts_an_active_run():
 
     with pytest.raises(AgentRunCapacityError, match="all agent run slots are active"):
         await service.create(AgentRunCreateRequest(goal="Second"), model="model")
-    assert service.get(first.id).id == first.id
+    assert (await service.get(first.id)).id == first.id
     await service.cancel(first.id)
 
 
@@ -460,8 +460,8 @@ async def test_old_terminal_run_is_evicted_to_make_room():
     second = await service.create(AgentRunCreateRequest(goal="Second"), model="model")
 
     with pytest.raises(AgentRunNotFoundError):
-        service.get(first.id)
-    assert service.get(second.id).id == second.id
+        await service.get(first.id)
+    assert (await service.get(second.id)).id == second.id
     await service.close()
 
 
@@ -479,7 +479,7 @@ async def test_terminal_ttl_expires_without_a_background_reaper():
     now[0] = 15.0
 
     with pytest.raises(AgentRunNotFoundError, match="expired"):
-        service.get(created.id)
+        await service.get(created.id)
 
 
 @pytest.mark.asyncio
@@ -494,7 +494,7 @@ async def test_adapter_exception_fails_closed_without_leaking_message():
     failed = await wait_for_status(service, created.id, AgentRunStatus.FAILED)
 
     assert failed.failure_code == "agent_adapter_failure"
-    wire = service.events(created.id).model_dump_json()
+    wire = (await service.events(created.id)).model_dump_json()
     assert "secret" not in wire
     assert "/private/path" not in wire
 
@@ -665,7 +665,7 @@ async def test_cancel_wins_when_model_driver_swallows_task_cancellation():
     assert cancelled.status is AgentRunStatus.CANCELLED
     assert cancelled.output is None
     assert "run.completed" not in [
-        event.type for event in service.events(created.id).events
+        event.type for event in (await service.events(created.id)).events
     ]
 
 
@@ -747,7 +747,7 @@ async def test_cancel_after_side_effect_dispatch_preserves_outcome_before_cancel
     release.set()
     cancelled = await cancellation
 
-    event_types = [event.type for event in service.events(created.id).events]
+    event_types = [event.type for event in (await service.events(created.id)).events]
     assert cancelled.status is AgentRunStatus.CANCELLED
     assert len(registry.calls) == 1
     assert registry.calls[0].arguments == call.arguments
@@ -798,10 +798,50 @@ async def test_cancel_request_disconnect_does_not_cancel_dispatched_tool():
     await entry.task
     cancelled = await service.cancel(created.id)
     assert cancelled.status is AgentRunStatus.CANCELLED
-    assert [event.type for event in service.events(created.id).events[-2:]] == [
+    assert [event.type for event in (await service.events(created.id)).events[-2:]] == [
         "tool.completed",
         "run.cancelled",
     ]
+
+
+@pytest.mark.asyncio
+async def test_cancel_records_unknown_if_dispatched_tool_task_is_cancelled():
+    started = asyncio.Event()
+
+    class CancelledRegistry(FakeRegistry):
+        async def execute(self, call):
+            self.calls.append(call)
+            started.set()
+            await asyncio.Future()
+
+    call = AgentToolCall(id="call-send", name=SEND.name, arguments={"body": "x"})
+    service = AgentServerService(
+        registry=CancelledRegistry((SEND,)),
+        chat_driver=ScriptedDriver(AgentModelTurn(tool_calls=[call])),
+    )
+    created = await service.create(AgentRunCreateRequest(goal="Send"), model="model")
+    waiting = await wait_for_status(
+        service, created.id, AgentRunStatus.AWAITING_APPROVAL
+    )
+    await service.approve(
+        created.id,
+        AgentApprovalRequest(call_id=waiting.pending_action.call_id, approved=True),
+    )
+    await started.wait()
+
+    cancellation = asyncio.create_task(service.cancel(created.id))
+    await asyncio.sleep(0)
+    entry = service._entry(created.id)
+    entry.task.cancel()
+    cancelled = await cancellation
+
+    assert cancelled.status is AgentRunStatus.CANCELLED
+    completed = [
+        event
+        for event in (await service.events(created.id)).events
+        if event.type == "tool.completed"
+    ]
+    assert completed[-1].data["result"]["executed"] is None
 
 
 @pytest.mark.asyncio
@@ -838,7 +878,7 @@ async def test_cancel_after_dispatched_tool_exception_records_outcome_then_cance
     release.set()
     cancelled = await cancellation
 
-    events = service.events(created.id).events
+    events = (await service.events(created.id)).events
     assert cancelled.status is AgentRunStatus.CANCELLED
     assert [event.type for event in events[-2:]] == [
         "tool.completed",
@@ -846,7 +886,7 @@ async def test_cancel_after_dispatched_tool_exception_records_outcome_then_cance
     ]
     assert events[-2].data["result"]["executed"] is True
     assert (
-        "private transport detail" not in service.events(created.id).model_dump_json()
+        "private transport detail" not in (await service.events(created.id)).model_dump_json()
     )
 
 
@@ -874,7 +914,7 @@ async def test_untyped_registry_failure_preserves_unknown_execution_state():
     done = await wait_for_status(service, created.id, AgentRunStatus.COMPLETED)
     completed = [
         event
-        for event in service.events(done.id).events
+        for event in (await service.events(done.id)).events
         if event.type == "tool.completed"
     ]
 
@@ -1041,9 +1081,9 @@ def test_event_cursor_returns_only_new_events():
         )
         created = await service.create(AgentRunCreateRequest(goal="x"), model="model")
         done = await wait_for_status(service, created.id, AgentRunStatus.COMPLETED)
-        all_events = service.events(done.id)
-        tail = service.events(done.id, after=all_events.events[-2].sequence)
-        ahead = service.events(done.id, after=999)
+        all_events = await service.events(done.id)
+        tail = await service.events(done.id, after=all_events.events[-2].sequence)
+        ahead = await service.events(done.id, after=999)
         return all_events, tail, ahead
 
     all_events, tail, ahead = asyncio.run(scenario())
@@ -1082,7 +1122,7 @@ async def test_model_authored_call_id_is_replaced_before_history_and_events():
     assert service._entry(created.id).messages[-1]["tool_calls"][0]["id"] == (
         "call_opaque"
     )
-    assert secret not in service.events(created.id).model_dump_json()
+    assert secret not in (await service.events(created.id)).model_dump_json()
 
 
 @pytest.mark.asyncio
@@ -1112,7 +1152,7 @@ async def test_repeated_model_authored_call_id_fails_before_opaque_replacement()
     failed = await wait_for_status(service, created.id, AgentRunStatus.FAILED)
 
     assert failed.failure_code == "agent_adapter_failure"
-    assert repeated not in service.events(created.id).model_dump_json()
+    assert repeated not in (await service.events(created.id)).model_dump_json()
 
 
 @pytest.mark.asyncio
@@ -1837,11 +1877,20 @@ async def test_mcp_result_shapes_and_execution_exception_are_audited():
 
 @pytest.mark.asyncio
 async def test_registry_without_mcp_has_no_tools_and_internal_request_stays_live():
+    from types import SimpleNamespace
+
     from vllm_mlx.agent_runtime.server import _InternalRequest
     from vllm_mlx.config import reset_config
 
     reset_config()
-    assert MCPToolRegistry().list_tools() == []
+    registry = MCPToolRegistry()
+    assert registry.list_tools() == []
+    assert registry.execution_timeout_seconds == 30.0
+    configured = MCPToolRegistry(
+        manager=SimpleNamespace(config=SimpleNamespace(default_timeout=12.5)),
+        pinned=True,
+    )
+    assert configured.execution_timeout_seconds == 12.5
     assert await _InternalRequest().is_disconnected() is False
 
 
@@ -1859,7 +1908,7 @@ async def test_close_cancels_active_work_and_rejects_new_runs():
 
     await service.close()
 
-    assert service.get(created.id).status is AgentRunStatus.CANCELLED
+    assert (await service.get(created.id)).status is AgentRunStatus.CANCELLED
     with pytest.raises(AgentRunCapacityError, match="shutting down"):
         await service.create(AgentRunCreateRequest(goal="new"), model="model")
 
@@ -1944,7 +1993,7 @@ async def test_close_fails_boundedly_if_dispatched_tool_exceeds_deadline(monkeyp
     await entry.task
     await service.close()
 
-    events = service.events(created.id).events
+    events = (await service.events(created.id)).events
     assert [event.type for event in events[-2:]] == [
         "tool.completed",
         "run.cancelled",
@@ -1971,6 +2020,30 @@ async def test_schedule_rejects_parallel_driver_for_same_run():
     entry.cancel_requested = True
     with pytest.raises(AgentRunConflictError, match="cancellation"):
         service._schedule(entry)
+
+
+@pytest.mark.asyncio
+async def test_get_waits_for_atomic_run_snapshot():
+    service = AgentServerService(
+        registry=FakeRegistry(()),
+        chat_driver=ScriptedDriver(AgentModelTurn(content="done")),
+    )
+    created = await service.create(AgentRunCreateRequest(goal="answer"), model="model")
+    done = await wait_for_status(service, created.id, AgentRunStatus.COMPLETED)
+    entry = service._entry(done.id)
+
+    async with entry.lock:
+        read = asyncio.create_task(service.get(done.id))
+        await asyncio.sleep(0)
+        assert not read.done()
+        entry.pending_action = AgentToolCall(id="stale", name=READ.name, arguments={})
+        entry.pending_risk = ToolRisk.READ_ONLY
+        entry.pending_action = None
+        entry.pending_risk = None
+
+    view = await read
+    assert view.status is AgentRunStatus.COMPLETED
+    assert view.pending_action is None
 
 
 @pytest.mark.asyncio

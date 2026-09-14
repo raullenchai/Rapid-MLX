@@ -257,12 +257,12 @@ class _RouteService:
             final_synthesis=False,
         )
 
-    def get(self, run_id):
+    async def get(self, run_id):
         if run_id == "missing":
             raise AgentRunNotFoundError("missing")
         return self.view()
 
-    def events(self, run_id, *, after):
+    async def events(self, run_id, *, after):
         if run_id == "missing":
             raise AgentRunNotFoundError("missing")
         return AgentEventsView(

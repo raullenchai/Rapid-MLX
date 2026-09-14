@@ -344,11 +344,9 @@ class MCPToolRegistry:
         manager, _ = self._components()
         if manager is None:
             return _SHUTDOWN_JOIN_SECONDS
-        try:
-            timeout = float(manager.config.default_timeout)
-        except (AttributeError, TypeError, ValueError):
-            return _SHUTDOWN_JOIN_SECONDS
-        return timeout if timeout > 0 else _SHUTDOWN_JOIN_SECONDS
+        # MCPConfig validates this as a positive number before a manager can
+        # become active, and pinned managers copy that validated value.
+        return float(manager.config.default_timeout)
 
     @staticmethod
     def _record_execution(sandbox: Any, *args: Any, **kwargs: Any) -> bool:
@@ -802,23 +800,24 @@ class AgentServerService:
             # marking entries cancelled.
             self._schedule(entry)
         await asyncio.sleep(0)
-        return self._view(entry)
+        return await self._view(entry)
 
-    def get(self, run_id: str) -> AgentRunView:
-        return self._view(self._entry(run_id))
+    async def get(self, run_id: str) -> AgentRunView:
+        return await self._view(self._entry(run_id))
 
-    def events(self, run_id: str, *, after: int = 0) -> AgentEventsView:
+    async def events(self, run_id: str, *, after: int = 0) -> AgentEventsView:
         entry = self._entry(run_id)
-        latest = entry.run.events[-1].sequence if entry.run.events else 0
-        events = [event for event in entry.run.events if event.sequence > after]
-        return AgentEventsView(
-            run_id=entry.run.id,
-            status=entry.run.status,
-            events=events,
-            # Never echo an ahead cursor: doing so would make a polling client
-            # skip every future event until the sequence happened to catch up.
-            next_after=latest,
-        )
+        async with entry.lock:
+            latest = entry.run.events[-1].sequence if entry.run.events else 0
+            events = [event for event in entry.run.events if event.sequence > after]
+            return AgentEventsView(
+                run_id=entry.run.id,
+                status=entry.run.status,
+                events=events,
+                # Never echo an ahead cursor: doing so would make a polling client
+                # skip every future event until the sequence happened to catch up.
+                next_after=latest,
+            )
 
     async def approve(self, run_id: str, request: AgentApprovalRequest) -> AgentRunView:
         entry = self._entry(run_id)
@@ -848,7 +847,7 @@ class AgentServerService:
                     raise AgentRunConflictError("denial observation is unavailable")
                 self._append_tool_observation(entry, output.observation)
                 self._schedule(entry)
-        return self._view(entry)
+        return await self._view(entry)
 
     async def submit_result(
         self, run_id: str, request: AgentToolResultRequest
@@ -886,7 +885,7 @@ class AgentServerService:
             entry.pending_action = None
             entry.pending_risk = None
             self._schedule(entry)
-        return self._view(entry)
+        return await self._view(entry)
 
     async def cancel(self, run_id: str) -> AgentRunView:
         entry = self._entry(run_id)
@@ -905,6 +904,8 @@ class AgentServerService:
                     cancelling = getattr(current, "cancelling", None)
                     if callable(cancelling) and cancelling():
                         raise
+                    async with entry.lock:
+                        self._record_unknown_server_outcome(entry)
             else:
                 task.cancel()
                 done, pending = await asyncio.wait({task}, timeout=_CANCEL_JOIN_SECONDS)
@@ -917,13 +918,14 @@ class AgentServerService:
                         completed_task.exception()
         async with entry.lock:
             if entry.run.status in _TERMINAL_STATUSES:
-                return self._view(entry)
-            self._record_unknown_client_outcome(entry)
-            self._runtime.cancel(entry.run)
-            entry.pending_action = None
-            entry.pending_risk = None
-            self._mark_terminal(entry)
-        return self._view(entry)
+                pass
+            else:
+                self._record_unknown_client_outcome(entry)
+                self._runtime.cancel(entry.run)
+                entry.pending_action = None
+                entry.pending_risk = None
+                self._mark_terminal(entry)
+        return await self._view(entry)
 
     async def close(self) -> None:
         with self._store_lock:
@@ -950,10 +952,7 @@ class AgentServerService:
                 for entry in entries
                 if entry.task in tool_tasks
             )
-            done, pending = await asyncio.wait(tool_tasks, timeout=tool_timeout)
-            for completed_task in done:
-                if not completed_task.cancelled():
-                    completed_task.exception()
+            _, pending = await asyncio.wait(tool_tasks, timeout=tool_timeout)
             if pending:
                 raise AgentRunCapacityError(
                     "agent tool work did not stop before its shutdown deadline"
@@ -984,14 +983,13 @@ class AgentServerService:
 
     @staticmethod
     def _tool_join_timeout(entry: _ServerRun) -> float:
-        raw = getattr(entry.registry, "execution_timeout_seconds", None)
-        if raw is None:
-            return _SHUTDOWN_JOIN_SECONDS
-        try:
-            timeout = float(raw)
-        except (TypeError, ValueError):
-            return _SHUTDOWN_JOIN_SECONDS
-        return timeout if timeout > 0 else _SHUTDOWN_JOIN_SECONDS
+        return float(
+            getattr(
+                entry.registry,
+                "execution_timeout_seconds",
+                _SHUTDOWN_JOIN_SECONDS,
+            )
+        )
 
     def _select_tools(
         self,
@@ -1282,7 +1280,33 @@ class AgentServerService:
         entry.pending_action = None
         entry.pending_risk = None
 
-    def _view(self, entry: _ServerRun) -> AgentRunView:
+    def _record_unknown_server_outcome(self, entry: _ServerRun) -> None:
+        pending = entry.pending_action
+        if pending is None or entry.settings.execution != "server":
+            return
+        result = AgentToolResult(
+            call_id=pending.id,
+            content=(
+                "Server tool execution outcome is unknown after cancellation; "
+                "do not retry automatically."
+            ),
+            is_error=True,
+            executed=None,
+            safe_summary=(
+                "Server tool execution outcome is unknown after cancellation; "
+                "do not retry automatically."
+            ),
+        )
+        self._runtime.accept_tool_result(entry.run, result)
+        self._append_tool_observation(entry, result)
+        entry.pending_action = None
+        entry.pending_risk = None
+
+    async def _view(self, entry: _ServerRun) -> AgentRunView:
+        async with entry.lock:
+            return self._view_locked(entry)
+
+    def _view_locked(self, entry: _ServerRun) -> AgentRunView:
         pending = entry.pending_action
         approval_required = entry.run.status is AgentRunStatus.AWAITING_APPROVAL
         release_arguments = (
