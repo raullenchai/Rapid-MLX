@@ -5,7 +5,7 @@ Date: 2026-09-13
 Owner / host: Vector / MZR-3
 
 Runtime feasibility branch: `raullenchai:vector/ltx25-distillation-feasibility`
-at `8685b9b` in the `ltx-2-mlx` repository. Rapid documentation branch:
+at `09b625a` in the `ltx-2-mlx` repository. Rapid documentation branch:
 `raullenchai/LTX`, PR #3438.
 
 ## Verified facts
@@ -226,3 +226,19 @@ This is product plumbing, not a qualified model claim. The first noise-coupled
 segment, complete shared adapter, 241-frame `4 + 1` timing, decoded blind suite,
 and cross-generation Apple Silicon run are still pending. Atlas owns the
 public `generation_mode` mapping, any default switch, and release integration.
+
+The progressive Stage-2 ten-case blind suite is now complete. Every case is
+768x512, 241 frames at 24 fps, with 48 kHz stereo audio. The mapping-safe
+anonymous means are SSIM `0.924042`, PSNR `32.504` dB, and audio APSNR
+`167.519` dB; cases 03 and 08 are the lowest visual-similarity outliers. The
+review bundle is under
+`123/strategy/ltx-stage2-qualification-2026-09-14/` and contains only A/B,
+muted side-by-side videos, review metadata, and anonymous metrics. It contains
+no teacher/student names or hidden mapping. Do not call the ten-case suite a
+pass until the human judgments are recorded.
+
+The serialized MZR-3 chain has advanced to the terminal Stage-2 468-token
+training phase. A later supervisor will advance the Stage-1 `0 -> 3` pilot to
+the complete four-transition curriculum only if both mean modalities improve
+at least 10% and no held-out sample regresses more than 5%; that is a compute
+gate, not a product-quality gate.
