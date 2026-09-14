@@ -4,9 +4,9 @@ Date: 2026-09-13
 
 Owner / host: Vector / MZR-3
 
-Runtime feasibility branch: `vector/ltx25-distillation-feasibility` in the
-`ltx-2-mlx` repository. Rapid documentation branch: `raullenchai/LTX`, PR
-#3438.
+Runtime feasibility branch: `raullenchai:vector/ltx25-distillation-feasibility`
+at `7088d3e` in the `ltx-2-mlx` repository. Rapid documentation branch:
+`raullenchai/LTX`, PR #3438.
 
 ## Verified facts
 
@@ -45,4 +45,3 @@ Vector implements teacher trajectory capture, Euler terminal-target tests,
 and a `stage2_terminal_distill` training strategy, then runs a 256-item pilot.
 Atlas should review the fast-tier/default policy only after the pilot clears
 the quality gate.
-
