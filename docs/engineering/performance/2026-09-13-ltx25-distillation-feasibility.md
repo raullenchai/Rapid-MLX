@@ -112,6 +112,22 @@ student is not expected to reproduce identical pixels.
    22B architecture requires these more aggressive schedules or architectural
    distillation, and perceptual non-inferiority is substantially less certain.
 
+## Capacity-pilot result
+
+A 12-trajectory 192x192x25 pilot (8 train, 4 held out) validated the complete
+capture, training, adapter-fusion, terminal-evaluation, and decode path. Rank-8
+Q/K/V training ran 50 steps in 4.6 minutes at 19.80 GiB peak. On held-out data,
+the best video checkpoint reduced one-step MSE by 27.0%; step 50 reduced audio
+MSE by 56.2%. One student evaluation took about 2.03 seconds at this shape.
+
+The checkpoint failed the perceptual gate: a small moving bee visible in the
+teacher disappeared in both the step-20 and step-50 decoded students. This is
+not ready for inference integration. The next experiment expands adapter
+capacity and data, and compares progressive `3 -> 2 -> 1` supervision with the
+direct terminal jump. Detailed metrics and paired MP4s are recorded in
+`123/strategy/2026-09-13-ltx-stage2-distillation-pilot-results.md` outside this
+repository.
+
 ## Reproduction
 
 Model: `MrMofer/ltx-2.5-mlx-q8`, revision
