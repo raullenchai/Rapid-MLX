@@ -1,0 +1,137 @@
+# Portable LTX-2.5 fast stage-2 product contract
+
+Date: 2026-09-14
+
+Status: proposed; Atlas owns the public API and default-on disposition
+
+Owner: Vector (runtime and qualification), Atlas (product integration)
+
+## Decision
+
+Productize few-step LTX acceleration as a checkpoint capability, never as a
+Mac model capability. Any Apple Silicon system that passes the existing base
+LTX-2.5 resource admission may execute the same fast schedule. Chip generation,
+GPU-core count, and installed-memory labels must not select weights, schedules,
+or numerical behavior.
+
+The initial candidate replaces the first two deterministic stage-2 teacher
+transitions with one learned transition, then retains the unchanged final base
+correction. It therefore changes stage 2 from three transformer evaluations to
+two. One blind 768x512, 241-frame review passed perceptual non-inferiority after
+the reviewer had detected brightness and detail regressions in the preceding
+checkpoint. Measured stage-2 latency was approximately 301.5 to 206.7 seconds
+(31.4% lower, 1.46x); projected end-to-end improvement is approximately
+1.20-1.25x because stage 1, text encoding, decoding, and muxing are unchanged.
+
+This one-sample pass authorizes product-contract work and a broader quality
+suite. It does not authorize default enablement.
+
+## Artifact contract
+
+The accepted adapter should ship inside an immutable model revision beside the
+base transformer. Runtime auto-discovery must not search arbitrary user cache
+paths. A fast-stage checkpoint must carry, at minimum:
+
+- a versioned capability identifier such as `ltx_stage2_transition_v1`;
+- start and target sigma, plus the complete resulting schedule;
+- adapter rank and alpha;
+- expected base model identifier, immutable model revision, transformer
+  filename, and transformer/config fingerprint;
+- supported pipeline family and major runtime contract version;
+- qualification manifest revision; and
+- a content digest for the adapter file.
+
+The current research metadata (`distillation`, `stage2_sigma`,
+`stage2_target_sigma`, and `stage2_steps`) is necessary but insufficient for
+automatic product activation because it does not bind the adapter to an exact
+base checkpoint.
+
+Metadata, tensor names, tensor shapes, schedule monotonicity, and base identity
+must all validate before model mutation. Missing, malformed, or incompatible
+metadata fails closed. Standard generation remains available; the runtime must
+never silently truncate the teacher schedule as a fallback.
+
+## Runtime lifecycle
+
+The base transformer runs all of stage 1. At the stage-2 boundary, the runtime
+loads and fuses the qualified transition adapter, evaluates the learned
+`0.909375 -> 0.421875` transition, releases that model, reloads the clean base
+transformer, and evaluates the unchanged `0.421875 -> 0` correction. Video and
+audio must switch together.
+
+This lifecycle matches the validated research renderer and prevents the
+transition adapter from leaking into stage 1 or the final correction. Model
+reload overhead is small relative to a production-shape transformer evaluation
+and preserves the low-RAM envelope. Cancellation, timeout, temporary-output,
+and process-group cleanup remain owned by Rapid's existing LTX sidecar adapter.
+
+Block-streaming support is a separate compatibility axis. The first product
+candidate may reject fast mode when its runtime cannot safely fuse the adapter
+into a streamed model, but that rejection must name the unsupported runtime
+mode, not the Mac chip.
+
+## Rapid API and discovery
+
+Proposed request control: `generation_mode=standard|fast`, initially defaulting
+to `standard`. `fast` is valid only for LTX-2.5 and only when the served model
+revision advertises a validated fast-stage capability. An unsupported explicit
+request returns a clear 400/409-style capability error rather than silently
+running standard mode.
+
+`GET /v1/videos/capabilities` should advertise the available values, current
+default, schedule evaluation counts, experimental status, and checkpoint
+qualification revision. It must not advertise fast mode merely because the
+host is an M3/M4 or has a particular memory size.
+
+After the broader quality and portability gates pass, Atlas may change the
+default to `fast` while retaining `standard` as a deterministic rollback. The
+same model package and request value must mean the same numerical path on M2,
+M3, M4, and later Apple Silicon generations.
+
+## Resource admission versus algorithm selection
+
+Portable does not mean every memory configuration can load a 67.7 GB model
+package. Existing model-level workload admission and low-RAM execution remain
+responsible for determining whether a requested resolution and duration fit.
+Once the base LTX-2.5 workload is admitted, hardware identity must not disable
+or alter the fast schedule. If empirical memory shows the fast path has a
+different envelope, express that as a measured workload budget, not a list of
+chips.
+
+Hardware may affect progress estimates and telemetry labels only. No quality,
+schedule, sigma, adapter-strength, or fallback branch may inspect `M2`, `M3`,
+`M4`, future chip names, GPU core counts, or a machine hostname.
+
+## Qualification and rollout gates
+
+1. Freeze 8-12 prompt-disjoint 10-second cases covering faces, hands, readable
+   text, fast subject motion, camera motion, low light, fine texture, speech,
+   impacts, ambience, and silence. Use at least two seeds for high-risk classes.
+2. Produce blinded teacher/student individual MP4s plus a muted side-by-side
+   for every case. Human non-inferiority is the release gate; latent error,
+   brightness, detail, temporal, and audio metrics are diagnostics.
+3. Verify exact schedule selection, base reload, audio/video coupling, malformed
+   metadata rejection, explicit unsupported-mode errors, cancellation, timeout,
+   and fallback behavior with automated tests.
+4. Run the same model revision, adapter digest, prompt/seed cases, and runtime
+   commit on representative M2, M3, and M4-or-later systems that satisfy base
+   workload admission. Record wall time, peak memory, swap growth, crashes, and
+   output hashes/metrics. Do not tune numerical settings per machine.
+5. Ship as explicit experimental opt-in. Promote to default only after the
+   cross-prompt quality gate and at least two materially different Apple GPU
+   generations pass. Rollback is metadata/default removal; `standard` remains
+   intact.
+
+## Current assets and blockers
+
+The resume-fixed candidate is archived outside the repository at
+`/Volumes/RTL-2T/models-cold/ltx-stage2-distillation/resume-fixed-2026-09-14/`
+with SHA-256
+`04ed313c536fae4ad78732f8c403d7ac044614dcb8a95f0f5ae0e896e310855c`.
+It is not yet a distributable product artifact.
+
+Before Rapid implementation, the upstream runtime needs a production inference
+entry point for the transition checkpoint and a base-bound metadata validator.
+The accepted adapter then needs an immutable model-repository revision. Upload,
+release, default changes, and public API disposition require explicit human and
+Atlas authorization.

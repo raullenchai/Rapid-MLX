@@ -77,3 +77,30 @@ and synchronization review. If the scaled adapter still drops semantic
 detail, escalate to full-model or
 smaller-architecture student distillation. Atlas should review fast-tier and
 default policy only after a pilot clears the quality gate.
+
+## Productization update (2026-09-14)
+
+The scaled run exposed and fixed three generic upstream trainer problems:
+lazy gradients were not materialized before clipping/AdamW, Python data
+shuffling was not seeded, and diffusers-style saved LoRA tensors were not
+converted back to native MLX names/shapes on resume. Upstream feasibility
+branch `vector/ltx25-distillation-feasibility` now passes 622 tests with 22
+skips. A correct low-learning-rate mixed replay improved held-out video/audio
+MSE in all 468/1536/3072-token buckets.
+
+A blind 768x512, 241-frame complex-scene review then passed: the human reviewer
+could not tell whether the resume-fixed student or teacher was better. The
+mapping was A/left = student and B/right = teacher. Stage 2 measured about
+206.7 seconds versus 301.5 seconds (1.46x); projected end-to-end remains only
+1.20-1.25x.
+
+The candidate adapter is archived under the Studio cold-model tier with digest
+`04ed313c536fae4ad78732f8c403d7ac044614dcb8a95f0f5ae0e896e310855c`.
+It is not published or release-qualified. The portable product contract is
+proposed in
+`docs/engineering/decisions/2026-09-14-ltx25-portable-fast-stage2.md`.
+
+Atlas disposition is required for the proposed public
+`generation_mode=standard|fast` control and any default-on policy. Vector's
+next backend action is to add upstream base-bound checkpoint validation and a
+stage-2-only adapter lifecycle, then run the frozen multi-prompt blind suite.
