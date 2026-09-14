@@ -6,10 +6,12 @@ Atlas, for runtime architecture and dependency integration.
 
 ## Branch
 
-Current implementation: `vector/glm53-native-runtime-v1`, based on
-`origin/main@12fbee034`. Rapid now owns the narrow cache transaction and
-generation-hook seam; mlx-vlm PR #2206 still supplies the model/cache protocol
-and GLM drafter architecture used for qualification.
+Production implementation is split across Rapid PR #3462 (the owned cache
+transaction, loader compatibility, and GLM-5 parser) and PR #3467 (the
+immutable public sidecar pair plus CLI/Desktop activation contract). Rapid
+owns the narrow cache transaction and generation-hook seam; mlx-vlm PR #2206
+still supplies the model/cache protocol and GLM drafter architecture used for
+qualification.
 
 ## Verified facts
 
@@ -131,7 +133,7 @@ and GLM drafter architecture used for qualification.
   `rapid-mlx/GLM-5.3-Flash-MTP-4bit@e9d62773d3e5272fb298830e8e06fadc4137ae2c`.
   Its 4,183,323,401-byte safetensors file has SHA-256
   `369cf9c0f9cdf3ae5f1b9f72d3db8e65ad3026b8e416b8de5618e9117d3f00ca`.
-  The activation branch pins both it and the target by immutable revision.
+  Rapid PR #3467 pins both it and the target by immutable revision.
 
 ## Unresolved
 
@@ -139,9 +141,9 @@ and GLM drafter architecture used for qualification.
 - Rapid still pins a released mlx-vlm version without the qualified upstream
   changes. PRs #2206 and #2231 are upstream-only, so no release
   dependency is available to integrate yet.
-- The Rapid serial-server thinking-budget fix is independently releasable, but
-  GLM MTP capability metadata must remain disabled until a tagged mlx-vlm
-  release contains the qualified cache-owned runtime and Q4 head loader.
+- Rapid PR #3467 declares the capability, but its unasked activation is
+  runtime-gated. With the current released dependency it keeps ordinary serves
+  on AR; an explicit incompatible request fails before loading either model.
 - The immutable sidecar gate is cleared. Runtime availability is now the only
   external activation blocker.
 - #2241 is intentionally stacked on #2206's source branch and cannot be
@@ -167,9 +169,9 @@ did not preserve bit-exact state in the production-shape check.
 
 Atlas should wait for a tagged mlx-vlm release containing the required
 structural seams, update the exact dependency pin, and re-run the six-task
-harness through that released wheel. The alias activation is already
-fail-closed: an older runtime keeps an unflagged serve on AR, while an explicit
-native request fails before loading either checkpoint. Include #2241's replay
-scheduling change when released, but do not block on experimental K2/K3
-adaptation. Do not delete the cached Q4 control without explicit human
-authorization and a recovery plan.
+harness through that released wheel. No second alias edit is required: the
+activation contract is already fail-closed, so the released runtime probe will
+turn on MTP for CLI and Desktop together. Include #2241's replay scheduling
+change when released, but do not block on experimental K2/K3 adaptation. Do
+not delete the cached Q4 control without explicit human authorization and a
+recovery plan.
