@@ -323,12 +323,22 @@ def test_public_lazy_loader_ignores_checkpoint_owned_model_code(
     (tmp_path / "model.py").write_text("raise AssertionError('must not run')\n")
 
     requested = "publisher/k2-horizon" if remote else str(tmp_path)
+    resolution_events = []
     if remote:
-        monkeypatch.setattr(tokenizer, "_local_snapshot_if_cached", lambda name: name)
+
+        def cold_cache(name):
+            resolution_events.append(("cache-miss", name))
+            return name
+
+        def download_snapshot(name):
+            resolution_events.append(("download", name))
+            return tmp_path if name == requested else Path(name)
+
+        monkeypatch.setattr(tokenizer, "_local_snapshot_if_cached", cold_cache)
         monkeypatch.setattr(
             tokenizer,
             "_resolve_model_path",
-            lambda name: tmp_path if name == requested else Path(name),
+            download_snapshot,
         )
 
     captured = {}
@@ -357,3 +367,8 @@ def test_public_lazy_loader_ignores_checkpoint_owned_model_code(
     assert model is fake_model
     assert returned_tokenizer is fake_tokenizer
     assert captured == {"model_file": None, "auto_map": None}
+    if remote:
+        assert resolution_events[:2] == [
+            ("cache-miss", requested),
+            ("download", requested),
+        ]

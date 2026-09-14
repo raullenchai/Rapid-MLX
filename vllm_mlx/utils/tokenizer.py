@@ -1429,7 +1429,9 @@ def load_model_with_fallback(
             "return_config": return_config,
         }
         if rapid_owned_model_config is not None:
-            # Older supported mlx-lm versions do not accept model_config.
+            # Keep the historical call shape for ordinary models and pass the
+            # security overlay only for reviewed runtimes. Rapid's supported
+            # mlx-lm floor (0.31.3) exposes this keyword on both load APIs.
             lazy_load_kwargs["model_config"] = rapid_owned_model_config
         result = _mlx_lm_load(model_name, **lazy_load_kwargs)
         model, tokenizer = result[0], result[1]
