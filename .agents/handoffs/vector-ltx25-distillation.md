@@ -165,3 +165,13 @@ matching held-out evaluation. The complete suite passes at 659 tests with 22
 skips. MZR-3 has serialized the scaled Stage-2 terminal curriculum, latent
 evaluation, ten-case blind render, first Stage-1 stochastic transition pilot,
 and its held-out evaluation behind the currently running qualification chain.
+
+The upstream work is now tracked as draft PR
+`MrMoferFRAN/ltx-2-mlx#3`; its description separates measured gains from the
+projected `4 + 1` target and lists all release gates. The latest full local
+suite passes 662 tests with 22 skips. The configured independent review runner
+on `spark2` could not run: its Codex refresh token is revoked (HTTP 401), and
+its basename-keyed clone cache selected an unrelated `ltx-2-mlx` checkout.
+It posted no review comment. Harbor/Atlas should repair both authentication and
+repo-qualified review worktree selection before treating that review gate as
+satisfied.
