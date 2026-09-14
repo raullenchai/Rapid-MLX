@@ -221,9 +221,16 @@ same qualification gates.
 
 Commits `d6084cc` and `164cdcd` add seeded original-step noise reproduction,
 an exact ancestral target inverse, noise-coupled Stage-1 training, and paired
-evaluation. The first stochastic pilot compresses original boundaries `0 -> 2`
+evaluation. The first stochastic pilot compresses original boundaries `0 -> 3`
 while explicitly re-injecting original noise lane 0. The full upstream suite at
 that point passes 659 tests with 22 skips.
+
+Path analysis over eight training and two prompt-disjoint validation
+trajectories independently selected the same four-evaluation boundaries on
+both splits: `[0, 3, 5, 7, 8]`, corresponding to sigmas
+`[1.0, 0.98125, 0.909375, 0.421875, 0]`. The validation mean video/audio chord
+error was 0.7099 versus 0.7353 for the second-ranked schedule. This selects the
+`3 + 2 + 2 + 1` research candidate but does not replace decoded qualification.
 
 The accepted adapter still needs completed multi-prompt qualification and an
 immutable published model-repository revision before Rapid integration. A

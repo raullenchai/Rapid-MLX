@@ -192,3 +192,12 @@ one-evaluation base; evaluation latency was unchanged (6.00 versus 6.05
 seconds). This is insufficient evidence to expand or productize terminal
 endpoint regression. Keep it as a negative/weak capacity result and continue
 with the queued noise-coupled non-terminal transition.
+
+Stage-1 path analysis was run independently on all eight training and both
+prompt-disjoint validation trajectories. Both splits ranked boundaries
+`[0, 3, 5, 7, 8]` first, i.e. sigmas
+`[1.0, 0.98125, 0.909375, 0.421875, 0]` and a `3 + 2 + 2 + 1` compression.
+Validation mean video/audio chord error was 0.7099; the second-ranked schedule
+was 0.7353. The queued first stochastic pilot was updated from `0 -> 2` to the
+selected target segment `0 -> 3`. These scores select an experiment and are
+not a release-quality metric.
