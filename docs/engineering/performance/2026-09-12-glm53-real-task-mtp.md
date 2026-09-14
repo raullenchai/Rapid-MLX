@@ -27,9 +27,9 @@ thinking_budget is not supported with speculative decoding in the server.
 This was a product-quality blocker, not benchmark noise. A follow-up
 transactional implementation passed the budgeted gate and preserved every AR
 byte. The later Rapid-owned cache transaction raised the repeated paired
-median to 1.341x while keeping 12/12 task outputs exact. It remains disabled in
-the product until a released mlx-vlm exposes the required model/cache seams and
-an immutable public Q4 sidecar is available.
+median to 1.341x while keeping 12/12 task outputs exact. Rapid PR #3467 declares
+the immutable public pair, but automatically retains AR until a released
+mlx-vlm exposes the required model/cache seams.
 
 ## Environment
 
@@ -371,9 +371,9 @@ implementation is restricted to singleton greedy speculative decoding, rejects
 penalties, batching, and logprobs, and rolls back both append-only and temporal
 caches when a request stops between accepted tokens. A sampled request remains
 valid but drops the drafter and uses ordinary autoregressive decode, so
-Desktop's normal sampling controls cannot turn activation into a 400. Runtime activation is
-structurally gated on the complete cache-owned GLM model/cache protocol rather
-than inferred from a version string.
+Desktop's normal sampling controls cannot turn activation into a 400. Runtime
+activation is structurally gated on the complete cache-owned GLM model/cache
+protocol rather than inferred from a version string.
 
 Two consecutive six-task runs through Rapid's serial OpenAI-compatible server
 passed 12/12. Both reproduced the AR control's complete reasoning and final
@@ -485,10 +485,11 @@ file-size, process-count, descriptor, and wall-time limits.
 
 Rapid now owns the complete proposal/verification/cache transaction, but still
 requires mlx-vlm's GLM model/cache protocol and drafter architecture. Do not
-point a release at an untagged Git commit or enable the alias against the
-current 0.6.17 pin. Once a tagged mlx-vlm release exposes those structural
-seams and a revision-pinned public Q4 sidecar exists, update the dependency,
-repeat the gate, and enable the alias for CLI and Desktop together. The legacy
+point a release at an untagged Git commit. The alias now declares the immutable
+target/sidecar pair, but the current released dependency fails the structural
+probe and therefore serves AR. Once a tagged mlx-vlm release exposes those
+seams, update the dependency and repeat the gate through its wheel; the same
+runtime probe will then activate MTP for CLI and Desktop together. The legacy
 #2232/#2233 chain remains a smaller fallback if #2206 does not land.
 The next performance investigation should target exact backbone dispatch cost;
 the same-width result shows that deeper drafting is not the main competitor
