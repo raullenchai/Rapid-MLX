@@ -123,8 +123,10 @@ MSE by 56.2%. One student evaluation took about 2.03 seconds at this shape.
 The checkpoint failed the perceptual gate: a small moving bee visible in the
 teacher disappeared in both the step-20 and step-50 decoded students. This is
 not ready for inference integration. The next experiment expands adapter
-capacity and data, and compares progressive `3 -> 2 -> 1` supervision with the
-direct terminal jump. Detailed metrics and paired MP4s are recorded in
+data and compares progressive `3 -> 2 -> 1` supervision with the direct
+terminal jump. A same-data rank-32 broad adapter regressed held-out video MSE
+by 10.6% versus the unadapted baseline and produced a blurrier decode, showing
+that capacity alone is not the fix. Detailed metrics and paired MP4s are recorded in
 `123/strategy/2026-09-13-ltx-stage2-distillation-pilot-results.md` outside this
 repository.
 

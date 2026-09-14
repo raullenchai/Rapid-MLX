@@ -5,7 +5,7 @@ Date: 2026-09-13
 Owner / host: Vector / MZR-3
 
 Runtime feasibility branch: `raullenchai:vector/ltx25-distillation-feasibility`
-at `a4cba82` in the `ltx-2-mlx` repository. Rapid documentation branch:
+at `cc6924f` in the `ltx-2-mlx` repository. Rapid documentation branch:
 `raullenchai/LTX`, PR #3438.
 
 ## Verified facts
@@ -26,6 +26,9 @@ at `a4cba82` in the `ltx-2-mlx` repository. Rapid documentation branch:
 - The pilot failed decoded quality: a held-out moving bee present in the
   teacher disappeared in step-20 and step-50 students. Aggregate latent
   metrics are therefore insufficient as a gate.
+- A rank-32 broad-target control on the same split peaked at 24.22 GiB but
+  regressed video MSE 10.6% below the unadapted baseline and produced a
+  blurrier decode. Rank alone does not solve the small-data direct-jump issue.
 - The implementation now includes resumable BF16 trajectory capture, the
   terminal strategy, checkpoint schedule/LoRA-scale metadata, paired latent
   evaluation, and paired MP4 rendering. Full non-slow tests pass: 611 passed,
@@ -52,7 +55,7 @@ model. More aggressive `3 + 1` or `2 + 1` schedules are research tiers.
 
 ## Next action
 
-Vector should run a rank-32, broader-target pilot on at least 100 trajectories
+Vector should collect at least 100 trajectories, run rank-8/rank-32 controls,
 and compare direct `3 -> 1` against progressive `3 -> 2 -> 1`. Include decoded
 small-subject, speech, impact, and synchronization review. If the larger
 adapter still drops semantic detail, escalate to full-model or
