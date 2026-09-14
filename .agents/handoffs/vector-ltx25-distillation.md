@@ -119,3 +119,18 @@ Atlas disposition is required for the proposed public
 `generation_mode=standard|fast` control and any default-on policy. Vector's
 next backend action is to inspect the runtime smoke result and render the frozen
 ten-case, ten-second teacher/student blind suite when capture completes.
+
+## Stage-1 8 -> 4 continuation
+
+The 2x objective requires `4 + 1`, not merely the currently qualified `8 + 2`
+candidate. Upstream commit `070eac5` adds exact seeded ancestral stage-1
+boundary capture and stops before stage 2; `d2405bb` adds a configurable
+one-evaluation transition strategy and a conservative final-pair pilot. The
+full suite passes at 647 tests with 22 skipped.
+
+Stage-1 teacher noise is independent between steps, so deterministic endpoint
+regression cannot by itself prove a valid ancestral student. Treat the first
+pilot as a capacity and failure-mode probe. Do not productize it unless decoded
+motion/diversity and prompt-disjoint blind tests pass; if it averages stochastic
+targets into blur, move to explicitly noise-coupled or distributional
+distillation rather than tuning around the failure.

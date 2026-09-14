@@ -26,6 +26,28 @@ checkpoint. Measured stage-2 latency was approximately 301.5 to 206.7 seconds
 This one-sample pass authorizes product-contract work and a broader quality
 suite. It does not authorize default enablement.
 
+## Relationship to the 2x objective
+
+This `8 + 2` candidate is a productization checkpoint, not the final speed
+target. At the measured 241-frame shape, startup/encoding is about 11 seconds,
+stage 1 is about 173 seconds, standard stage 2 is about 302 seconds, and decode
+plus mux is about 53 seconds. Replacing one full-resolution stage-2 evaluation
+therefore projects approximately 439 seconds total, only about 1.23x faster
+than the 539-second baseline.
+
+Reaching approximately 2x requires a qualified `4 + 1` schedule: four
+half-resolution stage-1 evaluations and one full-resolution stage-2 evaluation.
+The timing model projects roughly 252 seconds before any additional kernel
+gains, or about 2.14x. This remains a target until both distillation stages pass
+the same blind non-inferiority gates.
+
+Stage 1 is ancestral and injects independent noise between evaluations. It
+cannot be treated as deterministic schedule truncation. The research branch
+now records every seeded teacher boundary and can train a one-evaluation
+transition pilot, but deterministic endpoint regression is only a capacity
+probe: distributional and decoded blind evaluation must reject blur, motion
+collapse, or reduced diversity before any four-step schedule is proposed.
+
 ## Artifact contract
 
 The accepted adapter should ship inside an immutable model revision beside the
