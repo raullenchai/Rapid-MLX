@@ -123,6 +123,15 @@ must all validate before model mutation. Missing, malformed, or incompatible
 metadata fails closed. Standard generation remains available; the runtime must
 never silently truncate the teacher schedule as a fallback.
 
+Package creation is also a trust boundary. Before adding product metadata, the
+builder must verify that its source is the expected distillation strategy and
+transition, names the expected teacher target latents, and (for Stage 1) is the
+final `7 -> 8` checkpoint from the complete shared-adapter curriculum. The v1
+runtime accepts only exact qualified schedules `[0.909375, 0.421875, 0]` or
+`[0.909375, 0]` for Stage 2; merely monotonic arbitrary sigmas are not a v1
+capability. This prevents an unrelated LoRA from being relabeled as a qualified
+fast artifact.
+
 ## Runtime lifecycle
 
 The base transformer runs all of stage 1. At the stage-2 boundary, the runtime
@@ -247,7 +256,9 @@ Upstream `b2054aa` now sorts dataset discovery deterministically and derives
 render positions and review metadata from the same dataset instance. The A/B
 media and anonymous metrics were unaffected, and the exported index was
 corrected from the captured original order. The full upstream suite at
-`b2054aa` passes 700 tests with 22 skips.
+`fee2f51` passes 714 tests with 22 skips. That revision also validates source
+checkpoint provenance before packaging and rejects non-qualified Stage-2
+schedules at runtime.
 
 Path analysis over eight training and two prompt-disjoint validation
 trajectories independently selected the same four-evaluation boundaries on
