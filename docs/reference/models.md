@@ -25,6 +25,7 @@ Families with registered aliases (run `rapid-mlx models` for the full, current l
 | Hunyuan 3 (Hy3) | 295B MoE (21B active) — **Ultra-only** | 4-bit |
 | NeoHorse 1 | 9B (experimental Chat candidate) | 4-bit |
 | G9v3 (AI9Stars) | 39B MoE (5B active) | 4-bit |
+| K2 Horizon | 7B (experimental, text-only) | 4-bit |
 
 ### Experimental 256 GB lane: DeepSeek V4.1 Flash
 
@@ -107,6 +108,29 @@ cache optimizations until that exact checkpoint has separate compatibility
 evidence. See the
 [reproducible qualification note](../engineering/performance/2026-09-08-neohorse-9b-chat-qualification.md)
 for the current evidence and limitations.
+
+### Experimental Chat candidate: K2 Horizon 7B
+
+`k2-horizon-7b-4bit` is an opt-in, text-only model for Macs with at least
+16 GB of unified memory. Rapid-MLX implements the dense K2 architecture and
+its graded reasoning/tool protocol directly on the text runtime; loading this
+alias does not execute Python shipped by the checkpoint repository and does
+not use the optional vision runtime.
+
+```bash
+rapid-mlx pull k2-horizon-7b-4bit
+rapid-mlx serve k2-horizon-7b-4bit
+```
+
+The model has native high/medium/low reasoning effort rather than a true
+no-reasoning mode. Requests that disable thinking use its lowest native effort,
+and Rapid-MLX still keeps that trace out of visible answer content. A pinned
+4-bit checkpoint was qualified through the real OpenAI-compatible server on a
+48 GB M4 Mac: load completed in 1.62 seconds, peak MLX memory was 5.20 GB, a
+short arithmetic generation ran at 7.06 tokens/second, and native structured
+tool calls worked in both streaming and non-streaming responses. The alias is
+not a Smart/Fast default, and speculative decoding remains disabled pending
+separate evidence.
 
 ### Experimental research model: Qwen3.8 27B Abliterated
 
