@@ -352,6 +352,39 @@ def test_streaming_emits_prefix_once_and_call_on_close():
     assert json.loads(calls[0]["function"]["arguments"]) == {"limit": 3}
 
 
+def test_incomplete_stream_searches_only_the_new_closer_window():
+    class ObservedText(str):
+        starts: list[tuple[str, int]] = []
+
+        def find(self, sub, start=0, end=None):
+            self.starts.append((sub, start))
+            return super().find(sub, start) if end is None else super().find(sub, start, end)
+
+    parser = K2HorizonToolParser()
+    request = _request()
+    opening = ObservedText(
+        "<ifm|tool_calls><ifm|tool_call>lookup<ifm|arg_key>query</ifm|arg_key>"
+        "<ifm|arg_value>"
+    )
+    assert parser.extract_tool_calls_streaming(
+        "", opening, str(opening), request=request
+    ) is None
+
+    previous = str(opening)
+    for chunk in ("x" * 10_000, "y" * 10_000):
+        current = ObservedText(previous + chunk)
+        ObservedText.starts.clear()
+        assert parser.extract_tool_calls_streaming(
+            previous, current, chunk, request=request
+        ) is None
+        closer_searches = [
+            start for marker, start in ObservedText.starts if marker == parser.GROUP_END
+        ]
+        assert closer_searches
+        assert closer_searches[0] >= len(current) - len(chunk) - len(parser.GROUP_END)
+        previous = str(current)
+
+
 @pytest.mark.parametrize("closer", K2HorizonToolParser.REASONING_ENDS)
 def test_streaming_complete_group_hides_prompt_primed_reasoning(closer):
     parser = K2HorizonToolParser()

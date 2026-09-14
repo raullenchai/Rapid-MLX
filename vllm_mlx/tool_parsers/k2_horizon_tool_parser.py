@@ -54,6 +54,7 @@ class K2HorizonToolParser(ToolParser):
         self._next_tool_index = 0
         self._tool_group_seen = False
         self._post_tool_content_visible = False
+        self._pending_tool_start: int | None = None
 
     @staticmethod
     def _request_value(request: dict[str, Any] | None, key: str, default=None):
@@ -321,14 +322,17 @@ class K2HorizonToolParser(ToolParser):
     ) -> dict[str, Any] | None:
         del (
             previous_text,
-            delta_text,
             previous_token_ids,
             current_token_ids,
             delta_token_ids,
         )
         suppress_calls = self._request_value(request, "tool_choice") == "none"
 
-        start = current_text.find(self.GROUP_START, self._content_upto)
+        start = (
+            self._pending_tool_start
+            if self._pending_tool_start is not None
+            else current_text.find(self.GROUP_START, self._content_upto)
+        )
         if start < 0:
             if self._tool_group_seen:
                 # K2 may open another private reasoning lane between tool
@@ -372,11 +376,22 @@ class K2HorizonToolParser(ToolParser):
         calls: list[dict[str, Any]] = []
         cursor = start
         while cursor >= 0:
-            end = current_text.find(self.GROUP_END, cursor + len(self.GROUP_START))
+            search_from = cursor + len(self.GROUP_START)
+            if self._pending_tool_start == cursor:
+                # The prior delta already proved there was no closer in the
+                # accumulated prefix. Search only the new bytes plus enough
+                # overlap for a marker split across the delta boundary.
+                search_from = max(
+                    search_from,
+                    len(current_text) - len(delta_text) - len(self.GROUP_END) + 1,
+                )
+            end = current_text.find(self.GROUP_END, search_from)
             if end < 0:
                 self._content_upto = cursor
+                self._pending_tool_start = cursor
                 break
             end += len(self.GROUP_END)
+            self._pending_tool_start = None
             try:
                 calls.extend(self._parse_group(current_text[cursor:end], request))
             except (json.JSONDecodeError, TypeError, ValueError):
