@@ -45,6 +45,37 @@ motion, composition, and detail; audio APSNR was about 171 dB. Diffusion is
 sensitive to floating-point accumulation order, so a multi-prompt blind test
 is still required before default enablement.
 
+## Studio qualification
+
+The target Studio is a Mac Studio `Mac15,14`, M3 Ultra (28-core CPU), 256 GiB
+unified memory, macOS 26.5.2. A production-shape synthetic
+`BasicAVTransformerBlock` benchmark exercised all 34 Q8 linears with BF16
+activations and included dequantization on every call. It used the runtime's
+real block implementation and dimensions, 1,024 text tokens, two warmups and
+five measured iterations per mode. The measurement order was baseline,
+experimental, baseline; the final two medians were compared to avoid shader
+compilation bias. Random weights and inputs used seed 42.
+
+| MLX | Workload shape (video/audio tokens) | Baseline block | Experimental block | Improvement |
+|---:|---:|---:|---:|---:|
+| 0.32.0 | 6,144 / 126 (121 frames) | 292.81 ms | 279.04 ms | 4.70% |
+| 0.32.0 | 11,904 / 251 (241 frames) | 652.45 ms | 626.81 ms | 3.93% |
+| 0.32.2 | 6,144 / 126 (121 frames) | 292.41 ms | 278.82 ms | 4.65% |
+| 0.32.2 | 11,904 / 251 (241 frames) | 651.66 ms | 622.95 ms | 4.41% |
+
+The same whole-block method also found regressions at smaller captured shapes
+on MLX 0.32.0: 28.28 to 28.77 ms at 468/101 tokens (-1.72%) and 69.98 to
+71.12 ms at 1,536/26 tokens (-1.63%). The 3,072/59-token shape improved from
+136.89 to 132.97 ms (+2.87%). These results show that the 1,024-token global
+threshold is not a safe universal default even though the target 5- and
+10-second video shapes benefit.
+
+This is a block-level qualification, not an end-to-end Studio claim. The
+67.7 GB LTX-2.5 model snapshot was not present on Studio and the sole approved
+Hugging Face cache had only 12 GiB free. The storage policy forbids a second
+cache or deleting unrelated models, so a full generation could not be run on
+this host. The MZR-3 table above remains the end-to-end evidence.
+
 ## Crossover evidence
 
 Exact-shape microbenchmarks included dequantization on every measured call.
@@ -64,6 +95,9 @@ failed to improve the real workload: 269.4 seconds for 121 frames versus the
 ## Verification
 
 - Focused linear, transformer-shape, and block-streaming tests: 38 passed.
+- The dispatch-specific tests pass 5/5 on both MLX 0.32.0 and 0.32.2 and now
+  explicitly construct `QuantizedLinear`; this prevents a bare-`Linear`
+  false positive in the test helper.
 - Inference/pipeline non-slow suite: 546 passed, 22 skipped.
 - Ruff lint and format checks: passed.
 - The repository's trainer test subset was excluded because the existing
@@ -73,9 +107,16 @@ failed to improve the real workload: 269.4 seconds for 121 frames versus the
 ## Decision boundary
 
 Rapid pins the exact experimental runtime commit so the release contains the
-capability, while keeping it opt-in until it is benchmarked on at least the
-target M3 Ultra configuration and one additional MLX version. The temporary
-pin uses the maintainer-controlled `raullenchai/ltx-2-mlx` fork because the
-upstream PR is still open; switch the repository back after upstream merge.
-Atlas owns the decision to enable the environment variable automatically for
-qualified hardware.
+capability, but keeps it opt-in. It is not enabled by default because the
+1,024-token switch applies to every quantized linear, while crossover varies
+by projection shape, Apple GPU and MLX version; Studio measured 1.6-1.7%
+whole-block regressions at smaller shapes. In addition, Studio lacks an
+end-to-end run and the output-changing arithmetic path has not passed a
+multi-prompt blind visual/audio qualification.
+
+A future default should use a more conservative, shape-aware boundary (for
+example, initially bypassing token counts below 4,096) and must repeat MZR-3
+end-to-end and quality tests before shipment. That policy is not part of this
+release. The temporary pin uses the maintainer-controlled
+`raullenchai/ltx-2-mlx` fork because the upstream PR is still open; switch the
+repository back after upstream merge. Atlas owns any later default change.

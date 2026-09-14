@@ -157,7 +157,7 @@ especially its commercial-use and generated-content disclosure terms.
 
 ```bash
 git clone --branch vector/ltx25-dequant-matmul https://github.com/raullenchai/ltx-2-mlx.git
-git -C ltx-2-mlx checkout 15ae0280cb3b2372db9399484ba3944ed0316bb6
+git -C ltx-2-mlx checkout 905efb2308a05385f4051e1af6ac322147be23ed
 uv sync --project ltx-2-mlx
 brew install ffmpeg
 
