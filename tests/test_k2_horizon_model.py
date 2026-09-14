@@ -2,8 +2,11 @@
 """Contracts for Rapid's mlx-vlm-independent K2 Horizon text adapter."""
 
 import importlib
+import json
 import sys
 import types
+from pathlib import Path
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -179,3 +182,46 @@ def test_adapter_has_no_mlx_vlm_import():
     source = open(k2_horizon.__file__, encoding="utf-8").read()
     assert "import mlx_vlm" not in source
     assert "from mlx_vlm" not in source
+
+
+def test_vendored_load_ignores_checkpoint_owned_model_code(tmp_path, monkeypatch):
+    """K2 weights must execute Rapid's reviewed runtime, not repo Python."""
+    from vllm_mlx.utils import tokenizer
+
+    (tmp_path / "config.json").write_text(
+        json.dumps(
+            {
+                **TINY,
+                "model_file": "model.py",
+                "auto_map": {"AutoModel": "model.CustomModel"},
+            }
+        )
+    )
+    (tmp_path / "model.py").write_text("raise AssertionError('must not execute')\n")
+    (tmp_path / "tokenizer.json").write_text("{}")
+
+    captured = {}
+    fake_model = object()
+
+    def fake_load_model(path: Path, *, model_config=None, **_kwargs):
+        captured.update(model_config or {})
+        return fake_model, {}
+
+    fake_tokenizer = MagicMock()
+    fake_tokenizer.chat_template = "template"
+    monkeypatch.setattr("mlx_lm.utils.load_model", fake_load_model)
+    monkeypatch.setattr("tokenizers.Tokenizer.from_file", lambda _path: MagicMock())
+    monkeypatch.setattr(
+        "transformers.PreTrainedTokenizerFast", lambda **_kwargs: fake_tokenizer
+    )
+    monkeypatch.setattr(
+        tokenizer, "augment_eos_token_ids_from_generation_config", lambda *_: None
+    )
+    monkeypatch.setattr(tokenizer, "repair_byte_level_decoder", lambda *_: None)
+
+    tokenizer._register_vendored_archs()
+    model, returned_tokenizer = tokenizer._load_with_tokenizer_fallback(str(tmp_path))
+    assert model is fake_model
+    assert returned_tokenizer is fake_tokenizer
+    assert captured["model_file"] is None
+    assert captured["auto_map"] is None

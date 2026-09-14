@@ -1318,11 +1318,18 @@ def load_model_with_fallback(
         if resolved_snapshot is not None:
             model_name = str(resolved_snapshot)
 
-    # ``mlx_lm.load`` may import config.json::model_file.  Validate that
-    # caller-supplied local path once at this shared boundary before any native
-    # or fallback loader runs.  Remote repository ids are intentionally a no-op
-    # here; see validate_local_model_file for the containment boundary.
-    validate_local_model_file(model_name)
+    # ``mlx_lm.load`` may import config.json::model_file. Validate ordinary
+    # local checkpoints before any loader runs. Rapid-vendored architectures
+    # deliberately ignore repo-owned model code: their lower-level load path
+    # overlays ``model_file`` / ``auto_map`` to None and executes only the
+    # reviewed runtime shipped in this package. A Hugging Face cache snapshot's
+    # Python file is normally a symlink into ``blobs/`` outside the snapshot,
+    # so applying the ordinary containment gate here would reject a safe
+    # vendored load before that override can take effect.
+    _register_vendored_archs()
+    vendored_arch = _is_vendored_arch_model(model_name)
+    if not vendored_arch:
+        validate_local_model_file(model_name)
 
     tokenizer_config, trust_remote_code = apply_remote_code_policy(tokenizer_config)
 
@@ -1332,7 +1339,7 @@ def load_model_with_fallback(
     # downloaded and run. This turns silent code execution into an informed
     # choice; opt out process-wide with RAPID_MLX_TRUST_REMOTE_CODE=0 (see
     # BatchedEngine). A probe failure is silent — never breaks loading.
-    if _model_requires_remote_code(model_name):
+    if not vendored_arch and _model_requires_remote_code(model_name):
         if trust_remote_code:
             logger.warning(
                 "Security: model %r declares auto_map (custom Python code). "
@@ -1861,6 +1868,17 @@ def _load_with_tokenizer_fallback(model_name: str, *, enable_dspark: bool = Fals
     model_config = _deepseek_v4_quantization_override(
         model_path, enable_dspark=enable_dspark
     )
+    if _is_vendored_arch_model(str(model_path)):
+        # A vendored architecture is an explicit trust boundary: weights and
+        # tokenizer assets come from the checkpoint, executable model code
+        # comes from Rapid. ``mlx_lm.utils.load_model`` otherwise gives the
+        # checkpoint's ``model_file`` precedence over its registered
+        # ``model_type`` module, silently defeating that boundary.
+        model_config = {
+            **(model_config or {}),
+            "model_file": None,
+            "auto_map": None,
+        }
 
     # DeepSeek-style fp8 block checkpoints (Ling 3.0 fp8): mlx has no fp8
     # dtype, so ``mx.load`` cannot open the shards at all. Repack the
