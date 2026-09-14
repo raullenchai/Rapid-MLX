@@ -44,6 +44,12 @@ inputs:
       a tag must come from the real signed lane, never an ad-hoc build.
     required: false
     default: 'false'
+  parallel_sidecar_build:
+    description: >-
+      'true' only for the controlled release candidate/tag lane. Signing alone
+      does not opt a caller into a clean sidecar rebuild or parallel execution.
+    required: false
+    default: 'false'
   publish_sparkle:
     description: >-
       'true' for a releasable candidate or tagged standalone build that must
@@ -214,6 +220,9 @@ runs:
         SPARKLE_PUBLIC_ED_KEY: ${{ inputs.signed == 'true' && inputs.SPARKLE_PUBLIC_ED_KEY || '' }}
         RAPID_CANDIDATE_IDENTITY: ${{ inputs.candidate_identity }}
         SIGNED: ${{ inputs.signed }}
+        # Release builds have a fresh sidecar stage and a trusted signing
+        # identity, so overlap that independent work with Swift compilation.
+        PARALLEL_SIDECAR_BUILD: ${{ inputs.parallel_sidecar_build == 'true' && inputs.signed == 'true' && '1' || '0' }}
       shell: bash
       run: |
         set -euo pipefail
