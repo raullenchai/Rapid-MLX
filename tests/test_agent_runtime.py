@@ -54,7 +54,7 @@ def test_minicpm_profile_is_alias_and_repo_aware():
     ):
         profile = resolve_agent_profile(model)
         assert profile.name == "minicpm5-2b"
-        assert profile.max_visible_tools == 6
+        assert profile.max_visible_tools == 8
         assert profile.max_tool_rounds == 12
 
     assert resolve_agent_profile("qwen3.5-4b-4bit").name == "default"
@@ -89,7 +89,7 @@ def test_minicpm_profile_uses_exact_loaded_metadata_for_custom_local_paths():
     )
     unverified = resolve_agent_profile("/models/minicpm5-2b-copy")
     assert unverified.name == "default-conservative"
-    assert unverified.max_visible_tools == 6
+    assert unverified.max_visible_tools == 8
     assert unverified.max_tool_rounds == 8
 
 
@@ -296,10 +296,10 @@ def test_minicpm_rejects_an_oversized_tool_surface():
     runtime = _runtime()
     run = runtime.create_run(model="minicpm5-2b-4bit", goal="Do the task")
     tools = [
-        ToolSpec(name=f"tool_{index}", risk=ToolRisk.READ_ONLY) for index in range(7)
+        ToolSpec(name=f"tool_{index}", risk=ToolRisk.READ_ONLY) for index in range(9)
     ]
 
-    with pytest.raises(AgentRuntimeError, match="at most 6 visible tools"):
+    with pytest.raises(AgentRuntimeError, match="at most 8 visible tools"):
         runtime.request_model(run, tools)
 
     assert run.status is AgentRunStatus.READY
@@ -320,7 +320,7 @@ def test_profile_override_cannot_weaken_model_limits():
     runtime = _runtime()
     weakened = AgentProfile(
         name="unsafe",
-        max_visible_tools=7,
+        max_visible_tools=9,
         max_tool_rounds=8,
         repeated_call_limit=2,
     )

@@ -941,13 +941,23 @@ def test_tool_selection_is_exact_bounded_and_read_first_by_default():
     profile = resolve_agent_profile("minicpm5-2b-4bit")
 
     selected = service._select_tools(None, profile, registry)
-    assert len(selected) == 6
+    assert len(selected) == 7
     assert READ in selected
 
     with pytest.raises(AgentToolSelectionError, match="unknown"):
         service._select_tools(["missing"], profile, registry)
-    with pytest.raises(AgentToolSelectionError, match="at most 6"):
-        service._select_tools([tool.name for tool in tools], profile, registry)
+    with pytest.raises(AgentToolSelectionError, match="at most 8"):
+        service._select_tools(
+            [tool.name for tool in tools] + ["extra_one", "extra_two"],
+            profile,
+            FakeRegistry(
+                (
+                    *tools,
+                    ToolSpec(name="extra_one", risk=ToolRisk.READ_ONLY),
+                    ToolSpec(name="extra_two", risk=ToolRisk.READ_ONLY),
+                )
+            ),
+        )
 
 
 def test_automatic_helpers_never_displace_existing_connector_tools():
@@ -966,7 +976,9 @@ def test_automatic_helpers_never_displace_existing_connector_tools():
     selected = service._select_tools(None, profile, registry)
 
     assert [tool.name for tool in selected] == [
-        f"connector_{index}" for index in range(6)
+        *(f"connector_{index}" for index in range(6)),
+        "rapid__calculate",
+        "rapid__batch_read_only",
     ]
 
 
@@ -2217,6 +2229,7 @@ async def test_builtin_batch_collects_siblings_when_one_read_raises():
     assert "private connector detail" not in result.content
     payload = json.loads(result.content)
     assert [item["is_error"] for item in payload["results"]] == [True, False]
+    assert result.executed is None
 
 
 @pytest.mark.asyncio

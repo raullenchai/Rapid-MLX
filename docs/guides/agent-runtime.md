@@ -212,7 +212,7 @@ work.
 
 The MiniCPM5-2B profile is the measured low-memory path:
 
-- at most 6 visible tools;
+- at most 6 configured connector tools plus 2 bounded Rapid host helpers;
 - at most 12 tool rounds, followed by one tools-disabled synthesis turn;
 - at most 2 identical calls before loop blocking;
 - one tool call per model turn;

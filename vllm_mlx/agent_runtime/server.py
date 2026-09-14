@@ -667,7 +667,11 @@ class MCPToolRegistry:
             call_id=call.id,
             content=content,
             is_error=any(result.is_error for result in results),
-            executed=any(result.executed is not False for result in results),
+            executed=(
+                None
+                if any(result.executed is None for result in results)
+                else any(result.executed is True for result in results)
+            ),
             safe_summary=(
                 "One or more read-only tools failed."
                 if any(result.is_error for result in results)
@@ -1313,6 +1317,7 @@ class AgentServerService:
                 for name in (_BUILTIN_CALCULATE, _BUILTIN_BATCH_READ_ONLY)
                 if name in available
             ]
+            connector_limit = required_limit - len(helpers)
             selected = (
                 sorted(
                     connector_tools,
@@ -1320,9 +1325,9 @@ class AgentServerService:
                         item.risk is not ToolRisk.READ_ONLY,
                         item.name,
                     ),
-                )
+                )[:connector_limit]
                 + helpers
-            )[:required_limit]
+            )
         if len(selected) > required_limit:
             raise AgentToolSelectionError(
                 f"model profile permits at most {required_limit} tools"

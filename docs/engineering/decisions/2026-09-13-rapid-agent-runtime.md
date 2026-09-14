@@ -55,8 +55,9 @@ forcing macOS-only tools into Python.
 
 1. A run is bound to one immutable model profile, recorded completely in
    `run.created`. Only the runtime instance that created a run may advance it.
-2. The MiniCPM5-2B profile exposes at most six tools and permits twelve tool
-   rounds. P0 accepts one tool call per model turn for every profile.
+2. The MiniCPM5-2B profile exposes at most six configured connector tools plus
+   two bounded Rapid host helpers, and permits twelve tool rounds. P0 accepts
+   one tool call per model turn for every profile.
 3. Tools not advertised for that exact turn fail closed.
    Registry adapters must classify every tool explicitly; there is no
    permissive default risk. Calls are validated against the exact JSON Schema
