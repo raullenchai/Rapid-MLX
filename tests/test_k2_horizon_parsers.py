@@ -160,6 +160,17 @@ def test_nonstreaming_parses_multiple_groups_without_markup_leak():
     assert [call["name"] for call in result.tool_calls] == ["ping", "lookup"]
 
 
+def test_nonstreaming_redacts_reasoning_between_tool_groups():
+    output = (
+        _group(_xml_call("ping"))
+        + "private retry</ifm|think_fast>Visible between"
+        + _group(_xml_call("lookup"))
+    )
+    result = K2HorizonToolParser().extract_tool_calls(output, _request())
+    assert result.tools_called
+    assert result.content == "Visible between"
+
+
 @pytest.mark.parametrize(
     "closer",
     ["</ifm|think>", "</ifm|think_fast>", "</ifm|think_faster>"],
@@ -324,6 +335,20 @@ def test_streaming_parses_two_complete_groups_in_one_chunk():
         "ping",
         "lookup",
     ]
+
+
+def test_streaming_redacts_reasoning_between_tool_groups():
+    parser = K2HorizonToolParser()
+    output = (
+        _group(_xml_call("ping"))
+        + "private retry</ifm|think_faster>Visible between"
+        + _group(_xml_call("lookup"))
+    )
+    delta = parser.extract_tool_calls_streaming("", output, output, request=_request())
+    assert delta is not None
+    assert delta["content"] == "Visible between"
+    assert len(delta["tool_calls"]) == 2
+    assert all(len(call["id"]) == len("call_") + 32 for call in delta["tool_calls"])
 
 
 def test_streaming_tool_choice_none_strips_envelope_incrementally():

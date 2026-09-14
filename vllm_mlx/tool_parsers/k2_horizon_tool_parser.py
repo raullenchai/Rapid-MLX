@@ -182,7 +182,7 @@ class K2HorizonToolParser(ToolParser):
             name, arguments = cls._parse_call(match.group(1), request, wire_format)
             calls.append(
                 {
-                    "id": f"call_{uuid.uuid4().hex[:8]}",
+                    "id": f"call_{uuid.uuid4().hex}",
                     "name": name,
                     "arguments": json.dumps(
                         arguments, ensure_ascii=False, allow_nan=False
@@ -223,7 +223,9 @@ class K2HorizonToolParser(ToolParser):
                 break
             end += len(cls.GROUP_END)
             next_start = text.find(cls.GROUP_START, end)
-            parts.append(text[end : next_start if next_start >= 0 else None])
+            parts.append(
+                cls._visible_prefix(text[end : next_start if next_start >= 0 else None])
+            )
             cursor = next_start
         return "".join(parts)
 
@@ -258,7 +260,9 @@ class K2HorizonToolParser(ToolParser):
                 )
             next_start = model_output.find(self.GROUP_START, end)
             content_parts.append(
-                model_output[end : next_start if next_start >= 0 else None]
+                self._visible_prefix(
+                    model_output[end : next_start if next_start >= 0 else None]
+                )
             )
             cursor = next_start
         content = "".join(content_parts)
@@ -329,14 +333,14 @@ class K2HorizonToolParser(ToolParser):
 
             next_start = current_text.find(self.GROUP_START, end)
             if next_start >= 0:
-                content_parts.append(current_text[end:next_start])
+                content_parts.append(self._visible_prefix(current_text[end:next_start]))
                 cursor = next_start
                 continue
 
             trailing = current_text[end:]
             held = self._partial_overlap(trailing, self.GROUP_START)
             visible_end = len(current_text) - held
-            content_parts.append(current_text[end:visible_end])
+            content_parts.append(self._visible_prefix(current_text[end:visible_end]))
             self._content_upto = visible_end
             break
 
