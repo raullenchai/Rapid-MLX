@@ -1937,6 +1937,9 @@ async def test_mcp_result_shapes_and_execution_exception_are_audited():
     serialization_failure = await MCPToolRegistry().execute(call)
     assert serialization_failure.executed is True
     assert serialization_failure.is_error is True
+    assert serialization_failure.safe_summary == (
+        "Tool executed, but its result could not be serialized."
+    )
     assert "private serialization detail" not in serialization_failure.content
 
     manager.result = RuntimeError("private exception")

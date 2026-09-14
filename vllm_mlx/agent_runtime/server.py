@@ -608,10 +608,16 @@ class MCPToolRegistry:
             is_error=result_is_error,
             executed=True,
             safe_summary=(
-                "Tool execution completed, but its MCP audit record could not be written."
-                if not audit_recorded
+                "Tool executed, but its result could not be serialized."
+                if serialization_failed
                 else (
-                    "Tool execution failed." if result.is_error else "Tool completed."
+                    "Tool execution completed, but its MCP audit record could not be written."
+                    if not audit_recorded
+                    else (
+                        "Tool execution failed."
+                        if result_is_error
+                        else "Tool completed."
+                    )
                 )
             ),
         )

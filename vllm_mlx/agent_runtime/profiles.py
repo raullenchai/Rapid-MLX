@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
 from .models import AgentProfile
@@ -29,6 +30,9 @@ _MINICPM5_2B_CATALOG_IDENTITIES = frozenset(
         "openbmb/minicpm5-2b-mlx",
         "mlx-community/minicpm5-2b-8bit",
     }
+)
+_MINICPM5_2B_TRUSTED_REPO = re.compile(
+    r"^(?:openbmb|mlx-community)/minicpm5-2b(?:-(?:mlx|4bit|8bit|bf16))?$"
 )
 
 
@@ -65,7 +69,11 @@ def resolve_agent_profile(
     """Return budgets from catalog identity or exact loaded-model metadata."""
 
     normalized = model.casefold().replace("_", "-")
-    if normalized in _MINICPM5_2B_CATALOG_IDENTITIES or (
+    catalog_match = (
+        normalized in _MINICPM5_2B_CATALOG_IDENTITIES
+        or _MINICPM5_2B_TRUSTED_REPO.fullmatch(normalized) is not None
+    )
+    if catalog_match or (
         tool_call_parser == "minicpm" and _is_minicpm5_2b_config(model_config)
     ):
         return MINICPM5_2B_PROFILE

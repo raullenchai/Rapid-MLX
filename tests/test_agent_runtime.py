@@ -49,6 +49,7 @@ def test_minicpm_profile_is_alias_and_repo_aware():
         "minicpm5-2b-4bit",
         "openbmb/MiniCPM5-2B-MLX",
         "mlx-community/MiniCPM5_2B_8bit",
+        "mlx-community/MiniCPM5-2B-4bit",
     ):
         profile = resolve_agent_profile(model)
         assert profile.name == "minicpm5-2b"
