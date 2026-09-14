@@ -122,6 +122,24 @@ def test_unsupported_checkpoint_geometry_fails_closed(override, match):
         k2_horizon.ModelArgs.from_dict({**TINY, **override})
 
 
+def test_derived_attention_defaults_are_explicit_and_validated():
+    args = k2_horizon.ModelArgs.from_dict(
+        {**TINY, "num_key_value_heads": None, "head_dim": None}
+    )
+    assert args.num_key_value_heads == args.num_attention_heads
+    assert args.head_dim == TINY["hidden_size"] // TINY["num_attention_heads"]
+
+    with pytest.raises(ValueError, match="num_key_value_heads must be positive"):
+        k2_horizon.ModelArgs.from_dict({**TINY, "num_key_value_heads": 0})
+    with pytest.raises(ValueError, match="head_dim must be positive"):
+        k2_horizon.ModelArgs.from_dict({**TINY, "head_dim": 0})
+
+
+def test_group_rms_norm_rejects_invalid_group_geometry():
+    with pytest.raises(ValueError, match="must be divisible"):
+        k2_horizon.GroupRMSNorm(dims=4, groups=3, eps=1e-6)
+
+
 def test_tiny_forward_and_incremental_cache_match_full_prefill():
     mx.random.seed(7)
     args = k2_horizon.ModelArgs.from_dict(TINY)
@@ -141,6 +159,17 @@ def test_tiny_forward_and_incremental_cache_match_full_prefill():
     assert mx.allclose(
         full[:, -1, :], pieces[-1][:, -1, :], rtol=1e-4, atol=1e-4
     ).item()
+
+
+def test_tied_embeddings_supply_logits_and_drop_duplicate_lm_head():
+    args = k2_horizon.ModelArgs.from_dict({**TINY, "tie_word_embeddings": True})
+    model = k2_horizon.Model(args)
+    logits = model(mx.array([[1, 2]]))
+    mx.eval(logits)
+    assert logits.shape == (1, 2, TINY["vocab_size"])
+    assert "lm_head.weight" not in model.sanitize(
+        {"lm_head.weight": mx.ones((1,)), "model.weight": mx.ones((1,))}
+    )
 
 
 def test_group_rms_norm_matches_grouped_reference_not_global_rms():
@@ -198,6 +227,50 @@ def test_registration_defers_to_future_native_module(monkeypatch):
     tokenizer._register_vendored_archs()
     assert "mlx_lm.models.k2_horizon" not in sys.modules
     assert "k2_horizon" in tokenizer._VENDORED_MODEL_TYPES
+
+
+def test_registration_recovers_when_native_spec_probe_is_invalid(monkeypatch):
+    tokenizer = _reset_registration(monkeypatch)
+    real_find_spec = importlib.util.find_spec
+
+    def find_spec(name, *args, **kwargs):
+        if name == "mlx_lm.models.k2_horizon":
+            raise ValueError("module has no spec")
+        return real_find_spec(name, *args, **kwargs)
+
+    monkeypatch.setattr(importlib.util, "find_spec", find_spec)
+    tokenizer._register_vendored_archs()
+    assert importlib.import_module("mlx_lm.models.k2_horizon") is k2_horizon
+
+
+def test_registration_failure_does_not_advertise_k2(monkeypatch, caplog):
+    tokenizer = _reset_registration(monkeypatch)
+    real_import_module = importlib.import_module
+
+    def import_module(name, package=None):
+        if name == "vllm_mlx.models.k2_horizon":
+            raise ImportError("broken adapter")
+        return real_import_module(name, package)
+
+    monkeypatch.setattr(importlib, "import_module", import_module)
+    tokenizer._register_vendored_archs()
+    assert "k2_horizon" not in tokenizer._VENDORED_MODEL_TYPES
+    assert "failed to register" in caplog.text
+
+
+def test_runtime_probe_failure_fails_closed(tmp_path, monkeypatch):
+    from vllm_mlx.utils import tokenizer
+
+    (tmp_path / "config.json").write_text(json.dumps(TINY))
+    tokenizer._register_vendored_archs()
+    monkeypatch.delitem(sys.modules, "mlx_lm.models.k2_horizon", raising=False)
+
+    def invalid_spec(_name):
+        raise ValueError("module has no spec")
+
+    monkeypatch.setattr(importlib.util, "find_spec", invalid_spec)
+    with pytest.raises(RuntimeError, match="refusing to execute checkpoint-owned"):
+        tokenizer._uses_rapid_owned_runtime(str(tmp_path))
 
 
 def test_adapter_has_no_mlx_vlm_import():

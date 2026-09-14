@@ -937,7 +937,9 @@ def _register_vendored_archs() -> None:
 
         if _k2_native_spec is None:
             try:
-                from ..models import k2_horizon as _k2_horizon
+                import importlib as _importlib
+
+                _k2_horizon = _importlib.import_module("vllm_mlx.models.k2_horizon")
 
                 sys.modules.setdefault("mlx_lm.models.k2_horizon", _k2_horizon)
             except Exception as e:
@@ -1690,11 +1692,15 @@ def _load_model_with_fallback_impl(
 
     _register_vendored_archs()
     tokenizer_config = tokenizer_config or {}
-    load_kwargs = {"tokenizer_config": tokenizer_config}
     if model_config is not None:
-        # Preserve compatibility with older mlx-lm versions that do not
-        # accept this keyword. Only reviewed runtimes need the override.
-        load_kwargs["model_config"] = model_config
+        # The public wrapper supplies this only for an explicitly reviewed
+        # runtime. Route it directly to the lower-level loader so ordinary
+        # model families retain their historical high-level call shape.
+        return _load_with_tokenizer_fallback(
+            model_name,
+            enable_dspark=enable_dspark,
+            model_config=model_config,
+        )
     # #1420: neutralize any declared chat-template / tool-parser type whose
     # mlx-lm module isn't bundled, BEFORE any load() — covers the native
     # Gemma 4 path, its legacy-wrapper fallback, and the general path, all of
@@ -1708,11 +1714,7 @@ def _load_model_with_fallback_impl(
         logger.info(
             f"Model {model_name} requires tokenizer fallback, loading directly..."
         )
-        return _load_with_tokenizer_fallback(
-            model_name,
-            enable_dspark=enable_dspark,
-            model_config=model_config,
-        )
+        return _load_with_tokenizer_fallback(model_name, enable_dspark=enable_dspark)
 
     # Vendored architectures (e.g. deepseek_v4) — transformers' AutoConfig
     # doesn't know about them, so mlx-lm's high-level load() blows up
@@ -1723,11 +1725,7 @@ def _load_model_with_fallback_impl(
             f"Model {model_name} uses a vendored architecture, "
             "skipping AutoConfig path and loading directly..."
         )
-        return _load_with_tokenizer_fallback(
-            model_name,
-            enable_dspark=enable_dspark,
-            model_config=model_config,
-        )
+        return _load_with_tokenizer_fallback(model_name, enable_dspark=enable_dspark)
 
     # Gemma 4: mlx-lm 0.31+ supports it natively. Only use our wrapper
     # for older mlx-lm versions that lack gemma4 model support. Several
@@ -1764,7 +1762,7 @@ def _load_model_with_fallback_impl(
             return load_gemma4_text(model_name, tokenizer_config)
         try:
             # Try native mlx-lm load first (0.31+)
-            model, tokenizer = load(model_name, **load_kwargs)
+            model, tokenizer = load(model_name, tokenizer_config=tokenizer_config)
             logger.info("Gemma 4 loaded natively via mlx-lm")
             if not getattr(tokenizer, "chat_template", None):
                 mp = _resolve_model_path(model_name)
@@ -1797,7 +1795,7 @@ def _load_model_with_fallback_impl(
             return load_gemma4_text(model_name, tokenizer_config)
 
     try:
-        model, tokenizer = load(model_name, **load_kwargs)
+        model, tokenizer = load(model_name, tokenizer_config=tokenizer_config)
         # mlx_lm.load() succeeds but sanitize() may have silently
         # stripped mtp.* weights.  Check if the config declares MTP
         # layers and the model came back without a .mtp attribute;
