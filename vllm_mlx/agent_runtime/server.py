@@ -13,7 +13,7 @@ import time
 import uuid
 from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass, field
-from decimal import Decimal, DivisionByZero, InvalidOperation
+from decimal import Decimal, DecimalException, Inexact, Rounded, localcontext
 from threading import RLock
 from typing import Any, Literal, Protocol, cast
 
@@ -58,6 +58,8 @@ _CANCEL_JOIN_SECONDS = 1.0
 _SHUTDOWN_JOIN_SECONDS = 30.0
 _BUILTIN_CALCULATE = "rapid__calculate"
 _BUILTIN_BATCH_READ_ONLY = "rapid__batch_read_only"
+_BUILTIN_TOOL_NAMES = frozenset({_BUILTIN_CALCULATE, _BUILTIN_BATCH_READ_ONLY})
+_MAX_ARITHMETIC_PRECISION = 1024
 
 _CALCULATE_PARAMETERS = {
     "type": "object",
@@ -111,8 +113,12 @@ _BATCH_READ_ONLY_SPEC = ToolSpec(
 def _decimal_text(value: Decimal) -> str:
     """Stable non-scientific text for a finite exact calculator result."""
 
-    if not value.is_finite():
-        raise InvalidOperation
+    if (
+        not value.is_finite()
+        or len(value.as_tuple().digits) > _MAX_ARITHMETIC_PRECISION
+        or abs(value.adjusted()) > _MAX_ARITHMETIC_PRECISION
+    ):
+        raise ValueError("arithmetic result is outside the supported range")
     text = format(value.normalize(), "f")
     if "." in text:
         text = text.rstrip("0").rstrip(".")
@@ -130,7 +136,11 @@ def _evaluate_arithmetic(expression: str) -> str:
         if isinstance(node, ast.Expression):
             return visit(node.body)
         if isinstance(node, ast.Constant) and type(node.value) in (int, float):
-            return Decimal(str(node.value))
+            source = cast(str, ast.get_source_segment(expression, node))
+            value = Decimal(source.replace("_", ""))
+            # Reject huge exponents before formatting can allocate a massive
+            # result string. Literals and intermediates share one bound.
+            return Decimal(_decimal_text(value))
         if isinstance(node, ast.UnaryOp) and isinstance(node.op, (ast.UAdd, ast.USub)):
             value = visit(node.operand)
             return value if isinstance(node.op, ast.UAdd) else -value
@@ -147,8 +157,12 @@ def _evaluate_arithmetic(expression: str) -> str:
         raise ValueError("unsupported arithmetic syntax")
 
     try:
-        return _decimal_text(visit(tree))
-    except (DivisionByZero, InvalidOperation, ZeroDivisionError) as exc:
+        with localcontext() as context:
+            context.prec = _MAX_ARITHMETIC_PRECISION
+            context.traps[Inexact] = True
+            context.traps[Rounded] = True
+            return _decimal_text(visit(tree))
+    except (DecimalException, ZeroDivisionError) as exc:
         raise ValueError("arithmetic expression is undefined") from exc
 
 
@@ -503,7 +517,7 @@ class MCPToolRegistry:
                 "MCP registry is unavailable"
             ) from exc
         for tool in available_tools:
-            if tool.full_name in {_BUILTIN_CALCULATE, _BUILTIN_BATCH_READ_ONLY}:
+            if tool.full_name in _BUILTIN_TOOL_NAMES:
                 logger.warning(
                     "Agent runtime skipped MCP tool %r because its name is reserved",
                     tool.full_name,
@@ -1291,6 +1305,7 @@ class AgentServerService:
     ) -> list[ToolSpec]:
         available = {tool.name: tool for tool in registry.list_tools()}
         required_limit = profile.max_visible_tools
+        connector_limit = max(0, required_limit - len(_BUILTIN_TOOL_NAMES))
         if names is not None:
             missing = [name for name in names if name not in available]
             if missing:
@@ -1298,6 +1313,13 @@ class AgentServerService:
                     f"unknown or unsupported tools: {', '.join(missing)}"
                 )
             selected = [available[name] for name in names]
+            connector_count = sum(
+                tool.name not in _BUILTIN_TOOL_NAMES for tool in selected
+            )
+            if connector_count > connector_limit:
+                raise AgentToolSelectionError(
+                    f"model profile permits at most {connector_limit} connector tools"
+                )
         else:
             # Built-ins are opportunistic helpers, not a reason to hide an
             # operator's existing MCP surface. Fill the model's bounded tool
@@ -1306,14 +1328,13 @@ class AgentServerService:
             connector_tools = [
                 tool
                 for tool in available.values()
-                if tool.name not in {_BUILTIN_CALCULATE, _BUILTIN_BATCH_READ_ONLY}
+                if tool.name not in _BUILTIN_TOOL_NAMES
             ]
             helpers = [
                 available[name]
                 for name in (_BUILTIN_CALCULATE, _BUILTIN_BATCH_READ_ONLY)
                 if name in available
             ]
-            connector_limit = required_limit - len(helpers)
             selected = (
                 sorted(
                     connector_tools,

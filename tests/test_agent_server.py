@@ -942,22 +942,16 @@ def test_tool_selection_is_exact_bounded_and_read_first_by_default():
     profile = resolve_agent_profile("minicpm5-2b-4bit")
 
     selected = service._select_tools(None, profile, registry)
-    assert len(selected) == 7
+    assert len(selected) == 6
     assert READ in selected
 
     with pytest.raises(AgentToolSelectionError, match="unknown"):
         service._select_tools(["missing"], profile, registry)
-    with pytest.raises(AgentToolSelectionError, match="at most 8"):
+    with pytest.raises(AgentToolSelectionError, match="at most 6 connector tools"):
         service._select_tools(
-            [tool.name for tool in tools] + ["extra_one", "extra_two"],
+            [tool.name for tool in tools],
             profile,
-            FakeRegistry(
-                (
-                    *tools,
-                    ToolSpec(name="extra_one", risk=ToolRisk.READ_ONLY),
-                    ToolSpec(name="extra_two", risk=ToolRisk.READ_ONLY),
-                )
-            ),
+            registry,
         )
 
 
@@ -981,6 +975,10 @@ def test_automatic_helpers_never_displace_existing_connector_tools():
         "rapid__calculate",
         "rapid__batch_read_only",
     ]
+    assert (
+        service._select_tools([tool.name for tool in selected], profile, registry)
+        == selected
+    )
 
 
 @pytest.mark.parametrize(
@@ -2087,6 +2085,11 @@ async def test_builtin_calculator_is_exact_and_rejects_code():
 
 
 def test_builtin_arithmetic_covers_supported_grammar_and_bounds():
+    assert _evaluate_arithmetic("0.1 + 0.2") == "0.3"
+    assert (
+        _evaluate_arithmetic("123456789012345678901234567890.1 + 0.2")
+        == "123456789012345678901234567890.3"
+    )
     assert _evaluate_arithmetic("1 / 4") == "0.25"
     assert _evaluate_arithmetic("-2 + +3") == "1"
     assert _evaluate_arithmetic("2 * 3 - 1") == "5"
@@ -2096,7 +2099,9 @@ def test_builtin_arithmetic_covers_supported_grammar_and_bounds():
     with pytest.raises(ValueError, match="undefined"):
         _evaluate_arithmetic("1 / 0")
     with pytest.raises(ValueError, match="undefined"):
-        _evaluate_arithmetic("1e309")
+        _evaluate_arithmetic("1 / 3")
+    with pytest.raises(ValueError, match="supported range"):
+        _evaluate_arithmetic("1e2000")
 
 
 @pytest.mark.asyncio
