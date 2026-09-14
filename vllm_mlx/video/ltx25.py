@@ -17,7 +17,7 @@ import tempfile
 import threading
 from pathlib import Path
 
-LTX25_RUNTIME_COMMIT = "15ae0280cb3b2372db9399484ba3944ed0316bb6"
+LTX25_RUNTIME_COMMIT = "905efb2308a05385f4051e1af6ac322147be23ed"
 LTX25_RUNTIME_REPOSITORY = "https://github.com/raullenchai/ltx-2-mlx.git"
 LTX25_RUNTIME_VERSION = "0.14.15"
 # Stamped into each embedded distribution's .dist-info by build-sidecar.sh;

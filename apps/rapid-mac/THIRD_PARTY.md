@@ -186,11 +186,11 @@ dependency closures:
 | mflux | `==0.19.0` | MIT | https://github.com/filipstrand/mflux |
 | mlx-video-with-audio | `==0.1.36` | MIT | https://pypi.org/project/mlx-video-with-audio/ |
 | mlx-arsenal | `==0.12.1` | MIT | https://pypi.org/project/mlx-arsenal/ |
-| LTX 2 MLX runtime (`ltx-core-mlx`, `ltx-pipelines-mlx`) | `0.14.15` (`15ae0280cb3b2372db9399484ba3944ed0316bb6`) | MIT | https://github.com/raullenchai/ltx-2-mlx |
+| LTX 2 MLX runtime (`ltx-core-mlx`, `ltx-pipelines-mlx`) | `0.14.15` (`905efb2308a05385f4051e1af6ac322147be23ed`) | MIT | https://github.com/raullenchai/ltx-2-mlx |
 
 The complete audited LTX runtime source archive and its MIT license ship under
 `Contents/Resources/rapid-mlx/licenses/`. The archive SHA-256 is
-`4ab949ed3086c4cd3ec193823d9dda4578357ed33ece20e033c9701e48b292ef`.
+`3f4cf7f0150401640b50a0078b813a8d739718544586f3cb06ef2278d232c689`.
 
 ### Video encoder
 
