@@ -2564,14 +2564,38 @@ def test_exact_prefix_snap_refuses_when_rewind_or_clone_fails(monkeypatch):
     _store_entry_with_checkpoints(gen, list(range(100)), [40, 80])
     full_ids = list(range(90)) + [999] * 10
 
+    real_clone = adapters.clone_cache_entry
     monkeypatch.setattr(adapters, "clone_cache_entry", lambda *a, **k: None)
     assert gen._snap_exact_text_prefix(cache, full_ids, 17, min_position=0) is None
-    monkeypatch.undo()
+    monkeypatch.setattr(adapters, "clone_cache_entry", real_clone)
 
     monkeypatch.setattr(
         MLLMBatchGenerator, "_rewind_exact_entry", staticmethod(lambda *_: None)
     )
     assert gen._snap_exact_text_prefix(cache, full_ids, 17, min_position=0) is None
+
+
+def test_exact_prefix_snap_promotes_only_a_snapshot_that_served(monkeypatch):
+    """LRU order must not move for a candidate whose rewind or clone failed."""
+    import mlx_vlm.apc_adapters as adapters
+
+    gen = _make_real_apc_generator(monkeypatch)
+    cache = gen._prefix_cache
+    _store_entry_with_checkpoints(gen, list(range(100)), [40, 80])
+    _store_entry_with_checkpoints(gen, list(range(100, 200)), [])
+    order_before = [e.token_ids[0] for e in _stored_entries(gen)]
+    assert order_before == [0, 100]
+    full_ids = list(range(90)) + [999] * 10
+
+    real_clone = adapters.clone_cache_entry
+    monkeypatch.setattr(adapters, "clone_cache_entry", lambda *a, **k: None)
+    assert gen._snap_exact_text_prefix(cache, full_ids, 17, min_position=0) is None
+    assert [e.token_ids[0] for e in _stored_entries(gen)] == [0, 100]
+    monkeypatch.setattr(adapters, "clone_cache_entry", real_clone)
+
+    snapped = gen._snap_exact_text_prefix(cache, full_ids, 17, min_position=0)
+    assert snapped is not None and snapped[1] == 80
+    assert [e.token_ids[0] for e in _stored_entries(gen)] == [100, 0]
 
 
 def test_rewind_exact_entry_refuses_layers_it_cannot_rewind():
