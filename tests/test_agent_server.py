@@ -2069,10 +2069,17 @@ async def test_drive_cancellation_and_stale_state_guards(monkeypatch):
         AgentRunCreateRequest(goal="read"), model="model"
     )
     entry = cancelled_service._entry(created.id)
-    with pytest.raises(asyncio.CancelledError):
-        await entry.task
+    await entry.task
     assert entry.tool_in_flight is False
-    await cancelled_service.cancel(created.id)
+    failed = await cancelled_service.get(created.id)
+    assert failed.status is AgentRunStatus.FAILED
+    assert failed.failure_code == "agent_adapter_cancelled"
+    completed = [
+        event
+        for event in (await cancelled_service.events(created.id)).events
+        if event.type == "tool.completed"
+    ]
+    assert completed[-1].data["result"]["executed"] is None
     await cancelled_service._drive(entry, call=call)
     await cancelled_service._drive(entry)
 

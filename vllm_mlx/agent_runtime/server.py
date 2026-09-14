@@ -523,7 +523,7 @@ class MCPToolRegistry:
                 executed=False,
                 safe_summary="Tool validation failed; no action was executed.",
             )
-        started = time.time()
+        started = time.monotonic()
         try:
             result = await manager.execute_tool(call.name, call.arguments)
         except AgentToolExecutionError as exc:
@@ -534,7 +534,7 @@ class MCPToolRegistry:
                 call.arguments,
                 success=False,
                 error_message="MCP dispatch rejected",
-                execution_time_ms=(time.time() - started) * 1000,
+                execution_time_ms=(time.monotonic() - started) * 1000,
             )
             return AgentToolResult(
                 call_id=call.id,
@@ -559,7 +559,7 @@ class MCPToolRegistry:
                 call.arguments,
                 success=False,
                 error_message=type(exc).__name__,
-                execution_time_ms=(time.time() - started) * 1000,
+                execution_time_ms=(time.monotonic() - started) * 1000,
             )
             return AgentToolResult(
                 call_id=call.id,
@@ -575,7 +575,7 @@ class MCPToolRegistry:
             call.arguments,
             success=not result.is_error,
             error_message=("tool returned an error" if result.is_error else None),
-            execution_time_ms=(time.time() - started) * 1000,
+            execution_time_ms=(time.monotonic() - started) * 1000,
         )
         if result.is_error:
             content = result.error_message or "Tool execution failed."
@@ -1143,7 +1143,19 @@ class AgentServerService:
                         return
                     next_call = output.call
         except asyncio.CancelledError:
-            raise
+            async with entry.lock:
+                entry.tool_in_flight = False
+                if entry.cancel_requested:
+                    raise
+                # A dependency that self-cancels is not an operator-requested
+                # cancellation. Preserve uncertainty for a released server
+                # action, then terminalize the run so it cannot leak capacity.
+                self._record_unknown_server_outcome(entry)
+                if entry.run.status not in _TERMINAL_STATUSES:
+                    self._runtime.fail(entry.run, "agent_adapter_cancelled")
+                    entry.pending_action = None
+                    entry.pending_risk = None
+                    self._mark_terminal(entry)
         except Exception as exc:
             async with entry.lock:
                 logger.warning(
