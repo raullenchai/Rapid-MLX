@@ -109,6 +109,15 @@ The current research metadata (`distillation`, `stage2_sigma`,
 automatic product activation because it does not bind the adapter to an exact
 base checkpoint.
 
+The compressed Stage-1 counterpart uses capability
+`ltx_stage1_compressed_v1`. In addition to the same immutable-base and digest
+requirements, it carries the complete schedule
+`[1.0, 0.98125, 0.909375, 0.421875, 0.0]`, original noise-lane indices
+`[0, 3, 5, 7]`, original noise-stream length 8, and the fixed ancestral
+`eta=1`, `s_noise=1` semantics. A Stage-1 and Stage-2 package may compose only
+when their base model, revision, transformer file, and configuration digest
+match exactly.
+
 Metadata, tensor names, tensor shapes, schedule monotonicity, and base identity
 must all validate before model mutation. Missing, malformed, or incompatible
 metadata fails closed. Standard generation remains available; the runtime must
@@ -150,6 +159,12 @@ After the broader quality and portability gates pass, Atlas may change the
 default to `fast` while retaining `standard` as a deterministic rollback. The
 same model package and request value must mean the same numerical path on M2,
 M3, M4, and later Apple Silicon generations.
+
+The upstream research CLI now exposes separate experimental
+`--fast-stage1-manifest` and `--fast-stage2-manifest` inputs. Rapid should map
+these internal artifacts to one product-level `generation_mode=fast` only
+after both packages pass qualification; users should not have to assemble a
+machine-specific schedule themselves.
 
 ## Resource admission versus algorithm selection
 

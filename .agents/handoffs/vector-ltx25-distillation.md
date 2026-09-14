@@ -5,7 +5,7 @@ Date: 2026-09-13
 Owner / host: Vector / MZR-3
 
 Runtime feasibility branch: `raullenchai:vector/ltx25-distillation-feasibility`
-at `d22f2b6` in the `ltx-2-mlx` repository. Rapid documentation branch:
+at `8685b9b` in the `ltx-2-mlx` repository. Rapid documentation branch:
 `raullenchai/LTX`, PR #3438.
 
 ## Verified facts
@@ -201,3 +201,28 @@ Validation mean video/audio chord error was 0.7099; the second-ranked schedule
 was 0.7353. The queued first stochastic pilot was updated from `0 -> 2` to the
 selected target segment `0 -> 3`. These scores select an experiment and are
 not a release-quality metric.
+
+## Portable Stage-1 implementation (2026-09-14)
+
+Upstream `0c71e5d` adds the runtime primitive needed to preserve the exact
+original eight-step ancestral noise lanes under a compressed schedule. Its
+default arguments reproduce the existing sampler exactly; malformed explicit
+mappings fail closed. `c32306b` adds a resumable shared rank-8 adapter
+curriculum for transitions `0 -> 3`, `3 -> 5`, `5 -> 7`, and `7 -> 8`, followed
+by a complete low-learning-rate replay pass. `7070141` evaluates each
+transition independently against held-out teacher boundaries so catastrophic
+forgetting cannot hide behind an aggregate score.
+
+Upstream `8685b9b` implements the opt-in Stage-1 package and runtime contract.
+It validates the immutable base revision, transformer/config fingerprint,
+adapter SHA-256 and shapes, exact five-sigma schedule, original noise lanes,
+runtime major, and qualification revision. A composed Stage-1/Stage-2 pair
+must target the same base transformer, additional LoRAs and schedule overrides
+are rejected, and model state is released at stage/request boundaries. The
+standard eight-step path is unchanged when the manifest flag is absent. Full
+upstream tests pass: 694 passed, 22 skipped.
+
+This is product plumbing, not a qualified model claim. The first noise-coupled
+segment, complete shared adapter, 241-frame `4 + 1` timing, decoded blind suite,
+and cross-generation Apple Silicon run are still pending. Atlas owns the
+public `generation_mode` mapping, any default switch, and release integration.
