@@ -1230,8 +1230,6 @@ class MLLMBatchGenerator:
             if best is None:
                 return None
             position, key, entry = best
-            entries.move_to_end(key)
-            entry.last_used = time.time()
         rewound = self._rewind_exact_entry(entry.prompt_cache, position)
         if rewound is None:
             return None
@@ -1252,6 +1250,13 @@ class MLLMBatchGenerator:
             warm.append(cloned)
         if eval_targets:
             mx.eval(eval_targets)
+        # Promote only a snapshot that actually served: a candidate whose
+        # rewind or clone failed must not keep displacing usable entries.
+        with lock:
+            served = entries.get(key)
+            if served is not None and served is entry:
+                entries.move_to_end(key)
+                served.last_used = time.time()
         holders = collect_checkpoints(rewound)
         return (
             warm,

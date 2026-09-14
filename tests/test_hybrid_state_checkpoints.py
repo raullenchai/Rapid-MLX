@@ -270,18 +270,26 @@ class TestGuards:
         from vllm_mlx import hybrid_state_checkpoints as hsc
 
         monkeypatch.setattr(hsc, "_RECURRENT_TYPES", None)
-        layer = vlm_cache.ArraysCache(2)
+        mx = pytest.importorskip("mlx.core")
+        layer = vlm_cache.ArraysCache(2, left_padding=[3])
         layer.cache = [_Array(0, (1, 4)), _Array(1, (1, 4))]
+        layer.lengths = mx.array([8])
         assert hsc.is_recurrent_layer(layer)
         holders = [None]
         assert record_checkpoints([layer], holders, 8, max_count=2, stride=1)
+        # The live cache moves on: new state, advanced padding/length metadata.
         layer.cache = [_Array(2, (1, 4)), _Array(3, (1, 4))]
+        layer.lengths = mx.array([16])
         attach_checkpoints([layer], holders)
         restored = restore_recurrent_layer(layer, 8)
         assert restored is not None
         assert [a.tag for a in restored.cache] == [0, 1]
+        # Sequence-length / padding bookkeeping from the later snapshot must
+        # not ride along with the rewound state.
         assert restored.left_padding is None
+        assert restored.lengths is None
         assert layer.cache[0].tag == 2
+        assert layer.lengths.tolist() == [16]
 
     def test_attach_ignores_misaligned_holders(self):
         cache = _cache(0)
