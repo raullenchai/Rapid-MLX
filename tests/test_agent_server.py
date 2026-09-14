@@ -755,6 +755,56 @@ async def test_cancel_after_side_effect_dispatch_preserves_outcome_before_cancel
 
 
 @pytest.mark.asyncio
+async def test_cancel_request_disconnect_does_not_cancel_dispatched_tool():
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    class SlowRegistry(FakeRegistry):
+        async def execute(self, call):
+            self.calls.append(call)
+            started.set()
+            await release.wait()
+            return AgentToolResult(
+                call_id=call.id,
+                content="committed",
+                safe_summary="Tool completed.",
+            )
+
+    call = AgentToolCall(id="call-send", name=SEND.name, arguments={"body": "x"})
+    registry = SlowRegistry((SEND,))
+    service = AgentServerService(
+        registry=registry,
+        chat_driver=ScriptedDriver(AgentModelTurn(tool_calls=[call])),
+    )
+    created = await service.create(AgentRunCreateRequest(goal="Send"), model="model")
+    waiting = await wait_for_status(
+        service, created.id, AgentRunStatus.AWAITING_APPROVAL
+    )
+    await service.approve(
+        created.id,
+        AgentApprovalRequest(call_id=waiting.pending_action.call_id, approved=True),
+    )
+    await started.wait()
+
+    disconnected_request = asyncio.create_task(service.cancel(created.id))
+    await asyncio.sleep(0)
+    disconnected_request.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await disconnected_request
+
+    entry = service._entry(created.id)
+    assert entry.task is not None and not entry.task.done()
+    release.set()
+    await entry.task
+    cancelled = await service.cancel(created.id)
+    assert cancelled.status is AgentRunStatus.CANCELLED
+    assert [event.type for event in service.events(created.id).events[-2:]] == [
+        "tool.completed",
+        "run.cancelled",
+    ]
+
+
+@pytest.mark.asyncio
 async def test_cancel_after_dispatched_tool_exception_records_outcome_then_cancel():
     started = asyncio.Event()
     release = asyncio.Event()
@@ -1819,13 +1869,17 @@ async def test_close_fails_boundedly_if_generation_does_not_stop(monkeypatch):
     import vllm_mlx.agent_runtime.server as agent_server
 
     started = asyncio.Event()
+    release = asyncio.Event()
+    swallowed = asyncio.Event()
 
     async def cancellation_delaying_driver(*_args):
         started.set()
-        try:
-            await asyncio.Future()
-        except asyncio.CancelledError:
-            await asyncio.Future()
+        while not release.is_set():
+            try:
+                await release.wait()
+            except asyncio.CancelledError:
+                swallowed.set()
+        return AgentModelTurn(content="must not complete")
 
     monkeypatch.setattr(agent_server, "_SHUTDOWN_JOIN_SECONDS", 0.01)
     service = AgentServerService(
@@ -1840,11 +1894,14 @@ async def test_close_fails_boundedly_if_generation_does_not_stop(monkeypatch):
     task = service._entry(created.id).task
     assert task is not None
     await asyncio.sleep(0)
-    assert task.done()
+    assert swallowed.is_set()
+    assert not task.done()
+    release.set()
+    await task
 
 
 @pytest.mark.asyncio
-async def test_close_preserves_dispatched_tool_past_generation_join_budget(monkeypatch):
+async def test_close_fails_boundedly_if_dispatched_tool_exceeds_deadline(monkeypatch):
     import vllm_mlx.agent_runtime.server as agent_server
 
     started = asyncio.Event()
@@ -1879,10 +1936,13 @@ async def test_close_preserves_dispatched_tool_past_generation_join_budget(monke
     await started.wait()
 
     shutdown = asyncio.create_task(service.close())
-    await asyncio.sleep(0.02)
-    assert not shutdown.done()
+    with pytest.raises(AgentRunCapacityError, match="tool work.*shutdown deadline"):
+        await asyncio.wait_for(shutdown, timeout=0.5)
+    entry = service._entry(created.id)
+    assert entry.task is not None and not entry.task.done()
     release.set()
-    await shutdown
+    await entry.task
+    await service.close()
 
     events = service.events(created.id).events
     assert [event.type for event in events[-2:]] == [

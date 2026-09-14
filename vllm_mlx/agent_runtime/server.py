@@ -337,6 +337,19 @@ class MCPToolRegistry:
         cfg = get_config()
         return cfg.mcp_manager, cfg.mcp_executor
 
+    @property
+    def execution_timeout_seconds(self) -> float:
+        """Return the configured upper bound for one projected MCP call."""
+
+        manager, _ = self._components()
+        if manager is None:
+            return _SHUTDOWN_JOIN_SECONDS
+        try:
+            timeout = float(manager.config.default_timeout)
+        except (AttributeError, TypeError, ValueError):
+            return _SHUTDOWN_JOIN_SECONDS
+        return timeout if timeout > 0 else _SHUTDOWN_JOIN_SECONDS
+
     @staticmethod
     def _record_execution(sandbox: Any, *args: Any, **kwargs: Any) -> bool:
         """Best-effort audit that can never rewrite the tool outcome.
@@ -883,10 +896,15 @@ class AgentServerService:
             if entry.tool_in_flight:
                 # A dispatched side effect must settle before cancellation so
                 # its executed/unknown outcome is preserved for the operator.
+                # Shield it from cancellation of the HTTP request itself: a
+                # disconnected caller must not abort a side effect in flight.
                 try:
-                    await task
+                    await asyncio.shield(task)
                 except asyncio.CancelledError:
-                    pass
+                    current = asyncio.current_task()
+                    cancelling = getattr(current, "cancelling", None)
+                    if callable(cancelling) and cancelling():
+                        raise
             else:
                 task.cancel()
                 done, pending = await asyncio.wait({task}, timeout=_CANCEL_JOIN_SECONDS)
@@ -923,8 +941,23 @@ class AgentServerService:
         }
         # Dispatched MCP calls own their configured timeout and must settle so
         # their executed/unknown outcome is recorded before engine teardown.
+        # Still fail closed after that bound if a registry violates its own
+        # deadline: never cancel a possibly committed side effect, and never
+        # tear the engine down underneath it.
         if tool_tasks:
-            await asyncio.gather(*tool_tasks, return_exceptions=True)
+            tool_timeout = max(
+                self._tool_join_timeout(entry)
+                for entry in entries
+                if entry.task in tool_tasks
+            )
+            done, pending = await asyncio.wait(tool_tasks, timeout=tool_timeout)
+            for completed_task in done:
+                if not completed_task.cancelled():
+                    completed_task.exception()
+            if pending:
+                raise AgentRunCapacityError(
+                    "agent tool work did not stop before its shutdown deadline"
+                )
         generation_tasks = {
             entry.task
             for entry in entries
@@ -948,6 +981,17 @@ class AgentServerService:
                     entry.pending_action = None
                     entry.pending_risk = None
                     self._mark_terminal(entry)
+
+    @staticmethod
+    def _tool_join_timeout(entry: _ServerRun) -> float:
+        raw = getattr(entry.registry, "execution_timeout_seconds", None)
+        if raw is None:
+            return _SHUTDOWN_JOIN_SECONDS
+        try:
+            timeout = float(raw)
+        except (TypeError, ValueError):
+            return _SHUTDOWN_JOIN_SECONDS
+        return timeout if timeout > 0 else _SHUTDOWN_JOIN_SECONDS
 
     def _select_tools(
         self,
