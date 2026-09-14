@@ -539,20 +539,23 @@ def test_workflows_fail_closed_and_never_execute_candidate_code():
         "contents": "read",
         "statuses": "read",
     }
-    for name in (
+    cancellable_jobs = (
         "accessibility-identifiers",
         "accessibility-identifier-tests",
         "gui-harness-contracts",
         "build",
         "gui-app-build",
         "gui-golden-flows",
-        "desktop-tests",
-    ):
-        assert "always()" in str(jobs[name]["if"])
-    assert str(jobs["changes"]["if"]) == "always()"
+    )
+    for name in cancellable_jobs:
+        condition = str(jobs[name]["if"])
+        assert "!cancelled()" in condition
+        assert "always()" not in condition
+    assert str(jobs["changes"]["if"]) == "${{ !cancelled() }}"
+    assert str(jobs["desktop-tests"]["if"]) == "always()"
     for name in ("build", "gui-app-build", "gui-golden-flows"):
         assert "reuse_mac != 'true'" in str(jobs[name]["if"])
-        assert "always()" in str(jobs[name]["if"])
+        assert "!cancelled()" in str(jobs[name]["if"])
         assert "needs.changes.result == 'success'" in str(jobs[name]["if"])
         assert "queue-tree-evidence" in jobs[name]["needs"]
     aggregate = jobs["desktop-tests"]
@@ -575,7 +578,8 @@ def test_workflows_fail_closed_and_never_execute_candidate_code():
         if step.get("name") == "Revalidate source runs and jobs"
     )
     assert download["continue-on-error"] is True
-    assert str(validate["if"]).startswith("always()")
+    assert "!cancelled()" in str(validate["if"])
+    assert "always()" not in str(validate["if"])
     assert "--scope mac" in validate["run"]
     assert (
         '--source-run-id "${{ steps.discover.outputs.source_run_id }}"'

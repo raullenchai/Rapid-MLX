@@ -100,7 +100,10 @@ jobs:
 
       - name: Revalidate source runs and jobs
         id: validate
-        if: always() && steps.discover.outputs.found == 'true'
+        # A failed artifact download must still reach the verifier and fail
+        # closed, but a superseded workflow must stop instead of keeping its
+        # evidence job alive through cancellation.
+        if: ${{ !cancelled() && steps.discover.outputs.found == 'true' }}
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -131,8 +134,9 @@ jobs:
   changes:
     needs: queue-tree-evidence
     # Evidence lookup is an optimization, never a prerequisite. Even a job
-    # timeout or runner outage must route to the ordinary full gate.
-    if: always()
+    # timeout or runner outage must route to the ordinary full gate. Workflow
+    # cancellation is different: a superseded main push must not start work.
+    if: ${{ !cancelled() }}
     runs-on: ubuntu-latest
     outputs:
       desktop: ${{ steps.policy.outputs.desktop }}
@@ -204,7 +208,7 @@ jobs:
   accessibility-identifiers:
     needs: changes
     if: >-
-      always() &&
+      !cancelled() &&
       needs.changes.result == 'success' &&
       needs.changes.outputs.desktop == 'true'
     runs-on: ubuntu-latest
@@ -251,7 +255,7 @@ jobs:
   accessibility-identifier-tests:
     needs: changes
     if: >-
-      always() &&
+      !cancelled() &&
       needs.changes.result == 'success' &&
       needs.changes.outputs.desktop == 'true'
     runs-on: ubuntu-latest
@@ -293,7 +297,7 @@ jobs:
   gui-harness-contracts:
     needs: changes
     if: >-
-      always() &&
+      !cancelled() &&
       needs.changes.result == 'success' &&
       needs.changes.outputs.desktop == 'true'
     runs-on: ubuntu-latest
@@ -339,7 +343,7 @@ jobs:
   build:
     needs: [queue-tree-evidence, changes]
     if: >-
-      always() &&
+      !cancelled() &&
       needs.changes.result == 'success' &&
       needs.changes.outputs.desktop == 'true' &&
       needs.queue-tree-evidence.outputs.reuse_mac != 'true'
@@ -421,7 +425,7 @@ jobs:
   gui-app-build:
     needs: [queue-tree-evidence, changes]
     if: >-
-      always() &&
+      !cancelled() &&
       needs.changes.result == 'success' &&
       needs.changes.outputs.desktop == 'true' &&
       needs.changes.outputs.full_gate == 'true' &&
@@ -486,7 +490,7 @@ jobs:
       - changes
       - gui-app-build
     if: >-
-      always() &&
+      !cancelled() &&
       needs.changes.result == 'success' &&
       needs.gui-app-build.result == 'success' &&
       needs.changes.outputs.desktop == 'true' &&
@@ -900,6 +904,9 @@ jobs:
       - build
       - gui-app-build
       - gui-golden-flows
+    # Keep the required-check facade terminal after upstream failure or
+    # cancellation. This Ubuntu-only verdict is the sole intentional always():
+    # every product/build/GUI job above stops when superseded.
     if: always()
     runs-on: ubuntu-latest
     steps:
