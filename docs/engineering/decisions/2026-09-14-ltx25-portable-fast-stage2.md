@@ -210,6 +210,21 @@ at the current evaluation commit `a1213c9` (651 passed, 22 skipped). Commit
 `e3beea8` adds a resumable, deterministically blinded Stage-2 qualification
 renderer; it does not change inference behavior.
 
+The product contract now also has a separate qualified-terminal capability at
+upstream commit `280acb0`. A `ltx_stage2_terminal_v1` artifact declares the
+two-sigma `[0.909375, 0]` schedule and executes only the learned terminal
+evaluation; it cannot be confused with the three-sigma progressive artifact.
+The runtime materializes and releases the terminal student without performing
+an unnecessary base correction, then forces a clean base reload before a later
+request. This path remains unavailable unless a terminal checkpoint passes the
+same qualification gates.
+
+Commits `d6084cc` and `164cdcd` add seeded original-step noise reproduction,
+an exact ancestral target inverse, noise-coupled Stage-1 training, and paired
+evaluation. The first stochastic pilot compresses original boundaries `0 -> 2`
+while explicitly re-injecting original noise lane 0. The full upstream suite at
+that point passes 659 tests with 22 skips.
+
 The accepted adapter still needs completed multi-prompt qualification and an
 immutable published model-repository revision before Rapid integration. A
 scratch package has been produced for runtime smoke testing only; upload,

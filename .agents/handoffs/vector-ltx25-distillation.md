@@ -149,3 +149,19 @@ transition next. If that still narrows the decoded distribution, escalate to a
 DOLLAR-like consistency plus variational-score objective (or DMD-style
 distribution matching). Do not compensate for the wrong objective merely by
 increasing adapter rank, and do not use latent MSE as a release gate.
+
+## Active 2x experiments (2026-09-14)
+
+Upstream `9976410` adds a fail-closed, resumable `3 -> 1` Stage-2 curriculum
+over the frozen 468/1536/3072-token data followed by low-rate mixed replay.
+Commit `280acb0` extends the package validator and runtime with a distinct
+`ltx_stage2_terminal_v1` capability, so a qualified one-step student avoids the
+base correction while remaining isolated from the progressive two-step path.
+The complete suite passed at 655 tests with 22 skips.
+
+Upstream `d6084cc` and `164cdcd` add exact original-step ancestral noise
+reproduction, inverse ancestral targets, a noise-coupled Stage-1 strategy, and
+matching held-out evaluation. The complete suite passes at 659 tests with 22
+skips. MZR-3 has serialized the scaled Stage-2 terminal curriculum, latent
+evaluation, ten-case blind render, first Stage-1 stochastic transition pilot,
+and its held-out evaluation behind the currently running qualification chain.
