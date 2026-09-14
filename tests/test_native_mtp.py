@@ -10,6 +10,7 @@ import pytest
 from fastapi import HTTPException
 
 from vllm_mlx.speculative.native_mtp.eligibility import (
+    GLM53_FLASH_4BIT,
     QWEN36_35B_4BIT,
     NativeMTPUnavailableError,
     resolve_native_mtp_pair,
@@ -31,6 +32,26 @@ def test_native_mtp_resolves_only_qualified_pair() -> None:
     )
     assert pair == QWEN36_35B_4BIT
     assert pair.block_size == pair.draft_tokens + 1
+
+
+def test_glm53_native_mtp_resolves_immutable_public_pair() -> None:
+    pair = resolve_native_mtp_pair(
+        alias="glm5.3-flash-4bit",
+        target_repo=GLM53_FLASH_4BIT.target_repo,
+        drafter_repo=GLM53_FLASH_4BIT.drafter_repo,
+        draft_tokens=1,
+    )
+    assert pair == GLM53_FLASH_4BIT
+    assert pair.block_size == pair.draft_tokens + 1
+    assert pair.drafter_model_type == "glm5_next_mtp"
+
+    full_repo_pair = resolve_native_mtp_pair(
+        alias=GLM53_FLASH_4BIT.target_repo,
+        target_repo=GLM53_FLASH_4BIT.target_repo,
+        drafter_repo=GLM53_FLASH_4BIT.drafter_repo,
+        draft_tokens=1,
+    )
+    assert full_repo_pair == GLM53_FLASH_4BIT
 
 
 @pytest.mark.parametrize(
@@ -65,10 +86,8 @@ def test_native_mtp_accepts_greedy_without_penalties() -> None:
     )
 
 
-def test_native_mtp_rejects_sampling() -> None:
-    with pytest.raises(HTTPException, match="greedy") as exc_info:
-        _validate_greedy_request(SimpleNamespace(temperature=0.7))
-    assert exc_info.value.status_code == 400
+def test_native_mtp_accepts_sampling_for_ar_fallback() -> None:
+    _validate_greedy_request(SimpleNamespace(temperature=0.7))
 
 
 @pytest.mark.parametrize(
@@ -497,6 +516,30 @@ def test_native_mtp_preflight_reports_missing_runtime(monkeypatch, capsys) -> No
     assert "rapid-mlx[mtp]" in capsys.readouterr().err
 
 
+def test_glm_preflight_rejects_old_runtime_before_weight_load(
+    monkeypatch, capsys
+) -> None:
+    from vllm_mlx import cli
+    from vllm_mlx.speculative.native_mtp import runtime
+
+    monkeypatch.setattr(runtime, "have_runtime", lambda: True)
+    monkeypatch.setattr(runtime, "have_glm_cache_runtime", lambda: False)
+    args = SimpleNamespace(
+        mtp_backend="native",
+        model=GLM53_FLASH_4BIT.target_repo,
+        _original_alias="glm5.3-flash-4bit",
+        mtp_sidecar=GLM53_FLASH_4BIT.drafter_repo,
+        mtp_max_k=1,
+    )
+
+    with pytest.raises(SystemExit) as exc_info:
+        cli._preflight_native_mtp_or_exit(args)
+
+    assert exc_info.value.code == 1
+    assert "structurally incompatible" in capsys.readouterr().err
+    assert not hasattr(args, "_native_mtp_pair")
+
+
 def test_serve_native_mtp_helper_is_noop_for_standard_backend() -> None:
     from vllm_mlx.cli import _serve_native_mtp_if_requested
 
@@ -577,6 +620,13 @@ def test_native_mtp_server_builds_qualified_serial_app(monkeypatch) -> None:
         "draft_model": drafter,
         "draft_kind": "mtp",
         "draft_block_size": 3,
+    }
+    assert app_kwargs["generation_kwargs_fn"](
+        max_tokens=9, temperature=0.7, top_p=0.9
+    ) == {
+        "max_tokens": 9,
+        "temperature": 0.7,
+        "top_p": 0.9,
     }
     assert run_calls == [
         (

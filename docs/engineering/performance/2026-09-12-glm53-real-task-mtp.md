@@ -367,9 +367,11 @@ the GLM alias's MTP capability in a release.
 
 Rapid then took ownership of the narrow proposal/verification/cache-transaction
 seam while retaining mlx-vlm's model loader and ordinary GLM forward pass. The
-implementation is restricted to singleton greedy decoding, rejects sampling,
+implementation is restricted to singleton greedy speculative decoding, rejects
 penalties, batching, and logprobs, and rolls back both append-only and temporal
-caches when a request stops between accepted tokens. Runtime activation is
+caches when a request stops between accepted tokens. A sampled request remains
+valid but drops the drafter and uses ordinary autoregressive decode, so
+Desktop's normal sampling controls cannot turn activation into a 400. Runtime activation is
 structurally gated on the complete cache-owned GLM model/cache protocol rather
 than inferred from a version string.
 
@@ -399,6 +401,16 @@ dedicated GLM-5 parser now holds all prefix bytes in ``reasoning_content``
 until the close. The live regression request reconstructed exactly
 ``content=STREAM_OK`` with the full trace isolated in ``reasoning_content`` and
 a terminal ``[DONE]`` event.
+
+The product pair is immutable:
+
+- target: `Vontra/GLM-5.3-Flash-MLX-4bit-MTP` at
+  `76add2a341a1cd90ad0e86bb69839ea9c35827c6`
+- drafter: `rapid-mlx/GLM-5.3-Flash-MTP-4bit` at
+  `e9d62773d3e5272fb298830e8e06fadc4137ae2c`
+- drafter weights: 4,183,323,401 bytes, 55 tensors, SHA-256
+  `369cf9c0f9cdf3ae5f1b9f72d3db8e65ad3026b8e416b8de5618e9117d3f00ca`
+- speculative setting: one drafted token (`block_size=2`)
 
 ## Reproduction
 

@@ -195,6 +195,7 @@ def _coerce(alias: str, value: object) -> AliasProfile:
             "is_moe",
             "supports_spec_decode",
             "supports_native_mtp",
+            "native_mtp_draft_model",
             "mtp_draft_model",
             "mtp_speculative_tokens",
             "mtp_continuous_batching_tier",
@@ -612,6 +613,21 @@ def _coerce(alias: str, value: object) -> AliasProfile:
                 f"modality={modality!r} (native MTP is AR-only)"
             )
 
+    native_mtp_draft_model = value.get("native_mtp_draft_model")
+    if native_mtp_draft_model is not None and (
+        not isinstance(native_mtp_draft_model, str)
+        or not native_mtp_draft_model.strip()
+        or "/" not in native_mtp_draft_model
+    ):
+        raise ValueError(
+            f"alias {alias!r}: native_mtp_draft_model must use non-empty "
+            "'org/repo' format"
+        )
+    if native_mtp_draft_model is not None and not supports_native_mtp:
+        raise ValueError(
+            f"alias {alias!r}: native_mtp_draft_model requires supports_native_mtp=true"
+        )
+
     mtp_draft_model = value.get("mtp_draft_model")
     if mtp_draft_model is not None and (
         not isinstance(mtp_draft_model, str)
@@ -699,6 +715,7 @@ def _coerce(alias: str, value: object) -> AliasProfile:
         is_moe=_strict_bool("is_moe", False),
         supports_spec_decode=_strict_bool("supports_spec_decode", True),
         supports_native_mtp=supports_native_mtp,
+        native_mtp_draft_model=native_mtp_draft_model,
         mtp_draft_model=mtp_draft_model,
         mtp_speculative_tokens=mtp_speculative_tokens,
         mtp_continuous_batching_tier=mtp_continuous_batching_tier,

@@ -71,6 +71,7 @@ ALLOWED_PROFILE_KEYS: frozenset[str] = frozenset(
         "is_moe",
         "supports_spec_decode",
         "supports_native_mtp",
+        "native_mtp_draft_model",
         "mtp_draft_model",
         "mtp_speculative_tokens",
         "mtp_continuous_batching_tier",
@@ -235,6 +236,24 @@ def test_native_mtp_alias_metadata_is_strict_and_unambiguous() -> None:
                 "hf_path": "publisher/model",
                 "supports_native_mtp": True,
                 "mtp_draft_model": "publisher/drafter",
+            },
+        )
+    with pytest.raises(ValueError, match="org/repo"):
+        _coerce(
+            "malformed-native-sidecar",
+            {
+                "hf_path": "publisher/model",
+                "supports_native_mtp": True,
+                "native_mtp_draft_model": "drafter-without-owner",
+                "mtp_speculative_tokens": 1,
+            },
+        )
+    with pytest.raises(ValueError, match="requires supports_native_mtp"):
+        _coerce(
+            "orphan-native-sidecar",
+            {
+                "hf_path": "publisher/model",
+                "native_mtp_draft_model": "publisher/drafter",
             },
         )
 
@@ -2064,8 +2083,8 @@ def test_glm_5_2_reap50_alias_resolves_to_pipenetwork_4bit() -> None:
     )
 
 
-def test_glm_5_3_flash_alias_is_experimental_and_fails_closed() -> None:
-    """GLM-5.3 starts on the verified autoregressive VLM path only."""
+def test_glm_5_3_flash_alias_declares_qualified_native_mtp() -> None:
+    """GLM-5.3 advertises only its immutable, qualified native-MTP pair."""
 
     alias = "glm5.3-flash-4bit"
     profile = list_profiles()[alias]
@@ -2078,7 +2097,11 @@ def test_glm_5_3_flash_alias_is_experimental_and_fails_closed() -> None:
     assert profile.is_hybrid_explicit is True
     assert profile.is_moe is True
     assert profile.supports_spec_decode is False
-    assert profile.supports_native_mtp is False
+    assert profile.supports_native_mtp is True
+    assert profile.native_mtp_draft_model == "rapid-mlx/GLM-5.3-Flash-MTP-4bit"
+    assert profile.mtp_draft_model is None
+    assert profile.mtp_speculative_tokens == 1
+    assert profile.mtp_default_enabled is True
     assert profile.supports_dflash is False
     assert profile.tool_call_parser == "glm47"
     assert profile.reasoning_parser == "glm5"

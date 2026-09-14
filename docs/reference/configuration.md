@@ -162,7 +162,7 @@ into the same config path.
 | `{"method":"mtp","model":"<sidecar-head-repo>"}` | Attach a standalone MTP **sidecar head** (e.g. `mlx-community/Qwen3.6-27B-MTP-4bit`) to a full base checkpoint. The base must be MTP-eligible; the head repo goes in the `model` field — **not** in the `serve` positional. See [MTP sidecar heads are not standalone models](#mtp-sidecar-heads-are-not-standalone-models) below. Gemma 4 sidecar MTP remains disabled after its greedy-lossless A/B failed. |
 | `{"method":"mtp","num_speculative_tokens":3}` | Set the MTP max-K controller ceiling. |
 | `{"method":"mtp","disable_auto_k":true}` | Disable the MTP EV depth controller for fixed-K parity benches. |
-| `{"method":"mtp","backend":"native"}` | Use the qualified serial native verifier for `qwen3.6-35b-4bit`. This explicit backend is greedy-only and keeps a deliberately smaller API surface; see below. |
+| `{"method":"mtp","backend":"native"}` | Use a qualified serial native verifier. Current immutable pairs are `qwen3.6-35b-4bit` and `glm5.3-flash-4bit`; see below. |
 | `{"method":"suffix","num_speculative_tokens":8}` | Enable explicit SuffixDecoding for high-overlap workloads. |
 
 Rapid-MLX separates capability from recommendation. Registry flags identify
@@ -239,6 +239,20 @@ deadlines, cancellation, and bounded admission. It does not support image,
 audio, embeddings, MCP, prefix caching, structured-output constraints,
 logprobs, sampling penalties, or continuous batching. Use ordinary MTP or plain
 decode when those capabilities matter more than singleton latency.
+
+`glm5.3-flash-4bit` selects its qualified native pair automatically when the
+compatible optional runtime is installed. Rapid pins the target and 4-bit MTP
+sidecar by immutable revision and uses one drafted token (`block_size=2`). On
+M3 Ultra / 256 GB, two six-task Rapid-server runs preserved complete AR
+reasoning and final output byte-for-byte. The repeated category median was
+35.54 tok/s; the second run improved paired task throughput by 34.1%, with
+per-task gains of 1.405x, 1.377x, 1.306x, 1.390x, 1.285x, and 1.106x.
+
+If the compatible optional runtime is absent, an unflagged serve remains on
+plain AR rather than failing. `--no-spec-decode` always forces AR. Nonzero
+temperature also uses AR for that request because the qualified MTP equivalence
+contract is greedy-only; sampling remains available and does not produce a
+400 response.
 
 An 86% acceptance rate buys a 9% ceiling here, and per-round overhead
 consumes it. The architecture is why: this is a linear-attention hybrid,

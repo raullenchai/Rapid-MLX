@@ -2224,10 +2224,10 @@ def _alias_mtp_declaration(model_name) -> tuple[str | None, int | None]:
 
     ``(None, None)`` when the model is not a known alias, declares neither an
     MTP sidecar nor a native MTP head, or the registry cannot be read.
-    Resolution is best-effort by design: this only supplies DEFAULTS for a
-    request that already asked for MTP, so a registry problem must degrade to
-    "no default" and let the injector's own hard-fail speak — never turn a
-    serve into a crash of its own (#1998).
+    Resolution is best-effort by design: this supplies DEFAULTS after explicit
+    MTP selection or a qualified alias-owned default, so a registry problem
+    must degrade to "no default" and never turn a serve into a crash of its own
+    (#1998).
 
     ``mtp_speculative_tokens`` is returned only when it is a positive int. The
     alias schema already rejects the alternatives (``model_aliases`` requires
@@ -2248,9 +2248,13 @@ def _alias_mtp_declaration(model_name) -> tuple[str | None, int | None]:
     # profile object, and a non-str there would raise ``AttributeError`` out of
     # this helper — breaking the totality the docstring promises, in the exact
     # hand-edited-registry case it promises it for (codex nit).
-    raw_sidecar = getattr(profile, "mtp_draft_model", None)
-    sidecar = raw_sidecar.strip() or None if isinstance(raw_sidecar, str) else None
     native_head = getattr(profile, "supports_native_mtp", False) is True
+    raw_sidecar = getattr(
+        profile,
+        "native_mtp_draft_model" if native_head else "mtp_draft_model",
+        None,
+    )
+    sidecar = raw_sidecar.strip() or None if isinstance(raw_sidecar, str) else None
     if sidecar is None and not native_head:
         # Depth without either a sidecar or a native target head is
         # meaningless, so don't hand back a lone K.
@@ -2302,6 +2306,44 @@ def _alias_mtp_default_enabled(model_name) -> bool:
     if profile is None:
         return False
     return bool(getattr(profile, "mtp_default_enabled", True))
+
+
+def _alias_native_mtp_capable(model_name) -> bool:
+    """Whether an exact alias declares the isolated native-MTP backend."""
+    if not model_name:
+        return False
+    try:
+        from .model_aliases import resolve_profile as _resolve_alias
+
+        profile = _resolve_alias(model_name)
+    except Exception:  # noqa: BLE001 - registry failure must fail closed
+        return False
+    return bool(profile and getattr(profile, "supports_native_mtp", False) is True)
+
+
+def _native_mtp_runtime_ready(model_name) -> bool:
+    """Fail-closed runtime probe used only for an unasked native default.
+
+    Explicit requests still receive the detailed preflight error below.  An
+    alias-owned default, however, must preserve ordinary AR service when the
+    optional native runtime is absent or structurally too old.
+    """
+    try:
+        from .speculative.native_mtp.runtime import (
+            have_glm_cache_runtime,
+            have_runtime,
+        )
+
+        if not have_runtime():
+            return False
+        if model_name in {
+            "glm5.3-flash-4bit",
+            "Vontra/GLM-5.3-Flash-MLX-4bit-MTP",
+        }:
+            return have_glm_cache_runtime()
+        return True
+    except Exception:  # noqa: BLE001 - optional runtime must fail closed
+        return False
 
 
 def _normalize_speculative_config_or_exit(args):
@@ -2575,6 +2617,15 @@ def _normalize_speculative_config_or_exit(args):
             # shared lane resolver.  Explicit speculative requests are
             # rejected below instead of being dropped.
             and not getattr(args, "mllm", False)
+            and _alias_native_mtp_capable(getattr(args, "model", None))
+            and _alias_mtp_default_enabled(getattr(args, "model", None))
+            and _native_mtp_runtime_ready(getattr(args, "model", None))
+        ):
+            raw_config = '{"method":"mtp","backend":"native"}'
+            args.speculative_config = raw_config
+        elif (
+            not getattr(args, "no_spec_decode", False)
+            and not getattr(args, "mllm", False)
             and _alias_continuous_mtp_tier(getattr(args, "model", None)) == "verified"
             and _alias_mtp_default_enabled(getattr(args, "model", None))
         ):
@@ -2765,6 +2816,7 @@ def _preflight_native_mtp_or_exit(args):
 
     from .speculative.native_mtp.runtime import (
         QUALIFIED_MLX_VLM_VERSION,
+        have_glm_cache_runtime,
         have_runtime,
     )
 
@@ -2774,6 +2826,14 @@ def _preflight_native_mtp_or_exit(args):
             f"mlx-vlm {QUALIFIED_MLX_VLM_VERSION} runtime.\n\n"
             "  Install it with:\n"
             "    pip install 'rapid-mlx[mtp]'\n",
+            file=sys.stderr,
+        )
+        raise SystemExit(1)
+    if pair.drafter_model_type == "glm5_next_mtp" and not have_glm_cache_runtime():
+        print(
+            "\n  Error: GLM-5.3 native MTP requires the complete cache-owned "
+            "GLM runtime; the installed mlx-vlm build is structurally "
+            "incompatible.\n",
             file=sys.stderr,
         )
         raise SystemExit(1)
@@ -7354,6 +7414,7 @@ def _available_models_json_payload() -> dict:
             "is_moe": bool(getattr(p, "is_moe", False)),
             "supports_spec_decode": bool(getattr(p, "supports_spec_decode", False)),
             "supports_native_mtp": bool(getattr(p, "supports_native_mtp", False)),
+            "native_mtp_draft_model": getattr(p, "native_mtp_draft_model", None),
             "mtp_draft_model": getattr(p, "mtp_draft_model", None),
             "mtp_speculative_tokens": getattr(p, "mtp_speculative_tokens", None),
             "mtp_continuous_batching_tier": getattr(

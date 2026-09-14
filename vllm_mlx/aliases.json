@@ -486,6 +486,7 @@
     "supports_spec_decode": false,
     "supports_native_mtp": true,
     "mtp_speculative_tokens": 1,
+    "mtp_default_enabled": false,
     "min_memory_gb": 128,
     "experimental": true
   },
@@ -1285,7 +1286,10 @@
     "is_hybrid_explicit": true,
     "is_moe": true,
     "supports_spec_decode": false,
-    "supports_native_mtp": false,
+    "supports_native_mtp": true,
+    "native_mtp_draft_model": "rapid-mlx/GLM-5.3-Flash-MTP-4bit",
+    "mtp_speculative_tokens": 1,
+    "mtp_default_enabled": true,
     "supports_dflash": false,
     "min_memory_gb": 192,
     "experimental": true

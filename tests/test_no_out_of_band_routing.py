@@ -1525,6 +1525,10 @@ def test_alias_profile_str_fields_are_explicitly_listed():
             # VALID_DFLASH_ALGORITHMS before the DFlash lane can start.
             "dflash_algorithm",
             "ddtree_draft_model",  # HF path for the DDTree/DFlash drafter
+            # HF org/repo path for the isolated serial native-MTP sidecar.
+            # Open-ended artifact identity, not a lane enum; _coerce requires
+            # org/repo syntax and supports_native_mtp=true.
+            "native_mtp_draft_model",
             "mtp_draft_model",  # HF 'org/repo' path for the MTP drafter (#1987);
             # validated as non-empty org/repo at JSON load in model_aliases.py,
             # open-ended like the other *_draft_model paths, not a routing enum

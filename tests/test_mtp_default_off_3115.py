@@ -103,6 +103,82 @@ def test_serve_9b_without_flags_still_auto_selects_mtp() -> None:
     assert args.mtp_continuous_batching is True
 
 
+def test_glm53_without_flags_selects_native_mtp_pair(monkeypatch) -> None:
+    monkeypatch.setattr(cli, "_native_mtp_runtime_ready", lambda _model: True)
+    args = _args("glm5.3-flash-4bit", mtp_backend=None)
+
+    cli._normalize_speculative_config_or_exit(args)
+
+    assert args._speculative_config is not None
+    assert args._speculative_config.method == "mtp"
+    assert args._speculative_config.backend == "native"
+    assert args.mtp_backend == "native"
+    assert args.mtp_sidecar == "rapid-mlx/GLM-5.3-Flash-MTP-4bit"
+    assert args.mtp_max_k == 1
+    assert args.mtp_continuous_batching is False
+
+
+def test_glm53_without_qualified_runtime_falls_back_to_ar(monkeypatch) -> None:
+    monkeypatch.setattr(cli, "_native_mtp_runtime_ready", lambda _model: False)
+    args = _args("glm5.3-flash-4bit", mtp_backend=None)
+
+    cli._normalize_speculative_config_or_exit(args)
+
+    assert args._speculative_config is None
+    assert args.spec_decode == "none"
+
+
+def test_native_mtp_runtime_probe_requires_base_runtime(monkeypatch) -> None:
+    from vllm_mlx.speculative.native_mtp import runtime
+
+    monkeypatch.setattr(runtime, "have_runtime", lambda: False)
+
+    assert cli._native_mtp_runtime_ready("glm5.3-flash-4bit") is False
+
+
+@pytest.mark.parametrize(
+    "model_name",
+    ["glm5.3-flash-4bit", "Vontra/GLM-5.3-Flash-MLX-4bit-MTP"],
+)
+def test_native_mtp_runtime_probe_requires_glm_cache_seams(
+    monkeypatch, model_name: str
+) -> None:
+    from vllm_mlx.speculative.native_mtp import runtime
+
+    monkeypatch.setattr(runtime, "have_runtime", lambda: True)
+    monkeypatch.setattr(runtime, "have_glm_cache_runtime", lambda: False)
+
+    assert cli._native_mtp_runtime_ready(model_name) is False
+
+
+def test_native_mtp_runtime_probe_accepts_non_glm_runtime(monkeypatch) -> None:
+    from vllm_mlx.speculative.native_mtp import runtime
+
+    monkeypatch.setattr(runtime, "have_runtime", lambda: True)
+
+    assert cli._native_mtp_runtime_ready("qwen3.8-flash-next-4bit") is True
+
+
+def test_native_mtp_runtime_probe_fails_closed_on_probe_error(monkeypatch) -> None:
+    from vllm_mlx.speculative.native_mtp import runtime
+
+    def _raise() -> bool:
+        raise RuntimeError("broken optional runtime")
+
+    monkeypatch.setattr(runtime, "have_runtime", _raise)
+
+    assert cli._native_mtp_runtime_ready("glm5.3-flash-4bit") is False
+
+
+def test_glm53_no_spec_decode_keeps_plain_decode() -> None:
+    args = _args("glm5.3-flash-4bit", no_spec_decode=True, mtp_backend=None)
+
+    cli._normalize_speculative_config_or_exit(args)
+
+    assert args._speculative_config is None
+    assert args.spec_decode == "none"
+
+
 def test_explicit_mllm_suppresses_only_alias_auto_mtp_default() -> None:
     args = _args("qwen3.5-9b-4bit", mllm=True)
 
@@ -163,3 +239,6 @@ def test_models_json_carries_default_flag() -> None:
     assert rows["qwen3.5-4b-4bit"]["mtp_default_enabled"] is False
     assert rows["qwen3.5-4b-4bit"]["mtp_continuous_batching_tier"] == "verified"
     assert rows["qwen3.5-9b-4bit"]["mtp_default_enabled"] is True
+    assert rows["glm5.3-flash-4bit"]["native_mtp_draft_model"] == (
+        "rapid-mlx/GLM-5.3-Flash-MTP-4bit"
+    )
