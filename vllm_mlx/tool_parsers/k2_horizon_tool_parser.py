@@ -1,0 +1,263 @@
+# SPDX-License-Identifier: Apache-2.0
+"""Tool parser for K2 Horizon's IFM JSON and XML call envelopes."""
+
+from __future__ import annotations
+
+import json
+import re
+import uuid
+from collections.abc import Sequence
+from typing import Any
+
+from ..api.tool_calling import _coerce_schema_value
+from .abstract_tool_parser import (
+    ExtractedToolCallInformation,
+    ToolParser,
+    ToolParserManager,
+)
+
+
+@ToolParserManager.register_module("k2_horizon")
+class K2HorizonToolParser(ToolParser):
+    EXPECTED_WIRE_FORMATS = ("k2_ifm",)
+    SUPPORTS_NATIVE_TOOL_FORMAT = True
+
+    SUPPORTED_FORMATS = frozenset({"json", "xml", "xml_typed"})
+    GROUP_START = "<ifm|tool_calls>"
+    GROUP_END = "</ifm|tool_calls>"
+    ARG_KEY_START = "<ifm|arg_key>"
+    ARG_RE = re.compile(
+        r"<ifm\|arg_key>(.*?)</ifm\|arg_key>\s*"
+        r"(?:<ifm\|arg_type>(.*?)</ifm\|arg_type>\s*)?"
+        r"<ifm\|arg_value>(.*?)</ifm\|arg_value>",
+        re.DOTALL,
+    )
+    CALL_RE = re.compile(r"<ifm\|tool_call>(.*?)</ifm\|tool_call>", re.DOTALL)
+
+    def __init__(self, tokenizer=None):
+        super().__init__(tokenizer)
+        self.reset()
+
+    def reset(self) -> None:
+        super().reset()
+        self._content_upto = 0
+
+    @staticmethod
+    def _request_value(request: dict[str, Any] | None, key: str, default=None):
+        if not isinstance(request, dict):
+            return default
+        return request.get(key, default)
+
+    @classmethod
+    def _tool_format(cls, request: dict[str, Any] | None) -> str:
+        kwargs = cls._request_value(request, "chat_template_kwargs", {})
+        value = (
+            kwargs.get("tool_call_format", "xml") if isinstance(kwargs, dict) else "xml"
+        )
+        return (
+            value
+            if isinstance(value, str) and value in cls.SUPPORTED_FORMATS
+            else "xml"
+        )
+
+    @classmethod
+    def _declared_tools(cls, request: dict[str, Any] | None) -> dict[str, dict]:
+        result: dict[str, dict] = {}
+        for tool in cls._request_value(request, "tools", []) or []:
+            function = tool.get("function") if isinstance(tool, dict) else None
+            if isinstance(function, dict) and isinstance(function.get("name"), str):
+                result[function["name"]] = function
+        return result
+
+    @classmethod
+    def _named_choice(cls, request: dict[str, Any] | None) -> str | None:
+        choice = cls._request_value(request, "tool_choice")
+        if not isinstance(choice, dict):
+            return None
+        function = choice.get("function")
+        return function.get("name") if isinstance(function, dict) else None
+
+    @classmethod
+    def _validate_name(cls, name: Any, request: dict[str, Any] | None) -> str:
+        if not isinstance(name, str) or not name or any(ch.isspace() for ch in name):
+            raise ValueError("invalid IFM tool name")
+        declared = cls._declared_tools(request)
+        if declared and name not in declared:
+            raise ValueError("unknown IFM tool name")
+        named = cls._named_choice(request)
+        if named is not None and name != named:
+            raise ValueError("unexpected IFM tool name")
+        return name
+
+    @classmethod
+    def _properties(cls, name: str, request: dict[str, Any] | None) -> dict:
+        function = cls._declared_tools(request).get(name, {})
+        parameters = function.get("parameters") if isinstance(function, dict) else None
+        properties = (
+            parameters.get("properties") if isinstance(parameters, dict) else None
+        )
+        return properties if isinstance(properties, dict) else {}
+
+    @classmethod
+    def _parse_call(
+        cls, body: str, request: dict[str, Any] | None, wire_format: str
+    ) -> tuple[str, dict[str, Any]]:
+        if wire_format == "json":
+            payload = json.loads(body.strip())
+            arguments = (
+                payload.get("arguments", {}) if isinstance(payload, dict) else None
+            )
+            if not isinstance(payload, dict) or not isinstance(arguments, dict):
+                raise ValueError("invalid IFM JSON call")
+            name = cls._validate_name(payload.get("name"), request)
+            props = cls._properties(name, request)
+            return name, {
+                key: _coerce_schema_value(value, props.get(key))
+                for key, value in arguments.items()
+            }
+
+        first_arg = body.find(cls.ARG_KEY_START)
+        if first_arg < 0:
+            return cls._validate_name(body.strip(), request), {}
+        name = cls._validate_name(body[:first_arg].strip(), request)
+        props = cls._properties(name, request)
+        arguments: dict[str, Any] = {}
+        cursor = first_arg
+        for match in cls.ARG_RE.finditer(body, first_arg):
+            if body[cursor : match.start()].strip():
+                raise ValueError("malformed IFM argument tags")
+            key = match.group(1).strip()
+            explicit_type = (match.group(2) or "").strip()
+            if not key or key in arguments:
+                raise ValueError("missing or duplicate IFM argument name")
+            if wire_format == "xml" and explicit_type:
+                raise ValueError("unexpected IFM argument type")
+            if wire_format == "xml_typed" and not explicit_type:
+                raise ValueError("missing IFM argument type")
+            schema = props.get(key)
+            if schema is None and explicit_type:
+                schema = {"type": explicit_type.split("[", 1)[0].lower()}
+            arguments[key] = _coerce_schema_value(match.group(3), schema)
+            cursor = match.end()
+        if cursor == first_arg or body[cursor:].strip():
+            raise ValueError("malformed IFM argument tags")
+        return name, arguments
+
+    @classmethod
+    def _parse_group(
+        cls, group: str, request: dict[str, Any] | None
+    ) -> list[dict[str, Any]]:
+        inner = group[len(cls.GROUP_START) : -len(cls.GROUP_END)]
+        matches = list(cls.CALL_RE.finditer(inner))
+        if not matches or cls.CALL_RE.sub("", inner).strip():
+            raise ValueError("malformed IFM tool-call group")
+        wire_format = cls._tool_format(request)
+        calls = []
+        for match in matches:
+            name, arguments = cls._parse_call(match.group(1), request, wire_format)
+            calls.append(
+                {
+                    "id": f"call_{uuid.uuid4().hex[:8]}",
+                    "name": name,
+                    "arguments": json.dumps(
+                        arguments, ensure_ascii=False, allow_nan=False
+                    ),
+                }
+            )
+        return calls
+
+    def extract_tool_calls(
+        self, model_output: str, request: dict[str, Any] | None = None
+    ) -> ExtractedToolCallInformation:
+        if self._request_value(request, "tool_choice") == "none":
+            return ExtractedToolCallInformation(False, [], model_output)
+        start = model_output.find(self.GROUP_START)
+        if start < 0:
+            return ExtractedToolCallInformation(False, [], model_output)
+        end = model_output.find(self.GROUP_END, start + len(self.GROUP_START))
+        if end < 0:
+            return ExtractedToolCallInformation(False, [], model_output)
+        end += len(self.GROUP_END)
+        try:
+            calls = self._parse_group(model_output[start:end], request)
+        except (json.JSONDecodeError, TypeError, ValueError):
+            return ExtractedToolCallInformation(False, [], model_output)
+        content = model_output[:start] + model_output[end:]
+        return ExtractedToolCallInformation(True, calls, content or None)
+
+    @staticmethod
+    def _partial_overlap(text: str, marker: str) -> int:
+        for size in range(min(len(text), len(marker) - 1), 0, -1):
+            if text.endswith(marker[:size]):
+                return size
+        return 0
+
+    def extract_tool_calls_streaming(
+        self,
+        previous_text: str,
+        current_text: str,
+        delta_text: str,
+        previous_token_ids: Sequence[int] | None = None,
+        current_token_ids: Sequence[int] | None = None,
+        delta_token_ids: Sequence[int] | None = None,
+        request: dict[str, Any] | None = None,
+    ) -> dict[str, Any] | None:
+        del (
+            previous_text,
+            delta_text,
+            previous_token_ids,
+            current_token_ids,
+            delta_token_ids,
+        )
+        if self._request_value(request, "tool_choice") == "none":
+            addition = current_text[self._content_upto :]
+            self._content_upto = len(current_text)
+            return {"content": addition} if addition else None
+
+        start = current_text.find(self.GROUP_START, self._content_upto)
+        if start < 0:
+            pending = current_text[self._content_upto :]
+            held = self._partial_overlap(pending, self.GROUP_START)
+            end = len(current_text) - held
+            addition = current_text[self._content_upto : end]
+            self._content_upto = end
+            return {"content": addition} if addition else None
+
+        prefix = current_text[self._content_upto : start]
+        end = current_text.find(self.GROUP_END, start + len(self.GROUP_START))
+        if end < 0:
+            self._content_upto = start
+            return {"content": prefix} if prefix else None
+        end += len(self.GROUP_END)
+        try:
+            calls = self._parse_group(current_text[start:end], request)
+        except (json.JSONDecodeError, TypeError, ValueError):
+            addition = current_text[self._content_upto : end]
+            self._content_upto = end
+            return {"content": addition} if addition else None
+        self._content_upto = end
+        return {
+            "content": prefix or None,
+            "tool_calls": [
+                {
+                    "index": index,
+                    "id": call["id"],
+                    "type": "function",
+                    "function": {
+                        "name": call["name"],
+                        "arguments": call["arguments"],
+                    },
+                }
+                for index, call in enumerate(calls)
+            ],
+        }
+
+    def has_pending_tool_call(self, text: str) -> bool:
+        start = text.rfind(self.GROUP_START)
+        return start >= 0 and self.GROUP_END not in text[start:]
+
+    def flush_held_content(self, full_text: str) -> str:
+        if self.has_pending_tool_call(full_text):
+            return full_text[self._content_upto :]
+        held = self._partial_overlap(full_text[self._content_upto :], self.GROUP_START)
+        return full_text[-held:] if held else ""
