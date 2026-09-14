@@ -38,8 +38,12 @@ paths. A fast-stage checkpoint must carry, at minimum:
 - expected base model identifier, immutable model revision, transformer
   filename, and transformer/config fingerprint;
 - supported pipeline family and major runtime contract version;
-- qualification manifest revision; and
-- a content digest for the adapter file.
+- qualification manifest revision.
+
+The immutable model manifest must bind the adapter path to its SHA-256 digest.
+The digest cannot live inside the file it authenticates without becoming
+self-referential; runtime validates the external manifest digest before reading
+or fusing the adapter.
 
 The current research metadata (`distillation`, `stage2_sigma`,
 `stage2_target_sigma`, and `stage2_steps`) is necessary but insufficient for
@@ -130,8 +134,15 @@ with SHA-256
 `04ed313c536fae4ad78732f8c403d7ac044614dcb8a95f0f5ae0e896e310855c`.
 It is not yet a distributable product artifact.
 
-Before Rapid implementation, the upstream runtime needs a production inference
-entry point for the transition checkpoint and a base-bound metadata validator.
-The accepted adapter then needs an immutable model-repository revision. Upload,
-release, default changes, and public API disposition require explicit human and
-Atlas authorization.
+The upstream base-bound validator landed on the feasibility branch at
+`396667f`. It checks the external artifact digest, capability and schedule,
+rank/alpha, exact base identity and immutable revision, transformer filename
+and config fingerprint, runtime-contract major, qualification revision, and
+LoRA pair shapes before mutation. It contains no hardware-name selection and
+passes the full upstream suite (637 passed, 22 skipped).
+
+Before Rapid implementation, the upstream runtime still needs a production
+inference entry point and stage-2-only adapter lifecycle. The accepted adapter
+then needs complete contract metadata and an immutable model-repository
+revision. Upload, release, default changes, and public API disposition require
+explicit human and Atlas authorization.

@@ -100,7 +100,13 @@ It is not published or release-qualified. The portable product contract is
 proposed in
 `docs/engineering/decisions/2026-09-14-ltx25-portable-fast-stage2.md`.
 
+The upstream feasibility branch now includes a hardware-agnostic, fail-closed
+checkpoint validator at `396667f`. It binds the adapter to an external artifact
+digest, exact base model/revision, transformer/config fingerprint, runtime
+contract, schedule, qualification revision, and LoRA tensor shapes. The full
+upstream suite passes: 637 tests passed and 22 skipped.
+
 Atlas disposition is required for the proposed public
 `generation_mode=standard|fast` control and any default-on policy. Vector's
-next backend action is to add upstream base-bound checkpoint validation and a
-stage-2-only adapter lifecycle, then run the frozen multi-prompt blind suite.
+next backend action is to add the upstream stage-2-only adapter lifecycle while
+the frozen ten-case, ten-second multi-prompt capture runs on MZR-3.
