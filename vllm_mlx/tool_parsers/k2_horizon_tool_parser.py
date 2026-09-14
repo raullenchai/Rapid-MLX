@@ -335,10 +335,7 @@ class K2HorizonToolParser(ToolParser):
                 # groups. Hold it until a reasoning closer establishes the
                 # visible boundary, then resume ordinary incremental output.
                 pending = current_text[self._content_upto :]
-                if not (
-                    self._input_reasoning_sanitized
-                    or self._post_tool_content_visible
-                ):
+                if not self._post_tool_content_visible:
                     boundary = max(
                         (pending.rfind(marker) for marker in self.REASONING_ENDS),
                         default=-1,
@@ -399,35 +396,31 @@ class K2HorizonToolParser(ToolParser):
                 continue
 
             trailing = current_text[end:]
-            if self._input_reasoning_sanitized:
-                held = self._partial_overlap(trailing, self.GROUP_START)
+            # The upstream reasoning parser stops at the first tool group, so
+            # even an upstream-sanitized stream can contain a later private
+            # retry. Independently require its closer before exposing bytes.
+            boundary = max(
+                (trailing.rfind(marker) for marker in self.REASONING_ENDS),
+                default=-1,
+            )
+            if boundary >= 0:
+                marker = next(
+                    marker
+                    for marker in self.REASONING_ENDS
+                    if trailing.rfind(marker) == boundary
+                )
+                visible_start = end + boundary + len(marker)
+                visible = current_text[visible_start:]
+                held = self._partial_overlap(visible, self.GROUP_START)
                 visible_end = len(current_text) - held
-                content_parts.append(current_text[end:visible_end])
+                content_parts.append(current_text[visible_start:visible_end])
                 self._content_upto = visible_end
                 self._post_tool_content_visible = True
             else:
-                boundary = max(
-                    (trailing.rfind(marker) for marker in self.REASONING_ENDS),
-                    default=-1,
-                )
-                if boundary >= 0:
-                    marker = next(
-                        marker
-                        for marker in self.REASONING_ENDS
-                        if trailing.rfind(marker) == boundary
-                    )
-                    visible_start = end + boundary + len(marker)
-                    visible = current_text[visible_start:]
-                    held = self._partial_overlap(visible, self.GROUP_START)
-                    visible_end = len(current_text) - held
-                    content_parts.append(current_text[visible_start:visible_end])
-                    self._content_upto = visible_end
-                    self._post_tool_content_visible = True
-                else:
-                    # The completed call is safe to emit, but trailing bytes
-                    # are not public until a reasoning closer or EOF proves it.
-                    self._content_upto = end
-                    self._post_tool_content_visible = False
+                # The completed call is safe to emit, but trailing bytes are
+                # not public until a reasoning closer or EOF proves it.
+                self._content_upto = end
+                self._post_tool_content_visible = False
             break
 
         if not calls:
@@ -443,6 +436,10 @@ class K2HorizonToolParser(ToolParser):
         self._tool_group_seen = True
         return {
             "content": content or None,
+            # The parser independently holds/redacts post-call reasoning and
+            # returns only bytes proven visible. Allow the postprocessor to
+            # preserve those later content deltas after a call was emitted.
+            "preserve_post_tool_content": True,
             "tool_calls": [
                 {
                     "index": first_index + index,

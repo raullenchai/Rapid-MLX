@@ -521,6 +521,48 @@ def test_streaming_low_effort_compatibility_separates_reasoning_and_tool_call():
     assert "".join(reasoning) == "private plan"
     assert "".join(content) == ""
     assert len(calls) == 1
+
+
+def test_postprocessor_never_leaks_reasoning_after_a_tool_group():
+    """The upstream reasoning parser stops at the first native tool group."""
+    cfg = MagicMock()
+    cfg.engine = None
+    cfg.reasoning_parser_name = None
+    cfg.reasoning_parser = K2HorizonReasoningParser()
+    cfg.tool_call_parser = None
+    cfg.tool_parser_instance = K2HorizonToolParser()
+    cfg.enable_auto_tool_choice = True
+    processor = StreamingPostProcessor(
+        cfg,
+        tools_requested=True,
+        enable_thinking=True,
+        request=_request(),
+    )
+    processor.reset()
+
+    output = (
+        "initial plan</ifm|think>"
+        + _group(_xml_call("ping"))
+        + "private retry</ifm|think_fast>Visible recovery"
+    )
+    content: list[str] = []
+    calls: list[dict] = []
+    for char in output:
+        chunk = MagicMock()
+        chunk.new_text = char
+        chunk.finished = False
+        chunk.channel = None
+        chunk.finish_reason = None
+        chunk.tool_calls = None
+        for event in processor.process_chunk(chunk):
+            if event.type == "content":
+                content.append(event.content)
+            elif event.type == "tool_call":
+                calls.extend(event.tool_calls)
+
+    assert "".join(content) == "Visible recovery"
+    assert "private retry" not in "".join(content)
+    assert len(calls) == 1
     assert calls[0]["function"]["name"] == "ping"
 
 
