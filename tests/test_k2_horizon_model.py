@@ -179,9 +179,15 @@ def test_registration_defers_to_future_native_module(monkeypatch):
 
 
 def test_adapter_has_no_mlx_vlm_import():
-    source = open(k2_horizon.__file__, encoding="utf-8").read()
+    source = Path(k2_horizon.__file__).read_text(encoding="utf-8")
     assert "import mlx_vlm" not in source
     assert "from mlx_vlm" not in source
+
+
+def test_cache_shape_must_match_layer_count():
+    model = k2_horizon.Model(k2_horizon.ModelArgs.from_dict(TINY))
+    with pytest.raises(ValueError, match="expected 2 K2 cache entries, got 1"):
+        model(mx.array([[1]]), cache=[None])
 
 
 def test_repo_code_trust_boundary_is_scoped_to_rapid_owned_k2(tmp_path):

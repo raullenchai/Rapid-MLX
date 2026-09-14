@@ -271,6 +271,10 @@ class K2HorizonModel(nn.Module):
         )
         if cache is None:
             cache = [None] * len(self.layers)
+        elif len(cache) != len(self.layers):
+            raise ValueError(
+                f"expected {len(self.layers)} K2 cache entries, got {len(cache)}"
+            )
         mask = create_attention_mask(hidden, cache[0])
         for layer, layer_cache in zip(self.layers, cache):
             hidden = layer(hidden, mask, layer_cache)
