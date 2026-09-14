@@ -15,7 +15,7 @@ from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass, field
 from decimal import Decimal, DivisionByZero, InvalidOperation
 from threading import RLock
-from typing import Any, Literal, Protocol
+from typing import Any, Literal, Protocol, cast
 
 from jsonschema import ValidationError as JSONSchemaValidationError
 from jsonschema import validators
@@ -539,9 +539,7 @@ class MCPToolRegistry:
         try:
             validator_type = validators.validator_for(_CALCULATE_SPEC.parameters)
             validator_type(_CALCULATE_SPEC.parameters).validate(call.arguments)
-            encoded_expressions = call.arguments.get("expressions")
-            if not isinstance(encoded_expressions, str):
-                raise TypeError("expressions must be a JSON string")
+            encoded_expressions = cast(str, call.arguments["expressions"])
             expressions = json.loads(encoded_expressions)
             if not isinstance(expressions, dict) or not 1 <= len(expressions) <= 16:
                 raise ValueError("expressions must be a bounded object")
@@ -587,9 +585,7 @@ class MCPToolRegistry:
         try:
             validator_type = validators.validator_for(_BATCH_READ_ONLY_SPEC.parameters)
             validator_type(_BATCH_READ_ONLY_SPEC.parameters).validate(call.arguments)
-            encoded_calls = call.arguments.get("calls")
-            if not isinstance(encoded_calls, str):
-                raise TypeError("calls must be a JSON string")
+            encoded_calls = cast(str, call.arguments["calls"])
             calls = json.loads(encoded_calls)
             if not isinstance(calls, list) or not 1 <= len(calls) <= 8:
                 raise ValueError("calls must be a bounded array")

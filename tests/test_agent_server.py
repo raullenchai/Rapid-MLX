@@ -28,6 +28,7 @@ from vllm_mlx.agent_runtime.server import (
     AgentToolSelectionError,
     MCPToolRegistry,
     _approval_argument_summary,
+    _evaluate_arithmetic,
     classify_mcp_tool,
 )
 
@@ -2074,6 +2075,29 @@ async def test_builtin_calculator_is_exact_and_rejects_code():
     assert malformed.is_error is True
     assert malformed.executed is False
 
+    wrong_value_type = await registry.execute(
+        AgentToolCall(
+            id="wrong-value-type",
+            name="rapid__calculate",
+            arguments={"expressions": json.dumps({"x": 1})},
+        )
+    )
+    assert wrong_value_type.is_error is True
+    assert wrong_value_type.executed is False
+
+
+def test_builtin_arithmetic_covers_supported_grammar_and_bounds():
+    assert _evaluate_arithmetic("1 / 4") == "0.25"
+    assert _evaluate_arithmetic("-2 + +3") == "1"
+    assert _evaluate_arithmetic("2 * 3 - 1") == "5"
+
+    with pytest.raises(ValueError, match="too complex"):
+        _evaluate_arithmetic("+".join("1" for _ in range(40)))
+    with pytest.raises(ValueError, match="undefined"):
+        _evaluate_arithmetic("1 / 0")
+    with pytest.raises(ValueError, match="undefined"):
+        _evaluate_arithmetic("1e309")
+
 
 @pytest.mark.asyncio
 async def test_builtin_batch_runs_only_read_only_tools():
@@ -2146,6 +2170,17 @@ async def test_builtin_batch_runs_only_read_only_tools():
     assert rejected.is_error is True
     assert rejected.executed is False
     assert executed == []
+
+    for encoded_calls in ("{}", "[]"):
+        malformed = await registry.execute(
+            AgentToolCall(
+                id=f"malformed-{encoded_calls}",
+                name="rapid__batch_read_only",
+                arguments={"calls": encoded_calls},
+            )
+        )
+        assert malformed.is_error is True
+        assert malformed.executed is False
 
 
 @pytest.mark.asyncio
@@ -2230,6 +2265,32 @@ async def test_builtin_batch_collects_siblings_when_one_read_raises():
     payload = json.loads(result.content)
     assert [item["is_error"] for item in payload["results"]] == [True, False]
     assert result.executed is None
+
+
+@pytest.mark.asyncio
+async def test_builtin_batch_propagates_nested_cancellation():
+    class CancelledReadRegistry(MCPToolRegistry):
+        def list_tools(self):
+            return [
+                ToolSpec(name="rapid__batch_read_only", risk=ToolRisk.READ_ONLY),
+                ToolSpec(name="files__cancel", risk=ToolRisk.READ_ONLY),
+            ]
+
+        async def execute(self, nested_call):
+            if nested_call.name == "rapid__batch_read_only":
+                return await super().execute(nested_call)
+            raise asyncio.CancelledError
+
+    with pytest.raises(asyncio.CancelledError):
+        await CancelledReadRegistry(manager=None, executor=None, pinned=True).execute(
+            AgentToolCall(
+                id="cancelled-batch",
+                name="rapid__batch_read_only",
+                arguments={
+                    "calls": json.dumps([{"name": "files__cancel", "arguments": {}}])
+                },
+            )
+        )
 
 
 @pytest.mark.asyncio
