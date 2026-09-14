@@ -16,8 +16,8 @@ enum AboutPanel {
         let path: String
 
         var summary: String {
-            let versionLabel = version.map { "Engine \($0)" } ?? "Engine version unknown"
-            return "\(versionLabel) · \(source.displayLabel)"
+            let versionLabel = version.map { String(localized: "Engine \($0)") } ?? String(localized: "Engine version unknown")
+            return String(localized: "\(versionLabel) · \(source.displayLabel)")
         }
 
         var isOverride: Bool {
@@ -27,7 +27,7 @@ enum AboutPanel {
 
     private static let website = "https://rapidmlx.com"
     private static let repoURL = "https://github.com/raullenchai/Rapid-MLX"
-    static let mtplxAttribution = "Powered by MTPLX"
+    static let mtplxAttribution = String(localized: "Powered by MTPLX")
     static let mtplxURL = "https://github.com/youssofal/mtplx"
     /// The policy in the repository, not `rapidmlx.com/privacy` — that page
     /// has never been published and 404s, so the About window's "Privacy"
@@ -66,7 +66,7 @@ enum AboutPanel {
         win.titlebarAppearsTransparent = true
         win.titleVisibility = .hidden
         win.isMovableByWindowBackground = true
-        win.title = "About Rapid-MLX"
+        win.title = String(localized: "About Rapid-MLX")
         win.setContentSize(NSSize(width: 360, height: 340))
         win.center()
         win.isReleasedWhenClosed = false
@@ -119,9 +119,9 @@ enum AboutPanel {
     ) -> String {
         var line: String
         if let build, !build.isEmpty, build != version {
-            line = "Version \(version) (\(build))"
+            line = String(localized: "Version \(version) (\(build))")
         } else {
-            line = "Version \(version)"
+            line = String(localized: "Version \(version)")
         }
         if let candidateIdentity, !candidateIdentity.isEmpty {
             line += " · \(candidateIdentity)"
@@ -210,9 +210,9 @@ private struct AboutView: View {
             HStack(spacing: 8) {
                 aboutLink("rapidmlx.com", website)
                 Text("·").foregroundStyle(.tertiary)
-                aboutLink("GitHub", repoURL)
+                aboutLink(String(localized: "GitHub"), repoURL)
                 Text("·").foregroundStyle(.tertiary)
-                aboutLink("Privacy", privacyURL)
+                aboutLink(String(localized: "Privacy"), privacyURL)
             }
             .font(.callout)
             .padding(.top, 2)

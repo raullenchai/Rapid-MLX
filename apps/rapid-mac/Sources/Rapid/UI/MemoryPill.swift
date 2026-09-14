@@ -119,12 +119,12 @@ struct MemoryPill: View {
         let pct = Int((snap.usedRatio * 100).rounded())
         let header: String
         switch pressure {
-        case .normal:   header = "Memory: comfortable"
-        case .warning:  header = "Memory: tight"
-        case .critical: header = "Memory: critical — model loads may fail or trigger swap"
+        case .normal:   header = String(localized: "Memory: comfortable")
+        case .warning:  header = String(localized: "Memory: tight")
+        case .critical: header = String(localized: "Memory: critical — model loads may fail or trigger swap")
         }
         return String(
-            format: "%@\n%.1f GB in use (%d%%), %.1f GB free.",
+            format: String(localized: "%@\n%.1f GB in use (%d%%), %.1f GB free."),
             header, usedGB, pct, freeGB
         )
     }
@@ -138,12 +138,12 @@ struct MemoryPill: View {
         let totalGB = Double(snap.totalBytes) / Double(1 << 30)
         let state: String
         switch pressure {
-        case .normal:   state = "normal"
-        case .warning:  state = "tight"
-        case .critical: state = "critical"
+        case .normal:   state = String(localized: "normal")
+        case .warning:  state = String(localized: "tight")
+        case .critical: state = String(localized: "critical")
         }
         return String(
-            format: "Memory %@: %.1f gigabytes used out of %.0f gigabytes",
+            format: String(localized: "Memory %@: %.1f gigabytes used out of %.0f gigabytes"),
             state, usedGB, totalGB
         )
     }

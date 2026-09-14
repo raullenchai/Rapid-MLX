@@ -224,9 +224,9 @@ struct ComputerUseView: View {
     /// says what it will do instead of a generic "Start flow".
     private func actionLabel(_ kind: ComputerUseStarter.Kind) -> String {
         switch kind {
-        case .freeUpSpace: "Review files"
-        case .draftAndPost: "Draft update"
-        case .tidyInbox, .prospectCustomers, .createDemoVideo, .reserved: "Start flow"
+        case .freeUpSpace: String(localized: "Review files")
+        case .draftAndPost: String(localized: "Draft update")
+        case .tidyInbox, .prospectCustomers, .createDemoVideo, .reserved: String(localized: "Start flow")
         }
     }
 
@@ -245,9 +245,9 @@ struct ComputerUseView: View {
         _ availability: ComputerUseStarter.Availability
     ) -> String {
         switch availability {
-        case .available: "PREVIEW"
-        case .comingSoon: "COMING NEXT"
-        case .reserved: "RESERVED"
+        case .available: String(localized: "PREVIEW")
+        case .comingSoon: String(localized: "COMING NEXT")
+        case .reserved: String(localized: "RESERVED")
         }
     }
 }
@@ -341,7 +341,7 @@ private struct DraftPostFlowSheet: View {
             case .readyForReview(let metrics):
                 result(
                     title: "Ready for your review",
-                    message: "The browser composer matches the draft you reviewed. Check it in the browser and publish it yourself when ready.",
+                    message: String(localized: "The browser composer matches the draft you reviewed. Check it in the browser and publish it yourself when ready."),
                     symbol: "checkmark.shield.fill",
                     color: .green,
                     metrics: metrics
@@ -579,7 +579,7 @@ private struct DraftPostFlowSheet: View {
         }
     }
 
-    private func hint(_ text: String) -> some View {
+    private func hint(_ text: LocalizedStringKey) -> some View {
         Text(text)
             .font(.caption2.weight(.medium))
             .foregroundStyle(.secondary)
@@ -588,7 +588,7 @@ private struct DraftPostFlowSheet: View {
             .background(.secondary.opacity(0.08), in: Capsule())
     }
 
-    private func planField(_ title: String, _ value: String) -> some View {
+    private func planField(_ title: LocalizedStringKey, _ value: String) -> some View {
         VStack(alignment: .leading, spacing: 3) {
             Text(title).font(.caption.weight(.semibold)).foregroundStyle(.secondary)
             Text(value).font(.callout).lineLimit(3)
@@ -597,8 +597,8 @@ private struct DraftPostFlowSheet: View {
     }
 
     private func picker(
-        title: String,
-        prompt: String,
+        title: LocalizedStringKey,
+        prompt: LocalizedStringKey,
         options: [ComputerUseWindowOption],
         selection: Binding<String?>,
         identifier: String
@@ -618,7 +618,7 @@ private struct DraftPostFlowSheet: View {
     }
 
     private func result(
-        title: String,
+        title: LocalizedStringKey,
         message: String,
         symbol: String,
         color: Color,
@@ -641,7 +641,7 @@ private struct DraftPostFlowSheet: View {
         }
     }
 
-    private func metric(_ title: String, _ value: Int) -> some View {
+    private func metric(_ title: LocalizedStringKey, _ value: Int) -> some View {
         VStack(alignment: .leading, spacing: 2) {
             Text("\(value)").font(.headline.monospacedDigit())
             Text(title).font(.caption2).foregroundStyle(.secondary)

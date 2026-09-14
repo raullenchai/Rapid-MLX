@@ -100,7 +100,13 @@ struct SettingsVisualFoundationTests {
             """
         )
         for category in SettingsView.Category.allCases {
-            #expect(!category.title.isEmpty, "\(category.rawValue) lost its title")
+            // `title` is a `LocalizedStringKey` — the rail renders it with
+            // `Text(_:)`, whose `String` overload is the verbatim initialiser,
+            // which is why the sidebar stayed English until it was retyped.
+            // A key built from a literal cannot be empty, so there is nothing
+            // left to assert here; the failure mode that IS reachable is a key
+            // with no catalog entry, and `LocalizationTests` pins that for
+            // every category.
             #expect(!category.iconName.isEmpty, "\(category.rawValue) lost its icon")
         }
     }

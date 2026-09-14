@@ -147,10 +147,10 @@ extension QuickstartCoordinator.Step {
     /// owned there; what the rail calls each step is this file's business.
     var railTitle: String {
         switch self {
-        case .welcome:     return "Welcome"
-        case .chooseModel: return "Choose a model"
-        case .download:    return "Download"
-        case .start:       return "Start"
+        case .welcome:     return String(localized: "Welcome")
+        case .chooseModel: return String(localized: "Choose a model")
+        case .download:    return String(localized: "Download")
+        case .start:       return String(localized: "Start")
         }
     }
 }
@@ -248,7 +248,7 @@ struct OnboardingSetupRail: View {
     /// put it there. Anything richer belongs in the value below, where it can
     /// grow without breaking the pin.
     static func progressAccessibilityLabel(current: QuickstartCoordinator.Step) -> String {
-        "Setup progress, step \(current.displayNumber) of \(QuickstartCoordinator.Step.total)"
+        String(localized: "Setup progress, step \(current.displayNumber) of \(QuickstartCoordinator.Step.total)")
     }
 
     /// What the rail says beyond its position: the step's name, and which
@@ -260,7 +260,7 @@ struct OnboardingSetupRail: View {
             .map(\.railTitle)
         var value = current.railTitle
         if !done.isEmpty {
-            value += ". Completed: \(done.joined(separator: ", "))"
+            value += String(localized: ". Completed: \(done.joined(separator: ", "))")
         }
         return value
     }
@@ -377,7 +377,7 @@ private struct OnboardingRailFacts: View {
         .accessibilityLabel(Self.spokenFacts(hardware: hardware, freeSpace: freeSpace))
     }
 
-    private func row(_ label: String, _ value: String) -> some View {
+    private func row(_ label: LocalizedStringKey, _ value: String) -> some View {
         HStack(alignment: .firstTextBaseline, spacing: 8) {
             Text(label)
                 .scaledSystemFont(12)
@@ -400,8 +400,8 @@ private struct OnboardingRailFacts: View {
     /// The footer read aloud as one sentence, so VoiceOver gets the machine
     /// facts in one stop rather than three unlabelled fragments.
     static func spokenFacts(hardware: MacHardware, freeSpace: String?) -> String {
-        var text = "This Mac. Chip \(hardware.brandString). Memory \(memoryText(hardware))."
-        if let freeSpace { text += " Free space \(freeSpace)." }
+        var text = String(localized: "This Mac. Chip \(hardware.brandString). Memory \(memoryText(hardware)).")
+        if let freeSpace { text += String(localized: " Free space \(freeSpace).") }
         return text
     }
 }
@@ -786,6 +786,9 @@ struct OnboardingCenteredCanvas<Content: View>: View {
 
 /// `STEP 2 OF 4 · CHOOSE A MODEL` — the one element that names the branch.
 struct OnboardingKicker: View {
+    /// Stays `String`: the text is assembled by the caller
+    /// (`QuickstartView.microStageKicker`), which localizes it, and the value
+    /// therefore already arrives resolved.
     let text: String
 
     var body: some View {
@@ -814,6 +817,9 @@ struct OnboardingKicker: View {
 /// Paper value not carried over.
 struct OnboardingDisplayTitle: View {
     @Environment(\.onboardingLayout) private var layout
+    /// Stays `String`, not `LocalizedStringKey`: the compact layout rewrites
+    /// the authored line break with `replacingOccurrences`, and the copy is
+    /// localized where the screens produce it.
     let text: String
     var size: CGFloat = 38
     /// The single compact step. Defaults to Paper's floor relationship.
@@ -898,7 +904,17 @@ struct OnboardingStepColumns<Aside: View, Content: View>: View {
 
 /// A small caps group label above a run of rows.
 struct OnboardingGroupLabel: View {
-    let text: String
+    let text: LocalizedStringKey
+
+    /// An authored label ("YOUR PICK") becomes the catalogue key directly.
+    init(text: LocalizedStringKey) { self.text = text }
+
+    /// The section headings also take a runtime RAM-tier heading
+    /// (`QuickstartView.recommendedGroupLabel`), which arrives already
+    /// resolved. Wrapped as its own key it renders verbatim when unmatched, so
+    /// the dynamic value still displays.
+    @_disfavoredOverload
+    init(text: String) { self.text = LocalizedStringKey(text) }
 
     var body: some View {
         Text(text)
@@ -983,7 +999,12 @@ struct OnboardingComparisonTable: View {
             HStack(alignment: .bottom, spacing: 0) {
                 Color.clear.frame(width: labelWidth, height: 1)
                 ForEach(columns) { column in
-                    Text(column.isPicked ? "\(column.title) · PICKED" : column.title)
+                    // The picked marker is copy; the column title is data (a
+                    // size or a model name), so it is wrapped rather than
+                    // retyped and renders itself when it matches no key.
+                    Text(column.isPicked
+                         ? LocalizedStringKey("\(column.title) · PICKED")
+                         : LocalizedStringKey(column.title))
                         .scaledSystemFont(10, relativeTo: .caption2, weight: .semibold, design: .monospaced)
                         .tracking(OnboardingD.Tracking.groupLabel)
                         .foregroundStyle(column.isPicked ? RapidTheme.textPrimary : RapidTheme.textTertiary)
@@ -995,8 +1016,8 @@ struct OnboardingComparisonTable: View {
                 Rectangle().fill(RapidTheme.hairlineStrong).frame(height: 1)
             }
 
-            row("Download") { $0.download }
-            row("Memory when loaded") { $0.memory }
+            row(String(localized: "Download")) { $0.download }
+            row(String(localized: "Memory when loaded")) { $0.memory }
             row(fitLabel, isFit: true) { $0.fit }
         }
         .accessibilityElement(children: .combine)
@@ -1132,7 +1153,10 @@ struct OnboardingBadge: View {
         case neutral
     }
 
-    let text: String
+    /// Literal call sites ("START HERE") are keys. A badge built from the
+    /// catalogue's fixed vocabulary arrives as a resolved `String` and is
+    /// wrapped at that one call site.
+    let text: LocalizedStringKey
     let tone: Tone
 
     var body: some View {
@@ -1169,7 +1193,9 @@ struct OnboardingBadge: View {
 
 /// The qualitative pill under the starter card ("Instant", "Runs on any Mac").
 struct OnboardingAttributePill: View {
-    let text: String
+    /// Static copy, so it is retyped and every literal call site becomes a
+    /// catalogue key.
+    let text: LocalizedStringKey
 
     var body: some View {
         Text(text)
@@ -1294,7 +1320,9 @@ extension ButtonStyle where Self == OnboardingQuietButtonStyle {
 /// One `label · value` line in a Review-style fact table.
 struct OnboardingFactRow: Identifiable {
     let id = UUID()
-    let label: String
+    /// Static copy ("Memory when loaded"), retyped so literal call sites
+    /// become catalogue keys. ``value`` stays data.
+    let label: LocalizedStringKey
     let value: String
     /// Soft values (a path, "Not downloaded yet") sit back a step so the
     /// numbers that drive the decision stay the strongest thing in the column.
@@ -1307,7 +1335,7 @@ struct OnboardingFactRow: Identifiable {
     var identifier: String?
 
     init(
-        _ label: String,
+        _ label: LocalizedStringKey,
         _ value: String,
         isStrong: Bool = true,
         isAlert: Bool = false,
@@ -1351,7 +1379,9 @@ struct OnboardingFactTable: View {
                 .padding(.bottom, index == rows.count - 1 ? 0 : 11)
                 .accessibilityElement(children: .combine)
                 .accessibilityIdentifier(row.identifier ?? "")
-                .accessibilityLabel("\(row.label): \(row.value)")
+                // `row.label` is a key, not a resolved String — joined as
+                // Text so VoiceOver speaks the copy, not the key's debug form.
+                .accessibilityLabel(Text(row.label) + Text(verbatim: ": \(row.value)"))
             }
         }
     }
@@ -1489,7 +1519,10 @@ struct OnboardingStepFooter: View {
     var primaryEnabled: Bool = true
     /// Back's label, named for its destination ("← Back to all models") so the
     /// control says where it goes rather than only that it goes back.
-    var backTitle: String = "Back"
+    ///
+    /// Stays `String` (not `LocalizedStringKey`) because the footer composes it
+    /// with `backAccessibilityLabel` in a `??` fallback.
+    var backTitle: String = String(localized: "Back")
     /// Spoken form of ``backTitle``, without the arrow glyph.
     var backAccessibilityLabel: String?
     /// Spoken form of the primary. Defaults to ``primaryTitle`` so the AX
@@ -1531,7 +1564,9 @@ struct OnboardingStepFooter: View {
 
 /// A statistic pair under a warning — "FREE NOW 1.4 GB".
 struct OnboardingStat: View {
-    let label: String
+    /// Static copy ("FREE NOW"), so it is retyped and every literal call site
+    /// becomes a catalogue key. ``value`` stays data.
+    let label: LocalizedStringKey
     let value: String
     var tone: Color = RapidTheme.textPrimary
 
@@ -1546,6 +1581,9 @@ struct OnboardingStat: View {
                 .foregroundStyle(tone)
         }
         .accessibilityElement(children: .combine)
-        .accessibilityLabel("\(label): \(value)")
+        // `label` is a key, not a resolved String, so it is joined as Text
+        // rather than interpolated (interpolating a key would speak its
+        // debug description).
+        .accessibilityLabel(Text(label) + Text(verbatim: ": \(value)"))
     }
 }

@@ -272,7 +272,7 @@ struct FreeUpSpaceFlowSheet: View {
         .accessibilityIdentifier("ComputerUse.FreeSpace.Candidate.\(candidate.id)")
     }
 
-    private func progress(title: String, detail: String) -> some View {
+    private func progress(title: LocalizedStringKey, detail: LocalizedStringKey) -> some View {
         VStack(alignment: .leading, spacing: 10) {
             ProgressView()
             Text(title).font(.headline)
@@ -281,26 +281,26 @@ struct FreeUpSpaceFlowSheet: View {
     }
 
     private var selectionSummary: String {
-        guard !viewModel.selectedCandidates.isEmpty else { return "No files selected" }
-        return "\(viewModel.selectedCandidates.count) selected · \(bytes(viewModel.selectedByteCount))"
+        guard !viewModel.selectedCandidates.isEmpty else { return String(localized: "No files selected") }
+        return String(localized: "\(viewModel.selectedCandidates.count) selected · \(bytes(viewModel.selectedByteCount))")
     }
 
     private func bytes(_ count: Int64) -> String {
         ByteCountFormatter.string(fromByteCount: count, countStyle: .file)
     }
 
-    private func fileWord(_ count: Int) -> String { count == 1 ? "file" : "files" }
+    private func fileWord(_ count: Int) -> String { count == 1 ? String(localized: "file") : String(localized: "files") }
 
     private func errorMessage(_ error: FreeUpSpaceScanError) -> String {
         switch error {
         case .downloadsUnavailable:
-            "The Downloads folder is not available on this Mac."
+            String(localized: "The Downloads folder is not available on this Mac.")
         case .permissionDenied:
-            "macOS did not allow Rapid to read Downloads. Review Files & Folders access in System Settings, then try again."
+            String(localized: "macOS did not allow Rapid to read Downloads. Review Files & Folders access in System Settings, then try again.")
         case .enumerationFailed:
-            "Downloads could not be read. No files were changed."
+            String(localized: "Downloads could not be read. No files were changed.")
         case .cancelled:
-            "The scan was stopped. No files were changed."
+            String(localized: "The scan was stopped. No files were changed.")
         }
     }
 }

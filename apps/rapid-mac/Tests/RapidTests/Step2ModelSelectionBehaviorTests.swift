@@ -1043,7 +1043,11 @@ struct Step2ModelSelectionBehaviorTests {
         // already does.
         let directionD = Self.stripped(try Self.directionDSource())
         #expect(directionD.contains(".keyboardShortcut(.cancelAction).accessibilityIdentifier(\"Quickstart.Footer.Back\")"))
-        #expect(body.contains(#"backTitle:"←Backtorecommendedmodels""#))
+        // Match the copy, not the argument label: these strings are localized
+        // through `String(localized:)` now, and pinning the wrapper's exact
+        // spelling made this fail for a reason that has nothing to do with
+        // whether a visible Back control exists.
+        #expect(body.contains(#""←Backtorecommendedmodels""#))
         #expect(body.contains(#""←Backtoallmodels""#))
         let footers = body.components(separatedBy: "OnboardingStepFooter(").count - 1
         #expect(footers >= 4, "each Step 2 micro-stage must carry its own footer, found \(footers)")

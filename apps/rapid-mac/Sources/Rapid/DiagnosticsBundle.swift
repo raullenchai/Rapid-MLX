@@ -20,36 +20,38 @@ enum DiagnosticsBundle {
     @MainActor
     static func makeReport(server: ServerManager) -> String {
         let hw = MacHardware.detect()
-        let version = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "unknown"
-        let build = Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "unknown"
+        let version = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String
+            ?? String(localized: "unknown")
+        let build = Bundle.main.infoDictionary?["CFBundleVersion"] as? String
+            ?? String(localized: "unknown")
         let os = ProcessInfo.processInfo.operatingSystemVersionString
 
         var out = ""
         func line(_ s: String) { out += s + "\n" }
 
-        line("Rapid-MLX diagnostics")
+        line(String(localized: "Rapid-MLX diagnostics"))
         line("=====================")
-        line("Generated: \(ISO8601DateFormatter().string(from: Date()))")
+        line(String(localized: "Generated: \(ISO8601DateFormatter().string(from: Date()))"))
         line("")
-        line("App")
-        line("  version:  \(version) (build \(build))")
-        line("  bundle:   \(Bundle.main.bundleIdentifier ?? "unknown")")
+        line(String(localized: "App"))
+        line(String(localized: "  version:  \(version) (build \(build))"))
+        line(String(localized: "  bundle:   \(Bundle.main.bundleIdentifier ?? "unknown")"))
         line("")
-        line("Machine")
-        line("  chip:     \(hw.brandString)")
-        line("  ram:      \(String(format: "%.1f", hw.physicalRAMGB)) GB")
-        line("  macOS:    \(os)")
+        line(String(localized: "Machine"))
+        line(String(localized: "  chip:     \(hw.brandString)"))
+        line(String(localized: "  ram:      \(String(format: "%.1f", hw.physicalRAMGB)) GB"))
+        line(String(localized: "  macOS:    \(os)"))
         line("")
-        line("Server")
-        line("  state:    \(describe(server.state))")
-        line("  serving:  \(server.servingAlias ?? "—")")
-        line("  binary:   \(binaryDescription(server.binaryPath))")
+        line(String(localized: "Server"))
+        line(String(localized: "  state:    \(describe(server.state))"))
+        line(String(localized: "  serving:  \(server.servingAlias ?? "—")"))
+        line(String(localized: "  binary:   \(binaryDescription(server.binaryPath))"))
         line("")
-        line("Recent log (scrubbed, last \(logTailCount) lines)")
+        line(String(localized: "Recent log (scrubbed, last \(logTailCount) lines)"))
         line("------------------------------------------------")
         let tail = server.logLines.suffix(logTailCount)
         if tail.isEmpty {
-            line("  (no log output yet)")
+            line(String(localized: "  (no log output yet)"))
         } else {
             for l in tail {
                 // logLines are scrubbed at capture; scrub again so this
@@ -66,7 +68,7 @@ enum DiagnosticsBundle {
     static func exportViaSavePanel(server: ServerManager) {
         let report = makeReport(server: server)
         let panel = NSSavePanel()
-        panel.title = "Export Rapid-MLX Diagnostics"
+        panel.title = String(localized: "Export Rapid-MLX Diagnostics")
         panel.nameFieldStringValue = defaultFilename()
         panel.allowedContentTypes = [.plainText]
         panel.isExtensionHidden = false
@@ -77,7 +79,7 @@ enum DiagnosticsBundle {
                 NSWorkspace.shared.activateFileViewerSelecting([url])
             } catch {
                 let alert = NSAlert()
-                alert.messageText = "Couldn't save diagnostics"
+                alert.messageText = String(localized: "Couldn't save diagnostics")
                 alert.informativeText = error.localizedDescription
                 alert.alertStyle = .warning
                 alert.runModal()
@@ -97,19 +99,19 @@ enum DiagnosticsBundle {
 
     private static func describe(_ state: ServerState) -> String {
         switch state {
-        case .idle: return "idle"
-        case .starting(let a): return "starting (\(a))"
-        case .ready(let a): return "ready (\(a))"
-        case .stopped: return "stopped"
-        case .missing: return "missing (no rapid-mlx binary found)"
-        case .crashed(let a, let msg): return "crashed (\(a)): \(LogScrubber.scrub(msg))"
+        case .idle: return String(localized: "idle")
+        case .starting(let a): return String(localized: "starting (\(a))")
+        case .ready(let a): return String(localized: "ready (\(a))")
+        case .stopped: return String(localized: "stopped")
+        case .missing: return String(localized: "missing (no rapid-mlx binary found)")
+        case .crashed(let a, let msg): return String(localized: "crashed (\(a)): \(LogScrubber.scrub(msg))")
         }
     }
 
     /// Report only whether the sidecar binary was located, not its full
     /// path — the path can carry the username and install location.
     private static func binaryDescription(_ url: URL?) -> String {
-        guard let url else { return "not found" }
-        return "found (\(url.lastPathComponent))"
+        guard let url else { return String(localized: "not found") }
+        return String(localized: "found (\(url.lastPathComponent))")
     }
 }

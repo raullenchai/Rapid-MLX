@@ -68,9 +68,9 @@ struct CommunityBenchmarkModel: Identifiable, Hashable {
             }()
             let protocolName: String
             switch task {
-            case .imageGeneration: protocolName = "Rapid Image Speed v\(protocolVersion)"
-            case .videoGeneration: protocolName = "Rapid Video Speed v\(protocolVersion)"
-            case .textGeneration: protocolName = "Rapid Community Speed v\(protocolVersion)"
+            case .imageGeneration: protocolName = String(localized: "Rapid Image Speed v\(protocolVersion)")
+            case .videoGeneration: protocolName = String(localized: "Rapid Video Speed v\(protocolVersion)")
+            case .textGeneration: protocolName = String(localized: "Rapid Community Speed v\(protocolVersion)")
             default: return nil
             }
             return Self(
@@ -204,7 +204,7 @@ struct CommunityBenchmarkReceipt: Decodable, Identifiable {
 
     var id: String { submissionID }
     var contributionLinkTitle: String {
-        contributor?.displayName ?? "View Community Benchmark"
+        contributor?.displayName ?? String(localized: "View Community Benchmark")
     }
 
     var contributionURL: URL {
@@ -212,8 +212,8 @@ struct CommunityBenchmarkReceipt: Decodable, Identifiable {
     }
 
     var contributionAccessibilityLabel: String {
-        contributor.map { "View contributions by \($0.displayName)" }
-            ?? "View Community Benchmark"
+        contributor.map { String(localized: "View contributions by \($0.displayName)") }
+            ?? String(localized: "View Community Benchmark")
     }
 
     enum CodingKeys: String, CodingKey {
@@ -476,7 +476,7 @@ struct CommunityBenchmarkResult: Decodable, Identifiable {
         return caseSummaries.dropFirst().map { "\($0.caseID): \($0.headline)" }
     }
 
-    var repoID: String { model.components.first?.source.repoID ?? "Local model" }
+    var repoID: String { model.components.first?.source.repoID ?? String(localized: "Local model") }
 
     /// `completed_at` is a UTC ISO-8601 stamp with or without fractional
     /// seconds, depending on the CLI version that wrote the record.
@@ -550,17 +550,17 @@ final class ProgressSequencer: @unchecked Sendable {
 enum CommunityBenchmarkRunStatus {
     /// `Measuring qwen3.5-9b-4bit · 2 cases × (1 warmup + 5 rounds) · usually 2–5 minutes`
     static func description(for model: CommunityBenchmarkModel) -> String {
-        var parts = ["Measuring \(model.entry.alias)", scope(for: model.task)]
+        var parts = [String(localized: "Measuring \(model.entry.alias)"), scope(for: model.task)]
         parts.append(expectedDuration(for: model.task))
-        if !model.entry.cached { parts.append("plus the download") }
+        if !model.entry.cached { parts.append(String(localized: "plus the download")) }
         return parts.joined(separator: " · ")
     }
 
     static func scope(for task: ModelTask) -> String {
         switch task {
-        case .imageGeneration: return "1 warmup + 1 measured render"
-        case .videoGeneration: return "1 measured render"
-        default: return "2 cases × (1 warmup + 5 rounds)"
+        case .imageGeneration: return String(localized: "1 warmup + 1 measured render")
+        case .videoGeneration: return String(localized: "1 measured render")
+        default: return String(localized: "2 cases × (1 warmup + 5 rounds)")
         }
     }
 
@@ -569,9 +569,9 @@ enum CommunityBenchmarkRunStatus {
         // Image time is dominated by the model: a small SD-class model lands
         // in a couple of minutes, a flux-class one can take ten. Keep the
         // up-front hint wide and honest; the live ETA below carries accuracy.
-        case .imageGeneration: return "usually 2–10 minutes"
-        case .videoGeneration: return "usually 5–15 minutes"
-        default: return "usually 2–5 minutes"
+        case .imageGeneration: return String(localized: "usually 2–10 minutes")
+        case .videoGeneration: return String(localized: "usually 5–15 minutes")
+        default: return String(localized: "usually 2–5 minutes")
         }
     }
 
@@ -646,9 +646,9 @@ enum CommunityBenchmarkRunStatus {
         let remaining = projected - max(0, now.timeIntervalSince(lastStepAt))
         // Past the projection with no new step: don't sit on a stale
         // "~0:00 left" — say we're finishing the last pass(es).
-        guard remaining > 0 else { return "wrapping up…" }
+        guard remaining > 0 else { return String(localized: "wrapping up…") }
         let secs = Int(remaining.rounded())
-        return String(format: "~%d:%02d left", secs / 60, secs % 60)
+        return String(format: String(localized: "~%d:%02d left"), secs / 60, secs % 60)
     }
 
     /// `m:ss` elapsed clock, clamped at zero so a clock adjustment mid-run
@@ -865,7 +865,7 @@ enum CommunityBenchmarkCommand {
               let bodyDigest = root["body_digest"] as? String,
               let payloadJSON = root["payload_json"] as? String
         else {
-            throw Failure(message: "The benchmark preview was incomplete.")
+            throw Failure(message: String(localized: "The benchmark preview was incomplete."))
         }
         return CommunityBenchmarkUploadPreview(
             runID: runID,
@@ -948,12 +948,12 @@ enum CommunityBenchmarkCommand {
                             .trimmingCharacters(in: .whitespacesAndNewlines)
                         let message = detail
                             .flatMap { $0.isEmpty ? nil : Self.failureSummary(from: $0) }
-                            ?? "Benchmark exited with code \(child.terminationStatus)."
+                            ?? String(localized: "Benchmark exited with code \(child.terminationStatus).")
                         throw Failure(message: message)
                     }
                     guard !output.truncated else {
                         throw Failure(
-                            message: "Benchmark output exceeded the 8 MiB safety limit."
+                            message: String(localized: "Benchmark output exceeded the 8 MiB safety limit.")
                         )
                     }
                     return RunOutcome.output(output.data)
@@ -1598,9 +1598,9 @@ struct CommunityBenchmarkView: View {
 
     private func protocolDescription(_ task: ModelTask) -> String {
         switch task {
-        case .imageGeneration: return "1 warmup + 1 measured 1024×1024 render · fixed prompt, seed and 20 steps"
-        case .videoGeneration: return "1 measured 832×480, 81-frame render · fixed prompt and seed"
-        default: return "Two fixed token workloads · 1 warmup + 5 measured rounds each · concurrency 1"
+        case .imageGeneration: return String(localized: "1 warmup + 1 measured 1024×1024 render · fixed prompt, seed and 20 steps")
+        case .videoGeneration: return String(localized: "1 measured 832×480, 81-frame render · fixed prompt and seed")
+        default: return String(localized: "Two fixed token workloads · 1 warmup + 5 measured rounds each · concurrency 1")
         }
     }
 
@@ -1609,7 +1609,9 @@ struct CommunityBenchmarkView: View {
     }
 
     private func memoryCopy(_ memory: Int, fit: String) -> String {
-        fit == "does_not_fit" ? "Needs about \(memory) GB" : "About \(memory) GB"
+        fit == "does_not_fit"
+            ? String(localized: "Needs about \(memory) GB")
+            : String(localized: "About \(memory) GB")
     }
 
     private func startRun() {
@@ -1688,8 +1690,8 @@ struct CommunityBenchmarkView: View {
                 pendingShareResultID = CommunityBenchmarkCommand.runID(from: runOutput)
             } catch is CancellationError {
                 errorMessage = acquiredReservation
-                    ? "Benchmark stopped. No incomplete result was shared."
-                    : "Benchmark request stopped before it started."
+                    ? String(localized: "Benchmark stopped. No incomplete result was shared.")
+                    : String(localized: "Benchmark request stopped before it started.")
             } catch {
                 errorMessage = error.localizedDescription
             }
@@ -1722,7 +1724,7 @@ struct CommunityBenchmarkView: View {
             } catch is CancellationError {
                 // Navigation cancelled the preview command.
             } catch {
-                errorMessage = "Couldn’t prepare benchmark upload: \(error.localizedDescription)"
+                errorMessage = String(localized: "Couldn’t prepare benchmark upload: \(error.localizedDescription)")
             }
             sharingRunID = nil
             shareTask = nil
@@ -1751,19 +1753,19 @@ struct CommunityBenchmarkView: View {
                 )
                 guard response.uploaded else {
                     throw CommunityBenchmarkCommand.Failure(
-                        message: "The benchmark was not uploaded."
+                        message: String(localized: "The benchmark was not uploaded.")
                     )
                 }
                 if response.receiptSaved {
                     receipts[preview.runID] = response.receipt
                 } else {
-                    errorMessage = "Uploaded, but Rapid couldn’t save the local receipt."
+                    errorMessage = String(localized: "Uploaded, but Rapid couldn’t save the local receipt.")
                 }
                 shareSuccess = response.receipt
             } catch is CancellationError {
                 // Navigation cancelled the upload command and its subprocess.
             } catch {
-                errorMessage = "Couldn’t share benchmark: \(error.localizedDescription)"
+                errorMessage = String(localized: "Couldn’t share benchmark: \(error.localizedDescription)")
             }
             sharingRunID = nil
             shareTask = nil
@@ -1781,7 +1783,7 @@ struct CommunityBenchmarkView: View {
             results = envelope.runs
             receipts = envelope.receipts ?? [:]
         } catch {
-            if results.isEmpty { errorMessage = "Couldn’t read local results: \(error.localizedDescription)" }
+            if results.isEmpty { errorMessage = String(localized: "Couldn’t read local results: \(error.localizedDescription)") }
         }
     }
 
@@ -1800,7 +1802,7 @@ struct CommunityBenchmarkView: View {
     private func refreshBenchmarkCatalog() async {
         guard let binary else {
             benchmarkCLIAvailable = false
-            errorMessage = "Community Benchmark needs the bundled rapid-mlx runtime. Restart Rapid, then try again."
+            errorMessage = String(localized: "Community Benchmark needs the bundled rapid-mlx runtime. Restart Rapid, then try again.")
             return
         }
         let memory = max(1, Int(MacHardware.detect().physicalRAMGB.rounded()))
@@ -1816,7 +1818,7 @@ struct CommunityBenchmarkView: View {
             for model in envelope.models {
                 guard metadata.updateValue(model, forKey: model.alias) == nil else {
                     throw CommunityBenchmarkCommand.Failure(
-                        message: "Benchmark catalog contains duplicate alias \(model.alias)."
+                        message: String(localized: "Benchmark catalog contains duplicate alias \(model.alias).")
                     )
                 }
             }
@@ -1829,7 +1831,7 @@ struct CommunityBenchmarkView: View {
         } catch {
             benchmarkCLIAvailable = false
             benchmarkMetadata = [:]
-            errorMessage = "Community Benchmark needs a current rapid-mlx runtime. Update or restart Rapid, then try again."
+            errorMessage = String(localized: "Community Benchmark needs a current rapid-mlx runtime. Update or restart Rapid, then try again.")
         }
     }
 }

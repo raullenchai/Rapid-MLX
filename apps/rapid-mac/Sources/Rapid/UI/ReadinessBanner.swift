@@ -81,9 +81,8 @@ struct ReadinessBanner: View {
                 if readiness.isFailure {
                     QuietIconButton(
                         symbol: "stethoscope",
-                        label: "Export diagnostics…",
-                        help: "Export a privacy-scrubbed diagnostics bundle for support"
-                    ) {
+                        label: String(localized: "Export diagnostics…"),
+                        help: String(localized: "Export a privacy-scrubbed diagnostics bundle for support")) {
                         DiagnosticsBundle.exportViaSavePanel(server: server)
                     }
                     .accessibilityIdentifier("Readiness.ExportDiagnostics")

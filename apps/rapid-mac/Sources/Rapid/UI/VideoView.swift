@@ -216,25 +216,25 @@ struct VideoView: View {
     }
 
     private var emptyStageTitle: String {
-        if !viewModel.catalogLoaded { return "Finding video models…" }
-        if viewModel.videoModels.isEmpty { return "No supported video models" }
-        if !viewModel.isSelectedModelEligible { return "This model doesn't fit this Mac" }
-        if !viewModel.isServerReady { return "Start a video model" }
-        return "Create your first video"
+        if !viewModel.catalogLoaded { return String(localized: "Finding video models…") }
+        if viewModel.videoModels.isEmpty { return String(localized: "No supported video models") }
+        if !viewModel.isSelectedModelEligible { return String(localized: "This model doesn't fit this Mac") }
+        if !viewModel.isServerReady { return String(localized: "Start a video model") }
+        return String(localized: "Create your first video")
     }
 
     private var emptyStageMessage: String {
-        if !viewModel.catalogLoaded { return "Rapid is reading the local model catalog." }
+        if !viewModel.catalogLoaded { return String(localized: "Rapid is reading the local model catalog.") }
         if viewModel.videoModels.isEmpty {
-            return "The signed engine does not currently advertise a compatible video model."
+            return String(localized: "The signed engine does not currently advertise a compatible video model.")
         }
         if !viewModel.isSelectedModelEligible {
-            return viewModel.memoryRequirementText ?? "This model's memory requirement couldn't be verified."
+            return viewModel.memoryRequirementText ?? String(localized: "This model's memory requirement couldn't be verified.")
         }
         if !viewModel.isServerReady {
-            return "Starting is explicit so opening this tab never replaces your current model or allocates memory by surprise."
+            return String(localized: "Starting is explicit so opening this tab never replaces your current model or allocates memory by surprise.")
         }
-        return "Describe a short scene below. The first generation is safest at the smallest size and duration."
+        return String(localized: "Describe a short scene below. The first generation is safest at the smallest size and duration.")
     }
 
     @ViewBuilder
@@ -329,10 +329,10 @@ struct VideoView: View {
 
     private func jobStatusTitle(_ job: VideoJob) -> String {
         switch job.status {
-        case .queued: return "Waiting to generate"
-        case .inProgress: return "Generating · \(job.progress)%"
-        case .completed: return viewModel.isLoadingPreview ? "Loading preview…" : "Video ready"
-        case .failed: return "Generation failed"
+        case .queued: return String(localized: "Waiting to generate")
+        case .inProgress: return String(localized: "Generating · \(job.progress)%")
+        case .completed: return viewModel.isLoadingPreview ? String(localized: "Loading preview…") : String(localized: "Video ready")
+        case .failed: return String(localized: "Generation failed")
         }
     }
 
@@ -537,7 +537,7 @@ struct VideoView: View {
 
     private func modelPickerLabel(_ model: ModelEntry) -> String {
         guard let minimum = model.minimumMemoryGB else { return model.alias }
-        return "\(model.alias) · \(Int(minimum.rounded())) GB"
+        return String(localized: "\(model.alias) · \(Int(minimum.rounded())) GB")
     }
 
     private var referenceControls: some View {
@@ -601,7 +601,7 @@ struct VideoView: View {
                 await loadReference(url)
             }
         } catch {
-            viewModel.errorMessage = "Rapid couldn't open that reference image."
+            viewModel.errorMessage = String(localized: "Rapid couldn't open that reference image.")
         }
     }
 
@@ -625,17 +625,17 @@ struct VideoView: View {
                   maximumPixels == viewModel.referenceMaximumPixels,
                   acceptedMIMETypes == viewModel.acceptedReferenceMIMETypes else { return }
             guard acceptedMIMETypes.contains(mime) else {
-                viewModel.errorMessage = "Choose a valid JPEG, PNG, or WebP image."
+                viewModel.errorMessage = String(localized: "Choose a valid JPEG, PNG, or WebP image.")
                 return
             }
             viewModel.setReference(.init(data: data, fileName: url.lastPathComponent, mimeType: mime))
             viewModel.errorMessage = nil
         } catch VideoReferenceLoaderError.tooLarge {
-            viewModel.errorMessage = "That reference image exceeds this model's size limit."
+            viewModel.errorMessage = String(localized: "That reference image exceeds this model's size limit.")
         } catch VideoReferenceLoaderError.unsupportedFormat {
-            viewModel.errorMessage = "Choose a valid JPEG, PNG, or WebP image."
+            viewModel.errorMessage = String(localized: "Choose a valid JPEG, PNG, or WebP image.")
         } catch {
-            viewModel.errorMessage = "Rapid couldn't open that reference image."
+            viewModel.errorMessage = String(localized: "Rapid couldn't open that reference image.")
         }
     }
 
@@ -653,7 +653,7 @@ struct VideoView: View {
                     try VideoPreviewSaver.save(source: source, destination: destination)
                 }.value
             } catch {
-                viewModel.errorMessage = "Rapid couldn't save the video to that location."
+                viewModel.errorMessage = String(localized: "Rapid couldn't save the video to that location.")
             }
         }
     }
@@ -669,10 +669,10 @@ struct VideoView: View {
 
     private func jobStatusLabel(_ status: VideoJobStatus) -> String {
         switch status {
-        case .queued: return "Queued"
-        case .inProgress: return "Generating"
-        case .completed: return "Ready"
-        case .failed: return "Failed"
+        case .queued: return String(localized: "Queued")
+        case .inProgress: return String(localized: "Generating")
+        case .completed: return String(localized: "Ready")
+        case .failed: return String(localized: "Failed")
         }
     }
 }
@@ -722,13 +722,13 @@ private struct VideoDeletionSheet: View {
     private var deletionMessage: String {
         switch job.status {
         case .queued:
-            return "The queued request will be removed before generation begins."
+            return String(localized: "The queued request will be removed before generation begins.")
         case .failed:
-            return "This failed request will be removed from recent videos."
+            return String(localized: "This failed request will be removed from recent videos.")
         case .completed:
-            return "The generated file will be removed from this Mac. This can't be undone."
+            return String(localized: "The generated file will be removed from this Mac. This can't be undone.")
         case .inProgress:
-            return "Generation can't be deleted while it is in progress."
+            return String(localized: "Generation can't be deleted while it is in progress.")
         }
     }
 }

@@ -29,15 +29,22 @@ struct SectionHeader: View {
         case group
     }
 
-    let title: String
-    var subtitle: String? = nil
+    /// Localized, not `String`: `Text(String)` renders verbatim and never
+    /// consults the catalog. A heading that arrives as a `String` therefore
+    /// stays English no matter how complete the translations are — which is
+    /// what the `zh-Hans` table did before these properties were typed as
+    /// keys. Callers holding a genuinely dynamic value (a folder name, a
+    /// version) pass `LocalizedStringKey(_:)`; a miss falls back to the value
+    /// itself, so those still render.
+    let title: LocalizedStringKey
+    var subtitle: LocalizedStringKey? = nil
     var emphasis: Emphasis = .group
     /// Trailing control (a "See all", a count, a toggle).
     var accessory: AnyView? = nil
 
     init(
-        _ title: String,
-        subtitle: String? = nil,
+        _ title: LocalizedStringKey,
+        subtitle: LocalizedStringKey? = nil,
         emphasis: Emphasis = .group
     ) {
         self.title = title
@@ -47,8 +54,8 @@ struct SectionHeader: View {
     }
 
     init<Accessory: View>(
-        _ title: String,
-        subtitle: String? = nil,
+        _ title: LocalizedStringKey,
+        subtitle: LocalizedStringKey? = nil,
         emphasis: Emphasis = .group,
         @ViewBuilder accessory: () -> Accessory
     ) {

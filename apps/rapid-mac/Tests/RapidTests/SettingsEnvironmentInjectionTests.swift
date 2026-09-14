@@ -64,6 +64,21 @@ struct SettingsEnvironmentInjectionTests {
         return ""
     }
 
+    /// The panels the Settings window renders, in both build configurations.
+    private var settingsPanelSources: [String] {
+        var panels = [
+            "Sources/Rapid/UI/SettingsView.swift",
+            "Sources/Rapid/UI/SettingsToolsPanel.swift",
+            "Sources/Rapid/UI/SettingsConnectorsPanel.swift",
+            "Sources/Rapid/UI/SettingsModelManagementPanel.swift",
+            "Sources/Rapid/UI/SettingsPerformancePanel.swift",
+        ]
+        #if DEBUG
+        panels.append("Sources/Rapid/UI/SettingsDeveloperPanel.swift")
+        #endif
+        return panels
+    }
+
     @Test("The Settings scene injects every observable its panels read")
     func settingsSceneProvidesEveryPanelDependency() throws {
         let app = try source("Sources/Rapid/RapidApp.swift")
@@ -86,19 +101,7 @@ struct SettingsEnvironmentInjectionTests {
             matches(#"\.environment\((\w+)\)"#, in: scene).compactMap { typeOfProperty[$0] }
         )
 
-        // Every Settings panel, including the debug-only one when present.
-        var panels = [
-            "Sources/Rapid/UI/SettingsView.swift",
-            "Sources/Rapid/UI/SettingsToolsPanel.swift",
-            "Sources/Rapid/UI/SettingsConnectorsPanel.swift",
-            "Sources/Rapid/UI/SettingsModelManagementPanel.swift",
-            "Sources/Rapid/UI/SettingsPerformancePanel.swift",
-        ]
-        #if DEBUG
-        panels.append("Sources/Rapid/UI/SettingsDeveloperPanel.swift")
-        #endif
-
-        for path in panels {
+        for path in settingsPanelSources {
             let required = Set(matches(#"@Environment\((\w+)\.self\)"#, in: try source(path)))
             for type in required.sorted() {
                 #expect(
@@ -107,6 +110,86 @@ struct SettingsEnvironmentInjectionTests {
                     \(path) reads \(type) from the environment, and the \
                     Settings scene in RapidApp.swift never injects it. SwiftUI \
                     traps — not warns — the first time that category is opened.
+                    """
+                )
+            }
+        }
+    }
+
+    /// ``DevSnapshot/settingsShell(category:size:)`` is the *second* hand-built
+    /// environment chain that renders the real `SettingsView`, for the
+    /// `RAPID_DEV_SNAPSHOT_DIR` capture run. It has to provide the same
+    /// observables the scene does, and nothing was checking that.
+    ///
+    /// That gap shipped: adding the language picker to Settings → Appearance
+    /// gave `SettingsView` a new `@Environment(LanguageConfig.self)`, the scene
+    /// got it and the harness did not — so the capture run died with
+    /// `EnvironmentValues.subscript.getter` in the backtrace and no type named,
+    /// after writing 149 of its 221 PNGs. The failure is silent in CI because
+    /// the harness only runs when `RAPID_DEV_SNAPSHOT_DIR` is set.
+    @Test("The dev snapshot harness injects every observable its panels read")
+    func snapshotHarnessProvidesEveryPanelDependency() throws {
+        let snapshot = try source("Sources/Rapid/DevSnapshot.swift")
+
+        // name → type, from the harness's own sources of observables:
+        //   `runIfRequested(… appearance: AppearanceConfig, …)`
+        //   `let snapshotMemory = MemoryStore(…)`
+        var typeOfName: [String: String] = [:]
+        if let open = snapshot.range(of: "runIfRequested(") {
+            let body = snapshot[open.upperBound...]
+            if let close = body.firstIndex(of: ")") {
+                for pair in matches(#"(\w+):\s*([A-Z]\w*)"#, in: String(body[..<close]), group: 0) {
+                    let name = matches(#"(\w+)\s*:"#, in: pair).first
+                    let type = matches(#":\s*([A-Z]\w*)"#, in: pair).first
+                    if let name, let type { typeOfName[name] = type }
+                }
+            }
+        }
+        for pair in matches(#"let\s+(\w+)\s*=\s*([A-Z]\w*)"#, in: snapshot, group: 0) {
+            let name = matches(#"let\s+(\w+)"#, in: pair).first
+            let type = matches(#"=\s*([A-Z]\w*)"#, in: pair).first
+            if let name, let type { typeOfName[name] = type }
+        }
+        #expect(!typeOfName.isEmpty, "the DevSnapshot observable scrape found nothing")
+
+        guard let anchor = snapshot.range(of: "func settingsShell(") else {
+            Issue.record("DevSnapshot no longer declares settingsShell(category:size:)")
+            return
+        }
+        guard let open = snapshot[anchor.upperBound...].firstIndex(of: "{") else { return }
+        var depth = 0
+        var index = open
+        var shell = ""
+        while index < snapshot.endIndex {
+            if snapshot[index] == "{" { depth += 1 }
+            if snapshot[index] == "}" {
+                depth -= 1
+                if depth == 0 { shell = String(snapshot[open...index]); break }
+            }
+            index = snapshot.index(after: index)
+        }
+        #expect(!shell.isEmpty, "could not slice the settingsShell body")
+
+        var injected = Set(
+            matches(#"\.environment\((\w+)\)"#, in: shell).compactMap { typeOfName[$0] }
+        )
+        // The one dotted form the harness uses: the chat view model owns the
+        // instruction store, and Settings reads it directly.
+        if shell.contains(".environment(chat.customInstructions)") {
+            injected.insert("CustomInstructionsConfig")
+        }
+
+        for path in settingsPanelSources {
+            let required = Set(matches(#"@Environment\((\w+)\.self\)"#, in: try source(path)))
+            for type in required.sorted() {
+                #expect(
+                    injected.contains(type),
+                    """
+                    \(path) reads \(type) from the environment, and \
+                    DevSnapshot.settingsShell never injects it. The \
+                    RAPID_DEV_SNAPSHOT_DIR capture run traps — not warns — the \
+                    first time it walks to that category, and CI never sees it \
+                    because the harness does not run there.
                     """
                 )
             }

@@ -255,7 +255,9 @@ struct SettingsModelManagementPanel: View {
                         .frame(width: RapidTheme.Layout.iconSlot)
                         .accessibilityHidden(true)
                     VStack(alignment: .leading, spacing: RapidTheme.Space.xxs) {
-                        Text(customFolderPath == nil ? "Default location" : "Custom folder")
+                        Text(customFolderPath == nil
+                            ? LocalizedStringKey("Default location")
+                            : LocalizedStringKey("Custom folder"))
                             .font(RapidFont.bodyEmphasis)
                             .foregroundStyle(RapidTheme.textPrimary)
                         Text(effectiveFolderDisplayPath)
@@ -432,7 +434,7 @@ struct SettingsModelManagementPanel: View {
     /// what's in the newly chosen folder.
     private func chooseModelsFolder() {
         let panel = NSOpenPanel()
-        panel.title = "Choose a models folder"
+        panel.title = String(localized: "Choose a models folder")
         panel.message = "Pick the folder where Rapid should keep downloaded models."
         panel.prompt = "Use Folder"
         panel.canChooseDirectories = true
@@ -489,7 +491,7 @@ struct SettingsModelManagementPanel: View {
                     if !query.isEmpty {
                         QuietIconButton(
                             symbol: "xmark.circle.fill",
-                            label: "Clear search",
+                            label: String(localized: "Clear search"),
                             size: RapidTheme.ControlHeight.mini
                         ) {
                             query = ""
@@ -702,7 +704,7 @@ struct SettingsModelManagementPanel: View {
             }
             parts.append(caveat)
         } else {
-            parts.append("\(pick.capabilityPct)% capability")
+            parts.append(String(localized: "\(pick.capabilityPct)% capability"))
             if let tps = pick.tokensPerSec {
                 parts.append("~\(Int(tps.rounded())) tok/s")
             }
@@ -985,8 +987,8 @@ struct SettingsModelManagementPanel: View {
                     // staying the same grey as the copy glyph beside it.
                     QuietIconButton(
                         symbol: "trash",
-                        label: "Delete \(entry.alias) from disk",
-                        help: "Delete from disk",
+                        label: String(localized: "Delete \(entry.alias) from disk"),
+                        help: String(localized: "Delete from disk"),
                         tint: RapidTheme.statusError,
                         size: RapidTheme.ControlHeight.mini
                     ) {
@@ -1019,8 +1021,8 @@ struct SettingsModelManagementPanel: View {
                     .minimumScaleFactor(ModelTableLayout.cellMinimumScaleFactor)
                 QuietIconButton(
                     symbol: "trash",
-                    label: "Stop serving and delete \(entry.alias) from disk",
-                    help: "Stop serving and delete this model from disk.",
+                    label: String(localized: "Stop serving and delete \(entry.alias) from disk"),
+                    help: String(localized: "Stop serving and delete this model from disk."),
                     tint: RapidTheme.statusError,
                     size: RapidTheme.ControlHeight.mini
                 ) {
@@ -1041,8 +1043,8 @@ struct SettingsModelManagementPanel: View {
                 }
                 QuietIconButton(
                     symbol: "arrow.down.circle",
-                    label: "Download \(entry.alias)",
-                    help: "Download",
+                    label: String(localized: "Download \(entry.alias)"),
+                    help: String(localized: "Download"),
                     size: RapidTheme.ControlHeight.mini,
                     symbolSize: 14
                 ) {
@@ -1126,14 +1128,14 @@ struct SettingsModelManagementPanel: View {
         if query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             switch filterMode {
             case .all:
-                return "No models found. Restart Rapid-MLX to try again."
+                return String(localized: "No models found. Restart Rapid-MLX to try again.")
             case .cached:
-                return "Nothing cached on disk yet. Pick a row from \"Not cached\" and hit Download."
+                return String(localized: "Nothing cached on disk yet. Pick a row from \"Not cached\" and hit Download.")
             case .notCached:
-                return "Every model in the catalog is already downloaded."
+                return String(localized: "Every model in the catalog is already downloaded.")
             }
         }
-        return "No matches for \"\(query)\"."
+        return String(localized: "No matches for \"\(query)\".")
     }
 
     @ViewBuilder
@@ -1238,7 +1240,9 @@ struct SettingsModelManagementPanel: View {
         case .notCached:
             pill(text: "Not cached", color: RapidTheme.statusIdle)
         case .downloading(let pct):
-            let label: String = {
+            // Localized here rather than at the chip: the percent is dynamic,
+            // so the sentence has to be assembled as a format string.
+            let label: LocalizedStringKey = {
                 if let pct {
                     return "Downloading… \(pct)%"
                 }
@@ -1251,7 +1255,10 @@ struct SettingsModelManagementPanel: View {
     }
 
     @ViewBuilder
-    private func pill(text: String, color: Color) -> some View {
+    /// `text` is a `LocalizedStringKey`: `Text(String)` renders verbatim, so the
+    /// status chips ("On disk", "In use", "Not cached", "Failed") never
+    /// translated while their type was `String`.
+    private func pill(text: LocalizedStringKey, color: Color) -> some View {
         Text(text)
             .font(RapidFont.caption)
             .foregroundStyle(color)

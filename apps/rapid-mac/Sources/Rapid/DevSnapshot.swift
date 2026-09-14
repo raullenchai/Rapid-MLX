@@ -22,6 +22,7 @@ enum DevSnapshot {
         updater: UpdateChecker,
         sampling: SamplingConfig,
         appearance: AppearanceConfig,
+        language: LanguageConfig,
         settingsRouter: SettingsRouter,
         installTracker: InstallTracker,
         quickstart: QuickstartCoordinator,
@@ -308,6 +309,7 @@ enum DevSnapshot {
                     .environment(updater)
                     .environment(sampling)
                     .environment(appearance)
+                    .environment(language)
                     .environment(settingsRouter)
                     .environment(CommandPaletteRequestCoordinator())
                     .environment(installTracker)
@@ -447,6 +449,7 @@ enum DevSnapshot {
                 .environment(updater)
                 .environment(sampling)
                 .environment(appearance)
+                .environment(language)
                 .environment(settingsRouter)
                 .environment(installTracker)
                 .environment(quickstart)
@@ -904,6 +907,9 @@ enum DevSnapshot {
                     .environment(chat.customInstructions)
                     .environment(snapshotMemory)
                     .environment(appearance)
+                    // ``SettingsView`` reads this for the language picker;
+                    // SwiftUI traps rather than warns when it is absent.
+                    .environment(language)
                     .environment(settingsRouter)
                     .environment(server)
                     .environment(snapshotShareCompute)
@@ -1662,10 +1668,10 @@ private struct SettingsControlProofSheet: View {
                         .accessibilityIdentifier("DevSnapshot.Specimen.SecondaryCompact")
                     Button("Destructive") {}.buttonStyle(.rapidDestructiveCompact)
                         .accessibilityIdentifier("DevSnapshot.Specimen.DestructiveCompact")
-                    QuietIconButton(symbol: "trash", label: "Delete",
+                    QuietIconButton(symbol: "trash", label: String(localized: "Delete"),
                                     tint: RapidTheme.statusError) {}
                         .accessibilityIdentifier("DevSnapshot.Specimen.Icon.Delete")
-                    QuietIconButton(symbol: "arrow.down.circle", label: "Download") {}
+                    QuietIconButton(symbol: "arrow.down.circle", label: String(localized: "Download")) {}
                         .accessibilityIdentifier("DevSnapshot.Specimen.Icon.Download")
                 }
                 HStack(spacing: RapidTheme.Space.sm) {

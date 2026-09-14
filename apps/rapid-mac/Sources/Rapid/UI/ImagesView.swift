@@ -19,10 +19,10 @@ enum ImageReadinessPresentation {
         var details: [String] = []
         if let size = entry.sizeOnDisk, !size.isEmpty { details.append(size) }
         if let memory = entry.minimumMemoryGB, memory.isFinite, memory > 0 {
-            details.append(String(format: "≥%.0f GB RAM", memory))
+            details.append(String(format: String(localized: "≥%.0f GB RAM"), memory))
         }
-        details.append("512² default")
-        details.append("\(entry.imageDefaultSteps ?? ImageGenViewModel.seedSteps(for: entry.alias)) steps")
+        details.append(String(localized: "512² default"))
+        details.append(String(localized: "\(entry.imageDefaultSteps ?? ImageGenViewModel.seedSteps(for: entry.alias)) steps"))
         if let runtime = runtimeName(entry.runtimeAdapter) { details.append(runtime) }
         return ([entry.alias] + details).joined(separator: " · ")
     }
@@ -263,7 +263,7 @@ struct ImagesView: View {
         if server.isResidentLoadInFlight(viewModel.selectedAlias) {
             return .starting(
                 alias: viewModel.selectedAlias,
-                detail: "Downloading or loading the image model…"
+                detail: String(localized: "Downloading or loading the image model…")
             )
         }
         return ModelReadiness.resolve(
@@ -459,10 +459,10 @@ struct ImagesView: View {
                             .monospacedDigit()
                         Spacer()
                         Text(finalizing
-                             ? "Decoding and saving…"
+                             ? String(localized: "Decoding and saving…")
                              : (denoising
                                 ? etaText(secondsRemaining: viewModel.denoiseETASeconds)
-                                : "First run — only happens once"))
+                                : String(localized: "First run — only happens once")))
                             .font(.system(size: 12, weight: .medium))
                             .foregroundStyle(RapidTheme.bandInkSecondary)
                             .accessibilityIdentifier("Images.Progress.ETA")
@@ -495,9 +495,9 @@ struct ImagesView: View {
 
     private func etaText(secondsRemaining: TimeInterval?) -> String {
         guard let secondsRemaining, secondsRemaining.isFinite, secondsRemaining > 0 else {
-            return "Estimating…"
+            return String(localized: "Estimating…")
         }
-        return "~\(max(1, Int(secondsRemaining.rounded())))s left"
+        return String(localized: "~\(max(1, Int(secondsRemaining.rounded())))s left")
     }
 
     // MARK: - Filmstrip
@@ -689,8 +689,8 @@ struct ImagesView: View {
     private var composerPlaceholder: String {
         guard readiness.isReady else { return readiness.composerPlaceholder }
         return viewModel.isEditing
-            ? "Describe what you want to change…"
-            : "Describe the image you want…"
+            ? String(localized: "Describe what you want to change…")
+            : String(localized: "Describe the image you want…")
     }
 
     private func editSourceBar(_ source: GeneratedImage) -> some View {
@@ -877,7 +877,7 @@ struct ImagesView: View {
                 Image(systemName: viewModel.isEditing ? "pencil.and.scribble" : "photo")
                     .foregroundStyle(.secondary)
                     .accessibilityHidden(true)
-                Text(viewModel.selectedAlias.isEmpty ? "Choose a model" : viewModel.selectedAlias)
+                Text(viewModel.selectedAlias.isEmpty ? String(localized: "Choose a model") : viewModel.selectedAlias)
                     .font(RapidFont.secondary)
                     .foregroundStyle(viewModel.selectedAlias.isEmpty ? .secondary : .primary)
                     .lineLimit(1)
@@ -915,11 +915,11 @@ struct ImagesView: View {
     }
 
     private var selectedModelHelp: String {
-        guard !viewModel.selectedAlias.isEmpty else { return "Choose a model" }
+        guard !viewModel.selectedAlias.isEmpty else { return String(localized: "Choose a model") }
         guard let entry = viewModel.imageModels.first(where: {
             $0.alias == viewModel.selectedAlias
-        }) else { return "Model: \(viewModel.selectedAlias)" }
-        return "Model: \(ImageReadinessPresentation.rowTitle(entry))"
+        }) else { return String(localized: "Model: \(viewModel.selectedAlias)") }
+        return String(localized: "Model: \(ImageReadinessPresentation.rowTitle(entry))")
     }
 
     /// Submit / stop, styled exactly like ChatView's send button: an amber
@@ -990,7 +990,7 @@ struct ImagesView: View {
             try image.pngData.write(to: url)
         } catch {
             // Don't let a disk-full / permission failure look like a success.
-            viewModel.errorMessage = "Couldn't save the image: \(error.localizedDescription)"
+            viewModel.errorMessage = String(localized: "Couldn't save the image: \(error.localizedDescription)")
         }
     }
 
@@ -1034,7 +1034,7 @@ struct ImagesView: View {
                     isEdit: false
                 ))
             } catch {
-                viewModel.errorMessage = "Couldn't import the image: \(error.localizedDescription)"
+                viewModel.errorMessage = String(localized: "Couldn't import the image: \(error.localizedDescription)")
             }
         }
     }
@@ -1048,10 +1048,10 @@ enum ImportedEditImageError: LocalizedError {
 
     var errorDescription: String? {
         switch self {
-        case .tooLarge: return "Choose an image smaller than 25 MB."
-        case .tooManyPixels: return "Choose an image no larger than 8192 px or 40 megapixels."
-        case .unsupportedType: return "Choose a PNG or JPEG image."
-        case .cannotDecode: return "The selected file isn't a readable image."
+        case .tooLarge: return String(localized: "Choose an image smaller than 25 MB.")
+        case .tooManyPixels: return String(localized: "Choose an image no larger than 8192 px or 40 megapixels.")
+        case .unsupportedType: return String(localized: "Choose a PNG or JPEG image.")
+        case .cannotDecode: return String(localized: "The selected file isn't a readable image.")
         }
     }
 }

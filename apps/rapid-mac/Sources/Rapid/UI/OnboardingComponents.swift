@@ -220,16 +220,16 @@ struct QuickstartRecommendedCard: View {
         // visual START HERE badge must not erase the capability trade-off that
         // this same row announces when it is an optional fallback.
         if choice.alias == QuickstartCoordinator.lowMemoryChoice.alias {
-            parts.append("Lowest memory")
+            parts.append(String(localized: "Lowest memory"))
         }
-        parts.append("recommended starter")
+        parts.append(String(localized: "recommended starter"))
         parts.append(choice.blurb)
         if isCached {
-            parts.append(sizeText.isEmpty ? "on disk" : "on disk \(sizeText)")
+            parts.append(sizeText.isEmpty ? String(localized: "on disk") : String(localized: "on disk \(sizeText)"))
         } else if !sizeText.isEmpty {
-            parts.append("download \(sizeText)")
+            parts.append(String(localized: "download \(sizeText)"))
         }
-        parts.append("on-device, fits this Mac")
+        parts.append(String(localized: "on-device, fits this Mac"))
         return parts.joined(separator: ". ")
     }
 }
@@ -290,11 +290,11 @@ struct QuickstartLowMemoryCard: View {
         sizeText: String,
         isCached: Bool = false
     ) -> String {
-        var text = "\(choice.displayName). Lowest memory. \(choice.blurb)"
+        var text = String(localized: "\(choice.displayName). Lowest memory. \(choice.blurb)")
         if isCached {
-            text += sizeText.isEmpty ? " On disk" : " On disk \(sizeText)"
+            text += sizeText.isEmpty ? String(localized: " On disk") : String(localized: " On disk \(sizeText)")
         } else if !sizeText.isEmpty {
-            text += " Download \(sizeText)"
+            text += String(localized: " Download \(sizeText)")
         }
         return text
     }
@@ -356,9 +356,9 @@ struct QuickstartCompactCard: View {
         var parts = [choice.displayName]
         if !choice.blurb.isEmpty { parts.append(choice.blurb) }
         if isCached {
-            parts.append(sizeText.isEmpty ? "on disk" : "on disk \(sizeText)")
+            parts.append(sizeText.isEmpty ? String(localized: "on disk") : String(localized: "on disk \(sizeText)"))
         } else if !sizeText.isEmpty {
-            parts.append("download \(sizeText)")
+            parts.append(String(localized: "download \(sizeText)"))
         }
         return parts.joined(separator: ". ")
     }
@@ -420,7 +420,10 @@ struct OnboardingCatalogRow: View {
                 HStack(spacing: 6) {
                     Spacer(minLength: 0)
                     ForEach(badges) { badge in
-                        OnboardingBadge(text: badge.text, tone: badge.tone)
+                        // The badge vocabulary is assembled by the catalogue
+                        // (`catalogRowBadges`), so it arrives resolved; wrapped
+                        // as a key it renders itself verbatim when unmatched.
+                        OnboardingBadge(text: LocalizedStringKey(badge.text), tone: badge.tone)
                     }
                 }
                 .frame(width: OnboardingD.rowBadgeSlot, alignment: .trailing)
@@ -473,6 +476,6 @@ struct OnboardingCatalogRow: View {
     private var accessibilityHint: String {
         isAvailable
             ? ""
-            : "Cannot run on this Mac. Opens a read-only explanation — nothing will be downloaded."
+            : String(localized: "Cannot run on this Mac. Opens a read-only explanation — nothing will be downloaded.")
     }
 }
