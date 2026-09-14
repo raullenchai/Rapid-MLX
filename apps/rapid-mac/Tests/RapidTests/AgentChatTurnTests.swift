@@ -1,0 +1,164 @@
+import Foundation
+import Testing
+@testable import Rapid
+
+@MainActor
+@Suite("Agent turns in Chat", .serialized)
+struct AgentChatTurnTests {
+    @Test("A completed agent run becomes an ordinary persisted chat turn")
+    func completionProjectsIntoTranscript() {
+        let store = FileManager.default.temporaryDirectory
+            .appendingPathComponent("rapid-agent-chat-\(UUID().uuidString).json")
+        defer { try? FileManager.default.removeItem(at: store) }
+        var delivered: [ProductValueKind] = []
+        let model = ChatViewModel(
+            conversationStoreURL: store,
+            onProductValueDelivered: { delivered.append($0) }
+        )
+
+        #expect(model.beginAgentTurn("Organize my notes", alias: "minicpm5-2b") {})
+        #expect(model.isStreaming)
+        #expect(model.hasActiveAgentTurn)
+        #expect(model.messages.map(\.role) == [.user, .assistant])
+        #expect(model.messages.last?.status == .streaming)
+
+        model.completeAgentTurn("Three notes organized.")
+
+        #expect(!model.isStreaming)
+        #expect(!model.hasActiveAgentTurn)
+        #expect(model.messages.last?.content == "Three notes organized.")
+        #expect(model.messages.last?.status == .complete)
+        #expect(delivered == [.chatReply])
+
+        ConversationStore.flush()
+        let restored = ChatViewModel(conversationStoreURL: store)
+        #expect(restored.conversations.first?.messages.last?.content == "Three notes organized.")
+        #expect(restored.conversations.first?.messages.last?.status == .complete)
+    }
+
+    @Test("Chat Stop cancels and finalizes the server-owned turn")
+    func stopUsesSharedLifecycle() {
+        var cancellationCount = 0
+        let model = ChatViewModel(persistsConversations: false)
+        #expect(model.beginAgentTurn("Search locally", alias: "minicpm5-2b") {
+            cancellationCount += 1
+        })
+
+        model.stop()
+
+        #expect(cancellationCount == 1)
+        #expect(!model.isStreaming)
+        #expect(model.messages.last?.status == .complete)
+        #expect(model.messages.last?.content.isEmpty == true)
+        #expect(model.messages.last?.errorMessage == "Stopped.")
+    }
+
+    @Test("A server cancellation finalizes locally without echoing cancel")
+    func serverCancellationDoesNotEcho() {
+        var cancellationCount = 0
+        let model = ChatViewModel(persistsConversations: false)
+        #expect(model.beginAgentTurn("Search locally", alias: "minicpm5-2b") {
+            cancellationCount += 1
+        })
+
+        model.cancelAgentTurnFromServer()
+
+        #expect(cancellationCount == 0)
+        #expect(!model.isStreaming)
+        #expect(model.messages.last?.status == .complete)
+        #expect(model.messages.last?.errorMessage == "Stopped.")
+    }
+
+    @Test("A late completion cannot overwrite a stopped turn")
+    func lateCompletionAfterStopIsIgnored() {
+        var delivered: [ProductValueKind] = []
+        let model = ChatViewModel(
+            persistsConversations: false,
+            onProductValueDelivered: { delivered.append($0) }
+        )
+        #expect(model.beginAgentTurn("Search locally", alias: "minicpm5-2b") {})
+
+        model.stop()
+        model.completeAgentTurn("Too late")
+
+        #expect(model.messages.last?.content.isEmpty == true)
+        #expect(model.messages.last?.errorMessage == "Stopped.")
+        #expect(delivered.isEmpty)
+    }
+
+    @Test("Starting a new conversation cannot strand an agent placeholder")
+    func conversationTransitionCancelsAgent() {
+        var cancellationCount = 0
+        let model = ChatViewModel(persistsConversations: false)
+        #expect(model.beginAgentTurn("Prepare a report", alias: "minicpm5-2b") {
+            cancellationCount += 1
+        })
+        let previousConversation = model.activeConversationID
+
+        model.newConversation()
+
+        #expect(cancellationCount == 1)
+        #expect(model.activeConversationID != previousConversation)
+        #expect(model.messages.isEmpty)
+        #expect(!model.isStreaming)
+    }
+
+    @Test("A runtime failure is attributed to the agent model")
+    func failureProjectsIntoTranscript() {
+        let model = ChatViewModel(persistsConversations: false)
+        #expect(model.beginAgentTurn("Do the task", alias: "minicpm5-2b") {})
+
+        model.failAgentTurn("The local tool became unavailable.")
+
+        #expect(model.messages.last?.status == .failed)
+        #expect(model.messages.last?.content == "The local tool became unavailable.")
+        #expect(model.lastError == "The local tool became unavailable.")
+        #expect(model.lastFailureKind == .requestFailed)
+        #expect(model.lastFailureAlias == "minicpm5-2b")
+    }
+
+    @Test("Approval presentation uses only the bounded redacted summary")
+    func approvalPresentationIsRedactedAndBounded() throws {
+        let longToolName = "notes__" + String(repeating: "x", count: 80)
+        let longKey = "a" + String(repeating: "k", count: 45)
+        let longValue = String(repeating: "v", count: 130)
+        let payload: [String: Any] = [
+            "call_id": "call-1",
+            "name": longToolName,
+            "arguments": ["secret": "must-not-appear"],
+            "approval_summary": [
+                longKey: longValue,
+                "beta": ["nested": "summary-only"],
+                "delta": [1, 2],
+                "epsilon": 1.2349,
+                "gamma": "omitted-secret",
+                "path": "also-omitted",
+            ],
+            "risk": "local_change",
+            "approval_required": true,
+        ]
+        let data = try JSONSerialization.data(withJSONObject: payload)
+        let action = try JSONDecoder().decode(AgentPendingAction.self, from: data)
+
+        let title = AgentApprovalPresentation.title(for: action)
+        let message = AgentApprovalPresentation.message(for: action)
+        let expectedTool = String(
+            ("notes · " + String(repeating: "x", count: 80)).prefix(72)
+        ) + "…"
+        let expectedKey = String(longKey.prefix(40)) + "…"
+        let expectedValue = String(longValue.prefix(120)) + "…"
+
+        #expect(title == "Allow \(expectedTool)?")
+        #expect(message == """
+        This action will change something on this Mac.
+        \(expectedKey): \(expectedValue)
+        beta: 1 fields
+        delta: 2 items
+        epsilon: 1.2349
+        …and 2 more details
+        """)
+        #expect(!message.contains("must-not-appear"))
+        #expect(!message.contains("omitted-secret"))
+        #expect(!message.contains("also-omitted"))
+    }
+}

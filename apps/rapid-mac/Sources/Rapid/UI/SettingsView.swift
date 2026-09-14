@@ -56,6 +56,8 @@ struct SettingsView: View {
     private var communityBenchmarkEnabled = CommunityBenchmarkFeatureConfig.defaultEnabled
     @AppStorage(ShareComputeFeatureConfig.enabledKey)
     private var shareComputeEnabled = ShareComputeFeatureConfig.defaultEnabled
+    @AppStorage(AgentRuntimeFeatureConfig.enabledKey)
+    private var agentRuntimeEnabled = AgentRuntimeFeatureConfig.defaultEnabled
 
     /// Stable reference shared by the sidebar and detail canvas. Keeping the
     /// frequently-mutated category outside this large view's value state means
@@ -561,6 +563,15 @@ struct SettingsView: View {
                 .onChange(of: shareComputeEnabled) { _, enabled in
                     if !enabled { shareCompute.leave() }
                 }
+                SettingsRowDivider()
+                Toggle(isOn: $agentRuntimeEnabled) {
+                    SettingsRowLabel(
+                        title: "Enable Agent Mode",
+                        description: "Adds an explicit Agent option in Chat for bounded tool-using tasks. Rapid shows progress and asks before consequential actions; ordinary chat remains the default."
+                    )
+                }
+                .toggleStyle(TrailingSettingsToggleStyle())
+                .accessibilityIdentifier("Settings.Experimental.AgentRuntimeToggle")
                 SettingsRowDivider()
                 Toggle(isOn: $mcpConfig.isEnabled) {
                     SettingsRowLabel(

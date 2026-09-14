@@ -259,6 +259,11 @@ struct ChatView: View {
     @Environment(DownloadManager.self) private var downloads
     @Environment(QuickstartCoordinator.self) private var quickstart
 
+    @AppStorage(AgentRuntimeFeatureConfig.enabledKey)
+    private var agentRuntimeEnabled = AgentRuntimeFeatureConfig.defaultEnabled
+    @State private var agentSession = AgentSessionController()
+    @State private var agentModeEnabled = false
+    @State private var showsAgentApproval = false
     @State private var draft: String = ""
     @State private var attachmentDrafts = ChatAttachmentDraftStore()
     /// A rejected photo is a capability explanation, not an attachment
@@ -377,6 +382,32 @@ struct ChatView: View {
             photoCapabilityNotice.reconcile(with: availability)
         }
         .onChange(of: draft) { _, _ in photoCapabilityNotice.dismiss() }
+        .onChange(of: agentSession.phase) { _, phase in
+            reconcileAgentPhase(phase)
+        }
+        .onChange(of: agentRuntimeEnabled) { _, enabled in
+            guard !enabled else { return }
+            agentModeEnabled = false
+            stopAgentIfNeeded()
+        }
+        .onDisappear {
+            stopAgentIfNeeded()
+        }
+        .alert(
+            agentApprovalTitle,
+            isPresented: $showsAgentApproval
+        ) {
+            Button("Don't Allow", role: .cancel) {
+                agentSession.resolvePendingApproval(approved: false)
+            }
+            .accessibilityIdentifier("ChatView.AgentApprovalDeny")
+            Button("Allow") {
+                agentSession.resolvePendingApproval(approved: true)
+            }
+            .accessibilityIdentifier("ChatView.AgentApprovalAllow")
+        } message: {
+            Text(agentApprovalMessage)
+        }
     }
 
     // MARK: - Transcript
@@ -766,7 +797,12 @@ struct ChatView: View {
             // the same fact twice. Once the model is ready the slot
             // reverts to turn-level errors (a 500 from a healthy server),
             // which readiness has no opinion about.
-            if !readiness.isReady && !showsLifecycleBand {
+            if agentSession.isActive, let progress = agentSession.progressText {
+                InlineNotice(message: progress, tone: .info)
+                    .frame(maxWidth: contentMaxWidth)
+                    .frame(maxWidth: .infinity)
+                    .accessibilityIdentifier("ChatView.AgentProgress")
+            } else if !readiness.isReady && !showsLifecycleBand {
                 // Suppressed while the band is open. The band renders the
                 // same ``ModelReadiness`` — same headline, same detail,
                 // same fraction — so leaving the banner here as well
@@ -878,7 +914,9 @@ struct ChatView: View {
                     .background(Circle().fill(Color.primary.opacity(0.06)))
             }
             .buttonStyle(.plain)
-            .disabled(viewModel.isStreaming || attachmentDraft.isImportingFiles)
+            .disabled(
+                viewModel.isStreaming || attachmentDraft.isImportingFiles || agentModeEnabled
+            )
             .help("Add photos or files")
             .accessibilityLabel("Add attachments")
             .accessibilityIdentifier("ChatView.AddAttachments")
@@ -963,6 +1001,42 @@ struct ChatView: View {
                     onCancel: { showsConversationInstructions = false }
                 )
                 .id(viewModel.activeConversationID)
+            }
+            if agentRuntimeEnabled {
+                Button {
+                    if !agentModeEnabled, attachmentDraft.hasAttachments {
+                        attachmentDraft.notice = "Remove attachments before turning on Agent mode."
+                    } else {
+                        agentModeEnabled.toggle()
+                        attachmentDraft.notice = nil
+                    }
+                } label: {
+                    HStack(spacing: 5) {
+                        Image(systemName: "sparkles")
+                        Text("Agent")
+                    }
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(
+                        agentModeEnabled ? RapidTheme.onBrandPrimary : Color.secondary
+                    )
+                    .padding(.horizontal, 9)
+                    .frame(height: 28)
+                    .background(
+                        Capsule().fill(
+                            agentModeEnabled ? RapidTheme.brandPrimary : Color.primary.opacity(0.06)
+                        )
+                    )
+                }
+                .buttonStyle(.plain)
+                .disabled(viewModel.isStreaming || attachmentDraft.isImportingFiles)
+                .help(
+                    agentModeEnabled
+                        ? "Agent mode is on"
+                        : "Use bounded tools and ask before consequential actions"
+                )
+                .accessibilityLabel("Agent mode")
+                .accessibilityValue(agentModeEnabled ? "On" : "Off")
+                .accessibilityIdentifier("ChatView.AgentModeToggle")
             }
             Spacer(minLength: 0)
             if let speculativeAvailability {
@@ -1065,6 +1139,7 @@ struct ChatView: View {
     private var sendEnabled: Bool {
         hasDraft && readiness.sendAllowed && !attachmentDraft.isImportingFiles
             && (attachmentDraft.images.isEmpty || supportsImageInput)
+            && (!agentModeEnabled || !attachmentDraft.hasAttachments)
     }
 
     private var hasDraft: Bool {
@@ -1095,7 +1170,17 @@ struct ChatView: View {
         // flashes and VoiceOver speaks the same sentence the Send
         // tooltip carries.
         guard acknowledgeIfNotReady() else { return }
+        if agentModeEnabled, attachmentDraft.hasAttachments {
+            attachmentDraft.notice = "Agent mode currently supports text-only tasks. Remove the attachments or turn Agent off."
+            return
+        }
         photoCapabilityNotice.dismiss()
+        if agentModeEnabled {
+            guard startAgentTurn(text) else { return }
+            draft = ""
+            composeFocusToken &+= 1
+            return
+        }
         draft = ""
         let submission = attachmentDraft.takeSubmission()
         composeFocusToken &+= 1
@@ -1106,6 +1191,77 @@ struct ChatView: View {
             imageAttachments: submission.images,
             fileAttachments: submission.files
         )
+    }
+
+    @discardableResult
+    private func startAgentTurn(_ text: String) -> Bool {
+        guard !attachmentDraft.hasAttachments else {
+            attachmentDraft.notice = "Agent mode currently supports text-only tasks. Remove the attachments or turn Agent off."
+            return false
+        }
+        let goal = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !goal.isEmpty else { return false }
+        let session = agentSession
+        guard viewModel.beginAgentTurn(goal, alias: alias, onCancel: {
+            session.cancel()
+        }) else { return false }
+        session.start(
+            goal: goal,
+            model: alias,
+            baseURL: ChatStreamClient.loopbackURL(port: server.activePort),
+            bearerToken: server.activeBearer
+        )
+        return true
+    }
+
+    private func stopAgentIfNeeded() {
+        if viewModel.hasActiveAgentTurn {
+            // Preserve a terminal result that arrived just before SwiftUI's
+            // phase observer. Otherwise cancel the still-live server run and
+            // finalize Chat's placeholder through the shared Stop contract.
+            switch agentSession.phase {
+            case .completed, .failed, .cancelled:
+                reconcileAgentPhase(agentSession.phase)
+            case .idle, .starting, .running, .awaitingApproval:
+                viewModel.stop()
+            }
+        } else if agentSession.isActive {
+            // Defensive reconciliation for an observer that started before its
+            // transcript projection could be committed.
+            agentSession.cancel()
+        }
+    }
+
+    private var agentApprovalTitle: String {
+        guard let action = agentSession.pendingApproval else { return "Allow agent action?" }
+        return AgentApprovalPresentation.title(for: action)
+    }
+
+    private var agentApprovalMessage: String {
+        guard let action = agentSession.pendingApproval else {
+            return "Review this action before it runs."
+        }
+        return AgentApprovalPresentation.message(for: action)
+    }
+
+    private func reconcileAgentPhase(_ phase: AgentSessionController.Phase) {
+        switch phase {
+        case .awaitingApproval:
+            showsAgentApproval = true
+        case .completed:
+            showsAgentApproval = false
+            viewModel.completeAgentTurn(agentSession.run?.output ?? "")
+        case .failed:
+            showsAgentApproval = false
+            viewModel.failAgentTurn(
+                agentSession.errorMessage ?? "The agent task could not be completed."
+            )
+        case .cancelled:
+            showsAgentApproval = false
+            viewModel.cancelAgentTurnFromServer()
+        case .idle, .starting, .running:
+            showsAgentApproval = false
+        }
     }
 
     /// Send a suggestion chip's question.
@@ -1125,7 +1281,11 @@ struct ChatView: View {
         guard acknowledgeIfNotReady() else { return }
         photoCapabilityNotice.dismiss()
         composeFocusToken &+= 1
-        viewModel.send(text, alias: alias, supportsImageInput: supportsImageInput)
+        if agentModeEnabled {
+            _ = startAgentTurn(text)
+        } else {
+            viewModel.send(text, alias: alias, supportsImageInput: supportsImageInput)
+        }
     }
 
     private var attachmentStrip: some View {
@@ -1226,6 +1386,10 @@ struct ChatView: View {
 
     @discardableResult
     private func addAttachmentURLs(_ urls: [URL]) -> Bool {
+        guard !agentModeEnabled else {
+            attachmentDraft.notice = "Agent mode currently supports text-only tasks. Turn Agent off to attach files or photos."
+            return false
+        }
         guard !attachmentDraft.isImportingFiles else { return false }
         photoCapabilityNotice.dismiss()
         // Filter before splitting, so images and documents get the same
@@ -1442,6 +1606,10 @@ struct ChatView: View {
         }
         let pastedImage = NSImage(pasteboard: pasteboard)
         guard !urls.isEmpty || pastedImage != nil else { return false }
+        guard !agentModeEnabled else {
+            attachmentDraft.notice = "Agent mode currently supports text-only tasks. Turn Agent off to attach files or photos."
+            return true
+        }
         if !urls.isEmpty {
             _ = addAttachmentURLs(urls)
         } else if let image = pastedImage,
