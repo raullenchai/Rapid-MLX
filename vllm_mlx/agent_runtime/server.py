@@ -866,7 +866,14 @@ class AgentServerService:
                     "tool result does not match the pending action"
                 )
             result = AgentToolResult(
-                **request.model_dump(),
+                call_id=request.call_id,
+                content=(
+                    request.content
+                    if request.executed
+                    else "Client tool was not executed."
+                ),
+                is_error=request.is_error or not request.executed,
+                executed=request.executed,
                 safe_summary=(
                     "Client tool was not executed."
                     if not request.executed

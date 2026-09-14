@@ -271,6 +271,13 @@ async def test_client_mode_releases_call_then_accepts_one_matching_result():
     done = await wait_for_status(service, created.id, AgentRunStatus.COMPLETED)
 
     assert done.output == "Client result used."
+    tool_message = next(
+        message
+        for message in service._entry(done.id).messages
+        if message["role"] == "tool"
+    )
+    assert tool_message["content"].startswith("Client tool was not executed.")
+    assert "client secret result" not in tool_message["content"]
     event_json = (await service.events(done.id)).model_dump_json()
     assert "client secret result" not in event_json
     assert "Client tool was not executed." in event_json
@@ -886,7 +893,8 @@ async def test_cancel_after_dispatched_tool_exception_records_outcome_then_cance
     ]
     assert events[-2].data["result"]["executed"] is True
     assert (
-        "private transport detail" not in (await service.events(created.id)).model_dump_json()
+        "private transport detail"
+        not in (await service.events(created.id)).model_dump_json()
     )
 
 
