@@ -158,18 +158,32 @@ class StateCheckpoints:
 def _recurrent_cache_types() -> tuple[type, ...]:
     """The cache classes whose ``cache`` list this module knows how to
     checkpoint and restore: mlx-lm's ``ArraysCache`` (and subclasses such as
-    the Mamba/GatedDeltaNet state caches). Positive identification only —
+    the Mamba/GatedDeltaNet state caches) plus mlx-vlm's. Positive identification only —
     a look-alike wrapper with a ``cache`` attribute is NOT accepted, so the
     fetch path keeps refusing it instead of restoring a shallow copy of
     state it does not understand."""
     global _RECURRENT_TYPES
     if _RECURRENT_TYPES is None:
+        types: list[type] = []
         try:
             from mlx_lm.models.cache import ArraysCache
 
-            _RECURRENT_TYPES = (ArraysCache,)
+            types.append(ArraysCache)
         except Exception:
-            _RECURRENT_TYPES = ()
+            pass
+        # mlx-vlm ships its own ``ArraysCache`` (same ``cache`` list contract,
+        # plus ``left_padding`` / ``lengths`` bookkeeping) and every hybrid
+        # VLM (Qwen3.5 4B/9B) builds its prompt cache from it. The MLLM lane
+        # stores those entries through mlx-vlm's exact APC, so they must be
+        # recognised here for its checkpoints to record and restore.
+        try:
+            from mlx_vlm.models.cache import ArraysCache as VLMArraysCache
+
+            if VLMArraysCache not in types:
+                types.append(VLMArraysCache)
+        except Exception:
+            pass
+        _RECURRENT_TYPES = tuple(types)
     return _RECURRENT_TYPES
 
 

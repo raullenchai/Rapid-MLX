@@ -259,8 +259,29 @@ class TestGuards:
 
         monkeypatch.setattr(hsc, "_RECURRENT_TYPES", None)
         monkeypatch.setitem(sys.modules, "mlx_lm.models.cache", None)
+        monkeypatch.setitem(sys.modules, "mlx_vlm.models.cache", None)
         assert hsc._recurrent_cache_types() == ()
         assert not hsc.is_recurrent_layer(_RecurrentLayer(0))
+
+    def test_mlx_vlm_arrays_cache_is_recurrent(self, monkeypatch):
+        """The MLLM lane stores mlx-vlm's own ``ArraysCache`` through its
+        exact APC; checkpoints must record and restore on that class too."""
+        vlm_cache = pytest.importorskip("mlx_vlm.models.cache")
+        from vllm_mlx import hybrid_state_checkpoints as hsc
+
+        monkeypatch.setattr(hsc, "_RECURRENT_TYPES", None)
+        layer = vlm_cache.ArraysCache(2)
+        layer.cache = [_Array(0, (1, 4)), _Array(1, (1, 4))]
+        assert hsc.is_recurrent_layer(layer)
+        holders = [None]
+        assert record_checkpoints([layer], holders, 8, max_count=2, stride=1)
+        layer.cache = [_Array(2, (1, 4)), _Array(3, (1, 4))]
+        attach_checkpoints([layer], holders)
+        restored = restore_recurrent_layer(layer, 8)
+        assert restored is not None
+        assert [a.tag for a in restored.cache] == [0, 1]
+        assert restored.left_padding is None
+        assert layer.cache[0].tag == 2
 
     def test_attach_ignores_misaligned_holders(self):
         cache = _cache(0)

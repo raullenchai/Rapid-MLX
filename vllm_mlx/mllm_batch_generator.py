@@ -16,9 +16,12 @@ Architecture:
 3. Language model generation is batched using BatchKVCache (like LLM batching)
 """
 
+import copy
 import inspect
 import logging
+import os
 import time
+from collections import OrderedDict
 from collections.abc import Callable
 from contextlib import contextmanager
 from dataclasses import dataclass, field
@@ -38,6 +41,15 @@ _mlx_compat.install()
 
 from mlx_lm.sample_utils import make_logits_processors, make_sampler  # noqa: E402
 
+from .hybrid_state_checkpoints import (  # noqa: E402
+    achievable_position,
+    attach_checkpoints,
+    checkpoint_bytes,
+    collect_checkpoints,
+    is_recurrent_layer,
+    record_checkpoints,
+    restore_recurrent_layer,
+)
 from .mllm_cache_compat import first_incompatible_mllm_cache_type  # noqa: E402
 from .multimodal_processor import MultimodalProcessor  # noqa: E402
 from .request import ClientRequestError  # noqa: E402
@@ -172,6 +184,14 @@ def _vision_pixel_ceiling(
 # single-shot) with no throughput cost — it is also mlx-lm's own text-lane
 # default (``generate_step``/``PromptProcessingBatch`` prefill_step_size).
 _MLLM_PREFILL_CHUNK_TOKENS = 2048
+
+# How many exact hybrid snapshots mlx-vlm's APC keeps in memory for the MLLM
+# lane when ``APC_EXACT_CACHE_ENTRIES`` is unset. mlx-vlm's own default is 2,
+# which a desktop conversation blows through in one turn (boundary snapshot +
+# a title/summary side request); the text lane keeps 8 hybrid entries for the
+# same reason (``cli._resolve_hybrid_cache_entries``). Entries are also bound
+# by the shared prefix-cache byte budget (``MemoryCacheConfig``).
+_MLLM_EXACT_CACHE_ENTRIES_DEFAULT = 8
 
 
 def _model_supports_vision_feature_cache(model: nn.Module) -> bool:
@@ -359,6 +379,12 @@ class MLLMBatchRequest:
     # message-aware template probe used by the text scheduler. Exact hybrid
     # snapshots are captured here, before the transient generation suffix.
     prefix_boundary: int = 0
+    # Per-layer recurrent-state checkpoint holders (aligned with the prompt
+    # cache) recorded during this request's chunked text prefill, or seeded
+    # from the exact snapshot it resumed from. Attached to the boundary
+    # snapshot so a later prompt that diverges inside the stored prefix can
+    # resume at the newest checkpoint below the divergence.
+    hybrid_checkpoints: list[Any] | None = None
 
     # Vision state (populated after initial VLM forward pass)
     vision_encoded: bool = False
@@ -669,7 +695,9 @@ class MLLMBatchGenerator:
         # APC's conservative exact-snapshot mode: recurrent state resumes only
         # at a stored token boundary and is never trimmed. Block storage is not
         # used by this path, so keep that pool empty while APC owns the bounded
-        # exact LRU (APC_EXACT_CACHE_ENTRIES, default 2).
+        # exact LRU (APC_EXACT_CACHE_ENTRIES, default
+        # ``_MLLM_EXACT_CACHE_ENTRIES_DEFAULT`` here) under the shared
+        # prefix-cache byte budget.
         self._prefix_cache = None
         self._prefix_cache_mode: str | None = None
         self._prefix_cache_extra_hash = 0
@@ -677,6 +705,8 @@ class MLLMBatchGenerator:
         self._prefix_cache_misses = 0
         self._prefix_cache_evictions_offset = 0
         self._prefix_cache_tokens_saved = 0
+        self._prefix_cache_max_bytes = 0
+        self._prefix_cache_budget_evictions = 0
         if enable_prefix_cache:
             try:
                 from mlx_vlm import apc as _apc
@@ -687,6 +717,7 @@ class MLLMBatchGenerator:
                         overrides={"enabled": True, "num_blocks": 0}
                     )
                     self._prefix_cache_mode = mode
+                    self._configure_exact_cache_capacity(self._prefix_cache)
                     self._prefix_cache_extra_hash = _apc.semantic_extra_hash(
                         model=self.model,
                         processor=self.processor,
@@ -891,15 +922,36 @@ class MLLMBatchGenerator:
             self._prefix_cache_misses += 1
             return None
 
+        extra_hash = getattr(self, "_prefix_cache_extra_hash", 0)
         warm_cache, prefix_len = cache.lookup_exact_cache(
             full_ids,
-            extra_hash=getattr(self, "_prefix_cache_extra_hash", 0),
+            extra_hash=extra_hash,
         )
+        how = "HIT"
+        holders: list[Any] | None = None
         if warm_cache is None or not 0 < prefix_len < len(full_ids):
+            warm_cache, prefix_len = None, 0
+        else:
+            holders = self._stored_entry_checkpoints(
+                cache, full_ids[:prefix_len], extra_hash
+            )
+        # A stored entry that shares a longer prefix than any exact match but
+        # then diverges (an edited document, a follow-up after the LRU dropped
+        # the conversation's own boundary) can still be resumed at its newest
+        # recurrent-state checkpoint below the divergence.
+        min_tokens = int(getattr(cache, "exact_cache_min_tokens", 1) or 1)
+        snapped = self._snap_exact_text_prefix(
+            cache, full_ids, extra_hash, min_position=max(prefix_len, min_tokens)
+        )
+        if snapped is not None:
+            warm_cache, prefix_len, holders = snapped
+            how = "SNAP"
+        if warm_cache is None:
             self._prefix_cache_misses += 1
             return None
 
         request.cached_tokens = int(prefix_len)
+        request.hybrid_checkpoints = holders
         self._prefix_cache_hits += 1
         self._prefix_cache_tokens_saved += int(prefix_len)
         if request.input_ids.ndim == 1:
@@ -911,8 +963,9 @@ class MLLMBatchGenerator:
         # causal mask from the restored cache length instead.
         request.attention_mask = None
         logger.info(
-            "[mllm_apc] request=%s HIT prompt_tokens=%d cached=%d remaining=%d",
+            "[mllm_apc] request=%s %s prompt_tokens=%d cached=%d remaining=%d",
             request.request_id[:12],
+            how,
             len(full_ids),
             prefix_len,
             len(full_ids) - prefix_len,
@@ -939,11 +992,315 @@ class MLLMBatchGenerator:
         # cache entry synchronously before returning.  The live request cache
         # can therefore continue prefill/generation without moving this stored
         # boundary snapshot forward.
-        cache.store_exact_cache(
-            request.full_prompt_token_ids[:prefix_len],
-            prompt_cache,
-            extra_hash=getattr(self, "_prefix_cache_extra_hash", 0),
+        token_ids = request.full_prompt_token_ids[:prefix_len]
+        extra_hash = getattr(self, "_prefix_cache_extra_hash", 0)
+        if not cache.store_exact_cache(token_ids, prompt_cache, extra_hash=extra_hash):
+            return
+        self._attach_stored_checkpoints(
+            cache,
+            token_ids,
+            request.hybrid_checkpoints,
+            extra_hash=extra_hash,
+            prefix_len=prefix_len,
         )
+        self._enforce_exact_cache_budget(cache)
+
+    # -- recurrent-state checkpoints on exact snapshots -----------------------
+    #
+    # mlx-vlm's exact APC resumes a hybrid (GatedDeltaNet) prompt only at the
+    # precise length a snapshot was stored at. The text lane already records
+    # the recurrent state at prefill chunk boundaries and snaps a divergent
+    # prompt to the newest checkpoint below the divergence
+    # (``hybrid_state_checkpoints`` / ``memory_cache._snap_hybrid_trim``).
+    # The MLLM lane owns its chunked text prefill, so it records the same
+    # checkpoints there, attaches them to the snapshot mlx-vlm stores, and
+    # scans mlx-vlm's in-memory entries for the longest resumable prefix when
+    # the exact lookup falls short.
+
+    @staticmethod
+    def _resolve_exact_cache_entries() -> int:
+        raw = os.environ.get("APC_EXACT_CACHE_ENTRIES")
+        if raw is not None and raw.strip():
+            try:
+                return max(0, int(raw))
+            except ValueError:
+                logger.warning(
+                    "APC_EXACT_CACHE_ENTRIES=%r is not an integer; using %d",
+                    raw,
+                    _MLLM_EXACT_CACHE_ENTRIES_DEFAULT,
+                )
+        return _MLLM_EXACT_CACHE_ENTRIES_DEFAULT
+
+    def _configure_exact_cache_capacity(self, cache: Any) -> None:
+        """Raise mlx-vlm's exact-entry LRU to the lane default and adopt the
+        engine-wide prefix-cache byte budget for those entries.
+
+        The larger entry count is only safe under a byte budget: when none
+        can be computed (or the manager does not expose the store the budget
+        walks), mlx-vlm's own capacity is kept unless the operator asked for
+        a count explicitly via ``APC_EXACT_CACHE_ENTRIES``."""
+        try:
+            from .memory_cache import MemoryCacheConfig
+
+            self._prefix_cache_max_bytes = max(
+                0, int(MemoryCacheConfig().compute_memory_limit())
+            )
+        except Exception as exc:
+            logger.warning("[mllm_apc] no byte budget for exact entries: %s", exc)
+            self._prefix_cache_max_bytes = 0
+        if self._exact_entries(cache) is None:
+            logger.warning(
+                "[mllm_apc] %s does not expose mlx-vlm's exact entry store; "
+                "checkpoint resume and the byte budget are disabled",
+                type(cache).__name__,
+            )
+        explicit = (os.environ.get("APC_EXACT_CACHE_ENTRIES") or "").strip()
+        budgeted = self._prefix_cache_max_bytes > 0 and (
+            self._exact_entries(cache) is not None
+        )
+        if not hasattr(cache, "_exact_cache_max"):
+            logger.debug(
+                "[mllm_apc] manager has no _exact_cache_max; keeping its default"
+            )
+            return
+        if budgeted or explicit:
+            cache._exact_cache_max = self._resolve_exact_cache_entries()
+        logger.info(
+            "MLLMBatchGenerator: exact prefix cache keeps up to %d entries within %.1f GB",
+            int(cache._exact_cache_max),
+            self._prefix_cache_max_bytes / (1 << 30),
+        )
+
+    @staticmethod
+    def _exact_entries(cache: Any) -> tuple[Any, OrderedDict[Any, Any]] | None:
+        """mlx-vlm's ``(lock, in-memory exact entries)``; None for other managers."""
+        entries = getattr(cache, "_exact_cache", None)
+        lock = getattr(cache, "lock", None)
+        if not isinstance(entries, OrderedDict) or lock is None:
+            return None
+        return lock, entries
+
+    @staticmethod
+    def _find_exact_entry(
+        entries: OrderedDict[Any, Any], token_ids: Any, extra_hash: int
+    ) -> Any:
+        wanted = tuple(int(t) for t in token_ids)
+        for entry in entries.values():
+            if (
+                getattr(entry, "extra_hash", None) == extra_hash
+                and tuple(getattr(entry, "token_ids", ())) == wanted
+            ):
+                return entry
+        return None
+
+    def _stored_entry_checkpoints(
+        self, cache: Any, token_ids: Any, extra_hash: int
+    ) -> list[Any] | None:
+        """Checkpoint holders of the stored entry a warm hit was cloned from,
+        so the resumed request keeps extending the same position set."""
+        found = self._exact_entries(cache)
+        if found is None:
+            return None
+        lock, entries = found
+        with lock:
+            entry = self._find_exact_entry(entries, token_ids, extra_hash)
+            if entry is None:
+                return None
+            holders = collect_checkpoints(entry.prompt_cache)
+        return holders if any(h is not None for h in holders) else None
+
+    def _attach_stored_checkpoints(
+        self,
+        cache: Any,
+        token_ids: Any,
+        holders: list[Any] | None,
+        *,
+        extra_hash: int,
+        prefix_len: int,
+    ) -> None:
+        """Hang the request's checkpoints on the snapshot mlx-vlm just cloned
+        (its clone adapters build fresh cache objects, so the attribute does
+        not survive the copy). Checkpoints past ``prefix_len`` are dropped."""
+        if not holders or not any(h is not None for h in holders):
+            return
+        found = self._exact_entries(cache)
+        if found is None:
+            return
+        lock, entries = found
+        with lock:
+            entry = self._find_exact_entry(entries, token_ids, extra_hash)
+            if entry is None or len(entry.prompt_cache) != len(holders):
+                return
+            attach_checkpoints(entry.prompt_cache, holders, max_position=prefix_len)
+
+    def _record_text_prefill_checkpoint(
+        self, request: MLLMBatchRequest, cache: list[Any], position: int
+    ) -> None:
+        if (
+            getattr(self, "_prefix_cache", None) is None
+            or getattr(self, "_prefix_cache_mode", None) != "exact"
+        ):
+            return
+        holders = request.hybrid_checkpoints
+        if holders is None or len(holders) != len(cache):
+            holders = [None] * len(cache)
+        if record_checkpoints(cache, holders, position):
+            request.hybrid_checkpoints = holders
+            logger.debug(
+                "[mllm_apc] request=%s recorded checkpoint position=%d",
+                request.request_id[:12],
+                position,
+            )
+
+    @staticmethod
+    def _rewind_exact_entry(stored: list[Any], position: int) -> list[Any] | None:
+        """Copy of a stored snapshot rewound to ``position``: KV layers trim
+        their offset (mlx-vlm's own ``trim``), recurrent layers restore the
+        checkpoint recorded there. None when any layer cannot be rewound."""
+        try:
+            from mlx_vlm.apc_adapters import Capability, resolve_capability
+        except ImportError:  # pragma: no cover - mlx-vlm absent
+            return None
+        out: list[Any] = []
+        for layer in stored:
+            if is_recurrent_layer(layer):
+                restored = restore_recurrent_layer(layer, position)
+                if restored is None:
+                    return None
+                out.append(restored)
+                continue
+            offset = int(getattr(layer, "offset", 0) or 0)
+            trim = getattr(layer, "trim", None)
+            if (
+                resolve_capability(layer) != Capability.PAGEABLE
+                or not callable(trim)
+                or offset < position
+            ):
+                return None
+            rewound = copy.copy(layer)
+            if rewound.trim(offset - position) != offset - position:
+                return None
+            out.append(rewound)
+        return out
+
+    def _snap_exact_text_prefix(
+        self,
+        cache: Any,
+        full_ids: list[int],
+        extra_hash: int,
+        *,
+        min_position: int,
+    ) -> tuple[list[Any], int, list[Any] | None] | None:
+        """Longest checkpoint-resumable prefix among mlx-vlm's stored entries.
+
+        Returns ``(warm_cache, position, holders)`` for the entry whose newest
+        checkpoint below its common prefix with ``full_ids`` is the furthest
+        along (and beyond ``min_position``), or None.
+        """
+        found = self._exact_entries(cache)
+        if found is None or len(full_ids) < 2:
+            return None
+        lock, entries = found
+        max_len = len(full_ids) - 1
+        best: tuple[int, Any, Any] | None = None
+        with lock:
+            for key, entry in entries.items():
+                if getattr(entry, "extra_hash", None) != extra_hash:
+                    continue
+                stored_ids = entry.token_ids
+                limit = min(len(stored_ids), max_len)
+                if limit <= min_position:
+                    continue
+                if tuple(full_ids[:limit]) == tuple(stored_ids[:limit]):
+                    lcp = limit
+                else:
+                    lcp = 0
+                    for a, b in zip(full_ids, stored_ids):
+                        if a != b:
+                            break
+                        lcp += 1
+                    lcp = min(lcp, limit)
+                if lcp <= min_position:
+                    continue
+                position = achievable_position(entry.prompt_cache, lcp)
+                if position <= min_position or position > len(stored_ids):
+                    continue
+                if best is None or position > best[0]:
+                    best = (position, key, entry)
+            if best is None:
+                return None
+            position, key, entry = best
+            entries.move_to_end(key)
+            entry.last_used = time.time()
+        rewound = self._rewind_exact_entry(entry.prompt_cache, position)
+        if rewound is None:
+            return None
+        try:
+            from mlx_vlm.apc_adapters import clone_cache_entry
+        except ImportError:  # pragma: no cover - mlx-vlm absent
+            return None
+        eval_targets: list[Any] = []
+        warm: list[Any] = []
+        for layer in rewound:
+            cloned = clone_cache_entry(
+                layer,
+                min_capacity_tokens=len(full_ids) + 1,
+                eval_targets=eval_targets,
+            )
+            if cloned is None:
+                return None
+            warm.append(cloned)
+        if eval_targets:
+            mx.eval(eval_targets)
+        holders = collect_checkpoints(rewound)
+        return (
+            warm,
+            position,
+            (holders if any(h is not None for h in holders) else None),
+        )
+
+    @staticmethod
+    def _exact_entry_bytes(stored: list[Any]) -> int:
+        """Bytes held by one snapshot: its cache arrays plus the checkpoints
+        riding on it. Checkpoint arrays are shared between entries recorded
+        from the same prefill, so this double-charges them — deliberately
+        conservative for a budget."""
+        total = checkpoint_bytes(stored)
+        for layer in stored:
+            total += int(getattr(layer, "nbytes", 0) or 0)
+        return total
+
+    def _enforce_exact_cache_budget(self, cache: Any) -> None:
+        """Evict the oldest exact entries until the retained snapshots fit
+        the prefix-cache byte budget; the newest entry always survives."""
+        budget = int(getattr(self, "_prefix_cache_max_bytes", 0) or 0)
+        found = self._exact_entries(cache)
+        if budget <= 0 or found is None:
+            return
+        lock, entries = found
+        evicted = 0
+        with lock:
+            sizes = {
+                key: self._exact_entry_bytes(entry.prompt_cache)
+                for key, entry in entries.items()
+            }
+            total = sum(sizes.values())
+            while total > budget and len(entries) > 1:
+                key, _ = entries.popitem(last=False)
+                total -= sizes.pop(key, 0)
+                evicted += 1
+                stats = getattr(cache, "stats", None)
+                if stats is not None and hasattr(stats, "evictions"):
+                    stats.evictions += 1
+        if evicted:
+            self._prefix_cache_budget_evictions += evicted
+            logger.info(
+                "[mllm_apc] byte budget: evicted %d exact entr%s, %d MB retained of %d MB",
+                evicted,
+                "y" if evicted == 1 else "ies",
+                total >> 20,
+                budget >> 20,
+            )
 
     def get_prefix_cache_stats(self) -> dict[str, Any] | None:
         """Return the common prefix-cache counter shape for APIs/metrics."""
@@ -1522,6 +1879,9 @@ class MLLMBatchGenerator:
                 mx.eval([c.state for c in cache])
                 mx.clear_cache()
                 pos += n
+                self._record_text_prefill_checkpoint(
+                    request, cache, request.cached_tokens + pos
+                )
                 if pos == boundary:
                     self._store_exact_text_prefix(
                         request,
