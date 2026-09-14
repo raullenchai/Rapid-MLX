@@ -639,6 +639,11 @@ def _resolve_model_path(model_name: str) -> Path | None:
 # silently short-circuits (which would push users into an opaque later
 # model-load error instead of surfacing the actual registration failure).
 _VENDORED_MODEL_TYPES: set[str] = {"deepseek_v4"}
+# Model types whose executable architecture is intentionally owned by Rapid.
+# Keep this separate from ``_VENDORED_MODEL_TYPES``: several older adapters
+# still rely on checkpoint-specific loading behavior and must not inherit the
+# stricter "weights/tokenizer only" trust boundary implicitly.
+_RAPID_OWNED_RUNTIME_MODEL_TYPES: frozenset[str] = frozenset({"k2_horizon"})
 
 
 def _register_vendored_archs() -> None:
@@ -918,6 +923,38 @@ def _register_vendored_archs() -> None:
         else:
             _VENDORED_MODEL_TYPES.add("qwen4_exp")
 
+    if "mlx_lm.models.k2_horizon" not in sys.modules:
+        # K2 Horizon dense text models use Rapid's standard language lane.
+        # Keep the adapter independent of mlx-vlm and defer automatically when
+        # mlx-lm grows a native module.
+        import importlib.util as _importlib_util
+
+        _k2_native_spec = None
+        try:
+            _k2_native_spec = _importlib_util.find_spec("mlx_lm.models.k2_horizon")
+        except (ImportError, ValueError):
+            _k2_native_spec = None
+
+        if _k2_native_spec is None:
+            try:
+                import importlib as _importlib
+
+                _k2_horizon = _importlib.import_module("vllm_mlx.models.k2_horizon")
+
+                sys.modules.setdefault("mlx_lm.models.k2_horizon", _k2_horizon)
+            except Exception as e:
+                logger.warning(
+                    "k2_horizon Rapid adapter failed to register — "
+                    "K2 Horizon dense checkpoints will not load until resolved: %s",
+                    e,
+                )
+            else:
+                _VENDORED_MODEL_TYPES.add("k2_horizon")
+        else:
+            _VENDORED_MODEL_TYPES.add("k2_horizon")
+    elif sys.modules.get("mlx_lm.models.k2_horizon") is not None:
+        _VENDORED_MODEL_TYPES.add("k2_horizon")
+
 
 def _is_vendored_arch_model(model_name: str) -> bool:
     """Return True if model's config.json declares a model_type we vendor."""
@@ -939,6 +976,52 @@ def _is_vendored_arch_model(model_name: str) -> bool:
     except Exception as e:
         logger.debug(f"_is_vendored_arch_model({model_name}) failed: {e}")
         return False
+
+
+def _uses_rapid_owned_runtime(model_name: str) -> bool:
+    """Return whether repo Python must be ignored for this architecture.
+
+    A checkpoint declaration is untrusted.  Only grant the bypass after the
+    matching reviewed module is actually available and registered; otherwise
+    fail closed before any loader can fall back to checkpoint-owned code.
+    """
+    import sys
+
+    config = _read_model_config_json(model_name)
+    if not isinstance(config, dict):
+        return False
+    model_type = config.get("model_type")
+    if model_type not in _RAPID_OWNED_RUNTIME_MODEL_TYPES:
+        return False
+
+    module_name = f"mlx_lm.models.{model_type}"
+    module_available = sys.modules.get(module_name) is not None
+    if not module_available:
+        try:
+            import importlib.util as _importlib_util
+
+            module_available = _importlib_util.find_spec(module_name) is not None
+        except (ImportError, ValueError):
+            module_available = False
+    if model_type not in _VENDORED_MODEL_TYPES or not module_available:
+        raise RuntimeError(
+            f"Rapid-owned runtime for {model_type!r} is unavailable; "
+            "refusing to execute checkpoint-owned model code"
+        )
+    return True
+
+
+def _rapid_owned_model_config(model_name: str) -> dict | None:
+    """Return the fail-closed config overlay for a reviewed runtime.
+
+    ``mlx_lm.load`` and its lower-level ``load_model`` entry point both give
+    checkpoint metadata an opportunity to select repository-owned Python.
+    Suppress those selectors at every loader boundary once the architecture
+    has been matched to a registered Rapid-owned implementation.
+    """
+    if not _uses_rapid_owned_runtime(model_name):
+        return None
+    return {"model_file": None, "auto_map": None}
 
 
 def _post_load_ubc_evict(model_name: str) -> None:
@@ -1288,11 +1371,19 @@ def load_model_with_fallback(
         if resolved_snapshot is not None:
             model_name = str(resolved_snapshot)
 
-    # ``mlx_lm.load`` may import config.json::model_file.  Validate that
-    # caller-supplied local path once at this shared boundary before any native
-    # or fallback loader runs.  Remote repository ids are intentionally a no-op
-    # here; see validate_local_model_file for the containment boundary.
-    validate_local_model_file(model_name)
+    # ``mlx_lm.load`` may import config.json::model_file. Validate ordinary
+    # local checkpoints before any loader runs. Rapid-owned architectures
+    # deliberately ignore repo-owned model code: their lower-level load path
+    # overlays ``model_file`` / ``auto_map`` to None and executes only the
+    # reviewed runtime shipped in this package. A Hugging Face cache snapshot's
+    # Python file is normally a symlink into ``blobs/`` outside the snapshot,
+    # so applying the ordinary containment gate here would reject a safe
+    # vendored load before that override can take effect.
+    _register_vendored_archs()
+    rapid_owned_model_config = _rapid_owned_model_config(model_name)
+    rapid_owned_runtime = rapid_owned_model_config is not None
+    if not rapid_owned_runtime:
+        validate_local_model_file(model_name)
 
     tokenizer_config, trust_remote_code = apply_remote_code_policy(tokenizer_config)
 
@@ -1302,7 +1393,7 @@ def load_model_with_fallback(
     # downloaded and run. This turns silent code execution into an informed
     # choice; opt out process-wide with RAPID_MLX_TRUST_REMOTE_CODE=0 (see
     # BatchedEngine). A probe failure is silent — never breaks loading.
-    if _model_requires_remote_code(model_name):
+    if not rapid_owned_runtime and _model_requires_remote_code(model_name):
         if trust_remote_code:
             logger.warning(
                 "Security: model %r declares auto_map (custom Python code). "
@@ -1334,12 +1425,17 @@ def load_model_with_fallback(
         tokenizer_config = _neutralize_unbundled_template_types(
             model_name, tokenizer_config or {}
         )
-        result = _mlx_lm_load(
-            model_name,
-            tokenizer_config=tokenizer_config,
-            lazy=True,
-            return_config=return_config,
-        )
+        lazy_load_kwargs = {
+            "tokenizer_config": tokenizer_config,
+            "lazy": True,
+            "return_config": return_config,
+        }
+        if rapid_owned_model_config is not None:
+            # Keep the historical call shape for ordinary models and pass the
+            # security overlay only for reviewed runtimes. Rapid's supported
+            # mlx-lm floor (0.31.3) exposes this keyword on both load APIs.
+            lazy_load_kwargs["model_config"] = rapid_owned_model_config
+        result = _mlx_lm_load(model_name, **lazy_load_kwargs)
         model, tokenizer = result[0], result[1]
 
         # The four fixups below are pure post-load tokenizer/generation-
@@ -1386,7 +1482,14 @@ def load_model_with_fallback(
         # actually used for.
         _post_load_ubc_evict(model_name)
         return (*result, str(model_name)) if return_source else result
-    if enable_dspark:
+    if rapid_owned_runtime:
+        result = _load_model_with_fallback_impl(
+            model_name,
+            tokenizer_config,
+            enable_dspark=enable_dspark,
+            model_config=rapid_owned_model_config,
+        )
+    elif enable_dspark:
         result = _load_model_with_fallback_impl(
             model_name, tokenizer_config, enable_dspark=True
         )
@@ -1580,6 +1683,7 @@ def _load_model_with_fallback_impl(
     tokenizer_config: dict = None,
     *,
     enable_dspark: bool = False,
+    model_config: dict | None = None,
 ):
     """Inner load implementation — kept separate so the public wrapper can
     install a try/finally for the Defect 4 UBC eviction without rewriting
@@ -1588,6 +1692,15 @@ def _load_model_with_fallback_impl(
 
     _register_vendored_archs()
     tokenizer_config = tokenizer_config or {}
+    if model_config is not None:
+        # The public wrapper supplies this only for an explicitly reviewed
+        # runtime. Route it directly to the lower-level loader so ordinary
+        # model families retain their historical high-level call shape.
+        return _load_with_tokenizer_fallback(
+            model_name,
+            enable_dspark=enable_dspark,
+            model_config=model_config,
+        )
     # #1420: neutralize any declared chat-template / tool-parser type whose
     # mlx-lm module isn't bundled, BEFORE any load() — covers the native
     # Gemma 4 path, its legacy-wrapper fallback, and the general path, all of
@@ -1808,7 +1921,12 @@ def _try_inject_mtp_post_load(model, model_name):
             )
 
 
-def _load_with_tokenizer_fallback(model_name: str, *, enable_dspark: bool = False):
+def _load_with_tokenizer_fallback(
+    model_name: str,
+    *,
+    enable_dspark: bool = False,
+    model_config: dict | None = None,
+):
     """Load model with fallback tokenizer for non-standard models like Nemotron."""
     from mlx_lm.utils import load_model
 
@@ -1828,9 +1946,22 @@ def _load_with_tokenizer_fallback(model_name: str, *, enable_dspark: bool = Fals
     # nests the transformer under ``model`` and renames shared-expert
     # projections, so mlx-lm would otherwise apply the global MXFP4 default to
     # MXFP8 attention tensors and reject their packed shapes.
-    model_config = _deepseek_v4_quantization_override(
+    _register_vendored_archs()
+    detected_model_config = _deepseek_v4_quantization_override(
         model_path, enable_dspark=enable_dspark
     )
+    model_config = {**(detected_model_config or {}), **(model_config or {})}
+    if _uses_rapid_owned_runtime(str(model_path)):
+        # A vendored architecture is an explicit trust boundary: weights and
+        # tokenizer assets come from the checkpoint, executable model code
+        # comes from Rapid. ``mlx_lm.utils.load_model`` otherwise gives the
+        # checkpoint's ``model_file`` precedence over its registered
+        # ``model_type`` module, silently defeating that boundary.
+        model_config = {
+            **model_config,
+            "model_file": None,
+            "auto_map": None,
+        }
 
     # DeepSeek-style fp8 block checkpoints (Ling 3.0 fp8): mlx has no fp8
     # dtype, so ``mx.load`` cannot open the shards at all. Repack the

@@ -626,6 +626,7 @@ jobs:
             tests/test_forced_alignment_route_hardening.py \
             tests/test_muse_glimmer_model.py \
             tests/test_g9v3_model.py \
+            tests/test_k2_horizon_model.py \
             tests/test_bailing_hybrid_model.py \
             tests/test_mtp_spec_decode.py \
             tests/test_mtp_draft_overlap.py \
