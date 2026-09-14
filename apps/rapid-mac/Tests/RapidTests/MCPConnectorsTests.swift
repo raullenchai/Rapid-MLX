@@ -94,7 +94,9 @@ final class MCPConnectorsTests {
             transport: .stdio,
             command: "uvx",
             args: ["mcp-server-time", "--local-timezone=UTC"],
-            env: ["TZ": "UTC"]
+            env: ["TZ": "UTC"],
+            agentReadOnlyTools: ["time__get_time"],
+            agentLocalChangeTools: ["time__set_local_clock"]
         ))
         try store.upsert(MCPServerConfig(
             name: "remote",
@@ -116,6 +118,8 @@ final class MCPConnectorsTests {
         #expect(time.command == "uvx")
         #expect(time.args == ["mcp-server-time", "--local-timezone=UTC"])
         #expect(time.env == ["TZ": "UTC"])
+        #expect(time.agentReadOnlyTools == ["time__get_time"])
+        #expect(time.agentLocalChangeTools == ["time__set_local_clock"])
         let remote = try #require(decoded.first { $0.name == "remote" })
         #expect(remote.transport == .sse)
         #expect(remote.url == "https://example.com/mcp")

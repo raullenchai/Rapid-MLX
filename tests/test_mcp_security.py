@@ -998,3 +998,39 @@ class TestAgentReadOnlyToolsConfig:
         cfg = validate_config({"agent": {"command": "npx", "args": ["safe-package"]}})
 
         assert "agent" in cfg.servers
+
+    def test_local_change_declaration_is_aggregated_separately(self):
+        from vllm_mlx.mcp.config import validate_config
+
+        cfg = validate_config(
+            {
+                "servers": {
+                    "files": {
+                        "command": "npx",
+                        "args": ["safe-package"],
+                        "agent_read_only_tools": ["files__read_file"],
+                        "agent_local_change_tools": ["files__write_file"],
+                    }
+                }
+            }
+        )
+
+        assert cfg.agent_read_only_tools == ["files__read_file"]
+        assert cfg.agent_local_change_tools == ["files__write_file"]
+
+    def test_tool_cannot_have_two_agent_risk_declarations(self):
+        from vllm_mlx.mcp.config import validate_config
+
+        with pytest.raises(ValueError, match="overlap"):
+            validate_config(
+                {
+                    "servers": {
+                        "files": {
+                            "command": "npx",
+                            "args": ["safe-package"],
+                            "agent_read_only_tools": ["files__read_file"],
+                            "agent_local_change_tools": ["files__read_file"],
+                        }
+                    }
+                }
+            )

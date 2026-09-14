@@ -67,7 +67,7 @@ class ToolRisk(str, Enum):
 
     @property
     def requires_approval(self) -> bool:
-        return self is ToolRisk.EXTERNAL_SIDE_EFFECT
+        return self is not ToolRisk.READ_ONLY
 
 
 class AgentProfile(_WireModel):

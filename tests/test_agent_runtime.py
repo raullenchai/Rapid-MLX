@@ -37,6 +37,7 @@ def _runtime() -> AgentRuntime:
 
 
 READ = ToolSpec(name="read_file", risk=ToolRisk.READ_ONLY)
+WRITE = ToolSpec(name="write_file", risk=ToolRisk.LOCAL_CHANGE)
 SEND = ToolSpec(name="send_message", risk=ToolRisk.EXTERNAL_SIDE_EFFECT)
 
 
@@ -54,7 +55,7 @@ def test_minicpm_profile_is_alias_and_repo_aware():
         profile = resolve_agent_profile(model)
         assert profile.name == "minicpm5-2b"
         assert profile.max_visible_tools == 6
-        assert profile.max_tool_rounds == 8
+        assert profile.max_tool_rounds == 12
 
     assert resolve_agent_profile("qwen3.5-4b-4bit").name == "default"
 
@@ -99,6 +100,12 @@ def test_run_identity_and_profile_are_immutable_after_creation():
         run.profile = resolve_agent_profile("qwen3.5-4b-4bit")
     with pytest.raises(ValidationError, match="frozen"):
         run.model = "different-model"
+
+
+def test_only_read_only_tools_bypass_approval():
+    assert READ.risk.requires_approval is False
+    assert WRITE.risk.requires_approval is True
+    assert SEND.risk.requires_approval is True
 
 
 def test_tool_arguments_are_json_only_at_the_wire_boundary():
@@ -406,7 +413,7 @@ def test_tool_policy_is_snapshotted_before_the_model_turn():
     }
 
 
-def test_external_side_effect_pauses_for_approval_and_denial_is_evidence():
+def test_external_side_effect_denial_finishes_with_deterministic_copy():
     runtime = _runtime()
     run = runtime.create_run(model="minicpm5-2b-4bit", goal="Send the update")
     runtime.request_model(run, [SEND])
@@ -425,17 +432,17 @@ def test_external_side_effect_pauses_for_approval_and_denial_is_evidence():
 
     assert run.status is AgentRunStatus.AWAITING_APPROVAL
     denied = runtime.resolve_approval(run, call_id="send-1", approved=False)
-    assert run.status is AgentRunStatus.READY
+    assert run.status is AgentRunStatus.COMPLETED
     assert run.pending_call is None
     assert denied is not None
-    assert denied.observation is not None
-    assert denied.observation.content == "The user denied this tool call."
-    assert run.events[-2].type == "approval.resolved"
-    assert run.events[-1].data["result"]["is_error"] is True
-    assert run.events[-1].data["result"]["safe_summary"] == (
+    assert denied.final_content == "Action not approved. No changes were made."
+    assert run.events[-3].type == "approval.resolved"
+    assert run.events[-2].data["result"]["is_error"] is True
+    assert run.events[-2].data["result"]["safe_summary"] == (
         "User denied the tool call."
     )
-    assert run.events[-1].data["result"]["executed"] is False
+    assert run.events[-2].data["result"]["executed"] is False
+    assert run.events[-1].type == "run.completed"
 
 
 def test_external_call_is_released_only_after_exact_approval():

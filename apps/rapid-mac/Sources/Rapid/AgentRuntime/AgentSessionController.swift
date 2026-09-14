@@ -423,7 +423,7 @@ final class AgentSessionController {
         case .completed: phase = .completed
         case .failed:
             phase = .failed
-            errorMessage = nextRun.failureCode.map { "Agent run failed (\($0))." }
+            errorMessage = AgentFailurePresentation.message(for: nextRun.failureCode)
         case .cancelled: phase = .cancelled
         case .awaitingApproval: phase = .awaitingApproval
         case .ready, .awaitingModel, .awaitingToolResult: phase = .running

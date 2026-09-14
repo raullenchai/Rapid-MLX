@@ -207,11 +207,9 @@ async def test_side_effect_waits_for_exact_approval_before_server_execution():
 
 
 @pytest.mark.asyncio
-async def test_denial_becomes_tool_observation_and_does_not_execute():
+async def test_denial_finishes_without_another_model_turn_or_execution():
     call = AgentToolCall(id="call-send", name=SEND.name, arguments={"body": "no"})
-    driver = ScriptedDriver(
-        AgentModelTurn(tool_calls=[call]), AgentModelTurn(content="Not sent.")
-    )
+    driver = ScriptedDriver(AgentModelTurn(tool_calls=[call]))
     registry = FakeRegistry((SEND,))
     service = AgentServerService(registry=registry, chat_driver=driver)
     created = await service.create(
@@ -232,8 +230,8 @@ async def test_denial_becomes_tool_observation_and_does_not_execute():
     done = await wait_for_status(service, created.id, AgentRunStatus.COMPLETED)
 
     assert registry.calls == []
-    assert done.output == "Not sent."
-    assert "user denied" in driver.requests[1][1][-1]["content"].casefold()
+    assert done.output == "Action not approved. No changes were made."
+    assert len(driver.requests) == 1
 
 
 @pytest.mark.asyncio
@@ -619,7 +617,7 @@ async def test_approval_maps_missing_runtime_payload(monkeypatch, approved):
         service._runtime, "resolve_approval", lambda *_args, **_kw: None
     )
 
-    expected = "approved action payload" if approved else "denial observation"
+    expected = "approved action payload" if approved else "denial result"
     with pytest.raises(AgentRunConflictError, match=expected):
         await service.approve(
             created.id,
@@ -965,6 +963,16 @@ def test_mcp_risk_classifier_requires_exact_operator_declaration(name, declared,
     assert classify_mcp_tool(name, declared_read_only=declared) is risk
 
 
+def test_mcp_risk_classifier_distinguishes_approved_local_changes():
+    assert (
+        classify_mcp_tool(
+            "files__write_file",
+            declared_local_change=["files__write_file"],
+        )
+        is ToolRisk.LOCAL_CHANGE
+    )
+
+
 def test_request_contract_rejects_duplicate_tools_and_non_boolean_controls():
     assert AgentRunCreateRequest(goal="x", tool_names=None).tool_names is None
     assert AgentRunCreateRequest(goal="x", tool_names=["a"]).tool_names == ["a"]
@@ -1227,6 +1235,8 @@ def test_mcp_projection_uses_declared_risk_and_skips_unsupported_schemas():
     tools = list(MCPToolRegistry().list_tools())
 
     assert [(tool.name, tool.risk) for tool in tools] == [
+        ("rapid__calculate", ToolRisk.READ_ONLY),
+        ("rapid__batch_read_only", ToolRisk.READ_ONLY),
         ("files__read_file", ToolRisk.READ_ONLY),
         ("files__write_file", ToolRisk.EXTERNAL_SIDE_EFFECT),
     ]
@@ -1366,7 +1376,11 @@ async def test_mcp_snapshot_never_executes_against_reloaded_registry():
     cfg.mcp_manager = advertised
     cfg.mcp_executor = SimpleNamespace(sandbox=Sandbox())
     snapshot = MCPToolRegistry().snapshot()
-    assert [tool.name for tool in snapshot.list_tools()] == ["same__tool"]
+    assert [tool.name for tool in snapshot.list_tools()] == [
+        "rapid__calculate",
+        "rapid__batch_read_only",
+        "same__tool",
+    ]
 
     cfg.mcp_manager = Manager("reloaded")
     cfg.mcp_executor = SimpleNamespace(sandbox=Sandbox())
@@ -1964,7 +1978,7 @@ async def test_mcp_result_shapes_and_execution_exception_are_audited():
 
 
 @pytest.mark.asyncio
-async def test_registry_without_mcp_has_no_tools_and_internal_request_stays_live():
+async def test_registry_without_mcp_keeps_local_tools_and_internal_request_live():
     from types import SimpleNamespace
 
     from vllm_mlx.agent_runtime.server import _InternalRequest
@@ -1972,7 +1986,10 @@ async def test_registry_without_mcp_has_no_tools_and_internal_request_stays_live
 
     reset_config()
     registry = MCPToolRegistry()
-    assert registry.list_tools() == []
+    assert [tool.name for tool in registry.list_tools()] == [
+        "rapid__calculate",
+        "rapid__batch_read_only",
+    ]
     assert registry.execution_timeout_seconds == 30.0
     configured = MCPToolRegistry(
         manager=SimpleNamespace(config=SimpleNamespace(default_timeout=12.5)),
@@ -1980,6 +1997,73 @@ async def test_registry_without_mcp_has_no_tools_and_internal_request_stays_live
     )
     assert configured.execution_timeout_seconds == 12.5
     assert await _InternalRequest().is_disconnected() is False
+
+
+@pytest.mark.asyncio
+async def test_builtin_calculator_is_exact_and_rejects_code():
+    registry = MCPToolRegistry(manager=None, executor=None, pinned=True)
+    result = await registry.execute(
+        AgentToolCall(
+            id="calc",
+            name="rapid__calculate",
+            arguments={
+                "expressions": {
+                    "total": "12.30 + 7.70",
+                    "average": "(12.30 + 7.70) / 2",
+                }
+            },
+        )
+    )
+    assert json.loads(result.content) == {"average": "10", "total": "20"}
+    assert result.is_error is False
+
+    rejected = await registry.execute(
+        AgentToolCall(
+            id="unsafe",
+            name="rapid__calculate",
+            arguments={"expressions": {"x": "__import__('os').system('id')"}},
+        )
+    )
+    assert rejected.is_error is True
+    assert rejected.executed is False
+
+
+@pytest.mark.asyncio
+async def test_builtin_batch_runs_only_read_only_tools():
+    registry = MCPToolRegistry(manager=None, executor=None, pinned=True)
+    completed = await registry.execute(
+        AgentToolCall(
+            id="batch",
+            name="rapid__batch_read_only",
+            arguments={
+                "calls": [
+                    {
+                        "name": "rapid__calculate",
+                        "arguments": {"expressions": {"a": "2 + 3"}},
+                    },
+                    {
+                        "name": "rapid__calculate",
+                        "arguments": {"expressions": {"b": "8 / 4"}},
+                    },
+                ]
+            },
+        )
+    )
+    assert completed.is_error is False
+    assert [item["content"] for item in json.loads(completed.content)] == [
+        '{"a": "5"}',
+        '{"b": "2"}',
+    ]
+
+    rejected = await registry.execute(
+        AgentToolCall(
+            id="batch-side-effect",
+            name="rapid__batch_read_only",
+            arguments={"calls": [{"name": "files__write_file", "arguments": {}}]},
+        )
+    )
+    assert rejected.is_error is True
+    assert rejected.executed is False
 
 
 @pytest.mark.asyncio

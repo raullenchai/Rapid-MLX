@@ -11,7 +11,12 @@ from .models import AgentProfile
 MINICPM5_2B_PROFILE = AgentProfile(
     name="minicpm5-2b",
     max_visible_tools=6,
-    max_tool_rounds=8,
+    # Physical Desktop dogfood showed a two-file + exact-calculation task
+    # exhausting eight rounds before synthesis. Keep the six-tool prompt
+    # bound, repeat guard, and output ceiling, but allow the same twelve
+    # bounded rounds as the default profile so ordinary organizing work can
+    # finish instead of surfacing an internal budget code.
+    max_tool_rounds=12,
     repeated_call_limit=2,
     max_output_tokens=900,
 )
