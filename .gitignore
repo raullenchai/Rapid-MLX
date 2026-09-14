@@ -118,6 +118,7 @@ test_golden_*.py
 gsm8k_*.json
 *.jinja
 !vllm_mlx/templates/*.jinja
+!tests/fixtures/*.jinja
 
 # Aider
 .aider*
