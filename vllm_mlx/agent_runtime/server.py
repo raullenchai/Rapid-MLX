@@ -62,18 +62,18 @@ _BUILTIN_BATCH_READ_ONLY = "rapid__batch_read_only"
 _CALCULATE_SPEC = ToolSpec(
     name=_BUILTIN_CALCULATE,
     description=(
-        "Calculate up to 16 deterministic arithmetic expressions in one call. Use this "
-        "for every total, average, difference, percentage, or other arithmetic; "
-        "batch all related calculations into the expressions object."
+        "Calculate up to 16 deterministic arithmetic expressions in one call. "
+        "Pass expressions as a JSON string mapping short result labels to "
+        'arithmetic strings, for example {"total":"12+8"}. Use this for '
+        "every total, average, difference, percentage, or other arithmetic."
     ),
     parameters={
         "type": "object",
         "properties": {
             "expressions": {
-                "type": "object",
-                "minProperties": 1,
-                "maxProperties": 16,
-                "additionalProperties": {"type": "string", "maxLength": 512},
+                "type": "string",
+                "minLength": 2,
+                "maxLength": 16_384,
             }
         },
         "required": ["expressions"],
@@ -85,26 +85,18 @@ _CALCULATE_SPEC = ToolSpec(
 _BATCH_READ_ONLY_SPEC = ToolSpec(
     name=_BUILTIN_BATCH_READ_ONLY,
     description=(
-        "Run up to 8 independent read-only tools in one step. Prefer this when "
-        "several files or sources must be inspected; every nested tool must "
-        "already be declared read-only."
+        "Run up to 8 independent read-only tools in one step. Pass calls as a "
+        "JSON string containing an array of objects with name and arguments "
+        "fields. Prefer this when several files or sources must be inspected; "
+        "every nested tool must already be declared read-only."
     ),
     parameters={
         "type": "object",
         "properties": {
             "calls": {
-                "type": "array",
-                "minItems": 1,
-                "maxItems": 8,
-                "items": {
-                    "type": "object",
-                    "properties": {
-                        "name": {"type": "string", "minLength": 1, "maxLength": 64},
-                        "arguments": {"type": "object"},
-                    },
-                    "required": ["name", "arguments"],
-                    "additionalProperties": False,
-                },
+                "type": "string",
+                "minLength": 2,
+                "maxLength": 65_536,
             }
         },
         "required": ["calls"],
@@ -545,12 +537,27 @@ class MCPToolRegistry:
         try:
             validator_type = validators.validator_for(_CALCULATE_SPEC.parameters)
             validator_type(_CALCULATE_SPEC.parameters).validate(call.arguments)
-            expressions = call.arguments["expressions"]
+            expressions = json.loads(call.arguments["expressions"])
+            if not isinstance(expressions, dict) or not 1 <= len(expressions) <= 16:
+                raise ValueError("expressions must be a bounded object")
+            if not all(
+                isinstance(label, str)
+                and isinstance(expression, str)
+                and len(expression) <= 512
+                for label, expression in expressions.items()
+            ):
+                raise ValueError("expressions must map labels to bounded strings")
             values = {
-                str(label): _evaluate_arithmetic(expression)
+                label: _evaluate_arithmetic(expression)
                 for label, expression in expressions.items()
             }
-        except (KeyError, TypeError, ValueError, SyntaxError):
+        except (
+            KeyError,
+            TypeError,
+            ValueError,
+            SyntaxError,
+            JSONSchemaValidationError,
+        ):
             return AgentToolResult(
                 call_id=call.id,
                 content="One or more arithmetic expressions were invalid.",
@@ -575,7 +582,10 @@ class MCPToolRegistry:
         try:
             validator_type = validators.validator_for(_BATCH_READ_ONLY_SPEC.parameters)
             validator_type(_BATCH_READ_ONLY_SPEC.parameters).validate(call.arguments)
-            for index, item in enumerate(call.arguments["calls"]):
+            calls = json.loads(call.arguments["calls"])
+            if not isinstance(calls, list) or not 1 <= len(calls) <= 8:
+                raise ValueError("calls must be a bounded array")
+            for index, item in enumerate(calls):
                 spec = available[item["name"]]
                 validator = validators.validator_for(spec.parameters)
                 validator(spec.parameters).validate(item["arguments"])
@@ -595,7 +605,29 @@ class MCPToolRegistry:
                 safe_summary="Batch validation failed; no action was executed.",
             )
 
-        results = await asyncio.gather(*(self.execute(item) for item in nested_calls))
+        gathered = await asyncio.gather(
+            *(self.execute(item) for item in nested_calls),
+            return_exceptions=True,
+        )
+        results: list[AgentToolResult] = []
+        for nested, result in zip(nested_calls, gathered, strict=True):
+            if isinstance(result, asyncio.CancelledError):
+                raise result
+            if isinstance(result, BaseException):
+                results.append(
+                    AgentToolResult(
+                        call_id=nested.id,
+                        content=(
+                            "Read-only tool outcome is unknown; do not retry "
+                            "automatically."
+                        ),
+                        is_error=True,
+                        executed=None,
+                        safe_summary="Read-only tool failed with an unknown outcome.",
+                    )
+                )
+            else:
+                results.append(result)
         payload: dict[str, Any] = {
             "results": [
                 {
@@ -1416,7 +1448,18 @@ class AgentServerService:
                     not entry.cancel_requested
                     and entry.run.status not in _TERMINAL_STATUSES
                 ):
-                    self._runtime.fail(entry.run, "agent_adapter_failure")
+                    # The chat/tool parser attaches a deliberately stable,
+                    # content-free classification when the model emits
+                    # arguments that do not match the advertised schema.
+                    # Preserve that actionable code without allowing an
+                    # arbitrary dependency exception to control our API.
+                    failure_code = (
+                        "invalid_tool_arguments"
+                        if getattr(exc, "rapid_mlx_error_code", None)
+                        == "invalid_tool_arguments"
+                        else "agent_adapter_failure"
+                    )
+                    self._runtime.fail(entry.run, failure_code)
                     entry.pending_action = None
                     entry.pending_risk = None
                     self._mark_terminal(entry)

@@ -2008,10 +2008,12 @@ async def test_builtin_calculator_is_exact_and_rejects_code():
             id="calc",
             name="rapid__calculate",
             arguments={
-                "expressions": {
-                    "total": "12.30 + 7.70",
-                    "average": "(12.30 + 7.70) / 2",
-                }
+                "expressions": json.dumps(
+                    {
+                        "total": "12.30 + 7.70",
+                        "average": "(12.30 + 7.70) / 2",
+                    }
+                )
             },
         )
     )
@@ -2022,11 +2024,23 @@ async def test_builtin_calculator_is_exact_and_rejects_code():
         AgentToolCall(
             id="unsafe",
             name="rapid__calculate",
-            arguments={"expressions": {"x": "__import__('os').system('id')"}},
+            arguments={
+                "expressions": json.dumps({"x": "__import__('os').system('id')"})
+            },
         )
     )
     assert rejected.is_error is True
     assert rejected.executed is False
+
+    malformed = await registry.execute(
+        AgentToolCall(
+            id="malformed",
+            name="rapid__calculate",
+            arguments={"expressions": "[]"},
+        )
+    )
+    assert malformed.is_error is True
+    assert malformed.executed is False
 
 
 @pytest.mark.asyncio
@@ -2037,16 +2051,18 @@ async def test_builtin_batch_runs_only_read_only_tools():
             id="batch",
             name="rapid__batch_read_only",
             arguments={
-                "calls": [
-                    {
-                        "name": "rapid__calculate",
-                        "arguments": {"expressions": {"a": "2 + 3"}},
-                    },
-                    {
-                        "name": "rapid__calculate",
-                        "arguments": {"expressions": {"b": "8 / 4"}},
-                    },
-                ]
+                "calls": json.dumps(
+                    [
+                        {
+                            "name": "rapid__calculate",
+                            "arguments": {"expressions": json.dumps({"a": "2 + 3"})},
+                        },
+                        {
+                            "name": "rapid__calculate",
+                            "arguments": {"expressions": json.dumps({"b": "8 / 4"})},
+                        },
+                    ]
+                )
             },
         )
     )
@@ -2083,13 +2099,15 @@ async def test_builtin_batch_runs_only_read_only_tools():
             id="batch-side-effect",
             name="rapid__batch_read_only",
             arguments={
-                "calls": [
-                    {
-                        "name": "rapid__calculate",
-                        "arguments": {"expressions": {"x": "1 + 1"}},
-                    },
-                    {"name": "files__write_file", "arguments": {}},
-                ]
+                "calls": json.dumps(
+                    [
+                        {
+                            "name": "rapid__calculate",
+                            "arguments": {"expressions": json.dumps({"x": "1 + 1"})},
+                        },
+                        {"name": "files__write_file", "arguments": {}},
+                    ]
+                )
             },
         )
     )
@@ -2120,7 +2138,9 @@ async def test_builtin_batch_truncation_remains_valid_json():
         AgentToolCall(
             id="large-batch",
             name="rapid__batch_read_only",
-            arguments={"calls": [{"name": "files__read_file", "arguments": {}}]},
+            arguments={
+                "calls": json.dumps([{"name": "files__read_file", "arguments": {}}])
+            },
         )
     )
 
@@ -2128,6 +2148,55 @@ async def test_builtin_batch_truncation_remains_valid_json():
     assert len(result.content) <= 240_000
     assert payload["truncated"] is True
     assert payload["results"][0]["truncated"] is True
+
+
+@pytest.mark.asyncio
+async def test_builtin_batch_collects_siblings_when_one_read_raises():
+    completed = []
+
+    class RaisingReadRegistry(MCPToolRegistry):
+        def list_tools(self):
+            return [
+                ToolSpec(name="rapid__batch_read_only", risk=ToolRisk.READ_ONLY),
+                ToolSpec(name="files__good", risk=ToolRisk.READ_ONLY),
+                ToolSpec(name="files__raises", risk=ToolRisk.READ_ONLY),
+            ]
+
+        async def execute(self, nested_call):
+            if nested_call.name == "rapid__batch_read_only":
+                return await super().execute(nested_call)
+            await asyncio.sleep(0)
+            completed.append(nested_call.name)
+            if nested_call.name == "files__raises":
+                raise RuntimeError("private connector detail")
+            return AgentToolResult(
+                call_id=nested_call.id,
+                content="ok",
+                executed=True,
+            )
+
+    result = await RaisingReadRegistry(
+        manager=None, executor=None, pinned=True
+    ).execute(
+        AgentToolCall(
+            id="raising-batch",
+            name="rapid__batch_read_only",
+            arguments={
+                "calls": json.dumps(
+                    [
+                        {"name": "files__raises", "arguments": {}},
+                        {"name": "files__good", "arguments": {}},
+                    ]
+                )
+            },
+        )
+    )
+
+    assert sorted(completed) == ["files__good", "files__raises"]
+    assert result.is_error is True
+    assert "private connector detail" not in result.content
+    payload = json.loads(result.content)
+    assert [item["is_error"] for item in payload["results"]] == [True, False]
 
 
 @pytest.mark.asyncio
@@ -2388,6 +2457,44 @@ async def test_runtime_rejection_is_marked_terminal_by_adapter():
     failed = await wait_for_status(service, created.id, AgentRunStatus.FAILED)
 
     assert failed.failure_code == "unadvertised_tool_call"
+
+
+@pytest.mark.asyncio
+async def test_drive_preserves_stable_invalid_tool_arguments_code():
+    class InvalidToolArgumentsError(Exception):
+        rapid_mlx_error_code = "invalid_tool_arguments"
+
+    class RejectingDriver:
+        async def __call__(self, *_args):
+            raise InvalidToolArgumentsError("must not reach the client")
+
+    service = AgentServerService(
+        registry=FakeRegistry((READ,)), chat_driver=RejectingDriver()
+    )
+    created = await service.create(AgentRunCreateRequest(goal="read x"), model="model")
+
+    failed = await wait_for_status(service, created.id, AgentRunStatus.FAILED)
+
+    assert failed.failure_code == "invalid_tool_arguments"
+
+
+@pytest.mark.asyncio
+async def test_drive_does_not_trust_arbitrary_dependency_failure_code():
+    class UntrustedError(Exception):
+        rapid_mlx_error_code = "pretend_success"
+
+    class RejectingDriver:
+        async def __call__(self, *_args):
+            raise UntrustedError("must not reach the client")
+
+    service = AgentServerService(
+        registry=FakeRegistry((READ,)), chat_driver=RejectingDriver()
+    )
+    created = await service.create(AgentRunCreateRequest(goal="read x"), model="model")
+
+    failed = await wait_for_status(service, created.id, AgentRunStatus.FAILED)
+
+    assert failed.failure_code == "agent_adapter_failure"
 
 
 @pytest.mark.asyncio
