@@ -1872,6 +1872,7 @@ def _capture_enable_thinking(monkeypatch, *, no_thinking: bool, request_body: di
     import mlx_vlm as _mlx_vlm
 
     def _empty_gen(*a, **kw):
+        captured["generation_kwargs"] = kw
         if False:
             yield None  # pragma: no cover — generator shell
 
@@ -1898,6 +1899,62 @@ def _capture_enable_thinking(monkeypatch, *, no_thinking: bool, request_body: di
     with client.stream("POST", "/v1/chat/completions", json=request_body) as resp:
         b"".join(resp.iter_bytes())
     return captured
+
+
+@pytest.mark.parametrize(
+    ("reasoning_max_tokens", "expected"),
+    [
+        (None, {"max_tokens": 64, "enable_thinking": False}),
+        (
+            23,
+            {
+                "max_tokens": 64,
+                "enable_thinking": True,
+                "thinking_budget": 23,
+            },
+        ),
+    ],
+)
+def test_thinking_controls_map_to_mlx_vlm_generation_kwargs(
+    reasoning_max_tokens, expected
+) -> None:
+    """The public Rapid API maps to mlx-vlm without requiring mlx at test time."""
+    from vllm_mlx.speculative.dflash.server import (
+        _apply_thinking_generation_kwargs,
+    )
+
+    generation_kwargs = {"max_tokens": 64}
+    _apply_thinking_generation_kwargs(
+        generation_kwargs,
+        enable_thinking=reasoning_max_tokens is not None,
+        reasoning_max_tokens=reasoning_max_tokens,
+    )
+    assert generation_kwargs == expected
+
+
+@pytest.mark.parametrize(
+    ("no_thinking", "requested", "reasoning_max_tokens", "expected"),
+    [
+        (False, None, None, False),
+        (False, None, 23, True),
+        (False, False, 23, False),
+        (False, True, None, True),
+        (True, True, 23, False),
+    ],
+)
+def test_serial_thinking_resolution_preserves_explicit_precedence(
+    no_thinking, requested, reasoning_max_tokens, expected
+) -> None:
+    from vllm_mlx.speculative.dflash.server import _resolve_serial_thinking
+
+    assert (
+        _resolve_serial_thinking(
+            no_thinking=no_thinking,
+            requested=requested,
+            reasoning_max_tokens=reasoning_max_tokens,
+        )
+        is expected
+    )
 
 
 @_skip_without_mlx_vlm
@@ -1935,6 +1992,8 @@ def test_request_enable_thinking_false_honored(monkeypatch) -> None:
         },
     )
     assert captured.get("enable_thinking") is False
+    assert captured["generation_kwargs"]["enable_thinking"] is False
+    assert "thinking_budget" not in captured["generation_kwargs"]
 
 
 @_skip_without_mlx_vlm
@@ -1969,11 +2028,28 @@ def test_request_enable_thinking_true_honored(monkeypatch) -> None:
 
 
 @_skip_without_mlx_vlm
+def test_reasoning_budget_implicitly_enables_bounded_thinking(monkeypatch) -> None:
+    captured = _capture_enable_thinking(
+        monkeypatch,
+        no_thinking=False,
+        request_body={
+            "model": "qwen3.5-27b-8bit",
+            "messages": [{"role": "user", "content": "hi"}],
+            "stream": True,
+            "reasoning_max_tokens": 23,
+        },
+    )
+    assert captured.get("enable_thinking") is True
+    assert captured["generation_kwargs"]["enable_thinking"] is True
+    assert captured["generation_kwargs"]["thinking_budget"] == 23
+
+
+@_skip_without_mlx_vlm
 @pytest.mark.parametrize("stream", [False, True])
 def test_explicit_thinking_is_parsed_into_reasoning_content(
     monkeypatch, stream: bool
 ) -> None:
-    """DFlash opt-in thinking uses the standard Qwen reasoning parser."""
+    """DFlash threads thinking through generation and response parsing."""
     import json
 
     import mlx_vlm
@@ -1988,17 +2064,20 @@ def test_explicit_thinking_is_parsed_into_reasoning_content(
         "apply_chat_template",
         lambda *args, **kwargs: "rendered prompt",
     )
-    monkeypatch.setattr(
-        mlx_vlm,
-        "generate",
-        lambda *args, **kwargs: SimpleNamespace(
+    generation_calls = []
+
+    def _generate(*args, **kwargs):
+        generation_calls.append(kwargs)
+        return SimpleNamespace(
             text="<think>Need one addition.</think>Four.",
             prompt_tokens=5,
             generation_tokens=7,
-        ),
-    )
+        )
+
+    monkeypatch.setattr(mlx_vlm, "generate", _generate)
 
     def _stream(*args, **kwargs):
+        generation_calls.append(kwargs)
         for index, text in enumerate(
             ("<think>", "Need one addition.", "</think>", "Four."), start=1
         ):
@@ -2027,6 +2106,7 @@ def test_explicit_thinking_is_parsed_into_reasoning_content(
         "model": "qwen3.5-27b-8bit",
         "messages": [{"role": "user", "content": "What is 2 + 2?"}],
         "enable_thinking": True,
+        "reasoning_max_tokens": 23,
         "stream": stream,
     }
 
@@ -2039,6 +2119,8 @@ def test_explicit_thinking_is_parsed_into_reasoning_content(
         message = response.json()["choices"][0]["message"]
         assert message["reasoning_content"] == "Need one addition."
         assert message["content"] == "Four."
+        assert generation_calls[-1]["enable_thinking"] is True
+        assert generation_calls[-1]["thinking_budget"] == 23
         return
 
     with TestClient(app).stream(
@@ -2059,6 +2141,8 @@ def test_explicit_thinking_is_parsed_into_reasoning_content(
     )
     assert "".join(delta.get("content", "") for delta in deltas) == "Four."
     assert "<think>" not in body
+    assert generation_calls[-1]["enable_thinking"] is True
+    assert generation_calls[-1]["thinking_budget"] == 23
 
 
 @_skip_without_mlx_vlm

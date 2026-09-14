@@ -142,8 +142,17 @@ def test_compare_requires_exact_output_and_no_quality_regression(
     assert bench.compare_artifacts([str(baseline), str(candidate)]) == 3
 
 
-@pytest.mark.parametrize("use_budget", [False, True])
-def test_post_task_records_request_and_server_metrics(use_budget: bool) -> None:
+@pytest.mark.parametrize(
+    ("use_budget", "rapid_budget_field", "expected_field"),
+    [
+        (False, False, None),
+        (True, False, "thinking_budget"),
+        (True, True, "reasoning_max_tokens"),
+    ],
+)
+def test_post_task_records_request_and_server_metrics(
+    use_budget: bool, rapid_budget_field: bool, expected_field: str | None
+) -> None:
     requests = []
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -188,10 +197,15 @@ def test_post_task_records_request_and_server_metrics(use_budget: bool) -> None:
             model="model",
             task=task,
             use_thinking_budget=use_budget,
+            rapid_budget_field=rapid_budget_field,
         )
 
     payload = json.loads(requests[0].content)
-    assert payload.get("thinking_budget") == (7 if use_budget else None)
+    if expected_field is None:
+        assert "thinking_budget" not in payload
+        assert "reasoning_max_tokens" not in payload
+    else:
+        assert payload[expected_field] == 7
     assert result["thinking_budget"] == (7 if use_budget else None)
     assert result["server_metrics"]["decode_tok_s"] == 12.5
     assert result["response_timings"] == {

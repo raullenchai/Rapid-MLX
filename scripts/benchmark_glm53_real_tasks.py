@@ -398,6 +398,7 @@ def _post_task(
     model: str,
     task: Task,
     use_thinking_budget: bool,
+    rapid_budget_field: bool = False,
 ) -> dict[str, Any]:
     payload = {
         "model": model,
@@ -408,7 +409,9 @@ def _post_task(
         "enable_thinking": True,
     }
     if use_thinking_budget:
-        payload["thinking_budget"] = task.thinking_budget
+        payload["reasoning_max_tokens" if rapid_budget_field else "thinking_budget"] = (
+            task.thinking_budget
+        )
     started = time.perf_counter()
     response = client.post(
         f"{base_url.rstrip('/')}/chat/completions",
@@ -498,6 +501,7 @@ def run_suite(args: argparse.Namespace) -> int:
                 model=args.model,
                 task=warmup,
                 use_thinking_budget=not args.omit_thinking_budget,
+                rapid_budget_field=args.rapid_budget_field,
             )
         for task in suite:
             result = _post_task(
@@ -506,6 +510,7 @@ def run_suite(args: argparse.Namespace) -> int:
                 model=args.model,
                 task=task,
                 use_thinking_budget=not args.omit_thinking_budget,
+                rapid_budget_field=args.rapid_budget_field,
             )
             results.append(result)
             grade = result["grade"]
@@ -617,6 +622,11 @@ def parse_args() -> argparse.Namespace:
         "--omit-thinking-budget",
         action="store_true",
         help="omit thinking_budget for runtimes that cannot combine it with MTP",
+    )
+    parser.add_argument(
+        "--rapid-budget-field",
+        action="store_true",
+        help="send Rapid's reasoning_max_tokens field instead of mlx-vlm's thinking_budget",
     )
     parser.add_argument(
         "--compare",

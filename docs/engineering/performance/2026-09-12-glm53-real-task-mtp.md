@@ -325,6 +325,43 @@ regressed 3.6-3.7% while instruction and knowledge improved 7.4-8.6%. That
 mixed result is evidence for a future acceptance-aware depth controller, not
 for changing the qualified K=2 default.
 
+### Rapid serial-server integration gate
+
+The cache-owned candidate was then driven through Rapid's existing serial
+OpenAI-compatible server shell rather than mlx-vlm's own server. This exercises
+Rapid's prompt rendering, reasoning parser, request admission, timeout, and
+response shaping while leaving the untagged dependency checkout outside the
+product package.
+
+The first no-budget AR/MTP pair was byte-identical on all six tasks, but both
+exhausted the 1,024-token completion cap before finishing the creative answer.
+That isolated a Rapid integration bug rather than speculative drift: the
+serial DFlash/native-MTP shell forwarded `enable_thinking` to the prompt and
+postprocessor but not to mlx-vlm generation, and it silently dropped Rapid's
+`reasoning_max_tokens` request field. Forwarding those as `enable_thinking`
+and `thinking_budget` restored bounded reasoning. The previously failing
+creative task returned to 388 completion tokens and passed all six hard
+constraints. Supplying `reasoning_max_tokens` alone now also opts into bounded
+thinking, consistent with the standard chat route; an explicit
+`enable_thinking=false` or server `--no-thinking` still takes precedence.
+
+A warm AR/MTP pair with the production-shaped per-task budgets then passed
+6/6 in both modes with byte-identical reasoning and final output:
+
+| Task | Rapid AR | Rapid MTP K=2 | Ratio |
+| --- | ---: | ---: | ---: |
+| Coding, hidden tests | 27.55 | 33.18 | 1.204x |
+| Closed-book knowledge | 26.61 | 36.90 | 1.387x |
+| Multi-step math | 26.56 | 34.87 | 1.313x |
+| Instruction following | 25.69 | 35.84 | 1.395x |
+| Creative constraints | 27.52 | 35.32 | 1.283x |
+| Long-context contract | 10.62 | 11.69 | 1.101x |
+
+The paired task median was 1.298x and the median of category throughputs moved
+from 26.58 to 35.09 tok/s. This is an integration qualification for the
+candidate checkout, not authorization to pin an untagged dependency or enable
+the GLM alias's MTP capability in a release.
+
 ## Reproduction
 
 Start post-0.7 mlx-vlm once without a drafter and once with the target-matched
@@ -367,6 +404,10 @@ python scripts/benchmark_glm53_real_tasks.py \
   --label mtp-budget-positioned \
   --output /private/tmp/glm53-real-mtp-budget-positioned.json
 ```
+
+When the same harness targets Rapid's API, add `--rapid-budget-field`; this
+uses Rapid's public `reasoning_max_tokens` name instead of mlx-vlm's
+`thinking_budget` extension.
 
 The oMLX comparison used commit `b390b31`, cache disabled, concurrency one,
 thinking enabled, and the same local target exposed as `glm53-target`. The AR

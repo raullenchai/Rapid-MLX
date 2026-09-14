@@ -1094,6 +1094,7 @@ def test_shared_serial_app_invokes_product_callbacks_and_generators():
         "max_tokens": 1,
         "temperature": 0.0,
         "top_p": 1.0,
+        "enable_thinking": False,
     }
 
 

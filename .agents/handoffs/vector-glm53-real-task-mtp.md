@@ -6,10 +6,9 @@ Atlas, for runtime architecture and dependency integration.
 
 ## Branch
 
-Current handoff refresh: `docs/glm53-upstream-handoff`, based on
-`origin/main@6a4121d17` after benchmark-telemetry PR #3409 merged. Upstream
-implementation work is on mlx-vlm PR #2241 and the fork-only
-`experiment/glm53-cache-owned-ev-k23` spike.
+Current handoff refresh: `vector/glm53-release-gate`, based on
+`origin/main@321afa3fc`. Upstream implementation work remains on mlx-vlm PR
+#2206 plus #2231 and the fork-only cache-owned adaptive/replay experiments.
 
 ## Verified facts
 
@@ -107,6 +106,18 @@ implementation work is on mlx-vlm PR #2241 and the fork-only
   speculative counters into the six-task artifact so future acceptance claims
   remain reproducible.
 - MTP long-context peak Metal memory was 188.679 GB versus 184.141 GB for AR.
+- The cache-owned candidate now passes Rapid's own serial OpenAI-compatible
+  Server path. A warm budgeted AR/MTP pair passed 6/6 in each mode with all six
+  reasoning/final responses byte-identical. Per-task MTP gains were
+  1.204x/1.387x/1.313x/1.395x/1.283x/1.101x (1.298x paired median), and the
+  median category throughput moved from 26.58 to 35.09 tok/s.
+- That integration gate exposed a shared serial-server bug: DFlash/native-MTP
+  prompt rendering honored `enable_thinking`, but generation did not receive
+  it and silently dropped `reasoning_max_tokens`. The fix maps the public Rapid
+  cap to mlx-vlm's `thinking_budget`; the formerly failing creative task
+  contracted from a truncated 1,024 tokens to a passing 388-token completion.
+  A cap without a duplicate `enable_thinking=true` now opts into bounded
+  thinking, while an explicit false value and `--no-thinking` remain dominant.
 
 ## Unresolved
 
@@ -114,6 +125,9 @@ implementation work is on mlx-vlm PR #2241 and the fork-only
 - Rapid still pins a released mlx-vlm version without the qualified upstream
   changes. PRs #2206 and #2231 are upstream-only, so no release
   dependency is available to integrate yet.
+- The Rapid serial-server thinking-budget fix is independently releasable, but
+  GLM MTP capability metadata must remain disabled until a tagged mlx-vlm
+  release contains the qualified cache-owned runtime and Q4 head loader.
 - #2241 is intentionally stacked on #2206's source branch and cannot be
   retargeted to main until #2206's current conflict is resolved.
 - Creative prose still needs blind human review before any quality claim.
