@@ -5,7 +5,7 @@ Date: 2026-09-13
 Owner / host: Vector / MZR-3
 
 Runtime feasibility branch: `raullenchai:vector/ltx25-distillation-feasibility`
-at `14a0cb9` in the `ltx-2-mlx` repository. Rapid design branch:
+at `28f8dac` in the `ltx-2-mlx` repository. Rapid design branch:
 `design/ltx25-portable-fast-stage2`. PR #3438 remains the separate marginal
 dequantization release work and must not absorb this unqualified model path.
 
@@ -297,3 +297,21 @@ both held-out mean modalities improve at least 10% and no paired sample
 regresses more than 5%; a gate rejection falls back to lane v1. This is only a
 compute gate. Decoded multi-seed motion, detail, diversity, audio, and sync
 remain the product gate.
+
+## Terminal Stage-2 scale result (2026-09-14)
+
+The terminal `3 -> 1` curriculum and 24-step replay completed without OOM;
+replay took 10.7 minutes and peaked at 19.79 GiB. The final checkpoint improved
+all 20 prompt-disjoint held-out pairs in both modalities versus the unadapted
+one-step baseline. Mean video latent MSE fell 23.1% and mean audio latent MSE
+fell 74.7%; the smallest paired video improvement was 5.2%. These results
+authorize decoded testing only and are not a perceptual pass.
+
+The checkpoint was packaged with capability `ltx_stage2_terminal_v1`, exact
+schedule `[0.909375, 0]`, immutable base/config/content identity, runtime
+contract major 1, and adapter SHA-256
+`6e8de0813b3731e1be5ccb66170e219bc1f6395052702a04f3a141cd98d749f1`.
+The production loader reopened and validated the package. Its qualification
+revision is deliberately `diagnostic-terminal-20260914`; it must not be
+uploaded or exposed as a release artifact. The ten-case decoded terminal blind
+suite is now rendering serially before the matched Stage-1 v1/v2 pilots.
