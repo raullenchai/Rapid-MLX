@@ -9,7 +9,7 @@ import uuid
 from collections.abc import Sequence
 from typing import Any
 
-from ..api.tool_calling import _coerce_schema_value
+from ..api.tool_calling import _coerce_schema_value, validate_json_schema
 from .abstract_tool_parser import (
     ExtractedToolCallInformation,
     ToolParser,
@@ -53,6 +53,7 @@ class K2HorizonToolParser(ToolParser):
         self._content_upto = 0
         self._next_tool_index = 0
         self._tool_group_seen = False
+        self._post_tool_content_visible = False
 
     @staticmethod
     def _request_value(request: dict[str, Any] | None, key: str, default=None):
@@ -134,6 +135,9 @@ class K2HorizonToolParser(ToolParser):
             }
             if missing:
                 raise ValueError("missing required IFM tool argument")
+        valid, _error = validate_json_schema(arguments, parameters)
+        if not valid:
+            raise ValueError("IFM tool arguments violate tool schema")
 
     @classmethod
     def _parse_call(
@@ -328,9 +332,32 @@ class K2HorizonToolParser(ToolParser):
         if start < 0:
             if self._tool_group_seen:
                 # K2 may open another private reasoning lane between tool
-                # groups. Once any group has appeared, hold trailing bytes
-                # until a closer, another group, or EOF establishes visibility.
-                return None
+                # groups. Hold it until a reasoning closer establishes the
+                # visible boundary, then resume ordinary incremental output.
+                pending = current_text[self._content_upto :]
+                if not (
+                    self._input_reasoning_sanitized
+                    or self._post_tool_content_visible
+                ):
+                    boundary = max(
+                        (pending.rfind(marker) for marker in self.REASONING_ENDS),
+                        default=-1,
+                    )
+                    if boundary < 0:
+                        return None
+                    marker = next(
+                        marker
+                        for marker in self.REASONING_ENDS
+                        if pending.rfind(marker) == boundary
+                    )
+                    self._content_upto += boundary + len(marker)
+                    self._post_tool_content_visible = True
+                    pending = current_text[self._content_upto :]
+                held = self._partial_overlap(pending, self.GROUP_START)
+                end = len(current_text) - held
+                addition = current_text[self._content_upto : end]
+                self._content_upto = end
+                return {"content": addition} if addition else None
             if not self._input_reasoning_sanitized:
                 # Direct parser callers have not passed through K2's
                 # implicit-reasoning parser. Hold the prefix until a closer
@@ -367,14 +394,40 @@ class K2HorizonToolParser(ToolParser):
             next_start = current_text.find(self.GROUP_START, end)
             if next_start >= 0:
                 content_parts.append(self._visible_prefix(current_text[end:next_start]))
+                self._post_tool_content_visible = False
                 cursor = next_start
                 continue
 
             trailing = current_text[end:]
-            held = self._partial_overlap(trailing, self.GROUP_START)
-            visible_end = len(current_text) - held
-            content_parts.append(self._visible_prefix(current_text[end:visible_end]))
-            self._content_upto = visible_end
+            if self._input_reasoning_sanitized:
+                held = self._partial_overlap(trailing, self.GROUP_START)
+                visible_end = len(current_text) - held
+                content_parts.append(current_text[end:visible_end])
+                self._content_upto = visible_end
+                self._post_tool_content_visible = True
+            else:
+                boundary = max(
+                    (trailing.rfind(marker) for marker in self.REASONING_ENDS),
+                    default=-1,
+                )
+                if boundary >= 0:
+                    marker = next(
+                        marker
+                        for marker in self.REASONING_ENDS
+                        if trailing.rfind(marker) == boundary
+                    )
+                    visible_start = end + boundary + len(marker)
+                    visible = current_text[visible_start:]
+                    held = self._partial_overlap(visible, self.GROUP_START)
+                    visible_end = len(current_text) - held
+                    content_parts.append(current_text[visible_start:visible_end])
+                    self._content_upto = visible_end
+                    self._post_tool_content_visible = True
+                else:
+                    # The completed call is safe to emit, but trailing bytes
+                    # are not public until a reasoning closer or EOF proves it.
+                    self._content_upto = end
+                    self._post_tool_content_visible = False
             break
 
         if not calls:

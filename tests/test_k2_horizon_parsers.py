@@ -314,6 +314,22 @@ def test_declared_json_schema_contract_fails_closed(arguments):
     assert result.content == output
 
 
+@pytest.mark.parametrize(
+    "wire_format,call",
+    [
+        ("json", _json_call("lookup", {"limit": "not-an-integer"})),
+        ("xml", _xml_call("lookup", (("limit", "not-an-integer"),))),
+    ],
+)
+def test_schema_type_violation_after_coercion_fails_closed(wire_format, call):
+    output = _group(call)
+    result = K2HorizonToolParser().extract_tool_calls(
+        output, _request(wire_format)
+    )
+    assert not result.tools_called
+    assert result.content == output
+
+
 def test_streaming_emits_prefix_once_and_call_on_close():
     parser = K2HorizonToolParser()
     request = _request()
@@ -395,6 +411,33 @@ def test_streaming_redacts_reasoning_between_tool_groups():
     assert "".join(content) == "Visible between"
     assert len(calls) == 2
     assert all(len(call["id"]) == len("call_") + 32 for call in calls)
+
+
+def test_streaming_resumes_immediately_after_post_tool_reasoning_closer():
+    parser = K2HorizonToolParser()
+    group = _group(_xml_call("ping"))
+    first = parser.extract_tool_calls_streaming("", group, group, request=_request())
+    assert first is not None and len(first["tool_calls"]) == 1
+
+    private = group + "private retry"
+    assert parser.extract_tool_calls_streaming(
+        group, private, "private retry", request=_request()
+    ) is None
+
+    boundary = private + "</ifm|think_fast>"
+    assert parser.extract_tool_calls_streaming(
+        private, boundary, "</ifm|think_fast>", request=_request()
+    ) is None
+
+    visible = boundary + "Visible"
+    assert parser.extract_tool_calls_streaming(
+        boundary, visible, "Visible", request=_request()
+    ) == {"content": "Visible"}
+    more = visible + " now"
+    assert parser.extract_tool_calls_streaming(
+        visible, more, " now", request=_request()
+    ) == {"content": " now"}
+    assert parser.flush_held_content(more) == ""
 
 
 def test_streaming_tool_choice_none_strips_envelope_incrementally():
