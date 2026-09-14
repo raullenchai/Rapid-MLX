@@ -57,8 +57,12 @@ class ModelArgs(BaseModelArgs):
     hidden_act: str = "silu"
     layernorm_num_groups: int = 4
     num_experts: int = 0
+    num_shared_experts: int = 0
+    moe_intermediate_size: int = 0
     mova_num_experts: int = 0
     query_key_norm: bool = False
+    attention_gate_func: str | None = None
+    rope_head_dim: int | None = None
     use_sliding_window: bool = False
     sliding_window: int | None = None
 
@@ -107,14 +111,25 @@ class ModelArgs(BaseModelArgs):
             self.head_dim = self.hidden_size // self.num_attention_heads
         if self.head_dim < 1:
             raise ValueError("head_dim must be positive")
+        if self.rope_head_dim is None:
+            self.rope_head_dim = self.head_dim
+        if self.rope_head_dim != self.head_dim:
+            raise ValueError("partial rotary head dimensions are not supported")
         if self.hidden_act != "silu":
             raise ValueError(
                 f"unsupported hidden_act {self.hidden_act!r}; expected 'silu'"
             )
-        if self.num_experts or self.mova_num_experts:
+        if (
+            self.num_experts
+            or self.num_shared_experts
+            or self.moe_intermediate_size
+            or self.mova_num_experts
+        ):
             raise ValueError("K2 Horizon MoE/MoVA checkpoints are not supported")
         if self.query_key_norm:
             raise ValueError("K2 Horizon query/key normalization is not supported")
+        if self.attention_gate_func is not None:
+            raise ValueError("K2 Horizon gated attention is not supported")
         if self.use_sliding_window or self.sliding_window is not None:
             raise ValueError("K2 Horizon sliding attention is not supported")
 
