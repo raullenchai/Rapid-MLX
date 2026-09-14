@@ -28,6 +28,7 @@ from vllm_mlx.agent_runtime.server import (
     AgentToolSelectionError,
     MCPToolRegistry,
     _approval_argument_summary,
+    _evaluate_arithmetic,
     classify_mcp_tool,
 )
 
@@ -207,11 +208,9 @@ async def test_side_effect_waits_for_exact_approval_before_server_execution():
 
 
 @pytest.mark.asyncio
-async def test_denial_becomes_tool_observation_and_does_not_execute():
+async def test_denial_finishes_without_another_model_turn_or_execution():
     call = AgentToolCall(id="call-send", name=SEND.name, arguments={"body": "no"})
-    driver = ScriptedDriver(
-        AgentModelTurn(tool_calls=[call]), AgentModelTurn(content="Not sent.")
-    )
+    driver = ScriptedDriver(AgentModelTurn(tool_calls=[call]))
     registry = FakeRegistry((SEND,))
     service = AgentServerService(registry=registry, chat_driver=driver)
     created = await service.create(
@@ -232,8 +231,8 @@ async def test_denial_becomes_tool_observation_and_does_not_execute():
     done = await wait_for_status(service, created.id, AgentRunStatus.COMPLETED)
 
     assert registry.calls == []
-    assert done.output == "Not sent."
-    assert "user denied" in driver.requests[1][1][-1]["content"].casefold()
+    assert done.output == "That action wasn’t approved, so it wasn’t run."
+    assert len(driver.requests) == 1
 
 
 @pytest.mark.asyncio
@@ -619,7 +618,7 @@ async def test_approval_maps_missing_runtime_payload(monkeypatch, approved):
         service._runtime, "resolve_approval", lambda *_args, **_kw: None
     )
 
-    expected = "approved action payload" if approved else "denial observation"
+    expected = "approved action payload" if approved else "denial result"
     with pytest.raises(AgentRunConflictError, match=expected):
         await service.approve(
             created.id,
@@ -948,8 +947,38 @@ def test_tool_selection_is_exact_bounded_and_read_first_by_default():
 
     with pytest.raises(AgentToolSelectionError, match="unknown"):
         service._select_tools(["missing"], profile, registry)
-    with pytest.raises(AgentToolSelectionError, match="at most 6"):
-        service._select_tools([tool.name for tool in tools], profile, registry)
+    with pytest.raises(AgentToolSelectionError, match="at most 6 connector tools"):
+        service._select_tools(
+            [tool.name for tool in tools],
+            profile,
+            registry,
+        )
+
+
+def test_automatic_helpers_never_displace_existing_connector_tools():
+    connector_tools = [
+        ToolSpec(name=f"connector_{index}", risk=ToolRisk.READ_ONLY)
+        for index in range(6)
+    ]
+    helpers = [
+        ToolSpec(name="rapid__calculate", risk=ToolRisk.READ_ONLY),
+        ToolSpec(name="rapid__batch_read_only", risk=ToolRisk.READ_ONLY),
+    ]
+    registry = FakeRegistry((*helpers, *connector_tools))
+    service = AgentServerService(registry=registry)
+    profile = resolve_agent_profile("minicpm5-2b-4bit")
+
+    selected = service._select_tools(None, profile, registry)
+
+    assert [tool.name for tool in selected] == [
+        *(f"connector_{index}" for index in range(6)),
+        "rapid__calculate",
+        "rapid__batch_read_only",
+    ]
+    assert (
+        service._select_tools([tool.name for tool in selected], profile, registry)
+        == selected
+    )
 
 
 @pytest.mark.parametrize(
@@ -963,6 +992,16 @@ def test_tool_selection_is_exact_bounded_and_read_first_by_default():
 )
 def test_mcp_risk_classifier_requires_exact_operator_declaration(name, declared, risk):
     assert classify_mcp_tool(name, declared_read_only=declared) is risk
+
+
+def test_mcp_risk_classifier_distinguishes_approved_local_changes():
+    assert (
+        classify_mcp_tool(
+            "files__write_file",
+            declared_local_change=["files__write_file"],
+        )
+        is ToolRisk.LOCAL_CHANGE
+    )
 
 
 def test_request_contract_rejects_duplicate_tools_and_non_boolean_controls():
@@ -1219,6 +1258,7 @@ def test_mcp_projection_uses_declared_risk_and_skips_unsupported_schemas():
         get_all_tools=lambda: [
             MCPTool("files", "read_file", "read", {"type": "object"}),
             MCPTool("files", "write_file", "write", {"type": "object"}),
+            MCPTool("rapid", "calculate", "reserved", {"type": "object"}),
             MCPTool("refs", "search", "bad", {"$ref": "#/$defs/x"}),
             MCPTool("bad.server", "tool", "bad name", {"type": "object"}),
         ],
@@ -1227,6 +1267,8 @@ def test_mcp_projection_uses_declared_risk_and_skips_unsupported_schemas():
     tools = list(MCPToolRegistry().list_tools())
 
     assert [(tool.name, tool.risk) for tool in tools] == [
+        ("rapid__calculate", ToolRisk.READ_ONLY),
+        ("rapid__batch_read_only", ToolRisk.READ_ONLY),
         ("files__read_file", ToolRisk.READ_ONLY),
         ("files__write_file", ToolRisk.EXTERNAL_SIDE_EFFECT),
     ]
@@ -1366,7 +1408,11 @@ async def test_mcp_snapshot_never_executes_against_reloaded_registry():
     cfg.mcp_manager = advertised
     cfg.mcp_executor = SimpleNamespace(sandbox=Sandbox())
     snapshot = MCPToolRegistry().snapshot()
-    assert [tool.name for tool in snapshot.list_tools()] == ["same__tool"]
+    assert [tool.name for tool in snapshot.list_tools()] == [
+        "rapid__calculate",
+        "rapid__batch_read_only",
+        "same__tool",
+    ]
 
     cfg.mcp_manager = Manager("reloaded")
     cfg.mcp_executor = SimpleNamespace(sandbox=Sandbox())
@@ -1964,7 +2010,7 @@ async def test_mcp_result_shapes_and_execution_exception_are_audited():
 
 
 @pytest.mark.asyncio
-async def test_registry_without_mcp_has_no_tools_and_internal_request_stays_live():
+async def test_registry_without_mcp_keeps_local_tools_and_internal_request_live():
     from types import SimpleNamespace
 
     from vllm_mlx.agent_runtime.server import _InternalRequest
@@ -1972,7 +2018,10 @@ async def test_registry_without_mcp_has_no_tools_and_internal_request_stays_live
 
     reset_config()
     registry = MCPToolRegistry()
-    assert registry.list_tools() == []
+    assert [tool.name for tool in registry.list_tools()] == [
+        "rapid__calculate",
+        "rapid__batch_read_only",
+    ]
     assert registry.execution_timeout_seconds == 30.0
     configured = MCPToolRegistry(
         manager=SimpleNamespace(config=SimpleNamespace(default_timeout=12.5)),
@@ -1980,6 +2029,273 @@ async def test_registry_without_mcp_has_no_tools_and_internal_request_stays_live
     )
     assert configured.execution_timeout_seconds == 12.5
     assert await _InternalRequest().is_disconnected() is False
+
+
+@pytest.mark.asyncio
+async def test_builtin_calculator_is_exact_and_rejects_code():
+    registry = MCPToolRegistry(manager=None, executor=None, pinned=True)
+    result = await registry.execute(
+        AgentToolCall(
+            id="calc",
+            name="rapid__calculate",
+            arguments={
+                "expressions": json.dumps(
+                    {
+                        "total": "12.30 + 7.70",
+                        "average": "(12.30 + 7.70) / 2",
+                    }
+                )
+            },
+        )
+    )
+    assert json.loads(result.content) == {"average": "10", "total": "20"}
+    assert result.is_error is False
+
+    rejected = await registry.execute(
+        AgentToolCall(
+            id="unsafe",
+            name="rapid__calculate",
+            arguments={
+                "expressions": json.dumps({"x": "__import__('os').system('id')"})
+            },
+        )
+    )
+    assert rejected.is_error is True
+    assert rejected.executed is False
+
+    malformed = await registry.execute(
+        AgentToolCall(
+            id="malformed",
+            name="rapid__calculate",
+            arguments={"expressions": "[]"},
+        )
+    )
+    assert malformed.is_error is True
+    assert malformed.executed is False
+
+    wrong_value_type = await registry.execute(
+        AgentToolCall(
+            id="wrong-value-type",
+            name="rapid__calculate",
+            arguments={"expressions": json.dumps({"x": 1})},
+        )
+    )
+    assert wrong_value_type.is_error is True
+    assert wrong_value_type.executed is False
+
+
+def test_builtin_arithmetic_covers_supported_grammar_and_bounds():
+    assert _evaluate_arithmetic("0.1 + 0.2") == "0.3"
+    assert (
+        _evaluate_arithmetic("123456789012345678901234567890.1 + 0.2")
+        == "123456789012345678901234567890.3"
+    )
+    assert _evaluate_arithmetic("1 / 4") == "0.25"
+    assert _evaluate_arithmetic("-2 + +3") == "1"
+    assert _evaluate_arithmetic("2 * 3 - 1") == "5"
+
+    with pytest.raises(ValueError, match="too complex"):
+        _evaluate_arithmetic("+".join("1" for _ in range(40)))
+    with pytest.raises(ValueError, match="undefined"):
+        _evaluate_arithmetic("1 / 0")
+    with pytest.raises(ValueError, match="undefined"):
+        _evaluate_arithmetic("1 / 3")
+    with pytest.raises(ValueError, match="supported range"):
+        _evaluate_arithmetic("1e2000")
+
+
+@pytest.mark.asyncio
+async def test_builtin_batch_runs_only_read_only_tools():
+    registry = MCPToolRegistry(manager=None, executor=None, pinned=True)
+    completed = await registry.execute(
+        AgentToolCall(
+            id="batch",
+            name="rapid__batch_read_only",
+            arguments={
+                "calls": json.dumps(
+                    [
+                        {
+                            "name": "rapid__calculate",
+                            "arguments": {"expressions": json.dumps({"a": "2 + 3"})},
+                        },
+                        {
+                            "name": "rapid__calculate",
+                            "arguments": {"expressions": json.dumps({"b": "8 / 4"})},
+                        },
+                    ]
+                )
+            },
+        )
+    )
+    assert completed.is_error is False
+    payload = json.loads(completed.content)
+    assert payload["truncated"] is False
+    assert [item["content"] for item in payload["results"]] == [
+        '{"a": "5"}',
+        '{"b": "2"}',
+    ]
+
+    executed = []
+
+    class ObservedRegistry(MCPToolRegistry):
+        def list_tools(self):
+            return [
+                ToolSpec(name="rapid__calculate", risk=ToolRisk.READ_ONLY),
+                ToolSpec(name="rapid__batch_read_only", risk=ToolRisk.READ_ONLY),
+                ToolSpec(name="files__write_file", risk=ToolRisk.LOCAL_CHANGE),
+            ]
+
+        async def execute(self, nested_call):
+            if nested_call.name == "rapid__batch_read_only":
+                return await super().execute(nested_call)
+            executed.append(nested_call.name)
+            return AgentToolResult(
+                call_id=nested_call.id,
+                content="unexpected",
+                executed=True,
+            )
+
+    rejected = await ObservedRegistry(manager=None, executor=None, pinned=True).execute(
+        AgentToolCall(
+            id="batch-side-effect",
+            name="rapid__batch_read_only",
+            arguments={
+                "calls": json.dumps(
+                    [
+                        {
+                            "name": "rapid__calculate",
+                            "arguments": {"expressions": json.dumps({"x": "1 + 1"})},
+                        },
+                        {"name": "files__write_file", "arguments": {}},
+                    ]
+                )
+            },
+        )
+    )
+    assert rejected.is_error is True
+    assert rejected.executed is False
+    assert executed == []
+
+    for encoded_calls in ("{}", "[]"):
+        malformed = await registry.execute(
+            AgentToolCall(
+                id=f"malformed-{encoded_calls}",
+                name="rapid__batch_read_only",
+                arguments={"calls": encoded_calls},
+            )
+        )
+        assert malformed.is_error is True
+        assert malformed.executed is False
+
+
+@pytest.mark.asyncio
+async def test_builtin_batch_truncation_remains_valid_json():
+    class LargeReadRegistry(MCPToolRegistry):
+        def list_tools(self):
+            return [
+                ToolSpec(name="rapid__batch_read_only", risk=ToolRisk.READ_ONLY),
+                ToolSpec(name="files__read_file", risk=ToolRisk.READ_ONLY),
+            ]
+
+        async def execute(self, nested_call):
+            if nested_call.name == "rapid__batch_read_only":
+                return await super().execute(nested_call)
+            return AgentToolResult(
+                call_id=nested_call.id,
+                content="\u0000" * 240_000,
+                executed=True,
+            )
+
+    result = await LargeReadRegistry(manager=None, executor=None, pinned=True).execute(
+        AgentToolCall(
+            id="large-batch",
+            name="rapid__batch_read_only",
+            arguments={
+                "calls": json.dumps([{"name": "files__read_file", "arguments": {}}])
+            },
+        )
+    )
+
+    payload = json.loads(result.content)
+    assert len(result.content) <= 240_000
+    assert payload["truncated"] is True
+    assert payload["results"][0]["truncated"] is True
+
+
+@pytest.mark.asyncio
+async def test_builtin_batch_collects_siblings_when_one_read_raises():
+    completed = []
+
+    class RaisingReadRegistry(MCPToolRegistry):
+        def list_tools(self):
+            return [
+                ToolSpec(name="rapid__batch_read_only", risk=ToolRisk.READ_ONLY),
+                ToolSpec(name="files__good", risk=ToolRisk.READ_ONLY),
+                ToolSpec(name="files__raises", risk=ToolRisk.READ_ONLY),
+            ]
+
+        async def execute(self, nested_call):
+            if nested_call.name == "rapid__batch_read_only":
+                return await super().execute(nested_call)
+            await asyncio.sleep(0)
+            completed.append(nested_call.name)
+            if nested_call.name == "files__raises":
+                raise RuntimeError("private connector detail")
+            return AgentToolResult(
+                call_id=nested_call.id,
+                content="ok",
+                executed=True,
+            )
+
+    result = await RaisingReadRegistry(
+        manager=None, executor=None, pinned=True
+    ).execute(
+        AgentToolCall(
+            id="raising-batch",
+            name="rapid__batch_read_only",
+            arguments={
+                "calls": json.dumps(
+                    [
+                        {"name": "files__raises", "arguments": {}},
+                        {"name": "files__good", "arguments": {}},
+                    ]
+                )
+            },
+        )
+    )
+
+    assert sorted(completed) == ["files__good", "files__raises"]
+    assert result.is_error is True
+    assert "private connector detail" not in result.content
+    payload = json.loads(result.content)
+    assert [item["is_error"] for item in payload["results"]] == [True, False]
+    assert result.executed is None
+
+
+@pytest.mark.asyncio
+async def test_builtin_batch_propagates_nested_cancellation():
+    class CancelledReadRegistry(MCPToolRegistry):
+        def list_tools(self):
+            return [
+                ToolSpec(name="rapid__batch_read_only", risk=ToolRisk.READ_ONLY),
+                ToolSpec(name="files__cancel", risk=ToolRisk.READ_ONLY),
+            ]
+
+        async def execute(self, nested_call):
+            if nested_call.name == "rapid__batch_read_only":
+                return await super().execute(nested_call)
+            raise asyncio.CancelledError
+
+    with pytest.raises(asyncio.CancelledError):
+        await CancelledReadRegistry(manager=None, executor=None, pinned=True).execute(
+            AgentToolCall(
+                id="cancelled-batch",
+                name="rapid__batch_read_only",
+                arguments={
+                    "calls": json.dumps([{"name": "files__cancel", "arguments": {}}])
+                },
+            )
+        )
 
 
 @pytest.mark.asyncio
@@ -2240,6 +2556,44 @@ async def test_runtime_rejection_is_marked_terminal_by_adapter():
     failed = await wait_for_status(service, created.id, AgentRunStatus.FAILED)
 
     assert failed.failure_code == "unadvertised_tool_call"
+
+
+@pytest.mark.asyncio
+async def test_drive_preserves_stable_invalid_tool_arguments_code():
+    class InvalidToolArgumentsError(Exception):
+        rapid_mlx_error_code = "invalid_tool_arguments"
+
+    class RejectingDriver:
+        async def __call__(self, *_args):
+            raise InvalidToolArgumentsError("must not reach the client")
+
+    service = AgentServerService(
+        registry=FakeRegistry((READ,)), chat_driver=RejectingDriver()
+    )
+    created = await service.create(AgentRunCreateRequest(goal="read x"), model="model")
+
+    failed = await wait_for_status(service, created.id, AgentRunStatus.FAILED)
+
+    assert failed.failure_code == "invalid_tool_arguments"
+
+
+@pytest.mark.asyncio
+async def test_drive_does_not_trust_arbitrary_dependency_failure_code():
+    class UntrustedError(Exception):
+        rapid_mlx_error_code = "pretend_success"
+
+    class RejectingDriver:
+        async def __call__(self, *_args):
+            raise UntrustedError("must not reach the client")
+
+    service = AgentServerService(
+        registry=FakeRegistry((READ,)), chat_driver=RejectingDriver()
+    )
+    created = await service.create(AgentRunCreateRequest(goal="read x"), model="model")
+
+    failed = await wait_for_status(service, created.id, AgentRunStatus.FAILED)
+
+    assert failed.failure_code == "agent_adapter_failure"
 
 
 @pytest.mark.asyncio

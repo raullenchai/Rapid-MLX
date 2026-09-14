@@ -216,12 +216,16 @@ def validate_config(data: dict[str, Any], tolerant: bool = False) -> MCPConfig:
     agent_read_only_tools = [
         tool for server in servers.values() for tool in server.agent_read_only_tools
     ]
+    agent_local_change_tools = [
+        tool for server in servers.values() for tool in server.agent_local_change_tools
+    ]
 
     return MCPConfig(
         servers=servers,
         default_timeout=default_timeout,
         allowed_high_risk_tools=allowed_high_risk_tools,
         agent_read_only_tools=agent_read_only_tools,
+        agent_local_change_tools=agent_local_change_tools,
         rejected=rejected,
     )
 

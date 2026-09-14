@@ -1344,13 +1344,20 @@ final class ChatViewModel {
         let fallback = "The agent task could not be completed."
         if let index = messages.firstIndex(where: { $0.id == turn.placeholderID }) {
             var placeholder = messages[index]
-            placeholder.content = display.isEmpty ? fallback : display
+            // The failed row already owns the recovery copy through
+            // `errorMessage`. Leaving the same string in `content` rendered it
+            // once as Markdown, once as the failure caption, and once again in
+            // the compose banner during physical Agent dogfood.
+            placeholder.content = ""
+            placeholder.errorMessage = display.isEmpty ? fallback : display
             placeholder.status = .failed
             updateMessage(at: index, with: placeholder)
         }
-        lastError = display.isEmpty ? fallback : display
-        lastFailureKind = .requestFailed
-        lastFailureAlias = turn.alias
+        // Agent failures are retained on their transcript row. Do not mirror
+        // them into the composer-level turn banner.
+        lastError = nil
+        lastFailureKind = nil
+        lastFailureAlias = nil
         externalTurn = nil
         isStreaming = false
     }

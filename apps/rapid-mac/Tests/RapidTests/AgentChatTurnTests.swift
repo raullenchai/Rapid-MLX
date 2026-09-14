@@ -103,18 +103,36 @@ struct AgentChatTurnTests {
         #expect(!model.isStreaming)
     }
 
-    @Test("A runtime failure is attributed to the agent model")
-    func failureProjectsIntoTranscript() {
+    @Test("An Agent failure is shown once without the normal retry banner")
+    func failureProjectsOnceIntoTranscript() {
         let model = ChatViewModel(persistsConversations: false)
         #expect(model.beginAgentTurn("Do the task", alias: "minicpm5-2b") {})
 
         model.failAgentTurn("The local tool became unavailable.")
 
         #expect(model.messages.last?.status == .failed)
-        #expect(model.messages.last?.content == "The local tool became unavailable.")
-        #expect(model.lastError == "The local tool became unavailable.")
-        #expect(model.lastFailureKind == .requestFailed)
-        #expect(model.lastFailureAlias == "minicpm5-2b")
+        #expect(model.messages.last?.content.isEmpty == true)
+        #expect(model.messages.last?.errorMessage == "The local tool became unavailable.")
+        #expect(model.lastError == nil)
+        #expect(model.lastFailureKind == nil)
+        #expect(model.lastFailureAlias == nil)
+    }
+
+    @Test("Stable Agent failure codes become friendly recovery copy")
+    func failurePresentationHidesImplementationCodes() {
+        let limit = AgentFailurePresentation.message(for: "tool_call_during_final_synthesis")
+        #expect(limit.contains("action limit"))
+        #expect(limit.contains("smaller steps"))
+        #expect(!limit.contains("tool_call_during_final_synthesis"))
+
+        let fallback = AgentFailurePresentation.message(for: "future_server_code")
+        #expect(fallback == "Rapid couldn’t complete the agent task. Try again or split it into smaller steps.")
+        #expect(!fallback.contains("future_server_code"))
+
+        let invalid = AgentFailurePresentation.message(for: "invalid_tool_arguments")
+        #expect(invalid.contains("latest requested action"))
+        #expect(invalid.contains("wasn’t run"))
+        #expect(!invalid.contains("No action"))
     }
 
     @Test("Approval presentation uses only the bounded redacted summary")

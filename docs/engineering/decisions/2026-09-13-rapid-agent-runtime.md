@@ -55,18 +55,19 @@ forcing macOS-only tools into Python.
 
 1. A run is bound to one immutable model profile, recorded completely in
    `run.created`. Only the runtime instance that created a run may advance it.
-2. The MiniCPM5-2B profile exposes at most six tools and permits eight tool
-   rounds. P0 accepts one tool call per model turn for every profile.
+2. The MiniCPM5-2B profile exposes at most six configured connector tools plus
+   two bounded Rapid host helpers, and permits twelve tool rounds. P0 accepts
+   one tool call per model turn for every profile.
 3. Tools not advertised for that exact turn fail closed.
    Registry adapters must classify every tool explicitly; there is no
    permissive default risk. Calls are validated against the exact JSON Schema
    snapshot shown to the model before any executable payload is released. P0
    accepts inline schemas only; references and resolver/network behavior are out
    of scope.
-4. External side effects pause for an explicit approval result tied to the
-   exact pending call ID; their raw executable call is released only after
-   `approved=True`. A call ID may appear only once in a run. Blocked/denied
-   results are explicitly marked unexecuted.
+4. Local changes and external side effects pause for an explicit approval
+   result tied to the exact pending call ID; their raw executable call is
+   released only after `approved=True`. A call ID may appear only once in a
+   run. Blocked/denied results are explicitly marked unexecuted.
 5. Repeating the same tool and arguments more than twice disables tools and
    forces final synthesis.
 6. Tool-round exhaustion reserves one tools-disabled final synthesis turn.
@@ -78,8 +79,10 @@ forcing macOS-only tools into Python.
    must be resolved from opaque references out of band. Raw calls, results,
    final model content, and repeat fingerprints remain transient. Weak run references ensure
    abandoned runs do not pin memory.
-9. Host-generated denial and loop-guard observations are returned transiently
-   to the adapter, so every model tool call receives a matching tool result.
+9. Loop-guard observations are returned transiently to the adapter so the
+   model can synthesize from a matching tool result. A user denial is recorded
+   as an unexecuted result, then terminates with deterministic host copy; it is
+   never handed back to a compact model for narration.
 10. Adapters attach a short host-authored ledger block to the next model request.
     It stays transient because it includes the goal, and is never copied into a
     wire event. It is not appended as a new user instruction; the A/B test showed

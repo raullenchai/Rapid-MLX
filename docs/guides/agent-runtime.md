@@ -22,9 +22,11 @@ rapid-mlx serve minicpm5-2b-4bit \
   --mcp-config ./mcp.json
 ```
 
-MCP has no standard side-effect annotation. Rapid therefore requires approval
-for every MCP tool unless the operator explicitly declares an exact namespaced
-tool as read-only:
+Rapid does not trust a tool name as a safety policy. It therefore requires
+approval for every MCP tool unless the operator explicitly declares an exact
+namespaced tool as read-only. An operator can separately mark a tool as a
+local change so the approval dialog accurately says it changes this Mac rather
+than implying it contacts another person or service:
 
 ```json
 {
@@ -35,6 +37,10 @@ tool as read-only:
       "agent_read_only_tools": [
         "files__read_file",
         "files__list_directory"
+      ],
+      "agent_local_change_tools": [
+        "files__write_file",
+        "files__create_directory"
       ]
     }
   }
@@ -42,10 +48,14 @@ tool as read-only:
 ```
 
 Do not put a write, delete, shell, messaging, payment, or other consequential
-tool in that server's `agent_read_only_tools`. Name patterns are intentionally not trusted:
-a connector could call a mutating tool `get_and_delete`, so undeclared tools
-always pause for approval. The existing MCP sandbox still runs immediately
-before execution and may reject an approved call.
+tool in that server's `agent_read_only_tools`. Local changes still pause for
+approval; `agent_local_change_tools` changes only the explanation shown to the
+user. A tool cannot appear in both lists, and each declaration must use its
+own server's namespace. Name patterns are intentionally not trusted: a
+connector could call a mutating tool `get_and_delete`, so undeclared tools are
+treated as external side effects and always pause for approval. The existing
+MCP sandbox still runs immediately before execution and may reject an approved
+call.
 
 Each run also pins the MCP manager/executor generation that advertised its
 tools. If MCP is reloaded while a run is generating or awaiting approval, that
@@ -97,6 +107,20 @@ curl -sS \
 copied into the durable event contract. Events likewise omit the goal, raw
 argument values, tool-result content, credentials, and model reasoning.
 
+Rapid automatically exposes two local, read-only helpers when tools are
+selected automatically:
+
+- `rapid__calculate` evaluates up to 16 basic arithmetic expressions using a
+  restricted parser. It cannot execute names, functions, or code.
+- `rapid__batch_read_only` runs up to eight independent calls concurrently,
+  but only when every nested tool was already classified read-only. A batch
+  containing a write or undeclared tool is rejected before anything runs.
+
+These helpers let a compact model read several files and calculate totals in
+fewer model turns. They do not bypass MCP schemas, the sandbox, or approval
+policy. If `tool_names` is supplied explicitly, include either helper by name
+when the task needs it.
+
 ## Approve or deny an action
 
 When status is `awaiting_approval`, the run view contains one transient
@@ -111,9 +135,13 @@ curl -sS http://127.0.0.1:8000/v1/agent/runs/RUN_ID/approval \
   -d '{"call_id":"CALL_ID","approved":true}'
 ```
 
-Use `approved:false` to deny it. Rapid returns the denial to the model as an
-unexecuted tool result, then asks for a safe final response. A stale or wrong
-call ID returns HTTP 409 and cannot release an action.
+Use `approved:false` to deny it. Rapid records the action as unexecuted and
+finishes with `That action wasn’t approved, so it wasn’t run.` This wording is
+scoped to the pending action because earlier approved actions in the same run
+may already have completed. Rapid does not ask the model to reinterpret the
+refusal, so compact models cannot leak planning text or imply the pending
+action happened. A stale or wrong call ID returns HTTP 409 and cannot release
+an action.
 
 After `approved:true`, a client-executed run moves to
 `awaiting_tool_result` and only then exposes the original arguments. This
@@ -184,8 +212,8 @@ work.
 
 The MiniCPM5-2B profile is the measured low-memory path:
 
-- at most 6 visible tools;
-- at most 8 tool rounds, followed by one tools-disabled synthesis turn;
+- at most 6 configured connector tools plus 2 bounded Rapid host helpers;
+- at most 12 tool rounds, followed by one tools-disabled synthesis turn;
 - at most 2 identical calls before loop blocking;
 - one tool call per model turn;
 - a hard 900-token output ceiling (larger request values are clamped),

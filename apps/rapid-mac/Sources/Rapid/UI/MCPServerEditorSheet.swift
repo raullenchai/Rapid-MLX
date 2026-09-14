@@ -64,7 +64,13 @@ struct MCPServerEditorSheet: View {
             env: transport == .stdio ? Self.parseEnv(envText) : [:],
             url: transport == .sse ? url.trimmingCharacters(in: .whitespaces) : nil,
             enabled: enabled,
-            timeout: original?.timeout ?? 30
+            timeout: original?.timeout ?? 30,
+            // Policy is authored by the engine config today. Preserve it
+            // exactly when a user edits an unrelated connector field in the
+            // GUI; silently dropping it would turn safe reads into approval
+            // prompts and mislabel local writes on the next reload.
+            agentReadOnlyTools: original?.agentReadOnlyTools ?? [],
+            agentLocalChangeTools: original?.agentLocalChangeTools ?? []
         )
     }
 

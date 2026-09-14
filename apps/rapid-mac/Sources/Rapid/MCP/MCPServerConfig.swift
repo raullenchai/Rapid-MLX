@@ -1,5 +1,15 @@
 import Foundation
 
+private struct MCPConsentFingerprint: Encodable {
+    let transport: MCPServerConfig.Transport
+    let command: String?
+    let args: [String]
+    let env: [String: String]
+    let url: String?
+    let agentReadOnlyTools: [String]
+    let agentLocalChangeTools: [String]
+}
+
 /// One MCP server entry, as it round-trips through `~/.config/rapid-mlx/mcp.json`.
 ///
 /// Mirrors the engine's `MCPServerConfig` (`vllm_mlx/mcp/types.py`) field for
@@ -33,6 +43,11 @@ struct MCPServerConfig: Codable, Equatable, Hashable, Sendable, Identifiable {
     var url: String?
     var enabled: Bool
     var timeout: Double
+    /// Exact namespaced Agent policy declarations. Imported configs retain
+    /// these fields even though the engine remains the authority that
+    /// validates and applies them.
+    var agentReadOnlyTools: [String]
+    var agentLocalChangeTools: [String]
 
     var id: String { name }
 
@@ -44,7 +59,9 @@ struct MCPServerConfig: Codable, Equatable, Hashable, Sendable, Identifiable {
         env: [String: String] = [:],
         url: String? = nil,
         enabled: Bool = true,
-        timeout: Double = 30
+        timeout: Double = 30,
+        agentReadOnlyTools: [String] = [],
+        agentLocalChangeTools: [String] = []
     ) {
         self.name = name
         self.transport = transport
@@ -54,6 +71,8 @@ struct MCPServerConfig: Codable, Equatable, Hashable, Sendable, Identifiable {
         self.url = url
         self.enabled = enabled
         self.timeout = timeout
+        self.agentReadOnlyTools = agentReadOnlyTools
+        self.agentLocalChangeTools = agentLocalChangeTools
     }
 
     // MARK: - Validation
@@ -91,23 +110,28 @@ struct MCPServerConfig: Codable, Equatable, Hashable, Sendable, Identifiable {
         return true
     }
 
-    /// A stable string of this connector's execution identity — transport,
-    /// command, arguments, environment, URL. Two configs with the same
-    /// fingerprint run the same code; a change means consent must be
-    /// re-established. Used to catch hand-edits to the config file, which never
-    /// pass through the in-app edit path. Not cryptographic — only needs to
-    /// change when the execution identity does.
+    /// A stable string of this connector's execution and Agent-policy identity.
+    /// A change to code, transport, or exact risk declarations means consent
+    /// must be re-established. Used to catch hand-edits to the config file,
+    /// which never pass through the in-app edit path. Not cryptographic — only
+    /// needs to change when the consent-relevant identity does.
     var executionFingerprint: String {
-        let envPart = env.sorted { $0.key < $1.key }
-            .map { "\($0.key)=\($0.value)" }
-            .joined(separator: ",")
-        return [
-            transport.rawValue,
-            command ?? "",
-            args.joined(separator: "\u{1}"),
-            envPart,
-            url ?? "",
-        ].joined(separator: "\u{2}")
+        let payload = MCPConsentFingerprint(
+            transport: transport,
+            command: command,
+            args: args,
+            env: env,
+            url: url,
+            agentReadOnlyTools: agentReadOnlyTools.sorted(),
+            agentLocalChangeTools: agentLocalChangeTools.sorted()
+        )
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
+        // Every field above is a Foundation-native scalar/collection, so
+        // encoding cannot fail. A structured encoding avoids delimiter
+        // collisions between distinct argument or policy arrays.
+        let data = try! encoder.encode(payload)
+        return String(decoding: data, as: UTF8.self)
     }
 
     /// True when `other` would launch or reach a different program than `self`
@@ -122,6 +146,8 @@ struct MCPServerConfig: Codable, Equatable, Hashable, Sendable, Identifiable {
             || args != other.args
             || env != other.env
             || url != other.url
+            || agentReadOnlyTools != other.agentReadOnlyTools
+            || agentLocalChangeTools != other.agentLocalChangeTools
     }
 
     /// Human-readable reason this entry can't be saved, or `nil` when it can.
@@ -151,6 +177,14 @@ struct MCPServerConfig: Codable, Equatable, Hashable, Sendable, Identifiable {
         if timeout <= 0 {
             return "Timeout must be greater than zero."
         }
+        let prefix = name + "__"
+        let declarations = agentReadOnlyTools + agentLocalChangeTools
+        if declarations.contains(where: { !$0.hasPrefix(prefix) }) {
+            return "Agent tool declarations for this connector must start with \(prefix)."
+        }
+        if !Set(agentReadOnlyTools).isDisjoint(with: Set(agentLocalChangeTools)) {
+            return "An Agent tool cannot be both read-only and a local change."
+        }
         return nil
     }
 
@@ -160,6 +194,8 @@ struct MCPServerConfig: Codable, Equatable, Hashable, Sendable, Identifiable {
     /// excluded — ``MCPConfigStore`` reattaches it on load.
     private enum CodingKeys: String, CodingKey {
         case transport, command, args, env, url, enabled, timeout
+        case agentReadOnlyTools = "agent_read_only_tools"
+        case agentLocalChangeTools = "agent_local_change_tools"
     }
 
     init(from decoder: Decoder) throws {
@@ -176,6 +212,12 @@ struct MCPServerConfig: Codable, Equatable, Hashable, Sendable, Identifiable {
         self.url = try c.decodeIfPresent(String.self, forKey: .url)
         self.enabled = try c.decodeIfPresent(Bool.self, forKey: .enabled) ?? true
         self.timeout = try c.decodeIfPresent(Double.self, forKey: .timeout) ?? 30
+        self.agentReadOnlyTools = try c.decodeIfPresent(
+            [String].self, forKey: .agentReadOnlyTools
+        ) ?? []
+        self.agentLocalChangeTools = try c.decodeIfPresent(
+            [String].self, forKey: .agentLocalChangeTools
+        ) ?? []
         self.name = ""  // reattached by MCPConfigStore from the map key
     }
 
@@ -195,5 +237,11 @@ struct MCPServerConfig: Codable, Equatable, Hashable, Sendable, Identifiable {
         }
         try c.encode(enabled, forKey: .enabled)
         try c.encode(timeout, forKey: .timeout)
+        if !agentReadOnlyTools.isEmpty {
+            try c.encode(agentReadOnlyTools, forKey: .agentReadOnlyTools)
+        }
+        if !agentLocalChangeTools.isEmpty {
+            try c.encode(agentLocalChangeTools, forKey: .agentLocalChangeTools)
+        }
     }
 }

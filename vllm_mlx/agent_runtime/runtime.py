@@ -374,7 +374,7 @@ class AgentRuntime:
         call_id: str,
         approved: bool,
     ) -> AgentRuntimeOutput | None:
-        """Resolve exactly one pending approval and return a denial observation."""
+        """Resolve exactly one pending approval and finish deterministically on denial."""
 
         if type(approved) is not bool:
             raise AgentRuntimeError("approved must be a boolean")
@@ -409,7 +409,20 @@ class AgentRuntime:
             safe_summary="User denied the tool call.",
         )
         self._complete_tool_result(run, denied)
-        return AgentRuntimeOutput(observation=denied)
+        # A refusal is a complete user decision, not new evidence for the
+        # model to narrate.  Asking a compact model for one more turn leaked
+        # planner-like prose in physical GUI dogfood.  Terminate with stable
+        # product copy and make the no-side-effect outcome unambiguous.
+        content = "That action wasn’t approved, so it wasn’t run."
+        object.__setattr__(run, "status", AgentRunStatus.COMPLETED)
+        _append_event(
+            run,
+            "run.completed",
+            {"content_bytes": len(content.encode())},
+            now=self._clock(),
+        )
+        self._call_counts_by_run.pop(id(run), None)
+        return AgentRuntimeOutput(final_content=content)
 
     @_serialized
     def accept_tool_result(self, run: AgentRun, result: AgentToolResult) -> None:

@@ -94,7 +94,9 @@ final class MCPConnectorsTests {
             transport: .stdio,
             command: "uvx",
             args: ["mcp-server-time", "--local-timezone=UTC"],
-            env: ["TZ": "UTC"]
+            env: ["TZ": "UTC"],
+            agentReadOnlyTools: ["time__get_time"],
+            agentLocalChangeTools: ["time__set_local_clock"]
         ))
         try store.upsert(MCPServerConfig(
             name: "remote",
@@ -116,6 +118,8 @@ final class MCPConnectorsTests {
         #expect(time.command == "uvx")
         #expect(time.args == ["mcp-server-time", "--local-timezone=UTC"])
         #expect(time.env == ["TZ": "UTC"])
+        #expect(time.agentReadOnlyTools == ["time__get_time"])
+        #expect(time.agentLocalChangeTools == ["time__set_local_clock"])
         let remote = try #require(decoded.first { $0.name == "remote" })
         #expect(remote.transport == .sse)
         #expect(remote.url == "https://example.com/mcp")
@@ -426,6 +430,24 @@ final class MCPConnectorsTests {
         let edited = MCPServerConfig(name: "fs", command: "evil")
         approval.reconcileGrants(against: ["fs": edited.executionFingerprint])
         #expect(!approval.isGranted("fs__read_file"))
+    }
+
+    @Test("Consent fingerprints cannot collide through separator characters")
+    func consentFingerprintUsesStructuredEncoding() {
+        let embeddedSeparator = MCPServerConfig(
+            name: "fs",
+            command: "npx",
+            args: ["alpha\u{1}beta"],
+            agentReadOnlyTools: ["fs__one\u{1}fs__two"]
+        )
+        let separateValues = MCPServerConfig(
+            name: "fs",
+            command: "npx",
+            args: ["alpha", "beta"],
+            agentReadOnlyTools: ["fs__one", "fs__two"]
+        )
+
+        #expect(embeddedSeparator.executionFingerprint != separateValues.executionFingerprint)
     }
 
     @Test("Auto-approve mode skips the prompt entirely")

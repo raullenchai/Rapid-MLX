@@ -398,6 +398,11 @@ cat > "$LAUNCHER" <<LAUNCHEOF
 # which drops the environment and re-shares the user's app state.
 set -euo pipefail
 export HOME="$HOME_DIR"
+# Foundation's FileManager.homeDirectoryForCurrentUser follows
+# CFFIXED_USER_HOME on current macOS even when it ignores an overridden HOME.
+# Set both so isolated launches cannot resolve connector/session paths back to
+# the operator's real account (confirmed on macOS 26.5.2, M2 Pro).
+export CFFIXED_USER_HOME="$HOME_DIR"
 export HF_HOME="$HF_HOME_FOR_RUN"
 export RAPID_DESKTOP_PORT="$ISOLATED_PORT"
 export RAPID_DESKTOP_NO_PORT_SWEEP=1

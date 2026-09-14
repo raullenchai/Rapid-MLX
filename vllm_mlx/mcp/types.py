@@ -16,16 +16,20 @@ logger = logging.getLogger(__name__)
 _KNOWN_SETTING_KEYS = frozenset({"default_timeout", "allowed_high_risk_tools"})
 
 
-def validate_agent_read_only_tools(value: Any) -> list[str]:
+def validate_agent_tool_declarations(value: Any, *, field_name: str) -> list[str]:
     """Return exact namespaced declarations or reject the whole setting."""
 
     if not isinstance(value, list) or not all(
         isinstance(tool, str) and "__" in tool for tool in value
     ):
-        raise ValueError(
-            "'agent_read_only_tools' must be a list of namespaced tool strings"
-        )
+        raise ValueError(f"'{field_name}' must be a list of namespaced tool strings")
     return list(value)
+
+
+def validate_agent_read_only_tools(value: Any) -> list[str]:
+    """Backward-compatible validator for the existing public setting."""
+
+    return validate_agent_tool_declarations(value, field_name="agent_read_only_tools")
 
 
 def select_server_map(data: dict[str, Any]) -> dict[str, Any]:
@@ -124,6 +128,10 @@ class MCPServerConfig:
     # Agent policy belongs to the server it describes, avoiding a new
     # top-level config key that could collide with a legacy server name.
     agent_read_only_tools: list[str] = field(default_factory=list)
+    # Exact namespaced tools that only modify this Mac. They still require
+    # per-call approval, but Desktop can explain the real risk instead of
+    # claiming a local file write affects external services or other people.
+    agent_local_change_tools: list[str] = field(default_factory=list)
 
     def __post_init__(self):
         """Validate configuration."""
@@ -133,15 +141,27 @@ class MCPServerConfig:
         self.agent_read_only_tools = validate_agent_read_only_tools(
             self.agent_read_only_tools
         )
-        wrong_server = [
-            tool
-            for tool in self.agent_read_only_tools
-            if not tool.startswith(f"{self.name}__")
-        ]
-        if wrong_server:
+        self.agent_local_change_tools = validate_agent_tool_declarations(
+            self.agent_local_change_tools,
+            field_name="agent_local_change_tools",
+        )
+        for field_name, tools in (
+            ("agent_read_only_tools", self.agent_read_only_tools),
+            ("agent_local_change_tools", self.agent_local_change_tools),
+        ):
+            wrong_server = [
+                tool for tool in tools if not tool.startswith(f"{self.name}__")
+            ]
+            if wrong_server:
+                raise ValueError(
+                    f"MCP server '{self.name}': {field_name} must use "
+                    f"the '{self.name}__' namespace"
+                )
+        overlap = set(self.agent_read_only_tools) & set(self.agent_local_change_tools)
+        if overlap:
             raise ValueError(
-                f"MCP server '{self.name}': agent_read_only_tools must use "
-                f"the '{self.name}__' namespace"
+                f"MCP server '{self.name}': agent tool declarations overlap: "
+                + ", ".join(sorted(overlap))
             )
 
         if self.transport == MCPTransport.STDIO:
@@ -220,6 +240,7 @@ class MCPConfig:
     # Appended after every pre-existing field to preserve positional callers.
     # Agent runs require per-call approval for every MCP tool not listed here.
     agent_read_only_tools: list[str] = field(default_factory=list)
+    agent_local_change_tools: list[str] = field(default_factory=list)
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "MCPConfig":
@@ -239,12 +260,18 @@ class MCPConfig:
         agent_read_only_tools = [
             tool for server in servers.values() for tool in server.agent_read_only_tools
         ]
+        agent_local_change_tools = [
+            tool
+            for server in servers.values()
+            for tool in server.agent_local_change_tools
+        ]
 
         return cls(
             servers=servers,
             default_timeout=data.get("default_timeout", 30.0),
             allowed_high_risk_tools=data.get("allowed_high_risk_tools", []),
             agent_read_only_tools=agent_read_only_tools,
+            agent_local_change_tools=agent_local_change_tools,
         )
 
 
