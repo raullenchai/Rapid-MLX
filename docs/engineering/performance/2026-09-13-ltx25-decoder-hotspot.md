@@ -9,6 +9,8 @@ Host: MZR-3, Mac mini `Mac16,11`, M4 Pro 12-core CPU / 16-core GPU,
 
 ## Result
 
+Runtime change: [MrMoferFRAN/ltx-2-mlx#2](https://github.com/MrMoferFRAN/ltx-2-mlx/pull/2)
+
 The post-diffusion tail for the fixed 121-frame workload is almost entirely
 video VAE work. Audio VAE, vocoder, WAV output, frame conversion, ffmpeg pipe
 writes, and mux drain are too small to justify parallel audio/ANE or pipe

@@ -6,6 +6,7 @@ Date: 2026-09-13
 
 Runtime branch: `vector/ltx25-decoder-hotspot` in the `ltx-2-mlx` repository,
 based on upstream `ltx25` commit `57952288076766abe27dda3a774b2c24f7346977`.
+PR: [MrMoferFRAN/ltx-2-mlx#2](https://github.com/MrMoferFRAN/ltx-2-mlx/pull/2).
 
 ## Verified facts
 
