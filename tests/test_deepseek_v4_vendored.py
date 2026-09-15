@@ -14,6 +14,7 @@ day-0. These tests pin the contract that:
 
 import importlib
 import sys
+from types import SimpleNamespace
 
 import pytest
 
@@ -95,6 +96,229 @@ def test_register_vendored_archs_is_idempotent():
     _register_vendored_archs()
     second = sys.modules["mlx_lm.models.deepseek_v4"]
     assert first is second
+
+
+def test_heterogeneous_routed_projection_quantization_stays_unfused():
+    """Packed gate/up tensors with different group sizes cannot concatenate."""
+    import mlx.core as mx
+    from mlx_lm.models.switch_layers import SwitchGLU
+
+    from vllm_mlx.models import deepseek_v4
+
+    args = deepseek_v4.ModelArgs(
+        hidden_size=64,
+        moe_intermediate_size=16,
+        num_hidden_layers=1,
+        n_routed_experts=4,
+        compress_ratios=[0],
+        quantization={
+            "group_size": 64,
+            "bits": 4,
+            "mode": "affine",
+            "model.layers.0.ffn.switch_mlp.gate_proj": {
+                "group_size": 32,
+                "bits": 2,
+                "mode": "affine",
+            },
+            "model.layers.0.ffn.switch_mlp.up_proj": {
+                "group_size": 64,
+                "bits": 2,
+                "mode": "affine",
+            },
+        },
+    )
+
+    moe = deepseek_v4.DeepseekV4MoE(args, 0)
+    assert isinstance(moe.switch_mlp, SwitchGLU)
+
+    prefix = "model.layers.0.ffn.switch_mlp"
+    weights = {
+        f"{prefix}.gate_proj.weight": mx.zeros((4, 16, 4), dtype=mx.uint32),
+        f"{prefix}.gate_proj.scales": mx.ones((4, 16, 2)),
+        f"{prefix}.gate_proj.biases": mx.zeros((4, 16, 2)),
+        f"{prefix}.up_proj.weight": mx.ones((4, 16, 4), dtype=mx.uint32),
+        f"{prefix}.up_proj.scales": mx.ones((4, 16, 1)),
+        f"{prefix}.up_proj.biases": mx.ones((4, 16, 1)),
+    }
+    sanitized = deepseek_v4.Model.sanitize(SimpleNamespace(args=args, mtp=[]), weights)
+
+    def quantization_for_path(path, _module):
+        projection = path.rsplit(".", 1)[-1]
+        if projection in {"gate_proj", "up_proj"}:
+            return deepseek_v4._switch_projection_quantization(args, 0, projection)
+        return False
+
+    deepseek_v4.nn.quantize(
+        moe,
+        group_size=64,
+        bits=4,
+        mode="affine",
+        class_predicate=quantization_for_path,
+    )
+    relative_weights = [
+        (key.removeprefix("model.layers.0.ffn."), value)
+        for key, value in sanitized.items()
+    ]
+    moe.load_weights(relative_weights, strict=False)
+
+    assert moe.switch_mlp.gate_proj.group_size == 32
+    assert moe.switch_mlp.up_proj.group_size == 64
+    assert moe.switch_mlp.gate_proj.scales.shape == (4, 16, 2)
+    assert moe.switch_mlp.up_proj.scales.shape == (4, 16, 1)
+    assert sanitized[f"{prefix}.gate_proj.biases"].shape == (4, 16, 2)
+    assert sanitized[f"{prefix}.up_proj.biases"].shape == (4, 16, 1)
+    assert mx.all(moe.switch_mlp.gate_proj.biases == 0).item()
+    assert mx.all(moe.switch_mlp.up_proj.biases == 1).item()
+    assert mx.array_equal(
+        moe.switch_mlp.gate_proj.weight, sanitized[f"{prefix}.gate_proj.weight"]
+    ).item()
+    assert mx.array_equal(
+        moe.switch_mlp.up_proj.weight, sanitized[f"{prefix}.up_proj.weight"]
+    ).item()
+
+
+def test_homogeneous_routed_projection_quantization_keeps_fused_fast_path():
+    import mlx.core as mx
+
+    from vllm_mlx.models import deepseek_v4
+    from vllm_mlx.models.deepseek_v4_switch import FusedSwitchGLU
+
+    args = deepseek_v4.ModelArgs(
+        hidden_size=64,
+        moe_intermediate_size=16,
+        num_hidden_layers=1,
+        n_routed_experts=4,
+        compress_ratios=[0],
+        quantization={"group_size": 64, "bits": 4, "mode": "affine"},
+    )
+
+    moe = deepseek_v4.DeepseekV4MoE(args, 0)
+    assert isinstance(moe.switch_mlp, FusedSwitchGLU)
+
+    prefix = "model.layers.0.ffn.switch_mlp"
+    weights = {}
+    for suffix, (shape, dtype) in {
+        "weight": ((4, 16, 8), mx.uint32),
+        "scales": ((4, 16, 1), mx.float32),
+        "biases": ((4, 16, 1), mx.float32),
+    }.items():
+        weights[f"{prefix}.gate_proj.{suffix}"] = mx.zeros(shape, dtype=dtype)
+        weights[f"{prefix}.up_proj.{suffix}"] = mx.ones(shape, dtype=dtype)
+
+    sanitized = deepseek_v4.Model.sanitize(SimpleNamespace(args=args, mtp=[]), weights)
+
+    for suffix in ("weight", "scales", "biases"):
+        fused = sanitized[f"{prefix}.gate_proj.{suffix}"]
+        assert fused.shape[1] == 32
+        assert mx.all(fused[:, :16] == 0).item()
+        assert mx.all(fused[:, 16:] == 1).item()
+        assert f"{prefix}.up_proj.{suffix}" not in sanitized
+
+    def quantization_for_path(path, _module):
+        if path == "switch_mlp.gate_proj":
+            return {"group_size": 64, "bits": 4, "mode": "affine"}
+        return False
+
+    deepseek_v4.nn.quantize(
+        moe,
+        group_size=64,
+        bits=4,
+        mode="affine",
+        class_predicate=quantization_for_path,
+    )
+    relative_weights = [
+        (key.removeprefix("model.layers.0.ffn."), value)
+        for key, value in sanitized.items()
+    ]
+    moe.load_weights(relative_weights, strict=False)
+
+    fused_projection = moe.switch_mlp.gate_proj
+    assert fused_projection.weight.shape == (4, 32, 8)
+    assert fused_projection.scales.shape == (4, 32, 1)
+    assert fused_projection.biases.shape == (4, 32, 1)
+    assert mx.all(fused_projection.weight[:, :16] == 0).item()
+    assert mx.all(fused_projection.weight[:, 16:] == 1).item()
+
+
+def test_fused_routed_projection_rejects_unpaired_quantization_metadata():
+    import mlx.core as mx
+
+    from vllm_mlx.models.deepseek_v4 import _fuse_switch_gate_up_weights
+
+    prefix = "model.layers.0.ffn.switch_mlp"
+    weights = {
+        f"{prefix}.gate_proj.weight": mx.zeros((4, 16, 8), dtype=mx.uint32),
+        f"{prefix}.up_proj.weight": mx.ones((4, 16, 8), dtype=mx.uint32),
+        f"{prefix}.gate_proj.biases": mx.zeros((4, 16, 1)),
+    }
+
+    with pytest.raises(ValueError, match="missing paired parameter.*up_proj.biases"):
+        _fuse_switch_gate_up_weights(weights, prefix)
+
+    # Validation happens before mutation, so callers can report the intact
+    # checkpoint keys and shapes in their load error.
+    assert f"{prefix}.gate_proj.weight" in weights
+    assert f"{prefix}.up_proj.weight" in weights
+
+
+def test_fused_routed_projection_shape_failure_does_not_mutate_weights():
+    import mlx.core as mx
+
+    from vllm_mlx.models.deepseek_v4 import _fuse_switch_gate_up_weights
+
+    prefix = "model.layers.0.ffn.switch_mlp"
+    gate_key = f"{prefix}.gate_proj.weight"
+    up_key = f"{prefix}.up_proj.weight"
+    original = {
+        gate_key: mx.zeros((4, 16, 8), dtype=mx.uint32),
+        up_key: mx.ones((4, 16, 8), dtype=mx.uint32),
+        f"{prefix}.gate_proj.scales": mx.zeros((4, 16, 2)),
+        f"{prefix}.up_proj.scales": mx.ones((4, 16, 1)),
+    }
+    weights = dict(original)
+
+    with pytest.raises(ValueError, match="dimensions must match"):
+        _fuse_switch_gate_up_weights(weights, prefix)
+
+    assert weights.keys() == original.keys()
+    for key, value in original.items():
+        assert weights[key] is value
+
+
+@pytest.mark.parametrize(("up_group_size", "expect_fused"), [(32, True), (64, False)])
+def test_mtp_projection_fusion_follows_effective_quantization_layout(
+    up_group_size, expect_fused
+):
+    import mlx.core as mx
+
+    from vllm_mlx.models import deepseek_v4
+
+    args = deepseek_v4.ModelArgs(
+        num_hidden_layers=1,
+        compress_ratios=[0],
+        quantization={
+            "group_size": 32,
+            "bits": 2,
+            "mode": "affine",
+            "mtp.0.ffn.switch_mlp.up_proj": {
+                "group_size": up_group_size,
+                "bits": 2,
+                "mode": "affine",
+            },
+        },
+    )
+    prefix = "mtp.0.ffn.switch_mlp"
+    up_key = f"{prefix}.up_proj.weight"
+    weights = {
+        f"{prefix}.gate_proj.weight": mx.zeros((4, 16, 4), dtype=mx.uint32),
+        up_key: mx.ones((4, 16, 4), dtype=mx.uint32),
+    }
+
+    sanitized = deepseek_v4.Model.sanitize(
+        SimpleNamespace(args=args, mtp=[object()]), weights
+    )
+
+    assert (up_key not in sanitized) is expect_fused
 
 
 def test_restored_pooling_cache_without_legacy_undo_field_is_safe():

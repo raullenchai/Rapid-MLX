@@ -27,6 +27,7 @@ from mlx_lm.models.base import (
 from mlx_lm.models.cache import CacheList, RotatingKVCache
 from mlx_lm.models.mla import MultiLinear
 from mlx_lm.models.pipeline import PipelineMixin
+from mlx_lm.models.switch_layers import SwitchGLU
 
 from .deepseek_v4_cache import DeepseekV4PoolingCache, PoolingCache
 from .deepseek_v4_rollback import install_rotating_undo
@@ -85,6 +86,7 @@ class ModelArgs(BaseModelArgs):
     dspark_markov_rank: int = 256
     tie_word_embeddings: bool = False
     topk_method: str = "noaux_tc"
+    quantization: Optional[Dict[str, Any]] = None
 
     def __post_init__(self):
         if not self.compress_ratios:
@@ -103,6 +105,58 @@ class ModelArgs(BaseModelArgs):
         bad = [r for r in self.compress_ratios if r not in (0, 4, 128)]
         if bad:
             raise ValueError(f"Unsupported DeepSeek-V4 compress ratios: {bad}")
+
+
+def _switch_projection_quantization(
+    config: ModelArgs, layer_idx: int, projection: str
+) -> Dict[str, Any]:
+    """Return the effective quantization layout for one routed projection."""
+    quantization = config.quantization or {}
+    if layer_idx < config.num_hidden_layers:
+        prefix = f"model.layers.{layer_idx}.ffn.switch_mlp"
+    else:
+        prefix = f"mtp.{layer_idx - config.num_hidden_layers}.ffn.switch_mlp"
+    default = {
+        key: quantization[key]
+        for key in ("group_size", "bits", "mode")
+        if key in quantization
+    }
+    override = quantization.get(f"{prefix}.{projection}", {})
+    return {**default, **override}
+
+
+def _can_fuse_switch_gate_up(config: ModelArgs, layer_idx: int) -> bool:
+    """Only fuse projections whose packed quantization layouts are identical."""
+    gate = _switch_projection_quantization(config, layer_idx, "gate_proj")
+    up = _switch_projection_quantization(config, layer_idx, "up_proj")
+    layout = ("group_size", "bits", "mode")
+    return all(gate.get(key) == up.get(key) for key in layout)
+
+
+def _fuse_switch_gate_up_weights(weights: Dict[str, mx.array], prefix: str) -> None:
+    """Fuse a complete compatible projection pair without partial mutation."""
+    pairs = []
+    for suffix in ("weight", "scales", "biases"):
+        gate_key = f"{prefix}.gate_proj.{suffix}"
+        up_key = f"{prefix}.up_proj.{suffix}"
+        gate_present = gate_key in weights
+        up_present = up_key in weights
+        if gate_present != up_present:
+            missing = up_key if gate_present else gate_key
+            raise ValueError(
+                "Cannot fuse routed gate/up projections: "
+                f"checkpoint is missing paired parameter {missing!r}."
+            )
+        if gate_present:
+            pairs.append((gate_key, up_key))
+
+    fused_pairs = {
+        gate_key: mx.concatenate([weights[gate_key], weights[up_key]], axis=1)
+        for gate_key, up_key in pairs
+    }
+    for gate_key, up_key in pairs:
+        weights[gate_key] = fused_pairs[gate_key]
+        del weights[up_key]
 
 
 def make_quantization_config(model):
@@ -526,7 +580,10 @@ class DeepseekV4MoE(nn.Module):
         super().__init__()
         self.config = config
         self.gate = MoEGate(config, layer_idx)
-        self.switch_mlp = FusedSwitchGLU(
+        switch_mlp_type = (
+            FusedSwitchGLU if _can_fuse_switch_gate_up(config, layer_idx) else SwitchGLU
+        )
+        self.switch_mlp = switch_mlp_type(
             config.hidden_size,
             config.moe_intermediate_size,
             config.n_routed_experts,
@@ -1885,25 +1942,20 @@ class Model(nn.Module):
                             mx.stack(stacked)
                         )
 
-        # Fuse routed expert gate/up projections by concatenating output rows.
+        # Fuse routed expert gate/up projections only when their packed
+        # quantization layouts match. Some DQ checkpoints deliberately use a
+        # smaller group size for the gate than the up projection; retaining
+        # separate SwitchLinear modules preserves those checkpoint weights.
         for layer_idx in range(n_layers):
+            if not _can_fuse_switch_gate_up(self.args, layer_idx):
+                continue
             prefix = f"model.layers.{layer_idx}.ffn.switch_mlp"
-            for suffix in ("weight", "scales"):
-                gate_key = f"{prefix}.gate_proj.{suffix}"
-                up_key = f"{prefix}.up_proj.{suffix}"
-                if gate_key in weights and up_key in weights:
-                    weights[gate_key] = mx.concatenate(
-                        [weights.pop(gate_key), weights.pop(up_key)], axis=1
-                    )
+            _fuse_switch_gate_up_weights(weights, prefix)
         for stage_idx in range(len(self.mtp)):
+            if not _can_fuse_switch_gate_up(self.args, n_layers + stage_idx):
+                continue
             prefix = f"mtp.{stage_idx}.ffn.switch_mlp"
-            for suffix in ("weight", "scales"):
-                gate_key = f"{prefix}.gate_proj.{suffix}"
-                up_key = f"{prefix}.up_proj.{suffix}"
-                if gate_key in weights and up_key in weights:
-                    weights[gate_key] = mx.concatenate(
-                        [weights.pop(gate_key), weights.pop(up_key)], axis=1
-                    )
+            _fuse_switch_gate_up_weights(weights, prefix)
 
         # Reshape wo_a from nn.Linear (2D) to MultiLinear (3D) for all layers
         for layer_idx in range(n_layers):
