@@ -20,7 +20,7 @@ throughput, and must not be used to characterize the model's generation speed.
 - Mac mini with Apple M4 Pro and 48 GB unified memory
 - macOS 26.5.1 (25F80)
 - Rapid-MLX `132e4fee62bdfbb568250635461e99eafd897629`
-- MLX 0.32.2, language runtime 0.31.3, Transformers 5.15.1
+- MLX 0.32.2, MLX-LM 0.31.3, Transformers 5.15.1
 - offline Hugging Face snapshots; no model downloads during measurements
 - greedy decoding; machine otherwise idle; one model resident at a time
 
@@ -38,7 +38,7 @@ was reported separately as TTFT; decode throughput used the remaining 127
 token intervals. Every model produced the same token hash across all three
 runs.
 
-| Model/path | Median load | Median TTFT | Median decode | Peak MLX memory |
+| Model/path | Load | Median TTFT | Median decode | Peak MLX memory |
 | --- | ---: | ---: | ---: | ---: |
 | K2 Horizon 7B, Rapid-owned adapter | 1.43 s | 0.693 s | 51.12 tok/s | 5.52 GB |
 | K2 Horizon 7B, checkpoint-bundled adapter | 1.53 s | 0.693 s | 51.12 tok/s | 5.52 GB |
