@@ -568,15 +568,20 @@ class K2HorizonToolParser(ToolParser):
                 self._tool_group_seen = True
                 self._post_tool_content_visible = True
                 self._pending_tool_start = None
-                if suppress_calls:
-                    addition = self._without_tool_groups(current_text[initial_upto:])
-                    self._content_upto = len(current_text)
-                else:
-                    addition = self._visible_prefix(
-                        current_text[initial_upto:group_end]
-                    )
-                    self._content_upto = group_end
-                return {"content": addition} if addition else None
+                if not suppress_calls:
+                    content_parts.append(current_text[cursor:group_end])
+                self._content_upto = group_end
+                next_start = current_text.find(self.GROUP_START, group_end)
+                if next_start >= 0:
+                    # An invalid envelope is visible text, not a dispatched
+                    # tool boundary. Preserve the intervening prose and keep
+                    # scanning: a later complete group in this same delta may
+                    # still be valid and must not leak as raw markup at EOF.
+                    content_parts.append(current_text[group_end:next_start])
+                    cursor = next_start
+                    continue
+                content = "".join(content_parts)
+                return {"content": content} if content else None
 
             next_start = current_text.find(self.GROUP_START, group_end)
             if next_start >= 0:

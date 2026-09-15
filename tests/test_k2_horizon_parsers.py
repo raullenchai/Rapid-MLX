@@ -301,6 +301,20 @@ def test_streaming_malformed_group_does_not_strand_later_visible_text():
     assert parser.flush_held_content(current) == ""
 
 
+def test_streaming_invalid_group_does_not_hide_later_valid_group_in_same_chunk():
+    parser = K2HorizonToolParser()
+    malformed = _group("junk")
+    valid = _group(_xml_call("ping"), prefix=" between ")
+    output = malformed + valid
+    delta = parser.extract_tool_calls_streaming(
+        "", output, output, request=_request()
+    )
+    assert delta is not None
+    assert delta["content"] == malformed + " between "
+    assert [call["function"]["name"] for call in delta["tool_calls"]] == ["ping"]
+    assert parser.flush_held_content(output) == ""
+
+
 def test_named_choice_rejects_other_declared_tool():
     result = K2HorizonToolParser().extract_tool_calls(
         _group(_xml_call("ping")),
