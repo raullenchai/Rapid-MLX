@@ -269,6 +269,7 @@ struct ChatView: View {
         PersonalIntelligenceConfig.loadConversationStates()
     @State private var showsPersonalIntelligenceInfo = false
     @State private var personalIntelligencePopoverShowsActions = false
+    @State private var personalIntelligencePopoverOpenedByHover = false
     @State private var showsAgentApproval = false
     @State private var draft: String = ""
     @State private var attachmentDrafts = ChatAttachmentDraftStore()
@@ -399,7 +400,15 @@ struct ChatView: View {
             reconcilePersonalIntelligenceStates()
             photoCapabilityNotice.dismiss()
         }
-        .onChange(of: alias) { _, _ in photoCapabilityNotice.dismiss() }
+        .onChange(of: alias) { oldAlias, newAlias in
+            photoCapabilityNotice.dismiss()
+            if oldAlias != newAlias {
+                // Support can remain true across two qualified aliases. The
+                // in-flight run is still bound to the old exact model and must
+                // never outlive the picker transition.
+                stopAgentIfNeeded()
+            }
+        }
         .onChange(of: personalIntelligenceSupportsModel) { _, supported in
             if !supported {
                 stopAgentIfNeeded()
@@ -419,7 +428,10 @@ struct ChatView: View {
         }
         .onChange(of: draft) { _, _ in photoCapabilityNotice.dismiss() }
         .onChange(of: showsPersonalIntelligenceInfo) { _, shown in
-            if !shown { personalIntelligencePopoverShowsActions = false }
+            if !shown {
+                personalIntelligencePopoverShowsActions = false
+                personalIntelligencePopoverOpenedByHover = false
+            }
         }
         .onChange(of: agentSession.phase) { _, phase in
             reconcileAgentPhase(phase)
@@ -1040,6 +1052,7 @@ struct ChatView: View {
                 .id(viewModel.activeConversationID)
             }
             Button {
+                personalIntelligencePopoverOpenedByHover = false
                 if !personalIntelligenceSupportsModel {
                     personalIntelligencePopoverShowsActions = false
                     showsPersonalIntelligenceInfo = true
@@ -1076,7 +1089,11 @@ struct ChatView: View {
                     // Hover is explanation-only. It must never arm a consent
                     // action that a later Return or Escape could commit.
                     personalIntelligencePopoverShowsActions = false
+                    personalIntelligencePopoverOpenedByHover = true
                     showsPersonalIntelligenceInfo = true
+                } else if personalIntelligencePopoverOpenedByHover,
+                          !personalIntelligencePopoverShowsActions {
+                    showsPersonalIntelligenceInfo = false
                 }
             }
             .popover(isPresented: $showsPersonalIntelligenceInfo, arrowEdge: .bottom) {

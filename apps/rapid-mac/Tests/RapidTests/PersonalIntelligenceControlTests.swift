@@ -155,9 +155,27 @@ struct PersonalIntelligenceControlTests {
             .stripCommentsAndWhitespace(chat)
 
         #expect(stripped.contains(
-            ".onHover{hoveringinifhovering{personalIntelligencePopoverShowsActions=falseshowsPersonalIntelligenceInfo=true}}"
+            ".onHover{hoveringinifhovering{personalIntelligencePopoverShowsActions=falsepersonalIntelligencePopoverOpenedByHover=trueshowsPersonalIntelligenceInfo=true}elseifpersonalIntelligencePopoverOpenedByHover,!personalIntelligencePopoverShowsActions{showsPersonalIntelligenceInfo=false}}"
         ))
         #expect(!control.contains(".keyboardShortcut"))
+    }
+
+    @Test("Switching between qualified models stops the old model run")
+    func exactModelTransitionStopsAgent() throws {
+        let source = try String(
+            contentsOf: URL(fileURLWithPath: #filePath)
+                .deletingLastPathComponent()
+                .deletingLastPathComponent()
+                .deletingLastPathComponent()
+                .appendingPathComponent("Sources/Rapid/UI/ChatView.swift"),
+            encoding: .utf8
+        )
+        let stripped = CapabilityChipRenderGateSourceGuardTests
+            .stripCommentsAndWhitespace(source)
+
+        #expect(stripped.contains(
+            ".onChange(of:alias){oldAlias,newAliasinphotoCapabilityNotice.dismiss()ifoldAlias!=newAlias{stopAgentIfNeeded()}}"
+        ))
     }
 
     @Test("Losing model support stops an active Personal Intelligence run")
