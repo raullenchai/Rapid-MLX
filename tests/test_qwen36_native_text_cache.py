@@ -87,6 +87,8 @@ def test_wrapper_changes_only_cache_construction():
 
 
 def test_native_text_arrays_cache_owns_vlm_window_update_contract():
+    from mlx_vlm.models.cache import ArraysCache as VLMCompatArraysCache
+
     cache_type = _qwen36_text_arrays_cache_type()
     cache = cache_type(size=2)
     source = mx.arange(2 * 5 * 2).reshape(2, 5, 2)
@@ -99,6 +101,7 @@ def test_native_text_arrays_cache_owns_vlm_window_update_contract():
     )
 
     assert isinstance(cache, ArraysCache)
+    assert isinstance(cache, VLMCompatArraysCache)
     assert _qwen36_text_arrays_cache_type() is cache_type
     assert state.tolist() == [
         source[0, 3:5].tolist(),
@@ -110,6 +113,19 @@ def test_native_text_arrays_cache_owns_vlm_window_update_contract():
     assert type(extracted) is cache_type
     assert hasattr(extracted, "update_window")
     assert extracted[0].tolist() == [state[1].tolist()]
+
+
+def test_empty_native_text_arrays_cache_survives_vlm_singleton_extraction():
+    from mlx_vlm.models.cache import ArraysCache as VLMCompatArraysCache
+    from mlx_vlm.models.qwen3_5.language import _extract_row_cache
+
+    cache = _qwen36_text_arrays_cache_type()(size=2, left_padding=[0])
+
+    extracted = _extract_row_cache(cache, 0)
+
+    assert isinstance(extracted, VLMCompatArraysCache)
+    assert extracted.cache == [None, None]
+    assert extracted.make_mask(1) is None
 
 
 def test_native_text_arrays_cache_rejects_invalid_window_width():

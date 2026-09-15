@@ -879,15 +879,18 @@ def _qwen36_text_arrays_cache_type() -> type:
     namespace, while the already-loaded Qwen3.6 language module calls the
     additional ``update_window`` method owned by ``mlx_vlm``.  Constructing a
     plain text-runtime cache therefore passes batching admission but fails on
-    the first linear-attention forward.  A narrow subclass gives both sides
-    the contract they require without replacing weights or copying recurrent
-    state.  Cache the class itself so every layer and request shares one stable
-    runtime type.
+    the first linear-attention forward.  The vision runtime also recognizes
+    empty singleton recurrent caches by nominal type before extracting a row;
+    without that identity it replaces the empty recurrent cache with a KV
+    cache.  A narrow dual-namespace subclass gives both sides the contract they
+    require without replacing weights or copying recurrent state.  Cache the
+    class itself so every layer and request shares one stable runtime type.
     """
     import mlx.core as mx
     from mlx_lm.models.cache import ArraysCache
+    from mlx_vlm.models.cache import ArraysCache as VLMCompatArraysCache
 
-    class Qwen36TextArraysCache(ArraysCache):
+    class Qwen36TextArraysCache(ArraysCache, VLMCompatArraysCache):
         def update_window(self, index, source, width, *, lengths=None):
             width = int(width)
             length = source.shape[1] - width
