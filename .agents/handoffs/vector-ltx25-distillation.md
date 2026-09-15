@@ -534,3 +534,14 @@ strict 269.97-second 2x threshold by 0.04 seconds and must not be rounded up.
 The combined contact sheet still retains the chef and action sequence; SSIM
 against the non-dispatch merged-middle output is 0.963892. Human review remains
 authoritative.
+
+Upstream now has a default-off product contract for this exact route. The new
+`ltx_stage1_exact_prefix_middle_span_v1` capability reuses the existing
+segmented-manifest CLI, permits only exact `0 -> 1`, `1 -> 2`, `2 -> 3`, one
+bound learned `3 -> 7`, and exact `7 -> 8`, and validates immutable model and
+artifact identity, independent training/noise metadata, LoRA shapes, and
+runtime major. The dedicated packager copies the adapter for distribution;
+symlinks remain diagnostic-only. Existing segmented and standard paths are
+unchanged. Focused tests pass 31/31 and the full upstream suite passes 802 with
+22 skips. Atlas should review this compatibility surface but must not default
+it before the remaining human, suite, and cross-generation gates.

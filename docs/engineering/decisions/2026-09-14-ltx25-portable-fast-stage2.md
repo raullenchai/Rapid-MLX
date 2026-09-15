@@ -50,6 +50,22 @@ collapse, or reduced diversity before any four-step schedule is proposed.
 
 ## Stage-1 distillation method decision
 
+The first product-shaped route that preserves the held-out chef subject keeps
+the exact high-noise prefix and exact final correction while learning only the
+middle: boundaries `[0,1,2,3,7,8]`. Its artifact capability is
+`ltx_stage1_exact_prefix_middle_span_v1`. The manifest must encode that exact
+execution schedule, bind one independently trained `3 -> 7` span-v2 adapter,
+and validate immutable base revision, transformer/config/checkpoint digests,
+LoRA rank/shapes, noise metadata, and runtime major. The existing segmented
+manifest opt-in is reused; absence of the flag retains standard generation.
+
+This route is portable by contract rather than chip-name policy. Admission may
+use available unified memory and artifact/runtime compatibility, but numerical
+steps cannot branch on M2/M3/M4/M5 identity. Any load or validation failure
+falls back before inference starts; a user-visible opt-out must remain. Atlas
+must keep the capability default-off until human review, the broad decoded
+suite, and a second Apple GPU generation pass.
+
 The first `8 -> 7` final-pair pilot intentionally minimizes endpoint latent
 error. It is cheap enough to answer whether a rank-8 adapter can represent one
 compressed transition, but its target includes ancestral noise that is not
