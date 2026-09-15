@@ -388,9 +388,13 @@ struct ChatView: View {
             guard request != 0 else { return }
             composeFocusToken &+= 1
         }
-        .onChange(of: viewModel.conversations.map(\.id)) { _, _ in pruneAttachmentDrafts() }
+        .onChange(of: viewModel.conversations.map(\.id)) { _, _ in
+            pruneAttachmentDrafts()
+            reconcilePersonalIntelligenceStates()
+        }
         .onChange(of: viewModel.activeConversationID) { _, _ in
             pruneAttachmentDrafts()
+            reconcilePersonalIntelligenceStates()
             photoCapabilityNotice.dismiss()
         }
         .onChange(of: alias) { _, _ in photoCapabilityNotice.dismiss() }
@@ -1043,7 +1047,7 @@ struct ChatView: View {
                 } else if !agentModeEnabled, attachmentDraft.hasAttachments {
                     attachmentDraft.notice = "Remove attachments before turning on Personal Intelligence."
                 } else {
-                    setPersonalIntelligence(!agentModeEnabled)
+                    setPersonalIntelligence(!agentModeEnabled, updatesPreference: true)
                     attachmentDraft.notice = nil
                 }
             } label: {
@@ -1300,7 +1304,13 @@ struct ChatView: View {
         }
     }
 
-    private func setPersonalIntelligence(_ enabled: Bool) {
+    private func setPersonalIntelligence(
+        _ enabled: Bool,
+        updatesPreference: Bool = false
+    ) {
+        if updatesPreference {
+            personalIntelligencePreferred = enabled
+        }
         personalIntelligenceStates[viewModel.activeConversationID] =
             enabled && personalIntelligenceSupportsModel
         PersonalIntelligenceConfig.saveConversationStates(personalIntelligenceStates)
@@ -1638,7 +1648,6 @@ struct ChatView: View {
             for: Set(viewModel.conversations.map(\.id)).union([viewModel.activeConversationID])
         )
         DocumentContentCache.shared.remove(contentsOf: discarded)
-        reconcilePersonalIntelligenceStates()
     }
 
     private func reconcilePersonalIntelligenceStates() {

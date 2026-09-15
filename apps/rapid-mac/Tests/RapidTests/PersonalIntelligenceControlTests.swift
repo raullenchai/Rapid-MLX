@@ -112,6 +112,30 @@ struct PersonalIntelligenceControlTests {
         ))
     }
 
+    @Test("Manual toggles update the default and conversation switches reconcile it")
+    func manualPreferenceAndConversationInheritanceAreWired() throws {
+        let source = try String(
+            contentsOf: URL(fileURLWithPath: #filePath)
+                .deletingLastPathComponent()
+                .deletingLastPathComponent()
+                .deletingLastPathComponent()
+                .appendingPathComponent("Sources/Rapid/UI/ChatView.swift"),
+            encoding: .utf8
+        )
+        let stripped = CapabilityChipRenderGateSourceGuardTests
+            .stripCommentsAndWhitespace(source)
+
+        #expect(stripped.contains(
+            "setPersonalIntelligence(!agentModeEnabled,updatesPreference:true)"
+        ))
+        #expect(stripped.contains(
+            "ifupdatesPreference{personalIntelligencePreferred=enabled}"
+        ))
+        #expect(stripped.contains(
+            ".onChange(of:viewModel.activeConversationID){_,_inpruneAttachmentDrafts()reconcilePersonalIntelligenceStates()"
+        ))
+    }
+
     @Test("Hover explains without arming consent shortcuts")
     func hoverIsInformationalOnly() throws {
         let sourceRoot = URL(fileURLWithPath: #filePath)
