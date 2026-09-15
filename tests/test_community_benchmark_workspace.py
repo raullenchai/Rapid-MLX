@@ -162,20 +162,38 @@ def test_catalog_is_model_first_and_derives_protocol_from_atomic_task() -> None:
 def test_runtime_readiness_reuses_fail_fast_generation_guards(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    from vllm_mlx.models.deepseek_v41_native import artifacts
     from vllm_mlx.runtime import image_lane, video_lane
 
     assert benchmark_runtime_readiness("qwen3.5-4b-4bit", "text_generation") == {
         "status": "ready",
         "message": None,
     }
+    monkeypatch.setattr(artifacts, "require_product_memory", lambda: 256.0)
     assert benchmark_runtime_readiness(
         "deepseek-v41-flash-reap-2bit", "text_generation"
     ) == {
-        "status": "unavailable",
-        "message": (
-            "Community Benchmark does not yet support this model's dedicated "
-            "serial runtime; no model data will be downloaded."
-        ),
+        "status": "ready",
+        "message": None,
+    }
+    monkeypatch.setattr(
+        artifacts,
+        "require_product_memory",
+        lambda: (_ for _ in ()).throw(RuntimeError("requires 224 GiB")),
+    )
+    assert benchmark_runtime_readiness(
+        "deepseek-v41-flash-reap-2bit", "text_generation"
+    ) == {"status": "unavailable", "message": "requires 224 GiB"}
+    monkeypatch.setattr(
+        artifacts,
+        "require_product_memory",
+        lambda: (_ for _ in ()).throw(OSError("probe fault")),
+    )
+    assert benchmark_runtime_readiness(
+        "deepseek-v41-flash-reap-2bit", "text_generation"
+    ) == {
+        "status": "unknown",
+        "message": "Runtime readiness could not be verified; run will check again.",
     }
 
     def missing_image(_alias: str) -> str:
@@ -375,6 +393,29 @@ def test_execution_records_release_without_source_revision(
 
     assert runtime["distribution"] == "release"
     assert "rapid_mlx_revision" not in runtime
+
+
+def test_execution_records_v41_dspark_identity_and_block_size() -> None:
+    from vllm_mlx.models.deepseek_v41_native.artifacts import (
+        mtp_model_identity_digest,
+    )
+
+    speculative = {
+        "method": "dspark",
+        "max_draft_tokens": 5,
+        "draft_model_identity_digest": mtp_model_identity_digest(),
+    }
+    execution = execution_config(
+        "text_generation",
+        context_length=1_048_576,
+        speculative_decoding=speculative,
+    )
+    run = _text_run()
+    run["execution"] = execution
+
+    assert execution["task"]["language"]["speculative_decoding"] == speculative
+    assert speculative["draft_model_identity_digest"].startswith("sha256:")
+    BenchmarkRunValidator().validate(run)
 
 
 def test_results_cli_forwards_latest_limit(

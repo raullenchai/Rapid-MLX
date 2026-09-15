@@ -59,6 +59,47 @@ def is_product_target(model_name: str | None) -> bool:
     return model_name == TARGET_REPO
 
 
+def mtp_model_identity_digest() -> str:
+    """Stable identity digest for the exact DSpark sidecar byte set.
+
+    Community Benchmark's execution contract requires an external speculative
+    model identity.  The product runtime already verifies every permitted MTP
+    file by size and SHA-256, so this digest binds the same pinned revision and
+    allow-list without reading or downloading the files.
+    """
+    from vllm_mlx.catalog import rcj_digest
+
+    components = [
+        {
+            "component_id": "primary",
+            "role": "primary",
+            "source": {
+                "kind": "huggingface",
+                "repo_id": MTP_REPO,
+                "resolved_revision": MTP_REVISION,
+            },
+            "artifact": {
+                "format": "mlx-safetensors",
+                "manifest_digest": rcj_digest(
+                    [
+                        {"name": item.name, "size": item.size, "sha256": item.sha256}
+                        for item in MTP_FILES
+                    ]
+                ),
+                "manifest_basis": "content_sha256",
+                "total_size_bytes": sum(item.size for item in MTP_FILES),
+            },
+            "quantization": {"kind": "unknown", "base_dtype": "unknown"},
+        }
+    ]
+    projection = {
+        "schema_version": 1,
+        "pipeline_kind": "text_generation",
+        "components": components,
+    }
+    return rcj_digest(projection)
+
+
 def require_product_memory() -> float:
     """Fail closed for programmatic callers that bypass the CLI catalog gate."""
     import psutil
