@@ -46,6 +46,13 @@ generated exactly 128 tokens each. The first-token interval was reported
 separately as TTFT; decode throughput used the remaining 127 token intervals.
 Within each model/path, all three measured runs produced the same token hash.
 
+For each run, the probe called `gc.collect`, `mx.clear_cache`, and
+`mx.reset_peak_memory`; recorded the start immediately before constructing the
+`generate_step` iterator; recorded TTFT when its first token was yielded; called
+`mx.synchronize` after its 128th token; and calculated decode as
+`127 / (synchronized_end - first_token_time)`. Token hashes are SHA-256 over
+UTF-8 `json.dumps(output_token_ids)`.
+
 | Model/path | Load | Median TTFT | Median decode | Peak MLX memory |
 | --- | ---: | ---: | ---: | ---: |
 | K2 Horizon 7B, Rapid-owned adapter | 1.43 s | 0.693 s | 51.12 tok/s | 5.52 GB |
@@ -62,7 +69,8 @@ The three decode measurements in tokens/second were:
 | Qwen3.5 4B | 83.4932 | 83.5079 | 83.5464 |
 | Qwen3.5 9B | 50.1826 | 50.1734 | 50.1765 |
 
-The Rapid and checkpoint-bundled K2 paths also emitted the same token hash.
+The Rapid and checkpoint-bundled K2 paths also emitted the same token hash:
+`cf50ce0dd5d1675738f4947ea425a124936d503c9acf7f0c8b813a6231d0b1e5`.
 Their measured medians differ by 0.0089%, which rules out a material adapter
 regression under this workload.
 
