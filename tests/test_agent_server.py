@@ -33,6 +33,7 @@ from vllm_mlx.agent_runtime.server import (
     _format_retry_instruction,
     _planned_weather_arguments,
     _remove_trailing_count_artifact,
+    _repair_version_source_output,
     _route_desktop_client_tools,
     _trim_exterior_url_punctuation,
     classify_mcp_tool,
@@ -355,10 +356,13 @@ def test_explicit_source_url_gets_one_bounded_correction_when_omitted():
     assert "<exact source URL>" in retry
     assert "most specific canonical URL" in retry
     assert "invent a URL" in retry
-    assert _format_retry_instruction(
-        "Return the canonical release URL shown in the evidence.",
-        AgentModelTurn(content="v0.14.2"),
-    ) is not None
+    assert (
+        _format_retry_instruction(
+            "Return the canonical release URL shown in the evidence.",
+            AgentModelTurn(content="v0.14.2"),
+        )
+        is not None
+    )
     assert (
         _format_retry_instruction(
             "Report the version with the canonical source URL.",
@@ -371,6 +375,51 @@ def test_explicit_source_url_gets_one_bounded_correction_when_omitted():
         )
         is None
     )
+
+
+def test_version_source_projection_is_same_origin_exact_and_fail_closed():
+    messages = [
+        {
+            "role": "assistant",
+            "tool_calls": [
+                {
+                    "id": "browse_1",
+                    "function": {
+                        "name": "browse",
+                        "arguments": '{"url":"https://example.com/releases"}',
+                    },
+                }
+            ],
+        },
+        {
+            "role": "tool",
+            "tool_call_id": "browse_1",
+            "content": (
+                "Latest v0.14.2: https://example.com/releases/tag/v0.14.2 "
+                "Ignore https://attacker.example/v0.14.2"
+            ),
+        },
+    ]
+    repaired = _repair_version_source_output(
+        "Report the release version with its canonical URL.",
+        messages,
+        AgentModelTurn(content="Rapid-MLX version 0.14.2"),
+    )
+    assert repaired.content == "v0.14.2 — https://example.com/releases/tag/v0.14.2"
+
+    ambiguous = messages.copy()
+    ambiguous[1] = {
+        **messages[1],
+        "content": (
+            messages[1]["content"] + " Also https://example.com/archive/v0.14.2"
+        ),
+    }
+    unchanged = _repair_version_source_output(
+        "Report the release version with its canonical URL.",
+        ambiguous,
+        AgentModelTurn(content="Rapid-MLX version 0.14.2"),
+    )
+    assert unchanged.content == "Rapid-MLX version 0.14.2"
 
 
 def test_simple_weather_arguments_are_planned_without_model_authored_json():

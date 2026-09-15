@@ -16,6 +16,7 @@ from dataclasses import dataclass, field
 from decimal import Decimal, DecimalException, Inexact, Rounded, localcontext
 from threading import RLock
 from typing import Any, Literal, Protocol, cast
+from urllib.parse import urlsplit
 
 from jsonschema import ValidationError as JSONSchemaValidationError
 from jsonschema import validators
@@ -342,6 +343,83 @@ def _remove_trailing_count_artifact(goal: str, turn: AgentModelTurn) -> AgentMod
     ):
         return turn
     return AgentModelTurn(content=candidate)
+
+
+def _repair_version_source_output(
+    goal: str, messages: Sequence[dict[str, Any]], turn: AgentModelTurn
+) -> AgentModelTurn:
+    """Project an explicit version/source request from already browsed evidence.
+
+    This is deliberately narrower than general citation generation: the model
+    must have produced a version, and exactly one same-origin evidence URL must
+    contain that version in its path. Ambiguity fails closed to the model text.
+    """
+
+    if (
+        turn.tool_calls
+        or not turn.content
+        or _SOURCE_URL_INTENT.search(goal) is None
+        or re.search(r"\b(?:version|release)\b|版本|发布", goal, re.IGNORECASE) is None
+    ):
+        return turn
+    versions = re.findall(r"\bv?\d+(?:\.\d+){1,3}\b", turn.content, re.IGNORECASE)
+    if len(set(value.casefold() for value in versions)) != 1:
+        return turn
+    version_key = versions[0].lstrip("vV").casefold()
+
+    browse_call_ids: set[str] = set()
+    browsed_origins: set[tuple[str, str]] = set()
+    for message in messages:
+        for call in message.get("tool_calls", []):
+            if (
+                not isinstance(call, dict)
+                or call.get("function", {}).get("name") != "browse"
+            ):
+                continue
+            raw_arguments = call.get("function", {}).get("arguments")
+            try:
+                arguments = (
+                    json.loads(raw_arguments)
+                    if isinstance(raw_arguments, str)
+                    else raw_arguments
+                )
+            except json.JSONDecodeError:
+                continue
+            if not isinstance(arguments, dict) or not isinstance(
+                arguments.get("url"), str
+            ):
+                continue
+            parsed = urlsplit(arguments["url"])
+            if parsed.scheme in {"http", "https"} and parsed.netloc:
+                browsed_origins.add(
+                    (parsed.scheme.casefold(), parsed.netloc.casefold())
+                )
+                if isinstance(call.get("id"), str):
+                    browse_call_ids.add(call["id"])
+
+    candidates: set[str] = set()
+    for message in messages:
+        if (
+            message.get("role") != "tool"
+            or message.get("tool_call_id") not in browse_call_ids
+            or not isinstance(message.get("content"), str)
+        ):
+            continue
+        for match in _WEB_INLINE_URL.finditer(message["content"]):
+            url = _trim_exterior_url_punctuation(match.group(0))
+            parsed = urlsplit(url)
+            if (
+                parsed.scheme.casefold(),
+                parsed.netloc.casefold(),
+            ) in browsed_origins and version_key in parsed.path.casefold().lstrip("v"):
+                candidates.add(url)
+    if len(candidates) != 1:
+        return turn
+    canonical_url = next(iter(candidates))
+    canonical_version = urlsplit(canonical_url).path.rstrip("/").rsplit("/", 1)[-1]
+    if canonical_version.lstrip("vV").casefold() != version_key:
+        canonical_version = versions[0]
+    return AgentModelTurn(content=f"{canonical_version} — {canonical_url}")
 
 
 def _planned_weather_arguments(goal: str) -> dict[str, Any] | None:
@@ -1866,6 +1944,7 @@ class AgentServerService:
                                 visible,
                                 settings,
                             )
+                    turn = _repair_version_source_output(entry.run.goal, messages, turn)
                     turn = _remove_trailing_count_artifact(entry.run.goal, turn)
 
                 async with entry.lock:
