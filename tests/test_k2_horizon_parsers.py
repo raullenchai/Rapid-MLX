@@ -345,6 +345,15 @@ def test_declared_json_schema_contract_fails_closed(arguments):
     assert result.content == output
 
 
+def test_declared_xml_required_argument_fails_closed_when_call_is_empty():
+    request = _request("xml")
+    request["tools"][0]["function"]["parameters"]["required"] = ["query"]
+    output = _group(_xml_call("lookup"))
+    result = K2HorizonToolParser().extract_tool_calls(output, request)
+    assert not result.tools_called
+    assert result.content == output
+
+
 @pytest.mark.parametrize(
     "wire_format,call",
     [

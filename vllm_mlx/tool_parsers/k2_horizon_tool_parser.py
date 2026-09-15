@@ -163,7 +163,10 @@ class K2HorizonToolParser(ToolParser):
 
         first_arg = body.find(cls.ARG_KEY_START)
         if first_arg < 0:
-            return cls._validate_name(body.strip(), request), {}
+            name = cls._validate_name(body.strip(), request)
+            empty_arguments: dict[str, Any] = {}
+            cls._validate_argument_contract(name, empty_arguments, request)
+            return name, empty_arguments
         name = cls._validate_name(body[:first_arg].strip(), request)
         props = cls._properties(name, request)
         xml_arguments: dict[str, Any] = {}
