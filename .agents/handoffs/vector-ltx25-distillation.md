@@ -553,3 +553,12 @@ the same combined workload in 269.21 seconds (2.0057x), zero swap, with a
 269.21-270.01 seconds and median is 269.61 seconds (about 2.001x); because the
 range straddles the strict 269.97-second threshold, release language should say
 approximately 2x rather than stably greater than 2x.
+
+Adversarial self-review closed a loader-level provenance bypass: the packager
+already rejected cumulative/shared Stage-1 checkpoints, but a hand-crafted
+matching manifest could previously reach the loader without that same check.
+The loader now independently requires clean-base `independent` provenance for
+all segmented capabilities. The full upstream suite passes 803 with 22 skips.
+The required independent `spark2` PR reviewer could not start because its Codex
+refresh token is revoked; no review comment was posted. Reauthentication is the
+only remaining prerequisite for the automated loop to issue LGTM.
