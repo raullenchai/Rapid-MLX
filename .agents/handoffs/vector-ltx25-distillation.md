@@ -528,4 +528,9 @@ peak footprint. Ten sampled frames retain the same male chef, face, upper
 body, bread, oven, composition, and action sequence. It passes the categorical
 subject-preservation screen but still needs owner detail/motion/audio review
 and the broader suite. Dispatch composition projects 265.88 seconds/2.031x;
-the combined result is not yet measured.
+the actual composed run measured 270.01 seconds (1.9997x, 49.985% lower
+latency), zero swap, and a 39,464,962,808-byte peak footprint. It misses the
+strict 269.97-second 2x threshold by 0.04 seconds and must not be rounded up.
+The combined contact sheet still retains the chef and action sequence; SSIM
+against the non-dispatch merged-middle output is 0.963892. Human review remains
+authoritative.
