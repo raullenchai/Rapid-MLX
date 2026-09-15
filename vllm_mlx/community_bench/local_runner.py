@@ -998,6 +998,33 @@ def _next_generation_chunk(iterator: Any) -> tuple[bool, Any | None]:
         return False, None
 
 
+def _deepseek_v41_stream_generate(*args: Any, **kwargs: Any) -> Any:
+    """Load the MLX-only generator at execution time.
+
+    Keeping this boundary in the benchmark adapter lets Linux contract tests
+    exercise scheduling and provenance without importing the large-model MLX
+    implementation.  A real benchmark still resolves the exact product
+    runtime here before its first token.
+    """
+    from vllm_mlx.models.deepseek_v41_native.serving import stream_generate
+
+    return stream_generate(*args, **kwargs)
+
+
+def _deepseek_v41_load_product_runtime(*args: Any, **kwargs: Any) -> Any:
+    """Load the pinned product runtime behind the same no-MLX boundary."""
+    from vllm_mlx.models.deepseek_v41_native.serving import load_product_runtime
+
+    return load_product_runtime(*args, **kwargs)
+
+
+def _deepseek_v41_input_limit() -> int:
+    """Return the qualified product limit without importing MLX on Linux."""
+    from vllm_mlx.models.deepseek_v41_native.serving import MAX_INPUT_TOKENS
+
+    return MAX_INPUT_TOKENS
+
+
 class _DeepSeekV41BenchmarkAdapter:
     """Registered-token benchmark facade for the qualified serial runtime."""
 
@@ -1051,11 +1078,10 @@ class _DeepSeekV41BenchmarkAdapter:
     async def stream_outputs(
         self, request_id: str, timeout: float | None = None
     ) -> AsyncIterator[Any]:
-        from vllm_mlx.models.deepseek_v41_native.serving import stream_generate
         from vllm_mlx.request import RequestOutput
 
         prompt, sampling = self._requests.pop(request_id)
-        iterator = stream_generate(
+        iterator = _deepseek_v41_stream_generate(
             self._model,
             self._tokenizer,
             prompt,
@@ -1080,6 +1106,7 @@ class _DeepSeekV41BenchmarkAdapter:
                 has_chunk, chunk = await future
             if not has_chunk:
                 return
+            assert chunk is not None
             output_token_ids.append(chunk.token)
             output_text += chunk.text
             finished = len(output_token_ids) == sampling.max_tokens
@@ -1233,10 +1260,6 @@ async def _text_measurements(
                 download_mtp_snapshot,
                 download_target_snapshot,
             )
-            from vllm_mlx.models.deepseek_v41_native.serving import (
-                load_product_runtime,
-            )
-
             executor = concurrent.futures.ThreadPoolExecutor(
                 max_workers=1,
                 thread_name_prefix="mlx-step",
@@ -1246,7 +1269,7 @@ async def _text_measurements(
             def load_v41_runtime() -> tuple[Any, Any, Any, str, str]:
                 target_path = download_target_snapshot()
                 mtp_path = download_mtp_snapshot()
-                model, tokenizer, runtime = load_product_runtime(
+                model, tokenizer, runtime = _deepseek_v41_load_product_runtime(
                     str(target_path),
                     str(mtp_path),
                     target_revision=TARGET_REVISION,
@@ -1310,17 +1333,20 @@ async def _text_measurements(
             spec_decode="none",
         )
         config = EngineConfig(model_name=repo_id, scheduler_config=scheduler)
+        engine_context: Any
+        context_source: Any
         if use_v41_runtime:
+            assert executor is not None
             engine_context = _DeepSeekV41BenchmarkAdapter(
                 model, tokenizer, v41_runtime, executor
             )
             context_source = engine_context
         elif serving_engine is not None:
-            engine_context: Any = _ServingBenchmarkAdapter(serving_engine)
+            engine_context = _ServingBenchmarkAdapter(serving_engine)
             # ``get_model_max_context`` intentionally accepts serving-engine
             # wrappers: it reads ``._model`` first and then the wrapper's
             # tokenizer/local config. BatchedEngine exposes both after start.
-            context_source: Any = serving_engine
+            context_source = serving_engine
         else:
             engine_context = AsyncEngineCore(
                 model, tokenizer, config, executor=executor
@@ -1328,11 +1354,7 @@ async def _text_measurements(
             context_source = None
         async with engine_context as engine:
             if use_v41_runtime:
-                from vllm_mlx.models.deepseek_v41_native.serving import (
-                    MAX_INPUT_TOKENS,
-                )
-
-                context_length = MAX_INPUT_TOKENS
+                context_length = _deepseek_v41_input_limit()
             else:
                 context_length = get_model_max_context(
                     context_source if context_source is not None else engine.engine

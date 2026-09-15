@@ -218,7 +218,6 @@ def test_serving_adapter_rejects_unsupported_token_stop_ids() -> None:
 def test_v41_adapter_preserves_registered_tokens_and_exact_length(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from vllm_mlx.models.deepseek_v41_native import serving
     from vllm_mlx.request import SamplingParams
 
     observed: dict[str, object] = {}
@@ -234,7 +233,7 @@ def test_v41_adapter_preserves_registered_tokens_and_exact_length(
                 generation_tokens=index,
             )
 
-    monkeypatch.setattr(serving, "stream_generate", generate)
+    monkeypatch.setattr(local_runner, "_deepseek_v41_stream_generate", generate)
     executor = local_runner.concurrent.futures.ThreadPoolExecutor(max_workers=1)
 
     async def exercise():
@@ -419,7 +418,7 @@ def test_text_lane_uses_pinned_v41_serial_runtime(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     from vllm_mlx.community_bench import runner, workspace
-    from vllm_mlx.models.deepseek_v41_native import artifacts, serving
+    from vllm_mlx.models.deepseek_v41_native import artifacts
 
     target_path = tmp_path / "target" / "snapshots" / artifacts.TARGET_REVISION
     mtp_path = tmp_path / "mtp" / "snapshots" / artifacts.MTP_REVISION
@@ -448,7 +447,8 @@ def test_text_lane_uses_pinned_v41_serial_runtime(
         assert kwargs["registered_token_ids"] is True
         return _bench_result()
 
-    monkeypatch.setattr(serving, "load_product_runtime", load)
+    monkeypatch.setattr(local_runner, "_deepseek_v41_load_product_runtime", load)
+    monkeypatch.setattr(local_runner, "_deepseek_v41_input_limit", lambda: 8192)
     monkeypatch.setattr(runner, "run_standardized_bench", standardized)
     identity_calls: list[tuple[tuple, dict]] = []
 
