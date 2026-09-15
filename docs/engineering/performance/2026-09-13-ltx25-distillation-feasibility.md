@@ -304,3 +304,19 @@ steps `0 -> 1 -> 2 -> 3`, uses the existing independent students only for
 `[0,1,2,3,5,7,8]` require six Stage-1 evaluations and are expected to be
 roughly 1.8x end to end. If decoded quality passes, the remaining gap to 2x
 belongs to portable kernel/runtime optimization, not another high-noise skip.
+
+That route completed the 768x512x241 chef workload in 301.40 seconds versus
+539.94 seconds for the identity-verified standard: 1.791x end to end and
+44.18% lower latency. It used zero swap and peaked at 40,379,845,680 bytes.
+The initial ten-frame screen retains the same male chef and front-facing
+composition throughout, unlike every schedule that compressed the first three
+high-noise evaluations. It is still pending human and broader-suite
+non-inferiority; the timing is not a release claim.
+
+The measured 4.49% dequantized-linear dispatch gain projects 287.87 seconds,
+or 1.876x, if it composes. A merged-middle `3 -> 7` diagnostic would reduce
+Stage 1 to five calls while leaving `0 -> 1 -> 2 -> 3` and `7 -> 8` exact. Its
+timing model is about 280 seconds before dispatch and 267 seconds after it,
+enough to test the strict 2x boundary without compressing the semantic-sensitive
+prefix. It must pass held-out latent, decoded subject/motion/audio, and
+cross-generation gates before packaging.

@@ -499,3 +499,21 @@ endpoint-MSE retraining and is decoding `[0,1,2,3,5,7,8]`: exact high-noise
 steps, existing independent middle/late adapters, and exact final step. A
 quality pass would establish a roughly 1.8x base for a portable kernel/runtime
 push; it is not yet a release claim.
+
+The exact-high-noise control completed at 301.40 seconds versus the
+539.94-second standard (1.791x, 44.18% lower latency), with zero swap and a
+40,379,845,680-byte peak process footprint. Its ten-frame contact sheet keeps
+the male chef, face, upper body, bread, oven, composition, and motion
+throughout; it avoids the categorical subject loss seen in every compressed
+high-noise route. The synchronized side-by-side remains pending owner human
+non-inferiority review, so this is not a product/default qualification.
+
+Composing the separately measured 4.49% dispatch gain projects 287.87 seconds
+(1.876x), leaving about 6.22% further latency reduction for strict 2x. Vector
+is training a diagnostic merged-middle `3 -> 7` adapter on 48 train and 12
+prompt-disjoint validation trajectories on Studio. It retains exact
+`0 -> 1 -> 2 -> 3` and `7 -> 8`, yielding a five-call Stage-1 schedule that is
+projected near 280 seconds before dispatch and 267 seconds after it. Artifact
+capability, shapes, memory admission, and a standard fallback—not Apple chip
+names—remain the intended product boundary. Atlas owns any public surface,
+default, or release decision after decoded and cross-generation qualification.
