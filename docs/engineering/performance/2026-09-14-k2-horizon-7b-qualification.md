@@ -32,11 +32,19 @@ Snapshots:
 
 ## Fixed-length decode isolation
 
-Each model received exactly 256 input tokens. After one 16-token warm-up, three
-fresh-cache runs generated exactly 128 tokens each. The first-token interval
-was reported separately as TTFT; decode throughput used the remaining 127
-token intervals. Every model produced the same token hash across all three
-runs.
+Each model received exactly 256 input tokens. The input was the first 256 tokens
+obtained by repeating this text with one trailing space:
+
+```text
+You are testing deterministic local inference on Apple silicon. Explain how prefix caching and continuous batching reduce latency, then give a short numbered implementation checklist.
+```
+
+The probe used the installed language runtime's `generate_step`, greedy
+sampling, a fresh prompt cache for each run, and `time.perf_counter` around
+synchronized token iteration. After one 16-token warm-up, three measured runs
+generated exactly 128 tokens each. The first-token interval was reported
+separately as TTFT; decode throughput used the remaining 127 token intervals.
+Within each model/path, all three measured runs produced the same token hash.
 
 | Model/path | Load | Median TTFT | Median decode | Peak MLX memory |
 | --- | ---: | ---: | ---: | ---: |
@@ -45,9 +53,18 @@ runs.
 | Qwen3.5 4B | 1.35 s | 0.389 s | 83.51 tok/s | 3.08 GB |
 | Qwen3.5 9B | 1.98 s | 0.708 s | 50.18 tok/s | 5.66 GB |
 
-The Rapid and checkpoint-bundled K2 runs emitted the same token hash. Their
-median decode rates differed by less than 0.01%, which rules out a material
-adapter regression under this workload.
+The three decode measurements in tokens/second were:
+
+| Model/path | Run 1 | Run 2 | Run 3 |
+| --- | ---: | ---: | ---: |
+| K2 Horizon 7B, Rapid-owned adapter | 51.2152 | 51.1196 | 51.1098 |
+| K2 Horizon 7B, checkpoint-bundled adapter | 51.1120 | 51.1242 | 51.1808 |
+| Qwen3.5 4B | 83.4932 | 83.5079 | 83.5464 |
+| Qwen3.5 9B | 50.1826 | 50.1734 | 50.1765 |
+
+The Rapid and checkpoint-bundled K2 paths also emitted the same token hash.
+Their measured medians differ by 0.0089%, which rules out a material adapter
+regression under this workload.
 
 ## Shipped server path
 
