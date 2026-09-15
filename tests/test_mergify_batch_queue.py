@@ -18,8 +18,8 @@ REQUIRED_CHECKS = {
 }
 HEAD_AUTHORIZATION = "check-success = merge-ready-head"
 LANE_CHECKS = {
-    "no-mac": "check-success = @github-actions/merge-lane-no-mac",
-    "mac": "check-success = @github-actions/merge-lane-mac",
+    "no-mac-batch": "check-success = @github-actions/merge-lane-no-mac",
+    "mac-batch": "check-success = @github-actions/merge-lane-mac",
 }
 
 
@@ -39,7 +39,7 @@ def test_queue_runs_single_ready_prs_without_batch_features_or_fill_waits():
     assert queue["mode"] == "parallel"
     assert queue["max_parallel_checks"] == 2
     assert queue["skip_intermediate_results"] is False
-    assert set(rules) == {"no-mac", "mac"}
+    assert set(rules) == {"no-mac-batch", "mac-batch"}
     for rule in rules.values():
         assert "batch_size" not in rule
         assert "batch_max_wait_time" not in rule
@@ -97,8 +97,8 @@ def test_ready_labels_autoqueue_without_unsupported_recovery_rules():
     assert "pull_request_rules" not in config
 
     expected_labels = {
-        "no-mac": {"label = merge-ready", "-label = merge-ready-mac"},
-        "mac": {"label = merge-ready-mac", "-label = merge-ready"},
+        "no-mac-batch": {"label = merge-ready", "-label = merge-ready-mac"},
+        "mac-batch": {"label = merge-ready-mac", "-label = merge-ready"},
     }
     for name, queue_rule in queues.items():
         assert expected_labels[name] <= set(queue_rule["queue_conditions"])
@@ -298,8 +298,8 @@ def test_stale_head_or_double_ready_labels_fail_authorization():
 def test_operations_guide_uses_provider_supported_terminal_requeue():
     docs = (ROOT / "docs/engineering/operations/path-aware-merge-queue.md").read_text()
 
-    assert "@mergifyio queue no-mac" in docs
-    assert "@mergifyio queue mac" in docs
+    assert "@mergifyio queue no-mac-batch" in docs
+    assert "@mergifyio queue mac-batch" in docs
     assert "does not bypass `queue_conditions`" in docs
     assert "merge-requeue-trigger" not in docs
     assert "merge-requeue-required" not in docs

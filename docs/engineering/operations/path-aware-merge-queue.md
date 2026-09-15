@@ -148,8 +148,9 @@ The queue contract lives in `.mergify.yml`:
 - provider-supported recovery for a head left in terminal `dequeued` state.
   Diagnose the candidate failure and fix the original pull request when the
   failure is real. Once its exact-head checks are green and exactly one ready
-  label remains, issue `@mergifyio queue no-mac` or
-  `@mergifyio queue mac` in a PR comment. The command resets terminal
+  label remains, issue `@mergifyio queue no-mac-batch` or
+  `@mergifyio queue mac-batch` in a PR comment. Queue names are retained for
+  operational compatibility even though candidates are now singletons. The command resets terminal
   provider state but does not bypass `queue_conditions`; the authorized head
   still runs the full singleton candidate validation. Re-applying a ready label,
   removing `dequeued`, pushing an empty commit, or adding a custom trigger label

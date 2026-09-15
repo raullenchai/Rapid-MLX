@@ -50,7 +50,7 @@ merge_protections_settings:
 # not reset terminal queue state and must not be used as a requeue substitute.
 
 queue_rules:
-  - name: no-mac
+  - name: no-mac-batch
     queue_branch_prefix: mergify/merge-queue/
     checks_timeout: 90 min
     max_checks_retries: 0
@@ -75,7 +75,7 @@ queue_rules:
       - check-success = @github-actions/desktop-tests
       - check-success = @github-actions/version-bump-guard
 
-  - name: mac
+  - name: mac-batch
     queue_branch_prefix: mergify/merge-queue/
     checks_timeout: 90 min
     max_checks_retries: 0
