@@ -25,10 +25,12 @@ import mlx.core as mx
 import mlx.nn as nn
 
 from vllm_mlx.mllm_batch_generator import (
+    MLLMBatch,
     MLLMBatchGenerator,
     MLLMBatchRequest,
     _model_supports_vision_feature_cache,
 )
+from vllm_mlx.request import ClientRequestError
 
 
 class _RecordingModel:
@@ -69,6 +71,20 @@ def _make_request(*, pixel_values, extra_kwargs=None) -> MLLMBatchRequest:
         pixel_values=pixel_values,
         extra_kwargs=extra_kwargs or {},
     )
+
+
+@pytest.mark.parametrize(
+    "batch_request",
+    [
+        MLLMBatchRequest(uid=1, request_id="media", prompt=[1], images=["image.png"]),
+        MLLMBatchRequest(uid=2, request_id="empty", prompt=[]),
+        MLLMBatchRequest(uid=3, request_id="non-int", prompt=[1, "2"]),
+    ],
+)
+def test_pretokenized_prompt_rejects_ambiguous_inputs(batch_request):
+    generator = MLLMBatchGenerator.__new__(MLLMBatchGenerator)
+    with pytest.raises(ClientRequestError):
+        generator._preprocess_request(batch_request)
 
 
 def test_run_vision_encoding_passes_pixel_values_none_for_text_only_request():
@@ -755,6 +771,71 @@ def test_step_homogeneous_requests_call_shared_sampler_once(monkeypatch):
     assert sampled.shape == (4,)
 
 
+def test_step_homogeneous_requests_forward_min_p_and_top_k(monkeypatch):
+    calls = []
+
+    def fake_make_sampler(**kwargs):
+        calls.append(kwargs)
+        return lambda x: mx.zeros((x.shape[0],), dtype=mx.uint32)
+
+    monkeypatch.setattr("vllm_mlx.mllm_batch_generator.make_sampler", fake_make_sampler)
+    gen = _make_step_stub_generator()
+    requests = [
+        MLLMBatchRequest(
+            uid=i,
+            request_id=f"r{i}",
+            prompt="hi",
+            temperature=0.5,
+            top_p=0.8,
+            min_p=0.1,
+            top_k=12,
+        )
+        for i in range(2)
+    ]
+
+    MLLMBatchGenerator._step(
+        gen, mx.array([[1], [2]], dtype=mx.uint32), cache=[], requests=requests
+    )
+
+    assert calls == [{"temp": 0.5, "top_p": 0.8, "min_p": 0.1, "top_k": 12}]
+
+
+def test_next_applies_ignore_eos_per_request() -> None:
+    from types import SimpleNamespace
+
+    normal = MLLMBatchRequest(uid=1, request_id="normal", prompt="hi", max_tokens=8)
+    benchmark = MLLMBatchRequest(
+        uid=2, request_id="benchmark", prompt=[1], max_tokens=1, ignore_eos=True
+    )
+    batch = MLLMBatch(
+        uids=[1, 2],
+        request_ids=["normal", "benchmark"],
+        y=mx.array([7, 7]),
+        logprobs=[mx.zeros((8,)), mx.zeros((8,))],
+        max_tokens=[8, 1],
+        num_tokens=[0, 0],
+        cache=[],
+        requests=[normal, benchmark],
+    )
+    generator = MLLMBatchGenerator.__new__(MLLMBatchGenerator)
+    generator.active_batch = batch
+    generator.stop_tokens = {7}
+    generator.unprocessed_requests = []
+    generator.completion_batch_size = 2
+    generator._stats = SimpleNamespace(
+        prompt_time=0.0, generation_time=0.0, generation_tokens=0
+    )
+    generator._step = lambda *_args, **_kwargs: (
+        mx.array([8, 8]),
+        [mx.zeros((8,)), mx.zeros((8,))],
+    )
+
+    responses = generator._next()
+
+    assert [response.finish_reason for response in responses] == ["stop", "length"]
+    assert [response.token_is_stop_token for response in responses] == [True, False]
+
+
 def test_step_request_processor_sees_compute_ahead_token(monkeypatch):
     """Constraints see the token already fed into the decode step.
 
@@ -927,8 +1008,8 @@ def test_step_heterogeneous_requests_use_per_row_loop(monkeypatch):
         {"temp": 0.3, "top_p": 0.80},
     ]
     # Both got their per-request cache populated for future reuse.
-    assert req_a._cached_sampler[0] == (0.7, 0.95)
-    assert req_b._cached_sampler[0] == (0.3, 0.80)
+    assert req_a._cached_sampler[0] == (0.7, 0.95, 0.0, 0, None)
+    assert req_b._cached_sampler[0] == (0.3, 0.80, 0.0, 0, None)
     # Shared batch sampler must NOT have been populated for the mixed batch
     # (homogeneous fast path is the only writer).
     assert gen._shared_batch_sampler is None
@@ -956,7 +1037,7 @@ def test_step_b1_homogeneous_still_uses_shared_sampler(monkeypatch):
 
     assert len(make_sampler_calls) == 1
     assert gen._shared_batch_sampler is not None
-    assert gen._shared_batch_sampler[0] == (0.7, 0.95)
+    assert gen._shared_batch_sampler[0] == (0.7, 0.95, 0.0, 0)
 
 
 def test_step_batch_uses_dataclass_defaults(monkeypatch):
@@ -1026,7 +1107,7 @@ def test_step_heterogeneous_then_homogeneous_populates_shared(monkeypatch):
         ],
     )
     assert gen._shared_batch_sampler is not None
-    assert gen._shared_batch_sampler[0] == (0.5, 0.85)
+    assert gen._shared_batch_sampler[0] == (0.5, 0.85, 0.0, 0)
     # 3 total: 2 from the het batch + 1 fresh for the new homogeneous key.
     assert len(make_sampler_calls) == 3
 

@@ -23,6 +23,428 @@ from vllm_mlx.community_bench.runner import BenchResult, BucketResult, RoundResu
 from vllm_mlx.community_bench.workspace import LocalRunArchive
 
 
+def _missing_module(name: str) -> ModuleNotFoundError:
+    exc = ModuleNotFoundError(f"No module named {name!r}")
+    exc.name = name
+    return exc
+
+
+def _bench_result() -> BenchResult:
+    short = [RoundResult(100, 200, 10, prompt_tokens=512, output_tokens=128)] * 5
+    long = [RoundResult(50, 150, 20, prompt_tokens=2048, output_tokens=512)] * 5
+    return BenchResult(
+        short=BucketResult(short),
+        long=BucketResult(long),
+        peak_ram_mb=4096,
+        prompt_hash="unused",
+        sampling="greedy",
+    )
+
+
+def test_serving_adapter_preserves_exact_tokens_and_sampling_contract() -> None:
+    from vllm_mlx.engine.base import GenerationOutput
+    from vllm_mlx.request import SamplingParams
+
+    observed: dict[str, object] = {}
+
+    class Engine:
+        async def stream_generate(self, prompt, **kwargs):
+            observed["prompt"] = prompt
+            observed["kwargs"] = kwargs
+            yield GenerationOutput(
+                text="a",
+                new_text="a",
+                tokens=[7],
+                prompt_tokens=3,
+                completion_tokens=1,
+            )
+            yield GenerationOutput(
+                text="ab",
+                new_text="b",
+                tokens=[8],
+                prompt_tokens=3,
+                completion_tokens=2,
+                finished=True,
+                finish_reason="length",
+            )
+
+    async def exercise():
+        adapter = local_runner._ServingBenchmarkAdapter(Engine())
+        params = SamplingParams(
+            max_tokens=2,
+            temperature=0.25,
+            top_p=0.8,
+            top_k=5,
+            min_p=0.1,
+            repetition_penalty=1.2,
+            presence_penalty=0.3,
+            frequency_penalty=0.4,
+            ignore_eos=True,
+            seed=17,
+            stop=["END"],
+        )
+        request_id = await adapter.add_request([1, 2, 3], params)
+        return [item async for item in adapter.stream_outputs(request_id, timeout=1)]
+
+    outputs = asyncio.run(exercise())
+    assert observed["prompt"] == [1, 2, 3]
+    assert observed["kwargs"]["ignore_eos"] is True
+    assert observed["kwargs"]["seed"] == 17
+    assert observed["kwargs"]["max_tokens"] == 2
+    assert observed["kwargs"]["temperature"] == 0.25
+    assert observed["kwargs"]["top_p"] == 0.8
+    assert observed["kwargs"]["top_k"] == 5
+    assert observed["kwargs"]["min_p"] == 0.1
+    assert observed["kwargs"]["repetition_penalty"] == 1.2
+    assert observed["kwargs"]["presence_penalty"] == 0.3
+    assert observed["kwargs"]["frequency_penalty"] == 0.4
+    assert observed["kwargs"]["stop"] == ["END"]
+    assert outputs[0].new_token_ids == [7]
+    assert outputs[1].output_token_ids == [7, 8]
+    assert outputs[1].completion_tokens == 2
+
+
+def test_serving_adapter_context_and_unbounded_stream() -> None:
+    from vllm_mlx.engine.base import GenerationOutput
+    from vllm_mlx.request import SamplingParams
+
+    class Engine:
+        async def stream_generate(self, _prompt, **_kwargs):
+            yield GenerationOutput(text="ok", new_text="ok", tokens=[7], finished=True)
+
+    async def exercise():
+        async with local_runner._ServingBenchmarkAdapter(Engine()) as adapter:
+            request_id = await adapter.add_request(
+                "hello", SamplingParams(max_tokens=1)
+            )
+            return [item async for item in adapter.stream_outputs(request_id)]
+
+    outputs = asyncio.run(exercise())
+    assert [item.output_token_ids for item in outputs] == [[7]]
+
+
+def test_serving_adapter_zero_timeout_aborts() -> None:
+    from vllm_mlx.request import SamplingParams
+
+    events: list[str] = []
+
+    class Engine:
+        def abort_request(self, request_id):
+            events.append(f"abort:{request_id}")
+
+        async def stream_generate(self, _prompt, **_kwargs):
+            yield  # pragma: no cover - the zero deadline prevents iteration
+
+    async def exercise() -> None:
+        adapter = local_runner._ServingBenchmarkAdapter(Engine())
+        request_id = await adapter.add_request([1], SamplingParams(max_tokens=1))
+        async for _ in adapter.stream_outputs(request_id, timeout=0):
+            pass
+
+    with pytest.raises(asyncio.TimeoutError):
+        asyncio.run(exercise())
+    assert events[0].startswith("abort:")
+
+
+def test_serving_adapter_tolerates_stream_close_error() -> None:
+    from vllm_mlx.engine.base import GenerationOutput
+    from vllm_mlx.request import SamplingParams
+
+    events: list[str] = []
+
+    class Engine:
+        async def stream_generate(self, _prompt, **_kwargs):
+            try:
+                yield GenerationOutput(text="ok", new_text="ok", tokens=[7])
+            finally:
+                events.append("close")
+                raise RuntimeError("close failure")
+
+    async def exercise() -> None:
+        adapter = local_runner._ServingBenchmarkAdapter(Engine())
+        request_id = await adapter.add_request([1], SamplingParams(max_tokens=1))
+        outputs = adapter.stream_outputs(request_id)
+        await anext(outputs)
+        await outputs.aclose()
+
+    asyncio.run(exercise())
+    assert events == ["close"]
+
+
+def test_serving_adapter_timeout_is_total_request_budget() -> None:
+    from vllm_mlx.engine.base import GenerationOutput
+    from vllm_mlx.request import SamplingParams
+
+    events: list[str] = []
+
+    class SlowEngine:
+        async def abort_request(self, request_id):
+            events.append(f"abort:{request_id}")
+            raise RuntimeError("cleanup failure must not mask timeout")
+
+        async def stream_generate(self, _prompt, **_kwargs):
+            try:
+                for token in (7, 8):
+                    await asyncio.sleep(0.03)
+                    yield GenerationOutput(text="a", new_text="a", tokens=[token])
+            finally:
+                events.append("closed")
+
+    async def exercise() -> None:
+        adapter = local_runner._ServingBenchmarkAdapter(SlowEngine())
+        request_id = await adapter.add_request([1, 2, 3], SamplingParams(max_tokens=2))
+        async for _item in adapter.stream_outputs(request_id, timeout=0.05):
+            pass
+
+    with pytest.raises(asyncio.TimeoutError):
+        asyncio.run(exercise())
+    assert any(event.startswith("abort:") for event in events)
+    assert "closed" in events
+
+
+def test_serving_adapter_rejects_unsupported_token_stop_ids() -> None:
+    from vllm_mlx.request import SamplingParams
+
+    async def exercise() -> None:
+        adapter = local_runner._ServingBenchmarkAdapter(object())
+        await adapter.add_request(
+            [1, 2, 3], SamplingParams(max_tokens=2, stop_token_ids=[9])
+        )
+
+    with pytest.raises(ValueError, match="stop token IDs"):
+        asyncio.run(exercise())
+
+
+def test_benchmark_loader_lane_uses_shared_architecture_probe(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from vllm_mlx.api import utils
+
+    observed: list[str] = []
+    monkeypatch.setattr(
+        utils,
+        "is_mllm_model",
+        lambda target: observed.append(target) or target.startswith("vision/"),
+    )
+
+    assert local_runner._uses_serving_benchmark_engine("vision/model") is True
+    assert local_runner._uses_serving_benchmark_engine("text/model") is False
+    assert observed == ["vision/model", "text/model"]
+
+
+def test_serving_wrapper_exposes_real_model_context_length() -> None:
+    from vllm_mlx.service.helpers import get_model_max_context
+
+    serving_wrapper = SimpleNamespace(
+        _model=SimpleNamespace(args=SimpleNamespace(max_position_embeddings=1_048_576)),
+        tokenizer=SimpleNamespace(model_max_length=4096),
+    )
+    assert get_model_max_context(serving_wrapper) == 1_048_576
+
+
+@pytest.mark.parametrize(
+    ("exc", "expected"),
+    [
+        (ValueError("Model type glm5_next not supported."), True),
+        (_missing_module("mlx_lm.models.future"), True),
+        (_missing_module("sentencepiece"), False),
+        (ValueError("corrupt tensor shape"), False),
+        (ValueError("processor model type future is not supported"), False),
+        (OSError("checkpoint unavailable"), False),
+    ],
+)
+def test_serving_fallback_is_limited_to_architecture_rejection(
+    exc: BaseException, expected: bool
+) -> None:
+    assert local_runner._text_loader_needs_serving_fallback(exc) is expected
+
+
+def test_deepseek_v4_benchmark_family_keeps_native_text_runtime() -> None:
+    """DeepSeek V4 checkpoints use Rapid's vendored text model."""
+    from vllm_mlx.model_aliases import resolve_profile
+    from vllm_mlx.utils.tokenizer import _VENDORED_MODEL_TYPES
+
+    assert "deepseek_v4" in _VENDORED_MODEL_TYPES
+    for alias in (
+        "deepseek-v4-flash-2bit",
+        "deepseek-v4-flash-4bit",
+        "deepseek-v4-flash-8bit",
+        "deepseek-v4-flash-0731-mxfp4",
+    ):
+        profile = resolve_profile(alias)
+        assert profile is not None
+        assert profile.modality == "text"
+        assert profile.supports_image_input is False
+
+
+def test_unavailable_dedicated_text_runtime_fails_before_model_load(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from vllm_mlx.community_bench import workspace
+    from vllm_mlx.utils import tokenizer as tokenizer_module
+
+    monkeypatch.setattr(
+        workspace,
+        "benchmark_runtime_readiness",
+        lambda _alias, _task: {
+            "status": "unavailable",
+            "message": "dedicated runtime is not benchmarkable",
+        },
+    )
+    monkeypatch.setattr(
+        tokenizer_module,
+        "load_model_with_fallback",
+        lambda *_args, **_kwargs: pytest.fail("model loader must not run"),
+    )
+
+    with pytest.raises(RuntimeError, match="dedicated runtime is not benchmarkable"):
+        asyncio.run(
+            local_runner._text_measurements(
+                "deepseek-v41-flash-reap-2bit",
+                "rapid-mlx/DeepSeek-V4.1-Flash-REAP-2bit-MLX",
+            )
+        )
+
+
+def test_text_lane_uses_serving_runtime_and_tolerates_shutdown_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from vllm_mlx.community_bench import runner, workspace
+    from vllm_mlx.engine import batched
+
+    events: list[str] = []
+
+    class Engine:
+        def __init__(self, target, **kwargs):
+            events.append(f"init:{target}")
+            assert kwargs["force_mllm"] is True
+            self.tokenizer = object()
+            self._model = SimpleNamespace(
+                args=SimpleNamespace(max_position_embeddings=1_048_576)
+            )
+
+        async def start(self):
+            events.append("start")
+
+        async def stop(self):
+            events.append("stop")
+            raise RuntimeError("cleanup failure")
+
+    async def standardized(*_args, **kwargs):
+        assert kwargs["registered_token_ids"] is True
+        return _bench_result()
+
+    monkeypatch.setattr(local_runner, "_uses_serving_benchmark_engine", lambda _: True)
+    monkeypatch.setattr(
+        workspace,
+        "benchmark_runtime_readiness",
+        lambda *_args: {"status": "ready"},
+    )
+    monkeypatch.setattr(batched, "BatchedEngine", Engine)
+    monkeypatch.setattr(runner, "run_standardized_bench", standardized)
+    monkeypatch.setattr(
+        local_runner, "unresolved_model_identity", lambda *_args, **_kwargs: {}
+    )
+
+    measurements, context_length, _identity = asyncio.run(
+        local_runner._text_measurements("glm5.3-flash-4bit", "vendor/glm")
+    )
+
+    assert len(measurements) == 10
+    assert context_length == 1_048_576
+    assert events == ["init:vendor/glm", "start", "stop"]
+
+
+def test_text_lane_reaps_failed_serving_start(monkeypatch: pytest.MonkeyPatch) -> None:
+    from vllm_mlx.community_bench import workspace
+    from vllm_mlx.engine import batched
+
+    events: list[str] = []
+
+    class Engine:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        async def start(self):
+            events.append("start")
+            raise RuntimeError("startup failed")
+
+        async def stop(self):
+            events.append("stop")
+            raise RuntimeError("cleanup failed")
+
+    monkeypatch.setattr(local_runner, "_uses_serving_benchmark_engine", lambda _: True)
+    monkeypatch.setattr(
+        workspace,
+        "benchmark_runtime_readiness",
+        lambda *_args: {"status": "ready"},
+    )
+    monkeypatch.setattr(batched, "BatchedEngine", Engine)
+
+    with pytest.raises(RuntimeError, match="startup failed"):
+        asyncio.run(local_runner._text_measurements("glm", "vendor/glm"))
+    assert events == ["start", "stop"]
+
+
+def test_text_lane_falls_back_only_for_exact_architecture_rejection(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from vllm_mlx.community_bench import runner, workspace
+    from vllm_mlx.engine import batched
+    from vllm_mlx.utils import tokenizer as tokenizer_module
+
+    class Engine:
+        def __init__(self, *_args, **_kwargs):
+            self.tokenizer = object()
+            self._model = SimpleNamespace(
+                args=SimpleNamespace(max_position_embeddings=32768)
+            )
+
+        async def start(self):
+            return None
+
+        async def stop(self):
+            return None
+
+    async def standardized(*_args, **_kwargs):
+        return _bench_result()
+
+    monkeypatch.setattr(local_runner, "_uses_serving_benchmark_engine", lambda _: False)
+    monkeypatch.setattr(
+        workspace,
+        "benchmark_runtime_readiness",
+        lambda *_args: {"status": "ready"},
+    )
+    monkeypatch.setattr(batched, "BatchedEngine", Engine)
+    monkeypatch.setattr(runner, "run_standardized_bench", standardized)
+    monkeypatch.setattr(
+        local_runner, "unresolved_model_identity", lambda *_args, **_kwargs: {}
+    )
+    monkeypatch.setattr(
+        tokenizer_module,
+        "load_model_with_fallback",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            ValueError("Model type future_text not supported.")
+        ),
+    )
+
+    measurements, context_length, _identity = asyncio.run(
+        local_runner._text_measurements("future", "vendor/future")
+    )
+    assert len(measurements) == 10
+    assert context_length == 32768
+
+    monkeypatch.setattr(
+        tokenizer_module,
+        "load_model_with_fallback",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            ValueError("corrupt tensor shape")
+        ),
+    )
+    with pytest.raises(ValueError, match="corrupt tensor shape"):
+        asyncio.run(local_runner._text_measurements("future", "vendor/future"))
+
+
 def test_text_lane_converts_engine_result_and_reaps_executor(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:

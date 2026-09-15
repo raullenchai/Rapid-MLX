@@ -633,6 +633,114 @@ class TestVideoFpsForwarding:
         assert batch_req.video_fps == 3.0
         assert batch_req.video_max_frames == 24
 
+    def test_schedule_waiting_forwards_exact_benchmark_contract(self):
+        """Pre-tokenized work and ignore-EOS remain request-local."""
+        from vllm_mlx.mllm_scheduler import MLLMScheduler, MLLMSchedulerConfig
+
+        mock_model = MagicMock()
+        mock_processor = MagicMock()
+        mock_processor.tokenizer = MagicMock()
+        scheduler = MLLMScheduler(mock_model, mock_processor, MLLMSchedulerConfig())
+
+        scheduler.add_request(
+            prompt=[11, 12, 13],
+            ignore_eos=True,
+            top_k=7,
+            min_p=0.05,
+            seed=23,
+        )
+        scheduler._schedule_waiting()
+
+        assert scheduler.batch_generator is not None
+        batch_req = scheduler.batch_generator.unprocessed_requests[0]
+        assert batch_req.prompt == [11, 12, 13]
+        assert batch_req.ignore_eos is True
+        assert batch_req.top_k == 7
+        assert batch_req.min_p == 0.05
+        assert batch_req.seed == 23
+
+    def test_ignore_eos_suppresses_only_model_control_stops(self):
+        from vllm_mlx.mllm_batch_generator import (
+            MLLMBatchRequest,
+            _is_control_stop_token,
+        )
+
+        normal = MLLMBatchRequest(uid=1, request_id="normal", prompt="hi")
+        benchmark = MLLMBatchRequest(
+            uid=2, request_id="benchmark", prompt=[1, 2], ignore_eos=True
+        )
+
+        assert _is_control_stop_token(99, {99}, normal) is True
+        assert _is_control_stop_token(99, {99}, benchmark) is False
+        assert _is_control_stop_token(98, {99}, benchmark) is False
+
+    def test_request_sampler_uses_every_registered_sampling_control(self, monkeypatch):
+        from vllm_mlx import mllm_batch_generator as batch_module
+        from vllm_mlx.mllm_batch_generator import MLLMBatchRequest, _request_sampler
+
+        observed = []
+
+        def fake_sampler(**kwargs):
+            observed.append(("unseeded", kwargs))
+            return object()
+
+        def fake_seeded_sampler(**kwargs):
+            observed.append(("seeded", kwargs))
+            return object()
+
+        monkeypatch.setattr(batch_module, "make_sampler", fake_sampler)
+        monkeypatch.setattr(batch_module, "make_seeded_sampler", fake_seeded_sampler)
+
+        request = MLLMBatchRequest(
+            uid=1,
+            request_id="sampled",
+            prompt=[1, 2],
+            temperature=0.7,
+            top_p=0.9,
+            top_k=11,
+            min_p=0.04,
+        )
+        first = _request_sampler(request)
+        assert _request_sampler(request) is first
+        assert observed == [
+            (
+                "unseeded",
+                {"temp": 0.7, "top_p": 0.9, "min_p": 0.04, "top_k": 11},
+            )
+        ]
+
+        request.seed = 29
+        seeded = _request_sampler(request)
+        assert seeded is not first
+        assert observed[-1] == (
+            "seeded",
+            {
+                "seed": 29,
+                "temperature": 0.7,
+                "top_p": 0.9,
+                "min_p": 0.04,
+                "top_k": 11,
+            },
+        )
+
+    def test_pretokenized_text_prompt_bypasses_processor_round_trip(self):
+        """Exact registered IDs must reach MLX without decode/re-tokenize."""
+        from vllm_mlx.mllm_batch_generator import (
+            MLLMBatchGenerator,
+            MLLMBatchRequest,
+        )
+
+        generator = object.__new__(MLLMBatchGenerator)
+        request = MLLMBatchRequest(
+            uid=1, request_id="benchmark", prompt=[101, 202, 303]
+        )
+
+        generator._preprocess_request(request)
+
+        assert request.input_ids.tolist() == [[101, 202, 303]]
+        assert request.pixel_values is None
+        assert request.extra_kwargs == {}
+
 
 @_skip_no_mlx_lm
 class TestMLLMEosContract:

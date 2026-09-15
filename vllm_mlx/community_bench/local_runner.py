@@ -8,7 +8,9 @@ import base64
 import binascii
 import concurrent.futures
 import contextvars
+import inspect
 import io
+import logging
 import math
 import multiprocessing
 import multiprocessing.process
@@ -21,7 +23,8 @@ import sys
 import tempfile
 import threading
 import time
-from collections.abc import Callable
+import uuid
+from collections.abc import AsyncIterator, Callable
 from multiprocessing.connection import Connection
 from typing import Any
 
@@ -29,6 +32,8 @@ import requests
 
 from .benchmark_contracts import public_prompt, registered_workload
 from .hardware import collect, run_conditions
+
+logger = logging.getLogger(__name__)
 
 #: Where the measurement helpers deposit the "after" run-conditions snapshot.
 #: It must be taken while the model is still resident — after the last
@@ -846,6 +851,138 @@ def _loader_target(model_name: str, repo_id: str) -> str:
     return target
 
 
+def _uses_serving_benchmark_engine(target: str) -> bool:
+    """Whether ``target`` needs the architecture-owned serving loader."""
+
+    from vllm_mlx.api.utils import is_mllm_model
+
+    return bool(is_mllm_model(target))
+
+
+def _text_loader_needs_serving_fallback(exc: BaseException) -> bool:
+    """Whether mlx-lm rejected an architecture owned by the serving runtime."""
+
+    message = str(exc).strip().lower()
+    missing_module = getattr(exc, "name", None)
+    return (
+        isinstance(missing_module, str) and missing_module.startswith("mlx_lm.models.")
+    ) or bool(re.fullmatch(r"model type [a-z0-9_.-]+ not supported\.", message))
+
+
+class _ServingBenchmarkAdapter:
+    """Expose the standardized benchmark protocol over ``BatchedEngine``.
+
+    Architecture-owned text backbones such as GLM-5 Next are loaded by the
+    production multimodal lane rather than mlx-lm.  Keeping this adapter tiny
+    lets the benchmark reuse that proven loader/scheduler while preserving the
+    runner's exact-token and output-accounting contract.
+    """
+
+    def __init__(self, engine: Any) -> None:
+        self._engine = engine
+        self._requests: dict[str, tuple[str | list[int], Any]] = {}
+
+    async def __aenter__(self) -> _ServingBenchmarkAdapter:
+        return self
+
+    async def __aexit__(self, *_exc: Any) -> None:
+        return None
+
+    async def add_request(self, prompt: str | list[int], sampling_params: Any) -> str:
+        if getattr(sampling_params, "stop_token_ids", None):
+            raise ValueError(
+                "the serving benchmark adapter does not support caller-supplied "
+                "stop token IDs"
+            )
+        request_id = uuid.uuid4().hex
+        self._requests[request_id] = (prompt, sampling_params)
+        return request_id
+
+    async def stream_outputs(
+        self, request_id: str, timeout: float | None = None
+    ) -> AsyncIterator[Any]:
+        from vllm_mlx.request import RequestOutput
+
+        prompt, sampling = self._requests.pop(request_id)
+        output_token_ids: list[int] = []
+
+        stream = self._engine.stream_generate(
+            prompt,
+            request_id=request_id,
+            max_tokens=sampling.max_tokens,
+            temperature=sampling.temperature,
+            top_p=sampling.top_p,
+            top_k=sampling.top_k,
+            min_p=sampling.min_p,
+            repetition_penalty=sampling.repetition_penalty,
+            presence_penalty=sampling.presence_penalty,
+            frequency_penalty=sampling.frequency_penalty,
+            ignore_eos=sampling.ignore_eos,
+            seed=sampling.seed,
+            stop=sampling.stop,
+        )
+
+        def adapt(output: Any) -> Any:
+            output_token_ids.extend(output.tokens)
+            return RequestOutput(
+                request_id=request_id,
+                new_token_ids=list(output.tokens),
+                new_text=output.new_text,
+                output_token_ids=list(output_token_ids),
+                output_text=output.text,
+                finished=output.finished,
+                finish_reason=output.finish_reason,
+                prompt_tokens=output.prompt_tokens,
+                completion_tokens=output.completion_tokens,
+                cached_tokens=output.cached_tokens,
+            )
+
+        completed = False
+        try:
+            if timeout is None:
+                async for output in stream:
+                    yield adapt(output)
+                completed = True
+                return
+
+            loop = asyncio.get_running_loop()
+            deadline = loop.time() + timeout
+            while True:
+                try:
+                    remaining = deadline - loop.time()
+                    if remaining <= 0:
+                        raise asyncio.TimeoutError
+                    output = await asyncio.wait_for(anext(stream), timeout=remaining)
+                except StopAsyncIteration:
+                    completed = True
+                    return
+                yield adapt(output)
+        finally:
+            if not completed:
+                abort = getattr(self._engine, "abort_request", None)
+                if abort is not None:
+                    try:
+                        result = abort(request_id)
+                        if inspect.isawaitable(result):
+                            await result
+                    except Exception:
+                        logger.warning(
+                            "benchmark request abort cleanup failed for %s",
+                            request_id,
+                            exc_info=True,
+                        )
+            close = getattr(stream, "aclose", None)
+            if close is not None:
+                try:
+                    await close()
+                except Exception:
+                    logger.warning(
+                        "benchmark request stream cleanup failed for %s",
+                        request_id,
+                        exc_info=True,
+                    )
+
+
 async def _text_measurements(
     model_name: str,
     catalog_repo_id: str | None = None,
@@ -860,6 +997,7 @@ async def _text_measurements(
     could silently measure the 8-bit checkpoint. Loading by alias keeps the
     measured artifact and the recorded identity the same thing.
     """
+    from vllm_mlx.engine.batched import BatchedEngine
     from vllm_mlx.engine_core import (
         AsyncEngineCore,
         EngineConfig,
@@ -877,11 +1015,22 @@ async def _text_measurements(
     # would measure unrelated weights under the catalog identity.
     repo_id = catalog_repo_id or resolve_model(model_name)
     target = _loader_target(model_name, repo_id)
+    from .workspace import benchmark_runtime_readiness
+
+    runtime = benchmark_runtime_readiness(model_name, "text_generation")
+    if runtime.get("status") == "unavailable":
+        raise RuntimeError(runtime.get("message") or "benchmark runtime unavailable")
+
+    # Resolve against the concrete catalog checkpoint, just like serve. Most
+    # text-generation aliases (including DeepSeek V4) remain on the native
+    # text lane. Architecture-owned backbones such as GLM-5 Next use the
+    # production MLLM loader instead of failing in mlx-lm. Dedicated runtimes
+    # such as DeepSeek V4.1 are rejected by the readiness check above.
+    use_serving_engine = _uses_serving_benchmark_engine(target)
 
     workload = registered_workload("text_generation")
-    executor = concurrent.futures.ThreadPoolExecutor(
-        max_workers=1, thread_name_prefix="mlx-step", initializer=_init_mlx_step_thread
-    )
+    executor = None
+    serving_engine = None
     try:
         if progress is not None:
             cached = model_is_cached(repo_id)
@@ -893,13 +1042,61 @@ async def _text_measurements(
                 source = "cache state unknown; downloads anything missing"
             _report(progress, f"Loading {repo_id} ({source})...")
         load_started = _stage_started(progress)
-        loaded = executor.submit(
-            load_model_with_fallback, target, return_source=True
-        ).result()
-        # ``return_source`` appends the concrete checkpoint source; a test
-        # double may still answer with the plain pair.
-        model, tokenizer = loaded[0], loaded[1]
-        loaded_source = loaded[2] if len(loaded) > 2 else ""
+
+        async def start_serving_engine() -> tuple[Any, Any]:
+            scheduler = SchedulerConfig(
+                max_num_seqs=1,
+                max_concurrent_requests=1,
+                prefill_batch_size=1,
+                completion_batch_size=1,
+                enable_prefix_cache=False,
+                spec_decode="none",
+            )
+            candidate = BatchedEngine(
+                target,
+                scheduler_config=scheduler,
+                force_mllm=True,
+                profile_name=model_name,
+            )
+            try:
+                await candidate.start()
+                tokenizer = candidate.tokenizer
+            except BaseException:
+                try:
+                    await candidate.stop()
+                except Exception:
+                    logger.warning(
+                        "failed benchmark engine cleanup after startup error",
+                        exc_info=True,
+                    )
+                raise
+            return candidate, tokenizer
+
+        if use_serving_engine:
+            serving_engine, tokenizer = await start_serving_engine()
+            loaded_source, model = "", None
+        else:
+            executor = concurrent.futures.ThreadPoolExecutor(
+                max_workers=1,
+                thread_name_prefix="mlx-step",
+                initializer=_init_mlx_step_thread,
+            )
+            try:
+                loaded = executor.submit(
+                    load_model_with_fallback, target, return_source=True
+                ).result()
+            except (ValueError, ModuleNotFoundError) as exc:
+                if not _text_loader_needs_serving_fallback(exc):
+                    raise
+                executor.shutdown(wait=False, cancel_futures=True)
+                executor = None
+                serving_engine, tokenizer = await start_serving_engine()
+                loaded_source, model = "", None
+            else:
+                # ``return_source`` appends the concrete checkpoint source; a
+                # test double may still answer with the plain pair.
+                model, tokenizer = loaded[0], loaded[1]
+                loaded_source = loaded[2] if len(loaded) > 2 else ""
         _stage_finished(progress, load_started, "Model loaded")
         # Identity of the checkpoint the loader just pinned, read now — before
         # minutes of measurement give another process time to move refs/main.
@@ -925,10 +1122,21 @@ async def _text_measurements(
             spec_decode="none",
         )
         config = EngineConfig(model_name=repo_id, scheduler_config=scheduler)
-        async with AsyncEngineCore(
-            model, tokenizer, config, executor=executor
-        ) as engine:
-            context_length = get_model_max_context(engine.engine)
+        if serving_engine is not None:
+            engine_context: Any = _ServingBenchmarkAdapter(serving_engine)
+            # ``get_model_max_context`` intentionally accepts serving-engine
+            # wrappers: it reads ``._model`` first and then the wrapper's
+            # tokenizer/local config. BatchedEngine exposes both after start.
+            context_source: Any = serving_engine
+        else:
+            engine_context = AsyncEngineCore(
+                model, tokenizer, config, executor=executor
+            )
+            context_source = None
+        async with engine_context as engine:
+            context_length = get_model_max_context(
+                context_source if context_source is not None else engine.engine
+            )
             result = await run_standardized_bench(
                 engine,
                 tokenizer,
@@ -942,14 +1150,26 @@ async def _text_measurements(
             )
             _record_conditions_after()
     finally:
-        # ThreadPoolExecutor workers are non-daemon and Python joins them again
-        # during interpreter shutdown. Leaving this executor live can make the
-        # CLI appear finished while its process (and Desktop memory lease)
-        # remains stuck. AsyncEngineCore has exited at this point, so cancel
-        # work that never started and synchronously reap the owned worker. The
-        # Desktop's outer CLI process group remains the hard cancellation
-        # boundary for native MLX calls that cannot be interrupted in-process.
-        executor.shutdown(wait=True, cancel_futures=True)
+        try:
+            if serving_engine is not None:
+                try:
+                    await serving_engine.stop()
+                except Exception:
+                    logger.warning(
+                        "benchmark serving-engine shutdown failed",
+                        exc_info=True,
+                    )
+        finally:
+            # ThreadPoolExecutor workers are non-daemon and Python joins them
+            # again during interpreter shutdown. Leaving this executor live can
+            # make the CLI appear finished while its process (and Desktop memory
+            # lease) remains stuck. AsyncEngineCore has exited at this point, so
+            # cancel work that never started and synchronously reap the owned
+            # worker. The Desktop's outer CLI process group remains the hard
+            # cancellation boundary for native MLX calls that cannot be
+            # interrupted in-process.
+            if executor is not None:
+                executor.shutdown(wait=True, cancel_futures=True)
 
     buckets = (result.short, result.long)
     measurements: list[dict[str, Any]] = []

@@ -136,7 +136,7 @@ class MLLMRequest:
     """
 
     request_id: str
-    prompt: str
+    prompt: str | list[int]
     images: list[str] | None = None
     videos: list[str] | None = None
     sampling_params: SamplingParams = field(default_factory=SamplingParams)
@@ -577,7 +577,7 @@ class MLLMScheduler:
 
     def add_request(
         self,
-        prompt: str,
+        prompt: str | list[int],
         images: list[str] | None = None,
         videos: list[str] | None = None,
         max_tokens: int = 256,
@@ -655,9 +655,13 @@ class MLLMScheduler:
             max_tokens=max_tokens,
             temperature=temperature,
             top_p=top_p,
+            top_k=int(kwargs.pop("top_k", 0) or 0),
+            min_p=float(kwargs.pop("min_p", 0.0) or 0.0),
             repetition_penalty=repetition_penalty,
             presence_penalty=presence_penalty,
             frequency_penalty=frequency_penalty,
+            ignore_eos=bool(kwargs.pop("ignore_eos", False)),
+            seed=kwargs.pop("seed", None),
         )
 
         request = MLLMRequest(
@@ -949,12 +953,16 @@ class MLLMScheduler:
                 max_tokens=request.sampling_params.max_tokens,
                 temperature=request.sampling_params.temperature,
                 top_p=request.sampling_params.top_p,
+                top_k=request.sampling_params.top_k,
+                min_p=request.sampling_params.min_p,
+                seed=request.sampling_params.seed,
                 # OpenAI-spec penalty passthrough (#512). Default neutral
                 # values are no-ops inside ``_maybe_apply_penalty_processors``.
                 repetition_penalty=request.sampling_params.repetition_penalty,
                 presence_penalty=request.sampling_params.presence_penalty,
                 frequency_penalty=request.sampling_params.frequency_penalty,
                 logits_processors=request.logits_processors,
+                ignore_eos=request.sampling_params.ignore_eos,
                 prefix_boundary=request.prefix_boundary,
                 video_fps=request.video_fps,
                 video_max_frames=request.video_max_frames,
@@ -1049,7 +1057,11 @@ class MLLMScheduler:
 
             finish_reason = response.finish_reason
             repetition_error: str | None = None
-            if finish_reason is None and request.num_output_tokens % 8 == 0:
+            if (
+                finish_reason is None
+                and not request.sampling_params.ignore_eos
+                and request.num_output_tokens % 8 == 0
+            ):
                 repetition_match = detect_repeated_token_suffix(request.output_tokens)
                 if repetition_match is not None:
                     finish_reason = "abort"
@@ -2054,7 +2066,7 @@ class MLLMScheduler:
 
     async def add_request_async(
         self,
-        prompt: str,
+        prompt: str | list[int],
         images: list[str] | None = None,
         videos: list[str] | None = None,
         max_tokens: int = 256,

@@ -41,6 +41,7 @@ _mlx_compat.install()
 
 from mlx_lm.sample_utils import make_logits_processors, make_sampler  # noqa: E402
 
+from ._seeded_sampler import make_seeded_sampler  # noqa: E402
 from .hybrid_state_checkpoints import (  # noqa: E402
     achievable_position,
     attach_checkpoints,
@@ -275,6 +276,49 @@ def _is_text_only_request(request: "MLLMBatchRequest") -> bool:
     return request.pixel_values is None and request.image_grid_thw is None
 
 
+def _is_control_stop_token(
+    token: int, stop_tokens: set[int], request: "MLLMBatchRequest"
+) -> bool:
+    """Return whether model EOS should terminate this request."""
+
+    return token in stop_tokens and not request.ignore_eos
+
+
+def _request_sampler(request: "MLLMBatchRequest") -> Callable:
+    """Return the request-owned sampler, preserving all sampling controls."""
+
+    key = (
+        request.temperature,
+        request.top_p,
+        request.min_p,
+        request.top_k,
+        request.seed,
+    )
+    cached = request._cached_sampler
+    if cached is not None and cached[0] == key:
+        return cached[1]
+    if request.seed is None:
+        kwargs: dict[str, Any] = {
+            "temp": request.temperature,
+            "top_p": request.top_p,
+        }
+        if request.min_p:
+            kwargs["min_p"] = request.min_p
+        if request.top_k:
+            kwargs["top_k"] = request.top_k
+        sampler = make_sampler(**kwargs)
+    else:
+        sampler = make_seeded_sampler(
+            seed=request.seed,
+            temperature=request.temperature,
+            top_p=request.top_p,
+            min_p=request.min_p,
+            top_k=request.top_k,
+        )
+    request._cached_sampler = (key, sampler)
+    return sampler
+
+
 def _prefill_cap_violation(requests, prefill_step_size: int):
     """Return the "exceeds the per-batch cap" error message when a batch of
     requests violates the per-batch prefill cap, else ``None``.
@@ -329,12 +373,15 @@ class MLLMBatchRequest:
 
     uid: int  # Unique identifier within the batch generator
     request_id: str  # External request ID
-    prompt: str  # Text prompt
+    prompt: str | list[int]  # Text prompt or an exact pre-tokenized workload
     images: list[str] | None = None  # Image paths/URLs/base64
     videos: list[str] | None = None  # Video inputs
     max_tokens: int = 256
     temperature: float = 0.7
     top_p: float = 0.9
+    top_k: int = 0
+    min_p: float = 0.0
+    seed: int | None = None
     # OpenAI-spec penalties (#512) — wired into mlx-lm's
     # ``make_logits_processors`` inside ``_step``. ``repetition_penalty`` is
     # a rapid-mlx extension (mlx-lm-native semantics); ``presence_penalty``
@@ -349,6 +396,9 @@ class MLLMBatchRequest:
     # contract as the text scheduler and are owned by this request.
     logits_processors: list[Callable] = field(default_factory=list)
     logits_processor_tokens: list[int] = field(default_factory=list)
+    # Standardized hardware benchmarks must execute exactly max_tokens decode
+    # steps.  This is request-local so ordinary chat requests still stop on EOS.
+    ignore_eos: bool = False
     video_fps: float | None = None  # Caller-specified video FPS
     video_max_frames: int | None = None  # Caller-specified max video frames
 
@@ -397,6 +447,9 @@ class MLLMBatchRequest:
     # no images or the model does not support feature caching. Appended last so
     # inserting it never shifts the meaning of any positional constructor arg.
     vision_feature_key: str | None = None
+    _cached_sampler: (
+        tuple[tuple[float, float, float, int, int | None], Callable] | None
+    ) = field(default=None, init=False, repr=False, compare=False)
 
 
 @dataclass
@@ -785,7 +838,9 @@ class MLLMBatchGenerator:
         self.max_tokens = max_tokens
         self.stop_tokens = stop_tokens or set()
         self.sampler = sampler or (lambda x: mx.argmax(x, axis=-1))
-        self._shared_batch_sampler: tuple[tuple[float, float], Callable] | None = None
+        self._shared_batch_sampler: (
+            tuple[tuple[float, float, float, int], Callable] | None
+        ) = None
 
         self.prefill_batch_size = prefill_batch_size
         self.completion_batch_size = max(completion_batch_size, prefill_batch_size)
@@ -1443,12 +1498,34 @@ class MLLMBatchGenerator:
         Args:
             request: Request to preprocess
         """
-        from mlx_vlm.utils import prepare_inputs
-
-        tic = time.perf_counter()
-
         # Collect all images (including video frames)
         all_images = []
+
+        # Registered community benchmarks feed an exact token-id workload so
+        # every machine measures identical prefill work.  A decode-to-text and
+        # re-tokenize round trip can change both length and IDs.  Text-only
+        # MLLM requests therefore admit the same pre-tokenized contract as the
+        # native text scheduler; media requests remain processor-owned.
+        if isinstance(request.prompt, list):
+            if request.images or request.videos:
+                raise ClientRequestError(
+                    "pre-tokenized prompts cannot be combined with media inputs"
+                )
+            if not request.prompt or any(
+                type(token) is not int for token in request.prompt
+            ):
+                raise ClientRequestError(
+                    "pre-tokenized prompts must contain at least one integer token"
+                )
+            request.input_ids = mx.array([request.prompt])
+            request.pixel_values = None
+            request.attention_mask = None
+            request.image_grid_thw = None
+            request.extra_kwargs = {}
+            return
+
+        tic = time.perf_counter()
+        from mlx_vlm.utils import prepare_inputs
 
         if request.images:
             from .models.mllm import FileSizeExceededError, process_image_input
@@ -2036,7 +2113,7 @@ class MLLMBatchGenerator:
                 logprobs = last_logits - mx.logsumexp(
                     last_logits, axis=-1, keepdims=True
                 )
-                req_sampler = make_sampler(temp=req.temperature, top_p=req.top_p)
+                req_sampler = _request_sampler(req)
                 sampled = req_sampler(logprobs)
 
                 mx.eval(sampled, logprobs)
@@ -2206,39 +2283,41 @@ class MLLMBatchGenerator:
         # MLX kernel chain — distributionally identical to the per-row
         # loop. At B=8 on Gemma 3 12B this cuts step time ~30%.
         #
-        # WARNING: ``_shared_batch_sampler`` is keyed only on
-        # ``(temperature, top_p)``. If we ever add per-request sampling
-        # knobs (top_k, min_p) that change the sampler's *shape* (not just
-        # the per-row logits, which the penalty processors above handle),
-        # the key MUST grow accordingly — otherwise homogeneous-looking
-        # batches would silently share an incorrect sampler. The single
-        # ``MLLMScheduler`` worker thread (see mlx-lm 0.31.3+ stream
-        # ownership rule in #404) is the only writer, so no lock needed.
+        # Seeded samplers carry request-local PRNG state and therefore never
+        # use this shared fast path. Unseeded samplers can be shared only when
+        # every shape-changing control matches.
         logprobs = logits - mx.logsumexp(logits, axis=-1, keepdims=True)
         if requests and len(requests) == logprobs.shape[0]:
-            first_key = (requests[0].temperature, requests[0].top_p)
-            homogeneous = all((r.temperature, r.top_p) == first_key for r in requests)
+            first_key = (
+                requests[0].temperature,
+                requests[0].top_p,
+                requests[0].min_p,
+                requests[0].top_k,
+            )
+            homogeneous = requests[0].seed is None and all(
+                r.seed is None
+                and (r.temperature, r.top_p, r.min_p, r.top_k) == first_key
+                for r in requests
+            )
             if homogeneous:
                 shared = self._shared_batch_sampler
                 if shared is None or shared[0] != first_key:
-                    fn = make_sampler(
-                        temp=requests[0].temperature, top_p=requests[0].top_p
-                    )
+                    kwargs: dict[str, Any] = {
+                        "temp": requests[0].temperature,
+                        "top_p": requests[0].top_p,
+                    }
+                    if requests[0].min_p:
+                        kwargs["min_p"] = requests[0].min_p
+                    if requests[0].top_k:
+                        kwargs["top_k"] = requests[0].top_k
+                    fn = make_sampler(**kwargs)
                     shared = (first_key, fn)
                     self._shared_batch_sampler = shared
                 sampled = shared[1](logprobs)
             else:
                 sampled_tokens = []
                 for i, req in enumerate(requests):
-                    sampler_key = (req.temperature, req.top_p)
-                    cached = getattr(req, "_cached_sampler", None)
-                    if cached is None or cached[0] != sampler_key:
-                        req_sampler = make_sampler(
-                            temp=req.temperature, top_p=req.top_p
-                        )
-                        req._cached_sampler = (sampler_key, req_sampler)
-                    else:
-                        req_sampler = cached[1]
+                    req_sampler = _request_sampler(req)
                     sampled_tokens.append(req_sampler(logprobs[i : i + 1]))
                 sampled = mx.concatenate(sampled_tokens, axis=0)
         else:
@@ -2346,7 +2425,7 @@ class MLLMBatchGenerator:
             finish_reason = None
             prompt_cache = None
 
-            token_is_stop_token = token in self.stop_tokens
+            token_is_stop_token = _is_control_stop_token(token, self.stop_tokens, req)
             if token_is_stop_token:
                 finish_reason = "stop"
                 end_idx.append(i)
