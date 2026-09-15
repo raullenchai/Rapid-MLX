@@ -346,6 +346,28 @@ def test_explicit_sentence_count_gets_one_bounded_correction():
     )
 
 
+def test_explicit_source_url_gets_one_bounded_correction_when_omitted():
+    retry = _format_retry_instruction(
+        "Report the version with the canonical source URL.",
+        AgentModelTurn(content="v0.14.2"),
+    )
+    assert retry is not None
+    assert "exact source URL" in retry
+    assert "do not invent" in retry
+    assert (
+        _format_retry_instruction(
+            "Report the version with the canonical source URL.",
+            AgentModelTurn(
+                content=(
+                    "v0.14.2 — "
+                    "https://github.com/raullenchai/Rapid-MLX/releases/tag/v0.14.2"
+                )
+            ),
+        )
+        is None
+    )
+
+
 def test_simple_weather_arguments_are_planned_without_model_authored_json():
     assert _planned_weather_arguments(
         "What is the current weather in San Francisco? Answer in Celsius."

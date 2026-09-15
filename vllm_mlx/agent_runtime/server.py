@@ -207,6 +207,13 @@ _SENTENCE_COUNT_INTENT = re.compile(
     r"(?:个)?(?:简短|简洁)?句(?:话)?",
     re.IGNORECASE,
 )
+_SOURCE_URL_INTENT = re.compile(
+    r"\b(?:exact|canonical|source)\s+(?:source\s+)?url\b|"
+    r"\b(?:include|provide|report|return|show)\b.{0,40}\b(?:source\s+)?url\b|"
+    r"(?:准确|精确|规范|官方|来源)(?:的)?(?:链接|网址|URL)|"
+    r"(?:附上|给出|提供|返回|显示).{0,20}(?:链接|网址|URL)",
+    re.IGNORECASE,
+)
 _WEATHER_LOCATION = re.compile(
     r"\b(?:weather|temperature|forecast)\s+(?:in|for)\s+([^?;\n]+?)"
     r"(?=[?;\n]|$)",
@@ -292,8 +299,19 @@ def _observed_sentence_count(content: str) -> int:
 
 
 def _format_retry_instruction(goal: str, turn: AgentModelTurn) -> str | None:
+    if turn.tool_calls or not turn.content:
+        return None
+    if (
+        _SOURCE_URL_INTENT.search(goal) is not None
+        and _WEB_URL.search(turn.content) is None
+    ):
+        return (
+            "Rewrite the answer to include the exact source URL requested by the "
+            "user. Copy it from the tool evidence already provided; do not invent "
+            "a URL or add facts not present in that evidence."
+        )
     expected = _requested_sentence_count(goal)
-    if expected is None or turn.tool_calls or not turn.content:
+    if expected is None:
         return None
     observed = _observed_sentence_count(turn.content)
     stripped = turn.content.strip()
