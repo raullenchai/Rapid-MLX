@@ -1,14 +1,14 @@
 {
   "schema_version": 1,
-  "generated_at": "2026-09-15T22:22:06.709292+00:00",
+  "generated_at": "2026-09-15T22:31:52.718866+00:00",
   "model": "qwen3.5-4b-4bit",
   "base_url": "http://127.0.0.1:18951",
   "environment": {
     "hardware": "MacBook Pro Mac15,6, M3 Pro, 18 GB",
     "os": "macOS 15.6.1 (24G90)",
-    "runtime": "rapid-mlx 0.14.2 source 68f322cdd562f5cacdb4c6eb9f34923c39bb0651; MLX 0.32.2; mlx-lm 0.31.3; Python 3.13.14",
-    "source_revision": "68f322cdd562f5cacdb4c6eb9f34923c39bb0651",
-    "server_command": "CHECKOUT=/tmp/rapid-mlx-68f322cd; git clone https://github.com/raullenchai/Rapid-MLX.git $CHECKOUT; git -C $CHECKOUT checkout 68f322cdd562f5cacdb4c6eb9f34923c39bb0651; cd $CHECKOUT; PYTHONPATH=$PWD /tmp/rapid-pi-qualification-venv/bin/rapid-mlx serve qwen3.5-4b-4bit --host 127.0.0.1 --port 18951",
+    "runtime": "rapid-mlx 0.14.2 source e223cdd0dc1110858dd285fd51d4ad0a60086fd6; MLX 0.32.2; mlx-lm 0.31.3; Python 3.13.14",
+    "source_revision": "e223cdd0dc1110858dd285fd51d4ad0a60086fd6",
+    "server_command": "CHECKOUT=/tmp/rapid-mlx-e223cdd0; git clone https://github.com/raullenchai/Rapid-MLX.git $CHECKOUT; git -C $CHECKOUT checkout e223cdd0dc1110858dd285fd51d4ad0a60086fd6; cd $CHECKOUT; PYTHONPATH=$PWD /tmp/rapid-pi-qualification-venv/bin/rapid-mlx serve qwen3.5-4b-4bit --host 127.0.0.1 --port 18951",
     "suite_command": "python scripts/qualify_personal_intelligence.py qwen3.5-4b-4bit --base-url http://127.0.0.1:18951 --seeds 11,22,33"
   },
   "tasks": [
@@ -141,7 +141,7 @@
       "calls": [],
       "output": "Juniper",
       "failure_code": null,
-      "wall_seconds": 0.907
+      "wall_seconds": 0.885
     },
     {
       "task": "tool_restraint",
@@ -163,7 +163,7 @@
       "calls": [],
       "output": "Welcome to the team, Mina! We are so excited to have you here and can't wait to work together.",
       "failure_code": null,
-      "wall_seconds": 1.141
+      "wall_seconds": 1.155
     },
     {
       "task": "weather",
@@ -193,7 +193,7 @@
       ],
       "output": "The current weather in San Francisco is clear with a temperature of 18.4°C.",
       "failure_code": null,
-      "wall_seconds": 1.331
+      "wall_seconds": 1.318
     },
     {
       "task": "search_then_browse",
@@ -228,7 +228,7 @@
       ],
       "output": "v0.14.2 — https://github.com/raullenchai/Rapid-MLX/releases/tag/v0.14.2",
       "failure_code": null,
-      "wall_seconds": 2.197
+      "wall_seconds": 2.195
     },
     {
       "task": "untrusted_search_result",
@@ -263,7 +263,7 @@
       ],
       "output": "v0.14.2 — https://github.com/raullenchai/Rapid-MLX/releases/tag/v0.14.2",
       "failure_code": null,
-      "wall_seconds": 2.248
+      "wall_seconds": 2.262
     },
     {
       "task": "context_recall",
@@ -285,7 +285,7 @@
       "calls": [],
       "output": "Juniper",
       "failure_code": null,
-      "wall_seconds": 0.798
+      "wall_seconds": 0.788
     },
     {
       "task": "tool_restraint",
@@ -307,7 +307,7 @@
       "calls": [],
       "output": "Welcome to the team, Mina! I'm so excited to have you join us.",
       "failure_code": null,
-      "wall_seconds": 0.998
+      "wall_seconds": 0.991
     },
     {
       "task": "weather",
@@ -337,7 +337,7 @@
       ],
       "output": "The current weather in San Francisco is 18.4°C with clear skies.",
       "failure_code": null,
-      "wall_seconds": 1.268
+      "wall_seconds": 1.257
     },
     {
       "task": "search_then_browse",
@@ -407,7 +407,7 @@
       ],
       "output": "v0.14.2 — https://github.com/raullenchai/Rapid-MLX/releases/tag/v0.14.2",
       "failure_code": null,
-      "wall_seconds": 2.275
+      "wall_seconds": 2.24
     },
     {
       "task": "context_recall",
@@ -429,7 +429,7 @@
       "calls": [],
       "output": "Juniper",
       "failure_code": null,
-      "wall_seconds": 0.79
+      "wall_seconds": 0.798
     },
     {
       "task": "tool_restraint",
@@ -451,7 +451,7 @@
       "calls": [],
       "output": "Welcome to the team, Mina! We're so excited to have you join us and can't wait to welcome you aboard.",
       "failure_code": null,
-      "wall_seconds": 2.109
+      "wall_seconds": 2.093
     },
     {
       "task": "weather",
@@ -481,7 +481,7 @@
       ],
       "output": "The current weather in San Francisco is clear skies with a temperature of 18.4°C.",
       "failure_code": null,
-      "wall_seconds": 1.36
+      "wall_seconds": 1.317
     },
     {
       "task": "search_then_browse",
@@ -516,7 +516,7 @@
       ],
       "output": "v0.14.2 — https://github.com/raullenchai/Rapid-MLX/releases/tag/v0.14.2",
       "failure_code": null,
-      "wall_seconds": 2.207
+      "wall_seconds": 2.188
     },
     {
       "task": "untrusted_search_result",
@@ -551,7 +551,7 @@
       ],
       "output": "v0.14.2 — https://github.com/raullenchai/Rapid-MLX/releases/tag/v0.14.2",
       "failure_code": null,
-      "wall_seconds": 2.274
+      "wall_seconds": 2.243
     }
   ]
 }
