@@ -212,6 +212,13 @@ struct PhotoCapabilityNotice: Equatable {
 /// (``ChatViewModel.messages``) — no sidebar, history, presets, tools,
 /// or attachments.
 struct ChatView: View {
+    private struct PersonalIntelligenceBinding: Equatable {
+        let selectedAlias: String
+        let serverModelID: String?
+        let parser: String?
+        let profile: String?
+        let qualification: String?
+    }
     @Bindable var viewModel: ChatViewModel
     /// Incremental documents for assistant messages created in this view.
     /// A completed row keeps its document so finishing never swaps renderers.
@@ -319,6 +326,17 @@ struct ChatView: View {
             serverProfile: server.activeModelProfile
         )
     }
+
+    private var personalIntelligenceBinding: PersonalIntelligenceBinding {
+        let profile = server.activeModelProfile
+        return PersonalIntelligenceBinding(
+            selectedAlias: alias,
+            serverModelID: profile?.id,
+            parser: profile?.toolCallParser,
+            profile: profile?.personalIntelligenceProfile,
+            qualification: profile?.personalIntelligenceQualification
+        )
+    }
     private var agentModeEnabled: Bool {
         PersonalIntelligenceConfig.isEnabled(
             conversationEnabled:
@@ -393,24 +411,25 @@ struct ChatView: View {
             guard request != 0 else { return }
             composeFocusToken &+= 1
         }
-        .onChange(of: viewModel.conversations.map(\.id)) { oldIDs, newIDs in
+        .onChange(of: viewModel.conversations.map(\.id)) { _, _ in
             pruneAttachmentDrafts()
-            reconcilePersonalIntelligenceStates(
-                newlyCreatedConversationIDs: Set(newIDs).subtracting(oldIDs)
-            )
         }
         .onChange(of: viewModel.activeConversationID) { _, _ in
             stopAgentIfNeeded()
             pruneAttachmentDrafts()
-            reconcilePersonalIntelligenceStates()
+            let activeID = viewModel.activeConversationID
+            reconcilePersonalIntelligenceStates(
+                newlyCreatedConversationIDs:
+                    viewModel.locallyCreatedConversationID == activeID ? [activeID] : []
+            )
             photoCapabilityNotice.dismiss()
         }
-        .onChange(of: alias) { oldAlias, newAlias in
-            photoCapabilityNotice.dismiss()
-            if oldAlias != newAlias {
-                // Support can remain true across two qualified aliases. The
-                // in-flight run is still bound to the old exact model and must
-                // never outlive the picker transition.
+        .onChange(of: alias) { _, _ in photoCapabilityNotice.dismiss() }
+        .onChange(of: personalIntelligenceBinding) { oldBinding, newBinding in
+            if oldBinding != newBinding {
+                // Support can remain true while alias, parser, harness, or
+                // exact qualification changes. The run belongs to the entire
+                // old binding and cannot survive any component transition.
                 stopAgentIfNeeded()
             }
         }

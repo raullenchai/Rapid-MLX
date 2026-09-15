@@ -242,6 +242,7 @@ enum AgentRuntimeClientError: Error, Equatable, LocalizedError {
     case http(status: Int, message: String)
     case malformedResponse
     case harnessProfileMismatch(expected: String, received: String)
+    case modelBindingMismatch(expected: String, received: String)
 
     var errorDescription: String? {
         switch self {
@@ -255,6 +256,8 @@ enum AgentRuntimeClientError: Error, Equatable, LocalizedError {
             "The Rapid Agent Runtime returned an unreadable response."
         case .harnessProfileMismatch(let expected, let received):
             "Personal Intelligence expected the \(expected) harness, but the server returned \(received). Update Rapid-MLX and try again."
+        case .modelBindingMismatch(let expected, let received):
+            "Personal Intelligence expected \(expected), but the server started \(received). The mismatched run was stopped; refresh the model and try again."
         }
     }
 }

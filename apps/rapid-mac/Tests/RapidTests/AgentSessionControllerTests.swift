@@ -181,6 +181,35 @@ struct AgentSessionControllerTests {
         #expect(transport.cancelledRunIDs == [Self.runID])
     }
 
+    @Test("A mismatched exact model is cancelled even when the harness matches")
+    func rejectsMismatchedModel() async throws {
+        let transport = AgentSessionTransportStub(
+            created: try Self.run(
+                status: "awaiting_model",
+                model: "qwen3.5-4b-4bit",
+                profile: "minicpm5-2b"
+            )
+        )
+        let controller = AgentSessionController(
+            transportFactory: { _ in transport },
+            pollDelay: { await Task.yield() }
+        )
+
+        controller.start(
+            goal: "Organize these notes",
+            model: "minicpm5-2b-4bit",
+            expectedProfile: "minicpm5-2b",
+            baseURL: URL(string: "http://127.0.0.1:8000")!,
+            bearerToken: nil
+        )
+        await controller._testingWaitForDriver()
+        await transport.waitForCancellation()
+
+        #expect(controller.phase == .failed)
+        #expect(controller.errorMessage?.contains("server started qwen3.5-4b-4bit") == true)
+        #expect(transport.cancelledRunIDs == [Self.runID])
+    }
+
     @Test("Approval pauses and resumes only the pending call")
     func approvalRoundTrip() async throws {
         let transport = AgentSessionTransportStub(
@@ -423,11 +452,12 @@ struct AgentSessionControllerTests {
         status: String,
         output: String? = nil,
         pendingAction: String = "null",
+        model: String = "minicpm5-2b-4bit",
         profile: String = "minicpm5-2b"
     ) throws -> AgentRunView {
         let outputJSON = output.map { "\"\($0)\"" } ?? "null"
         return try JSONDecoder().decode(AgentRunView.self, from: Data("""
-        {"id":"\(runID)","model":"minicpm5-2b-4bit","profile":"\(profile)","status":"\(status)","model_turns":1,"tool_rounds":0,"final_synthesis":false,"failure_code":null,"output":\(outputJSON),"pending_action":\(pendingAction)}
+        {"id":"\(runID)","model":"\(model)","profile":"\(profile)","status":"\(status)","model_turns":1,"tool_rounds":0,"final_synthesis":false,"failure_code":null,"output":\(outputJSON),"pending_action":\(pendingAction)}
         """.utf8))
     }
 

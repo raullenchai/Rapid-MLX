@@ -170,6 +170,17 @@ final class AgentSessionController {
                     )
                 }
                 let created = try await createTask.value
+                if let model, created.model != model {
+                    Self.requestRemoteCancellation(
+                        transport: nextTransport,
+                        runID: created.id,
+                        bearerToken: bearerToken
+                    )
+                    throw AgentRuntimeClientError.modelBindingMismatch(
+                        expected: model,
+                        received: created.model
+                    )
+                }
                 if let expectedProfile, created.profile != expectedProfile {
                     Self.requestRemoteCancellation(
                         transport: nextTransport,

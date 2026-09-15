@@ -129,6 +129,9 @@ final class ChatViewModel {
     /// UUID on launch (opens to an empty "Ask anything"); ``persistActive``
     /// upserts under this id once the user sends.
     private(set) var activeConversationID = UUID()
+    /// Set only by the local New Chat command. Restore/import/sync paths never
+    /// populate it, so UI preferences cannot infer consent from a list delta.
+    private(set) var locallyCreatedConversationID: UUID?
 
     /// User-authored instructions for the open conversation. They are kept
     /// outside the visible transcript and merged into the wire-only system row.
@@ -1073,6 +1076,7 @@ final class ChatViewModel {
     /// currently open first. Cancels any in-flight stream.
     func selectConversation(_ id: UUID) {
         guard id != activeConversationID else { return }
+        locallyCreatedConversationID = nil
         cancelInflightWork()
         conversationEpoch &+= 1
         // Archive + unstick BEFORE swapping buffers, so the old transcript
@@ -1277,6 +1281,7 @@ final class ChatViewModel {
         branchChoices.removeAll()
         conversationInstructions = ""
         activeConversationID = UUID()
+        locallyCreatedConversationID = activeConversationID
         lastError = nil
         lastFailureKind = nil
         lastFailureAlias = nil
