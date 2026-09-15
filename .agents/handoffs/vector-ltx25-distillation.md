@@ -5,7 +5,7 @@ Date: 2026-09-13
 Owner / host: Vector / MZR-3
 
 Runtime feasibility branch: `raullenchai:vector/ltx25-distillation-feasibility`
-at `28f8dac` in the `ltx-2-mlx` repository. Rapid design branch:
+at `6b43046` in the `ltx-2-mlx` repository. Rapid design branch:
 `design/ltx25-portable-fast-stage2`. PR #3438 remains the separate marginal
 dequantization release work and must not absorb this unqualified model path.
 
@@ -341,3 +341,41 @@ fresh-phase validation bug was fixed upstream at `c30cb68`: newly trained
 span-v2 checkpoints now use the selected coupling validator just like resumed
 phases, rather than accidentally applying the default v1 rule. The upstream
 suite passes `736 passed, 22 skipped`.
+
+## Stage-1 clean-final result (2026-09-14)
+
+The complete four-primary/four-replay curriculum finished and every real phase
+handoff passed span-v2 metadata validation. The first evaluator launch exposed
+a direct-script import bug; upstream `7e3fc26` adds a reproducing subprocess
+test and supports both package and direct entrypoints. The recovered evaluator
+completed without retraining.
+
+One shared adapter must not execute the already-uncompressed `7 -> 8` step.
+On two prompt-disjoint held-out trajectories, the first three transitions
+improved video/audio MSE by 7.9%/14.5%, 43.4%/59.6%, and 8.1%/3.6%, while the
+adapter-backed final transition regressed by 51834%/1525% relative to the
+nearly exact clean base. That artifact is rejected.
+
+Upstream `6b43046` adds a distinct
+`ltx_stage1_compressed_span_v2_clean_final` contract. It packages the replay
+`5 -> 7` checkpoint, runs the student for the three genuinely compressed
+transitions, materializes both modalities, releases the adapter, and runs the
+original `7 -> 8` transition on the immutable clean base. Ordinary v1/v2
+package semantics remain unchanged. The full upstream suite passes 749 tests
+with 22 skips.
+
+A real 768x512, 25-frame, same-prompt/seed smoke measured standard `8 + 3` at
+78.80 seconds and combined clean-final `4 + 1` at 47.95 seconds: 1.64x end to
+end. Peak footprints were 17.58 and 17.41 GB with no reported process swap
+faults. This validates the runtime lifecycle and short-workload speed
+direction, not decoded quality or the required 241-frame result.
+
+The complete qualification, both packages, and smoke outputs are archived at
+`/Volumes/RTL-2T/scratch-archive/LTX-MZR3-20260914/clean-final-qualification/`.
+It contains 70 files / 5.4 GB; all 35 safetensors hashes match the remote
+sources. MZR-3 retains the originals and has about 1 GB free. The next action
+is to remove only hash-verified archived scratch checkpoints after explicit
+owner authorization, then run the 241-frame randomized standard/fast harness
+and export its anonymous review bundle. Atlas must not expose or default-enable
+this capability before that quality result and a second Apple GPU generation
+pass.

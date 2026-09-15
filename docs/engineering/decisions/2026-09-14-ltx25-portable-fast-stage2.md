@@ -85,6 +85,29 @@ subject identity, fine detail, temporal motion, motion amplitude, diversity
 across seeds, audio content, and synchronization. Latent MSE, cosine similarity,
 and runtime are diagnostics, not substitutes for blind non-inferiority.
 
+## Clean-final Stage-1 correction
+
+The completed shared-adapter curriculum showed that the final `7 -> 8`
+transition must not use the student. It is already one teacher evaluation, so
+there is no compression benefit; on the two held-out trajectories, applying
+the shared LoRA increased video/audio MSE by 51834%/1525% relative to the
+nearly exact clean-base step. The preceding compressed transitions still
+improved video/audio MSE by 7.9%/14.5%, 43.4%/59.6%, and 8.1%/3.6%.
+
+The corrected contract is a separate
+`ltx_stage1_compressed_span_v2_clean_final` capability. The student runs only
+`0 -> 3`, `3 -> 5`, and `5 -> 7`; runtime materializes both modalities,
+releases the adapter, reloads the same immutable base, and executes the
+original `7 -> 8`. This remains four Stage-1 evaluations and is independent of
+the host chip. It adds model-reload latency but removes an avoidable quality
+regression rather than trying to train an already-uncompressed step.
+
+A 768x512, 25-frame, same-prompt/seed smoke measured 78.80 seconds for
+standard `8 + 3` and 47.95 seconds for clean-final `4 + 1`, or 1.64x end to
+end. Peak footprints were 17.58 and 17.41 GB. This validates lifecycle and the
+short-workload speed direction; it is not the required 241-frame timing or
+decoded non-inferiority result.
+
 ## Artifact contract
 
 The accepted adapter should ship inside an immutable model revision beside the
