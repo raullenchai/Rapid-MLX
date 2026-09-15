@@ -28,40 +28,63 @@ from explicit contiguous copies evaluated on the worker stream; upstream
 
 `scripts/bench_qwen36_mllm_singleton.py` drives the production rollback
 lever (two `BatchedEngine` instances per phase: `off` then `auto`) over
-the tracked 21-case manifest `evals/prompts/qwen36_mllm_runtime.json`
+the tracked 22-case manifest `evals/prompts/qwen36_mllm_runtime.json`
 (20 media cases, 4 per category — OCR, grounded control, structured JSON,
-accessibility description, two-image comparison — plus one text-only
-fallback case protecting the native-text routing boundary, run with
-`no_hybrid=True` so the request stays on the measured lane). The primary
-deterministic gate is per-case output equality between phases on the same
-exact build; manifest checkers (required/forbidden terms, JSON shape)
-guard against two equally wrong outputs passing.
+accessibility description, two-image comparison — plus a long
+warm-prefix-capable text case that qualifies APC warm resumes on the
+fast path, and one text-only fallback case protecting the native-text
+routing boundary, run with `no_hybrid=True` so the request stays on the
+measured lane). The primary deterministic gate is per-case output
+equality between phases on the same exact build; manifest checkers
+(required/forbidden terms, JSON shape) guard against two equally wrong
+outputs passing. The harness exits non-zero unless the fast path
+engaged and the warm case qualified.
 
 ```bash
 RAPID_MLX_MEDIA_ROOT=<repo-root> python -m scripts.bench_qwen36_mllm_singleton \
   --model <snapshot-path> --pairs 3 --output <result.json>
+RAPID_MLX_MEDIA_ROOT=<repo-root> python -m scripts.bench_qwen36_mllm_singleton \
+  --model <snapshot-path> --pairs 2 --apc on --output <result-apc.json>
 RAPID_MLX_MEDIA_ROOT=<repo-root> python -m scripts.bench_qwen36_mllm_singleton \
   --model <snapshot-path> --lifecycle --abort-iterations 50 --pairs 0
 ```
 
 ## Results
 
-See `docs/benchmarks/results/2026-09-15-qwen36-mllm-singleton.json` for the
-exact-head paired run (per-case medians, memory, checker passes) and the
-lifecycle scenario output.
+See `docs/benchmarks/results/2026-09-15-qwen36-mllm-singleton.json`
+(schema 2) for the final-head paired runs (per-case medians, memory,
+checker passes, singleton batch counts) and the lifecycle scenario
+output.
 
-* Paired exactness: **21/21 cases bit-identical** between `off` and
-  `auto` (SHA-256 over full response text, 3 measured passes per case,
-  all passes identical within a phase).
-* Decode throughput: median **+35%** generation tok/s across the 21 cases
-  (per-case ×1.27–×1.49), matching the spike prediction for removing the
-  per-token batch extract/re-merge round-trip on the serialized lane.
-* TTFT: unchanged within noise (median −1.6%; prefill work is identical).
-* Memory: indistinguishable (candidate active bytes slightly lower;
+Cold A/B (`--apc off`, 3 measured passes per case):
+
+* Paired exactness: **22/22 cases bit-identical** between `off` and
+  `auto` (SHA-256 over full response text, all passes identical within
+  a phase); 88 singleton-regular batches counted in the `auto` phase,
+  0 in `off`.
+* End-to-end latency: median **−11.7%** elapsed across the 22 cases
+  (per-case −19.5%…+0.5%) — the per-token batch extract/re-merge
+  round-trip is gone on the serialized lane.
+* Decode throughput: median **+23.6%** generation tok/s.
+* TTFT: unchanged within noise (median −0.9%; prefill work is
+  identical).
+* Memory: indistinguishable (candidate cache bytes slightly lower;
   peak identical).
-* Lifecycle: mid-generation cancellation, post-abort recovery byte-match,
-  queued concurrency serialization, and a 50-iteration randomized
-  abort/recovery soak with byte-exact probe responses.
+
+APC-warm A/B (`--apc on`, 2 sends per case, second send warm):
+
+* Same paired exactness: 22/22 bit-identical, fast path engaged, 110
+  singleton batches in `auto`.
+* APC warm resumes interact correctly with the fast path: 4/4
+  qualified cases hit the warm cache in both phases
+  (204 tokens saved per warm send), and the `auto` phase keeps the
+  warm-TTFT win (median TTFT **−41.4%**, median elapsed **−59.1%**
+  across all cases including their cold first send).
+
+Lifecycle: mid-generation cancellation, post-abort recovery byte-match,
+queued concurrency serialization (26 queued requests processed), and a
+50-iteration randomized abort/recovery soak (seed 1729) with byte-exact
+probe responses.
 
 ## Interpretation and scope
 
