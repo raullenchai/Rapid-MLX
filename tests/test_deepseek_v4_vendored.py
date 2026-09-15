@@ -193,13 +193,13 @@ def test_homogeneous_routed_projection_quantization_keeps_fused_fast_path():
 
     prefix = "model.layers.0.ffn.switch_mlp"
     weights = {}
-    for suffix, shape in {
-        "weight": (4, 16, 4),
-        "scales": (4, 16, 2),
-        "biases": (4, 16, 2),
+    for suffix, (shape, dtype) in {
+        "weight": ((4, 16, 8), mx.uint32),
+        "scales": ((4, 16, 1), mx.float32),
+        "biases": ((4, 16, 1), mx.float32),
     }.items():
-        weights[f"{prefix}.gate_proj.{suffix}"] = mx.zeros(shape)
-        weights[f"{prefix}.up_proj.{suffix}"] = mx.ones(shape)
+        weights[f"{prefix}.gate_proj.{suffix}"] = mx.zeros(shape, dtype=dtype)
+        weights[f"{prefix}.up_proj.{suffix}"] = mx.ones(shape, dtype=dtype)
 
     sanitized = deepseek_v4.Model.sanitize(SimpleNamespace(args=args, mtp=[]), weights)
 
@@ -209,6 +209,31 @@ def test_homogeneous_routed_projection_quantization_keeps_fused_fast_path():
         assert mx.all(fused[:, :16] == 0).item()
         assert mx.all(fused[:, 16:] == 1).item()
         assert f"{prefix}.up_proj.{suffix}" not in sanitized
+
+    def quantization_for_path(path, _module):
+        if path == "switch_mlp.gate_proj":
+            return {"group_size": 64, "bits": 4, "mode": "affine"}
+        return False
+
+    deepseek_v4.nn.quantize(
+        moe,
+        group_size=64,
+        bits=4,
+        mode="affine",
+        class_predicate=quantization_for_path,
+    )
+    relative_weights = [
+        (key.removeprefix("model.layers.0.ffn."), value)
+        for key, value in sanitized.items()
+    ]
+    moe.load_weights(relative_weights, strict=False)
+
+    fused_projection = moe.switch_mlp.gate_proj
+    assert fused_projection.weight.shape == (4, 32, 8)
+    assert fused_projection.scales.shape == (4, 32, 1)
+    assert fused_projection.biases.shape == (4, 32, 1)
+    assert mx.all(fused_projection.weight[:, :16] == 0).item()
+    assert mx.all(fused_projection.weight[:, 16:] == 1).item()
 
 
 def test_restored_pooling_cache_without_legacy_undo_field_is_safe():
