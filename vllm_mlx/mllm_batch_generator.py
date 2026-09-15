@@ -634,7 +634,26 @@ def _sampler_fingerprint(req: MLLMBatchRequest) -> tuple:
     return (req.temperature, req.top_p, req.min_p, req.top_k)
 
 
-def _make_request_sampler(req: MLLMBatchRequest) -> Callable[[mx.array], mx.array]:
+def _effective_top_k(top_k: int, vocab_size: int | None) -> int:
+    """Clamp ``top_k`` to the vocabulary width.
+
+    The API layer deliberately admits ``top_k`` far above any vocabulary
+    (its sentinel cap documents that the backend kernel clamps
+    ``min(top_k, vocab)`` at sample time) and the text lane's fused fast
+    path honours that promise. mlx-lm's ``apply_top_k`` does not: it RAISES
+    for ``top_k >= vocab_size``. ``top_k >= vocab`` is semantically a no-op
+    ("keep every token"), so normalise it to the disabled value (``0``)
+    before building an mlx-lm chain. The seeded sampler already clamps
+    internally, so both paths share the same semantics regardless of seed.
+    """
+    if vocab_size is not None and top_k >= vocab_size:
+        return 0
+    return top_k
+
+
+def _make_request_sampler(
+    req: MLLMBatchRequest, vocab_size: int | None = None
+) -> Callable[[mx.array], mx.array]:
     """Build the sampler one request owns for its whole generation.
 
     Seeded requests get a fresh ``make_seeded_sampler`` closure that
@@ -654,11 +673,16 @@ def _make_request_sampler(req: MLLMBatchRequest) -> Callable[[mx.array], mx.arra
             top_k=req.top_k,
         )
     return make_sampler(
-        temp=req.temperature, top_p=req.top_p, min_p=req.min_p, top_k=req.top_k
+        temp=req.temperature,
+        top_p=req.top_p,
+        min_p=req.min_p,
+        top_k=_effective_top_k(req.top_k, vocab_size),
     )
 
 
-def _request_cached_sampler(req: MLLMBatchRequest) -> Callable[[mx.array], mx.array]:
+def _request_cached_sampler(
+    req: MLLMBatchRequest, vocab_size: int | None = None
+) -> Callable[[mx.array], mx.array]:
     """Return the sampler cached on ``req``, building it on first use.
 
     Caching on the request is load-bearing for seeded requests: the
@@ -674,11 +698,11 @@ def _request_cached_sampler(req: MLLMBatchRequest) -> Callable[[mx.array], mx.ar
     ``temperature``/``top_p``/``min_p``/``top_k``/``seed`` between
     prefill and the last decode step. Keep it that way.
     """
-    fingerprint = (_sampler_fingerprint(req), req.seed)
+    fingerprint = (_sampler_fingerprint(req), req.seed, vocab_size)
     cached = getattr(req, "_cached_sampler", None)
     if cached is not None and cached[0] == fingerprint:
         return cached[1]
-    sampler = _make_request_sampler(req)
+    sampler = _make_request_sampler(req, vocab_size)
     req._cached_sampler = (fingerprint, sampler)
     return sampler
 
@@ -2105,7 +2129,7 @@ class MLLMBatchGenerator:
                 logprobs = last_logits - mx.logsumexp(
                     last_logits, axis=-1, keepdims=True
                 )
-                req_sampler = _request_cached_sampler(req)
+                req_sampler = _request_cached_sampler(req, logprobs.shape[-1])
                 sampled = req_sampler(logprobs)
 
                 mx.eval(sampled, logprobs)
@@ -2287,13 +2311,16 @@ class MLLMBatchGenerator:
         # stream ownership rule in #404) is the only writer of
         # ``_shared_batch_sampler``, so no lock needed.
         logprobs = logits - mx.logsumexp(logits, axis=-1, keepdims=True)
+        vocab_size = logprobs.shape[-1]
         if requests and len(requests) == logprobs.shape[0]:
             first_fingerprint = (
                 _sampler_fingerprint(requests[0]),
                 requests[0].seed,
+                vocab_size,
             )
             homogeneous = requests[0].seed is None and all(
-                (_sampler_fingerprint(r), r.seed) == first_fingerprint for r in requests
+                (_sampler_fingerprint(r), r.seed) == first_fingerprint[:2]
+                for r in requests
             )
             if homogeneous:
                 shared = self._shared_batch_sampler
@@ -2302,7 +2329,7 @@ class MLLMBatchGenerator:
                         temp=requests[0].temperature,
                         top_p=requests[0].top_p,
                         min_p=requests[0].min_p,
-                        top_k=requests[0].top_k,
+                        top_k=_effective_top_k(requests[0].top_k, vocab_size),
                     )
                     shared = (first_fingerprint, fn)
                     self._shared_batch_sampler = shared
@@ -2310,7 +2337,7 @@ class MLLMBatchGenerator:
             else:
                 sampled_tokens = []
                 for i, req in enumerate(requests):
-                    req_sampler = _request_cached_sampler(req)
+                    req_sampler = _request_cached_sampler(req, vocab_size)
                     sampled_tokens.append(req_sampler(logprobs[i : i + 1]))
                 sampled = mx.concatenate(sampled_tokens, axis=0)
         else:
