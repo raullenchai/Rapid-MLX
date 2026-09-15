@@ -136,6 +136,35 @@ def test_admission_lowers_depth_to_admit_more_lanes():
     assert decision.estimated_bytes == 120
 
 
+def test_resident_cache_is_not_charged_twice_at_cycle_admission():
+    resident = LaneAdmission(
+        "resident",
+        base_bytes=500,
+        bytes_per_draft_token=20,
+        resident_cache=True,
+    )
+    joining = LaneAdmission(
+        "joining",
+        base_bytes=500,
+        bytes_per_draft_token=20,
+    )
+
+    assert resident.estimated_bytes(2) == 40
+    assert joining.estimated_bytes(2) == 540
+
+    decision = plan_admission(
+        [resident, joining],
+        config=_config(min_batch_lanes=1),
+        capabilities=_capabilities(),
+        free_bytes=200,
+    )
+
+    assert decision.route is BatchedMTPRoute.BATCHED_MTP
+    assert decision.batched_lane_ids == ("resident",)
+    assert decision.queued_lane_ids == ("joining",)
+    assert decision.estimated_bytes == 40
+
+
 def test_admission_keeps_ineligible_lanes_plain_and_overflow_queued():
     lanes = [
         LaneAdmission("plain", cache_ready=False),
@@ -254,6 +283,7 @@ def test_sampling_contract_requires_real_booleans(changes):
         ({"base_bytes": True}, "estimates must be integers"),
         ({"bytes_per_draft_token": -1}, "cannot be negative"),
         ({"cache_ready": 1}, "flags must be booleans"),
+        ({"resident_cache": 1}, "flags must be booleans"),
     ],
 )
 def test_lane_metadata_contracts_fail_closed(changes, message):
@@ -261,6 +291,21 @@ def test_lane_metadata_contracts_fail_closed(changes, message):
     values.update(changes)
     with pytest.raises(ValueError, match=message):
         LaneAdmission(**values)
+
+
+def test_resident_metadata_preserves_preexisting_positional_lane_signature():
+    sampling = SamplingContract(greedy=False)
+    lane = LaneAdmission("old-caller", 10, 20, sampling, False, True)
+    assert lane.sampling is sampling
+    assert lane.cache_ready is False
+    assert lane.terminal is True
+    assert lane.resident_cache is False
+    assert lane.estimated_bytes(2) == 50
+    resident = LaneAdmission(
+        "resident", 10, 20, sampling, False, True, resident_cache=True
+    )
+    assert resident.sampling is sampling
+    assert resident.estimated_bytes(2) == 40
 
 
 def test_terminal_empty_and_plain_on_pressure_routes_are_explicit():
