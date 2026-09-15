@@ -74,6 +74,15 @@ combined render. The two-run median is 269.61 seconds/about 2.001x; because
 the measured range straddles the strict 269.97-second boundary, the qualified
 claim remains approximately 2x pending a larger timing sample.
 
+A three-prompt product-entry extension measured 269.76, 269.25, and 268.97
+seconds for cafe dialogue, mountain-bike fast motion, and four-impact sync.
+All completed without swap and with 39.51-40.42 GB peak footprint. Their
+contact sheets passed categorical subject/action preservation, expanding the
+timing result beyond the chef case. Human detail, motion, dialogue/audio, and
+A/V-sync review plus a second Apple Silicon generation remain mandatory before
+Atlas may consider default-on behavior. The artifact contract and fallback do
+not change based on Mac model names.
+
 The first `8 -> 7` final-pair pilot intentionally minimizes endpoint latent
 error. It is cheap enough to answer whether a rank-8 adapter can represent one
 compressed transition, but its target includes ancestral noise that is not

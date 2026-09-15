@@ -340,3 +340,13 @@ originally projected 265.88 seconds (2.031x). The actual composed run measured
 threshold by 0.04 seconds and must not be rounded up. The combined ten-frame
 screen retains the chef and action sequence; SSIM against the non-dispatch
 merged-middle render is 0.963892, but human review remains authoritative.
+
+The real product CLI then ran three additional 10-second, 768x512x241 cases:
+cafe faces/hands/dialogue at 269.76 seconds, mountain-bike fast motion at
+269.25 seconds, and four-impact synchronization at 268.97 seconds. Each used
+zero swap and peaked at 39.51-40.42 GB. Relative to the identity-verified
+539.94-second standard reference at this shape, this is 2.001-2.008x. Initial
+contact sheets retain requested subjects and coarse actions in all three
+cases. The result supports an approximately 2x product claim, subject to owner
+full-speed/audio review and second-generation hardware qualification; it does
+not authorize default-on behavior.

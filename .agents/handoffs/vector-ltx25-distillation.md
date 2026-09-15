@@ -562,3 +562,14 @@ all segmented capabilities. The full upstream suite passes 803 with 22 skips.
 The required independent `spark2` PR reviewer could not start because its Codex
 refresh token is revoked; no review comment was posted. Reauthentication is the
 only remaining prerequisite for the automated loop to issue LGTM.
+
+Three broader real-product-CLI samples are complete: cafe dialogue/faces/hands
+269.76 seconds, mountain-bike fast motion 269.25 seconds, and four-impact sync
+268.97 seconds. All reported zero swap and 39.51-40.42 GB peak footprint. The
+initial contact sheets retain subjects and coarse actions; impact audio attacks
+appear at comparable early timestamps, but that candidate is about 5.3 dB
+quieter. The owner must review the synchronized side-by-sides and individual
+audio files under `123/strategy/ltx-exact-prefix-suite-2026-09-15/`. Vector
+must then run the identical artifact on another Apple Silicon generation.
+Atlas continues to own public/default/release disposition, and the standard
+path remains fallback. Reauthenticate `spark2` and rerun independent review.
