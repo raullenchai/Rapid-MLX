@@ -163,6 +163,33 @@ def test_neohorse_9b_alias_is_experimental_text_only_and_conservative() -> None:
     assert alias not in POPULAR_ALIASES
 
 
+def test_k2_horizon_7b_alias_uses_rapid_native_runtime_contract() -> None:
+    """K2 stays opt-in and binds only its reviewed IFM protocol handlers."""
+
+    alias = "k2-horizon-7b-4bit"
+    profile = list_profiles()[alias]
+
+    assert profile.hf_path == "abenzerps/K2-Horizon-7B-MLX-4bit"
+    assert profile.modality == "text"
+    assert profile.is_text_only is True
+    assert profile.experimental is True
+    assert profile.min_memory_gb == 16.0
+    assert profile.tool_call_parser == "k2_horizon"
+    assert profile.reasoning_parser == "k2_horizon"
+    assert profile.is_hybrid is False
+    assert profile.is_hybrid_explicit is True
+    assert profile.is_moe is False
+    assert profile.supports_spec_decode is False
+    assert profile.supports_native_mtp is False
+    assert profile.mtp_draft_model is None
+    assert profile.mtp_default_enabled is False
+    assert profile.pflash_tier == "unknown"
+    assert profile.turboquant_tier == "unknown"
+    assert detect_model_config(alias) == profile
+    assert detect_model_config(profile.hf_path) == profile
+    assert alias not in POPULAR_ALIASES
+
+
 def test_qwen38_27b_aliases_pin_the_native_named_xml_tool_contract() -> None:
     """Every shipped 27B checkpoint uses the same native XML tool template."""
 

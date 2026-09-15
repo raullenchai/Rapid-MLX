@@ -93,6 +93,7 @@ def _register_builtin_parsers():
     from .gpt_oss_parser import GptOssReasoningParser
     from .harmony_parser import HarmonyReasoningParser
     from .hy3_parser import Hy3ReasoningParser
+    from .k2_horizon_parser import K2HorizonReasoningParser
     from .minimax_parser import MiniMaxReasoningParser
     from .muse_parser import MuseReasoningParser
     from .qwen3_parser import Qwen3ReasoningParser
@@ -104,6 +105,7 @@ def _register_builtin_parsers():
     # variant of qwen3. Aliased as ``hy3`` for CLI convenience.
     register_parser("hy_v3", Hy3ReasoningParser)
     register_parser("hy3", Hy3ReasoningParser)
+    register_parser("k2_horizon", K2HorizonReasoningParser)
     register_parser("deepseek_r1", DeepSeekR1ReasoningParser)
     register_parser("deepseek_r1_distill", DeepSeekR1DistillReasoningParser)
     register_parser("deepseek_v4", DeepSeekV4ReasoningParser)

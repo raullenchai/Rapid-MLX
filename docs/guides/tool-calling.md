@@ -63,6 +63,7 @@ Use `--tool-call-parser` to select a parser for your model family:
 | `harmony` | `gpt-oss` | GPT-OSS (Harmony) | Channel tokens: `<\|channel\|>commentary to=functions.name` |
 | `hermes` | `nous`, `qwen3_coder` | Hermes, NousResearch, Qwen3-Coder | `<tool_call>` JSON in XML |
 | `hy_v3` | `hy3` | Tencent Hunyuan 3 | `<tool_call:opensource>name<tool_sep:opensource>{...}` tokens |
+| `k2_horizon` | | K2 Horizon | `<ifm|tool_calls>` with JSON, XML, or typed XML arguments |
 | `kimi` | `kimi_k2`, `moonshot` | Kimi K2, Moonshot | `<\|tool_call_begin\|>` tokens |
 | `lfm` | `liquid` | Liquid LFM | `[func(arg=val)]` pythonic or `[Calling tool:]` |
 | `llama` | `llama3`, `llama4` | Llama 3.x, 4.x | `<function=name>` tags |

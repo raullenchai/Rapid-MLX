@@ -53,6 +53,10 @@ class ReasoningParser(ABC):
         Output: reasoning="Let me solve this step by step...", content="The answer is 42."
     """
 
+    # Protocols whose private reasoning bytes this parser explicitly owns and
+    # removes before a downstream tool parser sees streamed content.
+    SANITIZED_REASONING_PROTOCOLS: frozenset[str] = frozenset()
+
     def __init__(self, tokenizer: Any | None = None):
         """
         Initialize parser with optional tokenizer.

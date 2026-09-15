@@ -191,6 +191,11 @@ _FIDELITY_EXEMPT: dict[str, str] = {
     "llama": "llama_python_tag, renderer TODO",
     "llama3": "alias of llama",
     "llama4": "alias of llama",
+    "k2_horizon": (
+        "IFM supports request-selected JSON/XML/XML-typed envelopes and "
+        "schema coercion; dedicated value and schema contracts live in "
+        "test_k2_horizon_parsers.py"
+    ),
 }
 
 # ---------------------------------------------------------------------------

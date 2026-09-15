@@ -153,6 +153,9 @@ enum ModelInfoCatalog {
         if a.contains("qwq") { return ("QwQ", 32_768) }
         if a.contains("qwen2.5") { return ("Qwen 2.5", 32_768) }
         if a.contains("qwen2") { return ("Qwen 2", 32_768) }
+        // K2 Horizon dense checkpoints advertise a 524k context window. The
+        // loaded server's memory-aware effective limit still wins when present.
+        if a.contains("k2-horizon") { return ("K2 Horizon", 524_288) }
         // Llama
         if a.contains("llama-4.5") || a.contains("llama4.5") { return ("Llama 4.5", 131_072) }
         if a.contains("llama-4") || a.contains("llama4") { return ("Llama 4", 131_072) }

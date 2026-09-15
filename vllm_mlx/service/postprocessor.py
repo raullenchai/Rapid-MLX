@@ -397,6 +397,25 @@ class StreamingPostProcessor:
             reset_parser = getattr(self.tool_parser, "reset", None)
             if callable(reset_parser):
                 reset_parser()
+        if self.tool_parser is not None:
+            set_reasoning_sanitized = getattr(
+                self.tool_parser, "set_reasoning_sanitized", None
+            )
+            if callable(set_reasoning_sanitized):
+                reasoning_protocol = getattr(
+                    self.tool_parser, "REASONING_PROTOCOL", None
+                )
+                sanitized_protocols: frozenset[str] = getattr(
+                    self.reasoning_parser,
+                    "SANITIZED_REASONING_PROTOCOLS",
+                    frozenset(),
+                )
+                if not isinstance(sanitized_protocols, frozenset):
+                    sanitized_protocols = frozenset()
+                set_reasoning_sanitized(
+                    isinstance(reasoning_protocol, str)
+                    and reasoning_protocol in sanitized_protocols
+                )
 
         # ``tool_choice="none"`` forbids tool calls this turn (OpenAI
         # contract). The tool parser still RUNS — that is what strips wire
@@ -4028,7 +4047,7 @@ class StreamingPostProcessor:
         if (
             self.tool_parser
             and self.tool_accumulated_text
-            and not self.tool_calls_detected
+            and (not self.tool_calls_detected or self._preserve_post_tool_content)
         ):
             held = self.tool_parser.flush_held_content(self.tool_accumulated_text)
             # Strict-string check: ``flush_held_content`` is part of the

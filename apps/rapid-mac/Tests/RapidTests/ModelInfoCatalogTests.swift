@@ -197,6 +197,7 @@ struct ModelInfoCatalogTests {
         #expect(ModelInfoCatalog.contextWindowFallback(forAlias: "llama-3.1-8b") == 131_072)
         #expect(ModelInfoCatalog.contextWindowFallback(forAlias: "gemma-4-12b") == 8_192)
         #expect(ModelInfoCatalog.contextWindowFallback(forAlias: "phi-4-mini") == 16_384)
+        #expect(ModelInfoCatalog.contextWindowFallback(forAlias: "k2-horizon-7b-4bit") == 524_288)
         #expect(ModelInfoCatalog.contextWindowFallback(forAlias: "unknown-blah") == nil)
     }
 }

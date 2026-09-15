@@ -130,6 +130,8 @@ class ExtractedToolCallInformation:
 #                           <atem:parameter name="K">V</atem:parameter>
 #                           </atem:invoke></atem:function_calls> on
 #                           recipient-routed channels (Meta Muse Glimmer)
+#   k2_ifm                — <ifm|tool_calls><ifm|tool_call>NAME plus IFM
+#                           argument key/type/value tags (K2 Horizon)
 WIRE_FORMAT_LABELS: frozenset[str] = frozenset(
     {
         "tool_call_json",
@@ -157,6 +159,7 @@ WIRE_FORMAT_LABELS: frozenset[str] = frozenset(
         "hy3_native",
         "minicpm_native",
         "muse_atem",
+        "k2_ifm",
     }
 )
 

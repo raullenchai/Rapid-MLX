@@ -13,6 +13,20 @@
     "min_memory_gb": 18,
     "experimental": true
   },
+  "k2-horizon-7b-4bit": {
+    "hf_path": "abenzerps/K2-Horizon-7B-MLX-4bit",
+    "modality": "text",
+    "is_text_only": true,
+    "tool_call_parser": "k2_horizon",
+    "reasoning_parser": "k2_horizon",
+    "is_hybrid": false,
+    "is_hybrid_explicit": true,
+    "is_moe": false,
+    "supports_spec_decode": false,
+    "mtp_default_enabled": false,
+    "min_memory_gb": 16,
+    "experimental": true
+  },
   "north-mini-code-4bit": {
     "hf_path": "mlx-community/North-Mini-Code-1.0-4bit",
     "reasoning_parser": "cohere_command4",
