@@ -58,6 +58,10 @@ class K2HorizonToolParser(ToolParser):
         self._pending_tool_start: int | None = None
         self._pre_tool_scan_upto = 0
         self._post_tool_scan_upto = 0
+        self._json_group_start: int | None = None
+        self._json_scan_upto = 0
+        self._json_in_string = False
+        self._json_escape = False
         self._suppress_calls = False
 
     @staticmethod
@@ -281,25 +285,88 @@ class K2HorizonToolParser(ToolParser):
             )
             return end + len(cls.GROUP_END) if end >= 0 else None
 
-        decoder = json.JSONDecoder()
-        cursor = start + len(cls.GROUP_START)
-        call_count = 0
-        try:
-            while True:
-                cursor = cls._skip_whitespace(text, cursor)
-                if text.startswith(cls.GROUP_END, cursor):
-                    return cursor + len(cls.GROUP_END) if call_count else None
-                if not text.startswith(cls.CALL_START, cursor):
-                    return None
-                cursor = cls._skip_whitespace(text, cursor + len(cls.CALL_START))
-                _payload, cursor = decoder.raw_decode(text, cursor)
-                cursor = cls._skip_whitespace(text, cursor)
-                if not text.startswith(cls.CALL_END, cursor):
-                    return None
-                cursor += len(cls.CALL_END)
-                call_count += 1
-        except json.JSONDecodeError:
-            return None
+        json_end, _cursor, _in_string, _escape = cls._scan_json_group_end(
+            text,
+            start + len(cls.GROUP_START),
+            in_string=False,
+            escape=False,
+        )
+        return json_end
+
+    @classmethod
+    def _scan_json_group_end(
+        cls,
+        text: str,
+        cursor: int,
+        *,
+        in_string: bool,
+        escape: bool,
+    ) -> tuple[int | None, int, bool, bool]:
+        """Scan once for a group closer outside JSON string literals."""
+        while cursor < len(text):
+            char = text[cursor]
+            if in_string:
+                if escape:
+                    escape = False
+                elif char == "\\":
+                    escape = True
+                elif char == '"':
+                    in_string = False
+                cursor += 1
+                continue
+            if char == '"':
+                in_string = True
+                cursor += 1
+                continue
+            if char == "<":
+                remainder = text[cursor:]
+                if remainder.startswith(cls.GROUP_END):
+                    return (
+                        cursor + len(cls.GROUP_END),
+                        cursor + len(cls.GROUP_END),
+                        False,
+                        False,
+                    )
+                if cls.GROUP_END.startswith(remainder):
+                    # Preserve a split delimiter for the next delta.
+                    return None, cursor, False, False
+            cursor += 1
+        return None, cursor, in_string, escape
+
+    def _find_streaming_group_end(
+        self,
+        text: str,
+        start: int,
+        request: dict[str, Any] | None,
+        search_from: int,
+    ) -> int | None:
+        if self._tool_format(request) != "json":
+            return self._find_group_end(
+                text,
+                start,
+                request,
+                search_from=search_from,
+            )
+        if self._json_group_start != start:
+            self._json_group_start = start
+            self._json_scan_upto = start + len(self.GROUP_START)
+            self._json_in_string = False
+            self._json_escape = False
+        end, cursor, in_string, escape = self._scan_json_group_end(
+            text,
+            self._json_scan_upto,
+            in_string=self._json_in_string,
+            escape=self._json_escape,
+        )
+        self._json_scan_upto = cursor
+        self._json_in_string = in_string
+        self._json_escape = escape
+        if end is not None:
+            self._json_group_start = None
+            self._json_scan_upto = 0
+            self._json_in_string = False
+            self._json_escape = False
+        return end
 
     @classmethod
     def _visible_prefix(cls, prefix: str) -> str:
@@ -477,11 +544,11 @@ class K2HorizonToolParser(ToolParser):
                     search_from,
                     len(current_text) - len(delta_text) - len(self.GROUP_END) + 1,
                 )
-            group_end = self._find_group_end(
+            group_end = self._find_streaming_group_end(
                 current_text,
                 cursor,
                 request,
-                search_from=search_from,
+                search_from,
             )
             if group_end is None:
                 self._content_upto = cursor
@@ -565,7 +632,7 @@ class K2HorizonToolParser(ToolParser):
         return start >= 0 and self.GROUP_END not in text[start:]
 
     def flush_held_content(self, full_text: str) -> str:
-        if self.has_pending_tool_call(full_text):
+        if self._pending_tool_start is not None or self.has_pending_tool_call(full_text):
             if self._suppress_calls:
                 return ""
             return self._visible_prefix(full_text[self._content_upto :])

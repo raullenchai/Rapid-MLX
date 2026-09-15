@@ -477,6 +477,50 @@ def test_prompt_primed_stream_searches_only_new_tool_marker_window():
         previous = str(current)
 
 
+def test_long_json_stream_advances_incremental_framing_cursor():
+    parser = K2HorizonToolParser()
+    request = _request("json")
+    previous = parser.GROUP_START + parser.CALL_START
+    for chunk in ('{"name":"lookup","arguments":{"query":"', "x" * 10_000, "y" * 10_000):
+        current = previous + chunk
+        assert (
+            parser.extract_tool_calls_streaming(
+                previous, current, chunk, request=request
+            )
+            is None
+        )
+        assert parser._json_scan_upto >= len(current) - len(parser.GROUP_END) + 1
+        previous = current
+    closing = '"}}' + parser.CALL_END + parser.GROUP_END
+    current = previous + closing
+    delta = parser.extract_tool_calls_streaming(
+        previous, current, closing, request=request
+    )
+    assert delta is not None
+    assert json.loads(delta["tool_calls"][0]["function"]["arguments"])["query"] == (
+        "x" * 10_000 + "y" * 10_000
+    )
+
+
+def test_malformed_unterminated_json_stream_is_visible_at_eof():
+    parser = K2HorizonToolParser()
+    parser.set_reasoning_sanitized(True)
+    output = (
+        parser.GROUP_START
+        + parser.CALL_START
+        + '{"name":"lookup","arguments":{"query":"unterminated}'
+        + parser.CALL_END
+        + parser.GROUP_END
+    )
+    assert (
+        parser.extract_tool_calls_streaming(
+            "", output, output, request=_request("json")
+        )
+        is None
+    )
+    assert parser.flush_held_content(output) == output
+
+
 @pytest.mark.parametrize("closer", K2HorizonToolParser.REASONING_ENDS)
 def test_streaming_complete_group_hides_prompt_primed_reasoning(closer):
     parser = K2HorizonToolParser()
