@@ -1258,6 +1258,7 @@ struct ChatView: View {
         }
         let session = agentSession
         let agentTools = viewModel.personalIntelligenceDefinitions
+        let trustedInstructions = viewModel.personalIntelligenceTrustedInstructions()
         let localContext = viewModel.personalIntelligenceLocalContext()
         guard viewModel.beginAgentTurn(goal, alias: alias, onCancel: {
             session.cancel()
@@ -1267,6 +1268,7 @@ struct ChatView: View {
             model: alias,
             expectedProfile: harnessProfile,
             toolNames: agentTools.map { $0.function.name },
+            trustedInstructions: trustedInstructions,
             localContext: localContext,
             clientToolExecutor: { action in
                 await viewModel.executePersonalIntelligenceTool(

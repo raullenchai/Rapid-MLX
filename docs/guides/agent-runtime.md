@@ -271,11 +271,15 @@ Tool completion events use `executed:true` when dispatch occurred,
 third-party registry failure leaves the outcome uncertain. Treat `null` as
 potentially executed and never retry it automatically.
 
-Desktop supplies custom instructions, Memory, and the last eight completed
-user/assistant messages through the optional `local_context` create field. It
-is capped at 32,768 characters by the server (Desktop sends at most 24,000
-Unicode scalars), is merged into the one leading system message for broad model
-compatibility, and is never copied into public Agent events.
+Desktop sends global and conversation custom instructions through the dedicated
+`trusted_instructions` create field; the runtime keeps them in the leading
+system message, after its fixed safety/tool policy, with conversation
+instructions taking precedence over conflicting global instructions. Memory
+and at most the last eight completed user/assistant messages travel separately
+through `local_context` as explicitly untrusted quoted data. The server caps
+that field at 32,768 characters (Desktop budgets message content to 24,000
+characters, newest first). Neither transient field is copied into public Agent
+events.
 
 The harness exposes only tools relevant to the current request. Recall,
 writing, explicit no-network requests, and transformation tasks see no

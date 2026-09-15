@@ -59,8 +59,10 @@ its own receipt before exposure.
 
 ## Harness changes from physical dogfood
 
-- Desktop now sends the selected model the user's custom instructions, memory,
-  and recent completed turns as bounded transient context.
+- Desktop sends user-authored global/conversation instructions through a
+  dedicated trusted channel, while Memory and at most eight recent completed
+  turns remain bounded, untrusted transient context. Newest turns win the
+  character budget.
 - The server owns the schemas and risk labels for `web_search`, `browse`, and
   `weather`; Desktop sends names only and remains the executor.
 - Intent routing hides irrelevant tools. Ordinary recall and writing expose no
@@ -70,6 +72,9 @@ its own receipt before exposure.
   pagination and reads up to three ranked pages for comparison tasks. Explicit
   no-network requests suppress the route. This removes fragile model-authored
   argument rounds without granting server-side execution.
+- Bare offline/no-network requests suppress live-data tools, and an
+  underspecified weather request remains available for clarification instead
+  of forcing the model to invent a location.
 - Tool arguments are checked against required and unknown schema fields before
   native dispatch. Invalid calls return a recoverable observation and do not
   reach the tool.
@@ -82,3 +87,6 @@ its own receipt before exposure.
 - `reports/benchmarks/personal-intelligence-qwen3.6-35b-8bit.json`
 - `reports/benchmarks/personal-intelligence-lfm2.5-1b-4bit.json`
 - Further receipts are added only after the exact live build reaches 15/15.
+- `--tasks` and non-canonical seed runs are diagnostic only: they always write
+  `qualified: false`. Only all five tasks across seeds `11,22,33` can issue a
+  qualification receipt.

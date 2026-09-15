@@ -127,6 +127,7 @@ final class AgentSessionController {
         model: String?,
         expectedProfile: String? = nil,
         toolNames: [String]? = nil,
+        trustedInstructions: String? = nil,
         localContext: String? = nil,
         clientToolExecutor: ClientToolExecutor? = nil,
         baseURL: URL,
@@ -162,6 +163,7 @@ final class AgentSessionController {
                         goal: trimmed,
                         model: model,
                         toolNames: toolNames,
+                        trustedInstructions: trustedInstructions,
                         localContext: localContext,
                         execution: clientToolExecutor == nil ? .server : .client,
                         bearerToken: bearerToken

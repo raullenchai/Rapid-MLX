@@ -265,6 +265,17 @@ def _run_task(
     }
 
 
+def _is_complete_qualification_matrix(
+    seeds: list[int], selected_ids: set[str], result_count: int
+) -> bool:
+    return (
+        len(seeds) == 3
+        and set(seeds) == {11, 22, 33}
+        and selected_ids == {task.id for task in TASKS}
+        and result_count == 15
+    )
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("model")
@@ -304,6 +315,9 @@ def main() -> int:
         for seed in seeds
         for task in selected_tasks
     ]
+    complete_matrix = _is_complete_qualification_matrix(
+        seeds, selected_ids, len(results)
+    )
     report = {
         "schema_version": 1,
         "generated_at": datetime.now(UTC).isoformat(),
@@ -327,7 +341,7 @@ def main() -> int:
         "tasks": [asdict(task) for task in selected_tasks],
         "passed": sum(result["passed"] for result in results),
         "total": len(results),
-        "qualified": all(result["passed"] for result in results),
+        "qualified": complete_matrix and all(result["passed"] for result in results),
         "results": results,
     }
     rendered = json.dumps(report, indent=2, ensure_ascii=False) + "\n"

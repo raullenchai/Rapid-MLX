@@ -484,6 +484,7 @@ private final class AgentSessionTransportStub: AgentRuntimeTransport, @unchecked
         goal: String,
         model _: String?,
         toolNames: [String]?,
+        trustedInstructions _: String?,
         localContext: String?,
         execution: AgentExecutionMode,
         bearerToken: String?

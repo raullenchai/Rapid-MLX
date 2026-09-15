@@ -28,6 +28,7 @@ from vllm_mlx.agent_runtime.server import (
     AgentToolSelectionError,
     MCPToolRegistry,
     _approval_argument_summary,
+    _chat_tool_choice,
     _evaluate_arithmetic,
     _format_retry_instruction,
     _planned_weather_arguments,
@@ -160,6 +161,24 @@ async def test_local_context_is_transient_model_input_not_event_payload():
 
 
 @pytest.mark.asyncio
+async def test_trusted_instructions_remain_in_system_prompt_but_not_events():
+    instructions = "Always answer in Spanish."
+    driver = ScriptedDriver(AgentModelTurn(content="Hecho."))
+    service = AgentServerService(registry=FakeRegistry(()), chat_driver=driver)
+
+    created = await service.create(
+        AgentRunCreateRequest(goal="Help me", trusted_instructions=instructions),
+        model="model",
+    )
+    await wait_for_status(service, created.id, AgentRunStatus.COMPLETED)
+
+    messages = driver.requests[0][1]
+    assert instructions in messages[0]["content"]
+    assert "Honor them unless" in messages[0]["content"]
+    assert instructions not in (await service.events(created.id)).model_dump_json()
+
+
+@pytest.mark.asyncio
 async def test_desktop_tools_are_server_owned_and_client_execution_only():
     driver = ScriptedDriver(AgentModelTurn(content="Done."))
     service = AgentServerService(registry=FakeRegistry(()), chat_driver=driver)
@@ -212,6 +231,12 @@ def test_desktop_tool_routing_is_intent_scoped_and_preserves_non_desktop_names()
     ) == ["custom__read"]
     assert _route_desktop_client_tools(
         "Do not browse; summarize the latest release from memory.", offered
+    ) == ["custom__read"]
+    assert _route_desktop_client_tools(
+        "Without internet, find the latest release.", offered
+    ) == ["custom__read"]
+    assert _route_desktop_client_tools(
+        "Stay offline and tell me the latest version.", offered
     ) == ["custom__read"]
     assert _route_desktop_client_tools(
         "Summarize these latest release notes: private draft text", offered
@@ -282,7 +307,70 @@ def test_simple_weather_arguments_are_planned_without_model_authored_json():
     assert _planned_weather_arguments(
         "What is the current weather in San Francisco? Answer in Celsius."
     ) == {"location": "San Francisco", "units": "metric"}
+    assert _planned_weather_arguments("Weather in Springfield, Illinois?") == {
+        "location": "Springfield, Illinois"
+    }
+    assert _planned_weather_arguments("Weather in Paris, France.") == {
+        "location": "Paris, France"
+    }
+    assert _planned_weather_arguments("Weather in Paris, please answer concisely.") == {
+        "location": "Paris"
+    }
+    assert _planned_weather_arguments("Weather in Paris, in Celsius.") == {
+        "location": "Paris",
+        "units": "metric",
+    }
+    assert _planned_weather_arguments(
+        "Weather in Paris, and tell me what to wear."
+    ) == {"location": "Paris"}
+    assert _planned_weather_arguments(
+        "Weather in Portland, OR, and answer briefly."
+    ) == {"location": "Portland, OR"}
+    assert _planned_weather_arguments("Weather in Portland, OR today?") == {
+        "location": "Portland, OR"
+    }
+    assert _planned_weather_arguments(
+        "Weather in Paris, France please answer briefly."
+    ) == {"location": "Paris, France"}
+    assert _planned_weather_arguments("Weather in Washington, D.C.?") == {
+        "location": "Washington, D.C"
+    }
+    assert _planned_weather_arguments("Weather in St. Louis?") == {
+        "location": "St. Louis"
+    }
+    assert _planned_weather_arguments("Weather in Paris. Answer in Celsius.") == {
+        "location": "Paris",
+        "units": "metric",
+    }
+    assert _planned_weather_arguments("Weather in Paris. Be concise.") == {
+        "location": "Paris"
+    }
+    assert _planned_weather_arguments("Weather in Paris. Include humidity.") == {
+        "location": "Paris"
+    }
+    assert _planned_weather_arguments("Weather in U.S. Virgin Islands?") == {
+        "location": "U.S. Virgin Islands"
+    }
+    assert _planned_weather_arguments("Weather in Washington, D.C. Is it raining?") == {
+        "location": "Washington, D.C"
+    }
+    assert _planned_weather_arguments("Weather in Trinidad and Tobago?") == {
+        "location": "Trinidad and Tobago"
+    }
     assert _planned_weather_arguments("Will it rain tomorrow?") is None
+
+
+def test_underspecified_weather_keeps_automatic_tool_choice():
+    weather = ToolSpec(name="weather", risk=ToolRisk.READ_ONLY)
+    settings = AgentRunCreateRequest(goal="What's the weather?", execution="client")
+    assert _chat_tool_choice([weather], settings) == "auto"
+    planned = AgentRunCreateRequest(
+        goal="What's the weather in Tokyo?", execution="client"
+    )
+    assert _chat_tool_choice([weather], planned) == {
+        "type": "function",
+        "function": {"name": "weather"},
+    }
 
 
 @pytest.mark.asyncio
