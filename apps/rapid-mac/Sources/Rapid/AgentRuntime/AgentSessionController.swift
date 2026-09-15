@@ -126,6 +126,7 @@ final class AgentSessionController {
         goal: String,
         model: String?,
         expectedProfile: String? = nil,
+        expectedQualification: String? = nil,
         toolNames: [String]? = nil,
         trustedInstructions: String? = nil,
         localContext: String? = nil,
@@ -190,6 +191,18 @@ final class AgentSessionController {
                     throw AgentRuntimeClientError.harnessProfileMismatch(
                         expected: expectedProfile,
                         received: created.profile
+                    )
+                }
+                if let expectedQualification,
+                   created.personalIntelligenceQualification != expectedQualification {
+                    Self.requestRemoteCancellation(
+                        transport: nextTransport,
+                        runID: created.id,
+                        bearerToken: bearerToken
+                    )
+                    throw AgentRuntimeClientError.qualificationMismatch(
+                        expected: expectedQualification,
+                        received: created.personalIntelligenceQualification
                     )
                 }
                 guard owner.value?.generation == expectedGeneration else {

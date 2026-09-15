@@ -298,6 +298,7 @@ def _run_task(
         "checks": checks,
         "status": view["status"],
         "profile": view.get("profile"),
+        "qualification": view.get("personal_intelligence_qualification"),
         "calls": calls,
         "output": output,
         "failure_code": view.get("failure_code"),
@@ -449,6 +450,10 @@ def main() -> int:
             and all(result["passed"] for result in results)
             and all(
                 result.get("profile") == args.expected_profile for result in results
+            )
+            and all(
+                result.get("qualification") == args.expected_qualification
+                for result in results
             )
         ),
         "results": results,

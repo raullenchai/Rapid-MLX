@@ -57,16 +57,18 @@ The qualification field is additive to the OpenAI model card:
 ```json
 {
   "id": "minicpm5-2b-4bit",
-  "personal_intelligence_profile": "minicpm5-2b"
+  "personal_intelligence_profile": "minicpm5-2b",
+  "personal_intelligence_qualification": "minicpm5-2b-q4-v1"
 }
 ```
 
 `null` means ordinary Chat, including for models that otherwise advertise tool
-support. At run creation Desktop also checks that the returned runtime profile
-matches this model-card value; a mismatch is cancelled rather than falling back
-to a generic harness. Qualification also requires the tested backing repository
-identity and live native parser; an alias reused for other weights, an
-incompatible parser override, or `--no-tool-call-parser` returns `null`.
+support. At run creation Desktop also checks that the returned model, runtime
+profile, and versioned qualification ID match the model-card values; a mismatch
+is cancelled rather than falling back to a generic harness. Qualification also
+requires the tested backing repository identity and live native parser; an alias
+reused for other weights, an incompatible parser override, or
+`--no-tool-call-parser` returns `null`.
 
 Each admitted pairing is a versioned
 `PersonalIntelligenceQualification`: public model identities, backing artifact
@@ -103,7 +105,8 @@ Only the complete canonical matrix can set `qualified:true`; subset `--tasks`
 runs are diagnostics. Receipts must use a full source SHA and a reconstruction
 command that checks out that revision before starting the server.
 The suite first verifies that the live model card matches all three expected
-identity fields. The qualification ID represents the exact public alias,
+identity fields, then verifies every created run returns the same profile and
+qualification ID. The qualification ID represents the exact public alias,
 backing artifact, parser, and harness admission record; behavior from a
 different mounted model therefore cannot certify the requested build.
 

@@ -111,11 +111,14 @@ async def test_direct_answer_completes_without_tools_and_keeps_output_out_of_eve
     service = AgentServerService(registry=FakeRegistry(()), chat_driver=driver)
 
     created = await service.create(
-        AgentRunCreateRequest(goal="private goal"), model="minicpm5-2b-4bit"
+        AgentRunCreateRequest(goal="private goal"),
+        model="minicpm5-2b-4bit",
+        profile_tool_call_parser="minicpm",
     )
     done = await wait_for_status(service, created.id, AgentRunStatus.COMPLETED)
 
     assert done.profile == "minicpm5-2b"
+    assert done.personal_intelligence_qualification == "minicpm5-2b-q4-v1"
     assert done.output == "Done."
     assert done.pending_action is None
     wire = (await service.events(done.id)).model_dump_json()

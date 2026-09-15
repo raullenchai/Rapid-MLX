@@ -191,6 +191,7 @@ struct AgentRunView: Codable, Equatable, Sendable {
     let id: String
     let model: String
     let profile: String
+    let personalIntelligenceQualification: String?
     let status: AgentRunStatus
     let modelTurns: Int
     let toolRounds: Int
@@ -201,6 +202,7 @@ struct AgentRunView: Codable, Equatable, Sendable {
 
     enum CodingKeys: String, CodingKey {
         case id, model, profile, status
+        case personalIntelligenceQualification = "personal_intelligence_qualification"
         case modelTurns = "model_turns"
         case toolRounds = "tool_rounds"
         case finalSynthesis = "final_synthesis"
@@ -249,6 +251,7 @@ enum AgentRuntimeClientError: Error, Equatable, LocalizedError {
     case malformedResponse
     case harnessProfileMismatch(expected: String, received: String)
     case modelBindingMismatch(expected: String, received: String)
+    case qualificationMismatch(expected: String, received: String?)
 
     var errorDescription: String? {
         switch self {
@@ -264,6 +267,8 @@ enum AgentRuntimeClientError: Error, Equatable, LocalizedError {
             "Personal Intelligence expected the \(expected) harness, but the server returned \(received). Update Rapid-MLX and try again."
         case .modelBindingMismatch(let expected, let received):
             "Personal Intelligence expected \(expected), but the server started \(received). The mismatched run was stopped; refresh the model and try again."
+        case .qualificationMismatch(let expected, let received):
+            "Personal Intelligence expected qualification \(expected), but the server returned \(received ?? "none"). The mismatched run was stopped; update Rapid-MLX and try again."
         }
     }
 }

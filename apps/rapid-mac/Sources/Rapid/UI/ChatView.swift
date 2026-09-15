@@ -1300,7 +1300,10 @@ struct ChatView: View {
         guard let harnessProfile = PersonalIntelligenceConfig.harnessProfile(
             for: alias,
             serverProfile: server.activeModelProfile
-        ) else {
+        ), let qualification = server.activeModelProfile?
+            .personalIntelligenceQualification?
+            .trimmingCharacters(in: .whitespacesAndNewlines),
+            !qualification.isEmpty else {
             return false
         }
         let session = agentSession
@@ -1314,6 +1317,7 @@ struct ChatView: View {
             goal: goal,
             model: alias,
             expectedProfile: harnessProfile,
+            expectedQualification: qualification,
             toolNames: agentTools.map { $0.function.name },
             trustedInstructions: trustedInstructions,
             localContext: localContext,

@@ -210,6 +210,35 @@ struct AgentSessionControllerTests {
         #expect(transport.cancelledRunIDs == [Self.runID])
     }
 
+    @Test("A stale exact-build qualification is cancelled before execution")
+    func rejectsMismatchedQualification() async throws {
+        let transport = AgentSessionTransportStub(
+            created: try Self.run(
+                status: "awaiting_model",
+                qualification: "minicpm5-2b-q4-v2"
+            )
+        )
+        let controller = AgentSessionController(
+            transportFactory: { _ in transport },
+            pollDelay: { await Task.yield() }
+        )
+
+        controller.start(
+            goal: "Organize these notes",
+            model: "minicpm5-2b-4bit",
+            expectedProfile: "minicpm5-2b",
+            expectedQualification: "minicpm5-2b-q4-v1",
+            baseURL: URL(string: "http://127.0.0.1:8000")!,
+            bearerToken: nil
+        )
+        await controller._testingWaitForDriver()
+        await transport.waitForCancellation()
+
+        #expect(controller.phase == .failed)
+        #expect(controller.errorMessage?.contains("expected qualification minicpm5-2b-q4-v1") == true)
+        #expect(transport.cancelledRunIDs == [Self.runID])
+    }
+
     @Test("Approval pauses and resumes only the pending call")
     func approvalRoundTrip() async throws {
         let transport = AgentSessionTransportStub(
@@ -453,11 +482,13 @@ struct AgentSessionControllerTests {
         output: String? = nil,
         pendingAction: String = "null",
         model: String = "minicpm5-2b-4bit",
-        profile: String = "minicpm5-2b"
+        profile: String = "minicpm5-2b",
+        qualification: String? = "minicpm5-2b-q4-v1"
     ) throws -> AgentRunView {
         let outputJSON = output.map { "\"\($0)\"" } ?? "null"
+        let qualificationJSON = qualification.map { "\"\($0)\"" } ?? "null"
         return try JSONDecoder().decode(AgentRunView.self, from: Data("""
-        {"id":"\(runID)","model":"\(model)","profile":"\(profile)","status":"\(status)","model_turns":1,"tool_rounds":0,"final_synthesis":false,"failure_code":null,"output":\(outputJSON),"pending_action":\(pendingAction)}
+        {"id":"\(runID)","model":"\(model)","profile":"\(profile)","personal_intelligence_qualification":\(qualificationJSON),"status":"\(status)","model_turns":1,"tool_rounds":0,"final_synthesis":false,"failure_code":null,"output":\(outputJSON),"pending_action":\(pendingAction)}
         """.utf8))
     }
 
