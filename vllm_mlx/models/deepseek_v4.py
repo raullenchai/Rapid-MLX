@@ -150,9 +150,12 @@ def _fuse_switch_gate_up_weights(weights: Dict[str, mx.array], prefix: str) -> N
         if gate_present:
             pairs.append((gate_key, up_key))
 
+    fused_pairs = {
+        gate_key: mx.concatenate([weights[gate_key], weights[up_key]], axis=1)
+        for gate_key, up_key in pairs
+    }
     for gate_key, up_key in pairs:
-        fused = mx.concatenate([weights[gate_key], weights[up_key]], axis=1)
-        weights[gate_key] = fused
+        weights[gate_key] = fused_pairs[gate_key]
         del weights[up_key]
 
 

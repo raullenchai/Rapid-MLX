@@ -265,16 +265,20 @@ def test_fused_routed_projection_shape_failure_does_not_mutate_weights():
     prefix = "model.layers.0.ffn.switch_mlp"
     gate_key = f"{prefix}.gate_proj.weight"
     up_key = f"{prefix}.up_proj.weight"
-    weights = {
+    original = {
         gate_key: mx.zeros((4, 16, 8), dtype=mx.uint32),
-        up_key: mx.ones((4, 16, 4), dtype=mx.uint32),
+        up_key: mx.ones((4, 16, 8), dtype=mx.uint32),
+        f"{prefix}.gate_proj.scales": mx.zeros((4, 16, 2)),
+        f"{prefix}.up_proj.scales": mx.ones((4, 16, 1)),
     }
+    weights = dict(original)
 
     with pytest.raises(ValueError, match="dimensions must match"):
         _fuse_switch_gate_up_weights(weights, prefix)
 
-    assert weights[gate_key].shape == (4, 16, 8)
-    assert weights[up_key].shape == (4, 16, 4)
+    assert weights.keys() == original.keys()
+    for key, value in original.items():
+        assert weights[key] is value
 
 
 def test_restored_pooling_cache_without_legacy_undo_field_is_safe():
