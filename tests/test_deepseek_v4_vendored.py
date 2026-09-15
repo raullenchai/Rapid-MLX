@@ -285,6 +285,42 @@ def test_fused_routed_projection_shape_failure_does_not_mutate_weights():
         assert weights[key] is value
 
 
+@pytest.mark.parametrize(("up_group_size", "expect_fused"), [(32, True), (64, False)])
+def test_mtp_projection_fusion_follows_effective_quantization_layout(
+    up_group_size, expect_fused
+):
+    import mlx.core as mx
+
+    from vllm_mlx.models import deepseek_v4
+
+    args = deepseek_v4.ModelArgs(
+        num_hidden_layers=1,
+        compress_ratios=[0],
+        quantization={
+            "group_size": 32,
+            "bits": 2,
+            "mode": "affine",
+            "mtp.0.ffn.switch_mlp.up_proj": {
+                "group_size": up_group_size,
+                "bits": 2,
+                "mode": "affine",
+            },
+        },
+    )
+    prefix = "mtp.0.ffn.switch_mlp"
+    up_key = f"{prefix}.up_proj.weight"
+    weights = {
+        f"{prefix}.gate_proj.weight": mx.zeros((4, 16, 4), dtype=mx.uint32),
+        up_key: mx.ones((4, 16, 4), dtype=mx.uint32),
+    }
+
+    sanitized = deepseek_v4.Model.sanitize(
+        SimpleNamespace(args=args, mtp=[object()]), weights
+    )
+
+    assert (up_key not in sanitized) is expect_fused
+
+
 def test_restored_pooling_cache_without_legacy_undo_field_is_safe():
     """Persisted pre-rollback caches must remain inspectable after upgrade."""
     import mlx.core as mx
