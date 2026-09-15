@@ -306,9 +306,10 @@ def _format_retry_instruction(goal: str, turn: AgentModelTurn) -> str | None:
         and _WEB_URL.search(turn.content) is None
     ):
         return (
-            "Rewrite the answer to include the exact source URL requested by the "
-            "user. Copy it from the tool evidence already provided; do not invent "
-            "a URL or add facts not present in that evidence."
+            "Rewrite the answer using only this shape: <requested value> — "
+            "<exact source URL>. Copy the most specific canonical URL from the "
+            "tool evidence already provided; do not use a broader index URL, "
+            "invent a URL, or add explanatory text."
         )
     expected = _requested_sentence_count(goal)
     if expected is None:
