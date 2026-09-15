@@ -245,10 +245,7 @@ def test_other_documented_formats(wire_format, call, expected):
 
 
 def test_json_string_may_contain_ifm_closing_delimiters():
-    query = (
-        "literal </ifm|tool_call> inside value and "
-        "</ifm|tool_calls> inside value"
-    )
+    query = "literal </ifm|tool_call> inside value and </ifm|tool_calls> inside value"
     result = K2HorizonToolParser().extract_tool_calls(
         _group(_json_call("lookup", {"query": query})),
         _request("json"),
@@ -306,9 +303,7 @@ def test_streaming_invalid_group_does_not_hide_later_valid_group_in_same_chunk()
     malformed = _group("junk")
     valid = _group(_xml_call("ping"), prefix=" between ")
     output = malformed + valid
-    delta = parser.extract_tool_calls_streaming(
-        "", output, output, request=_request()
-    )
+    delta = parser.extract_tool_calls_streaming("", output, output, request=_request())
     assert delta is not None
     assert delta["content"] == malformed + " between "
     assert [call["function"]["name"] for call in delta["tool_calls"]] == ["ping"]
@@ -496,7 +491,11 @@ def test_long_json_stream_advances_incremental_framing_cursor():
     parser = K2HorizonToolParser()
     request = _request("json")
     previous = parser.GROUP_START + parser.CALL_START
-    for chunk in ('{"name":"lookup","arguments":{"query":"', "x" * 10_000, "y" * 10_000):
+    for chunk in (
+        '{"name":"lookup","arguments":{"query":"',
+        "x" * 10_000,
+        "y" * 10_000,
+    ):
         current = previous + chunk
         assert (
             parser.extract_tool_calls_streaming(

@@ -557,9 +557,7 @@ class K2HorizonToolParser(ToolParser):
                 break
             self._pending_tool_start = None
             try:
-                calls.extend(
-                    self._parse_group(current_text[cursor:group_end], request)
-                )
+                calls.extend(self._parse_group(current_text[cursor:group_end], request))
             except (json.JSONDecodeError, TypeError, ValueError):
                 # A complete but invalid envelope is deliberately surfaced as
                 # content. Latch the same consumed/content-visible state as a
@@ -586,9 +584,7 @@ class K2HorizonToolParser(ToolParser):
             next_start = current_text.find(self.GROUP_START, group_end)
             if next_start >= 0:
                 content_parts.append(
-                    self._visible_post_tool_prefix(
-                        current_text[group_end:next_start]
-                    )
+                    self._visible_post_tool_prefix(current_text[group_end:next_start])
                 )
                 self._post_tool_content_visible = False
                 cursor = next_start
@@ -638,7 +634,9 @@ class K2HorizonToolParser(ToolParser):
         return start >= 0 and self.GROUP_END not in text[start:]
 
     def flush_held_content(self, full_text: str) -> str:
-        if self._pending_tool_start is not None or self.has_pending_tool_call(full_text):
+        if self._pending_tool_start is not None or self.has_pending_tool_call(
+            full_text
+        ):
             if self._suppress_calls:
                 return ""
             return self._visible_prefix(full_text[self._content_upto :])
