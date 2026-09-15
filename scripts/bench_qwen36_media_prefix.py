@@ -121,6 +121,14 @@ def _checker_pass(checker: dict[str, Any], text: str) -> bool:
     if kind == "terms":
         if not all(term.casefold() in lowered for term in checker.get("required", [])):
             return False
+        # ``required_any``: alternatives — at least one term list fully
+        # satisfied (e.g. a shortcut rendered as "⌘N" or "Cmd+N").
+        required_any = checker.get("required_any", [])
+        if required_any and not any(
+            all(term.casefold() in lowered for term in alternative)
+            for alternative in required_any
+        ):
+            return False
         return not any(
             term.casefold() in lowered for term in checker.get("forbidden", [])
         )
@@ -135,11 +143,35 @@ def _checker_pass(checker: dict[str, Any], text: str) -> bool:
             payload = json.loads(stripped[start:])
         except (ValueError, json.JSONDecodeError):
             return False
-        return isinstance(payload, dict) and all(
-            key in payload for key in checker.get("keys", [])
-        )
+        if not isinstance(payload, dict):
+            return False
+        if not all(key in payload for key in checker.get("keys", [])):
+            return False
+        # ``list_keys`` must be non-empty lists; ``item_keys`` requires
+        # these keys on every item — key presence alone lets any value
+        # qualify. ``required`` terms must appear in the serialized payload.
+        item_keys = checker.get("item_keys", {})
+        for key in checker.get("list_keys", []):
+            value = payload.get(key)
+            if not isinstance(value, list) or not value:
+                return False
+            # ``item_keys`` applies to object lists (``{"model", "status"}``
+            # bars); plain string lists (buttons) only need to be non-empty.
+            if key in item_keys:
+                for item in value:
+                    if not isinstance(item, dict) or not all(
+                        item_key in item for item_key in item_keys[key]
+                    ):
+                        return False
+        return not any(
+            term.casefold() in lowered for term in checker.get("forbidden", [])
+        ) and all(term.casefold() in lowered for term in checker.get("required", []))
     if kind == "any":
-        return bool(text.strip())
+        # ``min_words`` rejects degenerate outputs (empty, single looping
+        # token) on open-ended follow-up turns where no term checker can be
+        # semantic.
+        min_words = int(checker.get("min_words", 0) or 0)
+        return len(text.split()) >= min_words
     raise ValueError(f"unknown checker type: {kind}")
 
 

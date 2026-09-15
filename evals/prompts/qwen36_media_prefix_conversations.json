@@ -46,7 +46,8 @@
             "top_p": 1.0
           },
           "checker": {
-            "type": "any"
+            "type": "any",
+            "min_words": 3
           }
         },
         {
@@ -57,7 +58,8 @@
             "top_p": 1.0
           },
           "checker": {
-            "type": "any"
+            "type": "any",
+            "min_words": 5
           }
         }
       ]
@@ -96,7 +98,8 @@
             "top_p": 1.0
           },
           "checker": {
-            "type": "any"
+            "type": "any",
+            "min_words": 3
           }
         },
         {
@@ -107,7 +110,8 @@
             "top_p": 1.0
           },
           "checker": {
-            "type": "any"
+            "type": "any",
+            "min_words": 5
           }
         }
       ]
@@ -143,7 +147,8 @@
             "top_p": 1.0
           },
           "checker": {
-            "type": "any"
+            "type": "any",
+            "min_words": 3
           }
         },
         {
@@ -154,7 +159,8 @@
             "top_p": 1.0
           },
           "checker": {
-            "type": "any"
+            "type": "any",
+            "min_words": 5
           }
         }
       ]
@@ -191,7 +197,8 @@
             "top_p": 1.0
           },
           "checker": {
-            "type": "any"
+            "type": "any",
+            "min_words": 3
           }
         },
         {
@@ -202,7 +209,8 @@
             "top_p": 1.0
           },
           "checker": {
-            "type": "any"
+            "type": "any",
+            "min_words": 5
           }
         }
       ]
@@ -237,7 +245,8 @@
             "top_p": 1.0
           },
           "checker": {
-            "type": "any"
+            "type": "any",
+            "min_words": 3
           }
         },
         {
@@ -248,7 +257,8 @@
             "top_p": 1.0
           },
           "checker": {
-            "type": "any"
+            "type": "any",
+            "min_words": 5
           }
         }
       ]
@@ -283,7 +293,8 @@
             "top_p": 1.0
           },
           "checker": {
-            "type": "any"
+            "type": "any",
+            "min_words": 3
           }
         },
         {
@@ -294,7 +305,8 @@
             "top_p": 1.0
           },
           "checker": {
-            "type": "any"
+            "type": "any",
+            "min_words": 5
           }
         }
       ]
@@ -316,8 +328,16 @@
           },
           "checker": {
             "type": "terms",
-            "required": [
-              "n"
+            "required_any": [
+              [
+                "⌘n"
+              ],
+              [
+                "cmd+n"
+              ],
+              [
+                "command+n"
+              ]
             ]
           }
         },
@@ -329,7 +349,8 @@
             "top_p": 1.0
           },
           "checker": {
-            "type": "any"
+            "type": "any",
+            "min_words": 3
           }
         },
         {
@@ -340,7 +361,8 @@
             "top_p": 1.0
           },
           "checker": {
-            "type": "any"
+            "type": "any",
+            "min_words": 5
           }
         }
       ]
@@ -375,7 +397,8 @@
             "top_p": 1.0
           },
           "checker": {
-            "type": "any"
+            "type": "any",
+            "min_words": 3
           }
         },
         {
@@ -386,7 +409,8 @@
             "top_p": 1.0
           },
           "checker": {
-            "type": "any"
+            "type": "any",
+            "min_words": 5
           }
         }
       ]
@@ -412,6 +436,11 @@
               "model",
               "status",
               "action"
+            ],
+            "required": [
+              "qwen3.6-27b",
+              "ready",
+              "stop"
             ]
           }
         },
@@ -423,7 +452,8 @@
             "top_p": 1.0
           },
           "checker": {
-            "type": "any"
+            "type": "any",
+            "min_words": 3
           }
         },
         {
@@ -434,7 +464,8 @@
             "top_p": 1.0
           },
           "checker": {
-            "type": "any"
+            "type": "any",
+            "min_words": 5
           }
         }
       ]
@@ -459,6 +490,12 @@
             "keys": [
               "title",
               "buttons"
+            ],
+            "list_keys": [
+              "buttons"
+            ],
+            "required": [
+              "rapid-mlx desktop"
             ]
           }
         },
@@ -470,7 +507,8 @@
             "top_p": 1.0
           },
           "checker": {
-            "type": "any"
+            "type": "any",
+            "min_words": 3
           }
         },
         {
@@ -481,7 +519,8 @@
             "top_p": 1.0
           },
           "checker": {
-            "type": "any"
+            "type": "any",
+            "min_words": 5
           }
         }
       ]
@@ -506,6 +545,10 @@
             "keys": [
               "heading",
               "primary_action"
+            ],
+            "required": [
+              "pick a model",
+              "next"
             ]
           }
         },
@@ -517,7 +560,8 @@
             "top_p": 1.0
           },
           "checker": {
-            "type": "any"
+            "type": "any",
+            "min_words": 3
           }
         },
         {
@@ -528,7 +572,8 @@
             "top_p": 1.0
           },
           "checker": {
-            "type": "any"
+            "type": "any",
+            "min_words": 5
           }
         }
       ]
@@ -553,6 +598,18 @@
             "type": "json_shape",
             "keys": [
               "bars"
+            ],
+            "list_keys": [
+              "bars"
+            ],
+            "item_keys": {
+              "bars": [
+                "model",
+                "status"
+              ]
+            },
+            "required": [
+              "qwen3.6-27b"
             ]
           }
         },
@@ -564,7 +621,8 @@
             "top_p": 1.0
           },
           "checker": {
-            "type": "any"
+            "type": "any",
+            "min_words": 3
           }
         },
         {
@@ -575,7 +633,8 @@
             "top_p": 1.0
           },
           "checker": {
-            "type": "any"
+            "type": "any",
+            "min_words": 5
           }
         }
       ]
@@ -612,7 +671,8 @@
             "top_p": 1.0
           },
           "checker": {
-            "type": "any"
+            "type": "any",
+            "min_words": 3
           }
         },
         {
@@ -623,7 +683,8 @@
             "top_p": 1.0
           },
           "checker": {
-            "type": "any"
+            "type": "any",
+            "min_words": 5
           }
         }
       ]
@@ -658,7 +719,8 @@
             "top_p": 1.0
           },
           "checker": {
-            "type": "any"
+            "type": "any",
+            "min_words": 3
           }
         },
         {
@@ -669,7 +731,8 @@
             "top_p": 1.0
           },
           "checker": {
-            "type": "any"
+            "type": "any",
+            "min_words": 5
           }
         }
       ]
@@ -705,7 +768,8 @@
             "top_p": 1.0
           },
           "checker": {
-            "type": "any"
+            "type": "any",
+            "min_words": 3
           }
         },
         {
@@ -716,7 +780,8 @@
             "top_p": 1.0
           },
           "checker": {
-            "type": "any"
+            "type": "any",
+            "min_words": 5
           }
         }
       ]
@@ -751,7 +816,8 @@
             "top_p": 1.0
           },
           "checker": {
-            "type": "any"
+            "type": "any",
+            "min_words": 3
           }
         },
         {
@@ -762,7 +828,8 @@
             "top_p": 1.0
           },
           "checker": {
-            "type": "any"
+            "type": "any",
+            "min_words": 5
           }
         }
       ]
@@ -798,7 +865,8 @@
             "top_p": 1.0
           },
           "checker": {
-            "type": "any"
+            "type": "any",
+            "min_words": 3
           }
         },
         {
@@ -809,7 +877,8 @@
             "top_p": 1.0
           },
           "checker": {
-            "type": "any"
+            "type": "any",
+            "min_words": 5
           }
         }
       ]
@@ -846,7 +915,8 @@
             "top_p": 1.0
           },
           "checker": {
-            "type": "any"
+            "type": "any",
+            "min_words": 3
           }
         },
         {
@@ -857,7 +927,8 @@
             "top_p": 1.0
           },
           "checker": {
-            "type": "any"
+            "type": "any",
+            "min_words": 5
           }
         }
       ]
@@ -894,7 +965,8 @@
             "top_p": 1.0
           },
           "checker": {
-            "type": "any"
+            "type": "any",
+            "min_words": 3
           }
         },
         {
@@ -905,7 +977,8 @@
             "top_p": 1.0
           },
           "checker": {
-            "type": "any"
+            "type": "any",
+            "min_words": 5
           }
         }
       ]
@@ -942,7 +1015,8 @@
             "top_p": 1.0
           },
           "checker": {
-            "type": "any"
+            "type": "any",
+            "min_words": 3
           }
         },
         {
@@ -953,7 +1027,8 @@
             "top_p": 1.0
           },
           "checker": {
-            "type": "any"
+            "type": "any",
+            "min_words": 5
           }
         }
       ]

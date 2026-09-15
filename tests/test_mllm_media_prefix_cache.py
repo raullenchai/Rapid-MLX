@@ -824,6 +824,61 @@ class TestResumePath:
 
 
 class TestMropeTransaction:
+    def test_store_path_failure_restores_mrope_state(self, monkeypatch):
+        # The save transaction spans the whole request: a failing prefix
+        # forward must restore the prior model-global position state
+        # before the exception propagates.
+        gen = _stub_generator()
+        req = _make_request(
+            prompt="a" * 24,
+            pixel_values=mx.zeros((1, 2)),
+            prefix_boundary=20,
+            max_tokens=8,
+        )
+        gen._media_mrope_save()
+        lm = gen.language_model
+        prior_delta = mx.array([2])
+        lm._rope_deltas = prior_delta
+        lm._position_ids = None
+        lm.calls = None  # sentinel: raise on any forward
+
+        def broken_forward(*args, **kwargs):
+            raise RuntimeError("prefill exploded")
+
+        gen.model = type(
+            "Broken",
+            (),
+            {"__call__": staticmethod(broken_forward)},
+        )()
+        with pytest.raises(RuntimeError, match="prefill exploded"):
+            gen._media_forward(req, _ids(_full_ids()), _kv_leaves(), {})
+        assert lm._rope_deltas is prior_delta
+
+    def test_resume_suffix_failure_restores_mrope_state(self, monkeypatch):
+        gen = _stub_generator()
+        full_ids = _full_ids()
+        req = _make_request(
+            prompt="a" * 24,
+            pixel_values=mx.zeros((1, 2)),
+            prefix_boundary=20,
+            max_tokens=8,
+        )
+        prior_delta = mx.array([2])
+        gen.language_model._rope_deltas = prior_delta
+        gen._media_mrope_save()
+        gen._media_store(
+            req, _kv_leaves(), _ids(full_ids), len(full_ids) - 4, mx.array([3])
+        )
+        assert gen._media_boundary_stores == 1
+
+        def broken_suffix(*args, **kwargs):
+            raise RuntimeError("suffix exploded")
+
+        monkeypatch.setattr(gen, "_media_suffix_forward", broken_suffix)
+        with pytest.raises(RuntimeError, match="suffix exploded"):
+            gen._media_forward(req, _ids(full_ids), _kv_leaves(), {})
+        assert gen.language_model._rope_deltas is prior_delta
+
     def test_restore_deletes_absent_attributes(self):
         gen = _stub_generator()
         lm = gen.language_model
@@ -1084,3 +1139,46 @@ class TestStatsSurface:
             "budget_bytes",
         }
         assert stats["entries"] == 0
+
+    def test_stats_never_raise_during_concurrent_stores(self, monkeypatch):
+        # get_media_prefix_stats runs off the worker thread while the step
+        # executor inserts/evicts: the store lock must make the snapshot
+        # atomic instead of racing the OrderedDict mutation.
+        import threading
+
+        gen = _stub_generator()
+        gen._media_boundary_entries = OrderedDict()
+        gen._media_boundary_lock = threading.Lock()
+        full_ids = _full_ids()
+        errors: list[BaseException] = []
+        stop = threading.Event()
+
+        def store_loop():
+            try:
+                while not stop.is_set():
+                    gen._media_mrope_save()
+                    gen._media_store(
+                        _make_request(
+                            prompt="a" * 24,
+                            pixel_values=mx.zeros((1, 2)),
+                            prefix_boundary=20,
+                            max_tokens=8,
+                        ),
+                        _kv_leaves(),
+                        _ids(full_ids),
+                        26,
+                        mx.array([1]),
+                    )
+            except BaseException as exc:  # pragma: no cover - failure path
+                errors.append(exc)
+
+        worker = threading.Thread(target=store_loop, daemon=True)
+        worker.start()
+        try:
+            for _ in range(500):
+                stats = gen.get_media_prefix_stats()
+                assert stats["entries"] >= 0
+        finally:
+            stop.set()
+            worker.join(timeout=5)
+        assert not errors

@@ -16,10 +16,12 @@ Architecture:
 3. Language model generation is batched using BatchKVCache (like LLM batching)
 """
 
+import contextlib
 import copy
 import inspect
 import logging
 import os
+import threading
 import time
 from collections import OrderedDict
 from collections.abc import Callable
@@ -1017,6 +1019,9 @@ class MLLMBatchGenerator:
         self._media_boundary_entries: OrderedDict[str, MLLMMediaBoundaryEntry] = (
             OrderedDict()
         )
+        # Guards the store against cross-thread iteration: stats are served
+        # off the worker thread while the step executor inserts/evicts.
+        self._media_boundary_lock = threading.Lock()
         self._media_boundary_hits = 0
         self._media_boundary_misses = 0
         self._media_boundary_stores = 0
@@ -1696,9 +1701,12 @@ class MLLMBatchGenerator:
                 # evicted ahead of colder entries (LRU, not FIFO). The
                 # store is an OrderedDict in production; plain-dict stand-ins
                 # simply skip the promotion.
-                move_to_end = getattr(self._media_boundary_entries, "move_to_end", None)
-                if move_to_end is not None:
-                    move_to_end(digest)
+                with self._media_entries_guard():
+                    move_to_end = getattr(
+                        self._media_boundary_entries, "move_to_end", None
+                    )
+                    if move_to_end is not None:
+                        move_to_end(digest)
                 return ("resume", entry, boundary)
             # A stored candidate that fails the strict prefix or placeholder
             # check is a clean miss — never a trim or a partial resume. This
@@ -1791,9 +1799,10 @@ class MLLMBatchGenerator:
             return None
         # Replacing an existing entry for the same digest: drop the old
         # bytes first so the budget sees the net footprint.
-        self._media_boundary_entries.pop(digest, None)
-        self._media_boundary_entries[digest] = entry
-        self._media_boundary_stores += 1
+        with self._media_entries_guard():
+            self._media_boundary_entries.pop(digest, None)
+            self._media_boundary_entries[digest] = entry
+            self._media_boundary_stores += 1
         self._media_enforce_budget()
         return entry
 
@@ -1821,6 +1830,21 @@ class MLLMBatchGenerator:
                 )
         except Exception:
             return 0
+
+    def _media_entries_guard(self) -> contextlib.AbstractContextManager:
+        """Lock guarding the media store against cross-thread mutation.
+
+        Legacy/bare generators predate the lock (``__new__``-built test
+        stand-ins); they get a no-op guard. Lock order is always
+        media → text: the media enforcement holds this guard while the
+        coordinated eviction takes the text exact-cache lock, and the text
+        budget takes the media guard only for its credit read before any
+        text lock."""
+        lock = getattr(self, "_media_boundary_lock", None)
+        guard: contextlib.AbstractContextManager = (
+            lock if lock is not None else contextlib.nullcontext()
+        )
+        return guard
 
     def _media_resolved_budget(self) -> int:
         """The engine-wide byte ceiling the media store shares with the text
@@ -1856,21 +1880,22 @@ class MLLMBatchGenerator:
         budget = self._media_resolved_budget()
         if budget <= 0:
             return
-        media_bytes = sum(
-            entry.cache_bytes for entry in self._media_boundary_entries.values()
-        )
-        total = self._exact_cache_footprint_bytes() + media_bytes
-        while len(self._media_boundary_entries) > 1 and total > budget:
-            oldest = next(iter(self._media_boundary_entries))
-            evicted = self._media_boundary_entries.pop(oldest)
-            media_bytes -= evicted.cache_bytes
-            total -= evicted.cache_bytes
-            self._media_boundary_budget_evictions += 1
-        if total > budget:
-            # Own entries exhausted: reclaim room from the text side. The
-            # text newest always survives, so the residual overage is at
-            # most one text entry past its allowance.
-            self._evict_text_exact_to_fit(budget - media_bytes)
+        with self._media_entries_guard():
+            media_bytes = sum(
+                entry.cache_bytes for entry in self._media_boundary_entries.values()
+            )
+            total = self._exact_cache_footprint_bytes() + media_bytes
+            while len(self._media_boundary_entries) > 1 and total > budget:
+                oldest = next(iter(self._media_boundary_entries))
+                evicted = self._media_boundary_entries.pop(oldest)
+                media_bytes -= evicted.cache_bytes
+                total -= evicted.cache_bytes
+                self._media_boundary_budget_evictions += 1
+            if total > budget:
+                # Own entries exhausted: reclaim room from the text side. The
+                # text newest always survives, so the residual overage is at
+                # most one text entry past its allowance.
+                self._evict_text_exact_to_fit(budget - media_bytes)
 
     def _media_mrope_save(self) -> None:
         """Capture the model's current MRoPE bookkeeping (sentinel-aware)."""
@@ -1923,15 +1948,17 @@ class MLLMBatchGenerator:
             lm._rope_deltas = rope_deltas
 
     def get_media_prefix_stats(self) -> dict[str, Any]:
-        # Snapshot before iterating: stats are served off the worker thread
-        # while the step executor inserts/evicts concurrently.
-        entries = list(self._media_boundary_entries.values())
+        # Snapshot under the store lock: stats are served off the worker
+        # thread while the step executor inserts/evicts concurrently.
+        with self._media_entries_guard():
+            entries = list(self._media_boundary_entries.values())
+            entry_count = len(self._media_boundary_entries)
         return {
             "hits": self._media_boundary_hits,
             "misses": self._media_boundary_misses,
             "stores": self._media_boundary_stores,
             "budget_evictions": self._media_boundary_budget_evictions,
-            "entries": len(self._media_boundary_entries),
+            "entries": entry_count,
             "bytes": sum(entry.cache_bytes for entry in entries),
             "budget_bytes": self._media_boundary_max_bytes,
         }
@@ -2268,11 +2295,12 @@ class MLLMBatchGenerator:
         max_bytes = int(getattr(self, "_prefix_cache_max_bytes", 0) or 0)
         if max_bytes <= 0:
             return
-        budget = max_bytes - sum(
-            entry.cache_bytes
-            for entry in getattr(self, "_media_boundary_entries", {}).values()
-        )
-        self._evict_text_exact_to_fit(budget, cache)
+        with self._media_entries_guard():
+            media_bytes = sum(
+                entry.cache_bytes
+                for entry in getattr(self, "_media_boundary_entries", {}).values()
+            )
+        self._evict_text_exact_to_fit(max_bytes - media_bytes, cache)
 
     def get_prefix_cache_stats(self) -> dict[str, Any] | None:
         """Return the common prefix-cache counter shape for APIs/metrics."""
@@ -2311,7 +2339,8 @@ class MLLMBatchGenerator:
         # generator drops real MiB even without a text-APC manager.
         had_media = bool(media_entries)
         if media_entries is not None:
-            media_entries.clear()
+            with self._media_entries_guard():
+                media_entries.clear()
             self._media_enforce_budget()
         if reset_stats:
             self._prefix_cache_hits = 0
@@ -2759,10 +2788,17 @@ class MLLMBatchGenerator:
                 self._media_boundary_misses += 1
                 return self.model(input_ids, cache=cache, **kwargs)
             cache[:] = cloned
-            self._media_mrope_install(entry.rope_delta)
-            output = self._media_suffix_forward(
-                input_ids[:, boundary:], cache, entry.rope_delta
-            )
+            try:
+                self._media_mrope_install(entry.rope_delta)
+                output = self._media_suffix_forward(
+                    input_ids[:, boundary:], cache, entry.rope_delta
+                )
+            except Exception:
+                # The installed delta is model-global state: a failing
+                # suffix forward must not leave it behind for the next
+                # request's prefill.
+                self._media_mrope_restore()
+                raise
             request.cached_tokens = boundary
             return output
         # Store path: prefix forward with the full vision kwargs (the plan
@@ -2773,17 +2809,22 @@ class MLLMBatchGenerator:
         # droppable contract proves dropping equals the single forward.
         prefix_kwargs = {k: v for k, v in kwargs.items() if k != "attention_mask"}
         self._media_mrope_save()
-        self.model(input_ids[:, :boundary], cache=cache, **prefix_kwargs)
-        rope_delta = getattr(self.language_model, "_rope_deltas", None)
-        mx.eval([c.state for c in cache])
-        stored = self._media_store(request, cache, input_ids, boundary, rope_delta)
-        if stored is None:
+        try:
+            self.model(input_ids[:, :boundary], cache=cache, **prefix_kwargs)
+            rope_delta = getattr(self.language_model, "_rope_deltas", None)
+            mx.eval([c.state for c in cache])
+            stored = self._media_store(request, cache, input_ids, boundary, rope_delta)
             # No snapshot: continue the suffix on the same live cache with
             # the delta this forward already installed on the model.
             return self._media_suffix_forward(
                 input_ids[:, boundary:], cache, rope_delta
             )
-        return self._media_suffix_forward(input_ids[:, boundary:], cache, rope_delta)
+        except Exception:
+            # Same model-global-state contract: the save transaction spans
+            # the whole request, so a failing store or suffix forward
+            # restores the prior state before the exception propagates.
+            self._media_mrope_restore()
+            raise
 
     def _run_vision_encoding(
         self, request: MLLMBatchRequest, cache: list[Any] | None = None
