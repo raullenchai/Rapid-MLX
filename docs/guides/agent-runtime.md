@@ -10,6 +10,48 @@ in-flight runs, and completed runs expire after 15 minutes. Use ordinary
 `/v1/chat/completions` or `/v1/responses` when a managed tool loop is not
 needed; those endpoints are unchanged.
 
+## Use Personal Intelligence in Desktop
+
+Desktop presents the runtime as **Personal Intelligence**, not as a separate
+Agent product. The single four-point icon beside the Chat attachment button is
+the per-conversation control:
+
+1. Hover the icon to see what the capability does.
+2. On first use, choose **Turn on** after reviewing the local-data and approval
+   contract, or **Not now** to keep ordinary Chat.
+3. After that introduction, click the icon once to turn Personal Intelligence
+   on for the current conversation and click it again to turn it off. A filled
+   indigo icon means on; a neutral icon means off.
+4. New conversations start on after the user has chosen **Turn on**. Any
+   consequential action still receives its own approval prompt. Existing
+   conversations are not opted in retroactively; their choice is stored per
+   conversation.
+
+Personal Intelligence is fail-closed and model-specific. Desktop enables it
+only when the exact selected alias is bound to a harness profile that has been
+tuned and dogfooded with that model. Tool-call support by itself is not enough,
+and selecting Personal Intelligence never changes or downloads a different
+model. MiniCPM5-2B is the first qualified low-memory pairing; its profile owns
+its tool visibility, loop budget, repeat guard, output ceiling, parser, and
+prompt behavior. Gemma, Qwen, and other models remain ordinary Chat until each
+exact model has its own qualified profile. The popover names the current model
+and explains when its profile is not ready. Switching back to a qualified model
+restores that
+conversation's prior on/off choice, unless attachments were staged while it
+was on ordinary Chat; in that case Personal Intelligence stays off and explains
+why instead of stranding those attachments.
+
+The introduction copy is the user contract:
+
+> Use your Mac’s tools and local context to get things done.
+>
+> Reads only what you choose. Asks before making changes. Runs locally by
+> default.
+
+Personal Intelligence currently accepts text tasks. Turn it off before adding
+a normal Chat attachment; model-native image and document attachment behavior
+is otherwise unchanged.
+
 ## Start the server
 
 Agent runs use the MCP servers already configured for `serve`:

@@ -114,6 +114,7 @@ final class AgentSessionController {
     func start(
         goal: String,
         model: String?,
+        expectedProfile: String? = nil,
         toolNames: [String]? = nil,
         baseURL: URL,
         bearerToken: String?
@@ -152,6 +153,17 @@ final class AgentSessionController {
                     )
                 }
                 let created = try await createTask.value
+                if let expectedProfile, created.profile != expectedProfile {
+                    Self.requestRemoteCancellation(
+                        transport: nextTransport,
+                        runID: created.id,
+                        bearerToken: bearerToken
+                    )
+                    throw AgentRuntimeClientError.harnessProfileMismatch(
+                        expected: expectedProfile,
+                        received: created.profile
+                    )
+                }
                 guard owner.value?.generation == expectedGeneration else {
                     // The server may have committed the run even when the
                     // observing task was cancelled. Cancel from a fresh task:

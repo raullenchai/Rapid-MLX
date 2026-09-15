@@ -37,6 +37,31 @@ struct AgentSessionControllerTests {
         #expect(transport.eventCursors == [0, 1])
     }
 
+    @Test("A mismatched server harness is cancelled instead of running")
+    func rejectsMismatchedHarness() async throws {
+        let transport = AgentSessionTransportStub(
+            created: try Self.run(status: "awaiting_model", profile: "default")
+        )
+        let controller = AgentSessionController(
+            transportFactory: { _ in transport },
+            pollDelay: { await Task.yield() }
+        )
+
+        controller.start(
+            goal: "Organize these notes",
+            model: "minicpm5-2b-4bit",
+            expectedProfile: "minicpm5-2b",
+            baseURL: URL(string: "http://127.0.0.1:8000")!,
+            bearerToken: nil
+        )
+        await controller._testingWaitForDriver()
+        await transport.waitForCancellation()
+
+        #expect(controller.phase == .failed)
+        #expect(controller.errorMessage?.contains("expected the minicpm5-2b harness") == true)
+        #expect(transport.cancelledRunIDs == [Self.runID])
+    }
+
     @Test("Approval pauses and resumes only the pending call")
     func approvalRoundTrip() async throws {
         let transport = AgentSessionTransportStub(
@@ -278,11 +303,12 @@ struct AgentSessionControllerTests {
     fileprivate static func run(
         status: String,
         output: String? = nil,
-        pendingAction: String = "null"
+        pendingAction: String = "null",
+        profile: String = "minicpm5-2b"
     ) throws -> AgentRunView {
         let outputJSON = output.map { "\"\($0)\"" } ?? "null"
         return try JSONDecoder().decode(AgentRunView.self, from: Data("""
-        {"id":"\(runID)","model":"minicpm5-2b-4bit","profile":"minicpm5-2b","status":"\(status)","model_turns":1,"tool_rounds":0,"final_synthesis":false,"failure_code":null,"output":\(outputJSON),"pending_action":\(pendingAction)}
+        {"id":"\(runID)","model":"minicpm5-2b-4bit","profile":"\(profile)","status":"\(status)","model_turns":1,"tool_rounds":0,"final_synthesis":false,"failure_code":null,"output":\(outputJSON),"pending_action":\(pendingAction)}
         """.utf8))
     }
 
