@@ -1,8 +1,8 @@
 merge_queue:
-  mode: parallel
-  # At most two singleton candidates validate concurrently, matching the two
-  # available macOS slots even when both candidates require the Mac lane.
-  max_parallel_checks: 2
+  # Parallel mode requires subscription-gated scopes. Serial singleton
+  # candidates keep the active plan compatible; jobs within one candidate can
+  # still consume both provisioned macOS runners concurrently.
+  mode: serial
   skip_intermediate_results: false
   status_comments: outcomes
 

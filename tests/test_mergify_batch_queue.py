@@ -34,8 +34,8 @@ def test_queue_runs_single_ready_prs_without_batch_features_or_fill_waits():
     queue = config["merge_queue"]
     rules = _rules_by_name("queue_rules")
 
-    assert queue["mode"] == "parallel"
-    assert queue["max_parallel_checks"] == 2
+    assert queue["mode"] == "serial"
+    assert "max_parallel_checks" not in queue
     assert queue["skip_intermediate_results"] is False
     assert set(rules) == {"no-mac-batch", "mac-batch"}
     for rule in rules.values():
@@ -49,7 +49,7 @@ def test_queue_avoids_subscription_gated_batch_and_scope_features():
     config = _config()
 
     assert "scopes" not in config
-    assert config["merge_queue"]["max_parallel_checks"] == 2
+    assert config["merge_queue"]["mode"] == "serial"
 
 
 def test_queue_revalidates_every_required_check_on_the_candidate():
