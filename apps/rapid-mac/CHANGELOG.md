@@ -18,6 +18,11 @@ can actually understand.
 ## [Unreleased]
 
 ### Added
+- **An optional faster LTX-2.5 path for large videos.** Advanced users on
+  Apple Silicon can set `LTX2_DEQUANT_MATMUL_MIN_TOKENS=1024` before starting
+  Rapid. On a 48 GB M4 Pro this reduced measured 5- and 10-second generation
+  time by 4.1–4.5%, with unchanged memory use and video/audio stream shape.
+  It remains opt-in while broader chip and visual-quality checks continue.
 - **What changed after an update.** The first launch on a new version shows a
   one-line "Updated to vX.Y.Z" notice with a link to that release's notes.
   Updates install silently in the background, so until now the only sign that
