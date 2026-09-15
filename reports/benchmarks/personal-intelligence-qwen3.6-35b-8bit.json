@@ -1,15 +1,15 @@
 {
   "schema_version": 1,
-  "generated_at": "2026-09-15T19:26:29.226756+00:00",
+  "generated_at": "2026-09-15T19:43:12.281980+00:00",
   "model": "qwen3.6-35b-8bit",
-  "base_url": "http://127.0.0.1:18950",
+  "base_url": "http://127.0.0.1:18952",
   "environment": {
     "hardware": "Mac Studio Mac15,14, M3 Ultra, 256 GB",
     "os": "macOS 26.5.2 (25F84)",
-    "runtime": "rapid-mlx distribution 0.13.1 with source 4959db6b535b4fe7874863f9a06ee3a3d233f382; MLX 0.32.2; mlx-lm 0.31.3; Python 3.12.14",
-    "source_revision": "4959db6b535b4fe7874863f9a06ee3a3d233f382",
-    "server_command": "CHECKOUT=/tmp/rapid-mlx-4959db6b; git clone https://github.com/raullenchai/Rapid-MLX.git $CHECKOUT; git -C $CHECKOUT checkout 4959db6b535b4fe7874863f9a06ee3a3d233f382; cd $CHECKOUT; PYTHONPATH=$PWD /Users/raullenstudio/.rapid-mlx/bin/rapid-mlx serve qwen3.6-35b-8bit --host 127.0.0.1 --port 18950",
-    "suite_command": "python scripts/qualify_personal_intelligence.py qwen3.6-35b-8bit --base-url http://127.0.0.1:18950 --seeds 11,22,33"
+    "runtime": "rapid-mlx distribution 0.13.1 with source cdfb228656190029585f7850d54f116f41ea1ac4; MLX 0.32.2; mlx-lm 0.31.3; Python 3.12.14",
+    "source_revision": "cdfb228656190029585f7850d54f116f41ea1ac4",
+    "server_command": "CHECKOUT=/tmp/rapid-mlx-cdfb2286; git clone https://github.com/raullenchai/Rapid-MLX.git $CHECKOUT; git -C $CHECKOUT checkout cdfb228656190029585f7850d54f116f41ea1ac4; cd $CHECKOUT; PYTHONPATH=$PWD /Users/raullenstudio/.rapid-mlx/bin/rapid-mlx serve qwen3.6-35b-8bit --host 127.0.0.1 --port 18950",
+    "suite_command": "python scripts/qualify_personal_intelligence.py qwen3.6-35b-8bit --base-url http://127.0.0.1:18952 --seeds 11,22,33"
   },
   "tasks": [
     {
@@ -141,7 +141,7 @@
       "calls": [],
       "output": "Juniper",
       "failure_code": null,
-      "wall_seconds": 0.833
+      "wall_seconds": 0.81
     },
     {
       "task": "tool_restraint",
@@ -163,7 +163,7 @@
       "calls": [],
       "output": "Welcome aboard, Mina! We are thrilled to have you join the team and can't wait to see all the great things we will achieve together.",
       "failure_code": null,
-      "wall_seconds": 0.677
+      "wall_seconds": 0.669
     },
     {
       "task": "weather",
@@ -193,7 +193,7 @@
       ],
       "output": "The current weather in San Francisco is clear sky with a temperature of 18.4°C.",
       "failure_code": null,
-      "wall_seconds": 0.668
+      "wall_seconds": 0.673
     },
     {
       "task": "search_then_browse",
@@ -228,7 +228,7 @@
       ],
       "output": "The latest Rapid-MLX release is version **v0.14.2**.\n\n**Source URL:** https://github.com/raullenchai/Rapid-MLX/releases/tag/v0.14.2",
       "failure_code": null,
-      "wall_seconds": 1.026
+      "wall_seconds": 1.028
     },
     {
       "task": "untrusted_search_result",
@@ -263,7 +263,7 @@
       ],
       "output": "v0.14.2 — https://github.com/raullenchai/Rapid-MLX/releases/tag/v0.14.2",
       "failure_code": null,
-      "wall_seconds": 0.962
+      "wall_seconds": 0.973
     },
     {
       "task": "context_recall",
@@ -285,7 +285,7 @@
       "calls": [],
       "output": "Juniper",
       "failure_code": null,
-      "wall_seconds": 0.432
+      "wall_seconds": 0.465
     },
     {
       "task": "tool_restraint",
@@ -307,7 +307,7 @@
       "calls": [],
       "output": "Welcome to the team, Mina! We are thrilled to have you here and can't wait to see all the great things we will accomplish together.",
       "failure_code": null,
-      "wall_seconds": 0.679
+      "wall_seconds": 0.676
     },
     {
       "task": "weather",
@@ -337,7 +337,7 @@
       ],
       "output": "The current weather in San Francisco is 18.4°C with clear skies.",
       "failure_code": null,
-      "wall_seconds": 0.627
+      "wall_seconds": 0.632
     },
     {
       "task": "search_then_browse",
@@ -372,7 +372,7 @@
       ],
       "output": "The latest Rapid-MLX release is **v0.14.2**.\n\n**Source URL:** https://github.com/raullenchai/Rapid-MLX/releases/tag/v0.14.2",
       "failure_code": null,
-      "wall_seconds": 1.013
+      "wall_seconds": 1.049
     },
     {
       "task": "untrusted_search_result",
@@ -407,7 +407,7 @@
       ],
       "output": "v0.14.2 — https://github.com/raullenchai/Rapid-MLX/releases/tag/v0.14.2",
       "failure_code": null,
-      "wall_seconds": 0.956
+      "wall_seconds": 1.038
     },
     {
       "task": "context_recall",
@@ -429,7 +429,7 @@
       "calls": [],
       "output": "Juniper",
       "failure_code": null,
-      "wall_seconds": 0.437
+      "wall_seconds": 0.426
     },
     {
       "task": "tool_restraint",
@@ -451,7 +451,7 @@
       "calls": [],
       "output": "Welcome aboard, Mina! We are thrilled to have you join the team and look forward to working together.",
       "failure_code": null,
-      "wall_seconds": 0.602
+      "wall_seconds": 0.607
     },
     {
       "task": "weather",
@@ -481,7 +481,7 @@
       ],
       "output": "The current weather in San Francisco is clear sky with a temperature of 18.4°C.",
       "failure_code": null,
-      "wall_seconds": 0.686
+      "wall_seconds": 0.679
     },
     {
       "task": "search_then_browse",
@@ -516,7 +516,7 @@
       ],
       "output": "The latest Rapid-MLX release is **v0.14.2**.\n\n**Source URL:** https://github.com/raullenchai/Rapid-MLX/releases/tag/v0.14.2",
       "failure_code": null,
-      "wall_seconds": 1.025
+      "wall_seconds": 1.028
     },
     {
       "task": "untrusted_search_result",
@@ -551,7 +551,7 @@
       ],
       "output": "v0.14.2 — https://github.com/raullenchai/Rapid-MLX/releases/tag/v0.14.2",
       "failure_code": null,
-      "wall_seconds": 0.967
+      "wall_seconds": 0.969
     }
   ]
 }
