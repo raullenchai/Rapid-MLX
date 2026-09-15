@@ -284,7 +284,22 @@ def _is_control_stop_token(
     return token in stop_tokens and not request.ignore_eos
 
 
-def _request_sampler(request: "MLLMBatchRequest") -> Callable:
+def _effective_top_k(top_k: int, vocab_size: int | None) -> int:
+    """Normalize a top-k value that covers the complete vocabulary.
+
+    ``mlx_lm.sample_utils.apply_top_k`` rejects ``top_k >= vocab_size``,
+    while the API contract treats that range as "keep every token". A
+    disabled top-k value is therefore the equivalent, non-raising form.
+    """
+
+    if vocab_size is not None and top_k >= vocab_size:
+        return 0
+    return top_k
+
+
+def _request_sampler(
+    request: "MLLMBatchRequest", vocab_size: int | None = None
+) -> Callable:
     """Return the request-owned sampler, preserving all sampling controls."""
 
     key = (
@@ -293,6 +308,7 @@ def _request_sampler(request: "MLLMBatchRequest") -> Callable:
         request.min_p,
         request.top_k,
         request.seed,
+        vocab_size,
     )
     cached = request._cached_sampler
     if cached is not None and cached[0] == key:
@@ -304,8 +320,9 @@ def _request_sampler(request: "MLLMBatchRequest") -> Callable:
         }
         if request.min_p:
             kwargs["min_p"] = request.min_p
-        if request.top_k:
-            kwargs["top_k"] = request.top_k
+        effective_top_k = _effective_top_k(request.top_k, vocab_size)
+        if effective_top_k:
+            kwargs["top_k"] = effective_top_k
         sampler = make_sampler(**kwargs)
     else:
         sampler = make_seeded_sampler(
@@ -2113,7 +2130,7 @@ class MLLMBatchGenerator:
                 logprobs = last_logits - mx.logsumexp(
                     last_logits, axis=-1, keepdims=True
                 )
-                req_sampler = _request_sampler(req)
+                req_sampler = _request_sampler(req, logprobs.shape[-1])
                 sampled = req_sampler(logprobs)
 
                 mx.eval(sampled, logprobs)
@@ -2287,12 +2304,14 @@ class MLLMBatchGenerator:
         # use this shared fast path. Unseeded samplers can be shared only when
         # every shape-changing control matches.
         logprobs = logits - mx.logsumexp(logits, axis=-1, keepdims=True)
+        vocab_size = logprobs.shape[-1]
         if requests and len(requests) == logprobs.shape[0]:
             first_key = (
                 requests[0].temperature,
                 requests[0].top_p,
                 requests[0].min_p,
-                requests[0].top_k,
+                _effective_top_k(requests[0].top_k, vocab_size),
+                vocab_size,
             )
             homogeneous = requests[0].seed is None and all(
                 r.seed is None
@@ -2308,8 +2327,11 @@ class MLLMBatchGenerator:
                     }
                     if requests[0].min_p:
                         kwargs["min_p"] = requests[0].min_p
-                    if requests[0].top_k:
-                        kwargs["top_k"] = requests[0].top_k
+                    effective_top_k = _effective_top_k(
+                        requests[0].top_k, vocab_size
+                    )
+                    if effective_top_k:
+                        kwargs["top_k"] = effective_top_k
                     fn = make_sampler(**kwargs)
                     shared = (first_key, fn)
                     self._shared_batch_sampler = shared
@@ -2317,7 +2339,7 @@ class MLLMBatchGenerator:
             else:
                 sampled_tokens = []
                 for i, req in enumerate(requests):
-                    req_sampler = _request_sampler(req)
+                    req_sampler = _request_sampler(req, vocab_size)
                     sampled_tokens.append(req_sampler(logprobs[i : i + 1]))
                 sampled = mx.concatenate(sampled_tokens, axis=0)
         else:

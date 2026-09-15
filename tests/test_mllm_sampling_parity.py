@@ -39,13 +39,13 @@ from vllm_mlx.mllm_scheduler import MLLMScheduler, MLLMSchedulerConfig  # noqa: 
 # ---------------------------------------------------------------------------
 
 
-def _make_step_stub_generator():
+def _make_step_stub_generator(vocab: int = 32):
     gen = MLLMBatchGenerator.__new__(MLLMBatchGenerator)
     gen._shared_batch_sampler = None
 
     def _language_model(input_tokens, cache=None):
         B = input_tokens.shape[0]
-        return mx.zeros((B, 1, 4))
+        return mx.zeros((B, 1, vocab))
 
     gen.language_model = _language_model
     gen.sampler = lambda x: mx.zeros((x.shape[0],), dtype=mx.uint32)
@@ -208,6 +208,60 @@ class TestBatchSamplerSelection:
             {"temp": 0.7, "top_p": 0.9, "min_p": 0.10, "top_k": 0},
         ]
         assert gen._shared_batch_sampler is None
+
+    def test_out_of_range_top_k_is_clamped_not_fatal(self):
+        """The API layer admits ``top_k`` far above any vocabulary and its
+        docs promise the backend clamps ``min(top_k, vocab)`` — the text
+        lane honours that. mlx-lm's ``apply_top_k`` RAISES for
+        ``top_k >= vocab_size``, so the media lane must normalise before
+        building the chain or an API-valid request would fail the whole
+        batch. Drives the REAL mlx-lm ``make_sampler`` chain (no stub) so
+        the raise would surface here."""
+        gen = _make_step_stub_generator(vocab=8)
+        requests = [_make_request(0, top_k=10**9), _make_request(1, top_k=8)]
+        # No exception: both rows sample through the clamped chain.
+        sampled, _ = MLLMBatchGenerator._step(
+            gen,
+            mx.array([[1], [2]], dtype=mx.uint32),
+            cache=[],
+            requests=requests,
+        )
+        assert sampled.shape == (2,)
+
+        # Equivalence at the normalisation layer: ``top_k >= vocab`` is
+        # semantically "keep every token" — the disabled value.
+        from vllm_mlx.mllm_batch_generator import _effective_top_k
+
+        assert _effective_top_k(10**9, 8) == 0
+        assert _effective_top_k(8, 8) == 0
+        assert _effective_top_k(7, 8) == 7
+        assert _effective_top_k(5, None) == 5
+
+    def test_out_of_range_top_k_homogeneous_fast_path_also_clamps(self, monkeypatch):
+        """The homogeneous shared-sampler build applies the same vocab
+        clamp, so a batch of API-valid large-``top_k`` rows takes the fast
+        path instead of raising inside ``apply_top_k``."""
+        make_sampler_calls = []
+
+        def fake_make_sampler(**kwargs):
+            make_sampler_calls.append(kwargs)
+            return lambda x: mx.zeros((x.shape[0],), dtype=mx.uint32)
+
+        monkeypatch.setattr(
+            "vllm_mlx.mllm_batch_generator.make_sampler", fake_make_sampler
+        )
+        gen = _make_step_stub_generator(vocab=8)
+        requests = [_make_request(i, top_k=10**9) for i in range(3)]
+        MLLMBatchGenerator._step(
+            gen,
+            mx.array([[1], [2], [3]], dtype=mx.uint32),
+            cache=[],
+            requests=requests,
+        )
+        assert make_sampler_calls == [
+            {"temp": 0.7, "top_p": 0.9, "min_p": 0.0, "top_k": 0}
+        ]
+        assert gen._shared_batch_sampler is not None
 
     def test_seeded_request_gets_private_samplers_per_row(self, monkeypatch):
         """A seeded request never enters the shared fast path, even when
@@ -412,3 +466,15 @@ class TestBatchSamplerSelection:
         # Sanity: uniform logits + real RNG must not be degenerate, or the
         # interleaving comparison would be vacuous.
         assert len(set(isolated)) > 1
+
+        # Round-2 review: the SECOND row's isolation is part of the contract
+        # too — contamination that only corrupts later rows' draw order must
+        # not slip past an r0-only assertion.
+        isolated_r1 = run_sequence(_make_request(1, seed=99))["r1"]
+        interleaved_r1 = run_sequence(
+            _make_request(0, seed=7), _make_request(1, seed=99)
+        )["r1"]
+        assert isolated_r1 == interleaved_r1
+        assert len(set(isolated_r1)) > 1
+        # Distinct seeds must own distinct streams (not merely equal ones).
+        assert isolated_r1 != isolated
