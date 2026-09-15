@@ -133,6 +133,29 @@ def _can_fuse_switch_gate_up(config: ModelArgs, layer_idx: int) -> bool:
     return all(gate.get(key) == up.get(key) for key in layout)
 
 
+def _fuse_switch_gate_up_weights(weights: Dict[str, mx.array], prefix: str) -> None:
+    """Fuse a complete compatible projection pair without partial mutation."""
+    pairs = []
+    for suffix in ("weight", "scales", "biases"):
+        gate_key = f"{prefix}.gate_proj.{suffix}"
+        up_key = f"{prefix}.up_proj.{suffix}"
+        gate_present = gate_key in weights
+        up_present = up_key in weights
+        if gate_present != up_present:
+            missing = up_key if gate_present else gate_key
+            raise ValueError(
+                "Cannot fuse routed gate/up projections: "
+                f"checkpoint is missing paired parameter {missing!r}."
+            )
+        if gate_present:
+            pairs.append((gate_key, up_key))
+
+    for gate_key, up_key in pairs:
+        weights[gate_key] = mx.concatenate(
+            [weights.pop(gate_key), weights.pop(up_key)], axis=1
+        )
+
+
 def make_quantization_config(model):
     mxfp4 = {"group_size": 32, "bits": 4, "mode": "mxfp4"}
     mxfp8 = {"group_size": 32, "bits": 8, "mode": "mxfp8"}
@@ -1924,24 +1947,12 @@ class Model(nn.Module):
             if not _can_fuse_switch_gate_up(self.args, layer_idx):
                 continue
             prefix = f"model.layers.{layer_idx}.ffn.switch_mlp"
-            for suffix in ("weight", "scales", "biases"):
-                gate_key = f"{prefix}.gate_proj.{suffix}"
-                up_key = f"{prefix}.up_proj.{suffix}"
-                if gate_key in weights and up_key in weights:
-                    weights[gate_key] = mx.concatenate(
-                        [weights.pop(gate_key), weights.pop(up_key)], axis=1
-                    )
+            _fuse_switch_gate_up_weights(weights, prefix)
         for stage_idx in range(len(self.mtp)):
             if not _can_fuse_switch_gate_up(self.args, n_layers + stage_idx):
                 continue
             prefix = f"mtp.{stage_idx}.ffn.switch_mlp"
-            for suffix in ("weight", "scales", "biases"):
-                gate_key = f"{prefix}.gate_proj.{suffix}"
-                up_key = f"{prefix}.up_proj.{suffix}"
-                if gate_key in weights and up_key in weights:
-                    weights[gate_key] = mx.concatenate(
-                        [weights.pop(gate_key), weights.pop(up_key)], axis=1
-                    )
+            _fuse_switch_gate_up_weights(weights, prefix)
 
         # Reshape wo_a from nn.Linear (2D) to MultiLinear (3D) for all layers
         for layer_idx in range(n_layers):

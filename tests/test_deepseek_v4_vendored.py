@@ -236,6 +236,27 @@ def test_homogeneous_routed_projection_quantization_keeps_fused_fast_path():
     assert mx.all(fused_projection.weight[:, 16:] == 1).item()
 
 
+def test_fused_routed_projection_rejects_unpaired_quantization_metadata():
+    import mlx.core as mx
+
+    from vllm_mlx.models.deepseek_v4 import _fuse_switch_gate_up_weights
+
+    prefix = "model.layers.0.ffn.switch_mlp"
+    weights = {
+        f"{prefix}.gate_proj.weight": mx.zeros((4, 16, 8), dtype=mx.uint32),
+        f"{prefix}.up_proj.weight": mx.ones((4, 16, 8), dtype=mx.uint32),
+        f"{prefix}.gate_proj.biases": mx.zeros((4, 16, 1)),
+    }
+
+    with pytest.raises(ValueError, match="missing paired parameter.*up_proj.biases"):
+        _fuse_switch_gate_up_weights(weights, prefix)
+
+    # Validation happens before mutation, so callers can report the intact
+    # checkpoint keys and shapes in their load error.
+    assert f"{prefix}.gate_proj.weight" in weights
+    assert f"{prefix}.up_proj.weight" in weights
+
+
 def test_restored_pooling_cache_without_legacy_undo_field_is_safe():
     """Persisted pre-rollback caches must remain inspectable after upgrade."""
     import mlx.core as mx
