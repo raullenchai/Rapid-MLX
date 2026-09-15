@@ -379,3 +379,27 @@ owner authorization, then run the 241-frame randomized standard/fast harness
 and export its anonymous review bundle. Atlas must not expose or default-enable
 this capability before that quality result and a second Apple GPU generation
 pass.
+
+## Segmented Stage-1 result (2026-09-14)
+
+The shared clean-final adapter's 25-frame decoded output was visibly broken,
+despite its 1.64x speedup, so it is rejected. Per-transition evaluation showed
+strong sigma-region weight interference. Upstream `cc9091b` now binds separate
+span-v2 adapters to `0 -> 3`, `3 -> 5`, and `5 -> 7`, followed by the exact
+clean-base `7 -> 8`. It validates order, schedules, digests, LoRA shapes,
+immutable base identity, and runtime major before model mutation. The same
+artifact path applies across supported Apple Silicon; hardware identity does
+not alter numerical behavior. Full upstream tests pass: `767 passed, 22
+skipped`.
+
+MZR-3 paired 768x512x241 runs measured standard `8 + 3` at 539.94 seconds and
+segmented `4 + 1` at 259.65 seconds: 2.079x end to end and 51.91% lower
+latency. Both reported zero swap; peak footprint increased 3.05% from 39.65 to
+40.86 GB. A newly generated standard output exactly matched the prior teacher
+SHA-256. Contact-sheet inspection found no grayscale or structural collapse,
+but composition diverges and motion/audio still require human review. Do not
+add or default the Rapid `generation_mode` API until that review, broader
+prompt/seed qualification, and a second Apple GPU generation pass. The direct
+next action is to consume the existing standard teacher cohort with segmented
+fast renders, then produce a randomized blind bundle without regenerating
+verified byte-identical standards.

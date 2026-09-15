@@ -105,8 +105,39 @@ regression rather than trying to train an already-uncompressed step.
 A 768x512, 25-frame, same-prompt/seed smoke measured 78.80 seconds for
 standard `8 + 3` and 47.95 seconds for clean-final `4 + 1`, or 1.64x end to
 end. Peak footprints were 17.58 and 17.41 GB. This validates lifecycle and the
-short-workload speed direction; it is not the required 241-frame timing or
-decoded non-inferiority result.
+short-workload speed direction, but the decoded candidate showed severe
+grayscale, texture, and structural collapse. The shared adapter is rejected
+and must not be exposed even with a clean final transition.
+
+## Segmented Stage-1 resolution
+
+Per-transition evaluation showed that primary checkpoints specialize to their
+own sigma regions and regress when reused across later regions. The segmented
+candidate therefore binds three independent span-v2 adapters to `0 -> 3`,
+`3 -> 5`, and `5 -> 7`, then retains the immutable clean base for `7 -> 8`.
+It preserves the four Stage-1 evaluation count while materializing both
+modalities and reloading weights at each boundary.
+
+Upstream runtime `cc9091b` implements the fail-closed package, CLI, lifecycle,
+and qualification runner support. Selection is based only on immutable model
+identity and package contract; there are no chip, GPU-core, memory-size, or
+hostname branches. Ordinary packages copy adapters and reject symlinks;
+diagnostic scratch revisions may explicitly use symlinks to avoid duplicating
+large checkpoints.
+
+On MZR-3, a same-prompt/seed 768x512x25 smoke measured 78.80 to 46.47 seconds,
+or 1.70x, with zero swap. The shared-adapter grayscale/structure collapse was
+absent, but composition diverged enough that this is not a quality pass.
+
+At 768x512x241, fresh independent CLI runs on the mountain-bike qualification
+case measured standard `8 + 3` at 539.94 seconds and segmented `4 + 1` at
+259.65 seconds: 2.079x end-to-end speedup and 51.91% lower latency. Both runs
+reported zero swap. Peak process footprint was 39.65 GB standard and 40.86 GB
+fast, a 3.05% increase. The fresh standard output was byte-identical to the
+previous teacher render, establishing the review baseline identity. Ten-frame
+inspection found coherent rider, bicycle, and forest structure on both sides;
+human review of motion blur, detail, audio content, and synchronization remains
+required before Atlas exposes the product API.
 
 ## Artifact contract
 
