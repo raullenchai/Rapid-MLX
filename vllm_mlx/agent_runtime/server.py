@@ -299,11 +299,17 @@ def _observed_sentence_count(content: str) -> int:
     return len(re.findall(r"(?<!\d)[.!?。！？](?=\s|$)", content.strip()))
 
 
-def _format_retry_instruction(goal: str, turn: AgentModelTurn) -> str | None:
+def _format_retry_instruction(
+    goal: str,
+    turn: AgentModelTurn,
+    *,
+    source_evidence_available: bool = False,
+) -> str | None:
     if turn.tool_calls or not turn.content:
         return None
     if (
-        _SOURCE_URL_INTENT.search(goal) is not None
+        source_evidence_available
+        and _SOURCE_URL_INTENT.search(goal) is not None
         and _WEB_URL.search(turn.content) is None
     ):
         return (
@@ -343,6 +349,23 @@ def _remove_trailing_count_artifact(goal: str, turn: AgentModelTurn) -> AgentMod
     ):
         return turn
     return AgentModelTurn(content=candidate)
+
+
+def _has_browse_observation(messages: Sequence[dict[str, Any]]) -> bool:
+    browse_call_ids = {
+        call["id"]
+        for message in messages
+        for call in message.get("tool_calls", [])
+        if isinstance(call, dict)
+        and isinstance(call.get("id"), str)
+        and call.get("function", {}).get("name") == "browse"
+    }
+    return any(
+        message.get("role") == "tool"
+        and message.get("tool_call_id") in browse_call_ids
+        and isinstance(message.get("content"), str)
+        for message in messages
+    )
 
 
 def _repair_version_source_output(
@@ -408,10 +431,15 @@ def _repair_version_source_output(
         for match in _WEB_INLINE_URL.finditer(message["content"]):
             url = _trim_exterior_url_punctuation(match.group(0))
             parsed = urlsplit(url)
+            path_versions = {
+                segment.lstrip("vV").casefold()
+                for segment in parsed.path.split("/")
+                if segment
+            }
             if (
                 parsed.scheme.casefold(),
                 parsed.netloc.casefold(),
-            ) in browsed_origins and version_key in parsed.path.casefold().lstrip("v"):
+            ) in browsed_origins and version_key in path_versions:
                 candidates.add(url)
     if len(candidates) != 1:
         return turn
@@ -1931,7 +1959,11 @@ class AgentServerService:
                         )
                         if not visible and (
                             correction := _format_retry_instruction(
-                                entry.run.goal, turn
+                                entry.run.goal,
+                                turn,
+                                source_evidence_available=_has_browse_observation(
+                                    messages
+                                ),
                             )
                         ):
                             turn = await self._chat_driver(

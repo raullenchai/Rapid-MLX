@@ -351,6 +351,7 @@ def test_explicit_source_url_gets_one_bounded_correction_when_omitted():
     retry = _format_retry_instruction(
         "Report the version with the canonical source URL.",
         AgentModelTurn(content="v0.14.2"),
+        source_evidence_available=True,
     )
     assert retry is not None
     assert "<exact source URL>" in retry
@@ -360,8 +361,16 @@ def test_explicit_source_url_gets_one_bounded_correction_when_omitted():
         _format_retry_instruction(
             "Return the canonical release URL shown in the evidence.",
             AgentModelTurn(content="v0.14.2"),
+            source_evidence_available=True,
         )
         is not None
+    )
+    assert (
+        _format_retry_instruction(
+            "Return the canonical release URL.",
+            AgentModelTurn(content="v0.14.2"),
+        )
+        is None
     )
     assert (
         _format_retry_instruction(
@@ -420,6 +429,18 @@ def test_version_source_projection_is_same_origin_exact_and_fail_closed():
         AgentModelTurn(content="Rapid-MLX version 0.14.2"),
     )
     assert unchanged.content == "Rapid-MLX version 0.14.2"
+
+    substring_only = messages.copy()
+    substring_only[1] = {
+        **messages[1],
+        "content": "Wrong https://example.com/releases/tag/v11.2.0",
+    }
+    not_repaired = _repair_version_source_output(
+        "Report the release version with its canonical URL.",
+        substring_only,
+        AgentModelTurn(content="Rapid-MLX version 1.2"),
+    )
+    assert not_repaired.content == "Rapid-MLX version 1.2"
 
 
 def test_simple_weather_arguments_are_planned_without_model_authored_json():
