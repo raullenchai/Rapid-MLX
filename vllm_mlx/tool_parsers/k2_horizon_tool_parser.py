@@ -55,6 +55,7 @@ class K2HorizonToolParser(ToolParser):
         self._tool_group_seen = False
         self._post_tool_content_visible = False
         self._pending_tool_start: int | None = None
+        self._suppress_calls = False
 
     @staticmethod
     def _request_value(request: dict[str, Any] | None, key: str, default=None):
@@ -327,6 +328,7 @@ class K2HorizonToolParser(ToolParser):
             delta_token_ids,
         )
         suppress_calls = self._request_value(request, "tool_choice") == "none"
+        self._suppress_calls = suppress_calls
 
         start = (
             self._pending_tool_start
@@ -482,9 +484,16 @@ class K2HorizonToolParser(ToolParser):
 
     def flush_held_content(self, full_text: str) -> str:
         if self.has_pending_tool_call(full_text):
+            if self._suppress_calls:
+                return ""
             return self._visible_prefix(full_text[self._content_upto :])
         if self._tool_group_seen:
-            return self._visible_prefix(full_text[self._content_upto :])
+            remaining = full_text[self._content_upto :]
+            if self._post_tool_content_visible:
+                return remaining
+            if not any(marker in remaining for marker in self.REASONING_ENDS):
+                return ""
+            return self._visible_prefix(remaining)
         if not self._input_reasoning_sanitized and not self._tool_group_seen:
             remaining = full_text[self._content_upto :]
             if not any(marker in remaining for marker in self.REASONING_ENDS):

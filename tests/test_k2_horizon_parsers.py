@@ -410,7 +410,9 @@ def test_incomplete_stream_searches_only_the_new_closer_window():
 def test_streaming_complete_group_hides_prompt_primed_reasoning(closer):
     parser = K2HorizonToolParser()
     output = _group(
-        _xml_call("ping"), prefix=f"private plan{closer}", suffix="Visible suffix"
+        _xml_call("ping"),
+        prefix=f"private plan{closer}",
+        suffix=f"private retry{closer}Visible suffix",
     )
     content: list[str] = []
     calls: list[dict] = []
@@ -427,6 +429,22 @@ def test_streaming_complete_group_hides_prompt_primed_reasoning(closer):
     content.append(parser.flush_held_content(output))
     assert "".join(content) == "Visible suffix"
     assert len(calls) == 1
+
+
+def test_streaming_discards_unclosed_post_tool_reasoning_at_eof():
+    parser = K2HorizonToolParser()
+    group = _group(_xml_call("ping"))
+    first = parser.extract_tool_calls_streaming("", group, group, request=_request())
+    assert first is not None and len(first["tool_calls"]) == 1
+
+    truncated = group + "private retry without a closer"
+    assert (
+        parser.extract_tool_calls_streaming(
+            group, truncated, "private retry without a closer", request=_request()
+        )
+        is None
+    )
+    assert parser.flush_held_content(truncated) == ""
 
 
 def test_streaming_parses_two_complete_groups_in_one_chunk():
@@ -503,7 +521,11 @@ def test_streaming_resumes_immediately_after_post_tool_reasoning_closer():
 def test_streaming_tool_choice_none_strips_envelope_incrementally():
     parser = K2HorizonToolParser()
     parser.set_reasoning_sanitized(True)
-    output = _group(_xml_call("ping"), prefix="Before ", suffix=" after")
+    output = _group(
+        _xml_call("ping"),
+        prefix="Before ",
+        suffix="private retry</ifm|think> after",
+    )
     content: list[str] = []
     calls: list[dict] = []
     previous = ""
@@ -522,6 +544,27 @@ def test_streaming_tool_choice_none_strips_envelope_incrementally():
     content.append(parser.flush_held_content(output))
     assert "".join(content) == "Before  after"
     assert calls == []
+
+
+def test_streaming_tool_choice_none_drops_incomplete_envelope_at_eof():
+    parser = K2HorizonToolParser()
+    parser.set_reasoning_sanitized(True)
+    partial = "Visible before <ifm|tool_calls><ifm|tool_call>ping"
+    emitted: list[str] = []
+    previous = ""
+    for char in partial:
+        current = previous + char
+        delta = parser.extract_tool_calls_streaming(
+            previous,
+            current,
+            char,
+            request=_request(tool_choice="none"),
+        )
+        previous = current
+        if delta:
+            emitted.append(delta.get("content") or "")
+    emitted.append(parser.flush_held_content(partial))
+    assert "".join(emitted) == "Visible before "
 
 
 def test_partial_marker_flushes_without_silent_byte_loss():
