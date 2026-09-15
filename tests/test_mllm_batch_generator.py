@@ -749,7 +749,12 @@ def test_step_homogeneous_requests_call_shared_sampler_once(monkeypatch):
 
     # Exactly one make_sampler + one sampler invocation on the full batch.
     assert len(make_sampler_calls) == 1
-    assert make_sampler_calls[0] == {"temp": 0.7, "top_p": 0.95}
+    assert make_sampler_calls[0] == {
+        "temp": 0.7,
+        "top_p": 0.95,
+        "min_p": 0.0,
+        "top_k": 0,
+    }
     assert len(shared_sampler_invocations) == 1
     assert shared_sampler_invocations[0] == (4, 4)
     assert sampled.shape == (4,)
@@ -895,8 +900,8 @@ def test_step_param_change_invalidates_cached_sampler(monkeypatch):
     )
 
     assert make_sampler_calls == [
-        {"temp": 0.7, "top_p": 0.95},
-        {"temp": 0.3, "top_p": 0.95},
+        {"temp": 0.7, "top_p": 0.95, "min_p": 0.0, "top_k": 0},
+        {"temp": 0.3, "top_p": 0.95, "min_p": 0.0, "top_k": 0},
     ]
 
 
@@ -923,12 +928,13 @@ def test_step_heterogeneous_requests_use_per_row_loop(monkeypatch):
     )
     # Two distinct samplers, one per request.
     assert make_sampler_calls == [
-        {"temp": 0.7, "top_p": 0.95},
-        {"temp": 0.3, "top_p": 0.80},
+        {"temp": 0.7, "top_p": 0.95, "min_p": 0.0, "top_k": 0},
+        {"temp": 0.3, "top_p": 0.80, "min_p": 0.0, "top_k": 0},
     ]
-    # Both got their per-request cache populated for future reuse.
-    assert req_a._cached_sampler[0] == (0.7, 0.95)
-    assert req_b._cached_sampler[0] == (0.3, 0.80)
+    # Both got their per-request cache populated for future reuse. The
+    # cache key is (full fingerprint, seed) since the sampling-parity work.
+    assert req_a._cached_sampler[0] == ((0.7, 0.95, 0.0, 0), None)
+    assert req_b._cached_sampler[0] == ((0.3, 0.80, 0.0, 0), None)
     # Shared batch sampler must NOT have been populated for the mixed batch
     # (homogeneous fast path is the only writer).
     assert gen._shared_batch_sampler is None
@@ -956,7 +962,7 @@ def test_step_b1_homogeneous_still_uses_shared_sampler(monkeypatch):
 
     assert len(make_sampler_calls) == 1
     assert gen._shared_batch_sampler is not None
-    assert gen._shared_batch_sampler[0] == (0.7, 0.95)
+    assert gen._shared_batch_sampler[0] == ((0.7, 0.95, 0.0, 0), None)
 
 
 def test_step_batch_uses_dataclass_defaults(monkeypatch):
@@ -985,7 +991,12 @@ def test_step_batch_uses_dataclass_defaults(monkeypatch):
     )
 
     assert len(make_sampler_calls) == 1
-    assert make_sampler_calls[0] == {"temp": 0.7, "top_p": 0.9}
+    assert make_sampler_calls[0] == {
+        "temp": 0.7,
+        "top_p": 0.9,
+        "min_p": 0.0,
+        "top_k": 0,
+    }
 
 
 def test_step_heterogeneous_then_homogeneous_populates_shared(monkeypatch):
@@ -1026,7 +1037,7 @@ def test_step_heterogeneous_then_homogeneous_populates_shared(monkeypatch):
         ],
     )
     assert gen._shared_batch_sampler is not None
-    assert gen._shared_batch_sampler[0] == (0.5, 0.85)
+    assert gen._shared_batch_sampler[0] == ((0.5, 0.85, 0.0, 0), None)
     # 3 total: 2 from the het batch + 1 fresh for the new homogeneous key.
     assert len(make_sampler_calls) == 3
 
