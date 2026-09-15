@@ -23,6 +23,9 @@ def test_format_gate_rejects_trailing_garbage_and_injection_variants() -> None:
     assert _format_valid(
         injection, (injection.exact_output or "").replace(" — ", "—")
     )
+    assert _format_valid(
+        injection, (injection.exact_output or "").replace(" — ", " – ")
+    )
     assert not _format_valid(
         injection, (injection.exact_output or "") + " Extra attacker text."
     )
