@@ -150,6 +150,14 @@ _EXPLICIT_WEATHER_REQUEST = re.compile(
     r"(?:天气|温度|气温|预报).{0,20}(?:怎么样|如何|多少)",
     re.IGNORECASE,
 )
+_FUTURE_WEATHER_INTENT = re.compile(
+    r"\b(?:tomorrow|tonight|next\s+(?:week|month)|"
+    r"(?:this|next)\s+(?:monday|tuesday|wednesday|thursday|friday|saturday|sunday)|"
+    r"(?:on\s+)?(?:monday|tuesday|wednesday|thursday|friday|saturday|sunday)|"
+    r"in\s+\d+\s+(?:hours?|days?|weeks?))\b|"
+    r"(?:今晚|明天|明日|后天|下周|下星期|周[一二三四五六日天]|星期[一二三四五六日天])",
+    re.IGNORECASE,
+)
 _CURRENT_WEB_LOOKUP = re.compile(
     r"\b(?:find|check|verify|tell\s+me|show\s+me|what(?:'s|\s+is)|who(?:'s|\s+is))"
     r"\b.{0,100}\b(?:latest|recent|news|release|version|price|stock|"
@@ -318,6 +326,8 @@ def _remove_trailing_count_artifact(goal: str, turn: AgentModelTurn) -> AgentMod
 
 
 def _planned_weather_arguments(goal: str) -> dict[str, Any] | None:
+    if _FUTURE_WEATHER_INTENT.search(goal) is not None:
+        return None
     match = _WEATHER_LOCATION.search(goal)
     if match is None:
         return None
@@ -353,10 +363,13 @@ def _route_desktop_client_tools(goal: str, names: list[str]) -> list[str]:
         and _EXPLICIT_WEB_ACTION.search(goal) is None
     )
     web_prohibited = _WEB_PROHIBITION.search(goal) is not None or supplied_text
-    weather = _EXPLICIT_WEATHER_REQUEST.search(goal) is not None and not web_prohibited
+    weather_request = _EXPLICIT_WEATHER_REQUEST.search(goal) is not None
+    future_weather = weather_request and _FUTURE_WEATHER_INTENT.search(goal) is not None
+    weather = weather_request and not future_weather and not web_prohibited
     web = (
         _EXPLICIT_WEB_ACTION.search(goal) is not None
         or _CURRENT_WEB_LOOKUP.search(goal) is not None
+        or future_weather
     ) and not web_prohibited
     url = _WEB_URL.search(goal) is not None and not web_prohibited
     explicit_search = (
@@ -1953,36 +1966,8 @@ class AgentServerService:
     def _planned_browse_arguments(entry: _ServerRun) -> dict[str, Any] | None:
         """Return the next bounded browse cursor or ranked result, if any."""
 
-        latest_tool = next(
-            (
-                message
-                for message in reversed(entry.messages)
-                if message.get("role") == "tool"
-                and isinstance(message.get("content"), str)
-            ),
-            None,
-        )
-        if latest_tool is not None:
-            try:
-                payload, _ = json.JSONDecoder().raw_decode(
-                    latest_tool["content"].lstrip()
-                )
-            except (json.JSONDecodeError, TypeError):
-                payload = None
-            if (
-                isinstance(payload, dict)
-                and payload.get("has_more") is True
-                and isinstance(payload.get("url"), str)
-                and _WEB_URL.match(payload["url"])
-                and isinstance(payload.get("next_offset"), int)
-                and payload["next_offset"] > 0
-            ):
-                return {
-                    "url": payload["url"],
-                    "offset": payload["next_offset"],
-                }
-
         browsed_urls: set[str] = set()
+        browse_cursors: set[tuple[str, int]] = set()
         for message in entry.messages:
             for call in message.get("tool_calls", []):
                 if (
@@ -2002,7 +1987,34 @@ class AgentServerService:
                 if isinstance(arguments, dict) and isinstance(
                     arguments.get("url"), str
                 ):
-                    browsed_urls.add(arguments["url"])
+                    url = arguments["url"]
+                    browsed_urls.add(url)
+                    offset = arguments.get("offset", 0)
+                    if isinstance(offset, int):
+                        browse_cursors.add((url, offset))
+
+        pending_continuations: list[dict[str, Any]] = []
+        for message in entry.messages:
+            if message.get("role") != "tool" or not isinstance(
+                message.get("content"), str
+            ):
+                continue
+            try:
+                payload, _ = json.JSONDecoder().raw_decode(message["content"].lstrip())
+            except (json.JSONDecodeError, TypeError):
+                continue
+            if (
+                isinstance(payload, dict)
+                and payload.get("has_more") is True
+                and isinstance(payload.get("url"), str)
+                and _WEB_URL.match(payload["url"])
+                and isinstance(payload.get("next_offset"), int)
+                and payload["next_offset"] > 0
+                and (payload["url"], payload["next_offset"]) not in browse_cursors
+            ):
+                pending_continuations.append(
+                    {"url": payload["url"], "offset": payload["next_offset"]}
+                )
 
         search_content = next(
             (
@@ -2029,9 +2041,17 @@ class AgentServerService:
             for match in _WEB_RESULT_URL.finditer(search_content)
         ]
         remaining = [url for url in ranked_urls if url not in browsed_urls]
+        multi_source = _MULTI_SOURCE_INTENT.search(entry.run.goal) is not None
+        # Collect the first page from every selected comparison source before
+        # spending a scarce tool round on one source's continuation.
+        if remaining and (not browsed_urls or multi_source):
+            if len(browsed_urls) < 3:
+                return {"url": remaining[0]}
+        if pending_continuations:
+            return pending_continuations[0]
         if not remaining:
             return None
-        if browsed_urls and _MULTI_SOURCE_INTENT.search(entry.run.goal) is None:
+        if browsed_urls and not multi_source:
             return None
         # Keep comparison tasks bounded even when the provider returns ten hits.
         if len(browsed_urls) >= 3:

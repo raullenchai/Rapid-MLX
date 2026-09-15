@@ -276,6 +276,14 @@ def test_desktop_tool_routing_is_intent_scoped_and_preserves_non_desktop_names()
         "custom__read",
         "weather",
     ]
+    assert _route_desktop_client_tools(
+        "What's the weather in Seattle tomorrow?", offered
+    ) == ["custom__read", "web_search", "browse"]
+    assert _route_desktop_client_tools("Give me the forecast for Friday", offered) == [
+        "custom__read",
+        "web_search",
+        "browse",
+    ]
     assert _route_desktop_client_tools("Find the latest release", offered) == [
         "custom__read",
         "web_search",
@@ -393,6 +401,8 @@ def test_simple_weather_arguments_are_planned_without_model_authored_json():
         "location": "Trinidad and Tobago"
     }
     assert _planned_weather_arguments("Will it rain tomorrow?") is None
+    assert _planned_weather_arguments("Weather in Seattle tomorrow?") is None
+    assert _planned_weather_arguments("Weather in Paris on Friday?") is None
 
 
 def test_underspecified_weather_keeps_automatic_tool_choice():
@@ -515,6 +525,26 @@ async def test_desktop_browse_continues_pages_and_multiple_ranked_results():
         ),
     )
 
+    second = await wait_for_status(
+        service, created.id, AgentRunStatus.AWAITING_TOOL_RESULT
+    )
+    assert second.pending_action is not None
+    assert second.pending_action.arguments == {"url": "https://example.com/two"}
+    await service.submit_result(
+        created.id,
+        AgentToolResultRequest(
+            call_id=second.pending_action.call_id,
+            content=json.dumps(
+                {
+                    "url": "https://example.com/two",
+                    "content": "second report",
+                    "has_more": False,
+                }
+            ),
+            executed=True,
+        ),
+    )
+
     continuation = await wait_for_status(
         service, created.id, AgentRunStatus.AWAITING_TOOL_RESULT
     )
@@ -531,26 +561,6 @@ async def test_desktop_browse_continues_pages_and_multiple_ranked_results():
                 {
                     "url": "https://example.com/one",
                     "content": "last page",
-                    "has_more": False,
-                }
-            ),
-            executed=True,
-        ),
-    )
-
-    second = await wait_for_status(
-        service, created.id, AgentRunStatus.AWAITING_TOOL_RESULT
-    )
-    assert second.pending_action is not None
-    assert second.pending_action.arguments == {"url": "https://example.com/two"}
-    await service.submit_result(
-        created.id,
-        AgentToolResultRequest(
-            call_id=second.pending_action.call_id,
-            content=json.dumps(
-                {
-                    "url": "https://example.com/two",
-                    "content": "second report",
                     "has_more": False,
                 }
             ),
