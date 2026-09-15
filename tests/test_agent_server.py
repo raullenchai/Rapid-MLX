@@ -354,6 +354,10 @@ def test_explicit_source_url_gets_one_bounded_correction_when_omitted():
     assert retry is not None
     assert "exact source URL" in retry
     assert "do not invent" in retry
+    assert _format_retry_instruction(
+        "Return the canonical release URL shown in the evidence.",
+        AgentModelTurn(content="v0.14.2"),
+    ) is not None
     assert (
         _format_retry_instruction(
             "Report the version with the canonical source URL.",

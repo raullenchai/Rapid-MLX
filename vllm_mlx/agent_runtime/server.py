@@ -208,7 +208,7 @@ _SENTENCE_COUNT_INTENT = re.compile(
     re.IGNORECASE,
 )
 _SOURCE_URL_INTENT = re.compile(
-    r"\b(?:exact|canonical|source)\s+(?:source\s+)?url\b|"
+    r"\b(?:exact|canonical|source)\b.{0,40}\burl\b|"
     r"\b(?:include|provide|report|return|show)\b.{0,40}\b(?:source\s+)?url\b|"
     r"(?:准确|精确|规范|官方|来源)(?:的)?(?:链接|网址|URL)|"
     r"(?:附上|给出|提供|返回|显示).{0,20}(?:链接|网址|URL)",
