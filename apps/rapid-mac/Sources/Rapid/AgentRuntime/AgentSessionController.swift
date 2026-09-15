@@ -1,11 +1,18 @@
 import Foundation
 import Observation
 
+struct AgentClientToolResult: Equatable, Sendable {
+    let content: String
+    let isError: Bool
+    let executed: Bool
+}
+
 /// UI-ready ownership for one live server-owned Agent run.
 ///
-/// The controller observes and presents the Python runtime's state machine; it
-/// never plans, selects tools, or executes calls. A run pauses locally when an
-/// approval is pending and resumes only with that exact server-issued call ID.
+/// The controller observes and presents the Python runtime's state machine. The
+/// server still owns planning, budgets, call identity, and approvals; Desktop
+/// may execute an explicitly selected built-in read-only tool and return its
+/// result for that exact server-issued call ID.
 @MainActor
 @Observable
 final class AgentSessionController {
@@ -21,6 +28,9 @@ final class AgentSessionController {
 
     typealias TransportFactory = @MainActor (URL) -> any AgentRuntimeTransport
     typealias PollDelay = @Sendable () async throws -> Void
+    typealias ClientToolExecutor = @MainActor @Sendable (
+        AgentPendingAction
+    ) async -> AgentClientToolResult
 
     private(set) var phase: Phase = .idle
     private(set) var run: AgentRunView?
@@ -58,6 +68,7 @@ final class AgentSessionController {
     private var bearerToken: String?
     private var driverTask: Task<Void, Never>?
     private var activeRunID: String?
+    private var activeClientToolExecutor: ClientToolExecutor?
     private var generation = 0
     private let lifetimeCleanup = LifetimeCleanup()
 
@@ -114,7 +125,11 @@ final class AgentSessionController {
     func start(
         goal: String,
         model: String?,
+        expectedProfile: String? = nil,
         toolNames: [String]? = nil,
+        trustedInstructions: String? = nil,
+        localContext: String? = nil,
+        clientToolExecutor: ClientToolExecutor? = nil,
         baseURL: URL,
         bearerToken: String?
     ) {
@@ -133,6 +148,7 @@ final class AgentSessionController {
         eventCursor = 0
         errorMessage = nil
         activeRunID = nil
+        activeClientToolExecutor = clientToolExecutor
 
         let owner = WeakOwner(self)
         let task = Task {
@@ -147,11 +163,24 @@ final class AgentSessionController {
                         goal: trimmed,
                         model: model,
                         toolNames: toolNames,
-                        execution: .server,
+                        trustedInstructions: trustedInstructions,
+                        localContext: localContext,
+                        execution: clientToolExecutor == nil ? .server : .client,
                         bearerToken: bearerToken
                     )
                 }
                 let created = try await createTask.value
+                if let expectedProfile, created.profile != expectedProfile {
+                    Self.requestRemoteCancellation(
+                        transport: nextTransport,
+                        runID: created.id,
+                        bearerToken: bearerToken
+                    )
+                    throw AgentRuntimeClientError.harnessProfileMismatch(
+                        expected: expectedProfile,
+                        received: created.profile
+                    )
+                }
                 guard owner.value?.generation == expectedGeneration else {
                     // The server may have committed the run even when the
                     // observing task was cancelled. Cancel from a fresh task:
@@ -178,6 +207,7 @@ final class AgentSessionController {
                     owner: owner,
                     transport: nextTransport,
                     bearerToken: bearerToken,
+                    clientToolExecutor: clientToolExecutor,
                     generation: expectedGeneration
                 )
             } catch is CancellationError {
@@ -223,6 +253,7 @@ final class AgentSessionController {
                     owner: owner,
                     transport: transport,
                     bearerToken: approvalBearer,
+                    clientToolExecutor: activeClientToolExecutor,
                     generation: expectedGeneration
                 )
             } catch is CancellationError {
@@ -262,6 +293,7 @@ final class AgentSessionController {
         phase = .cancelled
         errorMessage = nil
         activeRunID = nil
+        activeClientToolExecutor = nil
         if let cancelledTransport, let cancelledRunID {
             Self.requestRemoteCancellation(
                 transport: cancelledTransport,
@@ -281,6 +313,7 @@ final class AgentSessionController {
         transport = nil
         bearerToken = nil
         activeRunID = nil
+        activeClientToolExecutor = nil
         lifetimeCleanup.clear()
     }
 
@@ -293,6 +326,7 @@ final class AgentSessionController {
         owner: WeakOwner,
         transport: any AgentRuntimeTransport,
         bearerToken: String?,
+        clientToolExecutor: ClientToolExecutor?,
         generation expectedGeneration: Int
     ) async {
         var latest = initialRun
@@ -327,7 +361,63 @@ final class AgentSessionController {
                     generation: expectedGeneration
                 )
                 return
-            case .ready, .awaitingModel, .awaitingToolResult:
+            case .awaitingToolResult:
+                owner.value?.publishRunning(latest, generation: expectedGeneration)
+                guard let pending = latest.pendingAction,
+                      let clientToolExecutor else {
+                    requestRemoteCancellation(
+                        transport: transport,
+                        runID: latest.id,
+                        bearerToken: bearerToken
+                    )
+                    owner.value?.publishFailure(
+                        AgentRuntimeClientError.invalidResponse,
+                        generation: expectedGeneration
+                    )
+                    return
+                }
+                let result = await clientToolExecutor(pending)
+                guard !Task.isCancelled,
+                      owner.value?.generation == expectedGeneration else {
+                    requestRemoteCancellation(
+                        transport: transport,
+                        runID: latest.id,
+                        bearerToken: bearerToken
+                    )
+                    return
+                }
+                do {
+                    latest = try await transport.submitToolResult(
+                        runID: latest.id,
+                        callID: pending.callID,
+                        content: result.content,
+                        isError: result.isError,
+                        executed: result.executed,
+                        bearerToken: bearerToken
+                    )
+                } catch is CancellationError {
+                    if owner.value?.generation == expectedGeneration {
+                        requestRemoteCancellation(
+                            transport: transport,
+                            runID: latest.id,
+                            bearerToken: bearerToken
+                        )
+                        owner.value?.publishCancellationFailureIfCurrent(
+                            generation: expectedGeneration
+                        )
+                    }
+                    return
+                } catch {
+                    requestRemoteCancellation(
+                        transport: transport,
+                        runID: latest.id,
+                        bearerToken: bearerToken
+                    )
+                    owner.value?.publishFailure(error, generation: expectedGeneration)
+                    return
+                }
+                continue
+            case .ready, .awaitingModel:
                 owner.value?.publishRunning(latest, generation: expectedGeneration)
             }
 
@@ -403,6 +493,7 @@ final class AgentSessionController {
             lifetimeCleanup.setTask(nil)
         } else {
             activeRunID = nil
+            activeClientToolExecutor = nil
             lifetimeCleanup.clear()
         }
     }
@@ -447,6 +538,7 @@ final class AgentSessionController {
             ?? "The Agent Runtime request failed."
         driverTask = nil
         activeRunID = nil
+        activeClientToolExecutor = nil
         lifetimeCleanup.clear()
     }
 

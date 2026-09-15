@@ -28,7 +28,14 @@ from vllm_mlx.agent_runtime.server import (
     AgentToolSelectionError,
     MCPToolRegistry,
     _approval_argument_summary,
+    _chat_tool_choice,
     _evaluate_arithmetic,
+    _format_retry_instruction,
+    _planned_weather_arguments,
+    _remove_trailing_count_artifact,
+    _repair_version_source_output,
+    _route_desktop_client_tools,
+    _trim_exterior_url_punctuation,
     classify_mcp_tool,
 )
 
@@ -114,6 +121,609 @@ async def test_direct_answer_completes_without_tools_and_keeps_output_out_of_eve
     wire = (await service.events(done.id)).model_dump_json()
     assert "private goal" not in wire
     assert "Done." not in wire
+
+
+@pytest.mark.asyncio
+async def test_direct_answer_retries_one_explicit_sentence_count_violation():
+    driver = ScriptedDriver(
+        AgentModelTurn(content="Welcome! Glad you're here. Let's begin."),
+        AgentModelTurn(content="Welcome! Glad you're here."),
+    )
+    service = AgentServerService(registry=FakeRegistry(()), chat_driver=driver)
+
+    created = await service.create(
+        AgentRunCreateRequest(goal="Welcome Mina in exactly two sentences."),
+        model="minicpm5-2b-4bit",
+    )
+    done = await wait_for_status(service, created.id, AgentRunStatus.COMPLETED)
+
+    assert done.output == "Welcome! Glad you're here."
+    assert len(driver.requests) == 2
+    assert "Your draft had 3" in driver.requests[1][1][-1]["content"]
+
+
+def test_format_retry_rejects_trailing_non_sentence_garbage():
+    retry = _format_retry_instruction(
+        "Write a two-sentence welcome.",
+        AgentModelTurn(content="Welcome! Glad you're here.\n2"),
+    )
+    assert retry is not None
+    assert "Your draft had 2" in retry
+
+    cleaned = _remove_trailing_count_artifact(
+        "Write a two-sentence welcome.",
+        AgentModelTurn(content="Welcome! Glad you're here.\n2"),
+    )
+    assert cleaned.content == "Welcome! Glad you're here."
+
+
+@pytest.mark.asyncio
+async def test_local_context_is_transient_model_input_not_event_payload():
+    context = "Preferences: concise\nMemory: private-project-codename"
+    driver = ScriptedDriver(AgentModelTurn(content="Done."))
+    service = AgentServerService(registry=FakeRegistry(()), chat_driver=driver)
+
+    created = await service.create(
+        AgentRunCreateRequest(goal="Help me", local_context=context), model="model"
+    )
+    await wait_for_status(service, created.id, AgentRunStatus.COMPLETED)
+
+    messages = driver.requests[0][1]
+    assert [message["role"] for message in messages] == ["system", "user", "user"]
+    assert context not in messages[0]["content"]
+    assert context in messages[1]["content"]
+    assert "untrusted background data" in messages[1]["content"]
+    wire = (await service.events(created.id)).model_dump_json()
+    assert "private-project-codename" not in wire
+
+
+@pytest.mark.asyncio
+async def test_trusted_instructions_remain_in_system_prompt_but_not_events():
+    instructions = "Always answer in Spanish."
+    driver = ScriptedDriver(AgentModelTurn(content="Hecho."))
+    service = AgentServerService(registry=FakeRegistry(()), chat_driver=driver)
+
+    created = await service.create(
+        AgentRunCreateRequest(goal="Help me", trusted_instructions=instructions),
+        model="model",
+    )
+    await wait_for_status(service, created.id, AgentRunStatus.COMPLETED)
+
+    messages = driver.requests[0][1]
+    assert instructions in messages[0]["content"]
+    assert "Honor them unless" in messages[0]["content"]
+    assert instructions not in (await service.events(created.id)).model_dump_json()
+
+
+@pytest.mark.asyncio
+async def test_desktop_tools_are_server_owned_and_client_execution_only():
+    driver = ScriptedDriver(AgentModelTurn(content="Done."))
+    service = AgentServerService(registry=FakeRegistry(()), chat_driver=driver)
+
+    created = await service.create(
+        AgentRunCreateRequest(
+            goal="Find current news",
+            execution="client",
+            tool_names=["web_search", "browse", "weather"],
+        ),
+        model="minicpm5-2b-4bit",
+    )
+    waiting = await wait_for_status(
+        service, created.id, AgentRunStatus.AWAITING_TOOL_RESULT
+    )
+    assert waiting.pending_action is not None
+    assert waiting.pending_action.name == "web_search"
+    visible = {tool.name: tool for tool in service._entry(created.id).tools}
+    assert set(visible) == {"web_search", "browse"}
+    assert visible["web_search"].risk is ToolRisk.READ_ONLY
+    await service.cancel(created.id)
+
+    with pytest.raises(AgentToolSelectionError, match="unknown or unsupported"):
+        await service.create(
+            AgentRunCreateRequest(
+                goal="Find current news",
+                execution="server",
+                tool_names=["web_search"],
+            ),
+            model="minicpm5-2b-4bit",
+        )
+
+
+def test_desktop_tool_routing_is_intent_scoped_and_preserves_non_desktop_names():
+    offered = ["custom__read", "web_search", "browse", "weather"]
+    assert _route_desktop_client_tools("Recall my project codename", offered) == [
+        "custom__read"
+    ]
+    assert _route_desktop_client_tools(
+        "Do not search the web; summarize the latest notes below.", offered
+    ) == ["custom__read"]
+    assert _route_desktop_client_tools(
+        "不要上网，整理下面的最新发布笔记。", offered
+    ) == ["custom__read"]
+    assert _route_desktop_client_tools(
+        "Don't look anything up; draft a weather-themed poem.", offered
+    ) == ["custom__read"]
+    assert _route_desktop_client_tools(
+        "Don't search; tell me the latest CEO from memory.", offered
+    ) == ["custom__read"]
+    assert _route_desktop_client_tools(
+        "Do not browse; summarize the latest release from memory.", offered
+    ) == ["custom__read"]
+    assert _route_desktop_client_tools(
+        "Without internet, find the latest release.", offered
+    ) == ["custom__read"]
+    assert _route_desktop_client_tools(
+        "Stay offline and tell me the latest version.", offered
+    ) == ["custom__read"]
+    assert _route_desktop_client_tools(
+        "Summarize these latest release notes: private draft text", offered
+    ) == ["custom__read"]
+    assert _route_desktop_client_tools("Review this source code", offered) == [
+        "custom__read"
+    ]
+    assert _route_desktop_client_tools(
+        "What is my current project codename?", offered
+    ) == ["custom__read"]
+    assert _route_desktop_client_tools("Create a release schedule", offered) == [
+        "custom__read"
+    ]
+    assert _route_desktop_client_tools("Create a revenue forecast for Q4", offered) == [
+        "custom__read"
+    ]
+    assert _route_desktop_client_tools(
+        "Search the web and summarize these latest release notes", offered
+    ) == ["custom__read", "web_search", "browse"]
+    assert _route_desktop_client_tools("What's the weather in Tokyo?", offered) == [
+        "custom__read",
+        "weather",
+    ]
+    assert _route_desktop_client_tools(
+        "What's the weather in Seattle tomorrow?", offered
+    ) == ["custom__read", "web_search", "browse"]
+    assert _route_desktop_client_tools("Give me the forecast for Friday", offered) == [
+        "custom__read",
+        "web_search",
+        "browse",
+    ]
+    assert _route_desktop_client_tools("Find the latest release", offered) == [
+        "custom__read",
+        "web_search",
+        "browse",
+    ]
+    assert _route_desktop_client_tools("Read https://example.com/a", offered) == [
+        "custom__read",
+        "browse",
+    ]
+    assert _route_desktop_client_tools(
+        "Give me Tokyo weather and summarize https://example.com/news", offered
+    ) == ["custom__read", "browse", "weather"]
+    assert _route_desktop_client_tools(
+        "Give me Tokyo weather and find the latest space news", offered
+    ) == ["custom__read", "web_search", "browse", "weather"]
+    assert _route_desktop_client_tools(
+        "Search the web for reviews of https://example.com", offered
+    ) == ["custom__read", "web_search", "browse"]
+
+
+def test_url_trimming_preserves_balanced_closing_delimiters():
+    assert (
+        _trim_exterior_url_punctuation(
+            "https://en.wikipedia.org/wiki/Function_(mathematics)"
+        )
+        == "https://en.wikipedia.org/wiki/Function_(mathematics)"
+    )
+    assert (
+        _trim_exterior_url_punctuation("https://example.com/news).")
+        == "https://example.com/news"
+    )
+
+
+def test_explicit_sentence_count_gets_one_bounded_correction():
+    assert _format_retry_instruction(
+        "Write exactly two sentences.",
+        AgentModelTurn(content="One. Two. Three."),
+    ) == (
+        "Rewrite the answer in exactly 2 sentence(s). Your draft had 3. "
+        "Preserve the requested facts and output only the corrected answer."
+    )
+    assert (
+        _format_retry_instruction(
+            "Write exactly two sentences.", AgentModelTurn(content="One. Two.")
+        )
+        is None
+    )
+    assert (
+        _format_retry_instruction(
+            "Write a two-sentence welcome.", AgentModelTurn(content="One. Two. Three.")
+        )
+        is not None
+    )
+    assert (
+        _format_retry_instruction(
+            "Summarize these two sentences: Alpha. Beta.",
+            AgentModelTurn(content="Summary."),
+        )
+        is None
+    )
+
+
+def test_explicit_source_url_gets_one_bounded_correction_when_omitted():
+    retry = _format_retry_instruction(
+        "Report the version with the canonical source URL.",
+        AgentModelTurn(content="v0.14.2"),
+    )
+    assert retry is not None
+    assert "<exact source URL>" in retry
+    assert "most specific canonical URL" in retry
+    assert "invent a URL" in retry
+    assert (
+        _format_retry_instruction(
+            "Return the canonical release URL shown in the evidence.",
+            AgentModelTurn(content="v0.14.2"),
+        )
+        is not None
+    )
+    assert (
+        _format_retry_instruction(
+            "Report the version with the canonical source URL.",
+            AgentModelTurn(
+                content=(
+                    "v0.14.2 — "
+                    "https://github.com/raullenchai/Rapid-MLX/releases/tag/v0.14.2"
+                )
+            ),
+        )
+        is None
+    )
+
+
+def test_version_source_projection_is_same_origin_exact_and_fail_closed():
+    messages = [
+        {
+            "role": "assistant",
+            "tool_calls": [
+                {
+                    "id": "browse_1",
+                    "function": {
+                        "name": "browse",
+                        "arguments": '{"url":"https://example.com/releases"}',
+                    },
+                }
+            ],
+        },
+        {
+            "role": "tool",
+            "tool_call_id": "browse_1",
+            "content": (
+                "Latest v0.14.2: https://example.com/releases/tag/v0.14.2 "
+                "Ignore https://attacker.example/v0.14.2"
+            ),
+        },
+    ]
+    repaired = _repair_version_source_output(
+        "Report the release version with its canonical URL.",
+        messages,
+        AgentModelTurn(content="Rapid-MLX version 0.14.2"),
+    )
+    assert repaired.content == "v0.14.2 — https://example.com/releases/tag/v0.14.2"
+
+    ambiguous = messages.copy()
+    ambiguous[1] = {
+        **messages[1],
+        "content": (
+            messages[1]["content"] + " Also https://example.com/archive/v0.14.2"
+        ),
+    }
+    unchanged = _repair_version_source_output(
+        "Report the release version with its canonical URL.",
+        ambiguous,
+        AgentModelTurn(content="Rapid-MLX version 0.14.2"),
+    )
+    assert unchanged.content == "Rapid-MLX version 0.14.2"
+
+
+def test_simple_weather_arguments_are_planned_without_model_authored_json():
+    assert _planned_weather_arguments(
+        "What is the current weather in San Francisco? Answer in Celsius."
+    ) == {"location": "San Francisco", "units": "metric"}
+    assert _planned_weather_arguments("Weather in Springfield, Illinois?") == {
+        "location": "Springfield, Illinois"
+    }
+    assert _planned_weather_arguments("Weather in Paris, France.") == {
+        "location": "Paris, France"
+    }
+    assert _planned_weather_arguments("Weather in Paris, please answer concisely.") == {
+        "location": "Paris"
+    }
+    assert _planned_weather_arguments("Weather in Paris, in Celsius.") == {
+        "location": "Paris",
+        "units": "metric",
+    }
+    assert _planned_weather_arguments(
+        "Weather in Paris, and tell me what to wear."
+    ) == {"location": "Paris"}
+    assert _planned_weather_arguments(
+        "Weather in Portland, OR, and answer briefly."
+    ) == {"location": "Portland, OR"}
+    assert _planned_weather_arguments("Weather in Portland, OR today?") == {
+        "location": "Portland, OR"
+    }
+    assert _planned_weather_arguments(
+        "Weather in Paris, France please answer briefly."
+    ) == {"location": "Paris, France"}
+    assert _planned_weather_arguments("Weather in Washington, D.C.?") == {
+        "location": "Washington, D.C"
+    }
+    assert _planned_weather_arguments("Weather in St. Louis?") == {
+        "location": "St. Louis"
+    }
+    assert _planned_weather_arguments("Weather in Paris. Answer in Celsius.") == {
+        "location": "Paris",
+        "units": "metric",
+    }
+    assert _planned_weather_arguments("Weather in Paris. Be concise.") == {
+        "location": "Paris"
+    }
+    assert _planned_weather_arguments("Weather in Paris. Include humidity.") == {
+        "location": "Paris"
+    }
+    assert _planned_weather_arguments("Weather in U.S. Virgin Islands?") == {
+        "location": "U.S. Virgin Islands"
+    }
+    assert _planned_weather_arguments("Weather in Washington, D.C. Is it raining?") == {
+        "location": "Washington, D.C"
+    }
+    assert _planned_weather_arguments("Weather in Trinidad and Tobago?") == {
+        "location": "Trinidad and Tobago"
+    }
+    assert _planned_weather_arguments("Will it rain tomorrow?") is None
+    assert _planned_weather_arguments("Weather in Seattle tomorrow?") is None
+    assert _planned_weather_arguments("Weather in Paris on Friday?") is None
+
+
+def test_underspecified_weather_keeps_automatic_tool_choice():
+    weather = ToolSpec(name="weather", risk=ToolRisk.READ_ONLY)
+    settings = AgentRunCreateRequest(goal="What's the weather?", execution="client")
+    assert _chat_tool_choice([weather], settings) == "auto"
+    planned = AgentRunCreateRequest(
+        goal="What's the weather in Tokyo?", execution="client"
+    )
+    assert _chat_tool_choice([weather], planned) == {
+        "type": "function",
+        "function": {"name": "weather"},
+    }
+
+
+@pytest.mark.asyncio
+async def test_desktop_web_flow_stages_search_then_browse_then_synthesis():
+    driver = ScriptedDriver(AgentModelTurn(content="v0.14.2"))
+    service = AgentServerService(registry=FakeRegistry(()), chat_driver=driver)
+    created = await service.create(
+        AgentRunCreateRequest(
+            goal="Find the latest Rapid-MLX release",
+            execution="client",
+            tool_names=["web_search", "browse", "weather"],
+        ),
+        model="minicpm5-2b-4bit",
+    )
+
+    waiting = await wait_for_status(
+        service, created.id, AgentRunStatus.AWAITING_TOOL_RESULT
+    )
+    assert waiting.pending_action is not None
+    assert waiting.pending_action.name == "web_search"
+    assert waiting.pending_action.arguments == {
+        "query": "Find the latest Rapid-MLX release"
+    }
+    await service.submit_result(
+        created.id,
+        AgentToolResultRequest(
+            call_id=waiting.pending_action.call_id,
+            content=(
+                'Web search: "newer than https://old.example"\n\n'
+                "1. Rapid-MLX releases\n"
+                "   https://github.com/raullenchai/Rapid-MLX/releases\n"
+                "   Official releases"
+            ),
+            executed=True,
+        ),
+    )
+
+    waiting = await wait_for_status(
+        service, created.id, AgentRunStatus.AWAITING_TOOL_RESULT
+    )
+    assert waiting.pending_action is not None
+    assert waiting.pending_action.name == "browse"
+    assert waiting.pending_action.arguments == {
+        "url": "https://github.com/raullenchai/Rapid-MLX/releases"
+    }
+    await service.submit_result(
+        created.id,
+        AgentToolResultRequest(
+            call_id=waiting.pending_action.call_id,
+            content="Latest release: v0.14.2",
+            executed=True,
+        ),
+    )
+    done = await wait_for_status(service, created.id, AgentRunStatus.COMPLETED)
+
+    assert done.output == "v0.14.2"
+    assert [request[2] for request in driver.requests] == [[]]
+
+
+@pytest.mark.asyncio
+async def test_desktop_browse_continues_pages_and_multiple_ranked_results():
+    driver = ScriptedDriver(AgentModelTurn(content="Compared."))
+    service = AgentServerService(registry=FakeRegistry(()), chat_driver=driver)
+    created = await service.create(
+        AgentRunCreateRequest(
+            goal="Compare the two latest release reports from the web",
+            execution="client",
+            tool_names=["web_search", "browse"],
+        ),
+        model="minicpm5-2b-4bit",
+    )
+
+    search = await wait_for_status(
+        service, created.id, AgentRunStatus.AWAITING_TOOL_RESULT
+    )
+    assert search.pending_action is not None
+    await service.submit_result(
+        created.id,
+        AgentToolResultRequest(
+            call_id=search.pending_action.call_id,
+            content=(
+                "1. First report\n   https://example.com/one\n   First\n\n"
+                "2. Second report\n   https://example.com/two\n   Second"
+            ),
+            executed=True,
+        ),
+    )
+
+    first = await wait_for_status(
+        service, created.id, AgentRunStatus.AWAITING_TOOL_RESULT
+    )
+    assert first.pending_action is not None
+    assert first.pending_action.arguments == {"url": "https://example.com/one"}
+    await service.submit_result(
+        created.id,
+        AgentToolResultRequest(
+            call_id=first.pending_action.call_id,
+            content=json.dumps(
+                {
+                    "url": "https://example.com/one",
+                    "content": "first page",
+                    "has_more": True,
+                    "next_offset": 15000,
+                }
+            ),
+            executed=True,
+        ),
+    )
+
+    second = await wait_for_status(
+        service, created.id, AgentRunStatus.AWAITING_TOOL_RESULT
+    )
+    assert second.pending_action is not None
+    assert second.pending_action.arguments == {"url": "https://example.com/two"}
+    await service.submit_result(
+        created.id,
+        AgentToolResultRequest(
+            call_id=second.pending_action.call_id,
+            content=json.dumps(
+                {
+                    "url": "https://example.com/two",
+                    "content": "second report",
+                    "has_more": False,
+                }
+            ),
+            executed=True,
+        ),
+    )
+
+    continuation = await wait_for_status(
+        service, created.id, AgentRunStatus.AWAITING_TOOL_RESULT
+    )
+    assert continuation.pending_action is not None
+    assert continuation.pending_action.arguments == {
+        "url": "https://example.com/one",
+        "offset": 15000,
+    }
+    await service.submit_result(
+        created.id,
+        AgentToolResultRequest(
+            call_id=continuation.pending_action.call_id,
+            content=json.dumps(
+                {
+                    "url": "https://example.com/one",
+                    "content": "last page",
+                    "has_more": False,
+                }
+            ),
+            executed=True,
+        ),
+    )
+
+    done = await wait_for_status(service, created.id, AgentRunStatus.COMPLETED)
+    assert done.output == "Compared."
+    assert [request[2] for request in driver.requests] == [[]]
+
+
+@pytest.mark.asyncio
+async def test_desktop_direct_url_browses_that_url_without_search():
+    service = AgentServerService(
+        registry=FakeRegistry(()),
+        chat_driver=ScriptedDriver(AgentModelTurn(content="unused")),
+    )
+    created = await service.create(
+        AgentRunCreateRequest(
+            goal="Read https://example.com/notes and summarize it",
+            execution="client",
+            tool_names=["web_search", "browse"],
+        ),
+        model="minicpm5-2b-4bit",
+    )
+    waiting = await wait_for_status(
+        service, created.id, AgentRunStatus.AWAITING_TOOL_RESULT
+    )
+    assert waiting.pending_action is not None
+    assert waiting.pending_action.name == "browse"
+    assert waiting.pending_action.arguments == {"url": "https://example.com/notes"}
+    await service.cancel(created.id)
+
+
+@pytest.mark.asyncio
+async def test_desktop_mixed_weather_and_url_completes_both_steps():
+    driver = ScriptedDriver(
+        AgentModelTurn(content="Tokyo is clear; article summarized."),
+    )
+    service = AgentServerService(registry=FakeRegistry(()), chat_driver=driver)
+    created = await service.create(
+        AgentRunCreateRequest(
+            goal=(
+                "Give me the weather in Tokyo and summarize "
+                "https://en.wikipedia.org/wiki/Function_(mathematics)"
+            ),
+            execution="client",
+            tool_names=["web_search", "browse", "weather"],
+        ),
+        model="minicpm5-2b-4bit",
+    )
+
+    weather = await wait_for_status(
+        service, created.id, AgentRunStatus.AWAITING_TOOL_RESULT
+    )
+    assert weather.pending_action is not None
+    assert weather.pending_action.name == "weather"
+    assert weather.pending_action.arguments == {"location": "Tokyo"}
+    await service.submit_result(
+        created.id,
+        AgentToolResultRequest(
+            call_id=weather.pending_action.call_id,
+            content="Tokyo: clear, 24 C",
+            executed=True,
+        ),
+    )
+
+    browse = await wait_for_status(
+        service, created.id, AgentRunStatus.AWAITING_TOOL_RESULT
+    )
+    assert browse.pending_action is not None
+    assert browse.pending_action.name == "browse"
+    assert browse.pending_action.arguments == {
+        "url": "https://en.wikipedia.org/wiki/Function_(mathematics)"
+    }
+    await service.submit_result(
+        created.id,
+        AgentToolResultRequest(
+            call_id=browse.pending_action.call_id,
+            content="A function maps inputs to outputs.",
+            executed=True,
+        ),
+    )
+
+    done = await wait_for_status(service, created.id, AgentRunStatus.COMPLETED)
+    assert done.output == "Tokyo is clear; article summarized."
 
 
 @pytest.mark.asyncio

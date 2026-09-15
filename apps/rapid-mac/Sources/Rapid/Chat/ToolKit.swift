@@ -315,6 +315,18 @@ struct NativeToolCallExecutor {
            case .object(let properties)? = schema["properties"]
         {
             let allowed = properties.keys.sorted()
+            if case .array(let requiredValues)? = schema["required"] {
+                let required = requiredValues.compactMap { value -> String? in
+                    if case .string(let name) = value { return name }
+                    return nil
+                }
+                let missing = required.filter { object[$0] == nil }
+                if !missing.isEmpty {
+                    return .failure(ArgumentRejection(
+                        reason: "missing required argument(s): \(missing.joined(separator: ", "))"
+                    ))
+                }
+            }
             if schema["additionalProperties"] == .bool(false) {
                 let unknown = object.keys.filter { !properties.keys.contains($0) }.sorted()
                 if !unknown.isEmpty {

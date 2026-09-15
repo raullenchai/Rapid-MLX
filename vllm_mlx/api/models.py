@@ -2567,6 +2567,10 @@ class ModelInfo(BaseModel):
     # server logs.
     tool_call_parser: str | None = None
     reasoning_parser: str | None = None
+    # Exact model-specific harness qualified for Rapid Desktop's Personal
+    # Intelligence surface. ``None`` means ordinary Chat even when the model
+    # can emit tool calls or the Agent Runtime can apply its generic fallback.
+    personal_intelligence_profile: str | None = None
     # Inference modality. Desktop's ``ModelInfoCatalog`` already
     # dispatches on this — populating from the server lets us drop
     # the desktop-side hard-coded modality map in a future release.

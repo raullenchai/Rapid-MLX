@@ -47,6 +47,7 @@ CLIENT_FIELDS: dict[str, str] = {
     "tool_call_parser": "whether it can emit OpenAI-shape tool_calls",
     "capabilities": "text / tools / vision, for request shaping",
     "recommended_sampling": "per-model sampling a client should adopt",
+    "personal_intelligence_profile": "qualified model-specific Rapid harness",
 }
 
 #: Fields whose ``None`` must reach the wire as an explicit ``null``.
@@ -56,6 +57,7 @@ TRISTATE_FIELDS = (
     "tool_call_parser",
     "context_window",
     "max_model_len",
+    "personal_intelligence_profile",
 )
 
 
