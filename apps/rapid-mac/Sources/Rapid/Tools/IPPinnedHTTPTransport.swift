@@ -34,7 +34,13 @@ enum IPPinnedHTTPTransport {
         )
 
         return try await withTaskCancellationHandler {
-            try await withCheckedThrowingContinuation { continuation in
+            // The continuation's `Success` must be spelled out: `reader.start`
+            // reports an unlabelled `(Data, HTTPURLResponse)` while `fetch`
+            // returns a labelled `(data:response:)` tuple, so inferring the
+            // type from the enclosing return context is ambiguous and fails to
+            // type-check on the macOS 27 SDK.
+            try await withCheckedThrowingContinuation {
+                (continuation: CheckedContinuation<(Data, HTTPURLResponse), Error>) in
                 reader.start { result in
                     continuation.resume(with: result)
                 }
