@@ -112,6 +112,13 @@ def test_native_text_arrays_cache_owns_vlm_window_update_contract():
     assert extracted[0].tolist() == [state[1].tolist()]
 
 
+def test_native_text_arrays_cache_rejects_invalid_window_width():
+    cache = _qwen36_text_arrays_cache_type()(size=2)
+
+    with pytest.raises(ValueError, match="Invalid causal cache window width"):
+        cache.update_window(0, mx.zeros((1, 2, 3)), 3)
+
+
 def test_native_text_wrapper_survives_real_linear_cache_call_contract():
     class _WindowUpdatingLanguageModel(_LanguageModel):
         def __call__(self, value, *, cache):
