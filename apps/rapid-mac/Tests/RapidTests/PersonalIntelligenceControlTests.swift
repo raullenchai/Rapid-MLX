@@ -133,7 +133,10 @@ struct PersonalIntelligenceControlTests {
             "ifupdatesPreference{personalIntelligencePreferred=enabled}"
         ))
         #expect(stripped.contains(
-            ".onChange(of:viewModel.activeConversationID){_,_instopAgentIfNeeded()pruneAttachmentDrafts()"
+            "returnPersonalIntelligenceRunBinding(conversationID:viewModel.activeConversationID,"
+        ))
+        #expect(stripped.contains(
+            ".onChange(of:personalIntelligenceBinding){oldBinding,newBindinginifnewBinding.invalidatesRun(boundTo:oldBinding){stopAgentIfNeeded()}"
         ))
         #expect(stripped.contains(
             "viewModel.locallyCreatedConversationID==activeID?[activeID]:[]"
