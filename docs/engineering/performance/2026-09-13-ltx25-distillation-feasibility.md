@@ -248,3 +248,10 @@ above the 2x latency threshold; the separately measured equivalent
 dequantized-linear dispatch saved 4.49% on the 241-frame workload, so the
 combined budget can exceed 2x if and only if the learned schedule first passes
 decoded quality.
+
+The targeted `1 -> 3` run completed 100 steps in 9.1 minutes at 19.79 GB peak;
+final loss was 41.4717 and the sole checkpoint is 160,674,992 bytes. On the 12
+held-out trajectories it reduced video MSE by 49.16% and audio MSE by 39.54%
+relative to clean base. Every paired sample stayed within the 5% regression
+limit in both modalities. The combined 241-frame chef decode is now the
+authoritative remaining gate; these latent results alone do not qualify it.

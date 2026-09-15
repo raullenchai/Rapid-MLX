@@ -452,3 +452,10 @@ that one 100-step broad-data checkpoint. A fail-closed supervisor will require
 at least 10% mean video/audio MSE improvement and no held-out sample regression
 above 5% before decoding `[0,1,3,5,7,8]`. Atlas must keep public API/default
 integration blocked until decoded qualification and cross-generation testing.
+
+The targeted checkpoint completed at 19.79 GB peak and passed the automatic
+held-out gate: video/audio MSE improved 49.16%/39.54%, with no greater-than-5%
+paired regression across 12 samples in either modality. The combined
+`[0,1,3,5,7,8]` chef decode is running. The artifact remains diagnostic and
+must be rejected if identity/frontal framing is not restored regardless of
+the latent result.
