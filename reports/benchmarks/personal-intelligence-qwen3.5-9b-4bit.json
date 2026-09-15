@@ -9,7 +9,7 @@
     "runtime": "rapid-mlx source f28f340d0ff6c4e3f8bddac107c3fee2a07e3599 (environment package metadata 0.13.1); MLX 0.32.2; mlx-lm 0.31.3; Python 3.12.14",
     "source_revision": "f28f340d0ff6c4e3f8bddac107c3fee2a07e3599",
     "server_command": "ssh mac-studio; CHECKOUT=/tmp/rapid-mlx-f28f340d; git clone https://github.com/raullenchai/Rapid-MLX.git $CHECKOUT; git -C $CHECKOUT checkout f28f340d0ff6c4e3f8bddac107c3fee2a07e3599; cd $CHECKOUT; PYTHONPATH=$PWD ~/.rapid-mlx/bin/rapid-mlx serve qwen3.5-9b-4bit --host 127.0.0.1 --port 18950",
-    "suite_command": "python scripts/qualify_personal_intelligence.py qwen3.5-9b-4bit --base-url http://127.0.0.1:18950 --seeds 11,22,33 --expected-profile qwen3.5-9b --expected-parser hermes --expected-qualification qwen3.5-9b-q4-v1"
+    "suite_command": "python scripts/qualify_personal_intelligence.py qwen3.5-9b-4bit --base-url http://127.0.0.1:18950 --seeds 11,22,33 --hardware 'Mac Studio Mac15,14, M3 Ultra, 256 GB' --os 'macOS 26.5.2 (25F84)' --runtime 'rapid-mlx source f28f340d0ff6c4e3f8bddac107c3fee2a07e3599 (environment package metadata 0.13.1); MLX 0.32.2; mlx-lm 0.31.3; Python 3.12.14' --source-revision f28f340d0ff6c4e3f8bddac107c3fee2a07e3599 --server-command 'ssh mac-studio; CHECKOUT=/tmp/rapid-mlx-f28f340d; git clone https://github.com/raullenchai/Rapid-MLX.git $CHECKOUT; git -C $CHECKOUT checkout f28f340d0ff6c4e3f8bddac107c3fee2a07e3599; cd $CHECKOUT; PYTHONPATH=$PWD ~/.rapid-mlx/bin/rapid-mlx serve qwen3.5-9b-4bit --host 127.0.0.1 --port 18950' --expected-profile qwen3.5-9b --expected-parser hermes --expected-qualification qwen3.5-9b-q4-v1 --output reports/benchmarks/personal-intelligence-qwen3.5-9b-4bit.json"
   },
   "tasks": [
     {

@@ -7,6 +7,24 @@ struct AgentClientToolResult: Equatable, Sendable {
     let executed: Bool
 }
 
+/// Exact UI context that owns a Personal Intelligence run.
+///
+/// Keeping the conversation alongside the live model identity gives SwiftUI
+/// one transition to observe. A run is invalid as soon as either the owning
+/// conversation or any component of the qualified model binding changes.
+struct PersonalIntelligenceRunBinding: Equatable, Sendable {
+    let conversationID: UUID
+    let selectedAlias: String
+    let serverModelID: String?
+    let parser: String?
+    let profile: String?
+    let qualification: String?
+
+    func invalidatesRun(boundTo previous: Self) -> Bool {
+        self != previous
+    }
+}
+
 /// UI-ready ownership for one live server-owned Agent run.
 ///
 /// The controller observes and presents the Python runtime's state machine. The

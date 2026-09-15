@@ -9,7 +9,7 @@
     "runtime": "rapid-mlx 0.14.2 source f28f340d0ff6c4e3f8bddac107c3fee2a07e3599; MLX 0.32.2; mlx-lm 0.31.3; Python 3.13.14",
     "source_revision": "f28f340d0ff6c4e3f8bddac107c3fee2a07e3599",
     "server_command": "CHECKOUT=/tmp/rapid-mlx-f28f340d; git clone https://github.com/raullenchai/Rapid-MLX.git $CHECKOUT; git -C $CHECKOUT checkout f28f340d0ff6c4e3f8bddac107c3fee2a07e3599; cd $CHECKOUT; PYTHONPATH=$PWD /tmp/rapid-pi-qualification-venv/bin/rapid-mlx serve lfm2.5-1b-4bit --host 127.0.0.1 --port 18951",
-    "suite_command": "python scripts/qualify_personal_intelligence.py lfm2.5-1b-4bit --base-url http://127.0.0.1:18951 --seeds 11,22,33 --expected-profile lfm2.5-1b --expected-parser lfm --expected-qualification lfm2.5-1.2b-q4-v1"
+    "suite_command": "python scripts/qualify_personal_intelligence.py lfm2.5-1b-4bit --base-url http://127.0.0.1:18951 --seeds 11,22,33 --hardware 'MacBook Pro Mac15,6, M3 Pro, 18 GB' --os 'macOS 15.6.1 (24G90)' --runtime 'rapid-mlx 0.14.2 source f28f340d0ff6c4e3f8bddac107c3fee2a07e3599; MLX 0.32.2; mlx-lm 0.31.3; Python 3.13.14' --source-revision f28f340d0ff6c4e3f8bddac107c3fee2a07e3599 --server-command 'CHECKOUT=/tmp/rapid-mlx-f28f340d; git clone https://github.com/raullenchai/Rapid-MLX.git $CHECKOUT; git -C $CHECKOUT checkout f28f340d0ff6c4e3f8bddac107c3fee2a07e3599; cd $CHECKOUT; PYTHONPATH=$PWD /tmp/rapid-pi-qualification-venv/bin/rapid-mlx serve lfm2.5-1b-4bit --host 127.0.0.1 --port 18951' --expected-profile lfm2.5-1b --expected-parser lfm --expected-qualification lfm2.5-1.2b-q4-v1 --output reports/benchmarks/personal-intelligence-lfm2.5-1b-4bit.json"
   },
   "tasks": [
     {

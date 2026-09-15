@@ -5,6 +5,11 @@ import Testing
 @MainActor
 @Suite("Agent Runtime session controller", .serialized)
 struct AgentSessionControllerTests {
+    enum BindingTransition: Sendable {
+        case model
+        case conversation
+    }
+
     @Test("A server-owned run reaches a completed UI state")
     func completesRun() async throws {
         let transport = AgentSessionTransportStub(
@@ -126,34 +131,44 @@ struct AgentSessionControllerTests {
         #expect(transport.toolSubmissions.isEmpty)
     }
 
-    @Test("A selected-model or conversation transition cancels the bound run")
-    func contextTransitionCancelsBoundRun() async throws {
-        for _ in 0..<2 {
-            let transport = AgentSessionTransportStub(
-                created: try Self.run(status: "awaiting_model"),
-                gets: [try Self.run(status: "awaiting_model")]
-            )
-            let controller = AgentSessionController(
-                transportFactory: { _ in transport },
-                pollDelay: { try await Task.sleep(nanoseconds: 30_000_000_000) }
-            )
+    @Test(
+        "A selected-model or conversation transition cancels the bound run",
+        arguments: [BindingTransition.model, .conversation]
+    )
+    func contextTransitionCancelsBoundRun(_ transition: BindingTransition) async throws {
+        let transport = AgentSessionTransportStub(
+            created: try Self.run(status: "awaiting_model"),
+            gets: [try Self.run(status: "awaiting_model")]
+        )
+        let controller = AgentSessionController(
+            transportFactory: { _ in transport },
+            pollDelay: { try await Task.sleep(nanoseconds: 30_000_000_000) }
+        )
 
-            controller.start(
-                goal: "Keep working",
-                model: "minicpm5-2b-4bit",
-                baseURL: URL(string: "http://127.0.0.1:8000")!,
-                bearerToken: nil
-            )
-            while controller.run == nil { await Task.yield() }
+        controller.start(
+            goal: "Keep working",
+            model: "minicpm5-2b-4bit",
+            baseURL: URL(string: "http://127.0.0.1:8000")!,
+            bearerToken: nil
+        )
+        while controller.run == nil { await Task.yield() }
 
-            // ChatView routes both an exact model binding change and an active
-            // conversation change through this same cancellation contract.
-            controller.bindingDidChange()
-            await transport.waitForCancellation()
-
-            #expect(controller.phase == .cancelled)
-            #expect(transport.cancelledRunIDs == [Self.runID])
+        let oldBinding = Self.binding()
+        let newBinding: PersonalIntelligenceRunBinding = switch transition {
+        case .model:
+            Self.binding(selectedAlias: "qwen3.5-4b-4bit")
+        case .conversation:
+            Self.binding(conversationID: UUID())
         }
+        // This is the same composite transition reconciliation invoked by
+        // ChatView's single binding observer.
+        if newBinding.invalidatesRun(boundTo: oldBinding) {
+            controller.bindingDidChange()
+        }
+        await transport.waitForCancellation()
+
+        #expect(controller.phase == .cancelled)
+        #expect(transport.cancelledRunIDs == [Self.runID])
     }
 
     @Test("A mismatched server harness is cancelled instead of running")
@@ -476,6 +491,20 @@ struct AgentSessionControllerTests {
     }
 
     private static let runID = "01234567-89ab-cdef-0123-456789abcdef"
+
+    private static func binding(
+        conversationID: UUID = UUID(uuidString: "11111111-1111-1111-1111-111111111111")!,
+        selectedAlias: String = "minicpm5-2b-4bit"
+    ) -> PersonalIntelligenceRunBinding {
+        PersonalIntelligenceRunBinding(
+            conversationID: conversationID,
+            selectedAlias: selectedAlias,
+            serverModelID: selectedAlias,
+            parser: "minicpm",
+            profile: "minicpm5-2b",
+            qualification: "minicpm5-2b-q4-v1"
+        )
+    }
 
     fileprivate static func run(
         status: String,

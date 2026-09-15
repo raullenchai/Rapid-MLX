@@ -212,13 +212,6 @@ struct PhotoCapabilityNotice: Equatable {
 /// (``ChatViewModel.messages``) — no sidebar, history, presets, tools,
 /// or attachments.
 struct ChatView: View {
-    private struct PersonalIntelligenceBinding: Equatable {
-        let selectedAlias: String
-        let serverModelID: String?
-        let parser: String?
-        let profile: String?
-        let qualification: String?
-    }
     @Bindable var viewModel: ChatViewModel
     /// Incremental documents for assistant messages created in this view.
     /// A completed row keeps its document so finishing never swaps renderers.
@@ -327,9 +320,10 @@ struct ChatView: View {
         )
     }
 
-    private var personalIntelligenceBinding: PersonalIntelligenceBinding {
+    private var personalIntelligenceBinding: PersonalIntelligenceRunBinding {
         let profile = server.activeModelProfile
-        return PersonalIntelligenceBinding(
+        return PersonalIntelligenceRunBinding(
+            conversationID: viewModel.activeConversationID,
             selectedAlias: alias,
             serverModelID: profile?.id,
             parser: profile?.toolCallParser,
@@ -415,7 +409,6 @@ struct ChatView: View {
             pruneAttachmentDrafts()
         }
         .onChange(of: viewModel.activeConversationID) { _, _ in
-            stopAgentIfNeeded()
             pruneAttachmentDrafts()
             let activeID = viewModel.activeConversationID
             reconcilePersonalIntelligenceStates(
@@ -426,10 +419,10 @@ struct ChatView: View {
         }
         .onChange(of: alias) { _, _ in photoCapabilityNotice.dismiss() }
         .onChange(of: personalIntelligenceBinding) { oldBinding, newBinding in
-            if oldBinding != newBinding {
-                // Support can remain true while alias, parser, harness, or
-                // exact qualification changes. The run belongs to the entire
-                // old binding and cannot survive any component transition.
+            if newBinding.invalidatesRun(boundTo: oldBinding) {
+                // The run belongs to its conversation and the entire exact
+                // model binding. One observer covers both kinds of ownership
+                // transition so neither cancellation path can drift.
                 stopAgentIfNeeded()
             }
         }

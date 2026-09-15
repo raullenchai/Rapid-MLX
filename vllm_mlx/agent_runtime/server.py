@@ -491,9 +491,11 @@ def _route_desktop_client_tools(goal: str, names: list[str]) -> list[str]:
     """
 
     routed = [name for name in names if name not in _DESKTOP_CLIENT_TOOL_NAMES]
+    has_url = _WEB_URL.search(goal) is not None
     supplied_text = (
         _SUPPLIED_TEXT_INTENT.search(goal) is not None
         and _EXPLICIT_WEB_ACTION.search(goal) is None
+        and not has_url
     )
     web_prohibited = _WEB_PROHIBITION.search(goal) is not None or supplied_text
     weather_request = _EXPLICIT_WEATHER_REQUEST.search(goal) is not None
@@ -504,7 +506,7 @@ def _route_desktop_client_tools(goal: str, names: list[str]) -> list[str]:
         or _CURRENT_WEB_LOOKUP.search(goal) is not None
         or future_weather
     ) and not web_prohibited
-    url = _WEB_URL.search(goal) is not None and not web_prohibited
+    url = has_url and not web_prohibited
     explicit_search = (
         _EXPLICIT_SEARCH_ACTION.search(goal) is not None and not web_prohibited
     )

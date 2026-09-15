@@ -298,6 +298,12 @@ def test_desktop_tool_routing_is_intent_scoped_and_preserves_non_desktop_names()
         "browse",
     ]
     assert _route_desktop_client_tools(
+        "Summarize this https://example.com/article", offered
+    ) == ["custom__read", "browse"]
+    assert _route_desktop_client_tools(
+        "Do not browse; summarize this https://example.com/private", offered
+    ) == ["custom__read"]
+    assert _route_desktop_client_tools(
         "Give me Tokyo weather and summarize https://example.com/news", offered
     ) == ["custom__read", "browse", "weather"]
     assert _route_desktop_client_tools(
