@@ -588,6 +588,62 @@ def test_stream_does_not_emit_literal_eos_marker():
 
 
 @pytest.mark.requires_mlx
+def test_benchmark_stream_accepts_exact_ids_and_ignores_eos():
+    import mlx.core as mx
+
+    from vllm_mlx.models.deepseek_v41_native.serving import (
+        DSparkRuntime,
+        stream_generate,
+    )
+
+    class Cache:
+        offset = 0
+
+    class Model:
+        def make_cache(self, max_seq_len):
+            assert max_seq_len == 12
+            return Cache()
+
+        def __call__(self, ids, cache, **_kwargs):
+            cache.offset += int(ids.shape[1])
+            logits = mx.full((1, int(ids.shape[1]), 10), -1.0)
+            logits[:, :, 9] = 1.0
+            return logits, mx.zeros((1, int(ids.shape[1]), 1))
+
+    class Draft:
+        layers = [0]
+        position = -1
+        windows = {0: []}
+
+        def observe(self, _hidden, position):
+            self.position = position
+
+        def propose(self, seed):
+            assert seed == 9
+            return [9, 9, 9, 9, 9], mx.ones((5,))
+
+    class Tokenizer(_Tokenizer):
+        def encode(self, *_args, **_kwargs):
+            raise AssertionError("registered IDs must not be re-tokenized")
+
+    runtime = DSparkRuntime(Draft(), "mtp", "t" * 40, "m" * 40)
+    chunks = list(
+        stream_generate(
+            Model(),
+            Tokenizer(),
+            [3, 4],
+            runtime=runtime,
+            max_tokens=2,
+            ignore_eos=True,
+        )
+    )
+    assert [chunk.token for chunk in chunks] == [9, 9]
+    assert chunks[-1].prompt_tokens == 2
+    assert chunks[-1].generation_tokens == 2
+    assert "<eos>" not in "".join(chunk.text for chunk in chunks)
+
+
+@pytest.mark.requires_mlx
 def test_target_qmv_install_and_small_route_execution():
     import mlx.core as mx
     import mlx.nn as nn

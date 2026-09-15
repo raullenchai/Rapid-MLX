@@ -62,23 +62,25 @@ def benchmark_runtime_readiness(alias: str, task_type: str) -> dict[str, Any]:
     """
 
     if task_type == "text_generation":
-        # The qualified DeepSeek V4.1 artifact uses a dedicated serial runtime
-        # and sidecar, not AsyncEngineCore/BatchedEngine. Advertising it as
-        # ready would download >200 GB before failing in the generic loader.
-        # Keep the catalog honest until that runtime has its own registered
-        # benchmark adapter and protocol qualification.
         from vllm_mlx.model_aliases import resolve_profile
-        from vllm_mlx.models.deepseek_v41_native.artifacts import is_product_target
+        from vllm_mlx.models.deepseek_v41_native.artifacts import (
+            is_product_target,
+            require_product_memory,
+        )
 
         profile = resolve_profile(alias)
         if profile is not None and is_product_target(profile.hf_path):
-            return {
-                "status": "unavailable",
-                "message": (
-                    "Community Benchmark does not yet support this model's "
-                    "dedicated serial runtime; no model data will be downloaded."
-                ),
-            }
+            try:
+                require_product_memory()
+            except RuntimeError as exc:
+                return {"status": "unavailable", "message": str(exc)}
+            except Exception:
+                return {
+                    "status": "unknown",
+                    "message": (
+                        "Runtime readiness could not be verified; run will check again."
+                    ),
+                }
         return {"status": "ready", "message": None}
     if task_type == "image_generation":
         from vllm_mlx.runtime.image_lane import image_runtime_issue

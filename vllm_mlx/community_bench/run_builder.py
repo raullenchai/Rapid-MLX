@@ -364,7 +364,10 @@ def _source_checkout_revision(start: Path | None = None) -> str | None:
 
 
 def execution_config(
-    task_type: str, *, context_length: int | None = None
+    task_type: str,
+    *,
+    context_length: int | None = None,
+    speculative_decoding: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     source_revision = _source_checkout_revision()
     runtime: dict[str, Any] = {
@@ -391,11 +394,16 @@ def execution_config(
         "vae_slicing": None,
     }
     if task_type == "text_generation":
+        speculative = (
+            copy.deepcopy(speculative_decoding)
+            if speculative_decoding is not None
+            else {"method": "none"}
+        )
         task = {
             "kind": task_type,
             "language": {
                 "context_length": context_length,
-                "speculative_decoding": {"method": "none"},
+                "speculative_decoding": speculative,
                 "kv_cache": {"mode": "unknown", "dtype": "unknown"},
                 "prefix_cache_enabled": False,
                 "prefill_backend": "gpu",

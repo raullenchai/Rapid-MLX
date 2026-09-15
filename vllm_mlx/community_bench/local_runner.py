@@ -8,6 +8,7 @@ import base64
 import binascii
 import concurrent.futures
 import contextvars
+import copy
 import inspect
 import io
 import logging
@@ -983,6 +984,183 @@ class _ServingBenchmarkAdapter:
                     )
 
 
+def _next_generation_chunk(iterator: Any) -> tuple[bool, Any | None]:
+    """Advance a synchronous MLX generator without leaking StopIteration.
+
+    ``StopIteration`` cannot cross an asyncio Future boundary: asyncio turns it
+    into a TypeError.  A tagged result keeps every model step on the one MLX
+    executor thread while preserving token-by-token timing at the async layer.
+    """
+
+    try:
+        return True, next(iterator)
+    except StopIteration:
+        return False, None
+
+
+def _deepseek_v41_stream_generate(*args: Any, **kwargs: Any) -> Any:
+    """Load the MLX-only generator at execution time.
+
+    Keeping this boundary in the benchmark adapter lets Linux contract tests
+    exercise scheduling and provenance without importing the large-model MLX
+    implementation.  A real benchmark still resolves the exact product
+    runtime here before its first token.
+    """
+    from vllm_mlx.models.deepseek_v41_native.serving import stream_generate
+
+    return stream_generate(*args, **kwargs)
+
+
+def _deepseek_v41_load_product_runtime(*args: Any, **kwargs: Any) -> Any:
+    """Load the pinned product runtime behind the same no-MLX boundary."""
+    from vllm_mlx.models.deepseek_v41_native.serving import load_product_runtime
+
+    return load_product_runtime(*args, **kwargs)
+
+
+def _deepseek_v41_input_limit() -> int:
+    """Return the qualified product limit without importing MLX on Linux."""
+    from vllm_mlx.models.deepseek_v41_native.serving import MAX_INPUT_TOKENS
+
+    return MAX_INPUT_TOKENS
+
+
+class _DeepSeekV41BenchmarkAdapter:
+    """Registered-token benchmark facade for the qualified serial runtime."""
+
+    def __init__(
+        self,
+        model: Any,
+        tokenizer: Any,
+        runtime: Any,
+        executor: concurrent.futures.ThreadPoolExecutor,
+    ) -> None:
+        self._model = model
+        self._tokenizer = tokenizer
+        self._runtime = runtime
+        self._executor = executor
+        self._requests: dict[str, tuple[list[int], Any]] = {}
+
+    async def __aenter__(self) -> _DeepSeekV41BenchmarkAdapter:
+        return self
+
+    async def __aexit__(self, *_exc: Any) -> None:
+        return None
+
+    async def add_request(self, prompt: str | list[int], sampling_params: Any) -> str:
+        if not isinstance(prompt, list) or not all(
+            type(token) is int for token in prompt
+        ):
+            raise ValueError(
+                "DeepSeek V4.1 Community Benchmark requires registered token IDs"
+            )
+        unsupported = (
+            sampling_params.temperature != 0.0
+            or sampling_params.top_p != 1.0
+            or sampling_params.top_k != 0
+            or sampling_params.min_p != 0.0
+            or sampling_params.repetition_penalty != 1.0
+            or sampling_params.presence_penalty != 0.0
+            or sampling_params.frequency_penalty != 0.0
+            or bool(sampling_params.stop)
+            or bool(sampling_params.stop_token_ids)
+            or not sampling_params.ignore_eos
+        )
+        if unsupported:
+            raise ValueError(
+                "DeepSeek V4.1 Community Benchmark supports only the registered "
+                "greedy, ignore-EOS workload"
+            )
+        request_id = uuid.uuid4().hex
+        self._requests[request_id] = (list(prompt), sampling_params)
+        return request_id
+
+    async def stream_outputs(
+        self, request_id: str, timeout: float | None = None
+    ) -> AsyncIterator[Any]:
+        from vllm_mlx.request import RequestOutput
+
+        prompt, sampling = self._requests.pop(request_id)
+        iterator = _deepseek_v41_stream_generate(
+            self._model,
+            self._tokenizer,
+            prompt,
+            runtime=self._runtime,
+            max_tokens=sampling.max_tokens,
+            ignore_eos=True,
+        )
+        loop = asyncio.get_running_loop()
+        deadline = None if timeout is None else loop.time() + timeout
+        output_token_ids: list[int] = []
+        output_text = ""
+        while True:
+            remaining = None if deadline is None else deadline - loop.time()
+            if remaining is not None and remaining <= 0:
+                raise asyncio.TimeoutError
+            future = loop.run_in_executor(
+                self._executor, _next_generation_chunk, iterator
+            )
+            if remaining is not None:
+                has_chunk, chunk = await asyncio.wait_for(future, remaining)
+            else:
+                has_chunk, chunk = await future
+            if not has_chunk:
+                return
+            assert chunk is not None
+            output_token_ids.append(chunk.token)
+            output_text += chunk.text
+            finished = len(output_token_ids) == sampling.max_tokens
+            yield RequestOutput(
+                request_id=request_id,
+                new_token_ids=[chunk.token],
+                new_text=chunk.text,
+                output_token_ids=list(output_token_ids),
+                output_text=output_text,
+                finished=finished,
+                finish_reason="length" if finished else None,
+                prompt_tokens=chunk.prompt_tokens,
+                completion_tokens=chunk.generation_tokens,
+                cached_tokens=0,
+            )
+
+
+def _is_deepseek_v41_benchmark_target(repo_id: str) -> bool:
+    from vllm_mlx.models.deepseek_v41_native.artifacts import is_product_target
+
+    return is_product_target(repo_id)
+
+
+def _text_speculative_execution(repo_id: str) -> dict[str, Any] | None:
+    if not _is_deepseek_v41_benchmark_target(repo_id):
+        return None
+    from vllm_mlx.models.deepseek_v41_native.artifacts import (
+        mtp_model_identity_digest,
+    )
+
+    return {
+        "method": "dspark",
+        "max_draft_tokens": 5,
+        "draft_model_identity_digest": mtp_model_identity_digest(),
+    }
+
+
+def _with_v41_sidecar_identity(
+    primary: dict[str, Any], mtp_snapshot_path: str
+) -> dict[str, Any]:
+    """Record the external DSpark sidecar beside the target checkpoint."""
+    from vllm_mlx.models.deepseek_v41_native.artifacts import MTP_REPO
+
+    combined = copy.deepcopy(primary)
+    sidecar = unresolved_model_identity(
+        MTP_REPO, "text_generation", snapshot_path=mtp_snapshot_path
+    )["components"][0]
+    sidecar["component_id"] = "sidecar"
+    sidecar["role"] = "other"
+    combined["components"].append(sidecar)
+    combined["components"].sort(key=lambda component: component["component_id"])
+    return combined
+
+
 async def _text_measurements(
     model_name: str,
     catalog_repo_id: str | None = None,
@@ -1025,12 +1203,14 @@ async def _text_measurements(
     # text-generation aliases (including DeepSeek V4) remain on the native
     # text lane. Architecture-owned backbones such as GLM-5 Next use the
     # production MLLM loader instead of failing in mlx-lm. Dedicated runtimes
-    # such as DeepSeek V4.1 are rejected by the readiness check above.
-    use_serving_engine = _uses_serving_benchmark_engine(target)
+    # such as DeepSeek V4.1 use their own adapter below.
+    use_v41_runtime = _is_deepseek_v41_benchmark_target(repo_id)
+    use_serving_engine = not use_v41_runtime and _uses_serving_benchmark_engine(target)
 
     workload = registered_workload("text_generation")
     executor = None
     serving_engine = None
+    mtp_source: str | None = None
     try:
         if progress is not None:
             cached = model_is_cached(repo_id)
@@ -1072,7 +1252,37 @@ async def _text_measurements(
                 raise
             return candidate, tokenizer
 
-        if use_serving_engine:
+        if use_v41_runtime:
+            from vllm_mlx.models.deepseek_v41_native.artifacts import (
+                MTP_REPO,
+                MTP_REVISION,
+                TARGET_REVISION,
+                download_mtp_snapshot,
+                download_target_snapshot,
+            )
+
+            executor = concurrent.futures.ThreadPoolExecutor(
+                max_workers=1,
+                thread_name_prefix="mlx-step",
+                initializer=_init_mlx_step_thread,
+            )
+
+            def load_v41_runtime() -> tuple[Any, Any, Any, str, str]:
+                target_path = download_target_snapshot()
+                mtp_path = download_mtp_snapshot()
+                model, tokenizer, runtime = _deepseek_v41_load_product_runtime(
+                    str(target_path),
+                    str(mtp_path),
+                    target_revision=TARGET_REVISION,
+                    mtp_revision=MTP_REVISION,
+                    mtp_identity=MTP_REPO,
+                )
+                return model, tokenizer, runtime, str(target_path), str(mtp_path)
+
+            model, tokenizer, v41_runtime, loaded_source, mtp_source = executor.submit(
+                load_v41_runtime
+            ).result()
+        elif use_serving_engine:
             serving_engine, tokenizer = await start_serving_engine()
             loaded_source, model = "", None
         else:
@@ -1110,6 +1320,8 @@ async def _text_measurements(
                 else None
             ),
         )
+        if mtp_source is not None:
+            loaded_identity = _with_v41_sidecar_identity(loaded_identity, mtp_source)
         capture = _LOADED_IDENTITY.get()
         if capture is not None:
             capture["identity"] = loaded_identity
@@ -1122,21 +1334,32 @@ async def _text_measurements(
             spec_decode="none",
         )
         config = EngineConfig(model_name=repo_id, scheduler_config=scheduler)
-        if serving_engine is not None:
-            engine_context: Any = _ServingBenchmarkAdapter(serving_engine)
+        engine_context: Any
+        context_source: Any
+        if use_v41_runtime:
+            assert executor is not None
+            engine_context = _DeepSeekV41BenchmarkAdapter(
+                model, tokenizer, v41_runtime, executor
+            )
+            context_source = engine_context
+        elif serving_engine is not None:
+            engine_context = _ServingBenchmarkAdapter(serving_engine)
             # ``get_model_max_context`` intentionally accepts serving-engine
             # wrappers: it reads ``._model`` first and then the wrapper's
             # tokenizer/local config. BatchedEngine exposes both after start.
-            context_source: Any = serving_engine
+            context_source = serving_engine
         else:
             engine_context = AsyncEngineCore(
                 model, tokenizer, config, executor=executor
             )
             context_source = None
         async with engine_context as engine:
-            context_length = get_model_max_context(
-                context_source if context_source is not None else engine.engine
-            )
+            if use_v41_runtime:
+                context_length = _deepseek_v41_input_limit()
+            else:
+                context_length = get_model_max_context(
+                    context_source if context_source is not None else engine.engine
+                )
             result = await run_standardized_bench(
                 engine,
                 tokenizer,
@@ -1377,7 +1600,15 @@ def _run_local_measured(
                 model["repo_id"],
                 task_type,
             )
-        execution = execution_config(task_type, context_length=context_length)
+        execution = execution_config(
+            task_type,
+            context_length=context_length,
+            speculative_decoding=(
+                _text_speculative_execution(model["repo_id"])
+                if task_type == "text_generation"
+                else None
+            ),
+        )
         run = build_run(
             repo_id=model["repo_id"],
             subfolder=model.get("subfolder"),
@@ -1414,7 +1645,15 @@ def _run_local_measured(
             failure_code = _failure_code(exc)
         try:
             if execution is None:
-                execution = execution_config(task_type, context_length=context_length)
+                execution = execution_config(
+                    task_type,
+                    context_length=context_length,
+                    speculative_decoding=(
+                        _text_speculative_execution(model["repo_id"])
+                        if task_type == "text_generation"
+                        else None
+                    ),
+                )
             failed = build_run(
                 repo_id=model["repo_id"],
                 subfolder=model.get("subfolder"),

@@ -12,6 +12,7 @@ The measurement-conversion contract itself is identical to the Apple-lane
 from __future__ import annotations
 
 import asyncio
+import sys
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -215,6 +216,255 @@ def test_serving_adapter_rejects_unsupported_token_stop_ids() -> None:
         asyncio.run(exercise())
 
 
+def test_v41_adapter_preserves_registered_tokens_and_exact_length(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from vllm_mlx.request import SamplingParams
+
+    observed: dict[str, object] = {}
+
+    def generate(_model, _tokenizer, prompt, **kwargs):
+        observed["prompt"] = prompt
+        observed["kwargs"] = kwargs
+        for index, token in enumerate((7, 8), start=1):
+            yield SimpleNamespace(
+                token=token,
+                text=str(token),
+                prompt_tokens=len(prompt),
+                generation_tokens=index,
+            )
+
+    monkeypatch.setattr(local_runner, "_deepseek_v41_stream_generate", generate)
+    executor = local_runner.concurrent.futures.ThreadPoolExecutor(max_workers=1)
+
+    async def exercise():
+        adapter = local_runner._DeepSeekV41BenchmarkAdapter(
+            object(), object(), object(), executor
+        )
+        params = SamplingParams(
+            max_tokens=2,
+            temperature=0.0,
+            top_p=1.0,
+            top_k=0,
+            min_p=0.0,
+            repetition_penalty=1.0,
+            presence_penalty=0.0,
+            frequency_penalty=0.0,
+            ignore_eos=True,
+        )
+        request_id = await adapter.add_request([10, 11, 12], params)
+        return [item async for item in adapter.stream_outputs(request_id, timeout=1)]
+
+    try:
+        outputs = asyncio.run(exercise())
+    finally:
+        executor.shutdown(wait=True)
+    assert observed["prompt"] == [10, 11, 12]
+    assert observed["kwargs"]["max_tokens"] == 2
+    assert observed["kwargs"]["ignore_eos"] is True
+    assert observed["kwargs"]["runtime"] is not None
+    assert outputs[0].new_token_ids == [7]
+    assert outputs[-1].output_token_ids == [7, 8]
+    assert outputs[-1].completion_tokens == 2
+    assert outputs[-1].finish_reason == "length"
+
+
+def test_v41_lazy_runtime_boundary_delegates_without_eager_mlx_import(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[tuple[str, tuple, dict]] = []
+    fake_serving = SimpleNamespace(
+        MAX_INPUT_TOKENS=8192,
+        stream_generate=lambda *args, **kwargs: (
+            calls.append(("stream", args, kwargs)) or "stream-result"
+        ),
+        load_product_runtime=lambda *args, **kwargs: (
+            calls.append(("load", args, kwargs)) or "load-result"
+        ),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "vllm_mlx.models.deepseek_v41_native.serving",
+        fake_serving,
+    )
+
+    assert local_runner._deepseek_v41_stream_generate("model", limit=2) == (
+        "stream-result"
+    )
+    assert local_runner._deepseek_v41_load_product_runtime("target") == ("load-result")
+    assert local_runner._deepseek_v41_input_limit() == 8192
+    assert calls == [
+        ("stream", ("model",), {"limit": 2}),
+        ("load", ("target",), {}),
+    ]
+
+
+@pytest.mark.parametrize("prompt", ["rendered text", [1, True], [1, "2"]])
+def test_v41_adapter_rejects_nonregistered_prompt_tokens(prompt: object) -> None:
+    from vllm_mlx.request import SamplingParams
+
+    executor = local_runner.concurrent.futures.ThreadPoolExecutor(max_workers=1)
+
+    async def exercise() -> None:
+        adapter = local_runner._DeepSeekV41BenchmarkAdapter(
+            object(), object(), object(), executor
+        )
+        await adapter.add_request(
+            prompt,  # type: ignore[arg-type]
+            SamplingParams(max_tokens=1, temperature=0.0, ignore_eos=True),
+        )
+
+    try:
+        with pytest.raises(ValueError, match="registered token IDs"):
+            asyncio.run(exercise())
+    finally:
+        executor.shutdown(wait=True)
+
+
+def test_v41_adapter_unbounded_empty_stream_completes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from vllm_mlx.request import SamplingParams
+
+    monkeypatch.setattr(
+        local_runner,
+        "_deepseek_v41_stream_generate",
+        lambda *_args, **_kwargs: iter(()),
+    )
+    executor = local_runner.concurrent.futures.ThreadPoolExecutor(max_workers=1)
+
+    async def exercise() -> list[object]:
+        adapter = local_runner._DeepSeekV41BenchmarkAdapter(
+            object(), object(), object(), executor
+        )
+        request_id = await adapter.add_request(
+            [1, 2],
+            SamplingParams(
+                max_tokens=1,
+                temperature=0.0,
+                top_p=1.0,
+                top_k=0,
+                min_p=0.0,
+                repetition_penalty=1.0,
+                presence_penalty=0.0,
+                frequency_penalty=0.0,
+                ignore_eos=True,
+            ),
+        )
+        return [item async for item in adapter.stream_outputs(request_id)]
+
+    try:
+        assert asyncio.run(exercise()) == []
+    finally:
+        executor.shutdown(wait=True)
+
+
+def test_v41_adapter_zero_timeout_fails_before_model_step(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from vllm_mlx.request import SamplingParams
+
+    monkeypatch.setattr(
+        local_runner,
+        "_deepseek_v41_stream_generate",
+        lambda *_args, **_kwargs: iter(()),
+    )
+    executor = local_runner.concurrent.futures.ThreadPoolExecutor(max_workers=1)
+
+    async def exercise() -> None:
+        adapter = local_runner._DeepSeekV41BenchmarkAdapter(
+            object(), object(), object(), executor
+        )
+        request_id = await adapter.add_request(
+            [1, 2],
+            SamplingParams(
+                max_tokens=1,
+                temperature=0.0,
+                top_p=1.0,
+                top_k=0,
+                min_p=0.0,
+                repetition_penalty=1.0,
+                presence_penalty=0.0,
+                frequency_penalty=0.0,
+                ignore_eos=True,
+            ),
+        )
+        async for _item in adapter.stream_outputs(request_id, timeout=0):
+            pass
+
+    try:
+        with pytest.raises(asyncio.TimeoutError):
+            asyncio.run(exercise())
+    finally:
+        executor.shutdown(wait=True)
+
+
+@pytest.mark.parametrize(
+    "params",
+    [
+        {"temperature": 0.7},
+        {"top_p": 0.9},
+        {"top_k": 4},
+        {"ignore_eos": False},
+        {"stop": ["done"]},
+    ],
+)
+def test_v41_adapter_rejects_nonregistered_sampling(params: dict) -> None:
+    from vllm_mlx.request import SamplingParams
+
+    defaults = {
+        "max_tokens": 2,
+        "temperature": 0.0,
+        "top_p": 1.0,
+        "top_k": 0,
+        "ignore_eos": True,
+    }
+    defaults.update(params)
+    executor = local_runner.concurrent.futures.ThreadPoolExecutor(max_workers=1)
+
+    async def exercise() -> None:
+        adapter = local_runner._DeepSeekV41BenchmarkAdapter(
+            object(), object(), object(), executor
+        )
+        await adapter.add_request([1, 2], SamplingParams(**defaults))
+
+    try:
+        with pytest.raises(ValueError, match="registered greedy"):
+            asyncio.run(exercise())
+    finally:
+        executor.shutdown(wait=True)
+
+
+def test_v41_model_identity_includes_the_measured_sidecar(tmp_path: Path) -> None:
+    from vllm_mlx.catalog import ContractValidator
+    from vllm_mlx.community_bench.run_builder import unresolved_model_identity
+
+    primary = unresolved_model_identity(
+        "rapid-mlx/DeepSeek-V4.1-Flash-REAP-2bit-MLX", "text_generation"
+    )
+    combined = local_runner._with_v41_sidecar_identity(primary, str(tmp_path))
+
+    assert [component["component_id"] for component in combined["components"]] == [
+        "primary",
+        "sidecar",
+    ]
+    assert combined["components"][1]["source"]["repo_id"] == (
+        "rapid-mlx/DeepSeek-V4.1-Flash-DSpark-4d2e-MLX"
+    )
+    ContractValidator().validate_model_identity(combined)
+
+
+def test_v41_speculative_provenance_is_target_specific() -> None:
+    from vllm_mlx.models.deepseek_v41_native import artifacts
+
+    assert local_runner._text_speculative_execution("other/model") is None
+    assert local_runner._text_speculative_execution(artifacts.TARGET_REPO) == {
+        "method": "dspark",
+        "max_draft_tokens": 5,
+        "draft_model_identity_digest": artifacts.mtp_model_identity_digest(),
+    }
+
+
 def test_benchmark_loader_lane_uses_shared_architecture_probe(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -304,6 +554,84 @@ def test_unavailable_dedicated_text_runtime_fails_before_model_load(
                 "rapid-mlx/DeepSeek-V4.1-Flash-REAP-2bit-MLX",
             )
         )
+
+
+def test_text_lane_uses_pinned_v41_serial_runtime(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    from vllm_mlx.community_bench import runner, workspace
+    from vllm_mlx.models.deepseek_v41_native import artifacts
+
+    target_path = tmp_path / "target" / "snapshots" / artifacts.TARGET_REVISION
+    mtp_path = tmp_path / "mtp" / "snapshots" / artifacts.MTP_REVISION
+    target_path.mkdir(parents=True)
+    mtp_path.mkdir(parents=True)
+    calls: dict[str, object] = {}
+    model = SimpleNamespace(args=SimpleNamespace(max_position_embeddings=1_048_576))
+    tokenizer = object()
+    runtime = object()
+
+    monkeypatch.setattr(
+        workspace,
+        "benchmark_runtime_readiness",
+        lambda *_args: {"status": "ready"},
+    )
+    monkeypatch.setattr(artifacts, "download_target_snapshot", lambda: target_path)
+    monkeypatch.setattr(artifacts, "download_mtp_snapshot", lambda: mtp_path)
+
+    def load(target, mtp, **kwargs):
+        calls["load"] = (target, mtp, kwargs)
+        return model, tokenizer, runtime
+
+    async def standardized(engine, active_tokenizer, **kwargs):
+        assert isinstance(engine, local_runner._DeepSeekV41BenchmarkAdapter)
+        assert active_tokenizer is tokenizer
+        assert kwargs["registered_token_ids"] is True
+        return _bench_result()
+
+    monkeypatch.setattr(local_runner, "_deepseek_v41_load_product_runtime", load)
+    monkeypatch.setattr(local_runner, "_deepseek_v41_input_limit", lambda: 8192)
+    monkeypatch.setattr(runner, "run_standardized_bench", standardized)
+    identity_calls: list[tuple[tuple, dict]] = []
+
+    def identity(*args, **kwargs):
+        identity_calls.append((args, kwargs))
+        return {
+            "schema_version": 1,
+            "identity_strength": "unresolved",
+            "pipeline_kind": "text_generation",
+            "components": [
+                {
+                    "component_id": "primary",
+                    "role": "primary",
+                    "source": {"kind": "huggingface", "repo_id": args[0]},
+                    "artifact": {"format": "mlx-safetensors"},
+                    "quantization": {"kind": "unknown", "base_dtype": "unknown"},
+                }
+            ],
+        }
+
+    monkeypatch.setattr(local_runner, "unresolved_model_identity", identity)
+
+    measurements, context_length, _identity = asyncio.run(
+        local_runner._text_measurements(
+            "deepseek-v41-flash-reap-2bit", artifacts.TARGET_REPO
+        )
+    )
+
+    assert len(measurements) == 10
+    assert context_length == 8192
+    loaded_target, loaded_mtp, load_kwargs = calls["load"]
+    assert loaded_target == str(target_path)
+    assert loaded_mtp == str(mtp_path)
+    assert load_kwargs == {
+        "target_revision": artifacts.TARGET_REVISION,
+        "mtp_revision": artifacts.MTP_REVISION,
+        "mtp_identity": artifacts.MTP_REPO,
+    }
+    assert identity_calls[0][1]["snapshot_path"] == str(target_path)
+    assert identity_calls[1][0][0] == artifacts.MTP_REPO
+    assert identity_calls[1][1]["snapshot_path"] == str(mtp_path)
 
 
 def test_text_lane_uses_serving_runtime_and_tolerates_shutdown_error(
