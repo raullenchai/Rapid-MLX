@@ -266,7 +266,9 @@ class K2HorizonToolParser(ToolParser):
             end += len(cls.GROUP_END)
             next_start = text.find(cls.GROUP_START, end)
             parts.append(
-                cls._visible_prefix(text[end : next_start if next_start >= 0 else None])
+                cls._visible_post_tool_prefix(
+                    text[end : next_start if next_start >= 0 else None]
+                )
             )
             cursor = next_start
         return "".join(parts)
@@ -302,7 +304,7 @@ class K2HorizonToolParser(ToolParser):
                 )
             next_start = model_output.find(self.GROUP_START, end)
             content_parts.append(
-                self._visible_prefix(
+                self._visible_post_tool_prefix(
                     model_output[end : next_start if next_start >= 0 else None]
                 )
             )

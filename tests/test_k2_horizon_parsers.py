@@ -159,7 +159,7 @@ def test_xml_default_parses_multiple_calls_and_schema_types():
             _xml_call("lookup", (("query", "123"), ("limit", "3"))),
             _xml_call("ping"),
             prefix="Before ",
-            suffix=" after",
+            suffix="private retry</ifm|think> after",
         ),
         _request(),
     )
@@ -170,8 +170,13 @@ def test_xml_default_parses_multiple_calls_and_schema_types():
 
 
 def test_nonstreaming_parses_multiple_groups_without_markup_leak():
-    output = _group(_xml_call("ping"), prefix="Before ", suffix=" between ") + _group(
-        _xml_call("lookup"), suffix=" after"
+    output = _group(
+        _xml_call("ping"),
+        prefix="Before ",
+        suffix="private retry</ifm|think> between ",
+    ) + _group(
+        _xml_call("lookup"),
+        suffix="private final</ifm|think_fast> after",
     )
     result = K2HorizonToolParser().extract_tool_calls(output, _request())
     assert result.tools_called
@@ -188,6 +193,13 @@ def test_nonstreaming_redacts_reasoning_between_tool_groups():
     result = K2HorizonToolParser().extract_tool_calls(output, _request())
     assert result.tools_called
     assert result.content == "Visible between"
+
+
+def test_nonstreaming_discards_unclosed_post_tool_reasoning():
+    output = _group(_xml_call("ping"), suffix="private retry without a closer")
+    result = K2HorizonToolParser().extract_tool_calls(output, _request())
+    assert result.tools_called
+    assert result.content is None
 
 
 @pytest.mark.parametrize(
@@ -285,7 +297,11 @@ def test_named_choice_rejects_other_declared_tool():
 
 def test_tool_choice_none_strips_native_envelope_without_dispatch():
     result = K2HorizonToolParser().extract_tool_calls(
-        _group(_xml_call("ping"), prefix="Visible before ", suffix=" after"),
+        _group(
+            _xml_call("ping"),
+            prefix="Visible before ",
+            suffix="private retry</ifm|think> after",
+        ),
         _request(tool_choice="none"),
     )
     assert not result.tools_called
