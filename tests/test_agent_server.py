@@ -260,6 +260,9 @@ def test_desktop_tool_routing_is_intent_scoped_and_preserves_non_desktop_names()
     assert _route_desktop_client_tools("Review this source code", offered) == [
         "custom__read"
     ]
+    assert _route_desktop_client_tools(
+        "What is my current project codename?", offered
+    ) == ["custom__read"]
     assert _route_desktop_client_tools("Create a release schedule", offered) == [
         "custom__read"
     ]

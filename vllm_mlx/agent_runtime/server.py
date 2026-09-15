@@ -152,7 +152,7 @@ _EXPLICIT_WEATHER_REQUEST = re.compile(
 )
 _CURRENT_WEB_LOOKUP = re.compile(
     r"\b(?:find|check|verify|tell\s+me|show\s+me|what(?:'s|\s+is)|who(?:'s|\s+is))"
-    r"\b.{0,100}\b(?:latest|current|recent|news|release|version|price|stock|"
+    r"\b.{0,100}\b(?:latest|recent|news|release|version|price|stock|"
     r"score|schedule|president|ceo)\b|"
     r"(?:查一下|查找|核实|告诉我|看看).{0,60}"
     r"(?:最新|当前|新闻|来源|价格|股价|比分|赛程|总统|发布|版本)",
