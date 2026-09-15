@@ -573,3 +573,8 @@ audio files under `123/strategy/ltx-exact-prefix-suite-2026-09-15/`. Vector
 must then run the identical artifact on another Apple Silicon generation.
 Atlas continues to own public/default/release disposition, and the standard
 path remains fallback. Reauthenticate `spark2` and rerun independent review.
+
+The upstream branch now includes the formerly separate opt-in dequantized-
+matmul dispatch, so a single pinned revision contains the complete measured
+path. Focused combined-path tests pass 40/40 and the full upstream suite passes
+808 with 22 skips.

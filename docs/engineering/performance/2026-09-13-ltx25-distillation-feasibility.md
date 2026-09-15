@@ -350,3 +350,8 @@ contact sheets retain requested subjects and coarse actions in all three
 cases. The result supports an approximately 2x product claim, subject to owner
 full-speed/audio review and second-generation hardware qualification; it does
 not authorize default-on behavior.
+
+The exact-prefix upstream branch now also contains the opt-in dequantized-
+matmul dispatch used in these runs. One pinned revision can therefore reproduce
+the complete measured route; focused combined-path tests pass 40/40 and the
+full upstream suite passes 808 with 22 skips.
