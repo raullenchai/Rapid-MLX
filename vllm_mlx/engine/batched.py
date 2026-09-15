@@ -161,7 +161,13 @@ _LANE_PARITY_SAMPLING_KEYS = (
     "presence_penalty",
     "frequency_penalty",
 )
-_TEXT_ONLY_SAMPLING_KEYS = ("top_k", "min_p", "seed")
+# Extended sampling params forwarded to BOTH lanes (sampling parity).
+# The text lane packs them into ``SamplingParams``; the multimodal lane
+# threads them into ``MLLMScheduler.add_request``. Historically the MLLM
+# branch silently dropped these three, so a media request with a pinned
+# ``seed`` (or ``top_k``/``min_p``) sampled from the global RNG with the
+# knobs ignored while the identical text request honored them.
+_EXTENDED_SAMPLING_KEYS = ("top_k", "min_p", "seed")
 _LANE_PARITY_PROCESSOR_KEYS = (
     "grammar_logits_processor",
     "reasoning_budget_logits_processor",
@@ -1922,6 +1928,9 @@ class BatchedEngine(BaseEngine):
             enable_prefix_cache=getattr(
                 self._scheduler_config, "enable_prefix_cache", True
             ),
+            mllm_singleton_fastpath=getattr(
+                self._scheduler_config, "mllm_singleton_fastpath", "auto"
+            ),
             vision_min_pixels=vision_min_pixels,
             vision_max_pixels=vision_max_pixels,
         )
@@ -2814,12 +2823,19 @@ class BatchedEngine(BaseEngine):
             # and forward to the MLLM scheduler so the route-layer
             # cascade (chat / completions / responses / anthropic) reaches
             # the per-request logits processors inside the VLM batch
-            # generator. ``top_k`` / ``min_p`` / ``seed`` MLLM passthrough
-            # is intentionally NOT in scope here — see #512 follow-ups.
+            # generator.
             _mllm_penalty_kwargs = {
                 key: kwargs.pop(key)
                 for key in _LANE_PARITY_SAMPLING_KEYS
                 if key in kwargs
+            }
+            # Extended sampling params (sampling parity). The MLLM branch
+            # historically dropped these three — a media request with a
+            # pinned ``seed`` sampled from the global RNG while the same
+            # text request honored it. Forward them so the batch
+            # generator's sampler construction sees the full fingerprint.
+            _mllm_extended_sampling_kwargs = {
+                key: kwargs.pop(key) for key in _EXTENDED_SAMPLING_KEYS if key in kwargs
             }
             _mllm_logits_processors = [
                 processor
@@ -2843,6 +2859,7 @@ class BatchedEngine(BaseEngine):
                     logits_processors=_mllm_logits_processors,
                     prefix_boundary=prefix_boundary,
                     **_mllm_penalty_kwargs,
+                    **_mllm_extended_sampling_kwargs,
                 )
             except BaseException:
                 if owns_admission:
@@ -2876,7 +2893,7 @@ class BatchedEngine(BaseEngine):
         # make_logits_processors().
         _sp_kwargs = {
             key: kwargs.pop(key)
-            for key in (*_LANE_PARITY_SAMPLING_KEYS, *_TEXT_ONLY_SAMPLING_KEYS)
+            for key in (*_LANE_PARITY_SAMPLING_KEYS, *_EXTENDED_SAMPLING_KEYS)
             if key in kwargs
         }
         sampling_params = SamplingParams(
@@ -3076,6 +3093,11 @@ class BatchedEngine(BaseEngine):
                 for processor in _pop_lane_parity_processors(kwargs)
                 if processor is not None
             ]
+            # Extended sampling params (sampling parity) — same rationale
+            # as the non-streaming MLLM branch above.
+            _mllm_extended_sampling_kwargs = {
+                key: kwargs.pop(key) for key in _EXTENDED_SAMPLING_KEYS if key in kwargs
+            }
             prefix_boundary = kwargs.pop("prefix_boundary", 0)
             try:
                 request_id = await mllm_scheduler.add_request_async(
@@ -3094,6 +3116,7 @@ class BatchedEngine(BaseEngine):
                     logits_processors=_mllm_logits_processors,
                     prefix_boundary=prefix_boundary,
                     **_mllm_penalty_kwargs,
+                    **_mllm_extended_sampling_kwargs,
                 )
             except BaseException:
                 release_uncommitted_admission()
@@ -3146,7 +3169,7 @@ class BatchedEngine(BaseEngine):
         # Extended sampling params (#355) — see generate() for rationale.
         _sp_kwargs = {
             key: kwargs.pop(key)
-            for key in (*_LANE_PARITY_SAMPLING_KEYS, *_TEXT_ONLY_SAMPLING_KEYS)
+            for key in (*_LANE_PARITY_SAMPLING_KEYS, *_EXTENDED_SAMPLING_KEYS)
             if key in kwargs
         }
         try:

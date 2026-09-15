@@ -41,6 +41,7 @@ _mlx_compat.install()
 
 from mlx_lm.sample_utils import make_logits_processors, make_sampler  # noqa: E402
 
+from ._seeded_sampler import make_seeded_sampler  # noqa: E402
 from .hybrid_state_checkpoints import (  # noqa: E402
     achievable_position,
     attach_checkpoints,
@@ -335,6 +336,25 @@ class MLLMBatchRequest:
     max_tokens: int = 256
     temperature: float = 0.7
     top_p: float = 0.9
+    # Extended sampling params (sampling-parity). Defaults mirror
+    # ``SamplingParams`` so absence == disabled and the homogeneous-default
+    # fast path stays a no-op. ``seed`` requests always own a private
+    # ``make_seeded_sampler`` closure (never interned into the shared
+    # batch sampler) so each request keeps an independent RNG stream.
+    top_k: int = 0
+    min_p: float = 0.0
+    seed: int | None = None
+    # Per-request sampler cache: (fingerprint, seed, vocab width) → sampler
+    # closure. Seeded closures carry RNG state, so the cache is what keeps
+    # one request's stream continuous across prefill and decode steps.
+    _cached_sampler: tuple[tuple[Any, ...], Callable[[Any], Any]] | None = field(
+        default=None, repr=False, compare=False
+    )
+    # Logits-processor cache keyed on the penalty knob tuple (see
+    # ``_apply_request_logits_processors``).
+    _cached_penalty_processors: tuple[Any, ...] | None = field(
+        default=None, repr=False, compare=False
+    )
     # OpenAI-spec penalties (#512) — wired into mlx-lm's
     # ``make_logits_processors`` inside ``_step``. ``repetition_penalty`` is
     # a rapid-mlx extension (mlx-lm-native semantics); ``presence_penalty``
@@ -435,6 +455,90 @@ class MLLMBatchResponse:
     cached_tokens: int = 0
 
 
+def _singleton_regular_cache_leaves(
+    caches: list[Any], allow_arrays_cache: bool
+) -> bool:
+    """Return True when every leaf qualifies for the singleton no-rebatch path.
+
+    Eligibility is deliberately narrower than the merge-compatibility check:
+    only the exact regular ``KVCache`` / ``ArraysCache`` classes the serialized
+    lane actually produces qualify. Compound wrappers (``CacheList``),
+    ``RotatingKVCache``, ``PoolingCache``, quantized caches, subclasses, and
+    any future shape fall through to the existing ``merge`` path. Matching is
+    exact-type on purpose — ``isinstance`` would admit subclasses whose
+    ``merge``/``extract`` lifecycle we have never validated.
+
+    Scope note: the mlx-lm leaf types only qualify when
+    ``allow_arrays_cache`` is on, i.e. the lever targets the serialized
+    hybrid (ArraysCache) lane. A structural B=1 batch on the dense lane
+    still pays the merge — that exclusion is deliberate until the dense
+    merge/extract lifecycle around plain mlx-lm leaves is qualified.
+    """
+    if not caches:
+        return False
+    try:
+        from mlx_vlm.models.cache import ArraysCache, KVCache
+    except ImportError:
+        # mlx-vlm is optional; the MLLM lane cannot even run without it.
+        return False
+    qualified: tuple[type, ...] = (KVCache, ArraysCache)
+    if allow_arrays_cache:
+        try:
+            from mlx_lm.models.cache import ArraysCache as LMArraysCache
+            from mlx_lm.models.cache import KVCache as LMKVCache
+
+            qualified += (LMArraysCache, LMKVCache)
+        except ImportError:
+            pass
+    return all(type(leaf) in qualified for leaf in caches)
+
+
+def _extract_detached_singleton_leaf(leaf: Any, idx: int) -> Any:
+    """Materialize a detached copy of a singleton-regular cache leaf.
+
+    Upstream ``extract`` implementations return lazy slices for some leaf
+    types (``ArraysCache.extract`` slices state arrays without
+    ``contiguous``/``eval``), which would alias the live batch state until a
+    later evaluation mutates or frees it. Terminal extraction must yield
+    arrays that stay valid no matter what happens to the live batch
+    afterwards, so build a fresh leaf from explicit ``mx.contiguous`` copies
+    and evaluate them on the caller's (worker) stream before returning.
+    """
+    from mlx_vlm.models.cache import ArraysCache, KVCache
+
+    if isinstance(leaf, ArraysCache):
+        detached = ArraysCache(len(leaf.cache))
+        detached.cache = [
+            None if state is None else mx.contiguous(state[idx : idx + 1])
+            for state in leaf.cache
+        ]
+        for attr in ("left_padding", "lengths"):
+            value = getattr(leaf, attr, None)
+            if value is not None:
+                setattr(detached, attr, mx.contiguous(value[idx : idx + 1]))
+        materialized = [state for state in detached.cache if state is not None]
+        for attr in ("left_padding", "lengths"):
+            value = getattr(detached, attr, None)
+            if value is not None:
+                materialized.append(value)
+        if materialized:
+            mx.eval(*materialized)
+        return detached
+
+    detached = KVCache()
+    if getattr(leaf, "keys", None) is not None:
+        # Trim to ``offset`` exactly like ``KVCache.extract`` and the LLM-lane
+        # singleton copy do: upstream KVCache slab-allocates in fixed steps, so
+        # an untrimmed row copy would carry up to one slab of zero padding and
+        # inflate byte accounting for anything that consumes the extract.
+        offset = int(getattr(leaf, "offset", 0) or 0)
+        detached.keys = mx.contiguous(leaf.keys[idx : idx + 1, :, :offset, :])
+        detached.values = mx.contiguous(leaf.values[idx : idx + 1, :, :offset, :])
+        detached.offset = leaf.offset
+        mx.eval(detached.keys, detached.values)
+    return detached
+
+
 @dataclass
 class MLLMBatch:
     """
@@ -452,6 +556,13 @@ class MLLMBatch:
     num_tokens: list[int]  # Tokens generated per request
     cache: list[Any]  # BatchKVCache for language model
     requests: list[MLLMBatchRequest]  # Full request data
+    # Explicit capability marker for the cache layout this batch carries.
+    # ``"batched"`` leaves went through ``merge`` and expose the batched
+    # merge/filter/extract lifecycle. ``"singleton_regular"`` leaves are the
+    # untouched regular per-request caches of a structural B=1 batch that
+    # skipped the singleton repack. Downstream code must branch on this
+    # marker, never on array rank or leaf type inspection.
+    cache_layout: str = "batched"
 
     def __len__(self) -> int:
         return len(self.uids)
@@ -463,6 +574,15 @@ class MLLMBatch:
         Args:
             keep_idx: Indices of requests to keep
         """
+        # Regular ``KVCache`` leaves expose no ``filter`` at all, so a
+        # singleton-regular batch would silently keep its KV state untouched;
+        # that is only correct for the B=1 identity filter, and anything else
+        # is a caller bug — fail loudly before any state is rewritten.
+        if self.cache_layout == "singleton_regular" and keep_idx != [0]:
+            raise ValueError(
+                "cannot filter a singleton-regular MLLM batch to anything "
+                f"other than its single row (got keep_idx={keep_idx})"
+            )
         self.uids = [self.uids[k] for k in keep_idx]
         self.request_ids = [self.request_ids[k] for k in keep_idx]
         self.logprobs = [self.logprobs[k] for k in keep_idx]
@@ -485,6 +605,19 @@ class MLLMBatch:
         Args:
             other: Batch to merge into this one
         """
+        if (
+            self.cache_layout == "singleton_regular"
+            or other.cache_layout == "singleton_regular"
+        ):
+            # A singleton-regular batch holds exactly one request whose cache
+            # leaves never went through ``merge``. Promoting it to a batched
+            # cache mid-generation via ``extend`` is not supported (and cannot
+            # arise on the serialized lane, where a new batch only starts once
+            # the active one finishes): refuse instead of producing a batched
+            # cache interleaved with regular leaves.
+            raise ValueError(
+                "cannot extend a singleton-regular MLLM batch mid-generation"
+            )
         self.uids.extend(other.uids)
         self.request_ids.extend(other.request_ids)
         self.y = mx.concatenate([self.y, other.y])
@@ -518,6 +651,8 @@ class MLLMBatch:
         Returns:
             Cache state for that request
         """
+        if self.cache_layout == "singleton_regular":
+            return [_extract_detached_singleton_leaf(c, idx) for c in self.cache]
         return [c.extract(idx) if hasattr(c, "extract") else None for c in self.cache]
 
 
@@ -532,6 +667,10 @@ class MLLMBatchStats:
         self.vision_encoding_time: float = 0
         self.num_images_processed: int = 0
         self.peak_memory: float = 0
+        # Batches that took the singleton no-rebatch fast path. Qualification
+        # harnesses assert this is >0 under ``auto`` and ==0 under ``off`` so
+        # an eligibility regression cannot produce a vacuous A/B pass.
+        self.singleton_batches: int = 0
 
     @property
     def prompt_tps(self) -> float:
@@ -556,6 +695,7 @@ class MLLMBatchStats:
             "vision_encoding_time": self.vision_encoding_time,
             "num_images_processed": self.num_images_processed,
             "peak_memory": self.peak_memory,
+            "singleton_batches": self.singleton_batches,
         }
 
 
@@ -585,7 +725,7 @@ def _maybe_apply_penalty_processors(
     freq = req.frequency_penalty
     if rep == 1.0 and pres == 0.0 and freq == 0.0:
         return row_logits
-    cached = getattr(req, "_cached_penalty_processors", None)
+    cached = req._cached_penalty_processors
     key = (rep, pres, freq)
     if cached is None or cached[0] != key:
         processors = make_logits_processors(
@@ -615,6 +755,93 @@ def _apply_request_logits_processors(
     for processor in req.logits_processors:
         row_logits = processor(history, row_logits)
     return row_logits
+
+
+def _sampler_fingerprint(req: MLLMBatchRequest) -> tuple:
+    """Full sampling fingerprint shared by sampler interning and the
+    homogeneous-batch fast path. Must cover every knob threaded into
+    ``make_sampler`` — an incomplete key would let homogeneous-looking
+    batches share an incorrect sampler."""
+    return (req.temperature, req.top_p, req.min_p, req.top_k)
+
+
+def _effective_top_k(top_k: int, vocab_size: int | None) -> int:
+    """Clamp ``top_k`` to the vocabulary width.
+
+    The API layer deliberately admits ``top_k`` far above any vocabulary
+    (its sentinel cap documents that the backend kernel clamps
+    ``min(top_k, vocab)`` at sample time) and the text lane's fused fast
+    path honours that promise. mlx-lm's ``apply_top_k`` does not: it RAISES
+    for ``top_k >= vocab_size``. ``top_k >= vocab`` is semantically a no-op
+    ("keep every token"), so normalise it to the disabled value (``0``)
+    before building an mlx-lm chain. The seeded sampler already clamps
+    internally, so both paths share the same semantics regardless of seed.
+    """
+    if vocab_size is not None and top_k >= vocab_size:
+        return 0
+    return top_k
+
+
+def _make_request_sampler(
+    req: MLLMBatchRequest, vocab_size: int | None = None
+) -> Callable[[mx.array], mx.array]:
+    """Build the sampler one request owns for its whole generation.
+
+    Seeded requests get a fresh ``make_seeded_sampler`` closure that
+    threads an explicit per-request PRNG key; the closure carries mutable
+    RNG state, so it must never be interned or shared across requests —
+    two same-seed requests each receive their own instance. Unseeded
+    requests use mlx-lm's stateless ``make_sampler`` chain with the full
+    sampling fingerprint.
+    """
+    seed = getattr(req, "seed", None)
+    if seed is not None:
+        return cast(
+            Callable[[mx.array], mx.array],
+            make_seeded_sampler(
+                seed=seed,
+                temperature=req.temperature,
+                top_p=req.top_p,
+                min_p=req.min_p,
+                top_k=req.top_k,
+            ),
+        )
+    return cast(
+        Callable[[mx.array], mx.array],
+        make_sampler(
+            temp=req.temperature,
+            top_p=req.top_p,
+            min_p=req.min_p,
+            top_k=_effective_top_k(req.top_k, vocab_size),
+        ),
+    )
+
+
+def _request_cached_sampler(
+    req: MLLMBatchRequest, vocab_size: int | None = None
+) -> Callable[[mx.array], mx.array]:
+    """Return the sampler cached on ``req``, building it on first use.
+
+    Caching on the request is load-bearing for seeded requests: the
+    closure carries the carried-RNG key, so reusing one instance across
+    prefill token zero and every decode step keeps the RNG stream
+    continuous. Rebuilding a seeded sampler per step would restart from
+    the initial key and reuse the same subkey for different draws.
+
+    Corollary: a fingerprint CHANGE mid-generation rebuilds the closure
+    and restarts that request's RNG stream from its initial key. That is
+    acceptable only because the lane keeps sampling params immutable
+    after admission — there is no code path that mutates
+    ``temperature``/``top_p``/``min_p``/``top_k``/``seed`` between
+    prefill and the last decode step. Keep it that way.
+    """
+    fingerprint = (_sampler_fingerprint(req), req.seed, vocab_size)
+    cached = req._cached_sampler
+    if cached is not None and cached[0] == fingerprint:
+        return cached[1]
+    sampler = _make_request_sampler(req, vocab_size)
+    req._cached_sampler = (fingerprint, sampler)
+    return cast(Callable[[mx.array], mx.array], sampler)
 
 
 class MLLMBatchGenerator:
@@ -659,6 +886,7 @@ class MLLMBatchGenerator:
         vision_max_pixels: int = 0,
         vision_prefill_token_budget: int = 8192,
         enable_prefix_cache: bool = True,
+        singleton_fastpath: str = "auto",
     ):
         """
         Initialize MLLM batch generator.
@@ -681,7 +909,17 @@ class MLLMBatchGenerator:
             vision_prefill_token_budget: Per-image-request admission budget;
                 independent from the language-model prefill chunk. Appended to
                 preserve positional compatibility with existing callers.
+            singleton_fastpath: ``"auto"`` (default) skips the per-request
+                cache merge for structural B=1 batches whose leaves qualify
+                (see :func:`_singleton_regular_cache_leaves`); ``"off"`` always
+                takes the legacy merge/rebatch path. Operator rollback only.
         """
+        if singleton_fastpath not in ("auto", "off"):
+            raise ValueError(
+                f"singleton_fastpath must be 'auto' or 'off', "
+                f"got {singleton_fastpath!r}"
+            )
+        self.singleton_fastpath = singleton_fastpath
         self.model = model
         self.processor = processor
         self.mm_processor = mm_processor
@@ -785,7 +1023,10 @@ class MLLMBatchGenerator:
         self.max_tokens = max_tokens
         self.stop_tokens = stop_tokens or set()
         self.sampler = sampler or (lambda x: mx.argmax(x, axis=-1))
-        self._shared_batch_sampler: tuple[tuple[float, float], Callable] | None = None
+        # Interned shared sampler for the homogeneous unseeded fast path,
+        # keyed on the full sampling fingerprint ``(temp, top_p, min_p,
+        # top_k)``. Seeded requests never enter this cache (see ``_step``).
+        self._shared_batch_sampler: tuple[tuple, Callable] | None = None
 
         self.prefill_batch_size = prefill_batch_size
         self.completion_batch_size = max(completion_batch_size, prefill_batch_size)
@@ -2036,7 +2277,7 @@ class MLLMBatchGenerator:
                 logprobs = last_logits - mx.logsumexp(
                     last_logits, axis=-1, keepdims=True
                 )
-                req_sampler = make_sampler(temp=req.temperature, top_p=req.top_p)
+                req_sampler = _request_cached_sampler(req, logprobs.shape[-1])
                 sampled = req_sampler(logprobs)
 
                 mx.eval(sampled, logprobs)
@@ -2069,18 +2310,51 @@ class MLLMBatchGenerator:
                 f"(disable it for multimodal models with continuous batching)."
             )
 
-        try:
-            batch_cache = [
-                per_request_caches[0][layer_idx].merge(
-                    [c[layer_idx] for c in per_request_caches]
-                )
-                for layer_idx in range(len(per_request_caches[0]))
-            ]
-        except Exception as e:
-            logger.error(
-                f"Failed to merge per-request KV caches: {type(e).__name__}: {e}"
+        # Singleton no-rebatch fast path: on the serialized lane the
+        # structural B=1 policy (config-enforced max_num_seqs /
+        # prefill_batch_size / completion_batch_size == 1, plus the
+        # ``_next()`` no-active-batch admission rule) means this batch holds
+        # exactly one request. Calling ``merge([single])`` would only repack
+        # the request's regular cache leaves into batched wrappers that every
+        # subsequent decode step must then extract and re-merge around.
+        # Keep the prefill-written regular leaves instead. Any structural
+        # change that violates the single-request invariant (larger batch
+        # limits, unknown/wrapped/subclassed leaves, disabled flag) falls
+        # through to the legacy merge path — the eligibility helper fails
+        # closed on anything it does not recognise.
+        singleton_regular = (
+            len(requests) == 1
+            and len(per_request_caches) == 1
+            and self.singleton_fastpath == "auto"
+            and _singleton_regular_cache_leaves(
+                per_request_caches[0], self.allow_arrays_cache
             )
-            raise
+        )
+        if singleton_regular:
+            batch_cache = list(per_request_caches[0])
+            # Legacy merge() rebuilds every ArraysCache leaf from scratch and
+            # therefore drops the prefill-era left_padding/lengths bookkeeping
+            # (make_mask returns None during decode). Reset ours the same way
+            # so ``off`` stays a faithful rollback even when a warm APC
+            # snapshot hands the fast path leaves that still carry that state.
+            for leaf in batch_cache:
+                finalize = getattr(leaf, "finalize", None)
+                if finalize is not None:
+                    finalize()
+            self._stats.singleton_batches += 1
+        else:
+            try:
+                batch_cache = [
+                    per_request_caches[0][layer_idx].merge(
+                        [c[layer_idx] for c in per_request_caches]
+                    )
+                    for layer_idx in range(len(per_request_caches[0]))
+                ]
+            except Exception as e:
+                logger.error(
+                    f"Failed to merge per-request KV caches: {type(e).__name__}: {e}"
+                )
+                raise
 
         # Create initial y (first generated tokens)
         y = mx.array(first_tokens)
@@ -2106,6 +2380,7 @@ class MLLMBatchGenerator:
             num_tokens=[0] * len(requests),
             cache=batch_cache,
             requests=requests,
+            cache_layout="singleton_regular" if singleton_regular else "batched",
         )
 
     def _step(
@@ -2197,51 +2472,64 @@ class MLLMBatchGenerator:
                 axis=0,
             )
 
-        # Sample per-request with correct temperature/top_p.
-        # Fast path: when all requests in the batch share (temp, top_p),
-        # invoke a single batched sampler on [B, vocab] instead of B
-        # per-row calls + mx.concatenate. mlx-lm's ``make_sampler`` chain
-        # (``apply_top_p`` + ``categorical_sampling``) is row-wise along
-        # ``axis=-1``, so one call on [B, vocab] yields [B] tokens via one
-        # MLX kernel chain — distributionally identical to the per-row
-        # loop. At B=8 on Gemma 3 12B this cuts step time ~30%.
+        # Sample per-request with the full sampling fingerprint.
+        # Fast path: when all requests are UNSEEDED and share the complete
+        # (temp, top_p, min_p, top_k) fingerprint, invoke a single batched
+        # sampler on [B, vocab] instead of B per-row calls + mx.concatenate.
+        # mlx-lm's ``make_sampler`` chain (``apply_top_p`` +
+        # ``categorical_sampling``) is row-wise along ``axis=-1``, so one
+        # call on [B, vocab] yields [B] tokens via one MLX kernel chain —
+        # distributionally identical to the per-row loop. At B=8 on Gemma 3
+        # 12B this cuts step time ~30%.
         #
-        # WARNING: ``_shared_batch_sampler`` is keyed only on
-        # ``(temperature, top_p)``. If we ever add per-request sampling
-        # knobs (top_k, min_p) that change the sampler's *shape* (not just
-        # the per-row logits, which the penalty processors above handle),
-        # the key MUST grow accordingly — otherwise homogeneous-looking
-        # batches would silently share an incorrect sampler. The single
-        # ``MLLMScheduler`` worker thread (see mlx-lm 0.31.3+ stream
-        # ownership rule in #404) is the only writer, so no lock needed.
+        # Seeded requests never enter the shared path: their sampler
+        # closures carry mutable per-request RNG state (sampling-parity),
+        # so a shared [B, vocab] call would either collapse two requests
+        # onto one RNG stream or silently drop the seed. Mixed
+        # fingerprints fall back to the per-row loop with each request's
+        # cached sampler (see ``_request_cached_sampler``).
+        #
+        # The single ``MLLMScheduler`` worker thread (see mlx-lm 0.31.3+
+        # stream ownership rule in #404) is the only writer of
+        # ``_shared_batch_sampler``, so no lock needed.
         logprobs = logits - mx.logsumexp(logits, axis=-1, keepdims=True)
+        vocab_size = logprobs.shape[-1]
         if requests and len(requests) == logprobs.shape[0]:
-            first_key = (requests[0].temperature, requests[0].top_p)
-            homogeneous = all((r.temperature, r.top_p) == first_key for r in requests)
+            first_fingerprint = (
+                _sampler_fingerprint(requests[0]),
+                requests[0].seed,
+                vocab_size,
+            )
+            homogeneous = requests[0].seed is None and all(
+                (_sampler_fingerprint(r), r.seed) == first_fingerprint[:2]
+                for r in requests
+            )
             if homogeneous:
                 shared = self._shared_batch_sampler
-                if shared is None or shared[0] != first_key:
+                if shared is None or shared[0] != first_fingerprint:
                     fn = make_sampler(
-                        temp=requests[0].temperature, top_p=requests[0].top_p
+                        temp=requests[0].temperature,
+                        top_p=requests[0].top_p,
+                        min_p=requests[0].min_p,
+                        top_k=_effective_top_k(requests[0].top_k, vocab_size),
                     )
-                    shared = (first_key, fn)
+                    shared = (first_fingerprint, fn)
                     self._shared_batch_sampler = shared
                 sampled = shared[1](logprobs)
             else:
                 sampled_tokens = []
                 for i, req in enumerate(requests):
-                    sampler_key = (req.temperature, req.top_p)
-                    cached = getattr(req, "_cached_sampler", None)
-                    if cached is None or cached[0] != sampler_key:
-                        req_sampler = make_sampler(
-                            temp=req.temperature, top_p=req.top_p
-                        )
-                        req._cached_sampler = (sampler_key, req_sampler)
-                    else:
-                        req_sampler = cached[1]
+                    req_sampler = _request_cached_sampler(req, vocab_size)
                     sampled_tokens.append(req_sampler(logprobs[i : i + 1]))
                 sampled = mx.concatenate(sampled_tokens, axis=0)
         else:
+            # Degenerate rows-without-metadata branch: ``requests`` is
+            # empty or its length no longer matches the logits rows, so
+            # there is no row→request mapping to honour extended params
+            # with. Retain the pre-parity generator-global sampler — the
+            # batch-level defaults — rather than guessing per-row knobs.
+            # Live call paths always pass the active batch's own requests
+            # alongside its logits, so this only guards internal misuse.
             sampled = self.sampler(logprobs)
 
         return sampled, list(logprobs)

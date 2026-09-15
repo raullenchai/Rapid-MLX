@@ -22,9 +22,9 @@ from vllm_mlx.api import utils as api_utils
 from vllm_mlx.config import reset_config
 from vllm_mlx.engine.base import GenerationOutput
 from vllm_mlx.engine.batched import (
+    _EXTENDED_SAMPLING_KEYS,
     _LANE_PARITY_PROCESSOR_KEYS,
     _LANE_PARITY_SAMPLING_KEYS,
-    _TEXT_ONLY_SAMPLING_KEYS,
     BatchedEngine,
 )
 from vllm_mlx.middleware.exception_handlers import (
@@ -37,9 +37,12 @@ from vllm_mlx.middleware.exception_handlers import (
 LANE_CAPABILITIES = {
     "media": {"text": False, "multimodal": True},
     "speculative_decode": {"text": True, "multimodal": False},
-    "top_k": {"text": True, "multimodal": False},
-    "min_p": {"text": True, "multimodal": False},
-    "seed": {"text": True, "multimodal": False},
+    # Extended sampling keys are honored by both lanes since the
+    # sampling-parity fix: a seeded/top-k/min-p media request no longer
+    # silently drops them.
+    "top_k": {"text": True, "multimodal": True},
+    "min_p": {"text": True, "multimodal": True},
+    "seed": {"text": True, "multimodal": True},
     "prefix_cache_usage": {"text": True, "multimodal": True},
     "cached_tokens_usage": {"text": True, "multimodal": True},
 }
@@ -526,8 +529,14 @@ def _assert_shared_semantics(
             "presence_penalty": 0.3,
             "frequency_penalty": -0.2,
         }
-        for key in _TEXT_ONLY_SAMPLING_KEYS:
-            assert key not in captured
+        # Sampling parity: the extended keys are forwarded to the MLLM
+        # scheduler as explicit keyword arguments, exactly like the text
+        # lane's ``SamplingParams`` fields.
+        assert {key: captured[key] for key in _EXTENDED_SAMPLING_KEYS} == {
+            "top_k": 17,
+            "min_p": 0.08,
+            "seed": 42,
+        }
         return
 
     params = captured["sampling_params"]
@@ -536,7 +545,7 @@ def _assert_shared_semantics(
         "presence_penalty": 0.3,
         "frequency_penalty": -0.2,
     }
-    assert {key: getattr(params, key) for key in _TEXT_ONLY_SAMPLING_KEYS} == {
+    assert {key: getattr(params, key) for key in _EXTENDED_SAMPLING_KEYS} == {
         "top_k": 17,
         "min_p": 0.08,
         "seed": 42,
@@ -636,7 +645,13 @@ def test_intentional_lane_differences_are_explicit_and_complete() -> None:
         "cached_tokens_usage",
     }
     assert all(set(row) == {"text", "multimodal"} for row in LANE_CAPABILITIES.values())
-    for name in {"media", "speculative_decode", "top_k", "min_p", "seed"}:
+    for name in {"media", "speculative_decode"}:
         assert LANE_CAPABILITIES[name]["text"] != LANE_CAPABILITIES[name]["multimodal"]
-    for name in {"prefix_cache_usage", "cached_tokens_usage"}:
+    for name in {
+        "top_k",
+        "min_p",
+        "seed",
+        "prefix_cache_usage",
+        "cached_tokens_usage",
+    }:
         assert LANE_CAPABILITIES[name] == {"text": True, "multimodal": True}
