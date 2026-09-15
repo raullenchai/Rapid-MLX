@@ -397,9 +397,17 @@ segmented `4 + 1` at 259.65 seconds: 2.079x end to end and 51.91% lower
 latency. Both reported zero swap; peak footprint increased 3.05% from 39.65 to
 40.86 GB. A newly generated standard output exactly matched the prior teacher
 SHA-256. Contact-sheet inspection found no grayscale or structural collapse,
-but composition diverges and motion/audio still require human review. Do not
-add or default the Rapid `generation_mode` API until that review, broader
-prompt/seed qualification, and a second Apple GPU generation pass. The direct
-next action is to consume the existing standard teacher cohort with segmented
-fast renders, then produce a randomized blind bundle without regenerating
-verified byte-identical standards.
+but that first case did not establish non-inferiority.
+
+The broader decoded screen rejected this exact three-adapter set. Five more
+241-frame fast cases remained stable at 259.09-262.39 seconds with zero swap,
+but the chef speech output omitted the requested front-facing speaker across
+20 evenly spaced samples while standard retained the chef's face throughout.
+The existing terminal-Stage-2-only A/B retained the face on both sides, so the
+failure is attributable to segmented Stage 1 or its downstream interaction,
+not terminal Stage 2 alone. Stop qualification work on these adapters. Keep the
+portable, fail-closed runtime/package design, but do not add or default the
+Rapid `generation_mode` API. Vector's next action is to expand prompt/seed and
+semantic coverage in the Stage-1 teacher trajectories, retrain each segment,
+and repeat the decoded gates before cross-generation qualification. Atlas must
+continue to block product exposure of the rejected artifact.

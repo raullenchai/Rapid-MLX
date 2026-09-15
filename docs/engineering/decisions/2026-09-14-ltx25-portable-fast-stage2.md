@@ -136,8 +136,18 @@ reported zero swap. Peak process footprint was 39.65 GB standard and 40.86 GB
 fast, a 3.05% increase. The fresh standard output was byte-identical to the
 previous teacher render, establishing the review baseline identity. Ten-frame
 inspection found coherent rider, bicycle, and forest structure on both sides;
-human review of motion blur, detail, audio content, and synchronization remains
-required before Atlas exposes the product API.
+however, that single case did not establish non-inferiority.
+
+The broader decoded screen rejects this exact checkpoint set. Five additional
+241-frame fast renders completed in 259.09-262.39 seconds with zero swap, but
+the chef speech case omitted the requested front-facing speaker across 20
+evenly spaced samples; the standard render retained the chef's face throughout.
+The existing terminal-Stage-2-only pair retained the face on both sides, which
+isolates the regression to segmented Stage 1 or its downstream interaction,
+not terminal Stage 2 alone. The 2.079x result therefore validates the timing
+model and portable lifecycle only. These adapters must not be exposed, shipped,
+or default-enabled. Retrain Stage 1 with broader semantic and distributional
+coverage before restarting decoded qualification.
 
 ## Artifact contract
 
