@@ -411,3 +411,11 @@ Rapid `generation_mode` API. Vector's next action is to expand prompt/seed and
 semantic coverage in the Stage-1 teacher trajectories, retrain each segment,
 and repeat the decoded gates before cross-generation qualification. Atlas must
 continue to block product exposure of the rejected artifact.
+
+Upstream `d524c95` implements the clean-base independent control and makes
+segmented packaging reject shared/cumulative checkpoint provenance. Full
+upstream tests pass (`770 passed, 22 skipped`). MZR-3 is training that control
+without deleting any existing artifacts; each span retains only its final
+checkpoint to fit the remaining disk budget. This does not remove the need for
+broader data: the current Stage-1 train split is only eight trajectories from
+four duplicated prompts and contains no human face or speech example.

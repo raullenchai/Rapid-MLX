@@ -149,6 +149,14 @@ model and portable lifecycle only. These adapters must not be exposed, shipped,
 or default-enabled. Retrain Stage 1 with broader semantic and distributional
 coverage before restarting decoded qualification.
 
+Post-failure inspection also found that the rejected checkpoints were trained
+cumulatively even though runtime applied them as separate spans: `3 -> 5`
+inherited `0 -> 3`, and `5 -> 7` inherited both earlier updates. This is a
+confound, not proof that segmented execution itself cannot preserve quality.
+The next control must initialize every span adapter from the same clean base
+and bind that training provenance into the package. A shared or cumulative
+checkpoint must fail segmented packaging.
+
 ## Artifact contract
 
 The accepted adapter should ship inside an immutable model revision beside the
