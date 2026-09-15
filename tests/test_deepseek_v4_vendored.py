@@ -138,7 +138,7 @@ def test_heterogeneous_routed_projection_quantization_stays_unfused():
         f"{prefix}.gate_proj.biases": mx.zeros((4, 16, 2)),
         f"{prefix}.up_proj.weight": mx.ones((4, 16, 4), dtype=mx.uint32),
         f"{prefix}.up_proj.scales": mx.ones((4, 16, 1)),
-        f"{prefix}.up_proj.biases": mx.zeros((4, 16, 1)),
+        f"{prefix}.up_proj.biases": mx.ones((4, 16, 1)),
     }
     sanitized = deepseek_v4.Model.sanitize(SimpleNamespace(args=args, mtp=[]), weights)
 
@@ -165,6 +165,10 @@ def test_heterogeneous_routed_projection_quantization_stays_unfused():
     assert moe.switch_mlp.up_proj.group_size == 64
     assert moe.switch_mlp.gate_proj.scales.shape == (4, 16, 2)
     assert moe.switch_mlp.up_proj.scales.shape == (4, 16, 1)
+    assert sanitized[f"{prefix}.gate_proj.biases"].shape == (4, 16, 2)
+    assert sanitized[f"{prefix}.up_proj.biases"].shape == (4, 16, 1)
+    assert mx.all(moe.switch_mlp.gate_proj.biases == 0).item()
+    assert mx.all(moe.switch_mlp.up_proj.biases == 1).item()
     assert mx.array_equal(
         moe.switch_mlp.gate_proj.weight, sanitized[f"{prefix}.gate_proj.weight"]
     ).item()
