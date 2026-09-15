@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import re
+from dataclasses import dataclass
 from typing import Any
 
 from .models import AgentProfile
@@ -39,22 +40,68 @@ CONSERVATIVE_LOCAL_PROFILE = AgentProfile(
     max_output_tokens=900,
 )
 
-# Personal Intelligence is a product qualification, not a synonym for “the
-# model can emit tool calls.”  Keep this allowlist beside the actual runtime
-# profiles so every client observes one server-owned model → harness decision.
-# A new identity enters this map only after its exact model pairing has passed
-# the qualification harness and physical-Mac dogfood.
-_PERSONAL_INTELLIGENCE_MODEL_BINDINGS = {
-    # OpenBMB's curated MLX Q4 appears under both the Rapid alias and HF id.
-    "minicpm5-2b-4bit": ("minicpm5-2b-q4", "minicpm5-2b", "minicpm"),
-    "openbmb/minicpm5-2b-mlx": ("minicpm5-2b-q4", "minicpm5-2b", "minicpm"),
-    # Separately qualified on the same harness; not recommended for 8 GB.
-    "mlx-community/minicpm5-2b-8bit": (
-        "minicpm5-2b-q8",
-        "minicpm5-2b",
-        "minicpm",
+
+@dataclass(frozen=True)
+class PersonalIntelligenceQualification:
+    """One evidence-backed model artifact and harness pairing.
+
+    Public names and backing artifact names are separate because a Rapid alias
+    is user-facing while the loaded repository is the runtime identity. Two
+    quantizations may share a harness and parser without sharing qualification.
+    """
+
+    id: str
+    public_identities: frozenset[str]
+    backing_identities: frozenset[str]
+    profile: AgentProfile
+    tool_call_parser: str
+    evidence: str
+
+
+PERSONAL_INTELLIGENCE_QUALIFICATIONS = (
+    PersonalIntelligenceQualification(
+        id="minicpm5-2b-q4-v1",
+        public_identities=frozenset({"minicpm5-2b-4bit", "openbmb/minicpm5-2b-mlx"}),
+        backing_identities=frozenset({"minicpm5-2b-4bit", "openbmb/minicpm5-2b-mlx"}),
+        profile=MINICPM5_2B_PROFILE,
+        tool_call_parser="minicpm",
+        evidence=(
+            "docs/engineering/performance/2026-09-13-minicpm5-small-agent-harness-ab.md"
+        ),
     ),
-}
+    # This is a 16 GB candidate only. It is deliberately a distinct receipt:
+    # sharing MiniCPM's harness must not let a Q4 alias qualify Q8 weights.
+    PersonalIntelligenceQualification(
+        id="minicpm5-2b-q8-v1",
+        public_identities=frozenset({"mlx-community/minicpm5-2b-8bit"}),
+        backing_identities=frozenset({"mlx-community/minicpm5-2b-8bit"}),
+        profile=MINICPM5_2B_PROFILE,
+        tool_call_parser="minicpm",
+        evidence=(
+            "docs/engineering/performance/2026-09-13-minicpm5-small-agent-harness-ab.md"
+        ),
+    ),
+)
+
+
+def _normalize_identity(identity: str) -> str:
+    return identity.casefold().replace("_", "-")
+
+
+def _qualification_index() -> dict[str, PersonalIntelligenceQualification]:
+    result: dict[str, PersonalIntelligenceQualification] = {}
+    for qualification in PERSONAL_INTELLIGENCE_QUALIFICATIONS:
+        for identity in qualification.public_identities:
+            normalized = _normalize_identity(identity)
+            if normalized in result:
+                raise RuntimeError(
+                    f"duplicate Personal Intelligence identity: {identity}"
+                )
+            result[normalized] = qualification
+    return result
+
+
+_PERSONAL_INTELLIGENCE_BY_PUBLIC_ID = _qualification_index()
 
 _MINICPM5_2B_CATALOG_IDENTITIES = frozenset(
     {
@@ -101,7 +148,7 @@ def resolve_agent_profile(
 ) -> AgentProfile:
     """Return budgets from catalog identity or exact loaded-model metadata."""
 
-    normalized = model.casefold().replace("_", "-")
+    normalized = _normalize_identity(model)
     catalog_match = (
         normalized in _MINICPM5_2B_CATALOG_IDENTITIES
         or _MINICPM5_2B_TRUSTED_REPO.fullmatch(normalized) is not None
@@ -131,23 +178,23 @@ def resolve_personal_intelligence_profile(
     the generic fallback cannot opt a model into Personal Intelligence.
     """
 
-    normalized = model.casefold().replace("_", "-")
-    binding = _PERSONAL_INTELLIGENCE_MODEL_BINDINGS.get(normalized)
+    normalized = _normalize_identity(model)
+    qualification = _PERSONAL_INTELLIGENCE_BY_PUBLIC_ID.get(normalized)
     backing_identity = model if backing_model is None else backing_model
-    backing_normalized = backing_identity.casefold().replace("_", "-")
-    backing_binding = _PERSONAL_INTELLIGENCE_MODEL_BINDINGS.get(backing_normalized)
-    if binding is None or backing_binding != binding:
+    backing_normalized = _normalize_identity(backing_identity)
+    if qualification is None or backing_normalized not in map(
+        _normalize_identity, qualification.backing_identities
+    ):
         return None
-    _, expected_name, expected_parser = binding
     # A known checkpoint served with its parser explicitly disabled or
     # overridden is not the pairing that passed qualification.
-    if tool_call_parser != expected_parser:
+    if tool_call_parser != qualification.tool_call_parser:
         return None
     profile = resolve_agent_profile(
         model,
         model_config=model_config,
         tool_call_parser=tool_call_parser,
     )
-    if profile.name != expected_name:
+    if profile.name != qualification.profile.name:
         return None
     return profile

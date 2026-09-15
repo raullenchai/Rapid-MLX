@@ -66,12 +66,20 @@ The qualification field is additive to the OpenAI model card:
 `null` means ordinary Chat, including for models that otherwise advertise tool
 support. At run creation Desktop also checks that the returned runtime profile
 matches this model-card value; a mismatch is cancelled rather than falling back
-to a generic harness. Qualification also requires the exact tested backing
-checkpoint and live native parser; an alias reused for other weights, an
+to a generic harness. Qualification also requires the tested backing repository
+identity and live native parser; an alias reused for other weights, an
 incompatible parser override, or `--no-tool-call-parser` returns `null`.
-Currently qualified identities are the tested MiniCPM5-2B MLX Q4
-alias/repository and the separately tested MLX Q8 repository. BF16, renamed
-local copies, and every non-MiniCPM model remain unqualified.
+
+Each admitted pairing is a versioned
+`PersonalIntelligenceQualification`: public model identities, backing artifact
+identities, parser, harness profile, and a repository-relative evidence report.
+Quantizations remain separate qualifications even when they share a parser and
+harness. Adding a name to a broad family matcher is therefore insufficient to
+enable the product. Currently admitted identities are the tested MiniCPM5-2B
+MLX Q4 alias/repository and the separately tested MLX Q8 repository. BF16,
+renamed local copies, and every non-MiniCPM model remain unqualified. The Q8
+receipt is a 16 GB candidate and does not inherit the Q4 model's 8 GB
+recommendation.
 
 ## Start the server
 

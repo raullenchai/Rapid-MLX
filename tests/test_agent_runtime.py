@@ -3,12 +3,14 @@
 import gc
 import weakref
 from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
 from threading import Barrier
 
 import pytest
 from pydantic import ValidationError
 
 from vllm_mlx.agent_runtime import (
+    PERSONAL_INTELLIGENCE_QUALIFICATIONS,
     AgentEvent,
     AgentModelTurn,
     AgentProfile,
@@ -81,33 +83,85 @@ def test_personal_intelligence_requires_a_qualified_model_profile():
         )
         is None
     )
-    assert resolve_personal_intelligence_profile(
-        "qwen3.5-4b-4bit", tool_call_parser="hermes"
-    ) is None
-    assert resolve_personal_intelligence_profile(
-        "gemma-4-e2b-4bit", tool_call_parser="gemma4"
-    ) is None
-    assert resolve_personal_intelligence_profile(
-        "openbmb/MiniCPM5-2B-bf16", tool_call_parser="minicpm"
-    ) is None
-    assert resolve_personal_intelligence_profile(
-        "/models/minicpm5-2b-copy", tool_call_parser="minicpm"
-    ) is None
-    assert resolve_personal_intelligence_profile(
-        "minicpm5-2b-4bit",
-        backing_model="someone/other-weights",
-        tool_call_parser="minicpm",
-    ) is None
-    assert resolve_personal_intelligence_profile(
-        "minicpm5-2b-4bit",
-        backing_model="mlx-community/MiniCPM5-2B-8bit",
-        tool_call_parser="minicpm",
-    ) is None
-    assert resolve_personal_intelligence_profile(
-        "mlx-community/MiniCPM5-2B-8bit",
-        backing_model="openbmb/MiniCPM5-2B-MLX",
-        tool_call_parser="minicpm",
-    ) is None
+    assert (
+        resolve_personal_intelligence_profile(
+            "qwen3.5-4b-4bit", tool_call_parser="hermes"
+        )
+        is None
+    )
+    assert (
+        resolve_personal_intelligence_profile(
+            "gemma-4-e2b-4bit", tool_call_parser="gemma4"
+        )
+        is None
+    )
+    assert (
+        resolve_personal_intelligence_profile(
+            "openbmb/MiniCPM5-2B-bf16", tool_call_parser="minicpm"
+        )
+        is None
+    )
+    assert (
+        resolve_personal_intelligence_profile(
+            "/models/minicpm5-2b-copy", tool_call_parser="minicpm"
+        )
+        is None
+    )
+    assert (
+        resolve_personal_intelligence_profile(
+            "minicpm5-2b-4bit",
+            backing_model="someone/other-weights",
+            tool_call_parser="minicpm",
+        )
+        is None
+    )
+    assert (
+        resolve_personal_intelligence_profile(
+            "minicpm5-2b-4bit",
+            backing_model="mlx-community/MiniCPM5-2B-8bit",
+            tool_call_parser="minicpm",
+        )
+        is None
+    )
+    assert (
+        resolve_personal_intelligence_profile(
+            "mlx-community/MiniCPM5-2B-8bit",
+            backing_model="openbmb/MiniCPM5-2B-MLX",
+            tool_call_parser="minicpm",
+        )
+        is None
+    )
+
+
+def test_personal_intelligence_qualifications_are_unique_and_evidence_backed():
+    root = Path(__file__).resolve().parents[1]
+    qualification_ids = [item.id for item in PERSONAL_INTELLIGENCE_QUALIFICATIONS]
+    assert len(qualification_ids) == len(set(qualification_ids))
+
+    public_identities: list[str] = []
+    for qualification in PERSONAL_INTELLIGENCE_QUALIFICATIONS:
+        assert qualification.profile.name != "default"
+        assert qualification.tool_call_parser
+        evidence = Path(qualification.evidence)
+        assert not evidence.is_absolute()
+        resolved_evidence = (root / evidence).resolve()
+        resolved_evidence.relative_to(root / "docs" / "engineering" / "performance")
+        assert resolved_evidence.suffix == ".md"
+        assert resolved_evidence.is_file()
+        public_identities.extend(
+            identity.casefold().replace("_", "-")
+            for identity in qualification.public_identities
+        )
+        for public_identity in qualification.public_identities:
+            for backing_identity in qualification.backing_identities:
+                resolved = resolve_personal_intelligence_profile(
+                    public_identity,
+                    backing_model=backing_identity,
+                    tool_call_parser=qualification.tool_call_parser,
+                )
+                assert resolved == qualification.profile
+
+    assert len(public_identities) == len(set(public_identities))
 
 
 def test_minicpm_profile_uses_exact_loaded_metadata_for_custom_local_paths():
