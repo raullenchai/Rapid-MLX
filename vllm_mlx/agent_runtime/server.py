@@ -142,15 +142,20 @@ _DESKTOP_CLIENT_TOOL_SPECS = (
     ),
 )
 _DESKTOP_CLIENT_TOOL_NAMES = frozenset(tool.name for tool in _DESKTOP_CLIENT_TOOL_SPECS)
-_WEATHER_INTENT = re.compile(
-    r"\b(?:weather|temperature|forecast)\b|天气|温度|气温|预报",
+_EXPLICIT_WEATHER_REQUEST = re.compile(
+    r"\b(?:what(?:'s|\s+is)|give|show|tell|get|check|find)\b.{0,80}"
+    r"\b(?:weather|temperature|forecast)\b|"
+    r"\b(?:weather|temperature)\s+(?:in|for)\b|"
+    r"(?:查|看看|告诉|给我).{0,40}(?:天气|温度|气温|预报)|"
+    r"(?:天气|温度|气温|预报).{0,20}(?:怎么样|如何|多少)",
     re.IGNORECASE,
 )
-_WEB_INTENT = re.compile(
-    r"\b(?:search|look\s+up|online|web|latest|recent|news|source|verify|"
-    r"release|version|price|stock|score|schedule|president|ceo)\b|"
-    r"搜索|查一下|查找|网上|网页|网站|最新|新闻|来源|核实|价格|股价|比分|"
-    r"赛程|总统|发布|版本",
+_CURRENT_WEB_LOOKUP = re.compile(
+    r"\b(?:find|check|verify|tell\s+me|show\s+me|what(?:'s|\s+is)|who(?:'s|\s+is))"
+    r"\b.{0,100}\b(?:latest|current|recent|news|release|version|price|stock|"
+    r"score|schedule|president|ceo)\b|"
+    r"(?:查一下|查找|核实|告诉我|看看).{0,60}"
+    r"(?:最新|当前|新闻|来源|价格|股价|比分|赛程|总统|发布|版本)",
     re.IGNORECASE,
 )
 _WEB_PROHIBITION = re.compile(
@@ -171,6 +176,7 @@ _SUPPLIED_TEXT_INTENT = re.compile(
 )
 _EXPLICIT_WEB_ACTION = re.compile(
     r"\b(?:search|look\s+up|browse|find\s+online|open\s+https?://)\b|"
+    r"\b(?:on|from|using)\s+(?:the\s+)?(?:web|internet|online)\b|"
     r"(?:搜索|上网查|联网查|浏览网页|打开\s*https?://)",
     re.IGNORECASE,
 )
@@ -184,9 +190,13 @@ _MULTI_SOURCE_INTENT = re.compile(
     re.IGNORECASE,
 )
 _SENTENCE_COUNT_INTENT = re.compile(
-    r"\b(?P<count>one|two|three|four|five|1|2|3|4|5)"
+    r"(?:\bexactly\s+|\bin\s+(?:exactly\s+)?|"
+    r"\b(?:write|draft|compose|create|give|provide|return|output)\s+(?:a\s+)?)"
+    r"(?P<count>one|two|three|four|five|1|2|3|4|5)"
     r"(?:[\s-]+concise)?[\s-]+sentences?\b|"
-    r"(?P<zh_count>[一二三四五两])(?:个)?(?:简短|简洁)?句(?:话)?",
+    r"\b(?P<hyphen_count>one|two|three|four|five|1|2|3|4|5)-sentence\b|"
+    r"(?:用|以|写|回答|回复|输出)(?P<zh_count>[一二三四五两])"
+    r"(?:个)?(?:简短|简洁)?句(?:话)?",
     re.IGNORECASE,
 )
 _WEATHER_LOCATION = re.compile(
@@ -246,7 +256,9 @@ def _requested_sentence_count(goal: str) -> int | None:
     match = _SENTENCE_COUNT_INTENT.search(goal)
     if match is None:
         return None
-    token = (match.group("count") or match.group("zh_count")).casefold()
+    token = (
+        match.group("count") or match.group("hyphen_count") or match.group("zh_count")
+    ).casefold()
     return {
         "one": 1,
         "two": 2,
@@ -341,8 +353,11 @@ def _route_desktop_client_tools(goal: str, names: list[str]) -> list[str]:
         and _EXPLICIT_WEB_ACTION.search(goal) is None
     )
     web_prohibited = _WEB_PROHIBITION.search(goal) is not None or supplied_text
-    weather = _WEATHER_INTENT.search(goal) is not None and not web_prohibited
-    web = _WEB_INTENT.search(goal) is not None and not web_prohibited
+    weather = _EXPLICIT_WEATHER_REQUEST.search(goal) is not None and not web_prohibited
+    web = (
+        _EXPLICIT_WEB_ACTION.search(goal) is not None
+        or _CURRENT_WEB_LOOKUP.search(goal) is not None
+    ) and not web_prohibited
     url = _WEB_URL.search(goal) is not None and not web_prohibited
     explicit_search = (
         _EXPLICIT_SEARCH_ACTION.search(goal) is not None and not web_prohibited

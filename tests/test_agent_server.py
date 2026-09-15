@@ -257,6 +257,15 @@ def test_desktop_tool_routing_is_intent_scoped_and_preserves_non_desktop_names()
     assert _route_desktop_client_tools(
         "Summarize these latest release notes: private draft text", offered
     ) == ["custom__read"]
+    assert _route_desktop_client_tools("Review this source code", offered) == [
+        "custom__read"
+    ]
+    assert _route_desktop_client_tools("Create a release schedule", offered) == [
+        "custom__read"
+    ]
+    assert _route_desktop_client_tools("Create a revenue forecast for Q4", offered) == [
+        "custom__read"
+    ]
     assert _route_desktop_client_tools(
         "Search the web and summarize these latest release notes", offered
     ) == ["custom__read", "web_search", "browse"]
@@ -316,6 +325,13 @@ def test_explicit_sentence_count_gets_one_bounded_correction():
             "Write a two-sentence welcome.", AgentModelTurn(content="One. Two. Three.")
         )
         is not None
+    )
+    assert (
+        _format_retry_instruction(
+            "Summarize these two sentences: Alpha. Beta.",
+            AgentModelTurn(content="Summary."),
+        )
+        is None
     )
 
 
