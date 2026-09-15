@@ -29,12 +29,63 @@ protocol AgentRuntimeTransport: Sendable {
     func cancel(runID: String, bearerToken: String?) async throws -> AgentRunView
 }
 
-enum AgentRuntimeFeatureConfig {
-    static let enabledKey = "Rapid.experimental.agentRuntimeEnabled"
-    static let defaultEnabled = false
+enum PersonalIntelligenceConfig {
+    static let introductionCompletedKey =
+        "Rapid.personalIntelligence.introductionCompleted"
+    static let preferredEnabledKey = "Rapid.personalIntelligence.preferredEnabled"
+    static let conversationStatesKey = "Rapid.personalIntelligence.conversationStates"
+    static let defaultPreferredEnabled = true
 
-    static func isEnabled(in defaults: UserDefaults = .standard) -> Bool {
-        defaults.object(forKey: enabledKey) as? Bool ?? defaultEnabled
+    static func supportsModel(_ alias: String) -> Bool {
+        ToolUseCapability.confidence(for: alias) == .known
+    }
+
+    static func loadConversationStates(
+        from defaults: UserDefaults = .standard
+    ) -> [UUID: Bool] {
+        guard let stored = defaults.dictionary(forKey: conversationStatesKey) else {
+            return [:]
+        }
+        return stored.reduce(into: [:]) { result, entry in
+            guard let id = UUID(uuidString: entry.key), let enabled = entry.value as? Bool else {
+                return
+            }
+            result[id] = enabled
+        }
+    }
+
+    static func saveConversationStates(
+        _ states: [UUID: Bool],
+        to defaults: UserDefaults = .standard
+    ) {
+        defaults.set(
+            Dictionary(uniqueKeysWithValues: states.map { ($0.key.uuidString, $0.value) }),
+            forKey: conversationStatesKey
+        )
+    }
+
+    static func reconciledConversationStates(
+        _ states: [UUID: Bool],
+        activeConversationID: UUID,
+        storedConversationIDs: Set<UUID>,
+        introductionCompleted: Bool,
+        preferredEnabled: Bool
+    ) -> [UUID: Bool] {
+        let retainedIDs = storedConversationIDs.union([activeConversationID])
+        var result = states.filter { retainedIDs.contains($0.key) }
+
+        // Previously saved conversations must not be retroactively opted in
+        // when the user accepts the introduction. Only a genuinely new draft
+        // inherits the default preference.
+        for id in storedConversationIDs where result[id] == nil {
+            result[id] = false
+        }
+        if result[activeConversationID] == nil {
+            result[activeConversationID] = storedConversationIDs.contains(activeConversationID)
+                ? false
+                : introductionCompleted && preferredEnabled
+        }
+        return result
     }
 }
 

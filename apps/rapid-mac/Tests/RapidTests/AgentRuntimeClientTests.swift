@@ -175,14 +175,66 @@ struct AgentRuntimeClientTests {
         }
     }
 
-    @Test("Agent runtime remains opt-in")
-    func featureFlag() {
+    @Test("Personal Intelligence recognizes only verified models")
+    func personalIntelligenceModelSupport() {
+        #expect(PersonalIntelligenceConfig.supportsModel("minicpm5-2b-4bit"))
+        #expect(PersonalIntelligenceConfig.supportsModel("qwen3.5-4b-4bit"))
+        #expect(!PersonalIntelligenceConfig.supportsModel("phi-4-mini-4bit"))
+        #expect(!PersonalIntelligenceConfig.supportsModel("future-model-7b"))
+    }
+
+    @Test("Only new conversations inherit the post-consent default")
+    func personalIntelligenceConversationDefaults() {
+        let oldA = UUID()
+        let oldB = UUID()
+        let newDraft = UUID()
+
+        let existing = PersonalIntelligenceConfig.reconciledConversationStates(
+            [:],
+            activeConversationID: oldA,
+            storedConversationIDs: [oldA, oldB],
+            introductionCompleted: true,
+            preferredEnabled: true
+        )
+        #expect(existing[oldA] == false)
+        #expect(existing[oldB] == false)
+
+        let created = PersonalIntelligenceConfig.reconciledConversationStates(
+            existing,
+            activeConversationID: newDraft,
+            storedConversationIDs: [oldA, oldB],
+            introductionCompleted: true,
+            preferredEnabled: true
+        )
+        #expect(created[newDraft] == true)
+
+        let declined = PersonalIntelligenceConfig.reconciledConversationStates(
+            [:],
+            activeConversationID: newDraft,
+            storedConversationIDs: [],
+            introductionCompleted: false,
+            preferredEnabled: true
+        )
+        #expect(declined[newDraft] == false)
+    }
+
+    @Test("Per-conversation choices round-trip through preferences")
+    func personalIntelligencePersistence() throws {
         let suite = "AgentRuntimeClientTests.\(UUID().uuidString)"
-        let defaults = UserDefaults(suiteName: suite)!
+        let defaults = try #require(UserDefaults(suiteName: suite))
         defer { defaults.removePersistentDomain(forName: suite) }
-        #expect(!AgentRuntimeFeatureConfig.isEnabled(in: defaults))
-        defaults.set(true, forKey: AgentRuntimeFeatureConfig.enabledKey)
-        #expect(AgentRuntimeFeatureConfig.isEnabled(in: defaults))
+        let enabled = UUID()
+        let disabled = UUID()
+
+        PersonalIntelligenceConfig.saveConversationStates(
+            [enabled: true, disabled: false],
+            to: defaults
+        )
+
+        #expect(PersonalIntelligenceConfig.loadConversationStates(from: defaults) == [
+            enabled: true,
+            disabled: false,
+        ])
     }
 
     private static func jsonBody(at index: Int) throws -> [String: Any] {

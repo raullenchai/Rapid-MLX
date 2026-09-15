@@ -10,6 +10,44 @@ in-flight runs, and completed runs expire after 15 minutes. Use ordinary
 `/v1/chat/completions` or `/v1/responses` when a managed tool loop is not
 needed; those endpoints are unchanged.
 
+## Use Personal Intelligence in Desktop
+
+Desktop presents the runtime as **Personal Intelligence**, not as a separate
+Agent product. The single four-point icon beside the Chat attachment button is
+the per-conversation control:
+
+1. Hover the icon to see what the capability does.
+2. On first use, choose **Turn on** after reviewing the local-data and approval
+   contract, or **Not now** to keep ordinary Chat.
+3. After that introduction, click the icon once to turn Personal Intelligence
+   on for the current conversation and click it again to turn it off. A filled
+   indigo icon means on; a neutral icon means off.
+4. New conversations start on after the user has chosen **Turn on**. Any
+   consequential action still receives its own approval prompt. Existing
+   conversations are not opted in retroactively; their choice is stored per
+   conversation.
+
+Personal Intelligence is fail-closed by model. Desktop enables it only for
+aliases whose tool-call behavior has passed Rapid's empirical capability gate.
+MiniCPM5-2B is the measured low-memory path; verified Qwen, Llama, Gemma, GLM,
+GPT-OSS, Mistral/Devstral, and other listed families share the same runtime
+through their own server-selected parser and budget profile. A model known to
+ignore or corrupt tool calls, or a new model that has not yet been qualified,
+stays on ordinary Chat. Hovering its neutral icon explains why and suggests a
+verified model. Switching back to a verified model restores that
+conversation's prior on/off choice.
+
+The introduction copy is the user contract:
+
+> Use your Mac’s tools and local context to get things done.
+>
+> Reads only what you choose. Asks before making changes. Runs locally by
+> default.
+
+Personal Intelligence currently accepts text tasks. Turn it off before adding
+a normal Chat attachment; model-native image and document attachment behavior
+is otherwise unchanged.
+
 ## Start the server
 
 Agent runs use the MCP servers already configured for `serve`:
