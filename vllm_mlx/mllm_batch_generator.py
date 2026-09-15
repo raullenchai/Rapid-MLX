@@ -1410,9 +1410,52 @@ class MLLMBatchGenerator:
             return None
         return rendered_tokens - request.prefix_boundary
 
-    @staticmethod
-    def _media_identity_digest(request: MLLMBatchRequest) -> str | None:
-        """Cache key: ordered media content, content-keyed.
+    def _media_semantics_salt(self) -> str:
+        """Stable salt over semantic inputs that change KV meaning without
+        changing image bytes: the model/processor dependency set (the text
+        APC's ``semantic_extra_hash`` when the manager exists, a structural
+        fallback otherwise) and the engine's vision pixel bounds.
+        Process-fixed settings (chat template, model revision, adapter) die
+        with the process and need no keying; a per-request pixel cap that
+        actually binds changes the expanded token stream and is caught by
+        the strict token-prefix check."""
+        cached = getattr(self, "_media_semantics_salt_cache", None)
+        if cached is not None:
+            hit: str = cached
+            return hit
+        try:
+            from mlx_vlm import apc as _apc
+
+            salt = str(
+                _apc.semantic_extra_hash(model=self.model, processor=self.processor)
+            )
+        except Exception:
+            salt = "|".join(
+                (
+                    type(self.model).__name__,
+                    type(self.processor).__name__,
+                    str(
+                        int(
+                            getattr(
+                                getattr(self.model, "config", None),
+                                "image_token_id",
+                                0,
+                            )
+                            or 0
+                        )
+                    ),
+                )
+            )
+        salt = (
+            f"{salt}#{int(getattr(self, 'vision_min_pixels', 0) or 0)}"
+            f"#{int(getattr(self, 'vision_max_pixels', 0) or 0)}"
+        )
+        cached_salt: str = salt
+        self._media_semantics_salt_cache = cached_salt
+        return cached_salt
+
+    def _media_identity_digest(self, request: MLLMBatchRequest) -> str | None:
+        """Cache key: ordered media content plus the semantic salt.
 
         ``vision_feature_key`` is only stamped for models honouring the
         vision-feature-cache contract, so fall back to hashing the request's
@@ -1420,10 +1463,12 @@ class MLLMBatchGenerator:
         file paths). Identity MUST be content-keyed: two turns rendering the
         same token prefix with different image bytes must never share an
         entry — the strict token-prefix check cannot tell them apart. The
-        full key string (not a truncated hash) keys the OrderedDict: the
-        strict token-prefix gate already guards collisions for *stored*
-        tokens, but keying on the digest itself keeps distinct media sets
-        from ever sharing an entry.
+        digest folds ``_media_semantics_salt`` so stored KV/MRoPE state is
+        never reused across a semantics-changing configuration. The full
+        key string (not a truncated hash) keys the OrderedDict: the strict
+        token-prefix gate already guards collisions for *stored* tokens,
+        but keying on the digest itself keeps distinct media sets from ever
+        sharing an entry.
         """
         key = request.vision_feature_key
         if not key:
@@ -1434,7 +1479,9 @@ class MLLMBatchGenerator:
                 key = compute_images_hash(images)
             except Exception:
                 return None
-        return key if isinstance(key, str) else None
+        if not isinstance(key, str):
+            return None
+        return f"{key}#{self._media_semantics_salt()}"
 
     def _media_model_supports_rope_kwarg(self) -> bool:
         """The split boundary forward needs ``rope_deltas`` through the call.
@@ -1641,6 +1688,13 @@ class MLLMBatchGenerator:
                 and not any(token in placeholder_ids for token in full_ids[boundary:])
             ):
                 self._media_boundary_hits += 1
+                # Promote on hit: frequently resumed media must not be
+                # evicted ahead of colder entries (LRU, not FIFO). The
+                # store is an OrderedDict in production; plain-dict stand-ins
+                # simply skip the promotion.
+                move_to_end = getattr(self._media_boundary_entries, "move_to_end", None)
+                if move_to_end is not None:
+                    move_to_end(digest)
                 return ("resume", entry, boundary)
             # A stored candidate that fails the strict prefix or placeholder
             # check is a clean miss — never a trim or a partial resume. This
@@ -1724,6 +1778,13 @@ class MLLMBatchGenerator:
             rope_delta=rope_delta,
             cache_bytes=_media_leaves_bytes(cloned),
         )
+        # Admission cap: a single entry larger than the whole shared ceiling
+        # can never fit beside anything, and holding it makes every budget
+        # calculation degenerate. Discard the snapshot — the caller continues
+        # the suffix on the live cache, exactly like an uncloneable store.
+        budget = self._media_resolved_budget()
+        if budget > 0 and entry.cache_bytes > budget:
+            return None
         # Replacing an existing entry for the same digest: drop the old
         # bytes first so the budget sees the net footprint.
         self._media_boundary_entries.pop(digest, None)
@@ -1757,16 +1818,10 @@ class MLLMBatchGenerator:
         except Exception:
             return 0
 
-    def _media_enforce_budget(self) -> None:
-        """Evict oldest media entries until the store fits the byte budget.
-
-        Shares the engine-wide prefix-cache byte budget with the text exact
-        cache: the ceiling is resolved once (``_configure_exact_cache_capacity``)
-        and the text cache's current footprint is credited against it, so
-        the two stores together cannot exceed the same limit the text lane
-        enforces alone. Always keeps the newest entry even when it alone
-        exceeds the budget — identical to the text-lane budget contract.
-        """
+    def _media_resolved_budget(self) -> int:
+        """The engine-wide byte ceiling the media store shares with the text
+        exact cache, resolved from the explicit setting, the text ceiling,
+        or the memory-cache fraction (in that order)."""
         if self._media_boundary_max_bytes <= 0:
             self._media_boundary_max_bytes = int(
                 getattr(self, "_prefix_cache_max_bytes", 0) or 0
@@ -1780,17 +1835,38 @@ class MLLMBatchGenerator:
                 )
             except Exception:
                 self._media_boundary_max_bytes = 0
-        budget = self._media_boundary_max_bytes
+        return self._media_boundary_max_bytes
+
+    def _media_enforce_budget(self) -> None:
+        """Keep the media store inside the shared engine-wide byte budget.
+
+        Own entries are evicted oldest-first; when they are exhausted and
+        the combined footprint still exceeds the ceiling, the media
+        insertion evicts TEXT exact entries oldest-first (coordinated
+        eviction) rather than letting the two stores grow apart. Each side
+        retains at most its newest entry past the ceiling and no side
+        admits a single entry larger than the whole ceiling (admission cap
+        in ``_media_store``), so the combined worst case is bounded — at
+        most one oversize entry per store — not unbounded.
+        """
+        budget = self._media_resolved_budget()
         if budget <= 0:
             return
-        total = self._exact_cache_footprint_bytes() + sum(
+        media_bytes = sum(
             entry.cache_bytes for entry in self._media_boundary_entries.values()
         )
+        total = self._exact_cache_footprint_bytes() + media_bytes
         while len(self._media_boundary_entries) > 1 and total > budget:
             oldest = next(iter(self._media_boundary_entries))
             evicted = self._media_boundary_entries.pop(oldest)
+            media_bytes -= evicted.cache_bytes
             total -= evicted.cache_bytes
             self._media_boundary_budget_evictions += 1
+        if total > budget:
+            # Own entries exhausted: reclaim room from the text side. The
+            # text newest always survives, so the residual overage is at
+            # most one text entry past its allowance.
+            self._evict_text_exact_to_fit(budget - media_bytes)
 
     def _media_mrope_save(self) -> None:
         """Capture the model's current MRoPE bookkeeping (sentinel-aware)."""
@@ -2126,28 +2202,26 @@ class MLLMBatchGenerator:
             total += int(getattr(layer, "nbytes", 0) or 0)
         return total
 
-    def _enforce_exact_cache_budget(self, cache: Any) -> None:
-        """Evict the oldest exact entries until the retained snapshots fit
-        the prefix-cache byte budget; the newest entry always survives.
+    def _evict_text_exact_to_fit(
+        self, allowance: int, cache: Any = None
+    ) -> tuple[int, int, int]:
+        """Evict oldest text exact entries until their footprint fits
+        ``allowance`` bytes; the newest entry always survives. Returns
+        ``(freed_bytes, evicted_count, retained_bytes)``.
 
-        The media boundary store shares this ceiling and already credits the
-        text footprint in its own enforcement, so symmetrically the text
-        eviction credits the media bytes — the two stores together can never
-        hold more than the one engine-wide budget plus the newest entries
-        each side retains. When media bytes alone meet the ceiling the text
-        side evicts down to its newest entry, mirroring the media store's
-        own newest-entry guarantee, instead of freezing eviction forever."""
-        max_bytes = int(getattr(self, "_prefix_cache_max_bytes", 0) or 0)
-        if max_bytes <= 0:
-            return
-        budget = max_bytes - sum(
-            entry.cache_bytes
-            for entry in getattr(self, "_media_boundary_entries", {}).values()
-        )
+        Shared eviction primitive for both stores on the one engine-wide
+        ceiling: the text budget calls it with its own allowance, and a
+        media insertion whose own entries are exhausted calls it to reclaim
+        room from the text side (coordinated eviction)."""
+        if cache is None:
+            cache = getattr(self, "_prefix_cache", None)
+        if cache is None:
+            return 0, 0, 0
         found = self._exact_entries(cache)
         if found is None:
-            return
+            return 0, 0, 0
         lock, entries = found
+        freed = 0
         evicted = 0
         with lock:
             sizes = {
@@ -2155,9 +2229,11 @@ class MLLMBatchGenerator:
                 for key, entry in entries.items()
             }
             total = sum(sizes.values())
-            while total > budget and len(entries) > 1:
+            while total > allowance and len(entries) > 1:
                 key, _ = entries.popitem(last=False)
-                total -= sizes.pop(key, 0)
+                size = sizes.pop(key, 0)
+                total -= size
+                freed += size
                 evicted += 1
                 stats = getattr(cache, "stats", None)
                 if stats is not None and hasattr(stats, "evictions"):
@@ -2169,8 +2245,30 @@ class MLLMBatchGenerator:
                 evicted,
                 "y" if evicted == 1 else "ies",
                 total >> 20,
-                budget >> 20,
+                allowance >> 20,
             )
+        return freed, evicted, total
+
+    def _enforce_exact_cache_budget(self, cache: Any) -> None:
+        """Evict the oldest exact entries until the retained snapshots fit
+        the prefix-cache byte budget; the newest entry always survives.
+
+        The media boundary store shares this ceiling and already credits the
+        text footprint in its own enforcement, so symmetrically the text
+        eviction credits the media bytes. When media bytes alone meet the
+        ceiling the text side evicts down to its newest entry, mirroring the
+        media store's own newest-entry guarantee, instead of freezing
+        eviction forever. Each side retains at most its newest entry past
+        the ceiling, and no side admits a single entry larger than the
+        whole ceiling — the combined worst case is bounded, not unbounded."""
+        max_bytes = int(getattr(self, "_prefix_cache_max_bytes", 0) or 0)
+        if max_bytes <= 0:
+            return
+        budget = max_bytes - sum(
+            entry.cache_bytes
+            for entry in getattr(self, "_media_boundary_entries", {}).values()
+        )
+        self._evict_text_exact_to_fit(budget, cache)
 
     def get_prefix_cache_stats(self) -> dict[str, Any] | None:
         """Return the common prefix-cache counter shape for APIs/metrics."""

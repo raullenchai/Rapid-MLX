@@ -40,6 +40,7 @@ from vllm_mlx.mllm_batch_generator import (  # noqa: E402
     MLLMBatchRequest,
     MLLMBatchStats,
     _media_clone_leaves,
+    _media_leaves_bytes,
 )
 from vllm_mlx.mllm_scheduler import MLLMSchedulerConfig  # noqa: E402
 from vllm_mlx.scheduler import SchedulerConfig  # noqa: E402
@@ -606,9 +607,20 @@ class TestMediaIdentity:
     def test_stamped_feature_key_wins(self):
         gen = _stub_generator()
         keyed = _make_request(vision_feature_key="stamped-key")
-        # The full key string keys the OrderedDict — no truncated hash that
-        # could alias distinct media sets.
-        assert gen._media_identity_digest(keyed) == "stamped-key"
+        # The stamped key leads the digest verbatim (no truncated hash that
+        # could alias distinct media sets), suffixed by the semantic salt
+        # so a semantics-changing configuration never shares an entry.
+        digest = gen._media_identity_digest(keyed)
+        assert digest is not None and digest.startswith("stamped-key#")
+        # The salt is stable per model and folds the pixel bounds.
+        assert gen._media_identity_digest(keyed) == digest
+        assert gen._media_semantics_salt().endswith(
+            f"#{int(getattr(gen, 'vision_min_pixels', 0) or 0)}"
+            f"#{int(getattr(gen, 'vision_max_pixels', 0) or 0)}"
+        )
+        # A different media identity never collides with the stamped one.
+        other = _make_request(images=["other.png"], vision_feature_key=None)
+        assert gen._media_identity_digest(other) != digest
 
 
 class TestStorePath:
@@ -859,7 +871,10 @@ class TestMropeTransaction:
 class TestBudget:
     def test_oldest_evicted_newest_kept(self, monkeypatch):
         gen = _stub_generator()
-        gen._media_boundary_max_bytes = 10
+        # Ceiling = exactly one entry's bytes: the admission cap lets every
+        # store through (entry == ceiling), and enforcement keeps only the
+        # newest.
+        gen._media_boundary_max_bytes = _media_leaves_bytes(_kv_leaves())
         full_ids = _full_ids()
 
         def fake_clone(leaves, *, min_capacity_tokens):
@@ -956,6 +971,58 @@ class TestBudget:
         gen._enforce_exact_cache_budget(object())
         assert list(entries) == ["a"]
         assert gen._prefix_cache_budget_evictions == 0
+
+    def test_media_insertion_evicts_text_oldest_first(self, monkeypatch):
+        # Coordinated eviction: when the media store's own entries are
+        # exhausted and the combined footprint still exceeds the ceiling,
+        # the media side reclaims room from the text side (oldest first).
+        import threading
+
+        gen = _stub_generator()
+        gen._prefix_cache_max_bytes = 0  # text budget step inert
+        gen._media_boundary_max_bytes = 12
+        gen._prefix_cache_budget_evictions = 0
+        gen._media_boundary_entries["media"] = type("Entry", (), {"cache_bytes": 10})()
+        lock = threading.Lock()
+        entries: OrderedDict[str, Any] = OrderedDict()
+        for key in ("a", "b"):
+            entries[key] = type(
+                "ExactEntry", (), {"prompt_cache": [type("L", (), {"nbytes": 5})()]}
+            )()
+        monkeypatch.setattr(gen, "_exact_entries", lambda cache: (lock, entries))
+        monkeypatch.setattr(
+            "vllm_mlx.mllm_batch_generator.checkpoint_bytes", lambda stored: 0
+        )
+        gen._prefix_cache = object()
+        gen._media_enforce_budget()
+        # 10 media + 10 text > 12: text evicts down to its newest entry.
+        assert list(entries) == ["b"]
+        assert gen._prefix_cache_budget_evictions == 1
+
+    def test_media_store_refuses_entry_over_ceiling(self, monkeypatch):
+        # Admission cap: a single snapshot larger than the whole shared
+        # ceiling is discarded — it can never fit beside anything.
+        gen = _stub_generator()
+        gen._media_boundary_max_bytes = 4
+        full_ids = _full_ids()
+
+        def fake_clone(leaves, *, min_capacity_tokens):
+            return _kv_leaves()
+
+        monkeypatch.setattr(
+            "vllm_mlx.mllm_batch_generator._media_clone_leaves", fake_clone
+        )
+        req = _make_request(
+            prompt="a" * 24,
+            pixel_values=mx.zeros((1, 2)),
+            prefix_boundary=20,
+            max_tokens=8,
+        )
+        gen._media_mrope_save()
+        stored = gen._media_store(req, _kv_leaves(), _ids(full_ids), 26, mx.array([1]))
+        assert stored is None
+        assert not gen._media_boundary_entries
+        assert gen._media_boundary_stores == 0
 
     def test_footprint_zero_without_text_cache(self):
         gen = _stub_generator()

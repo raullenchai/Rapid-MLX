@@ -23,7 +23,17 @@ The primary deterministic gates are:
   phases, guarding against two equally wrong outputs passing;
 * **engagement** — the candidate phase must actually store boundary
   snapshots and serve warm resumes (``stores > 0`` and ``hits > 0``) while
-  the baseline does neither, else the A/B compares off against off.
+  the baseline does neither, else the A/B compares off against off;
+* **no warm-turn regression** — every turn from the first warm one on must
+  not exceed the baseline median TTFT by more than a 15% stall margin
+  (exit 3 otherwise). The storing turn's bounded snapshot cost is analyzed
+  in the design note and excluded.
+
+Scope: this harness gates determinism, semantics, engagement, and
+warm-turn latency on the qualified model. The remaining design-note gates
+(bounded-memory soak, cancellation-recovery probes, sampled fixed-seed A/B
+through the real request API) are covered by separate evidence — see the
+design note's qualification section.
 
 Cross-phase per-turn SHA equality is *reported* (``exact_by_conversation``)
 but not gated: the warm turn's suffix forward runs its input-projection
@@ -82,16 +92,22 @@ def _conversation_messages(
     into the resumed suffix (whose forward intentionally carries
     ``pixel_values=None``).
     """
-    image_path = (repo_root / conversation["images"][0]).resolve()
-    if not image_path.exists():
-        raise FileNotFoundError(f"manifest image missing: {image_path}")
+    image_paths = [(repo_root / image).resolve() for image in conversation["images"]]
+    for image_path in image_paths:
+        if not image_path.exists():
+            raise FileNotFoundError(f"manifest image missing: {image_path}")
     messages: list[dict[str, Any]] = []
     for index in range(turn_index + 1):
         content: list[dict[str, Any]] = [
             {"type": "text", "text": conversation["turns"][index]["prompt"]}
         ]
         if index == 0:
-            content.append({"type": "image_url", "image_url": {"url": str(image_path)}})
+            # Every declared image rides on the first user turn — the
+            # multi-image comparison cases must actually run multi-image.
+            for image_path in image_paths:
+                content.append(
+                    {"type": "image_url", "image_url": {"url": str(image_path)}}
+                )
         messages.append({"role": "user", "content": content})
         if index < turn_index:
             messages.append({"role": "assistant", "content": replies[index]})
@@ -245,10 +261,19 @@ async def _main() -> None:
         default=[],
         help="Conversation id filter (repeatable); default runs the whole manifest",
     )
-    parser.add_argument("--pairs", type=int, default=2)
+    parser.add_argument(
+        "--pairs",
+        type=int,
+        default=2,
+        help="Measured passes per phase; >= 2 so the determinism gate is meaningful",
+    )
     parser.add_argument("--output", type=Path, default=None)
     parser.add_argument("--summary-only", action="store_true")
     args = parser.parse_args()
+    # One measured pass cannot demonstrate within-phase determinism: the
+    # gate would pass vacuously on a single sample. Fail at the door.
+    if args.pairs < 2:
+        parser.error("--pairs must be >= 2 (within-phase determinism gate)")
 
     from vllm_mlx.engine.batched import BatchedEngine
     from vllm_mlx.scheduler import SchedulerConfig
@@ -417,6 +442,28 @@ async def _main() -> None:
                     }
                 )
             result["summary_change_pct"][conversation_id] = per_turn
+
+        # Hard gate: a warm turn (the pure resume turn) must not be slower
+        # than the cold baseline by more than the stall margin. The storing
+        # turn's bounded snapshot cost is documented in the design note and
+        # deliberately excluded here.
+        warm_regression_margin = 1.15
+        regressions = {
+            conversation_id: [
+                {
+                    "turn": turn_index,
+                    "ttft_pct": per_turn[turn_index]["ttft"],
+                }
+                for turn_index in range(1, len(per_turn))
+                if per_turn[turn_index]["ttft"] / 100.0 > warm_regression_margin - 1.0
+            ]
+            for conversation_id, per_turn in result["summary_change_pct"].items()
+        }
+        result["warm_turn_regressions"] = {
+            conversation_id: turns
+            for conversation_id, turns in regressions.items()
+            if turns
+        }
     finally:
         pass
 
@@ -433,6 +480,7 @@ async def _main() -> None:
             "within_phase_deterministic",
             "checkers_pass",
             "media_engaged",
+            "warm_turn_regressions",
             "summary_change_pct",
             "phases",
         )
@@ -450,7 +498,9 @@ async def _main() -> None:
         "checkers_pass", False
     ):
         raise SystemExit(1)
-    if args.pairs > 0 and not result.get("media_engaged", False):
+    if result.get("warm_turn_regressions"):
+        raise SystemExit(3)
+    if not result.get("media_engaged", False):
         raise SystemExit(2)
 
 
