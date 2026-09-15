@@ -48,6 +48,18 @@ def install_glm5_next_forget_gate_quant_fix() -> bool:
 
         from mlx_vlm.models.glm5_next import language
 
+        # mlx-vlm 0.7.1's architecture-owned runtime removed the nested
+        # ``forget_gate`` module: ``f_b_proj`` is direct again and the other
+        # projections are fused into ``fbg_a_proj`` by its sanitizer. Applying
+        # the older compatibility rename there creates keys for modules that
+        # do not exist, so strict loading rejects every quantized linear layer.
+        from .glm5_next_runtime import _has_native_glm5_next_runtime
+
+        if _has_native_glm5_next_runtime(language):
+            language._RAPID_MLX_FORGET_GATE_QUANT_INSTALLED = True
+            _INSTALLED = True
+            return False
+
         if getattr(language, "_RAPID_MLX_FORGET_GATE_QUANT_INSTALLED", False):
             _INSTALLED = True
             return False

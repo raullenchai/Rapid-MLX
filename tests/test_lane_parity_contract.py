@@ -526,8 +526,11 @@ def _assert_shared_semantics(
             "presence_penalty": 0.3,
             "frequency_penalty": -0.2,
         }
-        for key in _TEXT_ONLY_SAMPLING_KEYS:
-            assert key not in captured
+        assert {key: captured[key] for key in _TEXT_ONLY_SAMPLING_KEYS} == {
+            "top_k": 17,
+            "min_p": 0.08,
+            "seed": 42,
+        }
         return
 
     params = captured["sampling_params"]

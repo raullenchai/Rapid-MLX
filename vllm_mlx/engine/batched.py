@@ -2814,11 +2814,16 @@ class BatchedEngine(BaseEngine):
             # and forward to the MLLM scheduler so the route-layer
             # cascade (chat / completions / responses / anthropic) reaches
             # the per-request logits processors inside the VLM batch
-            # generator. ``top_k`` / ``min_p`` / ``seed`` MLLM passthrough
-            # is intentionally NOT in scope here — see #512 follow-ups.
-            _mllm_penalty_kwargs = {
+            # generator. The remaining sampling controls are request-local too;
+            # exact benchmark comparisons require the serving lane to preserve
+            # the complete registered sampling contract.
+            _mllm_sampling_kwargs = {
                 key: kwargs.pop(key)
-                for key in _LANE_PARITY_SAMPLING_KEYS
+                for key in (
+                    *_LANE_PARITY_SAMPLING_KEYS,
+                    *_TEXT_ONLY_SAMPLING_KEYS,
+                    "ignore_eos",
+                )
                 if key in kwargs
             }
             _mllm_logits_processors = [
@@ -2842,7 +2847,7 @@ class BatchedEngine(BaseEngine):
                     on_request_committed=request_committed,
                     logits_processors=_mllm_logits_processors,
                     prefix_boundary=prefix_boundary,
-                    **_mllm_penalty_kwargs,
+                    **_mllm_sampling_kwargs,
                 )
             except BaseException:
                 if owns_admission:
@@ -3064,11 +3069,15 @@ class BatchedEngine(BaseEngine):
             assert mllm_scheduler is not None
             # Media always stays on MLLMScheduler; only qualified text-only
             # requests may use the shared-weight native-cache engine.
-            # OpenAI-spec penalty passthrough (#512) — see ``generate()``
-            # MLLM branch above for the rationale.
-            _mllm_penalty_kwargs = {
+            # OpenAI-spec penalty and exact-length benchmark passthrough — see
+            # ``generate()`` MLLM branch above for the rationale.
+            _mllm_sampling_kwargs = {
                 key: kwargs.pop(key)
-                for key in _LANE_PARITY_SAMPLING_KEYS
+                for key in (
+                    *_LANE_PARITY_SAMPLING_KEYS,
+                    *_TEXT_ONLY_SAMPLING_KEYS,
+                    "ignore_eos",
+                )
                 if key in kwargs
             }
             _mllm_logits_processors = [
@@ -3093,7 +3102,7 @@ class BatchedEngine(BaseEngine):
                     on_request_committed=commit_admission,
                     logits_processors=_mllm_logits_processors,
                     prefix_boundary=prefix_boundary,
-                    **_mllm_penalty_kwargs,
+                    **_mllm_sampling_kwargs,
                 )
             except BaseException:
                 release_uncommitted_admission()

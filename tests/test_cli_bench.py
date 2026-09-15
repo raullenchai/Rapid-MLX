@@ -413,6 +413,251 @@ def test_run_submit_flow_prefetches_via_mirror_before_hf_load(
     ], f"order violation: {order}"
 
 
+def test_submit_refuses_unbenchmarked_dedicated_runtime_before_download(
+    monkeypatch, capsys
+) -> None:
+    cli = importlib.import_module("vllm_mlx.cli")
+    from vllm_mlx.community_bench import workspace
+
+    _install_submit_flow_stubs(
+        monkeypatch,
+        cli,
+        alias="deepseek-v41-flash-reap-2bit",
+        hf_path="rapid-mlx/DeepSeek-V4.1-Flash-REAP-2bit-MLX",
+    )
+    monkeypatch.setattr(
+        workspace,
+        "benchmark_runtime_readiness",
+        lambda _alias, _task: {
+            "status": "unavailable",
+            "message": "dedicated runtime is not benchmarkable",
+        },
+    )
+    monkeypatch.setattr(
+        cli,
+        "_ensure_model_downloaded",
+        lambda *_args, **_kwargs: pytest.fail("download must not start"),
+    )
+
+    args = argparse.Namespace(
+        model="deepseek-v41-flash-reap-2bit",
+        submit=True,
+        sampled=False,
+        notes=None,
+        force_disk_check=False,
+    )
+    assert cli._run_submit_flow(args) == 2
+    assert "dedicated runtime is not benchmarkable" in capsys.readouterr().out
+
+
+def test_submit_retries_architecture_rejection_with_serving_runtime(
+    monkeypatch, capsys
+) -> None:
+    cli = importlib.import_module("vllm_mlx.cli")
+    from vllm_mlx.community_bench import local_runner
+    from vllm_mlx.engine import batched
+
+    events: list[str] = []
+    _install_submit_flow_stubs(
+        monkeypatch,
+        cli,
+        alias="future-text-4bit",
+        hf_path="vendor/Future-Text-4bit",
+    )
+    monkeypatch.setattr(cli, "_ensure_model_downloaded", lambda _name: None)
+    monkeypatch.setattr(local_runner, "_uses_serving_benchmark_engine", lambda _: False)
+    _patch_mlx_lm_load(
+        monkeypatch,
+        lambda _name: (_ for _ in ()).throw(
+            ValueError("Model type future_text not supported.")
+        ),
+    )
+    monkeypatch.setattr(
+        sys.modules["vllm_mlx.scheduler"],
+        "SchedulerConfig",
+        lambda **_kwargs: object(),
+    )
+
+    class FakeServingEngine:
+        def __init__(self, *_args, **_kwargs):
+            events.append("serving:init")
+
+        async def start(self):
+            events.append("serving:start")
+            raise RuntimeError("stop after proving fallback")
+
+        async def stop(self):
+            events.append("serving:stop")
+            raise RuntimeError("cleanup must not mask startup failure")
+
+    monkeypatch.setattr(batched, "BatchedEngine", FakeServingEngine)
+
+    args = argparse.Namespace(
+        model="future-text-4bit",
+        submit=True,
+        sampled=False,
+        notes=None,
+        force_disk_check=False,
+    )
+    assert cli._run_submit_flow(args) == 2
+    assert events == ["serving:init", "serving:start", "serving:stop"]
+    assert "stop after proving fallback" in capsys.readouterr().out
+
+
+def _install_successful_serving_submit_stubs(monkeypatch, cli):
+    from vllm_mlx.community_bench import hardware, local_runner, runner, submission
+    from vllm_mlx.engine import batched
+
+    events = []
+    _install_submit_flow_stubs(
+        monkeypatch,
+        cli,
+        alias="glm5.3-flash-4bit",
+        hf_path="vendor/GLM-5.3-Flash-4bit",
+    )
+    monkeypatch.setattr(cli, "_ensure_model_downloaded", lambda _name: None)
+    monkeypatch.setattr(local_runner, "_uses_serving_benchmark_engine", lambda _: True)
+    monkeypatch.setattr(
+        "vllm_mlx.community_bench.workspace.benchmark_runtime_readiness",
+        lambda *_args: {"status": "ready"},
+    )
+
+    class SchedulerConfig:
+        mtp_max_k = None
+
+        def __init__(self, **_kwargs):
+            pass
+
+    class EngineConfig:
+        def __init__(self, **_kwargs):
+            pass
+
+    class Engine:
+        def __init__(self, *_args, **_kwargs):
+            self.tokenizer = object()
+
+        async def start(self):
+            events.append("start")
+
+        async def stop(self):
+            events.append("stop")
+
+    monkeypatch.setattr(
+        sys.modules["vllm_mlx.scheduler"], "SchedulerConfig", SchedulerConfig
+    )
+    monkeypatch.setattr(
+        sys.modules["vllm_mlx.engine_core"], "EngineConfig", EngineConfig
+    )
+    monkeypatch.setattr(batched, "BatchedEngine", Engine)
+    monkeypatch.setattr(
+        hardware,
+        "collect",
+        lambda: (
+            argparse.Namespace(chip="M3 Ultra", ram_gb=256, cpu_cores=32, gpu_cores=80),
+            argparse.Namespace(
+                macos="26", rapid_mlx="0.14.2", mlx="0.32", python="3.12"
+            ),
+        ),
+    )
+    monkeypatch.setattr(submission, "build_submission_payload", lambda **kwargs: kwargs)
+    return events, runner, submission
+
+
+def _serving_submit_args(**overrides):
+    values = {
+        "model": "glm5.3-flash-4bit",
+        "submit": True,
+        "sampled": False,
+        "notes": None,
+        "force_disk_check": False,
+        "spec_decode": "none",
+        "run_group": None,
+        "repo_root": None,
+    }
+    values.update(overrides)
+    return argparse.Namespace(**values)
+
+
+def test_submit_serving_runtime_runs_all_modes_and_reaps_engine(
+    monkeypatch, capsys
+) -> None:
+    cli = importlib.import_module("vllm_mlx.cli")
+    from vllm_mlx.community_bench.runner import BenchResult, BucketResult, RoundResult
+
+    events, runner, submission = _install_successful_serving_submit_stubs(
+        monkeypatch, cli
+    )
+    rounds = [RoundResult(100, 200, 10, prompt_tokens=512, output_tokens=128)] * 5
+    result = BenchResult(
+        short=BucketResult(rounds),
+        long=BucketResult(rounds),
+        peak_ram_mb=1,
+        prompt_hash="hash",
+        sampling="greedy",
+    )
+    modes = []
+
+    async def run_bench(*_args, **kwargs):
+        modes.append(kwargs["sampling"])
+        return result
+
+    returns = iter((0, 7))
+    monkeypatch.setattr(runner, "run_standardized_bench", run_bench)
+    monkeypatch.setattr(submission, "submit_interactive", lambda *_args: next(returns))
+
+    assert cli._run_submit_flow(_serving_submit_args(sampled=True)) == 7
+    assert modes == ["greedy", "sampled"]
+    assert events == ["start", "stop"]
+    assert "short: decode=" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize(
+    ("message", "expected"),
+    [
+        ("standardized bench requires exactly 512 tokens. got 3", 1),
+        ("unrelated benchmark failure", None),
+    ],
+)
+def test_submit_serving_runtime_reports_exact_length_failure_and_propagates_other_errors(
+    monkeypatch, message, expected
+) -> None:
+    cli = importlib.import_module("vllm_mlx.cli")
+    events, runner, _submission = _install_successful_serving_submit_stubs(
+        monkeypatch, cli
+    )
+
+    async def fail(*_args, **_kwargs):
+        raise RuntimeError(message)
+
+    monkeypatch.setattr(runner, "run_standardized_bench", fail)
+    if expected is None:
+        with pytest.raises(RuntimeError, match=message):
+            cli._run_submit_flow(_serving_submit_args())
+    else:
+        assert cli._run_submit_flow(_serving_submit_args()) == expected
+    assert events == ["start", "stop"]
+
+
+def test_submit_native_loader_os_error_reaps_executor(monkeypatch) -> None:
+    cli = importlib.import_module("vllm_mlx.cli")
+    from vllm_mlx.community_bench import local_runner
+
+    _install_submit_flow_stubs(
+        monkeypatch,
+        cli,
+        alias="qwen3.5-9b-4bit",
+        hf_path="vendor/qwen",
+    )
+    monkeypatch.setattr(cli, "_ensure_model_downloaded", lambda _name: None)
+    monkeypatch.setattr(local_runner, "_uses_serving_benchmark_engine", lambda _: False)
+    _patch_mlx_lm_load(
+        monkeypatch,
+        lambda _name: (_ for _ in ()).throw(OSError("checkpoint missing")),
+    )
+
+    assert cli._run_submit_flow(_serving_submit_args(model="qwen3.5-9b-4bit")) == 2
+
+
 def test_run_submit_flow_proceeds_when_mirror_prefetch_is_silent_noop(
     monkeypatch,
 ) -> None:

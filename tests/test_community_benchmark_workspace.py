@@ -168,6 +168,15 @@ def test_runtime_readiness_reuses_fail_fast_generation_guards(
         "status": "ready",
         "message": None,
     }
+    assert benchmark_runtime_readiness(
+        "deepseek-v41-flash-reap-2bit", "text_generation"
+    ) == {
+        "status": "unavailable",
+        "message": (
+            "Community Benchmark does not yet support this model's dedicated "
+            "serial runtime; no model data will be downloaded."
+        ),
+    }
 
     def missing_image(_alias: str) -> str:
         return (

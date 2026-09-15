@@ -265,6 +265,10 @@ async def test_engine_stream_generate_mllm_forwards_penalty_kwargs():
         repetition_penalty=1.7,
         presence_penalty=0.3,
         frequency_penalty=0.4,
+        ignore_eos=True,
+        top_k=12,
+        min_p=0.08,
+        seed=17,
         grammar_logits_processor=grammar,
         reasoning_budget_logits_processor=budget,
         suppressed_tokens_logits_processor=suppression,
@@ -274,6 +278,10 @@ async def test_engine_stream_generate_mllm_forwards_penalty_kwargs():
     assert captured["repetition_penalty"] == 1.7
     assert captured["presence_penalty"] == 0.3
     assert captured["frequency_penalty"] == 0.4
+    assert captured["ignore_eos"] is True
+    assert captured["top_k"] == 12
+    assert captured["min_p"] == 0.08
+    assert captured["seed"] == 17
     assert captured["logits_processors"] == [grammar, budget, suppression]
     assert captured["prefix_boundary"] == 5
 

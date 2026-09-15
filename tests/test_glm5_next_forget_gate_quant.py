@@ -38,6 +38,12 @@ def test_installer_wraps_released_sanitizer_once_in_clean_process() -> None:
 
     from vllm_mlx.patches import glm5_next_forget_gate_quant as patch
 
+    monkeypatch = pytest.MonkeyPatch()
+    monkeypatch.setattr(
+        "vllm_mlx.patches.glm5_next_runtime._has_native_glm5_next_runtime",
+        lambda _language: False,
+    )
+
     original = language.LanguageModel.sanitize
     marker = getattr(language, "_RAPID_MLX_FORGET_GATE_QUANT_INSTALLED", None)
     marker_existed = hasattr(language, "_RAPID_MLX_FORGET_GATE_QUANT_INSTALLED")
@@ -61,6 +67,38 @@ def test_installer_wraps_released_sanitizer_once_in_clean_process() -> None:
         assert language._RAPID_MLX_FORGET_GATE_QUANT_INSTALLED is True
     finally:
         language.LanguageModel.sanitize = original
+        if marker_existed:
+            language._RAPID_MLX_FORGET_GATE_QUANT_INSTALLED = marker
+        elif hasattr(language, "_RAPID_MLX_FORGET_GATE_QUANT_INSTALLED"):
+            del language._RAPID_MLX_FORGET_GATE_QUANT_INSTALLED
+        patch._INSTALLED = False
+        monkeypatch.undo()
+
+
+@pytest.mark.requires_mlx
+def test_installer_self_retires_on_native_glm_runtime(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from mlx_vlm.models.glm5_next import language
+
+    from vllm_mlx.patches import glm5_next_forget_gate_quant as patch
+
+    original = language.LanguageModel.sanitize
+    marker = getattr(language, "_RAPID_MLX_FORGET_GATE_QUANT_INSTALLED", None)
+    marker_existed = hasattr(language, "_RAPID_MLX_FORGET_GATE_QUANT_INSTALLED")
+    patch._INSTALLED = False
+    if marker_existed:
+        del language._RAPID_MLX_FORGET_GATE_QUANT_INSTALLED
+    monkeypatch.setattr(
+        "vllm_mlx.patches.glm5_next_runtime._has_native_glm5_next_runtime",
+        lambda _language: True,
+    )
+
+    try:
+        assert patch.install_glm5_next_forget_gate_quant_fix() is False
+        assert language.LanguageModel.sanitize is original
+        assert patch.is_installed() is True
+    finally:
         if marker_existed:
             language._RAPID_MLX_FORGET_GATE_QUANT_INSTALLED = marker
         elif hasattr(language, "_RAPID_MLX_FORGET_GATE_QUANT_INSTALLED"):
