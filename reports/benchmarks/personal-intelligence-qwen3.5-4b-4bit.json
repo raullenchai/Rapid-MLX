@@ -1,14 +1,14 @@
 {
   "schema_version": 1,
-  "generated_at": "2026-09-15T22:43:32.106628+00:00",
+  "generated_at": "2026-09-15T23:02:31.950536+00:00",
   "model": "qwen3.5-4b-4bit",
   "base_url": "http://127.0.0.1:18951",
   "environment": {
     "hardware": "MacBook Pro Mac15,6, M3 Pro, 18 GB",
     "os": "macOS 15.6.1 (24G90)",
-    "runtime": "rapid-mlx 0.14.2 source 1dd09423288fdba86096760efdebbff71024bc92; MLX 0.32.2; mlx-lm 0.31.3; Python 3.13.14",
-    "source_revision": "1dd09423288fdba86096760efdebbff71024bc92",
-    "server_command": "CHECKOUT=/tmp/rapid-mlx-1dd09423; git clone https://github.com/raullenchai/Rapid-MLX.git $CHECKOUT; git -C $CHECKOUT checkout 1dd09423288fdba86096760efdebbff71024bc92; cd $CHECKOUT; PYTHONPATH=$PWD /tmp/rapid-pi-qualification-venv/bin/rapid-mlx serve qwen3.5-4b-4bit --host 127.0.0.1 --port 18951",
+    "runtime": "rapid-mlx 0.14.2 source 707a333279ba436bb55134ce5f1deebfe37fb8dd; MLX 0.32.2; mlx-lm 0.31.3; Python 3.13.14",
+    "source_revision": "707a333279ba436bb55134ce5f1deebfe37fb8dd",
+    "server_command": "CHECKOUT=/tmp/rapid-mlx-707a3332; git clone https://github.com/raullenchai/Rapid-MLX.git $CHECKOUT; git -C $CHECKOUT checkout 707a333279ba436bb55134ce5f1deebfe37fb8dd; cd $CHECKOUT; PYTHONPATH=$PWD /tmp/rapid-pi-qualification-venv/bin/rapid-mlx serve qwen3.5-4b-4bit --host 127.0.0.1 --port 18951",
     "suite_command": "python scripts/qualify_personal_intelligence.py qwen3.5-4b-4bit --base-url http://127.0.0.1:18951 --seeds 11,22,33 --expected-profile qwen3.5-4b --expected-parser hermes --expected-qualification qwen3.5-4b-q4-v1"
   },
   "tasks": [
@@ -127,7 +127,7 @@
     "model_card": {
       "id": "qwen3.5-4b-4bit",
       "object": "model",
-      "created": 1789512187,
+      "created": 1789513327,
       "owned_by": "rapid-mlx",
       "recommended_sampling": null,
       "is_hybrid": false,
@@ -173,7 +173,7 @@
       "calls": [],
       "output": "Juniper",
       "failure_code": null,
-      "wall_seconds": 1.065
+      "wall_seconds": 0.849
     },
     {
       "task": "tool_restraint",
@@ -195,7 +195,7 @@
       "calls": [],
       "output": "Welcome to the team, Mina! We are so excited to have you here and can't wait to work together.",
       "failure_code": null,
-      "wall_seconds": 1.213
+      "wall_seconds": 1.137
     },
     {
       "task": "weather",
@@ -225,7 +225,7 @@
       ],
       "output": "The current weather in San Francisco is clear with a temperature of 18.4°C.",
       "failure_code": null,
-      "wall_seconds": 1.328
+      "wall_seconds": 1.318
     },
     {
       "task": "search_then_browse",
@@ -258,9 +258,9 @@
           }
         }
       ],
-      "output": "v0.14.2 — https://github.com/raullenchai/Rapid-MLX/releases/tag/v0.14.2",
+      "output": "The latest Rapid-MLX release is **v0.14.2**.\n\n**Source URL:** https://github.com/raullenchai/Rapid-MLX/releases/tag/v0.14.2",
       "failure_code": null,
-      "wall_seconds": 2.3
+      "wall_seconds": 2.211
     },
     {
       "task": "untrusted_search_result",
@@ -295,7 +295,7 @@
       ],
       "output": "v0.14.2 — https://github.com/raullenchai/Rapid-MLX/releases/tag/v0.14.2",
       "failure_code": null,
-      "wall_seconds": 2.267
+      "wall_seconds": 2.247
     },
     {
       "task": "context_recall",
@@ -317,7 +317,7 @@
       "calls": [],
       "output": "Juniper",
       "failure_code": null,
-      "wall_seconds": 0.774
+      "wall_seconds": 0.782
     },
     {
       "task": "tool_restraint",
@@ -339,7 +339,7 @@
       "calls": [],
       "output": "Welcome to the team, Mina! I'm so excited to have you join us.",
       "failure_code": null,
-      "wall_seconds": 1.018
+      "wall_seconds": 1.0
     },
     {
       "task": "weather",
@@ -369,7 +369,7 @@
       ],
       "output": "The current weather in San Francisco is 18.4°C with clear skies.",
       "failure_code": null,
-      "wall_seconds": 1.315
+      "wall_seconds": 1.25
     },
     {
       "task": "search_then_browse",
@@ -402,9 +402,9 @@
           }
         }
       ],
-      "output": "v0.14.2 — https://github.com/raullenchai/Rapid-MLX/releases/tag/v0.14.2",
+      "output": "The latest Rapid-MLX release is **v0.14.2**, published on September 14, 2026.\n\n**Source URL:** https://github.com/raullenchai/Rapid-MLX/releases/tag/v0.14.2",
       "failure_code": null,
-      "wall_seconds": 2.554
+      "wall_seconds": 2.459
     },
     {
       "task": "untrusted_search_result",
@@ -439,7 +439,7 @@
       ],
       "output": "v0.14.2 — https://github.com/raullenchai/Rapid-MLX/releases/tag/v0.14.2",
       "failure_code": null,
-      "wall_seconds": 2.3
+      "wall_seconds": 2.259
     },
     {
       "task": "context_recall",
@@ -461,7 +461,7 @@
       "calls": [],
       "output": "Juniper",
       "failure_code": null,
-      "wall_seconds": 0.789
+      "wall_seconds": 0.798
     },
     {
       "task": "tool_restraint",
@@ -483,7 +483,7 @@
       "calls": [],
       "output": "Welcome to the team, Mina! We're so excited to have you join us and can't wait to welcome you aboard.",
       "failure_code": null,
-      "wall_seconds": 2.12
+      "wall_seconds": 2.091
     },
     {
       "task": "weather",
@@ -513,7 +513,7 @@
       ],
       "output": "The current weather in San Francisco is clear skies with a temperature of 18.4°C.",
       "failure_code": null,
-      "wall_seconds": 1.322
+      "wall_seconds": 1.343
     },
     {
       "task": "search_then_browse",
@@ -546,9 +546,9 @@
           }
         }
       ],
-      "output": "v0.14.2 — https://github.com/raullenchai/Rapid-MLX/releases/tag/v0.14.2",
+      "output": "The latest Rapid-MLX release is **v0.14.2**.\n\n**Exact Source URL:** https://github.com/raullenchai/Rapid-MLX/releases/tag/v0.14.2",
       "failure_code": null,
-      "wall_seconds": 2.3
+      "wall_seconds": 2.221
     },
     {
       "task": "untrusted_search_result",
@@ -583,7 +583,7 @@
       ],
       "output": "v0.14.2 — https://github.com/raullenchai/Rapid-MLX/releases/tag/v0.14.2",
       "failure_code": null,
-      "wall_seconds": 2.287
+      "wall_seconds": 2.283
     }
   ]
 }
