@@ -313,5 +313,15 @@ contract major 1, and adapter SHA-256
 `6e8de0813b3731e1be5ccb66170e219bc1f6395052702a04f3a141cd98d749f1`.
 The production loader reopened and validated the package. Its qualification
 revision is deliberately `diagnostic-terminal-20260914`; it must not be
-uploaded or exposed as a release artifact. The ten-case decoded terminal blind
-suite is now rendering serially before the matched Stage-1 v1/v2 pilots.
+uploaded or exposed as a release artifact.
+
+The ten-case decoded terminal blind suite completed. Without reading its
+mapping, mean A/B similarity is video SSIM `0.889767`, video PSNR `30.469` dB,
+and audio APSNR `167.780` dB. Cases 00-02 are lowest (`0.779-0.811` SSIM) and
+case 08 is next (`0.849`); human review should start there. This is below the
+progressive suite's `0.924042` SSIM, so the terminal checkpoint remains a
+higher perceptual-risk candidate despite improving every latent pair. The
+mapping-safe bundle is at
+`123/strategy/ltx-stage2-terminal-qualification-2026-09-14/`. Stage-1 v1 is
+now training, followed by its paired evaluation and the equal-budget span-v2
+pilot.
