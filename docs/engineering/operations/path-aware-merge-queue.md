@@ -89,8 +89,9 @@ one authorization label after review and PR validation have converged:
 - `merge-ready-mac` when the classifier selects the engine lane, the Desktop
   lane, or both.
 
-The managed queue never mixes the two labels. Each ready pull request starts a
-singleton candidate immediately, avoiding paid batching and fill-wait latency.
+The managed queue never mixes the two labels. Each ready pull request forms a
+singleton candidate without a batching fill wait and starts when queue capacity
+is available.
 The two classes are independent scheduling scopes: one no-Mac candidate may
 validate while one Mac candidate is running, but the `mac-required` scope has
 capacity one, so scarce
@@ -163,7 +164,8 @@ The queue contract lives in `.mergify.yml`:
   routing files are global barriers and serialize the train while policy changes;
 - separate no-Mac and Mac-required queues, each with mutually exclusive
   authorization labels;
-- singleton candidates start immediately, with no batch feature or fill wait;
+- singleton candidates require no batch feature or fill wait and start when
+  queue capacity is available;
 - no blind CI retry and no skipped intermediate failures;
 - a 90-minute check timeout, covering normal hosted macOS queue delay;
 - the three GitHub Actions required checks must pass both before queue entry and
@@ -240,9 +242,9 @@ repository permission.
    human-authorized hotfix paths. Normal pull requests enter through the
    matching merge-ready label and are merged by the queue.
 6. Rehearse with a harmless individually green pull request. Apply
-   `merge-ready` and verify a temporary singleton candidate starts immediately,
-   runs each affected full lane once, reports all three required checks, and
-   squash-merges the original.
+   `merge-ready` and verify a temporary singleton candidate forms without a fill
+   wait, runs each affected full lane once when capacity is available, reports
+   all three required checks, and squash-merges the original.
 7. Run one `merge-ready` candidate beside one `merge-ready-mac` candidate.
    Verify both temporary candidates become active, no more than two total checks
    run, and no more than one candidate carrying `mac-required` runs at once.
