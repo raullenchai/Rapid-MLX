@@ -18,13 +18,18 @@ struct PersonalIntelligenceControlTests {
 
     @Test("Only models bound to a tuned harness can enter Personal Intelligence")
     func modelGate() {
+        let miniProfile = ServerModelProfile(
+            id: "minicpm5-2b-4bit",
+            toolCallParser: "minicpm",
+            personalIntelligenceProfile: "minicpm5-2b"
+        )
         #expect(
-            PersonalIntelligenceConfig.harnessProfile(for: "minicpm5-2b-4bit")
+            PersonalIntelligenceConfig.harnessProfile(
+                for: "minicpm5-2b-4bit",
+                serverProfile: miniProfile
+            )
                 == "minicpm5-2b"
         )
-        let verified = [
-            "minicpm5-2b-4bit",
-        ]
         let excluded = [
             // Tool calling support does not imply that the complete Personal
             // Intelligence harness has been tuned for this exact model.
@@ -46,12 +51,23 @@ struct PersonalIntelligenceControlTests {
             "qwen3.5-future-999b",
         ]
 
-        for alias in verified {
-            #expect(PersonalIntelligenceConfig.supportsModel(alias))
-        }
         for alias in excluded {
-            #expect(!PersonalIntelligenceConfig.supportsModel(alias))
+            #expect(!PersonalIntelligenceConfig.supportsModel(
+                alias,
+                serverProfile: ServerModelProfile(
+                    id: alias,
+                    toolCallParser: "hermes"
+                )
+            ))
         }
+        #expect(!PersonalIntelligenceConfig.supportsModel(
+            "minicpm5-2b-4bit",
+            serverProfile: nil
+        ))
+        #expect(!PersonalIntelligenceConfig.supportsModel(
+            "qwen3.5-4b-4bit",
+            serverProfile: miniProfile
+        ))
     }
 
     @Test("Unsupported models stay themselves and never offer an implicit switch")

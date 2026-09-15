@@ -21,6 +21,7 @@ from vllm_mlx.agent_runtime import (
     ToolRisk,
     ToolSpec,
     resolve_agent_profile,
+    resolve_personal_intelligence_profile,
 )
 
 
@@ -58,6 +59,55 @@ def test_minicpm_profile_is_alias_and_repo_aware():
         assert profile.max_tool_rounds == 12
 
     assert resolve_agent_profile("qwen3.5-4b-4bit").name == "default"
+
+
+def test_personal_intelligence_requires_a_qualified_model_profile():
+    for model in (
+        "minicpm5-2b-4bit",
+        "openbmb/MiniCPM5-2B-MLX",
+        "mlx-community/MiniCPM5-2B-8bit",
+    ):
+        profile = resolve_personal_intelligence_profile(
+            model, tool_call_parser="minicpm"
+        )
+        assert profile is not None
+        assert profile.name == "minicpm5-2b"
+
+    # Tool-capable and generic-runtime-compatible are not product qualification.
+    assert resolve_personal_intelligence_profile("minicpm5-2b-4bit") is None
+    assert (
+        resolve_personal_intelligence_profile(
+            "minicpm5-2b-4bit", tool_call_parser="hermes"
+        )
+        is None
+    )
+    assert resolve_personal_intelligence_profile(
+        "qwen3.5-4b-4bit", tool_call_parser="hermes"
+    ) is None
+    assert resolve_personal_intelligence_profile(
+        "gemma-4-e2b-4bit", tool_call_parser="gemma4"
+    ) is None
+    assert resolve_personal_intelligence_profile(
+        "openbmb/MiniCPM5-2B-bf16", tool_call_parser="minicpm"
+    ) is None
+    assert resolve_personal_intelligence_profile(
+        "/models/minicpm5-2b-copy", tool_call_parser="minicpm"
+    ) is None
+    assert resolve_personal_intelligence_profile(
+        "minicpm5-2b-4bit",
+        backing_model="someone/other-weights",
+        tool_call_parser="minicpm",
+    ) is None
+    assert resolve_personal_intelligence_profile(
+        "minicpm5-2b-4bit",
+        backing_model="mlx-community/MiniCPM5-2B-8bit",
+        tool_call_parser="minicpm",
+    ) is None
+    assert resolve_personal_intelligence_profile(
+        "mlx-community/MiniCPM5-2B-8bit",
+        backing_model="openbmb/MiniCPM5-2B-MLX",
+        tool_call_parser="minicpm",
+    ) is None
 
 
 def test_minicpm_profile_uses_exact_loaded_metadata_for_custom_local_paths():

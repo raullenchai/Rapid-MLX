@@ -326,6 +326,30 @@ def test_model_info_exposes_live_serving_lane_reason(monkeypatch):
     assert info.serving_lane_reason == "vision_hybrid_runtime_unsupported"
 
 
+def test_model_info_exposes_only_qualified_personal_intelligence_harnesses():
+    """Tool support and Personal Intelligence qualification are distinct."""
+    from vllm_mlx.routes import models as models_route
+
+    assert (
+        models_route._build_model_info(
+            "minicpm5-2b-4bit"
+        ).personal_intelligence_profile
+        == "minicpm5-2b"
+    )
+    assert (
+        models_route._build_model_info(
+            "qwen3.5-4b-4bit"
+        ).personal_intelligence_profile
+        is None
+    )
+    assert (
+        models_route._build_model_info(
+            "gemma-4-e2b-4bit"
+        ).personal_intelligence_profile
+        is None
+    )
+
+
 def test_build_model_info_prefers_live_hybrid_probe(monkeypatch):
     """The wire reports the scheduler's loaded profile, not stale alias data."""
     from vllm_mlx.routes import models as models_route

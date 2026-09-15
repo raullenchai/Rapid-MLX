@@ -313,7 +313,10 @@ struct ChatView: View {
         nonmutating set { attachmentDrafts[viewModel.activeConversationID] = newValue }
     }
     private var personalIntelligenceSupportsModel: Bool {
-        PersonalIntelligenceConfig.supportsModel(alias)
+        PersonalIntelligenceConfig.supportsModel(
+            alias,
+            serverProfile: server.activeModelProfile
+        )
     }
     private var agentModeEnabled: Bool {
         (personalIntelligenceStates[viewModel.activeConversationID] ?? false)
@@ -1247,7 +1250,10 @@ struct ChatView: View {
         }
         let goal = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !goal.isEmpty else { return false }
-        guard let harnessProfile = PersonalIntelligenceConfig.harnessProfile(for: alias) else {
+        guard let harnessProfile = PersonalIntelligenceConfig.harnessProfile(
+            for: alias,
+            serverProfile: server.activeModelProfile
+        ) else {
             return false
         }
         let session = agentSession

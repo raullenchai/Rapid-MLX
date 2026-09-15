@@ -18,6 +18,7 @@ from typing import Literal
 from fastapi import APIRouter, Depends, HTTPException
 
 from ..agents.codex_catalog import build_codex_model_info
+from ..agent_runtime.profiles import resolve_personal_intelligence_profile
 from ..api.models import ModelInfo, ModelsResponse, SpeculativeDecodingInfo
 from ..api.utils import is_mllm_model
 from ..config import get_config
@@ -1038,6 +1039,42 @@ def _build_model_info(model_id: str) -> ModelInfo:
     audio_lanes = _audio_lane_snapshot()
     serving_lane, serving_lane_reason = _served_lane_fields(model_id)
     speculative_decoding = _resolve_speculative_decoding(model_id)
+    profile_tool_parser = profile.tool_call_parser if profile is not None else None
+    profile_reasoning_parser = (
+        profile.reasoning_parser if profile is not None else None
+    )
+    effective_tool_parser, _ = effective_parsers_for(
+        model_id, profile_tool_parser, profile_reasoning_parser
+    )
+    backing_model = model_id
+    cfg = get_config()
+    if cfg.model_registry is not None:
+        # Registry identity is authoritative. Any malformed/missing entry must
+        # fail closed instead of allowing the public alias to qualify itself.
+        backing_model = ""
+        try:
+            qualification_entry = cfg.model_registry.get_entry(model_id)
+        except Exception:  # noqa: BLE001 - /v1/models remains best-effort
+            qualification_entry = None
+        if (
+            qualification_entry is not None
+            and qualification_entry.matches(model_id) is True
+        ):
+            backing_model = (
+                getattr(qualification_entry, "model_path", None)
+                or getattr(qualification_entry, "model_name", None)
+                or ""
+            )
+    elif _is_served_model(model_id):
+        backing_model = cfg.model_path or cfg.model_name or model_id
+    qualified_agent_profile = resolve_personal_intelligence_profile(
+        model_id,
+        backing_model=backing_model,
+        tool_call_parser=effective_tool_parser,
+    )
+    personal_intelligence_profile = (
+        qualified_agent_profile.name if qualified_agent_profile is not None else None
+    )
 
     # R11-B-F4 (Bo 0.8.12 dogfood): audio aliases get an audio-shaped
     # ModelInfo regardless of whether the registry has a text profile
@@ -1064,6 +1101,7 @@ def _build_model_info(model_id: str) -> ModelInfo:
             capabilities=audio_caps,
             audio_lanes=audio_lanes,
             speculative_decoding=speculative_decoding,
+            personal_intelligence_profile=personal_intelligence_profile,
         )
 
     locked = _locked_embedding_id()
@@ -1084,6 +1122,7 @@ def _build_model_info(model_id: str) -> ModelInfo:
                 max_model_len=max_model_len,
                 audio_lanes=audio_lanes,
                 speculative_decoding=speculative_decoding,
+                personal_intelligence_profile=personal_intelligence_profile,
             )
         sampling = (
             dict(profile.recommended_sampling)
@@ -1106,6 +1145,7 @@ def _build_model_info(model_id: str) -> ModelInfo:
             max_model_len=max_model_len,
             audio_lanes=audio_lanes,
             speculative_decoding=speculative_decoding,
+            personal_intelligence_profile=personal_intelligence_profile,
         )
 
     if profile is None:
@@ -1153,6 +1193,7 @@ def _build_model_info(model_id: str) -> ModelInfo:
                     serving_lane=serving_lane,
                     serving_lane_reason=serving_lane_reason,
                     speculative_decoding=speculative_decoding,
+                    personal_intelligence_profile=personal_intelligence_profile,
                 )
         except Exception:  # noqa: BLE001
             pass
@@ -1168,6 +1209,7 @@ def _build_model_info(model_id: str) -> ModelInfo:
             serving_lane=serving_lane,
             serving_lane_reason=serving_lane_reason,
             speculative_decoding=speculative_decoding,
+            personal_intelligence_profile=personal_intelligence_profile,
         )
     # ``recommended_sampling`` lives on the dataclass as a tuple of
     # ``(key, value)`` pairs (frozen-dataclass requirement); convert
@@ -1213,6 +1255,7 @@ def _build_model_info(model_id: str) -> ModelInfo:
         serving_lane=serving_lane,
         serving_lane_reason=serving_lane_reason,
         speculative_decoding=speculative_decoding,
+        personal_intelligence_profile=personal_intelligence_profile,
     )
 
 

@@ -28,8 +28,10 @@ the per-conversation control:
    conversation.
 
 Personal Intelligence is fail-closed and model-specific. Desktop enables it
-only when the exact selected alias is bound to a harness profile that has been
-tuned and dogfooded with that model. Tool-call support by itself is not enough,
+only when the live `/v1/models/{id}` response binds the exact selected model to
+a harness profile that has been tuned and dogfooded with that model. The server
+is the single source of truth; Desktop does not maintain a parallel model
+allowlist. Tool-call support by itself is not enough,
 and selecting Personal Intelligence never changes or downloads a different
 model. MiniCPM5-2B is the first qualified low-memory pairing; its profile owns
 its tool visibility, loop budget, repeat guard, output ceiling, parser, and
@@ -51,6 +53,25 @@ The introduction copy is the user contract:
 Personal Intelligence currently accepts text tasks. Turn it off before adding
 a normal Chat attachment; model-native image and document attachment behavior
 is otherwise unchanged.
+
+The qualification field is additive to the OpenAI model card:
+
+```json
+{
+  "id": "minicpm5-2b-4bit",
+  "personal_intelligence_profile": "minicpm5-2b"
+}
+```
+
+`null` means ordinary Chat, including for models that otherwise advertise tool
+support. At run creation Desktop also checks that the returned runtime profile
+matches this model-card value; a mismatch is cancelled rather than falling back
+to a generic harness. Qualification also requires the exact tested backing
+checkpoint and live native parser; an alias reused for other weights, an
+incompatible parser override, or `--no-tool-call-parser` returns `null`.
+Currently qualified identities are the tested MiniCPM5-2B MLX Q4
+alias/repository and the separately tested MLX Q8 repository. BF16, renamed
+local copies, and every non-MiniCPM model remain unqualified.
 
 ## Start the server
 

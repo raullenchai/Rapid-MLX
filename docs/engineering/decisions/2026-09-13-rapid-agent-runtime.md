@@ -139,6 +139,17 @@ is data in `AgentProfile`, so Qwen and future compact models reuse the same
 runtime. The server becomes the owner of run state, while the GUI stays the
 owner of macOS presentation and client-local tool execution.
 
+Product qualification is also server-owned. `/v1/models/{id}` publishes an
+additive `personal_intelligence_profile` only for exact model identities whose
+model, parser, prompt, and limits have passed the qualification harness and
+physical-Mac dogfood. Tool-call capability and the bounded generic Agent Runtime
+fallback do not imply Personal Intelligence support. Desktop consumes this
+field, never swaps the selected model, and cancels a newly created run if the
+returned profile differs from the advertised binding. This avoids parallel
+allowlists and keeps each model's harness independently releasable. The server
+also matches the live backing checkpoint and effective parser, so a reused
+alias, parser override, or parser opt-out fails closed.
+
 P0 does not claim crash durability and does not accept serialized runs back from
 clients. Durable recovery is a separate future decision that would require an
 explicit event-replay state machine, atomic storage, migrations, and corruption

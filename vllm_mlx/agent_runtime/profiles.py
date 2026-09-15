@@ -39,6 +39,23 @@ CONSERVATIVE_LOCAL_PROFILE = AgentProfile(
     max_output_tokens=900,
 )
 
+# Personal Intelligence is a product qualification, not a synonym for “the
+# model can emit tool calls.”  Keep this allowlist beside the actual runtime
+# profiles so every client observes one server-owned model → harness decision.
+# A new identity enters this map only after its exact model pairing has passed
+# the qualification harness and physical-Mac dogfood.
+_PERSONAL_INTELLIGENCE_MODEL_BINDINGS = {
+    # OpenBMB's curated MLX Q4 appears under both the Rapid alias and HF id.
+    "minicpm5-2b-4bit": ("minicpm5-2b-q4", "minicpm5-2b", "minicpm"),
+    "openbmb/minicpm5-2b-mlx": ("minicpm5-2b-q4", "minicpm5-2b", "minicpm"),
+    # Separately qualified on the same harness; not recommended for 8 GB.
+    "mlx-community/minicpm5-2b-8bit": (
+        "minicpm5-2b-q8",
+        "minicpm5-2b",
+        "minicpm",
+    ),
+}
+
 _MINICPM5_2B_CATALOG_IDENTITIES = frozenset(
     {
         "minicpm5-2b-4bit",
@@ -98,3 +115,39 @@ def resolve_agent_profile(
         # granting them a verified MiniCPM identity.
         return CONSERVATIVE_LOCAL_PROFILE
     return DEFAULT_PROFILE
+
+
+def resolve_personal_intelligence_profile(
+    model: str,
+    *,
+    backing_model: str | None = None,
+    model_config: dict[str, Any] | None = None,
+    tool_call_parser: str | None = None,
+) -> AgentProfile | None:
+    """Return the qualified Personal Intelligence harness, if any.
+
+    ``resolve_agent_profile`` deliberately retains a bounded generic fallback
+    for API callers.  The product surface is stricter: tool-call capability or
+    the generic fallback cannot opt a model into Personal Intelligence.
+    """
+
+    normalized = model.casefold().replace("_", "-")
+    binding = _PERSONAL_INTELLIGENCE_MODEL_BINDINGS.get(normalized)
+    backing_identity = model if backing_model is None else backing_model
+    backing_normalized = backing_identity.casefold().replace("_", "-")
+    backing_binding = _PERSONAL_INTELLIGENCE_MODEL_BINDINGS.get(backing_normalized)
+    if binding is None or backing_binding != binding:
+        return None
+    _, expected_name, expected_parser = binding
+    # A known checkpoint served with its parser explicitly disabled or
+    # overridden is not the pairing that passed qualification.
+    if tool_call_parser != expected_parser:
+        return None
+    profile = resolve_agent_profile(
+        model,
+        model_config=model_config,
+        tool_call_parser=tool_call_parser,
+    )
+    if profile.name != expected_name:
+        return None
+    return profile

@@ -36,22 +36,26 @@ enum PersonalIntelligenceConfig {
     static let conversationStatesKey = "Rapid.personalIntelligence.conversationStates"
     static let defaultPreferredEnabled = true
 
-    /// Product-qualified model-to-harness bindings for Personal Intelligence.
-    ///
-    /// Tool-call capability alone is not enough. Every entry must name the
-    /// exact runtime profile that was tuned and dogfooded with that model.
-    /// New families, sizes, and quants remain ordinary Chat until their own
-    /// binding has passed the Personal Intelligence qualification suite.
-    static let qualifiedHarnessProfiles: [String: String] = [
-        "minicpm5-2b-4bit": "minicpm5-2b",
-    ]
-
-    static func harnessProfile(for alias: String) -> String? {
-        qualifiedHarnessProfiles[alias.localizedLowercase]
+    /// Accept only the server's exact live model → harness binding. Tool-call
+    /// support is deliberately insufficient, and a stale profile for the
+    /// previously selected model must not enable this one.
+    static func harnessProfile(
+        for alias: String,
+        serverProfile: ServerModelProfile?
+    ) -> String? {
+        guard let serverProfile,
+              serverProfile.id.caseInsensitiveCompare(alias) == .orderedSame,
+              let harness = serverProfile.personalIntelligenceProfile?
+                  .trimmingCharacters(in: .whitespacesAndNewlines),
+              !harness.isEmpty else { return nil }
+        return harness
     }
 
-    static func supportsModel(_ alias: String) -> Bool {
-        harnessProfile(for: alias) != nil
+    static func supportsModel(
+        _ alias: String,
+        serverProfile: ServerModelProfile?
+    ) -> Bool {
+        harnessProfile(for: alias, serverProfile: serverProfile) != nil
     }
 
     static func loadConversationStates(

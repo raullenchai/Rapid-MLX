@@ -72,6 +72,7 @@ def _mounted(
         k: getattr(cfg, k, None)
         for k in (
             "model_name",
+            "model_path",
             "model_alias",
             "model_registry",
             "tool_call_parser",
@@ -81,6 +82,7 @@ def _mounted(
         )
     }
     cfg.model_name = model_name
+    cfg.model_path = model_name
     cfg.model_alias = model_alias
     cfg.model_registry = model_registry
     cfg.tool_call_parser = tool_call_parser
@@ -145,6 +147,42 @@ def _by_id(body, model_id):
         if entry["id"] == model_id:
             return entry
     raise AssertionError(f"id {model_id!r} not in /v1/models: {body}")
+
+
+def test_personal_intelligence_qualification_requires_live_native_parser():
+    model_id = "openbmb/MiniCPM5-2B-MLX"
+    alias = "minicpm5-2b-4bit"
+
+    with _mounted(
+        model_name=model_id,
+        model_alias=alias,
+        tool_call_parser="minicpm",
+    ) as client:
+        enabled = client.get("/v1/models").json()
+    assert _by_id(enabled, alias)["personal_intelligence_profile"] == "minicpm5-2b"
+
+    with _mounted(
+        model_name=model_id,
+        model_alias=alias,
+        tool_call_parser=None,
+    ) as client:
+        disabled = client.get("/v1/models").json()
+    assert _by_id(disabled, alias)["personal_intelligence_profile"] is None
+
+
+def test_personal_intelligence_rejects_alias_reused_for_other_weights():
+    alias = "minicpm5-2b-4bit"
+    registry = _make_registry(
+        _make_entry(
+            model_name="someone/other-weights",
+            model_path="someone/other-weights",
+            aliases={alias},
+            tool_call_parser="minicpm",
+        )
+    )
+    with _mounted(model_name=None, model_registry=registry) as client:
+        body = client.get("/v1/models").json()
+    assert _by_id(body, alias)["personal_intelligence_profile"] is None
 
 
 # ---------------------------------------------------------------------------

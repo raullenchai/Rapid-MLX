@@ -177,11 +177,22 @@ struct AgentRuntimeClientTests {
 
     @Test("Personal Intelligence recognizes only model-specific harness bindings")
     func personalIntelligenceModelSupport() {
-        #expect(PersonalIntelligenceConfig.supportsModel("minicpm5-2b-4bit"))
-        #expect(!PersonalIntelligenceConfig.supportsModel("qwen3.5-4b-4bit"))
-        #expect(!PersonalIntelligenceConfig.supportsModel("phi-4-mini-4bit"))
-        #expect(!PersonalIntelligenceConfig.supportsModel("future-model-7b"))
-        #expect(!PersonalIntelligenceConfig.supportsModel("qwen3.5-future-999b"))
+        let qualified = ServerModelProfile(
+            id: "minicpm5-2b-4bit",
+            personalIntelligenceProfile: "minicpm5-2b"
+        )
+        #expect(PersonalIntelligenceConfig.supportsModel(
+            "minicpm5-2b-4bit",
+            serverProfile: qualified
+        ))
+        #expect(!PersonalIntelligenceConfig.supportsModel(
+            "qwen3.5-4b-4bit",
+            serverProfile: qualified
+        ))
+        #expect(!PersonalIntelligenceConfig.supportsModel(
+            "minicpm5-2b-4bit",
+            serverProfile: ServerModelProfile(id: "minicpm5-2b-4bit")
+        ))
     }
 
     @Test("Only new conversations inherit the post-consent default")
