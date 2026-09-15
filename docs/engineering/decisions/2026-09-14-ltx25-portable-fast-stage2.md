@@ -335,6 +335,16 @@ case. It must not be published, shipped as qualified, or selected by default.
 The next model iteration should retain the terminal Stage 2 speed gain and
 retrain or reduce Stage 1 compression on a broader semantic/motion dataset.
 
+A same-budget rank-4/100-step control expanded LoRA coverage from Q/K/V to
+attention output and feed-forward input/output projections. It improved
+held-out video/audio MSE by 16.52%/23.31% over clean base and beat the original
+QKV-only checkpoint on 12/12 samples in both modalities. The real product path
+still showed the same dark mesh/metallic artifacts and composition drift, and
+slowed to 95.49 seconds (1.840x). This rejects target-module expansion and
+confirms that latent regression is not a sufficient decoded-quality proxy.
+Further model work must add decoded-feature/reward or distribution-matching
+supervision rather than sweep rank, steps, or LoRA module coverage.
+
 ## Resource admission versus algorithm selection
 
 Portable does not mean every memory configuration can load a 67.7 GB model

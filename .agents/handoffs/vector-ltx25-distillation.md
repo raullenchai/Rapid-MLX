@@ -607,3 +607,12 @@ reduce the Stage-1 learned span on broader semantic/motion coverage, then rerun
 the prompt-disjoint blind gate. Atlas should review only the experimental API
 and rollback plumbing for release integration. The spark2 reviewer remains
 unavailable because its Codex refresh token is revoked; no LGTM exists.
+
+The next same-budget control expanded rank-4/100-step LoRA targets from Q/K/V
+to attention output plus FFN input/output projections. Validation improved
+16.52%/23.31% over clean base and beat QKV-only on 12/12 video and audio
+samples, but the 95.49-second real Rapid decode retained the same dark
+mesh/metallic artifacts and composition drift (1.840x versus standard).
+Target-module expansion is rejected. Vector's next concrete action is a
+decoded-feature/reward or distribution-matching training prototype; do not
+continue rank, step, cosine-weight, or target-module sweeps.
