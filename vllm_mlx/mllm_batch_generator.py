@@ -344,6 +344,17 @@ class MLLMBatchRequest:
     top_k: int = 0
     min_p: float = 0.0
     seed: int | None = None
+    # Per-request sampler cache: (fingerprint, seed, vocab width) → sampler
+    # closure. Seeded closures carry RNG state, so the cache is what keeps
+    # one request's stream continuous across prefill and decode steps.
+    _cached_sampler: tuple[tuple[Any, ...], Callable[[Any], Any]] | None = field(
+        default=None, repr=False, compare=False
+    )
+    # Logits-processor cache keyed on the penalty knob tuple (see
+    # ``_apply_request_logits_processors``).
+    _cached_penalty_processors: tuple[Any, ...] | None = field(
+        default=None, repr=False, compare=False
+    )
     # OpenAI-spec penalties (#512) — wired into mlx-lm's
     # ``make_logits_processors`` inside ``_step``. ``repetition_penalty`` is
     # a rapid-mlx extension (mlx-lm-native semantics); ``presence_penalty``
@@ -594,7 +605,7 @@ def _maybe_apply_penalty_processors(
     freq = req.frequency_penalty
     if rep == 1.0 and pres == 0.0 and freq == 0.0:
         return row_logits
-    cached = getattr(req, "_cached_penalty_processors", None)
+    cached = req._cached_penalty_processors
     key = (rep, pres, freq)
     if cached is None or cached[0] != key:
         processors = make_logits_processors(
@@ -665,18 +676,24 @@ def _make_request_sampler(
     """
     seed = getattr(req, "seed", None)
     if seed is not None:
-        return make_seeded_sampler(
-            seed=seed,
-            temperature=req.temperature,
+        return cast(
+            Callable[[mx.array], mx.array],
+            make_seeded_sampler(
+                seed=seed,
+                temperature=req.temperature,
+                top_p=req.top_p,
+                min_p=req.min_p,
+                top_k=req.top_k,
+            ),
+        )
+    return cast(
+        Callable[[mx.array], mx.array],
+        make_sampler(
+            temp=req.temperature,
             top_p=req.top_p,
             min_p=req.min_p,
-            top_k=req.top_k,
-        )
-    return make_sampler(
-        temp=req.temperature,
-        top_p=req.top_p,
-        min_p=req.min_p,
-        top_k=_effective_top_k(req.top_k, vocab_size),
+            top_k=_effective_top_k(req.top_k, vocab_size),
+        ),
     )
 
 
@@ -699,12 +716,12 @@ def _request_cached_sampler(
     prefill and the last decode step. Keep it that way.
     """
     fingerprint = (_sampler_fingerprint(req), req.seed, vocab_size)
-    cached = getattr(req, "_cached_sampler", None)
+    cached = req._cached_sampler
     if cached is not None and cached[0] == fingerprint:
         return cached[1]
     sampler = _make_request_sampler(req, vocab_size)
     req._cached_sampler = (fingerprint, sampler)
-    return sampler
+    return cast(Callable[[mx.array], mx.array], sampler)
 
 
 class MLLMBatchGenerator:
