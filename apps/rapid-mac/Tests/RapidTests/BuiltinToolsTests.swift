@@ -212,6 +212,24 @@ final class BuiltinToolsTests {
         #expect(result.content.contains("location"))
     }
 
+    @Test("Personal Intelligence records a declined browse as unexecuted")
+    func personalIntelligenceRecordsDeclinedBrowse() async throws {
+        let registry = DeclinedBrowseRegistry()
+        let vm = ChatViewModel(tools: registry, toolDefaults: freshDefaults())
+        let action = try JSONDecoder().decode(
+            AgentPendingAction.self,
+            from: Data(#"{"call_id":"declined","name":"browse","arguments":{"url":"https://example.com"},"approval_summary":null,"risk":"read_only","approval_required":false}"#.utf8)
+        )
+
+        let result = await vm.executePersonalIntelligenceTool(
+            action,
+            advertised: registry.definitions
+        )
+
+        #expect(result.isError)
+        #expect(!result.executed)
+    }
+
     // MARK: - Dispatch refusal
 
     @Test("A call for a tool that wasn't advertised this round is refused, not run")
@@ -359,6 +377,20 @@ final class BuiltinToolsTests {
         #expect(stamped.count == turn.count)
         #expect(stamped.map(\.role) == turn.map(\.role))
         #expect(stamped.filter { $0.role == .system } == turn.filter { $0.role == .system })
+    }
+}
+
+@MainActor
+private final class DeclinedBrowseRegistry: ToolRegistry {
+    let definitions = [BrowseTool.definition]
+
+    func run(_ call: ToolCall) async -> ToolCallResult {
+        ToolCallResult(
+            toolCallID: call.id,
+            content: "User declined to open this page.",
+            isError: true,
+            failureKind: .userDeclined
+        )
     }
 }
 

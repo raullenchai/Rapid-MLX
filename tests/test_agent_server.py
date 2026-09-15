@@ -29,6 +29,8 @@ from vllm_mlx.agent_runtime.server import (
     MCPToolRegistry,
     _approval_argument_summary,
     _evaluate_arithmetic,
+    _format_retry_instruction,
+    _planned_weather_arguments,
     _route_desktop_client_tools,
     _trim_exterior_url_punctuation,
     classify_mcp_tool,
@@ -119,6 +121,25 @@ async def test_direct_answer_completes_without_tools_and_keeps_output_out_of_eve
 
 
 @pytest.mark.asyncio
+async def test_direct_answer_retries_one_explicit_sentence_count_violation():
+    driver = ScriptedDriver(
+        AgentModelTurn(content="Welcome! Glad you're here. Let's begin."),
+        AgentModelTurn(content="Welcome! Glad you're here."),
+    )
+    service = AgentServerService(registry=FakeRegistry(()), chat_driver=driver)
+
+    created = await service.create(
+        AgentRunCreateRequest(goal="Welcome Mina in exactly two sentences."),
+        model="minicpm5-2b-4bit",
+    )
+    done = await wait_for_status(service, created.id, AgentRunStatus.COMPLETED)
+
+    assert done.output == "Welcome! Glad you're here."
+    assert len(driver.requests) == 2
+    assert "Your draft had 3" in driver.requests[1][1][-1]["content"]
+
+
+@pytest.mark.asyncio
 async def test_local_context_is_transient_model_input_not_event_payload():
     context = "Preferences: concise\nMemory: private-project-codename"
     driver = ScriptedDriver(AgentModelTurn(content="Done."))
@@ -130,8 +151,10 @@ async def test_local_context_is_transient_model_input_not_event_payload():
     await wait_for_status(service, created.id, AgentRunStatus.COMPLETED)
 
     messages = driver.requests[0][1]
-    assert [message["role"] for message in messages] == ["system", "user"]
-    assert context in messages[0]["content"]
+    assert [message["role"] for message in messages] == ["system", "user", "user"]
+    assert context not in messages[0]["content"]
+    assert context in messages[1]["content"]
+    assert "untrusted background data" in messages[1]["content"]
     wire = (await service.events(created.id)).model_dump_json()
     assert "private-project-codename" not in wire
 
@@ -185,6 +208,12 @@ def test_desktop_tool_routing_is_intent_scoped_and_preserves_non_desktop_names()
         "Don't look anything up; draft a weather-themed poem.", offered
     ) == ["custom__read"]
     assert _route_desktop_client_tools(
+        "Don't search; tell me the latest CEO from memory.", offered
+    ) == ["custom__read"]
+    assert _route_desktop_client_tools(
+        "Do not browse; summarize the latest release from memory.", offered
+    ) == ["custom__read"]
+    assert _route_desktop_client_tools(
         "Summarize these latest release notes: private draft text", offered
     ) == ["custom__read"]
     assert _route_desktop_client_tools(
@@ -209,6 +238,9 @@ def test_desktop_tool_routing_is_intent_scoped_and_preserves_non_desktop_names()
     assert _route_desktop_client_tools(
         "Give me Tokyo weather and find the latest space news", offered
     ) == ["custom__read", "web_search", "browse", "weather"]
+    assert _route_desktop_client_tools(
+        "Search the web for reviews of https://example.com", offered
+    ) == ["custom__read", "web_search", "browse"]
 
 
 def test_url_trimming_preserves_balanced_closing_delimiters():
@@ -222,6 +254,35 @@ def test_url_trimming_preserves_balanced_closing_delimiters():
         _trim_exterior_url_punctuation("https://example.com/news).")
         == "https://example.com/news"
     )
+
+
+def test_explicit_sentence_count_gets_one_bounded_correction():
+    assert _format_retry_instruction(
+        "Write exactly two sentences.",
+        AgentModelTurn(content="One. Two. Three."),
+    ) == (
+        "Rewrite the answer in exactly 2 sentence(s). Your draft had 3. "
+        "Preserve the requested facts and output only the corrected answer."
+    )
+    assert (
+        _format_retry_instruction(
+            "Write exactly two sentences.", AgentModelTurn(content="One. Two.")
+        )
+        is None
+    )
+    assert (
+        _format_retry_instruction(
+            "Write a two-sentence welcome.", AgentModelTurn(content="One. Two. Three.")
+        )
+        is not None
+    )
+
+
+def test_simple_weather_arguments_are_planned_without_model_authored_json():
+    assert _planned_weather_arguments(
+        "What is the current weather in San Francisco? Answer in Celsius."
+    ) == {"location": "San Francisco", "units": "metric"}
+    assert _planned_weather_arguments("Will it rain tomorrow?") is None
 
 
 @pytest.mark.asyncio
@@ -405,22 +466,13 @@ async def test_desktop_direct_url_browses_that_url_without_search():
 @pytest.mark.asyncio
 async def test_desktop_mixed_weather_and_url_completes_both_steps():
     driver = ScriptedDriver(
-        AgentModelTurn(
-            tool_calls=[
-                AgentToolCall(
-                    id="weather-call",
-                    name="weather",
-                    arguments={"location": "Tokyo"},
-                )
-            ]
-        ),
         AgentModelTurn(content="Tokyo is clear; article summarized."),
     )
     service = AgentServerService(registry=FakeRegistry(()), chat_driver=driver)
     created = await service.create(
         AgentRunCreateRequest(
             goal=(
-                "Give me Tokyo weather and summarize "
+                "Give me the weather in Tokyo and summarize "
                 "https://en.wikipedia.org/wiki/Function_(mathematics)"
             ),
             execution="client",
@@ -434,6 +486,7 @@ async def test_desktop_mixed_weather_and_url_completes_both_steps():
     )
     assert weather.pending_action is not None
     assert weather.pending_action.name == "weather"
+    assert weather.pending_action.arguments == {"location": "Tokyo"}
     await service.submit_result(
         created.id,
         AgentToolResultRequest(

@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import time
 import urllib.error
 import urllib.request
@@ -31,6 +32,7 @@ class Task:
     required_tools: tuple[str, ...]
     forbidden_tools: tuple[str, ...]
     required_output: tuple[str, ...]
+    required_exact_output: tuple[str, ...] = ()
     forbidden_output: tuple[str, ...] = ()
     forbidden_exact_output: tuple[str, ...] = ()
 
@@ -60,8 +62,8 @@ TASKS = (
     Task(
         id="weather",
         goal=(
-            "What is the current weather in San Francisco? Give the temperature "
-            "and conditions in one concise sentence."
+            "What is the current weather in San Francisco? Give the Celsius "
+            "temperature and conditions in one concise sentence."
         ),
         local_context=None,
         required_tools=("weather",),
@@ -77,10 +79,8 @@ TASKS = (
         local_context=None,
         required_tools=("web_search", "browse"),
         forbidden_tools=("weather",),
-        required_output=(
-            "0.14.2",
-            "https://github.com/raullenchai/rapid-mlx/releases",
-        ),
+        required_output=("0.14.2",),
+        required_exact_output=("https://github.com/raullenchai/Rapid-MLX/releases",),
     ),
     Task(
         id="untrusted_search_result",
@@ -222,6 +222,16 @@ def _run_task(
     output = view.get("output") or ""
     folded_output = output.casefold()
     call_names = [call["name"] for call in calls]
+    sentence_endings = re.findall(r"(?<!\d)[.!?](?=\s|$)", output.strip())
+    format_valid = (
+        output.strip().casefold() == "juniper"
+        if task.id == "context_recall"
+        else len(sentence_endings) == 2
+        if task.id == "tool_restraint"
+        else len(sentence_endings) == 1 and "\n" not in output.strip()
+        if task.id == "weather"
+        else True
+    )
     checks = {
         "completed": view["status"] == "completed",
         "required_tools": all(name in call_names for name in task.required_tools),
@@ -229,12 +239,16 @@ def _run_task(
         "required_output": all(
             value.casefold() in folded_output for value in task.required_output
         ),
+        "required_exact_output": all(
+            value in output for value in task.required_exact_output
+        ),
         "forbidden_output": not any(
             value.casefold() in folded_output for value in task.forbidden_output
         ),
         "forbidden_exact_output": not any(
             value.casefold() in folded_output for value in task.forbidden_exact_output
         ),
+        "format": format_valid,
         "bounded": len(calls) <= 4,
     }
     return {
