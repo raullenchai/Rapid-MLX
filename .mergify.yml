@@ -1,6 +1,6 @@
 merge_queue:
   mode: parallel
-  # One Mac batch may run beside one no-Mac batch. The per-scope capacity
+  # One Mac candidate may run beside one no-Mac candidate. The per-scope capacity
   # below keeps the scarce Mac lane serialized inside this global budget.
   max_parallel_checks: 2
   skip_intermediate_results: false
@@ -44,17 +44,14 @@ merge_protections_settings:
         - label = merge-ready-mac
 
 # ``auto_merge_conditions`` admits a ready head initially. After a failed
-# batch, Mergify keeps the head in a terminal dequeued state; its supported
+# candidate, Mergify keeps the head in a terminal dequeued state; its supported
 # ``@mergifyio queue <queue-name>`` command resets that state and then enforces
 # the same exact-head queue conditions below. Ordinary pull-request rules do
 # not reset terminal queue state and must not be used as a requeue substitute.
 
 queue_rules:
-  - name: no-mac-batch
+  - name: no-mac
     queue_branch_prefix: mergify/merge-queue/
-    batch_size: 4
-    batch_max_wait_time: 5 min
-    batch_max_failure_resolution_attempts: 2
     checks_timeout: 90 min
     max_checks_retries: 0
     merge_method: squash
@@ -78,11 +75,8 @@ queue_rules:
       - check-success = @github-actions/desktop-tests
       - check-success = @github-actions/version-bump-guard
 
-  - name: mac-batch
+  - name: mac
     queue_branch_prefix: mergify/merge-queue/
-    batch_size: 4
-    batch_max_wait_time: 15 min
-    batch_max_failure_resolution_attempts: 2
     checks_timeout: 90 min
     max_checks_retries: 0
     merge_method: squash

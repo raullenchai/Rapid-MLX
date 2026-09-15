@@ -89,21 +89,20 @@ one authorization label after review and PR validation have converged:
 - `merge-ready-mac` when the classifier selects the engine lane, the Desktop
   lane, or both.
 
-The managed queue never mixes the two labels in one batch. It collects up to
-four candidates of the same class and validates their combined tree once. The
-no-Mac queue waits at most five minutes to favor latency; the Mac-required queue
-waits at most 15 minutes to amortize scarce macOS capacity. The two classes are
-independent scheduling scopes: one no-Mac batch may validate while one Mac
-batch is running, but the `mac-required` scope has capacity one, so scarce
+The managed queue never mixes the two labels. Each ready pull request starts a
+singleton candidate immediately, avoiding paid batching and fill-wait latency.
+The two classes are independent scheduling scopes: one no-Mac candidate may
+validate while one Mac candidate is running, but the `mac-required` scope has
+capacity one, so scarce
 macOS work never multiplies. The global speculative-check ceiling is two.
 
 The Linux `changes` classifier publishes exactly one successful lane marker per
 head: `merge-lane-no-mac` for the false/false state, or `merge-lane-mac` for the
 other three engine/Desktop combinations. Each queue requires its matching
 marker, so a mistaken human label cannot route a Mac-dependent change into the
-no-Mac batch. The combined batch still runs only the union selected by its real
-diff: an engine-only batch does not acquire GUI work, and a Desktop-only batch
-does not acquire engine work.
+no-Mac queue. The singleton candidate still runs only the union selected by its
+real diff: an engine-only candidate does not acquire GUI work, and a
+Desktop-only candidate does not acquire engine work.
 
 Labeling writes a `merge-ready-head` success status onto that exact pull-request
 head. Both queues require the status before admission, while their synthetic
@@ -115,7 +114,7 @@ The queue creates an internal pull request from a branch whose name is exactly
 workflows treat only that exact same-repository shape as a promoted head. A fork
 using the same branch name remains on the ordinary PR path.
 
-An internal queue batch upgrades the lanes selected by the actual diff:
+An internal queue candidate upgrades the lanes selected by the actual diff:
 
 - Engine changes expand to the full five-model L1 matrix.
 - Desktop changes build the release GUI once, then run every journey group
@@ -138,8 +137,8 @@ the number of result records selected by the classifier, so a selected journey
 cannot silently disappear.
 
 Promotion never changes lane classification. This prevents an engine-only
-batch from allocating the full Desktop gate, or a Desktop-only batch from
-allocating model runners. A mixed or fail-closed batch selects both.
+candidate from allocating the full Desktop gate, or a Desktop-only candidate
+from allocating model runners. A mixed or fail-closed candidate selects both.
 
 The queue contract lives in `.mergify.yml`:
 
@@ -148,31 +147,29 @@ The queue contract lives in `.mergify.yml`:
 - provider-supported recovery for a head left in terminal `dequeued` state.
   Diagnose the candidate failure and fix the original pull request when the
   failure is real. Once its exact-head checks are green and exactly one ready
-  label remains, issue `@mergifyio queue no-mac-batch` or
-  `@mergifyio queue mac-batch` in a PR comment. The command resets terminal
+  label remains, issue `@mergifyio queue no-mac` or
+  `@mergifyio queue mac` in a PR comment. The command resets terminal
   provider state but does not bypass `queue_conditions`; the authorized head
-  still runs the full combined candidate validation. Re-applying a ready label,
+  still runs the full singleton candidate validation. Re-applying a ready label,
   removing `dequeued`, pushing an empty commit, or adding a custom trigger label
   does not reset terminal queue state and must not be used as a substitute;
 - an exact-head authorization status in both queue conditions, preventing a
   newly pushed head from racing asynchronous label revocation;
 - parallel mode with a global ceiling of two and a `mac-required` scope capacity
-  of one, so no-Mac work can pass a slow Mac batch without multiplying scarce
+  of one, so no-Mac work can pass a slow Mac candidate without multiplying scarce
   macOS capacity;
 - documentation-only changes carry no scope; any non-documentation file assigns
   `mac-required`, matching the label policy's fail-closed boundary. Queue and CI
   routing files are global barriers and serialize the train while policy changes;
 - separate no-Mac and Mac-required queues, each with mutually exclusive
   authorization labels;
-- up to four pull requests per batch, with five-minute and 15-minute maximum
-  fill waits respectively;
+- singleton candidates start immediately, with no batch feature or fill wait;
 - no blind CI retry and no skipped intermediate failures;
-- at most two batch-split attempts to isolate a failing member;
 - a 90-minute check timeout, covering normal hosted macOS queue delay;
 - the three GitHub Actions required checks must pass both before queue entry and
-  again on the combined temporary pull request;
-- successful members are squash-merged individually, preserving one commit per
-  pull request and GitHub's `Fixes #N` issue closure behavior.
+  again on the temporary candidate pull request;
+- successful candidates are squash-merged, preserving one commit per pull
+  request and GitHub's `Fixes #N` issue closure behavior.
 
 Release bump and version-correction pull requests are excluded by title and
 labels. They continue through the separately authorized release transaction;
@@ -181,7 +178,7 @@ they must never be combined with ordinary changes.
 All three required workflows retain `merge_group` support so an eventual
 organization transfer can use the native queue without another trigger
 migration. The managed queue itself uses ordinary `pull_request` events for its
-temporary batch pull requests.
+temporary candidate pull requests.
 
 Pushes to `main` retain the full engine coverage as a post-merge signal.
 
@@ -228,7 +225,7 @@ Production activation is an owner operation and must happen in this order:
    Fork pull requests are deliberately ineligible because composing fork code
    onto an internal queue branch changes GitHub's token and secret boundary.
    After review, bring an accepted external change onto a same-repository
-   maintainer branch before authorizing it for the batch queue.
+   maintainer branch before authorizing it for the managed queue.
 
 Maintainers who can manage labels are part of the queue's trusted control
 plane: they can authorize a head by applying its ready label. Requeue commands
@@ -237,19 +234,18 @@ repository permission.
 4. In the existing `main` protection, retain required contexts `tests`,
    `desktop-tests`, and `version-bump-guard`, required conversation resolution,
    administrator enforcement, and linear history. Disable only **Require
-   branches to be up to date before merging**: temporary batch validation is
-   incompatible with that strict flag because the combined branch, rather than
-   every original head, is the artifact tested by CI.
+   branches to be up to date before merging**: the queue validates a temporary
+   candidate based on current `main`, rather than updating the original head.
 5. Keep manual merges limited to the documented version-bump and
    human-authorized hotfix paths. Normal pull requests enter through the
    matching merge-ready label and are merged by the queue.
-6. Rehearse with two harmless pull requests that are individually green. Apply
-   `merge-ready` to both within the fill window and verify one temporary batch
-   PR contains both exact heads, runs each affected full lane once, reports all
-   three required checks, and squash-merges both originals in order.
+6. Rehearse with a harmless individually green pull request. Apply
+   `merge-ready` and verify a temporary singleton candidate starts immediately,
+   runs each affected full lane once, reports all three required checks, and
+   squash-merges the original.
 7. Run one `merge-ready` candidate beside one `merge-ready-mac` candidate.
-   Verify both temporary batches become active, no more than two total checks
-   run, and no more than one batch carrying `mac-required` runs at once.
+   Verify both temporary candidates become active, no more than two total checks
+   run, and no more than one candidate carrying `mac-required` runs at once.
 8. Confirm a fork branch named like a queue branch does not receive promoted
    lanes. Then remove the applicable ready label from a queued test PR and
    verify it leaves the queue without merging.
@@ -263,16 +259,15 @@ new exact SHA. Avoiding asynchronous label deletion removes the race in which a
 delayed synchronize job could erase authorization deliberately applied to the
 newer head.
 
-Do not enable batching while strict up-to-date protection remains on, and do
-not weaken or remove any required context to make a batch move. A missing,
+Do not weaken or remove any required context to make a candidate move. A missing,
 cancelled, or failed aggregate is a queue failure.
 
 ## Rollback
 
 Pause the managed queue and remove both merge-ready labels from every queued
-pull request first. Wait for the active batch to stop, restore strict
+pull request first. Wait for the active candidate to stop, restore strict
 up-to-date protection, and only then disable or uninstall the app. Keep the
-batch-head and
+queue-branch and
 `merge_group` workflow triggers in place; they are inert without a queue and
 make rollback recoverable without weakening CI. If path classification is
 suspect, make its policy select both lanes for every PR; this restores the
