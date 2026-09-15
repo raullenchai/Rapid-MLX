@@ -151,9 +151,9 @@ def _fuse_switch_gate_up_weights(weights: Dict[str, mx.array], prefix: str) -> N
             pairs.append((gate_key, up_key))
 
     for gate_key, up_key in pairs:
-        weights[gate_key] = mx.concatenate(
-            [weights.pop(gate_key), weights.pop(up_key)], axis=1
-        )
+        fused = mx.concatenate([weights[gate_key], weights[up_key]], axis=1)
+        weights[gate_key] = fused
+        del weights[up_key]
 
 
 def make_quantization_config(model):

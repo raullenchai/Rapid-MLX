@@ -257,6 +257,26 @@ def test_fused_routed_projection_rejects_unpaired_quantization_metadata():
     assert f"{prefix}.up_proj.weight" in weights
 
 
+def test_fused_routed_projection_shape_failure_does_not_mutate_weights():
+    import mlx.core as mx
+
+    from vllm_mlx.models.deepseek_v4 import _fuse_switch_gate_up_weights
+
+    prefix = "model.layers.0.ffn.switch_mlp"
+    gate_key = f"{prefix}.gate_proj.weight"
+    up_key = f"{prefix}.up_proj.weight"
+    weights = {
+        gate_key: mx.zeros((4, 16, 8), dtype=mx.uint32),
+        up_key: mx.ones((4, 16, 4), dtype=mx.uint32),
+    }
+
+    with pytest.raises(ValueError, match="dimensions must match"):
+        _fuse_switch_gate_up_weights(weights, prefix)
+
+    assert weights[gate_key].shape == (4, 16, 8)
+    assert weights[up_key].shape == (4, 16, 4)
+
+
 def test_restored_pooling_cache_without_legacy_undo_field_is_safe():
     """Persisted pre-rollback caches must remain inspectable after upgrade."""
     import mlx.core as mx
