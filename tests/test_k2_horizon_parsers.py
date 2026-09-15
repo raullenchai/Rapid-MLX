@@ -113,6 +113,39 @@ def test_reasoning_parser_stays_active_for_lowest_effort_compatibility():
     assert K2HorizonReasoningParser.sanitize_when_thinking_disabled is True
 
 
+def test_reasoning_protocol_properties_match_default_effort():
+    parser = K2HorizonReasoningParser()
+    assert parser.reasoning_start_str == "<ifm|think>"
+    assert parser.reasoning_end_str == "</ifm|think>"
+    assert parser.end_token == "</ifm|think>"
+
+
+def test_reasoning_stream_accepts_split_and_prefixed_start_markers():
+    parser = K2HorizonReasoningParser()
+    previous = ""
+    marker = "<ifm|think_fast>"
+    for char in marker:
+        current = previous + char
+        assert parser.extract_reasoning_streaming(previous, current, char) is None
+        previous = current
+    delta = parser.extract_reasoning_streaming(previous, previous + "plan", "plan")
+    assert delta is not None and delta.reasoning == "plan"
+
+    parser = K2HorizonReasoningParser()
+    delta = parser.extract_reasoning_streaming("", marker + "plan", marker + "plan")
+    assert delta is not None and delta.reasoning == "plan"
+
+
+def test_reasoning_finish_stream_and_implicit_open_state():
+    parser = K2HorizonReasoningParser()
+    partial = "</ifm|thi"
+    assert parser.extract_reasoning_streaming("", partial, partial) is None
+    tail = parser.finish_stream()
+    assert tail is not None and tail.reasoning == partial
+    assert parser.finish_stream() is None
+    assert K2HorizonReasoningParser().is_open_in_think("private plan")
+
+
 @pytest.mark.parametrize("start,end", K2HorizonReasoningParser.EFFORT_TOKENS)
 def test_reasoning_open_state_includes_a_bare_generated_start(start, end):
     parser = K2HorizonReasoningParser()
@@ -335,6 +368,181 @@ def test_tool_choice_none_strips_native_envelope_without_dispatch():
 def test_tool_call_without_declared_tools_fails_closed():
     output = _group(_xml_call("ping"))
     result = K2HorizonToolParser().extract_tool_calls(output, {"tools": []})
+    assert not result.tools_called
+    assert result.content == output
+
+
+def test_plain_output_without_tool_group_is_untouched():
+    result = K2HorizonToolParser().extract_tool_calls("plain answer", _request())
+    assert not result.tools_called
+    assert result.content == "plain answer"
+
+
+def test_request_value_uses_default_for_non_mapping_request():
+    assert K2HorizonToolParser._request_value(None, "missing", "fallback") == "fallback"
+
+
+def test_declared_tool_without_parameter_schema_accepts_empty_call():
+    request = _request()
+    request["tools"][1]["function"].pop("parameters")
+    result = K2HorizonToolParser().extract_tool_calls(
+        _group(_xml_call("ping")), request
+    )
+    assert result.tools_called
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        "[]",
+        '{"name":"lookup","arguments":[]}',
+    ],
+    ids=["non-object-payload", "non-object-arguments"],
+)
+def test_invalid_json_call_shapes_fail_closed(body):
+    output = _group(
+        K2HorizonToolParser.CALL_START + body + K2HorizonToolParser.CALL_END
+    )
+    result = K2HorizonToolParser().extract_tool_calls(output, _request("json"))
+    assert not result.tools_called
+    assert result.content == output
+
+
+def test_typed_unknown_argument_uses_its_explicit_wire_type():
+    call = (
+        "<ifm|tool_call>lookup"
+        "<ifm|arg_key>extra</ifm|arg_key>"
+        "<ifm|arg_type>integer</ifm|arg_type>"
+        "<ifm|arg_value>7</ifm|arg_value>"
+        "</ifm|tool_call>"
+    )
+    result = K2HorizonToolParser().extract_tool_calls(
+        _group(call), _request("xml_typed")
+    )
+    assert result.tools_called
+    assert json.loads(result.tool_calls[0]["arguments"]) == {"extra": 7}
+
+
+def test_xml_gap_between_complete_arguments_fails_closed():
+    call = (
+        "<ifm|tool_call>lookup"
+        "<ifm|arg_key>query</ifm|arg_key><ifm|arg_value>x</ifm|arg_value>"
+        "junk"
+        "<ifm|arg_key>limit</ifm|arg_key><ifm|arg_value>2</ifm|arg_value>"
+        "</ifm|tool_call>"
+    )
+    output = _group(call)
+    result = K2HorizonToolParser().extract_tool_calls(output, _request())
+    assert not result.tools_called
+    assert result.content == output
+
+
+@pytest.mark.parametrize(
+    "group",
+    [
+        K2HorizonToolParser.GROUP_START + "junk" + K2HorizonToolParser.GROUP_END,
+        K2HorizonToolParser.GROUP_START
+        + K2HorizonToolParser.CALL_START
+        + '{"name":}'
+        + K2HorizonToolParser.CALL_END
+        + K2HorizonToolParser.GROUP_END,
+        K2HorizonToolParser.GROUP_START
+        + K2HorizonToolParser.CALL_START
+        + '{"name":"ping","arguments":{}}'
+        + K2HorizonToolParser.GROUP_END,
+        K2HorizonToolParser.GROUP_START + K2HorizonToolParser.GROUP_END,
+    ],
+    ids=["missing-call-start", "invalid-json", "missing-call-end", "empty"],
+)
+def test_json_group_framing_rejects_malformed_shapes(group):
+    with pytest.raises(ValueError):
+        K2HorizonToolParser._parse_group(group, _request("json"))
+
+
+def test_json_group_framing_accepts_whitespace_and_escapes():
+    query = 'quote " and slash \\'
+    payload = json.dumps({"name": "lookup", "arguments": {"query": query}})
+    group = (
+        K2HorizonToolParser.GROUP_START
+        + "  "
+        + K2HorizonToolParser.CALL_START
+        + "  "
+        + payload
+        + "  "
+        + K2HorizonToolParser.CALL_END
+        + "  "
+        + K2HorizonToolParser.GROUP_END
+    )
+    result = K2HorizonToolParser().extract_tool_calls(group, _request("json"))
+    assert result.tools_called
+    assert json.loads(result.tool_calls[0]["arguments"]) == {"query": query}
+
+
+def test_json_scanner_preserves_split_group_delimiter():
+    partial = K2HorizonToolParser.GROUP_END[:-2]
+    assert K2HorizonToolParser._scan_json_group_end(
+        partial, 0, in_string=False, escape=False
+    ) == (None, 0, False, False)
+
+
+def test_tool_choice_none_strips_incomplete_and_malformed_groups():
+    incomplete = "Visible " + K2HorizonToolParser.GROUP_START + "partial"
+    result = K2HorizonToolParser().extract_tool_calls(
+        incomplete, _request(tool_choice="none")
+    )
+    assert not result.tools_called
+    assert result.content == "Visible "
+
+    malformed = "Visible " + _group("junk")
+    result = K2HorizonToolParser().extract_tool_calls(
+        malformed, _request(tool_choice="none")
+    )
+    assert not result.tools_called
+    assert result.content == "Visible "
+
+
+def test_without_tool_groups_handles_plain_incomplete_and_multiple_groups():
+    parser = K2HorizonToolParser
+    assert parser._without_tool_groups("plain") == "plain"
+    assert parser._without_tool_groups("before " + parser.GROUP_START) == "before "
+    text = (
+        "before "
+        + _group(_xml_call("ping"))
+        + "private</ifm|think> between "
+        + _group(_xml_call("ping"))
+        + "private</ifm|think_fast> after"
+    )
+    assert parser._without_tool_groups(text) == "before  between  after"
+
+
+def test_unsanitized_direct_stream_flushes_only_proven_public_suffix():
+    parser = K2HorizonToolParser()
+    assert parser.flush_held_content("private plan") == ""
+    assert parser.flush_held_content("private plan</ifm|think>Visible") == "Visible"
+
+
+@pytest.mark.parametrize(
+    "wire_format,call",
+    [
+        ("xml", _xml_call("bad name")),
+        (
+            "xml",
+            "<ifm|tool_call>lookup<ifm|arg_key>query</ifm|arg_key>junk"
+            "<ifm|arg_value>x</ifm|arg_value></ifm|tool_call>",
+        ),
+        ("xml", _xml_call("lookup", (("query", "a"), ("query", "b")))),
+        ("xml_typed", _xml_call("lookup", (("query", "a"),), typed=False)),
+        (
+            "xml",
+            _xml_call("lookup", (("query", "a"),))[: -len("</ifm|tool_call>")]
+            + "junk</ifm|tool_call>",
+        ),
+    ],
+    ids=["invalid-name", "gap", "duplicate", "missing-type", "trailing-junk"],
+)
+def test_additional_malformed_xml_shapes_fail_closed(wire_format, call):
+    output = _group(call)
+    result = K2HorizonToolParser().extract_tool_calls(output, _request(wire_format))
     assert not result.tools_called
     assert result.content == output
 
