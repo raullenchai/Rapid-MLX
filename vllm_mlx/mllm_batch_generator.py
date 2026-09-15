@@ -455,6 +455,79 @@ class MLLMBatchResponse:
     cached_tokens: int = 0
 
 
+def _singleton_regular_cache_leaves(
+    caches: list[Any], allow_arrays_cache: bool
+) -> bool:
+    """Return True when every leaf qualifies for the singleton no-rebatch path.
+
+    Eligibility is deliberately narrower than the merge-compatibility check:
+    only the exact regular ``KVCache`` / ``ArraysCache`` classes the serialized
+    lane actually produces qualify. Compound wrappers (``CacheList``),
+    ``RotatingKVCache``, ``PoolingCache``, quantized caches, subclasses, and
+    any future shape fall through to the existing ``merge`` path. Matching is
+    exact-type on purpose — ``isinstance`` would admit subclasses whose
+    ``merge``/``extract`` lifecycle we have never validated.
+    """
+    if not caches:
+        return False
+    try:
+        from mlx_vlm.models.cache import ArraysCache, KVCache
+    except ImportError:
+        # mlx-vlm is optional; the MLLM lane cannot even run without it.
+        return False
+    qualified: tuple[type, ...] = (KVCache, ArraysCache)
+    if allow_arrays_cache:
+        try:
+            from mlx_lm.models.cache import ArraysCache as LMArraysCache
+            from mlx_lm.models.cache import KVCache as LMKVCache
+
+            qualified += (LMArraysCache, LMKVCache)
+        except ImportError:
+            pass
+    return all(type(leaf) in qualified for leaf in caches)
+
+
+def _extract_detached_singleton_leaf(leaf: Any, idx: int) -> Any:
+    """Materialize a detached copy of a singleton-regular cache leaf.
+
+    Upstream ``extract`` implementations return lazy slices for some leaf
+    types (``ArraysCache.extract`` slices state arrays without
+    ``contiguous``/``eval``), which would alias the live batch state until a
+    later evaluation mutates or frees it. Terminal extraction must yield
+    arrays that stay valid no matter what happens to the live batch
+    afterwards, so build a fresh leaf from explicit ``mx.contiguous`` copies
+    and evaluate them on the caller's (worker) stream before returning.
+    """
+    from mlx_vlm.models.cache import ArraysCache, KVCache
+
+    if isinstance(leaf, ArraysCache):
+        detached = ArraysCache(len(leaf.cache))
+        detached.cache = [
+            None if state is None else mx.contiguous(state[idx : idx + 1])
+            for state in leaf.cache
+        ]
+        for attr in ("left_padding", "lengths"):
+            value = getattr(leaf, attr, None)
+            if value is not None:
+                setattr(detached, attr, mx.contiguous(value[idx : idx + 1]))
+        materialized = [state for state in detached.cache if state is not None]
+        for attr in ("left_padding", "lengths"):
+            value = getattr(detached, attr, None)
+            if value is not None:
+                materialized.append(value)
+        if materialized:
+            mx.eval(*materialized)
+        return detached
+
+    detached = KVCache()
+    if getattr(leaf, "keys", None) is not None:
+        detached.keys = mx.contiguous(leaf.keys[idx : idx + 1])
+        detached.values = mx.contiguous(leaf.values[idx : idx + 1])
+        detached.offset = leaf.offset
+        mx.eval(detached.keys, detached.values)
+    return detached
+
+
 @dataclass
 class MLLMBatch:
     """
@@ -472,6 +545,13 @@ class MLLMBatch:
     num_tokens: list[int]  # Tokens generated per request
     cache: list[Any]  # BatchKVCache for language model
     requests: list[MLLMBatchRequest]  # Full request data
+    # Explicit capability marker for the cache layout this batch carries.
+    # ``"batched"`` leaves went through ``merge`` and expose the batched
+    # merge/filter/extract lifecycle. ``"singleton_regular"`` leaves are the
+    # untouched regular per-request caches of a structural B=1 batch that
+    # skipped the singleton repack. Downstream code must branch on this
+    # marker, never on array rank or leaf type inspection.
+    cache_layout: str = "batched"
 
     def __len__(self) -> int:
         return len(self.uids)
@@ -505,6 +585,19 @@ class MLLMBatch:
         Args:
             other: Batch to merge into this one
         """
+        if (
+            self.cache_layout == "singleton_regular"
+            or other.cache_layout == "singleton_regular"
+        ):
+            # A singleton-regular batch holds exactly one request whose cache
+            # leaves never went through ``merge``. Promoting it to a batched
+            # cache mid-generation via ``extend`` is not supported (and cannot
+            # arise on the serialized lane, where a new batch only starts once
+            # the active one finishes): refuse instead of producing a batched
+            # cache interleaved with regular leaves.
+            raise ValueError(
+                "cannot extend a singleton-regular MLLM batch mid-generation"
+            )
         self.uids.extend(other.uids)
         self.request_ids.extend(other.request_ids)
         self.y = mx.concatenate([self.y, other.y])
@@ -538,6 +631,8 @@ class MLLMBatch:
         Returns:
             Cache state for that request
         """
+        if self.cache_layout == "singleton_regular":
+            return [_extract_detached_singleton_leaf(c, idx) for c in self.cache]
         return [c.extract(idx) if hasattr(c, "extract") else None for c in self.cache]
 
 
@@ -766,6 +861,7 @@ class MLLMBatchGenerator:
         vision_max_pixels: int = 0,
         vision_prefill_token_budget: int = 8192,
         enable_prefix_cache: bool = True,
+        singleton_fastpath: str = "auto",
     ):
         """
         Initialize MLLM batch generator.
@@ -788,7 +884,17 @@ class MLLMBatchGenerator:
             vision_prefill_token_budget: Per-image-request admission budget;
                 independent from the language-model prefill chunk. Appended to
                 preserve positional compatibility with existing callers.
+            singleton_fastpath: ``"auto"`` (default) skips the per-request
+                cache merge for structural B=1 batches whose leaves qualify
+                (see :func:`_singleton_regular_cache_leaves`); ``"off"`` always
+                takes the legacy merge/rebatch path. Operator rollback only.
         """
+        if singleton_fastpath not in ("auto", "off"):
+            raise ValueError(
+                f"singleton_fastpath must be 'auto' or 'off', "
+                f"got {singleton_fastpath!r}"
+            )
+        self.singleton_fastpath = singleton_fastpath
         self.model = model
         self.processor = processor
         self.mm_processor = mm_processor
@@ -2179,18 +2285,41 @@ class MLLMBatchGenerator:
                 f"(disable it for multimodal models with continuous batching)."
             )
 
-        try:
-            batch_cache = [
-                per_request_caches[0][layer_idx].merge(
-                    [c[layer_idx] for c in per_request_caches]
-                )
-                for layer_idx in range(len(per_request_caches[0]))
-            ]
-        except Exception as e:
-            logger.error(
-                f"Failed to merge per-request KV caches: {type(e).__name__}: {e}"
+        # Singleton no-rebatch fast path: on the serialized lane the
+        # structural B=1 policy (config-enforced max_num_seqs /
+        # prefill_batch_size / completion_batch_size == 1, plus the
+        # ``_next()`` no-active-batch admission rule) means this batch holds
+        # exactly one request. Calling ``merge([single])`` would only repack
+        # the request's regular cache leaves into batched wrappers that every
+        # subsequent decode step must then extract and re-merge around.
+        # Keep the prefill-written regular leaves instead. Any structural
+        # change that violates the single-request invariant (larger batch
+        # limits, unknown/wrapped/subclassed leaves, disabled flag) falls
+        # through to the legacy merge path — the eligibility helper fails
+        # closed on anything it does not recognise.
+        singleton_regular = (
+            len(requests) == 1
+            and len(per_request_caches) == 1
+            and self.singleton_fastpath == "auto"
+            and _singleton_regular_cache_leaves(
+                per_request_caches[0], self.allow_arrays_cache
             )
-            raise
+        )
+        if singleton_regular:
+            batch_cache = list(per_request_caches[0])
+        else:
+            try:
+                batch_cache = [
+                    per_request_caches[0][layer_idx].merge(
+                        [c[layer_idx] for c in per_request_caches]
+                    )
+                    for layer_idx in range(len(per_request_caches[0]))
+                ]
+            except Exception as e:
+                logger.error(
+                    f"Failed to merge per-request KV caches: {type(e).__name__}: {e}"
+                )
+                raise
 
         # Create initial y (first generated tokens)
         y = mx.array(first_tokens)
@@ -2216,6 +2345,7 @@ class MLLMBatchGenerator:
             num_tokens=[0] * len(requests),
             cache=batch_cache,
             requests=requests,
+            cache_layout="singleton_regular" if singleton_regular else "batched",
         )
 
     def _step(
