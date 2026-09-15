@@ -42,11 +42,18 @@ plugin is wired into THIS interpreter — same path pytest itself takes.
 
 from __future__ import annotations
 
+import json
 import os
+import re
 import subprocess
 import sys
 from dataclasses import dataclass
 from pathlib import Path
+
+if sys.version_info >= (3, 11):
+    import tomllib
+else:  # pragma: no cover - Python 3.10 compatibility
+    import tomli as tomllib
 
 # Packages the test suite REQUIRES at collection time. Keep this list
 # narrow — anything that's only used by a single test should be
@@ -55,11 +62,11 @@ from pathlib import Path
 # because plugin discovery happens before tests are collected, so a
 # missing plugin breaks the entire run.
 #
-# Each entry is (import_name, pip_name, why). ``import_name`` is what
-# the self-check tries; ``pip_name`` is what would be installed if we
-# fell back to ad-hoc ``pip install`` (we don't — we install the full
-# canonical extras instead — but it's surfaced in the error message
-# so the operator can manually recover).
+# Each entry is (import_name, distribution_hint, why). ``import_name`` is
+# what the self-check tries. ``distribution_hint`` identifies the matching
+# entry in the canonical ``[project.optional-dependencies].test`` table;
+# its specifier and marker are loaded from pyproject.toml at runtime so this
+# probe cannot silently drift from the dependency declaration.
 REQUIRED_TEST_PACKAGES: tuple[tuple[str, str, str], ...] = (
     (
         "pytest",
@@ -174,9 +181,54 @@ TRUSTED_TEST_PINS: tuple[str, ...] = (
     "pytest-asyncio>=0.21.0,<1",
     "aiohttp>=3.9.0,<4",
     "pillow>=10.0.0,<13",
-    "mlx-vlm>=0.6.3,<0.7; platform_system == 'Darwin'",
+    "mlx-vlm==0.6.17; platform_system == 'Darwin'",
     "mlx-audio>=0.5.3,<0.6; platform_system == 'Darwin'",
 )
+
+
+_REQUIREMENT_NAME = re.compile(r"^\s*([A-Za-z0-9][A-Za-z0-9._-]*)")
+
+
+def _normalized_requirement_name(requirement: str) -> str:
+    """Extract and normalize the distribution name from a PEP 508 string."""
+    match = _REQUIREMENT_NAME.match(requirement)
+    if match is None:
+        raise ValueError(
+            f"invalid requirement without a distribution name: {requirement}"
+        )
+    return re.sub(r"[-_.]+", "-", match.group(1)).lower()
+
+
+def canonical_test_packages(
+    repo_root: Path | None = None,
+) -> tuple[tuple[str, str, str], ...]:
+    """Join import probes to canonical ``test`` requirements.
+
+    Only the import/distribution mapping lives in this module. Version
+    specifiers and environment markers come from pyproject.toml, while the
+    target interpreter still performs the actual PEP 508 parsing and marker
+    evaluation inside ``_REQUIREMENT_PROBE``.
+    """
+    root = repo_root or Path(__file__).resolve().parents[2]
+    data = tomllib.loads((root / "pyproject.toml").read_text())
+    declared = data["project"]["optional-dependencies"][TEST_EXTRAS_NAME]
+    requirements_by_name = {
+        _normalized_requirement_name(requirement): requirement
+        for requirement in declared
+    }
+
+    packages: list[tuple[str, str, str]] = []
+    for import_name, distribution_hint, why in REQUIRED_TEST_PACKAGES:
+        name = _normalized_requirement_name(distribution_hint)
+        try:
+            canonical_requirement = requirements_by_name[name]
+        except KeyError as exc:
+            raise ValueError(
+                f"required import {import_name!r} has no canonical "
+                f"[{TEST_EXTRAS_NAME}] requirement for {name!r}"
+            ) from exc
+        packages.append((import_name, canonical_requirement, why))
+    return tuple(packages)
 
 
 def required_test_packages_for_platform(
@@ -195,9 +247,10 @@ def required_test_packages_for_platform(
 class TestEnvStatus:
     """Result of a test-env check.
 
-    ``missing`` is the list of import names that failed; ``ok`` mirrors
-    the bool the caller usually wants. ``message`` is a one-liner
-    suitable for a step-result summary.
+    ``missing`` is the list of import names whose requirement is not
+    satisfied (missing import/distribution metadata or an incompatible
+    installed version); ``ok`` mirrors the bool the caller usually wants.
+    ``message`` is a one-liner suitable for a step-result summary.
     """
 
     ok: bool
@@ -219,8 +272,107 @@ class TestEnvStatus:
         )
 
 
-def check_test_env(python: str | None = None) -> TestEnvStatus:
-    """Probe ``python`` for the required test-runtime packages.
+_REQUIREMENT_PROBE = r"""
+import contextlib
+import importlib
+import io
+import json
+import sys
+from importlib import metadata
+
+from packaging.requirements import Requirement
+from packaging.version import InvalidVersion
+
+packages = json.loads(sys.stdin.read())
+results = []
+for import_name, requirement_text, _why in packages:
+    requirement = Requirement(requirement_text)
+    if requirement.marker is not None and not requirement.marker.evaluate():
+        results.append(
+            {
+                "import_name": import_name,
+                "distribution": requirement.name,
+                "installed": None,
+                "required": str(requirement.specifier) or "any version",
+                "state": "skipped",
+                "import_error": None,
+            }
+        )
+        continue
+
+    try:
+        installed = metadata.version(requirement.name)
+    except metadata.PackageNotFoundError:
+        installed = None
+
+    import_error = None
+    try:
+        # Some optional runtimes print notices while importing. Keep stdout
+        # reserved for the machine-readable result consumed by the parent.
+        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(
+            io.StringIO()
+        ):
+            importlib.import_module(import_name)
+    except Exception as exc:
+        import_error = f"{type(exc).__name__}: {exc}"
+
+    if import_error is not None:
+        state = "missing_import"
+    elif installed is None:
+        state = "missing_distribution"
+    else:
+        try:
+            compatible = not requirement.specifier or requirement.specifier.contains(
+                installed,
+                # Pip ignores prereleases unless the requirement itself
+                # opts into one. Mirror that behavior for an already
+                # installed distribution instead of silently widening a
+                # stable-only canonical range.
+                prereleases=requirement.specifier.prereleases is True,
+            )
+        except InvalidVersion:
+            compatible = False
+        state = "ok" if compatible else "version_mismatch"
+
+    results.append(
+        {
+            "import_name": import_name,
+            "distribution": requirement.name,
+            "installed": installed,
+            "required": str(requirement.specifier) or "any version",
+            "state": state,
+            "import_error": import_error,
+        }
+    )
+
+print(json.dumps(results))
+"""
+
+
+def _problem_message(problem: dict[str, str | None]) -> str:
+    """Format one failed requirement probe for operator-facing output."""
+    distribution = problem["distribution"]
+    import_name = problem["import_name"]
+    installed = problem["installed"] or "not installed"
+    required = problem["required"]
+
+    if problem["state"] == "version_mismatch":
+        return f"{distribution} {installed} does not satisfy {required}"
+    if problem["state"] == "missing_distribution":
+        return (
+            f"{distribution} has no installed distribution metadata "
+            f"(import {import_name} succeeded; requires {required})"
+        )
+    return (
+        f"{distribution} is not importable as {import_name} "
+        f"(installed: {installed}; requires {required})"
+    )
+
+
+def check_test_env(
+    python: str | None = None, repo_root: Path | None = None
+) -> TestEnvStatus:
+    """Probe ``python`` for required imports and compatible distributions.
 
     ``python`` defaults to ``sys.executable`` — i.e. the interpreter
     currently running pr_validate, which is also the one
@@ -228,69 +380,108 @@ def check_test_env(python: str | None = None) -> TestEnvStatus:
     different interpreter for the check than for the actual run would
     defeat the point of the check.
 
-    The probe is a single ``python -c "import pytest, pytest_asyncio"``
-    so the import side-effects happen in a fresh process — keeps this
-    function safe to call from inside pytest itself (where importing
-    pytest_asyncio twice could trip a "plugin already registered" warning).
+    The probe runs in one fresh child process so imports, PEP 508 marker
+    evaluation, distribution metadata lookup, and version comparison all use
+    the exact interpreter that will run pytest. This also keeps the function
+    safe to call from inside pytest itself (where importing pytest plugins a
+    second time could trip a "plugin already registered" warning).
     """
     interp = python or sys.executable
-    import_names = [pkg for pkg, _, _ in required_test_packages_for_platform()]
-    probe = "; ".join(f"import {name}" for name in import_names)
-
-    proc = subprocess.run(  # noqa: S603
-        [interp, "-c", probe],
-        capture_output=True,
-        text=True,
-    )
-    if proc.returncode == 0:
+    try:
+        packages = canonical_test_packages(repo_root)
+    except (KeyError, OSError, ValueError, tomllib.TOMLDecodeError) as exc:
         return TestEnvStatus(
-            ok=True,
-            missing=(),
-            message=f"all {len(import_names)} required test packages importable",
+            ok=False,
+            missing=tuple(pkg for pkg, _, _ in REQUIRED_TEST_PACKAGES),
+            message=f"could not load canonical test requirements: {exc}",
             interpreter=interp,
         )
 
-    # Identify exactly which import failed. Re-probe each one
-    # individually — cheap (a handful of process spawns) and gives the
-    # operator the precise list instead of just "something broke".
-    missing: list[str] = []
-    for name in import_names:
-        single = subprocess.run(  # noqa: S603
-            [interp, "-c", f"import {name}"],
-            capture_output=True,
-            text=True,
-        )
-        if single.returncode != 0:
-            missing.append(name)
-
-    if not missing:
-        # The batch probe failed but every individual import passed.
-        # This is a real condition pytest will hit at startup — plugin
-        # registration order / "plugin already registered" / a sys.path
-        # mutation by one import that breaks the next. Codex r1
-        # BLOCKING: returning ok=True here let a broken env masquerade
-        # as healthy, exactly the failure mode #185 is about.
-        # Surface the batch stderr so the operator can diagnose
-        # without re-running by hand.
+    proc = subprocess.run(  # noqa: S603
+        [interp, "-c", _REQUIREMENT_PROBE],
+        input=json.dumps(packages),
+        capture_output=True,
+        text=True,
+    )
+    if proc.returncode != 0:
         batch_err = (proc.stderr or proc.stdout or "").strip() or (
-            "(no diagnostic output from the failing import batch — "
+            "(no diagnostic output from the failing requirement probe — "
             f"exit code: {proc.returncode})"
         )
         return TestEnvStatus(
             ok=False,
-            missing=tuple(import_names),
+            missing=tuple(pkg for pkg, _, _ in packages),
             message=(
-                "batch import probe failed (every individual import "
-                "passed, but the combined load order pytest takes is "
-                f"broken). Diagnostic: {batch_err[:512]}"
+                "test requirement probe failed before it could inspect the "
+                f"environment. Diagnostic: {batch_err[:512]}"
+            ),
+            interpreter=interp,
+        )
+
+    try:
+        results = json.loads(proc.stdout)
+    except (TypeError, json.JSONDecodeError) as exc:
+        return TestEnvStatus(
+            ok=False,
+            missing=tuple(pkg for pkg, _, _ in packages),
+            message=f"test requirement probe returned invalid output: {exc}",
+            interpreter=interp,
+        )
+
+    expected_imports = [pkg for pkg, _, _ in packages]
+    valid_states = {
+        "ok",
+        "skipped",
+        "missing_import",
+        "missing_distribution",
+        "version_mismatch",
+    }
+    valid_result = (
+        isinstance(results, list)
+        and len(results) == len(packages)
+        and all(
+            isinstance(result, dict)
+            and result.get("import_name") == expected_imports[index]
+            and isinstance(result.get("distribution"), str)
+            and (
+                result.get("installed") is None
+                or isinstance(result.get("installed"), str)
+            )
+            and isinstance(result.get("required"), str)
+            and result.get("state") in valid_states
+            and (
+                result.get("import_error") is None
+                or isinstance(result.get("import_error"), str)
+            )
+            for index, result in enumerate(results)
+        )
+    )
+    if not valid_result:
+        return TestEnvStatus(
+            ok=False,
+            missing=tuple(expected_imports),
+            message="test requirement probe returned an invalid result schema",
+            interpreter=interp,
+        )
+
+    applicable = [result for result in results if result["state"] != "skipped"]
+    problems = [result for result in applicable if result["state"] != "ok"]
+    if not problems:
+        return TestEnvStatus(
+            ok=True,
+            missing=(),
+            message=(
+                f"all {len(applicable)} applicable required test packages "
+                "importable and version-compatible"
             ),
             interpreter=interp,
         )
 
     return TestEnvStatus(
         ok=False,
-        missing=tuple(missing),
-        message=f"missing required test packages: {', '.join(missing)}",
+        missing=tuple(str(problem["import_name"]) for problem in problems),
+        message="unsatisfied test requirements: "
+        + "; ".join(_problem_message(problem) for problem in problems),
         interpreter=interp,
     )
 
