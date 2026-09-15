@@ -335,6 +335,12 @@ def test_model_info_exposes_only_qualified_personal_intelligence_harnesses():
         == "minicpm5-2b"
     )
     assert (
+        models_route._build_model_info(
+            "minicpm5-2b-4bit"
+        ).personal_intelligence_qualification
+        == "minicpm5-2b-q4-v1"
+    )
+    assert (
         models_route._build_model_info("qwen3.5-4b-4bit").personal_intelligence_profile
         == "qwen3.5-4b"
     )

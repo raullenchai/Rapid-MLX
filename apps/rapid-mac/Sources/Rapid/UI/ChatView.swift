@@ -388,9 +388,11 @@ struct ChatView: View {
             guard request != 0 else { return }
             composeFocusToken &+= 1
         }
-        .onChange(of: viewModel.conversations.map(\.id)) { _, _ in
+        .onChange(of: viewModel.conversations.map(\.id)) { oldIDs, newIDs in
             pruneAttachmentDrafts()
-            reconcilePersonalIntelligenceStates()
+            reconcilePersonalIntelligenceStates(
+                newlyCreatedConversationIDs: Set(newIDs).subtracting(oldIDs)
+            )
         }
         .onChange(of: viewModel.activeConversationID) { _, _ in
             pruneAttachmentDrafts()
@@ -1650,12 +1652,15 @@ struct ChatView: View {
         DocumentContentCache.shared.remove(contentsOf: discarded)
     }
 
-    private func reconcilePersonalIntelligenceStates() {
+    private func reconcilePersonalIntelligenceStates(
+        newlyCreatedConversationIDs: Set<UUID> = []
+    ) {
         let stored = Set(viewModel.conversations.map(\.id))
         personalIntelligenceStates = PersonalIntelligenceConfig.reconciledConversationStates(
             personalIntelligenceStates,
             activeConversationID: viewModel.activeConversationID,
             storedConversationIDs: stored,
+            newlyCreatedConversationIDs: newlyCreatedConversationIDs,
             introductionCompleted: personalIntelligenceIntroductionCompleted,
             preferredEnabled: personalIntelligencePreferred
         )

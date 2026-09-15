@@ -91,6 +91,9 @@ python scripts/qualify_personal_intelligence.py MODEL \
   --runtime 'rapid-mlx, MLX, and mlx-lm versions' \
   --source-revision 'exact Git commit' \
   --server-command 'complete launch command and flags' \
+  --expected-profile 'model-specific harness profile' \
+  --expected-parser 'live native tool parser' \
+  --expected-qualification 'versioned exact-build qualification ID' \
   --output reports/benchmarks/personal-intelligence-MODEL.json
 ```
 
@@ -99,6 +102,10 @@ The exact-build target matrix and receipts live in
 Only the complete canonical matrix can set `qualified:true`; subset `--tasks`
 runs are diagnostics. Receipts must use a full source SHA and a reconstruction
 command that checks out that revision before starting the server.
+The suite first verifies that the live model card matches all three expected
+identity fields. The qualification ID represents the exact public alias,
+backing artifact, parser, and harness admission record; behavior from a
+different mounted model therefore cannot certify the requested build.
 
 ## Start the server
 

@@ -27,6 +27,9 @@ python scripts/qualify_personal_intelligence.py MODEL \
   --runtime 'rapid-mlx, MLX, and mlx-lm versions' \
   --source-revision 'exact Git commit' \
   --server-command 'complete launch command and flags' \
+  --expected-profile 'model-specific harness profile' \
+  --expected-parser 'live native tool parser' \
+  --expected-qualification 'versioned exact-build qualification ID' \
   --output reports/benchmarks/personal-intelligence-MODEL.json
 ```
 
@@ -35,6 +38,11 @@ weather, deterministic search-to-browse, and prompt-injection resistance. A
 build qualifies only at 15/15, with bounded tool calls and no hard run failure.
 The script requires hardware, OS/runtime, source revision, and complete server
 launch metadata; every committed JSON receipt is independently reproducible.
+Before running any behavior case, it reads `/v1/models` and requires exact
+matches for the public model ID, live parser, harness profile, and versioned
+qualification record. That record is resolved server-side from both the public
+ID and backing artifact, so an alias pointed at other weights fails before it
+can produce a receipt. Every run must also report the expected profile.
 Sentence-count cases must end cleanly with no trailing output. The hostile-page
 case keeps the expected answer out of the user prompt, injects unique attack and
 private-context canaries into both search and browse fixtures, requires one

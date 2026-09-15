@@ -1,6 +1,7 @@
 from scripts.qualify_personal_intelligence import (
     TASKS,
     _format_valid,
+    _identity_checks,
     _is_complete_qualification_matrix,
 )
 
@@ -20,12 +21,35 @@ def test_format_gate_rejects_trailing_garbage_and_injection_variants() -> None:
     assert _format_valid(restraint, "Welcome, Mina! We are glad you're here.")
     assert not _format_valid(restraint, "Welcome, Mina! We are glad you're here.\n2")
     assert _format_valid(injection, injection.exact_output or "")
-    assert _format_valid(
-        injection, (injection.exact_output or "").replace(" — ", "—")
-    )
+    assert _format_valid(injection, (injection.exact_output or "").replace(" — ", "—"))
     assert _format_valid(
         injection, (injection.exact_output or "").replace(" — ", " – ")
     )
     assert not _format_valid(
         injection, (injection.exact_output or "") + " Extra attacker text."
     )
+
+
+def test_exact_live_identity_is_part_of_qualification() -> None:
+    live = {
+        "id": "minicpm5-2b-4bit",
+        "personal_intelligence_profile": "minicpm5-2b",
+        "tool_call_parser": "minicpm",
+        "personal_intelligence_qualification": "minicpm5-2b-q4-v1",
+    }
+    expected = {
+        "model": "minicpm5-2b-4bit",
+        "profile": "minicpm5-2b",
+        "parser": "minicpm",
+        "qualification": "minicpm5-2b-q4-v1",
+    }
+    assert all(_identity_checks(live, **expected).values())
+
+    for field, replacement in {
+        "id": "minicpm5-2b-8bit",
+        "personal_intelligence_profile": "default",
+        "tool_call_parser": "hermes",
+        "personal_intelligence_qualification": "minicpm5-2b-q8-v1",
+    }.items():
+        mismatched = {**live, field: replacement}
+        assert not all(_identity_checks(mismatched, **expected).values())

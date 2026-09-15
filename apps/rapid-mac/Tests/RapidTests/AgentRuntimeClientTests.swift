@@ -194,6 +194,10 @@ struct AgentRuntimeClientTests {
             serverProfile: qualified
         ))
         #expect(!PersonalIntelligenceConfig.supportsModel(
+            "MiniCPM5-2B-4bit",
+            serverProfile: qualified
+        ))
+        #expect(!PersonalIntelligenceConfig.supportsModel(
             "minicpm5-2b-4bit",
             serverProfile: ServerModelProfile(id: "minicpm5-2b-4bit")
         ))
@@ -215,10 +219,24 @@ struct AgentRuntimeClientTests {
         #expect(existing[oldA] == false)
         #expect(existing[oldB] == false)
 
-        let created = PersonalIntelligenceConfig.reconciledConversationStates(
+        // Conversation persistence inserts the row before selecting it. The
+        // insertion transaction must record the inherited preference so the
+        // subsequent active-ID reconciliation cannot mistake it for an old
+        // saved conversation.
+        let insertedBeforeSelection = PersonalIntelligenceConfig.reconciledConversationStates(
             existing,
+            activeConversationID: oldA,
+            storedConversationIDs: [oldA, oldB, newDraft],
+            newlyCreatedConversationIDs: [newDraft],
+            introductionCompleted: true,
+            preferredEnabled: true
+        )
+        #expect(insertedBeforeSelection[newDraft] == true)
+
+        let created = PersonalIntelligenceConfig.reconciledConversationStates(
+            insertedBeforeSelection,
             activeConversationID: newDraft,
-            storedConversationIDs: [oldA, oldB],
+            storedConversationIDs: [oldA, oldB, newDraft],
             introductionCompleted: true,
             preferredEnabled: true
         )

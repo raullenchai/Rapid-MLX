@@ -22,6 +22,7 @@ from .profiles import (
     PersonalIntelligenceQualification,
     resolve_agent_profile,
     resolve_personal_intelligence_profile,
+    resolve_personal_intelligence_qualification,
 )
 from .runtime import AgentRuntime, AgentRuntimeError, AgentRuntimeOutput
 
@@ -41,5 +42,6 @@ __all__ = [
     "ToolRisk",
     "ToolSpec",
     "resolve_agent_profile",
+    "resolve_personal_intelligence_qualification",
     "resolve_personal_intelligence_profile",
 ]

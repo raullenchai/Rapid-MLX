@@ -362,6 +362,24 @@ def resolve_personal_intelligence_profile(
     the generic fallback cannot opt a model into Personal Intelligence.
     """
 
+    qualification = resolve_personal_intelligence_qualification(
+        model,
+        backing_model=backing_model,
+        model_config=model_config,
+        tool_call_parser=tool_call_parser,
+    )
+    return qualification.profile if qualification is not None else None
+
+
+def resolve_personal_intelligence_qualification(
+    model: str,
+    *,
+    backing_model: str | None = None,
+    model_config: dict[str, Any] | None = None,
+    tool_call_parser: str | None = None,
+) -> PersonalIntelligenceQualification | None:
+    """Return the exact admitted artifact/parser/harness record, if any."""
+
     normalized = _normalize_identity(model)
     qualification = _PERSONAL_INTELLIGENCE_BY_PUBLIC_ID.get(normalized)
     backing_identity = model if backing_model is None else backing_model
@@ -381,4 +399,4 @@ def resolve_personal_intelligence_profile(
     )
     if profile.name != qualification.profile.name:
         return None
-    return profile
+    return qualification

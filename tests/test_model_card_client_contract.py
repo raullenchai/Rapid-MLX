@@ -48,6 +48,7 @@ CLIENT_FIELDS: dict[str, str] = {
     "capabilities": "text / tools / vision, for request shaping",
     "recommended_sampling": "per-model sampling a client should adopt",
     "personal_intelligence_profile": "qualified model-specific Rapid harness",
+    "personal_intelligence_qualification": "exact admitted artifact/parser/harness record",
 }
 
 #: Fields whose ``None`` must reach the wire as an explicit ``null``.
@@ -58,6 +59,7 @@ TRISTATE_FIELDS = (
     "context_window",
     "max_model_len",
     "personal_intelligence_profile",
+    "personal_intelligence_qualification",
 )
 
 

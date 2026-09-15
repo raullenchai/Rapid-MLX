@@ -46,7 +46,7 @@ enum PersonalIntelligenceConfig {
         serverProfile: ServerModelProfile?
     ) -> String? {
         guard let serverProfile,
-              serverProfile.id.caseInsensitiveCompare(alias) == .orderedSame,
+              serverProfile.id == alias,
               let harness = serverProfile.personalIntelligenceProfile?
                   .trimmingCharacters(in: .whitespacesAndNewlines),
               !harness.isEmpty else { return nil }
@@ -88,6 +88,7 @@ enum PersonalIntelligenceConfig {
         _ states: [UUID: Bool],
         activeConversationID: UUID,
         storedConversationIDs: Set<UUID>,
+        newlyCreatedConversationIDs: Set<UUID> = [],
         introductionCompleted: Bool,
         preferredEnabled: Bool
     ) -> [UUID: Bool] {
@@ -98,7 +99,9 @@ enum PersonalIntelligenceConfig {
         // when the user accepts the introduction. Only a genuinely new draft
         // inherits the default preference.
         for id in storedConversationIDs where result[id] == nil {
-            result[id] = false
+            result[id] = newlyCreatedConversationIDs.contains(id)
+                ? introductionCompleted && preferredEnabled
+                : false
         }
         if result[activeConversationID] == nil {
             result[activeConversationID] = storedConversationIDs.contains(activeConversationID)

@@ -316,6 +316,33 @@ def _is_complete_qualification_matrix(
     )
 
 
+def _live_model_identity(base_url: str, model: str) -> dict[str, Any]:
+    response = _request(base_url, "GET", "/v1/models")
+    matches = [entry for entry in response.get("data", []) if entry.get("id") == model]
+    if len(matches) != 1:
+        raise RuntimeError(
+            f"expected exactly one live /v1/models entry for {model!r}, got {len(matches)}"
+        )
+    return matches[0]
+
+
+def _identity_checks(
+    live_model: dict[str, Any],
+    *,
+    model: str,
+    profile: str,
+    parser: str,
+    qualification: str,
+) -> dict[str, bool]:
+    return {
+        "public_model": live_model.get("id") == model,
+        "profile": live_model.get("personal_intelligence_profile") == profile,
+        "parser": live_model.get("tool_call_parser") == parser,
+        "qualification": live_model.get("personal_intelligence_qualification")
+        == qualification,
+    }
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("model")
@@ -332,6 +359,9 @@ def main() -> int:
     parser.add_argument("--runtime", required=True)
     parser.add_argument("--source-revision", required=True)
     parser.add_argument("--server-command", required=True)
+    parser.add_argument("--expected-profile", required=True)
+    parser.add_argument("--expected-parser", required=True)
+    parser.add_argument("--expected-qualification", required=True)
     args = parser.parse_args()
 
     seeds = [int(value) for value in args.seeds.split(",") if value.strip()]
@@ -344,6 +374,31 @@ def main() -> int:
     unknown_tasks = selected_ids - {task.id for task in selected_tasks}
     if unknown_tasks:
         parser.error(f"unknown task ids: {', '.join(sorted(unknown_tasks))}")
+    live_model = _live_model_identity(args.base_url, args.model)
+    identity_checks = _identity_checks(
+        live_model,
+        model=args.model,
+        profile=args.expected_profile,
+        parser=args.expected_parser,
+        qualification=args.expected_qualification,
+    )
+    if not all(identity_checks.values()):
+        raise RuntimeError(
+            "live model identity does not match qualification target: "
+            + json.dumps(
+                {
+                    "checks": identity_checks,
+                    "expected": {
+                        "id": args.model,
+                        "profile": args.expected_profile,
+                        "parser": args.expected_parser,
+                        "qualification": args.expected_qualification,
+                    },
+                    "actual": live_model,
+                },
+                ensure_ascii=False,
+            )
+        )
     results = [
         _run_task(
             args.base_url,
@@ -375,13 +430,27 @@ def main() -> int:
                     args.model,
                     f"--base-url {args.base_url}",
                     f"--seeds {args.seeds}",
+                    f"--expected-profile {args.expected_profile}",
+                    f"--expected-parser {args.expected_parser}",
+                    f"--expected-qualification {args.expected_qualification}",
                 ]
             ),
         },
         "tasks": [asdict(task) for task in selected_tasks],
+        "identity": {
+            "checks": identity_checks,
+            "model_card": live_model,
+        },
         "passed": sum(result["passed"] for result in results),
         "total": len(results),
-        "qualified": complete_matrix and all(result["passed"] for result in results),
+        "qualified": (
+            all(identity_checks.values())
+            and complete_matrix
+            and all(result["passed"] for result in results)
+            and all(
+                result.get("profile") == args.expected_profile for result in results
+            )
+        ),
         "results": results,
     }
     rendered = json.dumps(report, indent=2, ensure_ascii=False) + "\n"
