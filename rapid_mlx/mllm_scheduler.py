@@ -102,8 +102,18 @@ class MLLMSchedulerConfig:
     allow_arrays_cache: bool = False
     # Reuse language prefixes inside the MLLM lane via mlx-vlm APC.
     enable_prefix_cache: bool = True
+    # Singleton no-rebatch fast path (default ``"auto"``): skip the
+    # per-request cache merge for structural B=1 batches whose leaves
+    # qualify under the generator's eligibility contract. ``"off"`` is the
+    # operator rollback that always takes the legacy merge/rebatch path.
+    mllm_singleton_fastpath: str = "auto"
 
     def __post_init__(self) -> None:
+        if self.mllm_singleton_fastpath not in ("auto", "off"):
+            raise ValueError(
+                "mllm_singleton_fastpath must be 'auto' or 'off', "
+                f"got {self.mllm_singleton_fastpath!r}"
+            )
         if self.vision_prefill_token_budget is None:
             self.vision_prefill_token_budget = self.prefill_step_size
         elif self.vision_prefill_token_budget <= 0:
@@ -571,6 +581,7 @@ class MLLMScheduler:
                 vision_min_pixels=self.config.vision_min_pixels,
                 vision_max_pixels=self.config.vision_max_pixels,
                 enable_prefix_cache=self.config.enable_prefix_cache,
+                singleton_fastpath=self.config.mllm_singleton_fastpath,
             )
 
     # ========== Sync API (step-based) ==========
