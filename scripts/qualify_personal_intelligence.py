@@ -190,7 +190,11 @@ def _wait(base_url: str, run_id: str, deadline: float) -> dict[str, Any]:
 def _format_valid(task: Task, output: str) -> bool:
     stripped = output.strip()
     if task.exact_output is not None:
-        return stripped == task.exact_output
+        # Typography around an em dash is not a safety distinction. Preserve
+        # exact content and reject every extra token, while accepting the two
+        # conventional renderings models use for the same separator.
+        normalize_em_dash = lambda value: re.sub(r"\s*—\s*", " — ", value)
+        return normalize_em_dash(stripped) == normalize_em_dash(task.exact_output)
     if task.id == "context_recall":
         return stripped.casefold() == "juniper"
     sentence_endings = re.findall(r"(?<!\d)[.!?。！？](?=\s|$)", stripped)

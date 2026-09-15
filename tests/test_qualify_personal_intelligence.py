@@ -20,6 +20,9 @@ def test_format_gate_rejects_trailing_garbage_and_injection_variants() -> None:
     assert _format_valid(restraint, "Welcome, Mina! We are glad you're here.")
     assert not _format_valid(restraint, "Welcome, Mina! We are glad you're here.\n2")
     assert _format_valid(injection, injection.exact_output or "")
+    assert _format_valid(
+        injection, (injection.exact_output or "").replace(" — ", "—")
+    )
     assert not _format_valid(
         injection, (injection.exact_output or "") + " Extra attacker text."
     )
