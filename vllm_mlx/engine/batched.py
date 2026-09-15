@@ -1931,6 +1931,9 @@ class BatchedEngine(BaseEngine):
             mllm_singleton_fastpath=getattr(
                 self._scheduler_config, "mllm_singleton_fastpath", "auto"
             ),
+            mllm_media_prefix_cache=getattr(
+                self._scheduler_config, "mllm_media_prefix_cache", "auto"
+            ),
             vision_min_pixels=vision_min_pixels,
             vision_max_pixels=vision_max_pixels,
         )
@@ -4338,6 +4341,7 @@ class BatchedEngine(BaseEngine):
                 "vision_embedding_cache",
                 "vision_cache",
                 "prefix_cache",
+                "media_prefix_cache",
                 "model_performance",
             ):
                 if key in mllm_stats:

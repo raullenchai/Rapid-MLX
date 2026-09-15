@@ -600,11 +600,23 @@ class SchedulerConfig:
     # consults an environment variable. Appended for positional callers.
     mllm_singleton_fastpath: str = "auto"
 
+    # Prior-turn media boundary store/lookup for the serialized MLLM lane
+    # (default ``"auto"``). ``"auto"`` snapshots each eligible media
+    # prefill's stable turn boundary and resumes it on strict-prefix
+    # verification; ``"off"`` disables both store and lookup so the lane
+    # stays exactly on the cold image path. Appended for positional callers.
+    mllm_media_prefix_cache: str = "auto"
+
     def __post_init__(self) -> None:
         if self.mllm_singleton_fastpath not in ("auto", "off"):
             raise ValueError(
                 "mllm_singleton_fastpath must be 'auto' or 'off', "
                 f"got {self.mllm_singleton_fastpath!r}"
+            )
+        if self.mllm_media_prefix_cache not in ("auto", "off"):
+            raise ValueError(
+                "mllm_media_prefix_cache must be 'auto' or 'off', "
+                f"got {self.mllm_media_prefix_cache!r}"
             )
         if self.scheduling_policy not in ("fcfs", "shortest_validated_tail"):
             raise ValueError(
