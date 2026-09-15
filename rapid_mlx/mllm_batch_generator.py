@@ -464,9 +464,18 @@ class MLLMBatchRequest:
     # no images or the model does not support feature caching. Appended last so
     # inserting it never shifts the meaning of any positional constructor arg.
     vision_feature_key: str | None = None
+    # Request-owned sampler state. The key also includes vocabulary width,
+    # because an otherwise identical top-k setting may normalize differently
+    # across models.
     _cached_sampler: (
-        tuple[tuple[float, float, float, int, int | None], Callable] | None
+        tuple[
+            tuple[float, float, float, int, int | None, int | None], Callable
+        ]
+        | None
     ) = field(default=None, init=False, repr=False, compare=False)
+    _cached_penalty_processors: tuple[Any, ...] | None = field(
+        default=None, init=False, repr=False, compare=False
+    )
 
 
 @dataclass
@@ -655,7 +664,7 @@ def _maybe_apply_penalty_processors(
     freq = req.frequency_penalty
     if rep == 1.0 and pres == 0.0 and freq == 0.0:
         return row_logits
-    cached = getattr(req, "_cached_penalty_processors", None)
+    cached = req._cached_penalty_processors
     key = (rep, pres, freq)
     if cached is None or cached[0] != key:
         processors = make_logits_processors(
