@@ -276,3 +276,18 @@ on these on-policy inputs by 51.40% video and 47.08% audio, so simple exposure
 bias is not a complete explanation. A matched on-policy `3 -> 5` control must
 substantially exceed that reference and restore the decoded subject before any
 additional downstream training or product integration.
+
+The first matched rank-4 control failed that compute gate. It improved
+shifted-input video/audio MSE by 47.43%/38.34%, worse than the old adapter's
+51.40%/47.08%; it was not decoded and no `5 -> 7` training followed. The
+target was also counterfactual: it asked a student step-3 state to reach the
+step-5 state produced from a different teacher step-3 state.
+
+A stricter DAgger-style capture now runs the clean teacher's original fine
+steps from the actual student state with the original per-step noise lanes.
+Starting from a captured teacher step 3, its `3 -> 4 -> 5` smoke reproduced
+the stored target to video/audio MSE `3.26e-10`/`7.38e-11`; only five of
+27,904 bfloat16 values differed, with maximum absolute error 0.001953125. It
+materialized 48 train and 12 validation reachable targets in 193.35/47.58
+seconds. This changes only offline supervision; the inference schedule and
+portable artifact contract stay unchanged.

@@ -477,3 +477,16 @@ input-distribution shift alone is not a sufficient diagnosis. A rank-4 matched
 `3 -> 5` control is in progress under MZR-3's 290 MiB free-space constraint.
 Stop unless it materially exceeds the old adapter and restores the decoded
 chef. Atlas continues to own any public API, default, or release decision.
+
+The first rank-4 on-policy `3 -> 5` control did not beat the reference:
+video/audio MSE improved 47.43%/38.34%, versus 51.40%/47.08% for the old
+adapter. It was not decoded and downstream training stopped. Its target was
+counterfactual because it came from the original teacher step-3 state.
+
+Upstream `233d7b6` adds clean-teacher correction from the actual student
+boundary using every original fine step and matching seeded noise lane. A
+teacher-state `3 -> 5` smoke reproduced the stored target to `3.26e-10` video
+MSE and `7.38e-11` audio MSE; only five of 27,904 bfloat16 values changed, with
+maximum absolute error 0.001953125. It generated 48 train/12 validation
+reachable targets in 193.35/47.58 seconds. The matched rank-4 control is now
+running; decoded work remains gated on beating both prior latent references.
