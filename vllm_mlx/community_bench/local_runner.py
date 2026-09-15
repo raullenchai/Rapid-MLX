@@ -1260,6 +1260,7 @@ async def _text_measurements(
                 download_mtp_snapshot,
                 download_target_snapshot,
             )
+
             executor = concurrent.futures.ThreadPoolExecutor(
                 max_workers=1,
                 thread_name_prefix="mlx-step",
