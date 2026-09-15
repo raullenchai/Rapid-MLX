@@ -191,6 +191,22 @@ class _OverrideNoEmbedsModel(_PositionOverrideModel):
     get_input_embeddings = None  # type: ignore[assignment]
 
 
+class _TalkerOverrideModel(_PositionOverrideModel):
+    """Thinker/talker-shaped wrapper (qwen3_omni_moe): the wrapper performs
+    talker bookkeeping around the LM call, so the LM-direct bypass must
+    never engage even though the position-override probe matches."""
+
+    def __call__(self, ids, cache=None, pixel_values=None, **kwargs):
+        rope_deltas = kwargs.pop("rope_deltas", None)
+        start = int(ids[0, 0]) if ids.size else -1
+        self.calls.append((start, start + int(ids.shape[1]), pixel_values is not None))
+        feats = self.get_input_embeddings(ids, pixel_values)
+        kwargs.update({"pixel_values": pixel_values, **feats.to_dict()})
+        # The wrapper must sync talker state before returning; a direct
+        # language_model call would skip that bookkeeping entirely.
+        return _Output(mx.zeros((1, int(ids.shape[1]), self.vocab)))
+
+
 class _Output:
     def __init__(self, logits):
         self.logits = logits
@@ -304,6 +320,19 @@ class TestRopeKwargGate:
         gen = _stub_generator(model=_CommentRopeModel())
         assert gen._media_model_supports_rope_kwarg() is False
 
+    def test_source_read_failure_fails_closed(self, monkeypatch):
+        # inspect.getsource can raise SyntaxError from a stale linecache;
+        # every source-derived gate must fail closed, not propagate.
+        def boom(target):
+            raise SyntaxError("stale linecache")
+
+        monkeypatch.setattr("vllm_mlx.mllm_batch_generator.inspect.getsource", boom)
+        gen = _stub_generator(model=_PositionOverrideModel())
+        gen.language_model = _DirectLanguageModel()
+        assert gen._media_model_supports_rope_kwarg() is False
+        assert gen._media_wrapper_overrides_positions() is False
+        assert gen._media_lm_direct_available() is False
+
 
 class TestWrapperPositionOverride:
     def test_probe_detects_to_dict_merging_wrapper(self):
@@ -311,6 +340,34 @@ class TestWrapperPositionOverride:
         assert override._media_wrapper_overrides_positions() is True
         plain = _stub_generator(model=_RecordingModel())
         assert plain._media_wrapper_overrides_positions() is False
+
+    def test_talker_wrapper_never_bypasses(self):
+        # qwen3_omni_moe-shaped wrappers do talker bookkeeping a direct LM
+        # call would skip: the bypass must refuse them (plan fails closed).
+        gen = _stub_generator(model=_TalkerOverrideModel())
+        gen.language_model = _DirectLanguageModel()
+        assert gen._media_wrapper_overrides_positions() is True
+        assert gen._media_lm_direct_available() is False
+        req = _make_request(
+            prompt="a" * 24,
+            pixel_values=mx.zeros((1, 2)),
+            prefix_boundary=20,
+            max_tokens=8,
+        )
+        assert gen._media_boundary_plan(req, _ids(_full_ids()), _kv_leaves()) is None
+
+    def test_probes_memoize_per_model(self):
+        gen = _stub_generator(model=_PositionOverrideModel())
+        gen.language_model = _DirectLanguageModel()
+        first = gen._media_wrapper_overrides_positions()
+        second = gen._media_wrapper_overrides_positions()
+        assert first is second is True
+        # The source probe ran once: the memo survives further calls.
+        assert gen._media_wrapper_source[0] is type(gen.model)
+        rope_first = gen._media_model_supports_rope_kwarg()
+        rope_second = gen._media_model_supports_rope_kwarg()
+        assert rope_first is rope_second is True
+        assert gen._media_rope_probe[0] == (type(gen.model), type(gen.language_model))
 
     def test_plan_fails_closed_without_lm_direct_escape(self):
         # The corrupting wrapper shape without get_input_embeddings: the
@@ -841,9 +898,7 @@ class TestBudget:
         gen._prefix_cache_max_bytes = 12
         gen._prefix_cache_budget_evictions = 0
         gen._media_boundary_max_bytes = 12
-        gen._media_boundary_entries["media"] = type(
-            "Entry", (), {"cache_bytes": 10}
-        )()
+        gen._media_boundary_entries["media"] = type("Entry", (), {"cache_bytes": 10})()
         lock = threading.Lock()
         entries: OrderedDict[str, Any] = OrderedDict()
         for key in ("a", "b"):
@@ -860,6 +915,48 @@ class TestBudget:
         assert list(entries) == ["b"]
         assert gen._prefix_cache_budget_evictions == 1
 
+    def test_text_budget_media_over_ceiling_evicts_to_newest(self, monkeypatch):
+        # One media entry alone meeting the shared ceiling must not freeze
+        # text eviction: the text side evicts down to its newest entry,
+        # mirroring the media store's own newest-entry guarantee.
+        import threading
+
+        gen = _stub_generator()
+        gen._prefix_cache_max_bytes = 12
+        gen._prefix_cache_budget_evictions = 0
+        gen._media_boundary_max_bytes = 12
+        gen._media_boundary_entries["media"] = type("Entry", (), {"cache_bytes": 15})()
+        lock = threading.Lock()
+        entries: OrderedDict[str, Any] = OrderedDict()
+        for key in ("a", "b", "c"):
+            entries[key] = type(
+                "ExactEntry", (), {"prompt_cache": [type("L", (), {"nbytes": 5})()]}
+            )()
+        monkeypatch.setattr(gen, "_exact_entries", lambda cache: (lock, entries))
+        monkeypatch.setattr(
+            "vllm_mlx.mllm_batch_generator.checkpoint_bytes", lambda stored: 0
+        )
+        gen._enforce_exact_cache_budget(object())
+        assert list(entries) == ["c"]
+        assert gen._prefix_cache_budget_evictions == 2
+
+    def test_text_budget_zero_config_disables_eviction(self, monkeypatch):
+        # A zero ceiling means the feature is off: no eviction either way.
+        import threading
+
+        gen = _stub_generator()
+        gen._prefix_cache_max_bytes = 0
+        gen._prefix_cache_budget_evictions = 0
+        lock = threading.Lock()
+        entries: OrderedDict[str, Any] = OrderedDict()
+        entries["a"] = type(
+            "ExactEntry", (), {"prompt_cache": [type("L", (), {"nbytes": 5})()]}
+        )()
+        monkeypatch.setattr(gen, "_exact_entries", lambda cache: (lock, entries))
+        gen._enforce_exact_cache_budget(object())
+        assert list(entries) == ["a"]
+        assert gen._prefix_cache_budget_evictions == 0
+
     def test_footprint_zero_without_text_cache(self):
         gen = _stub_generator()
         assert gen._exact_cache_footprint_bytes() == 0
@@ -870,15 +967,15 @@ class TestClearPrefixCache:
         gen = _stub_generator()
         req = _make_request()
         gen._media_mrope_save()
-        gen._media_store(
-            req, _kv_leaves(), _ids(_full_ids()), 26, mx.array([7])
-        )
+        gen._media_store(req, _kv_leaves(), _ids(_full_ids()), 26, mx.array([7]))
         assert gen._media_boundary_entries
         monkeypatch.setattr(gen, "_media_enforce_budget", lambda: None)
-        # No text-APC manager attached: text clearing reports False, but the
-        # media snapshots must still be dropped (they pin real KV bytes).
-        assert gen.clear_prefix_cache() is False
+        # No text-APC manager attached, but real media bytes were dropped —
+        # the return must report that reusable state was held and released.
+        assert gen.clear_prefix_cache() is True
         assert not gen._media_boundary_entries
+        # Nothing held at all: nothing was cleared.
+        assert gen.clear_prefix_cache() is False
 
     def test_clear_with_text_cache_drops_both(self, monkeypatch):
         gen = _stub_generator()
