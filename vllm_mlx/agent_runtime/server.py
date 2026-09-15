@@ -276,7 +276,9 @@ def _format_retry_instruction(goal: str, turn: AgentModelTurn) -> str | None:
     if expected is None or turn.tool_calls or not turn.content:
         return None
     observed = _observed_sentence_count(turn.content)
-    if observed == expected:
+    stripped = turn.content.strip()
+    ends_cleanly = bool(stripped) and stripped[-1] in ".!?。！？"
+    if observed == expected and ends_cleanly:
         return None
     return (
         f"Rewrite the answer in exactly {expected} sentence(s). Your draft had "

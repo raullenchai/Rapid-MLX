@@ -140,6 +140,15 @@ async def test_direct_answer_retries_one_explicit_sentence_count_violation():
     assert "Your draft had 3" in driver.requests[1][1][-1]["content"]
 
 
+def test_format_retry_rejects_trailing_non_sentence_garbage():
+    retry = _format_retry_instruction(
+        "Write a two-sentence welcome.",
+        AgentModelTurn(content="Welcome! Glad you're here.\n2"),
+    )
+    assert retry is not None
+    assert "Your draft had 2" in retry
+
+
 @pytest.mark.asyncio
 async def test_local_context_is_transient_model_input_not_event_payload():
     context = "Preferences: concise\nMemory: private-project-codename"
