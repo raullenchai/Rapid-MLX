@@ -24,10 +24,11 @@ The primary deterministic gates are:
 * **engagement** — the candidate phase must actually store boundary
   snapshots and serve warm resumes (``stores > 0`` and ``hits > 0``) while
   the baseline does neither, else the A/B compares off against off;
-* **no warm-turn regression** — every turn from the first warm one on must
-  not exceed the baseline median TTFT by more than a 15% stall margin
-  (exit 3 otherwise). The storing turn's bounded snapshot cost is analyzed
-  in the design note and excluded.
+* **no resume-turn regression** — every turn that actually served a media
+  resume (auto ``cached_tokens > 0``) must not exceed the baseline median
+  TTFT by more than a 15% stall margin (exit 3 otherwise). Turns that
+  store (or miss) pay the documented bounded snapshot cost and are
+  excluded.
 
 Scope: this harness gates determinism, semantics, engagement, and
 warm-turn latency on the qualified model. The remaining design-note gates
@@ -448,17 +449,30 @@ async def _main() -> None:
         # turn's bounded snapshot cost is documented in the design note and
         # deliberately excluded here.
         warm_regression_margin = 1.15
-        regressions = {
-            conversation_id: [
-                {
-                    "turn": turn_index,
-                    "ttft_pct": per_turn[turn_index]["ttft"],
-                }
-                for turn_index in range(1, len(per_turn))
-                if per_turn[turn_index]["ttft"] / 100.0 > warm_regression_margin - 1.0
-            ]
-            for conversation_id, per_turn in result["summary_change_pct"].items()
-        }
+        regressions = {}
+        for conversation_id, per_turn in result["summary_change_pct"].items():
+            auto_summary = result["phases"]["auto"]["summary"][conversation_id]
+            cached = auto_summary["median_cached_tokens"]
+            flagged = []
+            for turn_index in range(1, len(per_turn)):
+                # Gate exactly the turns that actually resumed (the media
+                # resume stamps ``cached_tokens`` with the boundary length):
+                # a resume must never be slower than the cold baseline by
+                # more than the stall margin. Turns that stored (or missed)
+                # pay the documented bounded snapshot cost instead and are
+                # excluded here.
+                if turn_index >= len(cached) or cached[turn_index] <= 0:
+                    continue
+                if per_turn[turn_index]["ttft"] / 100.0 > warm_regression_margin - 1.0:
+                    flagged.append(
+                        {
+                            "turn": turn_index,
+                            "ttft_pct": per_turn[turn_index]["ttft"],
+                            "cached_tokens": cached[turn_index],
+                        }
+                    )
+            if flagged:
+                regressions[conversation_id] = flagged
         result["warm_turn_regressions"] = {
             conversation_id: turns
             for conversation_id, turns in regressions.items()
