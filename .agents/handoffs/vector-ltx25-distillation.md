@@ -434,3 +434,10 @@ gains do not override the decoded failure. A first local A/B accidentally used
 corrected case 06 (pottery) as the standard; it was rejected and rebuilt with
 case 05, the actual chef entry. The broad 24-prompt early-span control is now
 running. Atlas must continue to block public API/default integration.
+
+Upstream `052583b` keeps decoded span ablation behind a research-only script
+and private runtime state; the production constructor and CLI are unchanged.
+Two held-out chef renders are queued after the broad control: clean base for
+only `0 -> 3`, then clean base for every compressed span. They preserve the
+same 4+1 schedule and isolate adapter harm from schedule harm. Full upstream
+tests pass (`781 passed, 22 skipped`).

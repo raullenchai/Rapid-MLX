@@ -396,3 +396,11 @@ The next serialized control changes only semantic coverage for the highest-
 noise `0 -> 3` adapter (24 training prompts, six prompt-disjoint validation
 prompts) while holding the independent middle/late adapters and runtime
 schedule fixed. Product exposure and default enablement remain blocked.
+
+Before spending a scaled training budget, an orthogonal decoded ablation will
+hold the same four-evaluation schedule and span-v2 noise but replace either
+the `0 -> 3` adapter or all three adapters with the immutable base. This can
+distinguish a harmful learned correction from a schedule-level compression
+failure. The ablation is private research state, accepts only diagnostic
+qualifications, and does not extend Rapid's proposed API or the upstream
+product CLI. Atlas should treat it as evidence gathering only.
