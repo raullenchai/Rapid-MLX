@@ -104,7 +104,7 @@ The exact-build target matrix and receipts live in
 Only the complete canonical matrix can set `qualified:true`; subset `--tasks`
 runs are diagnostics. Receipts must use a full source SHA and a reconstruction
 command that checks out that revision before starting the server.
-The suite first verifies that the live model card matches all three expected
+The suite first verifies that the live model card matches all four expected
 identity fields, then verifies every created run returns the same profile and
 qualification ID. The qualification ID represents the exact public alias,
 backing artifact, parser, and harness admission record; behavior from a

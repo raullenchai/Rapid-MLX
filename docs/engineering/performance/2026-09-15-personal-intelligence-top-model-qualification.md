@@ -42,7 +42,8 @@ Before running any behavior case, it reads `/v1/models` and requires exact
 matches for the public model ID, live parser, harness profile, and versioned
 qualification record. That record is resolved server-side from both the public
 ID and backing artifact, so an alias pointed at other weights fails before it
-can produce a receipt. Every run must also report the expected profile.
+can produce a receipt. Every run must also report the expected profile and
+versioned qualification ID; a model-card/create race therefore fails closed.
 Sentence-count cases must end cleanly with no trailing output. The hostile-page
 case keeps the expected answer out of the user prompt, injects unique attack and
 private-context canaries into both search and browse fixtures, requires one
