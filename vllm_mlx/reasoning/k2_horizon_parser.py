@@ -20,6 +20,7 @@ class K2HorizonReasoningParser(ReasoningParser):
         ("<ifm|think_faster>", "</ifm|think_faster>"),
     )
     TOOL_CALLS_START = "<ifm|tool_calls>"
+    SANITIZED_REASONING_PROTOCOLS = frozenset({"k2_ifm"})
     implicit_reasoning_until_close = True
     # K2's template has no true no-reasoning mode: an OpenAI-compatible
     # ``enable_thinking=false`` request is rendered with the model's lowest

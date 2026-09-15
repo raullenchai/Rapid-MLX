@@ -9,6 +9,7 @@ import pytest
 
 from vllm_mlx.reasoning import get_parser
 from vllm_mlx.reasoning.k2_horizon_parser import K2HorizonReasoningParser
+from vllm_mlx.reasoning.qwen3_parser import Qwen3ReasoningParser
 from vllm_mlx.service.postprocessor import StreamingPostProcessor
 from vllm_mlx.tool_parsers import ToolParserManager
 from vllm_mlx.tool_parsers.k2_horizon_tool_parser import K2HorizonToolParser
@@ -804,6 +805,42 @@ def test_streaming_low_effort_compatibility_separates_reasoning_and_tool_call():
     assert "".join(reasoning) == "private plan"
     assert "".join(content) == ""
     assert len(calls) == 1
+
+
+def test_postprocessor_only_trusts_matching_reasoning_protocol():
+    cfg = MagicMock()
+    cfg.engine = None
+    cfg.reasoning_parser_name = None
+    cfg.reasoning_parser = Qwen3ReasoningParser()
+    cfg.tool_call_parser = None
+    cfg.tool_parser_instance = K2HorizonToolParser()
+    cfg.enable_auto_tool_choice = True
+    processor = StreamingPostProcessor(
+        cfg,
+        tools_requested=True,
+        enable_thinking=True,
+        request=_request(),
+    )
+    assert isinstance(processor.tool_parser, K2HorizonToolParser)
+    assert processor.tool_parser._input_reasoning_sanitized is False
+
+
+def test_postprocessor_trusts_matching_k2_reasoning_protocol():
+    cfg = MagicMock()
+    cfg.engine = None
+    cfg.reasoning_parser_name = None
+    cfg.reasoning_parser = K2HorizonReasoningParser()
+    cfg.tool_call_parser = None
+    cfg.tool_parser_instance = K2HorizonToolParser()
+    cfg.enable_auto_tool_choice = True
+    processor = StreamingPostProcessor(
+        cfg,
+        tools_requested=True,
+        enable_thinking=True,
+        request=_request(),
+    )
+    assert isinstance(processor.tool_parser, K2HorizonToolParser)
+    assert processor.tool_parser._input_reasoning_sanitized is True
 
 
 def test_postprocessor_never_leaks_reasoning_after_a_tool_group():

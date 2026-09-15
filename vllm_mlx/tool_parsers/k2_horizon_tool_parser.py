@@ -19,6 +19,7 @@ from .abstract_tool_parser import (
 
 class K2HorizonToolParser(ToolParser):
     EXPECTED_WIRE_FORMATS = ("k2_ifm",)
+    REASONING_PROTOCOL = "k2_ifm"
     SUPPORTS_NATIVE_TOOL_FORMAT = True
 
     SUPPORTED_FORMATS = frozenset({"json", "xml", "xml_typed"})
