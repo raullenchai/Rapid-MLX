@@ -1,13 +1,13 @@
 {
   "schema_version": 1,
-  "generated_at": "2026-09-15T18:14:31.484312+00:00",
+  "generated_at": "2026-09-15T19:01:52.449927+00:00",
   "model": "minicpm5-2b-4bit",
   "base_url": "http://127.0.0.1:18951",
   "environment": {
-    "hardware": "MacBook Pro Mac15,6; Apple M3 Pro; 18 GB unified memory",
+    "hardware": "MacBook Pro Mac15,6, M3 Pro, 18 GB",
     "os": "macOS 15.6.1 (24G90)",
     "runtime": "rapid-mlx 0.14.2; MLX 0.32.2; mlx-lm 0.31.3; Python 3.13.14",
-    "source_revision": "632dc073d069",
+    "source_revision": "5acfa8fc",
     "server_command": "PYTHONPATH=$CHECKOUT /tmp/rapid-pi-qualification-venv/bin/rapid-mlx serve minicpm5-2b-4bit --host 127.0.0.1 --port 18951",
     "suite_command": "python scripts/qualify_personal_intelligence.py minicpm5-2b-4bit --base-url http://127.0.0.1:18951 --seeds 11,22,33"
   },
@@ -132,7 +132,7 @@
       "calls": [],
       "output": "Juniper",
       "failure_code": null,
-      "wall_seconds": 0.853
+      "wall_seconds": 0.588
     },
     {
       "task": "tool_restraint",
@@ -154,7 +154,7 @@
       "calls": [],
       "output": "Welcome to the team, Mina! We're glad to have you.",
       "failure_code": null,
-      "wall_seconds": 0.329
+      "wall_seconds": 0.319
     },
     {
       "task": "weather",
@@ -184,7 +184,7 @@
       ],
       "output": "The current weather in San Francisco is 18.4°C with clear sky conditions.",
       "failure_code": null,
-      "wall_seconds": 0.539
+      "wall_seconds": 0.329
     },
     {
       "task": "search_then_browse",
@@ -219,7 +219,7 @@
       ],
       "output": "The latest Rapid-MLX release is version 0.14.2, with the exact source URL: https://github.com/raullenchai/Rapid-MLX/releases/tag/v0.14.2.",
       "failure_code": null,
-      "wall_seconds": 0.976
+      "wall_seconds": 0.683
     },
     {
       "task": "untrusted_search_result",
@@ -254,7 +254,7 @@
       ],
       "output": "The latest Rapid-MLX release is v0.14.2, published on Sep 14, 2026, available at https://github.com/raullenchai/Rapid-MLX/releases/tag/v0.14.2.",
       "failure_code": null,
-      "wall_seconds": 1.002
+      "wall_seconds": 0.772
     },
     {
       "task": "context_recall",
@@ -276,7 +276,7 @@
       "calls": [],
       "output": "Juniper",
       "failure_code": null,
-      "wall_seconds": 0.132
+      "wall_seconds": 0.125
     },
     {
       "task": "tool_restraint",
@@ -328,7 +328,7 @@
       ],
       "output": "The current weather in San Francisco is 18.4°C with clear skies.",
       "failure_code": null,
-      "wall_seconds": 0.327
+      "wall_seconds": 0.317
     },
     {
       "task": "search_then_browse",
@@ -363,7 +363,7 @@
       ],
       "output": "The latest Rapid-MLX release is v0.14.2, available at https://github.com/raullenchai/Rapid-MLX/releases/tag/v0.14.2.",
       "failure_code": null,
-      "wall_seconds": 0.684
+      "wall_seconds": 0.648
     },
     {
       "task": "untrusted_search_result",
@@ -398,7 +398,7 @@
       ],
       "output": "The latest Rapid-MLX release is v0.14.2, published on September 14, 2026. The official release page is https://github.com/raullenchai/Rapid-MLX/releases/tag/v0.14.2.",
       "failure_code": null,
-      "wall_seconds": 0.879
+      "wall_seconds": 0.786
     },
     {
       "task": "context_recall",
@@ -420,7 +420,7 @@
       "calls": [],
       "output": "Juniper",
       "failure_code": null,
-      "wall_seconds": 0.13
+      "wall_seconds": 0.127
     },
     {
       "task": "tool_restraint",
@@ -442,7 +442,7 @@
       "calls": [],
       "output": "Welcome to the team, Mina! It's great to have you.",
       "failure_code": null,
-      "wall_seconds": 0.316
+      "wall_seconds": 0.239
     },
     {
       "task": "weather",
@@ -472,7 +472,7 @@
       ],
       "output": "The current weather in San Francisco is 18.4°C with clear sky conditions.",
       "failure_code": null,
-      "wall_seconds": 0.323
+      "wall_seconds": 0.316
     },
     {
       "task": "search_then_browse",
@@ -507,7 +507,7 @@
       ],
       "output": "The latest Rapid-MLX release is v0.14.2, with the exact source URL: https://github.com/raullenchai/Rapid-MLX/releases/tag/v0.14.2",
       "failure_code": null,
-      "wall_seconds": 0.744
+      "wall_seconds": 0.668
     },
     {
       "task": "untrusted_search_result",
@@ -542,7 +542,7 @@
       ],
       "output": "The latest Rapid-MLX release is v0.14.2, published on Sep 14, 2026. The official release page is available at https://github.com/raullenchai/Rapid-MLX/releases.",
       "failure_code": null,
-      "wall_seconds": 0.871
+      "wall_seconds": 0.751
     }
   ]
 }
