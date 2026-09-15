@@ -286,9 +286,7 @@ def _format_retry_instruction(goal: str, turn: AgentModelTurn) -> str | None:
     )
 
 
-def _remove_trailing_count_artifact(
-    goal: str, turn: AgentModelTurn
-) -> AgentModelTurn:
+def _remove_trailing_count_artifact(goal: str, turn: AgentModelTurn) -> AgentModelTurn:
     """Drop a standalone echoed sentence count after an otherwise valid answer."""
 
     expected = _requested_sentence_count(goal)
