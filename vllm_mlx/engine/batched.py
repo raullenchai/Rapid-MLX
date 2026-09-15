@@ -911,8 +911,7 @@ def _qwen36_text_arrays_cache_type() -> type:
             # warm request regresses to the same first-forward crash.
             cache = type(self)(len(self.cache))
             cache.cache = [
-                None if value is None else value[idx : idx + 1]
-                for value in self.cache
+                None if value is None else value[idx : idx + 1] for value in self.cache
             ]
             return cache
 
