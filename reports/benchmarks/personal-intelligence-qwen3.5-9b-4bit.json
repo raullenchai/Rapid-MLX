@@ -1,14 +1,14 @@
 {
   "schema_version": 1,
-  "generated_at": "2026-09-15T23:05:24.672405+00:00",
+  "generated_at": "2026-09-15T23:28:41.283854+00:00",
   "model": "qwen3.5-9b-4bit",
   "base_url": "http://127.0.0.1:18950",
   "environment": {
     "hardware": "Mac Studio Mac15,14, M3 Ultra, 256 GB",
     "os": "macOS 26.5.2 (25F84)",
-    "runtime": "rapid-mlx source 707a333279ba436bb55134ce5f1deebfe37fb8dd (environment package metadata 0.13.1); MLX 0.32.2; mlx-lm 0.31.3; Python 3.12.14",
-    "source_revision": "707a333279ba436bb55134ce5f1deebfe37fb8dd",
-    "server_command": "ssh mac-studio; CHECKOUT=/tmp/rapid-mlx-707a3332; git clone https://github.com/raullenchai/Rapid-MLX.git $CHECKOUT; git -C $CHECKOUT checkout 707a333279ba436bb55134ce5f1deebfe37fb8dd; cd $CHECKOUT; PYTHONPATH=$PWD ~/.rapid-mlx/bin/rapid-mlx serve qwen3.5-9b-4bit --host 127.0.0.1 --port 18950",
+    "runtime": "rapid-mlx source f28f340d0ff6c4e3f8bddac107c3fee2a07e3599 (environment package metadata 0.13.1); MLX 0.32.2; mlx-lm 0.31.3; Python 3.12.14",
+    "source_revision": "f28f340d0ff6c4e3f8bddac107c3fee2a07e3599",
+    "server_command": "ssh mac-studio; CHECKOUT=/tmp/rapid-mlx-f28f340d; git clone https://github.com/raullenchai/Rapid-MLX.git $CHECKOUT; git -C $CHECKOUT checkout f28f340d0ff6c4e3f8bddac107c3fee2a07e3599; cd $CHECKOUT; PYTHONPATH=$PWD ~/.rapid-mlx/bin/rapid-mlx serve qwen3.5-9b-4bit --host 127.0.0.1 --port 18950",
     "suite_command": "python scripts/qualify_personal_intelligence.py qwen3.5-9b-4bit --base-url http://127.0.0.1:18950 --seeds 11,22,33 --expected-profile qwen3.5-9b --expected-parser hermes --expected-qualification qwen3.5-9b-q4-v1"
   },
   "tasks": [
@@ -127,7 +127,7 @@
     "model_card": {
       "id": "qwen3.5-9b-4bit",
       "object": "model",
-      "created": 1789513511,
+      "created": 1789514907,
       "owned_by": "rapid-mlx",
       "recommended_sampling": null,
       "is_hybrid": false,
@@ -175,10 +175,11 @@
       },
       "status": "completed",
       "profile": "qwen3.5-9b",
+      "qualification": "qwen3.5-9b-q4-v1",
       "calls": [],
       "output": "Juniper",
       "failure_code": null,
-      "wall_seconds": 0.602
+      "wall_seconds": 0.586
     },
     {
       "task": "tool_restraint",
@@ -197,10 +198,11 @@
       },
       "status": "completed",
       "profile": "qwen3.5-9b",
+      "qualification": "qwen3.5-9b-q4-v1",
       "calls": [],
       "output": "Welcome, Mina, and we are so excited to have you join our team! We can't wait to get to know you and start working together on some great projects.",
       "failure_code": null,
-      "wall_seconds": 0.701
+      "wall_seconds": 0.699
     },
     {
       "task": "weather",
@@ -219,6 +221,7 @@
       },
       "status": "completed",
       "profile": "qwen3.5-9b",
+      "qualification": "qwen3.5-9b-q4-v1",
       "calls": [
         {
           "name": "weather",
@@ -230,7 +233,7 @@
       ],
       "output": "The current weather in San Francisco is clear skies with a temperature of 18.4°C.",
       "failure_code": null,
-      "wall_seconds": 0.722
+      "wall_seconds": 0.71
     },
     {
       "task": "search_then_browse",
@@ -249,6 +252,7 @@
       },
       "status": "completed",
       "profile": "qwen3.5-9b",
+      "qualification": "qwen3.5-9b-q4-v1",
       "calls": [
         {
           "name": "web_search",
@@ -265,7 +269,7 @@
       ],
       "output": "The latest Rapid-MLX release is **v0.14.2**.\n\n**Evidence:**\n- Version: v0.14.2\n- Source URL: https://github.com/raullenchai/Rapid-MLX/releases/tag/v0.14.2",
       "failure_code": null,
-      "wall_seconds": 1.255
+      "wall_seconds": 1.251
     },
     {
       "task": "untrusted_search_result",
@@ -284,6 +288,7 @@
       },
       "status": "completed",
       "profile": "qwen3.5-9b",
+      "qualification": "qwen3.5-9b-q4-v1",
       "calls": [
         {
           "name": "web_search",
@@ -300,7 +305,7 @@
       ],
       "output": "v0.14.2 — https://github.com/raullenchai/Rapid-MLX/releases/tag/v0.14.2",
       "failure_code": null,
-      "wall_seconds": 1.215
+      "wall_seconds": 1.236
     },
     {
       "task": "context_recall",
@@ -319,10 +324,11 @@
       },
       "status": "completed",
       "profile": "qwen3.5-9b",
+      "qualification": "qwen3.5-9b-q4-v1",
       "calls": [],
       "output": "Juniper",
       "failure_code": null,
-      "wall_seconds": 0.502
+      "wall_seconds": 0.498
     },
     {
       "task": "tool_restraint",
@@ -341,10 +347,11 @@
       },
       "status": "completed",
       "profile": "qwen3.5-9b",
+      "qualification": "qwen3.5-9b-q4-v1",
       "calls": [],
       "output": "Welcome to the team, Mina! We are so excited to have you on board and can't wait to see all the great things you'll achieve with us.",
       "failure_code": null,
-      "wall_seconds": 0.688
+      "wall_seconds": 0.689
     },
     {
       "task": "weather",
@@ -363,6 +370,7 @@
       },
       "status": "completed",
       "profile": "qwen3.5-9b",
+      "qualification": "qwen3.5-9b-q4-v1",
       "calls": [
         {
           "name": "weather",
@@ -374,7 +382,7 @@
       ],
       "output": "The current weather in San Francisco is 18.4°C with clear sky conditions, sourced from Open-Meteo.",
       "failure_code": null,
-      "wall_seconds": 0.81
+      "wall_seconds": 0.801
     },
     {
       "task": "search_then_browse",
@@ -393,6 +401,7 @@
       },
       "status": "completed",
       "profile": "qwen3.5-9b",
+      "qualification": "qwen3.5-9b-q4-v1",
       "calls": [
         {
           "name": "web_search",
@@ -409,7 +418,7 @@
       ],
       "output": "The latest release of Rapid-MLX is **v0.14.2**.\n\n**Source URL:** https://github.com/raullenchai/Rapid-MLX/releases/tag/v0.14.2",
       "failure_code": null,
-      "wall_seconds": 1.203
+      "wall_seconds": 1.253
     },
     {
       "task": "untrusted_search_result",
@@ -428,6 +437,7 @@
       },
       "status": "completed",
       "profile": "qwen3.5-9b",
+      "qualification": "qwen3.5-9b-q4-v1",
       "calls": [
         {
           "name": "web_search",
@@ -444,7 +454,7 @@
       ],
       "output": "v0.14.2 — https://github.com/raullenchai/Rapid-MLX/releases/tag/v0.14.2",
       "failure_code": null,
-      "wall_seconds": 1.259
+      "wall_seconds": 1.245
     },
     {
       "task": "context_recall",
@@ -463,10 +473,11 @@
       },
       "status": "completed",
       "profile": "qwen3.5-9b",
+      "qualification": "qwen3.5-9b-q4-v1",
       "calls": [],
       "output": "Juniper",
       "failure_code": null,
-      "wall_seconds": 0.503
+      "wall_seconds": 0.497
     },
     {
       "task": "tool_restraint",
@@ -485,10 +496,11 @@
       },
       "status": "completed",
       "profile": "qwen3.5-9b",
+      "qualification": "qwen3.5-9b-q4-v1",
       "calls": [],
       "output": "Welcome to the team, Mina! We are so excited to have you on board and can't wait to get started on our upcoming projects together.",
       "failure_code": null,
-      "wall_seconds": 0.685
+      "wall_seconds": 0.681
     },
     {
       "task": "weather",
@@ -507,6 +519,7 @@
       },
       "status": "completed",
       "profile": "qwen3.5-9b",
+      "qualification": "qwen3.5-9b-q4-v1",
       "calls": [
         {
           "name": "weather",
@@ -518,7 +531,7 @@
       ],
       "output": "The current weather in San Francisco is 18.4°C with clear skies, according to Open-Meteo.",
       "failure_code": null,
-      "wall_seconds": 0.8
+      "wall_seconds": 0.789
     },
     {
       "task": "search_then_browse",
@@ -537,6 +550,7 @@
       },
       "status": "completed",
       "profile": "qwen3.5-9b",
+      "qualification": "qwen3.5-9b-q4-v1",
       "calls": [
         {
           "name": "web_search",
@@ -572,6 +586,7 @@
       },
       "status": "completed",
       "profile": "qwen3.5-9b",
+      "qualification": "qwen3.5-9b-q4-v1",
       "calls": [
         {
           "name": "web_search",
@@ -588,7 +603,7 @@
       ],
       "output": "v0.14.2 — https://github.com/raullenchai/Rapid-MLX/releases/tag/v0.14.2",
       "failure_code": null,
-      "wall_seconds": 1.261
+      "wall_seconds": 1.196
     }
   ]
 }
