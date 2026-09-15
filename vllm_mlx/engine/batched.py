@@ -871,6 +871,54 @@ class MLLMModelWrapper:
         return getattr(self._model, name)
 
 
+@functools.cache
+def _qwen36_text_arrays_cache_type() -> type:
+    """Return the text scheduler cache type with the VLM window API.
+
+    ``mlx_lm``'s batch generator recognizes only its own ``ArraysCache``
+    namespace, while the already-loaded Qwen3.6 language module calls the
+    additional ``update_window`` method owned by ``mlx_vlm``.  Constructing a
+    plain text-runtime cache therefore passes batching admission but fails on
+    the first linear-attention forward.  A narrow subclass gives both sides
+    the contract they require without replacing weights or copying recurrent
+    state.  Cache the class itself so every layer and request shares one stable
+    runtime type.
+    """
+    import mlx.core as mx
+    from mlx_lm.models.cache import ArraysCache
+
+    class Qwen36TextArraysCache(ArraysCache):
+        def update_window(self, index, source, width, *, lengths=None):
+            width = int(width)
+            length = source.shape[1] - width
+            if width < 0 or length < 0:
+                raise ValueError("Invalid causal cache window width.")
+            if lengths is None:
+                state = mx.contiguous(source[:, length : length + width])
+            else:
+                positions = mx.clip(lengths, 0, length)[:, None] + mx.arange(width)
+                positions = positions.reshape(
+                    *positions.shape, *([1] * (source.ndim - 2))
+                )
+                state = mx.take_along_axis(source, positions, axis=1)
+            self.cache[index] = state
+            return state
+
+        def extract(self, idx):
+            # mlx-lm's base implementation constructs ``ArraysCache``
+            # explicitly. That silently drops ``update_window`` when the
+            # scheduler saves a completed row for prefix reuse, so the next
+            # warm request regresses to the same first-forward crash.
+            cache = type(self)(len(self.cache))
+            cache.cache = [
+                None if value is None else value[idx : idx + 1]
+                for value in self.cache
+            ]
+            return cache
+
+    return Qwen36TextArraysCache
+
+
 class Qwen36NativeCacheTextWrapper(MLLMModelWrapper):
     """Expose MLX-LM caches for qualified Qwen3.6 text-only scheduling.
 
@@ -912,10 +960,11 @@ class Qwen36NativeCacheTextWrapper(MLLMModelWrapper):
                 self._model._rope_deltas = previous_rope_deltas
 
     def make_cache(self):
-        from mlx_lm.models.cache import ArraysCache, KVCache
+        from mlx_lm.models.cache import KVCache
 
+        arrays_cache_type = _qwen36_text_arrays_cache_type()
         return [
-            ArraysCache(size=2) if layer.is_linear else KVCache()
+            arrays_cache_type(size=2) if layer.is_linear else KVCache()
             for layer in self.layers
         ]
 

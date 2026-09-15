@@ -11,12 +11,14 @@ import pytest
 pytest.importorskip("mlx")
 pytestmark = pytest.mark.requires_mlx
 
-from mlx_lm.models.cache import ArraysCache, KVCache
+import mlx.core as mx
+from mlx_lm.models.cache import ArraysCache, BatchKVCache, KVCache
 
 from scripts.benchmark_qwen36_native_text_cache import _behavioral_pass
 from vllm_mlx.engine.batched import (
     BatchedEngine,
     Qwen36NativeCacheTextWrapper,
+    _qwen36_text_arrays_cache_type,
     _should_start_qwen36_native_text_cache,
     _supports_qwen36_native_text_cache,
 )
@@ -82,6 +84,58 @@ def test_wrapper_changes_only_cache_construction():
     assert wrapper("same-array") == "same-array"
     assert not hasattr(model, "_position_ids")
     assert not hasattr(model, "_rope_deltas")
+
+
+def test_native_text_arrays_cache_owns_vlm_window_update_contract():
+    cache_type = _qwen36_text_arrays_cache_type()
+    cache = cache_type(size=2)
+    source = mx.arange(2 * 5 * 2).reshape(2, 5, 2)
+
+    state = cache.update_window(
+        0,
+        source,
+        2,
+        lengths=mx.array([3, 2]),
+    )
+
+    assert isinstance(cache, ArraysCache)
+    assert _qwen36_text_arrays_cache_type() is cache_type
+    assert state.tolist() == [
+        source[0, 3:5].tolist(),
+        source[1, 2:4].tolist(),
+    ]
+    assert cache[0] is state
+
+    extracted = cache.extract(1)
+    assert type(extracted) is cache_type
+    assert hasattr(extracted, "update_window")
+    assert extracted[0].tolist() == [state[1].tolist()]
+
+
+def test_native_text_wrapper_survives_real_linear_cache_call_contract():
+    class _WindowUpdatingLanguageModel(_LanguageModel):
+        def __call__(self, value, *, cache):
+            cache[0].update_window(0, value, 2, lengths=cache[0].lengths)
+            return SimpleNamespace(logits=value)
+
+    wrapper = Qwen36NativeCacheTextWrapper(_WindowUpdatingLanguageModel())
+    caches = wrapper.make_cache()
+    value = mx.arange(6).reshape(1, 3, 2)
+
+    assert wrapper(value, cache=caches).tolist() == value.tolist()
+    assert caches[0][0].tolist() == value[:, -2:].tolist()
+
+
+def test_mlx_lm_batch_builder_accepts_bridged_cache_type():
+    from mlx_lm.generate import _make_cache
+
+    wrapper = Qwen36NativeCacheTextWrapper(_LanguageModel())
+
+    caches = _make_cache(wrapper, left_padding=[0], max_kv_size=None)
+
+    assert isinstance(caches[0], ArraysCache)
+    assert hasattr(caches[0], "update_window")
+    assert isinstance(caches[1], BatchKVCache)
 
 
 def test_wrapper_isolates_lane_local_mrope_state():
