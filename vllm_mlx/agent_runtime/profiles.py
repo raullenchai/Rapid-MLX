@@ -176,18 +176,6 @@ PERSONAL_INTELLIGENCE_QUALIFICATIONS = (
             "docs/engineering/performance/2026-09-13-minicpm5-small-agent-harness-ab.md"
         ),
     ),
-    # This is a 16 GB candidate only. It is deliberately a distinct receipt:
-    # sharing MiniCPM's harness must not let a Q4 alias qualify Q8 weights.
-    PersonalIntelligenceQualification(
-        id="minicpm5-2b-q8-v1",
-        public_identities=frozenset({"mlx-community/minicpm5-2b-8bit"}),
-        backing_identities=frozenset({"mlx-community/minicpm5-2b-8bit"}),
-        profile=MINICPM5_2B_PROFILE,
-        tool_call_parser="minicpm",
-        evidence=(
-            "docs/engineering/performance/2026-09-13-minicpm5-small-agent-harness-ab.md"
-        ),
-    ),
 )
 
 

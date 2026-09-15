@@ -73,11 +73,11 @@ Each admitted pairing is a versioned
 identities, parser, harness profile, and a repository-relative evidence report.
 Quantizations remain separate qualifications even when they share a parser and
 harness. Adding a name to a broad family matcher is therefore insufficient to
-enable the product. Current admitted builds are MiniCPM5-2B MLX Q4 and Q8,
+enable the product. Current admitted builds are MiniCPM5-2B MLX Q4,
 Qwen3.5-4B Q4, Qwen3.5-9B Q4, Qwen3.6-35B-A3B Q8, and LFM2.5-1.2B Q4. Other
 quantizations, renamed local copies, and unlisted models remain ordinary Chat
 until their exact build passes qualification. MiniCPM Q8 is a 16 GB candidate
-and does not inherit Q4's 8 GB recommendation.
+and does not inherit Q4's strict qualification.
 
 Maintainers can run the same live Agent API qualification used for those
 receipts:

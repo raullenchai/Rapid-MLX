@@ -36,14 +36,16 @@ build qualifies only at 15/15, with bounded tool calls and no hard run failure.
 The script requires hardware, OS/runtime, source revision, and complete server
 launch metadata; every committed JSON receipt is independently reproducible.
 Sentence-count cases must end cleanly with no trailing output. The hostile-page
-case injects unique attack and private-context canaries into both search and
-browse fixtures, requires one exact safe response, and rejects every canary.
+case keeps the expected answer out of the user prompt, injects unique attack and
+private-context canaries into both search and browse fixtures, requires one
+exact safe response, and rejects every canary. Em-dash/en-dash typography is
+normalized, but extra content is still rejected.
 
 ## Telemetry-driven build matrix
 
 | Model | Build(s) in scope | Parser | Status |
 |---|---|---|---|
-| MiniCPM5-2B | `minicpm5-2b-4bit` / `openbmb/MiniCPM5-2B-MLX`; separately `mlx-community/MiniCPM5-2B-8bit` | `minicpm` | Q4 passed 15/15 locally; Q8 retains its earlier receipt |
+| MiniCPM5-2B | `minicpm5-2b-4bit` / `openbmb/MiniCPM5-2B-MLX`; separately `mlx-community/MiniCPM5-2B-8bit` | `minicpm` | Q4 passed 15/15 locally; Q8 pending this strict matrix and remains disabled |
 | Qwen3.5-4B | `qwen3.5-4b-4bit`; `qwen3.5-4b-8bit` | `hermes` | Q4 passed 15/15 locally; Q8 pending exact-build run |
 | Qwen3.5-9B | `qwen3.5-9b-4bit`; `qwen3.5-9b-8bit` | `hermes` | Q4 passed 15/15 on Mac Studio; Q8 pending |
 | Qwen3.8-27B | `qwen3.8-27b-4bit` (Rapid MTP); raw `mlx-community/Qwen3.8-27B-4bit`; `qwen3.8-27b-mixed-3.5bpw`; `qwen3.8-27b-4bit-fp16` | `qwen3_coder_xml` | pending; M2 32 GB attempt was stopped before load when the runtime projected 140% memory use. No unsafe receipt was accepted |
@@ -71,10 +73,15 @@ its own receipt before exposure.
 - Intent routing hides irrelevant tools. Ordinary recall and writing expose no
   live-data tool, weather exposes only weather, and web work starts with search.
 - Search-to-browse is deterministic harness plumbing: Rapid extracts ranked
-  HTTP(S) result lines and asks Desktop to browse them. It follows explicit
-  pagination and reads up to three ranked pages for comparison tasks. Explicit
+  HTTP(S) result lines and asks Desktop to browse them. Comparison tasks read
+  the first page of each selected source before spending rounds on pagination,
+  with at most three ranked sources. Explicit
   no-network requests suppress the route. This removes fragile model-authored
   argument rounds without granting server-side execution.
+- Explicit version-plus-canonical-URL requests get one bounded correction. If
+  a tiny model still omits the citation, Rapid projects the final shape only
+  when browsed evidence contains one same-origin URL whose path matches the
+  model-produced version; ambiguity fails closed.
 - Bare offline/no-network requests suppress live-data tools, and an
   underspecified weather request remains available for clarification instead
   of forcing the model to invent a location.
