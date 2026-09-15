@@ -126,6 +126,36 @@ struct AgentSessionControllerTests {
         #expect(transport.toolSubmissions.isEmpty)
     }
 
+    @Test("A selected-model or conversation transition cancels the bound run")
+    func contextTransitionCancelsBoundRun() async throws {
+        for _ in 0..<2 {
+            let transport = AgentSessionTransportStub(
+                created: try Self.run(status: "awaiting_model"),
+                gets: [try Self.run(status: "awaiting_model")]
+            )
+            let controller = AgentSessionController(
+                transportFactory: { _ in transport },
+                pollDelay: { try await Task.sleep(nanoseconds: 30_000_000_000) }
+            )
+
+            controller.start(
+                goal: "Keep working",
+                model: "minicpm5-2b-4bit",
+                baseURL: URL(string: "http://127.0.0.1:8000")!,
+                bearerToken: nil
+            )
+            while controller.run == nil { await Task.yield() }
+
+            // ChatView routes both an exact model binding change and an active
+            // conversation change through this same cancellation contract.
+            controller.bindingDidChange()
+            await transport.waitForCancellation()
+
+            #expect(controller.phase == .cancelled)
+            #expect(transport.cancelledRunIDs == [Self.runID])
+        }
+    }
+
     @Test("A mismatched server harness is cancelled instead of running")
     func rejectsMismatchedHarness() async throws {
         let transport = AgentSessionTransportStub(

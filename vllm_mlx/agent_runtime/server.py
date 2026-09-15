@@ -378,9 +378,17 @@ def _repair_version_source_output(
     contain that version in its path. Ambiguity fails closed to the model text.
     """
 
+    exact_output_requested = re.search(
+        r"\b(?:reply|respond|answer|output|return)\s+(?:with\s+)?only\b"
+        r"|\bnothing\s+else\b|\bexact(?:ly)?\s+(?:this\s+)?(?:format|output)\b"
+        r"|仅(?:输出|回复|回答)|只(?:输出|回复|回答)|不要(?:输出|包含).*其他",
+        goal,
+        re.IGNORECASE,
+    )
     if (
         turn.tool_calls
         or not turn.content
+        or exact_output_requested is None
         or _SOURCE_URL_INTENT.search(goal) is None
         or re.search(r"\b(?:version|release)\b|版本|发布", goal, re.IGNORECASE) is None
     ):

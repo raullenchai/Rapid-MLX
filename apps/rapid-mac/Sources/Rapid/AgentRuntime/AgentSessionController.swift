@@ -223,6 +223,14 @@ final class AgentSessionController {
         lifetimeCleanup.setTask(task)
     }
 
+    /// Invalidate a run whose selected model or owning conversation changed.
+    /// This is intentionally the same remote cancellation contract as Stop;
+    /// the semantic entry point makes context-transition behavior directly
+    /// testable without relying on SwiftUI source inspection.
+    func bindingDidChange() {
+        cancel()
+    }
+
     func resolvePendingApproval(approved: Bool) {
         guard let transport,
               let run,

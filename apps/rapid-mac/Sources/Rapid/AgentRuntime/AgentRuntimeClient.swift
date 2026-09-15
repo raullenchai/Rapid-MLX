@@ -60,6 +60,14 @@ enum PersonalIntelligenceConfig {
         harnessProfile(for: alias, serverProfile: serverProfile) != nil
     }
 
+    static func isEnabled(
+        conversationEnabled: Bool,
+        alias: String,
+        serverProfile: ServerModelProfile?
+    ) -> Bool {
+        conversationEnabled && supportsModel(alias, serverProfile: serverProfile)
+    }
+
     static func loadConversationStates(
         from defaults: UserDefaults = .standard
     ) -> [UUID: Bool] {

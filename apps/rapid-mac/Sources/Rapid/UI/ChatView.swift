@@ -320,8 +320,12 @@ struct ChatView: View {
         )
     }
     private var agentModeEnabled: Bool {
-        (personalIntelligenceStates[viewModel.activeConversationID] ?? false)
-            && personalIntelligenceSupportsModel
+        PersonalIntelligenceConfig.isEnabled(
+            conversationEnabled:
+                personalIntelligenceStates[viewModel.activeConversationID] ?? false,
+            alias: alias,
+            serverProfile: server.activeModelProfile
+        )
     }
     private var photoAvailability: PhotoCapabilityNotice.Availability {
         PhotoCapabilityNotice.Availability(
@@ -396,6 +400,7 @@ struct ChatView: View {
             )
         }
         .onChange(of: viewModel.activeConversationID) { _, _ in
+            stopAgentIfNeeded()
             pruneAttachmentDrafts()
             reconcilePersonalIntelligenceStates()
             photoCapabilityNotice.dismiss()
@@ -1284,7 +1289,7 @@ struct ChatView: View {
         let trustedInstructions = viewModel.personalIntelligenceTrustedInstructions()
         let localContext = viewModel.personalIntelligenceLocalContext()
         guard viewModel.beginAgentTurn(goal, alias: alias, onCancel: {
-            session.cancel()
+            session.bindingDidChange()
         }) else { return false }
         session.start(
             goal: goal,
@@ -1319,7 +1324,7 @@ struct ChatView: View {
         } else if agentSession.isActive {
             // Defensive reconciliation for an observer that started before its
             // transcript projection could be committed.
-            agentSession.cancel()
+            agentSession.bindingDidChange()
         }
     }
 

@@ -410,7 +410,7 @@ def test_version_source_projection_is_same_origin_exact_and_fail_closed():
         },
     ]
     repaired = _repair_version_source_output(
-        "Report the release version with its canonical URL.",
+        "Reply with only the release version and its canonical URL; output nothing else.",
         messages,
         AgentModelTurn(content="Rapid-MLX version 0.14.2"),
     )
@@ -424,7 +424,7 @@ def test_version_source_projection_is_same_origin_exact_and_fail_closed():
         ),
     }
     unchanged = _repair_version_source_output(
-        "Report the release version with its canonical URL.",
+        "Reply with only the release version and its canonical URL; output nothing else.",
         ambiguous,
         AgentModelTurn(content="Rapid-MLX version 0.14.2"),
     )
@@ -436,11 +436,23 @@ def test_version_source_projection_is_same_origin_exact_and_fail_closed():
         "content": "Wrong https://example.com/releases/tag/v11.2.0",
     }
     not_repaired = _repair_version_source_output(
-        "Report the release version with its canonical URL.",
+        "Reply with only the release version and its canonical URL; output nothing else.",
         substring_only,
         AgentModelTurn(content="Rapid-MLX version 1.2"),
     )
     assert not_repaired.content == "Rapid-MLX version 1.2"
+
+    summary = _repair_version_source_output(
+        "Summarize this release in three sentences and include its canonical URL.",
+        messages,
+        AgentModelTurn(
+            content=(
+                "Rapid-MLX 0.14.2 improves local inference. It adds safer "
+                "serving behavior. See the canonical source for details."
+            )
+        ),
+    )
+    assert summary.content.startswith("Rapid-MLX 0.14.2 improves")
 
 
 def test_simple_weather_arguments_are_planned_without_model_authored_json():

@@ -201,6 +201,16 @@ struct AgentRuntimeClientTests {
             "minicpm5-2b-4bit",
             serverProfile: ServerModelProfile(id: "minicpm5-2b-4bit")
         ))
+        #expect(PersonalIntelligenceConfig.isEnabled(
+            conversationEnabled: true,
+            alias: "minicpm5-2b-4bit",
+            serverProfile: qualified
+        ))
+        #expect(!PersonalIntelligenceConfig.isEnabled(
+            conversationEnabled: true,
+            alias: "qwen3.5-4b-4bit",
+            serverProfile: qualified
+        ))
     }
 
     @Test("Only new conversations inherit the post-consent default")

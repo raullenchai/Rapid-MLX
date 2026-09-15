@@ -87,7 +87,7 @@ its own receipt before exposure.
   no-network requests suppress the route. This removes fragile model-authored
   argument rounds without granting server-side execution.
 - Explicit version-plus-canonical-URL requests get one bounded correction. If
-  a tiny model still omits the citation, Rapid projects the final shape only
+  an exact/only-output request still omits the citation, Rapid projects the final shape only
   when browsed evidence contains one same-origin URL whose path matches the
   model-produced version; ambiguity fails closed.
 - Bare offline/no-network requests suppress live-data tools, and an
