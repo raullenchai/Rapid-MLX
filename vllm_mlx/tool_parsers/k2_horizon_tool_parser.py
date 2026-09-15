@@ -17,7 +17,6 @@ from .abstract_tool_parser import (
 )
 
 
-@ToolParserManager.register_module("k2_horizon")
 class K2HorizonToolParser(ToolParser):
     EXPECTED_WIRE_FORMATS = ("k2_ifm",)
     SUPPORTS_NATIVE_TOOL_FORMAT = True
@@ -148,16 +147,16 @@ class K2HorizonToolParser(ToolParser):
     ) -> tuple[str, dict[str, Any]]:
         if wire_format == "json":
             payload = json.loads(body.strip())
-            arguments = (
-                payload.get("arguments", {}) if isinstance(payload, dict) else None
-            )
-            if not isinstance(payload, dict) or not isinstance(arguments, dict):
+            if not isinstance(payload, dict):
+                raise ValueError("invalid IFM JSON call")
+            json_arguments = payload.get("arguments", {})
+            if not isinstance(json_arguments, dict):
                 raise ValueError("invalid IFM JSON call")
             name = cls._validate_name(payload.get("name"), request)
             props = cls._properties(name, request)
             coerced = {
                 key: _coerce_schema_value(value, props.get(key))
-                for key, value in arguments.items()
+                for key, value in json_arguments.items()
             }
             cls._validate_argument_contract(name, coerced, request)
             return name, coerced
@@ -167,21 +166,22 @@ class K2HorizonToolParser(ToolParser):
             return cls._validate_name(body.strip(), request), {}
         name = cls._validate_name(body[:first_arg].strip(), request)
         props = cls._properties(name, request)
-        arguments: dict[str, Any] = {}
+        xml_arguments: dict[str, Any] = {}
         cursor = first_arg
         for match in cls.ARG_RE.finditer(body, first_arg):
             if body[cursor : match.start()].strip():
                 raise ValueError("malformed IFM argument tags")
             key = match.group(1).strip()
             explicit_type = (match.group(2) or "").strip()
-            if not key or key in arguments:
+            if not key or key in xml_arguments:
                 raise ValueError("missing or duplicate IFM argument name")
             if wire_format == "xml" and explicit_type:
                 raise ValueError("unexpected IFM argument type")
             if wire_format == "xml_typed" and not explicit_type:
                 raise ValueError("missing IFM argument type")
-            schema = props.get(key)
-            if explicit_type and isinstance(schema, dict):
+            declared_schema = props.get(key)
+            schema = declared_schema if isinstance(declared_schema, dict) else None
+            if explicit_type and schema is not None:
                 explicit_base = explicit_type.split("[", 1)[0].lower()
                 declared_type = schema.get("type")
                 declared_types = (
@@ -196,12 +196,12 @@ class K2HorizonToolParser(ToolParser):
                     raise ValueError("IFM argument type contradicts tool schema")
             if schema is None and explicit_type:
                 schema = {"type": explicit_type.split("[", 1)[0].lower()}
-            arguments[key] = _coerce_schema_value(match.group(3), schema)
+            xml_arguments[key] = _coerce_schema_value(match.group(3), schema)
             cursor = match.end()
         if cursor == first_arg or body[cursor:].strip():
             raise ValueError("malformed IFM argument tags")
-        cls._validate_argument_contract(name, arguments, request)
-        return name, arguments
+        cls._validate_argument_contract(name, xml_arguments, request)
+        return name, xml_arguments
 
     @classmethod
     def _parse_group(
@@ -491,3 +491,8 @@ class K2HorizonToolParser(ToolParser):
             return self._visible_prefix(remaining)
         held = self._partial_overlap(full_text[self._content_upto :], self.GROUP_START)
         return full_text[-held:] if held else ""
+
+
+# Direct registration keeps the manager's runtime contract while avoiding the
+# intentionally broad decorator return type from obscuring this class's type.
+ToolParserManager.register_module("k2_horizon", K2HorizonToolParser)
