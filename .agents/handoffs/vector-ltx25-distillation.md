@@ -545,3 +545,11 @@ symlinks remain diagnostic-only. Existing segmented and standard paths are
 unchanged. Focused tests pass 31/31 and the full upstream suite passes 802 with
 22 skips. Atlas should review this compatibility surface but must not default
 it before the remaining human, suite, and cross-generation gates.
+
+The actual product CLI entry point has now loaded that manifest and completed
+the same combined workload in 269.21 seconds (2.0057x), zero swap, with a
+40,371,407,824-byte peak footprint. Its MP4 hash exactly matches the prior
+270.01-second research-path combined render. The two-run range is
+269.21-270.01 seconds and median is 269.61 seconds (about 2.001x); because the
+range straddles the strict 269.97-second threshold, release language should say
+approximately 2x rather than stably greater than 2x.

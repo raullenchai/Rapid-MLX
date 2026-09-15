@@ -66,6 +66,14 @@ falls back before inference starts; a user-visible opt-out must remain. Atlas
 must keep the capability default-off until human review, the broad decoded
 suite, and a second Apple GPU generation pass.
 
+The first full product-entry validation loaded this exact capability through
+`ltx_pipelines_mlx.cli generate`, composed terminal-fast Stage 2 and the
+dequantized-matmul dispatch, and measured 269.21 seconds (2.0057x) with zero
+swap. Its output hash exactly matched the preceding 270.01-second research
+combined render. The two-run median is 269.61 seconds/about 2.001x; because
+the measured range straddles the strict 269.97-second boundary, the qualified
+claim remains approximately 2x pending a larger timing sample.
+
 The first `8 -> 7` final-pair pilot intentionally minimizes endpoint latent
 error. It is cheap enough to answer whether a rank-8 adapter can represent one
 compressed transition, but its target includes ancestral noise that is not
