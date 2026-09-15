@@ -374,3 +374,25 @@ immutable published model-repository revision before Rapid integration. A
 scratch package has been produced for runtime smoke testing only; upload,
 release, default changes, and public API disposition require explicit human
 and Atlas authorization.
+
+## Independent-segment control result (2026-09-14)
+
+All three Stage-1 adapters were retrained independently from the immutable
+clean base. On the same two held-out trajectories, their bound-span
+video/audio MSE improvements were 28.47%/31.54% (`0 -> 3`), 61.04%/70.06%
+(`3 -> 5`), and 4.81%/6.25% (`5 -> 7`). The valid same-prompt, same-seed
+241-frame chef comparison still failed subject preservation: standard retains
+the chef's face and upper body, while fast retains almost only hands, bread,
+and oven. Removing cumulative adapter inheritance therefore did not qualify
+the artifact.
+
+An initial comparison used `case-06` from the corrected review layout, which
+is pottery rather than chef. It was invalidated before judgment. The valid
+chef baseline is deterministic case 05. This reinforces that qualification
+runners must derive media paths and prompt labels from one validated dataset
+order rather than hard-coded case assumptions.
+
+The next serialized control changes only semantic coverage for the highest-
+noise `0 -> 3` adapter (24 training prompts, six prompt-disjoint validation
+prompts) while holding the independent middle/late adapters and runtime
+schedule fixed. Product exposure and default enablement remain blocked.

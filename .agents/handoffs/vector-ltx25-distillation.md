@@ -426,3 +426,11 @@ retrains only `0 -> 3` and reruns the held-out chef case. Upstream `ce31075`
 reuses exact Stage-2 conditions by same-filesystem hard link, avoiding roughly
 755 MB of duplicate embeddings while freshly capturing every Stage-1 latent
 boundary. Full upstream tests pass (`775 passed, 22 skipped`).
+
+The independent three-span control completed, but its valid held-out chef
+decode still omits the front-facing speaker. Bound-span video/audio MSE
+improvements were 28.47%/31.54%, 61.04%/70.06%, and 4.81%/6.25%; these latent
+gains do not override the decoded failure. A first local A/B accidentally used
+corrected case 06 (pottery) as the standard; it was rejected and rebuilt with
+case 05, the actual chef entry. The broad 24-prompt early-span control is now
+running. Atlas must continue to block public API/default integration.
