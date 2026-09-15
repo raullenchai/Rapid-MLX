@@ -60,9 +60,15 @@ def _checker_pass(checker: dict[str, Any], text: str) -> bool:
             term.casefold() in lowered for term in checker.get("forbidden", [])
         )
     if kind == "json_shape":
+        # Strip a trailing code fence the model may wrap the payload in.
+        stripped = text.strip()
+        if stripped.startswith("```"):
+            stripped = stripped.split("\n", 1)[-1]
+            if stripped.endswith("```"):
+                stripped = stripped[:-3]
         try:
-            start = lowered.index("{")
-            payload = json.loads(text[start:])
+            start = stripped.index("{")
+            payload = json.loads(stripped[start:])
         except (ValueError, json.JSONDecodeError):
             return False
         return isinstance(payload, dict) and all(
@@ -166,12 +172,17 @@ async def _run_phase(
     return {
         "per_case": by_case,
         "memory": memory,
+        # pairs == 0 runs warmup only (lifecycle-only mode): no medians.
         "summary": {
             case_id: {
-                "median_ttft_s": _median(samples, "ttft_s"),
-                "median_elapsed_s": _median(samples, "elapsed_s"),
-                "median_generation_tps": _median(samples, "generation_tps"),
-                "median_completion_tokens": _median(samples, "completion_tokens"),
+                "median_ttft_s": _median(samples, "ttft_s") if samples else None,
+                "median_elapsed_s": _median(samples, "elapsed_s") if samples else None,
+                "median_generation_tps": _median(samples, "generation_tps")
+                if samples
+                else None,
+                "median_completion_tokens": _median(samples, "completion_tokens")
+                if samples
+                else None,
                 "checker_passes": sum(bool(s["checker_pass"]) for s in samples),
             }
             for case_id, samples in by_case.items()
@@ -425,6 +436,8 @@ async def _main() -> None:
         per_case_exact: dict[str, bool] = {}
         for case_id, off_samples in result["phases"]["off"]["per_case"].items():
             auto_samples = result["phases"]["auto"]["per_case"][case_id]
+            if not off_samples and not auto_samples:
+                continue
             off_hashes = {sample["sha256"] for sample in off_samples}
             auto_hashes = {sample["sha256"] for sample in auto_samples}
             per_case_exact[case_id] = off_hashes == auto_hashes
@@ -458,7 +471,7 @@ async def _main() -> None:
                 ),
             }
             for case_id in result["phases"]["auto"]["summary"]
-            if result["phases"]["off"]["summary"][case_id]["median_ttft_s"] > 0
+            if result["phases"]["off"]["summary"][case_id]["median_ttft_s"]
         }
     finally:
         pass
