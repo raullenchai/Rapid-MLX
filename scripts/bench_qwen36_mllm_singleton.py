@@ -18,7 +18,10 @@ both phases with ``enable_prefix_cache=True`` and sends every case twice
 per measured pass so warm exact-prefix resumes feed the singleton batch
 (the cold default run cannot qualify that interaction); it also asserts
 the candidate phase actually engaged the fast path via the generator's
-``singleton_batches`` counter.
+``singleton_batches`` counter and that the APC actually served warm hits
+in both phases (the manifest carries a long text-only case because
+mlx-vlm's exact APC ignores boundaries below ``APC_EXACT_MIN_TOKENS``,
+default 16).
 
 Usage (Studio qualification, 256 GB, offline model resolution):
 
@@ -521,11 +524,18 @@ async def _main() -> None:
             result["phases"]["auto"]["singleton_batches"] > 0
             and result["phases"]["off"]["singleton_batches"] == 0
         )
-        # Warm-hit qualification requires the APC to actually serve hits.
+        # Warm-hit qualification requires the APC to actually serve hits in
+        # both phases. mlx-vlm's exact APC stores a turn boundary only when
+        # it clears ``APC_EXACT_MIN_TOKENS`` (default 16), so the manifest
+        # must carry a long text-only case; if no hit lands the warm
+        # interaction went unqualified and the run must not count.
         result["apc_hits"] = {
             phase: (result["phases"][phase].get("prefix_cache") or {}).get("hits", 0)
             for phase in ("off", "auto")
         }
+        result["warm_qualified"] = args.apc == "off" or (
+            result["apc_hits"]["off"] > 0 and result["apc_hits"]["auto"] > 0
+        )
 
         result["summary_change_pct"] = {
             case_id: {
@@ -568,6 +578,7 @@ async def _main() -> None:
             "total_cases",
             "fastpath_engaged",
             "apc_hits",
+            "warm_qualified",
             "summary_change_pct",
             "lifecycle",
             "phases",
@@ -586,6 +597,8 @@ async def _main() -> None:
         raise SystemExit(1)
     if args.pairs > 0 and not result.get("fastpath_engaged", False):
         raise SystemExit(2)
+    if args.pairs > 0 and not result.get("warm_qualified", True):
+        raise SystemExit(3)
 
 
 if __name__ == "__main__":
