@@ -18,37 +18,39 @@
 - Q4 and Q8 MiniCPM artifacts have distinct, versioned, evidence-backed
   qualification records even though they share one harness. Q8 is a 16 GB
   candidate and does not inherit Q4's 8 GB recommendation.
-- Codex review found and closed parser, backing-weight, cross-quant, and
-  repository-evidence containment gaps; the last review had no finding.
-- Relevant Python regression suite: 387 passed. Qualification suite after the
-  receipt refactor: 107 passed. Affected Swift suites: 72 passed. Ruff,
-  accessibility identifier gate, and `git diff --check` passed.
+- Desktop now executes the three existing read-only built-ins (`web_search`,
+  `browse`, `weather`) for client-owned Agent runs and returns results under the
+  exact opaque call ID. Schemas and risk labels remain server-owned.
+- Custom instructions, MemoryStore, and the last eight completed chat messages
+  are available as bounded transient context and never enter public Agent
+  events.
+- Intent routing and deterministic search-to-browse staging reduce the visible
+  tool surface and remove mechanical argument generation from small models.
+- Live 15/15 receipts now qualify Qwen3.5 4B Q4, Qwen3.5 9B Q4, Qwen3.6 35B
+  A3B Q8, and LFM2.5 1.2B Q4 in addition to MiniCPM.
+- Codex review found and closed parser, backing-weight, cross-quant,
+  repository-evidence, explicit no-network, pagination, multi-source, and
+  ranked-URL selection gaps.
+- Current affected Python suite: 191 passed. Affected Swift suites: 90 passed.
+  Ruff format/lint and `git diff --check` passed.
 
-## Unresolved product blocker
+## Remaining qualification work
 
-The GUI currently creates `execution: server` runs. With no user-configured MCP,
-the server exposes only calculator helpers; it does not expose Desktop's
-existing web search, browse, weather, memory context, or native tool executor.
-That does not fulfill the first-use promise to use the Mac's tools and local
-context, so #3490 must remain Draft.
+The Desktop execution/context blocker is closed. #3490 remains Draft because
+the maintainer's usage-table union is the product support target and the exact
+remaining builds have not all completed physical qualification.
 
 ## Next concrete action
 
-Implement the thin Desktop client-tool adapter using the existing
-`execution: client` protocol:
-
-1. Define a server-owned allowlist/schema for the official Desktop built-ins;
-   clients select names but cannot submit arbitrary schemas or risk labels.
-2. Have `AgentSessionController` execute `awaiting_tool_result` calls through
-   the existing `NativeToolCallExecutor` and permission stores, then submit the
-   typed result to the server.
-3. Pass a bounded snapshot of existing custom instructions and MemoryStore
-   context without persisting it in public agent events.
-4. Run physical-Mac GUI dogfood with MiniCPM Q4 before changing the 8/16 GB
-   recommendation catalog or marking the PR ready.
+Run the exact-build matrix in
+`docs/engineering/performance/2026-09-15-personal-intelligence-top-model-qualification.md`.
+Only add a `PersonalIntelligenceQualification` after a 15/15 JSON receipt.
+Qwen3.6 35B Q4, the Qwen3.8 variants, Bonsai, Qwen3-Coder, Ling, Qwen3.6 27B,
+GPT-OSS, and the Qwen3.5 Q8 builds remain pending.
 
 ## Evidence
 
 - `docs/engineering/performance/2026-09-13-minicpm5-small-agent-harness-ab.md`
 - `docs/engineering/decisions/2026-09-13-rapid-agent-runtime.md`
 - `docs/guides/agent-runtime.md`
+- `docs/engineering/performance/2026-09-15-personal-intelligence-top-model-qualification.md`

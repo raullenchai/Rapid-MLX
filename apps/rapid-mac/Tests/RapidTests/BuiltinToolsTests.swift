@@ -181,6 +181,37 @@ final class BuiltinToolsTests {
         #expect(vm.disabledTools.isEmpty)
     }
 
+    @Test("Personal Intelligence projects only enabled live-data built-ins")
+    func personalIntelligenceToolProjection() {
+        let vm = ChatViewModel(tools: makeRegistry(), toolDefaults: freshDefaults())
+        #expect(vm.personalIntelligenceDefinitions.map { $0.function.name } == [
+            "web_search", "browse", "weather",
+        ])
+
+        vm.setToolEnabled("browse", false)
+        #expect(vm.personalIntelligenceDefinitions.map { $0.function.name } == [
+            "web_search", "weather",
+        ])
+    }
+
+    @Test("Personal Intelligence refuses invalid arguments before dispatch")
+    func personalIntelligenceRejectsInvalidArguments() async throws {
+        let vm = ChatViewModel(tools: makeRegistry(), toolDefaults: freshDefaults())
+        let action = try JSONDecoder().decode(
+            AgentPendingAction.self,
+            from: Data(#"{"call_id":"bad","name":"weather","arguments":{},"approval_summary":null,"risk":"read_only","approval_required":false}"#.utf8)
+        )
+
+        let result = await vm.executePersonalIntelligenceTool(
+            action,
+            advertised: vm.personalIntelligenceDefinitions
+        )
+
+        #expect(result.isError)
+        #expect(!result.executed)
+        #expect(result.content.contains("location"))
+    }
+
     // MARK: - Dispatch refusal
 
     @Test("A call for a tool that wasn't advertised this round is refused, not run")

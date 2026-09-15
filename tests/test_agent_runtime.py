@@ -60,7 +60,45 @@ def test_minicpm_profile_is_alias_and_repo_aware():
         assert profile.max_visible_tools == 8
         assert profile.max_tool_rounds == 12
 
-    assert resolve_agent_profile("qwen3.5-4b-4bit").name == "default"
+    for model, expected in (
+        ("qwen3.5-4b-4bit", "qwen3.5-4b"),
+        ("mlx-community/Qwen3.5-4B-MLX-4bit", "qwen3.5-4b"),
+        ("qwen3.5-9b-4bit", "qwen3.5-9b"),
+        ("mlx-community/Qwen3.5-9B-4bit", "qwen3.5-9b"),
+    ):
+        profile = resolve_personal_intelligence_profile(
+            model, tool_call_parser="hermes"
+        )
+        assert profile is not None
+        assert profile.name == expected
+
+    assert resolve_agent_profile("qwen3.5-4b-4bit").name == "qwen3.5-4b"
+    assert resolve_agent_profile("qwen3.5-9b-4bit").name == "qwen3.5-9b"
+
+
+@pytest.mark.parametrize(
+    ("model", "profile_name"),
+    (
+        ("qwen3.5-4b-8bit", "qwen3.5-4b"),
+        ("qwen3.5-9b-8bit", "qwen3.5-9b"),
+        ("qwen3.6-27b-4bit", "qwen3.6-27b"),
+        ("qwen3.6-35b-4bit", "qwen3.6-35b"),
+        ("qwen3.6-35b-8bit", "qwen3.6-35b"),
+        ("qwen3.8-27b-4bit", "qwen3.8-27b"),
+        ("mlx-community/Qwen3.8-27B-4bit", "qwen3.8-27b"),
+        ("qwen3.8-27b-mixed-3.5bpw", "qwen3.8-27b"),
+        ("qwen3.8-27b-4bit-fp16", "qwen3.8-27b"),
+        ("bonsai-27b-2bit", "bonsai-27b"),
+        ("qwen3-coder-30b-4bit", "qwen3-coder-30b"),
+        ("ling-3.0-tiny-4bit", "ling-3.0-tiny"),
+        ("gpt-oss-20b", "gpt-oss-20b"),
+        ("lfm2.5-1b-4bit", "lfm2.5-1b"),
+    ),
+)
+def test_usage_union_has_an_explicit_candidate_profile(model, profile_name):
+    assert resolve_agent_profile(model).name == profile_name
+    # Candidate registration is not product qualification.
+    assert resolve_personal_intelligence_profile(model) is None
 
 
 def test_personal_intelligence_requires_a_qualified_model_profile():
@@ -85,7 +123,7 @@ def test_personal_intelligence_requires_a_qualified_model_profile():
     )
     assert (
         resolve_personal_intelligence_profile(
-            "qwen3.5-4b-4bit", tool_call_parser="hermes"
+            "qwen3.5-4b-4bit", tool_call_parser="minicpm"
         )
         is None
     )

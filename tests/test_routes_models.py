@@ -331,21 +331,19 @@ def test_model_info_exposes_only_qualified_personal_intelligence_harnesses():
     from vllm_mlx.routes import models as models_route
 
     assert (
-        models_route._build_model_info(
-            "minicpm5-2b-4bit"
-        ).personal_intelligence_profile
+        models_route._build_model_info("minicpm5-2b-4bit").personal_intelligence_profile
         == "minicpm5-2b"
     )
     assert (
-        models_route._build_model_info(
-            "qwen3.5-4b-4bit"
-        ).personal_intelligence_profile
-        is None
+        models_route._build_model_info("qwen3.5-4b-4bit").personal_intelligence_profile
+        == "qwen3.5-4b"
     )
     assert (
-        models_route._build_model_info(
-            "gemma-4-e2b-4bit"
-        ).personal_intelligence_profile
+        models_route._build_model_info("qwen3.5-9b-4bit").personal_intelligence_profile
+        == "qwen3.5-9b"
+    )
+    assert (
+        models_route._build_model_info("gemma-4-e2b-4bit").personal_intelligence_profile
         is None
     )
 

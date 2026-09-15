@@ -6,6 +6,7 @@ protocol AgentRuntimeTransport: Sendable {
         goal: String,
         model: String?,
         toolNames: [String]?,
+        localContext: String?,
         execution: AgentExecutionMode,
         bearerToken: String?
     ) async throws -> AgentRunView
@@ -256,11 +257,13 @@ final class AgentRuntimeClient: Sendable {
         let goal: String
         let model: String?
         let toolNames: [String]?
+        let localContext: String?
         let execution: AgentExecutionMode
 
         enum CodingKeys: String, CodingKey {
             case goal, model
             case toolNames = "tool_names"
+            case localContext = "local_context"
             case execution
         }
     }
@@ -311,6 +314,7 @@ final class AgentRuntimeClient: Sendable {
         goal: String,
         model: String? = nil,
         toolNames: [String]? = nil,
+        localContext: String? = nil,
         execution: AgentExecutionMode,
         bearerToken: String? = nil
     ) async throws -> AgentRunView {
@@ -322,6 +326,7 @@ final class AgentRuntimeClient: Sendable {
                 goal: goal,
                 model: model,
                 toolNames: toolNames,
+                localContext: localContext,
                 execution: execution
             )
         )

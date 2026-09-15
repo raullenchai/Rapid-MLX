@@ -33,11 +33,9 @@ a harness profile that has been tuned and dogfooded with that model. The server
 is the single source of truth; Desktop does not maintain a parallel model
 allowlist. Tool-call support by itself is not enough,
 and selecting Personal Intelligence never changes or downloads a different
-model. MiniCPM5-2B is the first qualified low-memory pairing; its profile owns
-its tool visibility, loop budget, repeat guard, output ceiling, parser, and
-prompt behavior. Gemma, Qwen, and other models remain ordinary Chat until each
-exact model has its own qualified profile. The popover names the current model
-and explains when its profile is not ready. Switching back to a qualified model
+model. Every qualified pairing owns its tool visibility, loop budget, repeat
+guard, output ceiling, parser, and prompt behavior. The popover names the
+current model and explains when its profile is not ready. Switching back to a qualified model
 restores that
 conversation's prior on/off choice, unless attachments were staged while it
 was on ordinary Chat; in that case Personal Intelligence stays off and explains
@@ -75,11 +73,29 @@ Each admitted pairing is a versioned
 identities, parser, harness profile, and a repository-relative evidence report.
 Quantizations remain separate qualifications even when they share a parser and
 harness. Adding a name to a broad family matcher is therefore insufficient to
-enable the product. Currently admitted identities are the tested MiniCPM5-2B
-MLX Q4 alias/repository and the separately tested MLX Q8 repository. BF16,
-renamed local copies, and every non-MiniCPM model remain unqualified. The Q8
-receipt is a 16 GB candidate and does not inherit the Q4 model's 8 GB
-recommendation.
+enable the product. Current admitted builds are MiniCPM5-2B MLX Q4 and Q8,
+Qwen3.5-4B Q4, Qwen3.5-9B Q4, Qwen3.6-35B-A3B Q8, and LFM2.5-1.2B Q4. Other
+quantizations, renamed local copies, and unlisted models remain ordinary Chat
+until their exact build passes qualification. MiniCPM Q8 is a 16 GB candidate
+and does not inherit Q4's 8 GB recommendation.
+
+Maintainers can run the same live Agent API qualification used for those
+receipts:
+
+```bash
+python scripts/qualify_personal_intelligence.py MODEL \
+  --base-url http://127.0.0.1:8000 \
+  --seeds 11,22,33 \
+  --hardware 'Mac model, chip, memory' \
+  --os 'macOS version and build' \
+  --runtime 'rapid-mlx, MLX, and mlx-lm versions' \
+  --source-revision 'exact Git commit' \
+  --server-command 'complete launch command and flags' \
+  --output reports/benchmarks/personal-intelligence-MODEL.json
+```
+
+The exact-build target matrix and receipts live in
+`docs/engineering/performance/2026-09-15-personal-intelligence-top-model-qualification.md`.
 
 ## Start the server
 
@@ -222,9 +238,12 @@ before the approval boundary.
 ## Client execution for Desktop
 
 Set `execution:"client"` when an authenticated client owns execution. Rapid
-still chooses tools from the server-owned registry, validates the model call,
-and applies the same approval policy. The client reads `pending_action`, runs
-the matching local adapter, then returns exactly one result:
+still chooses tools from server-owned schemas, validates the model call, and
+applies the same approval policy. Desktop selects only enabled names from the
+official `web_search`, `browse`, and `weather` catalog; it cannot submit a new
+schema or change a risk label. The client reads `pending_action`, validates the
+arguments against its matching native schema, runs the existing local adapter,
+then returns exactly one result:
 
 ```bash
 curl -sS http://127.0.0.1:8000/v1/agent/runs/RUN_ID/tool-result \
@@ -251,6 +270,22 @@ Tool completion events use `executed:true` when dispatch occurred,
 `executed:false` for a known pre-dispatch rejection, and `executed:null` when a
 third-party registry failure leaves the outcome uncertain. Treat `null` as
 potentially executed and never retry it automatically.
+
+Desktop supplies custom instructions, Memory, and the last eight completed
+user/assistant messages through the optional `local_context` create field. It
+is capped at 32,768 characters by the server (Desktop sends at most 24,000
+Unicode scalars), is merged into the one leading system message for broad model
+compatibility, and is never copied into public Agent events.
+
+The harness exposes only tools relevant to the current request. Recall,
+writing, explicit no-network requests, and transformation tasks see no
+live-data tool; weather tasks see only `weather`; web tasks deterministically
+run `web_search`, extract ranked HTTP(S) result lines, then run `browse`. Long
+pages follow the tool's `next_offset`, and explicit comparison tasks can read
+up to three ranked pages. Search and browse still execute only in Desktop, and
+`browse` retains its existing cache, SSRF guard, and per-fetch approval. Tool
+output remains untrusted data, and the final synthesis turn has no tools
+visible.
 
 ## Cancel a run
 

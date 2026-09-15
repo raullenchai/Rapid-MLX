@@ -29,6 +29,8 @@ from vllm_mlx.agent_runtime.server import (
     MCPToolRegistry,
     _approval_argument_summary,
     _evaluate_arithmetic,
+    _route_desktop_client_tools,
+    _trim_exterior_url_punctuation,
     classify_mcp_tool,
 )
 
@@ -114,6 +116,352 @@ async def test_direct_answer_completes_without_tools_and_keeps_output_out_of_eve
     wire = (await service.events(done.id)).model_dump_json()
     assert "private goal" not in wire
     assert "Done." not in wire
+
+
+@pytest.mark.asyncio
+async def test_local_context_is_transient_model_input_not_event_payload():
+    context = "Preferences: concise\nMemory: private-project-codename"
+    driver = ScriptedDriver(AgentModelTurn(content="Done."))
+    service = AgentServerService(registry=FakeRegistry(()), chat_driver=driver)
+
+    created = await service.create(
+        AgentRunCreateRequest(goal="Help me", local_context=context), model="model"
+    )
+    await wait_for_status(service, created.id, AgentRunStatus.COMPLETED)
+
+    messages = driver.requests[0][1]
+    assert [message["role"] for message in messages] == ["system", "user"]
+    assert context in messages[0]["content"]
+    wire = (await service.events(created.id)).model_dump_json()
+    assert "private-project-codename" not in wire
+
+
+@pytest.mark.asyncio
+async def test_desktop_tools_are_server_owned_and_client_execution_only():
+    driver = ScriptedDriver(AgentModelTurn(content="Done."))
+    service = AgentServerService(registry=FakeRegistry(()), chat_driver=driver)
+
+    created = await service.create(
+        AgentRunCreateRequest(
+            goal="Find current news",
+            execution="client",
+            tool_names=["web_search", "browse", "weather"],
+        ),
+        model="minicpm5-2b-4bit",
+    )
+    waiting = await wait_for_status(
+        service, created.id, AgentRunStatus.AWAITING_TOOL_RESULT
+    )
+    assert waiting.pending_action is not None
+    assert waiting.pending_action.name == "web_search"
+    visible = {tool.name: tool for tool in service._entry(created.id).tools}
+    assert set(visible) == {"web_search", "browse"}
+    assert visible["web_search"].risk is ToolRisk.READ_ONLY
+    await service.cancel(created.id)
+
+    with pytest.raises(AgentToolSelectionError, match="unknown or unsupported"):
+        await service.create(
+            AgentRunCreateRequest(
+                goal="Find current news",
+                execution="server",
+                tool_names=["web_search"],
+            ),
+            model="minicpm5-2b-4bit",
+        )
+
+
+def test_desktop_tool_routing_is_intent_scoped_and_preserves_non_desktop_names():
+    offered = ["custom__read", "web_search", "browse", "weather"]
+    assert _route_desktop_client_tools("Recall my project codename", offered) == [
+        "custom__read"
+    ]
+    assert _route_desktop_client_tools(
+        "Do not search the web; summarize the latest notes below.", offered
+    ) == ["custom__read"]
+    assert _route_desktop_client_tools(
+        "不要上网，整理下面的最新发布笔记。", offered
+    ) == ["custom__read"]
+    assert _route_desktop_client_tools(
+        "Don't look anything up; draft a weather-themed poem.", offered
+    ) == ["custom__read"]
+    assert _route_desktop_client_tools(
+        "Summarize these latest release notes: private draft text", offered
+    ) == ["custom__read"]
+    assert _route_desktop_client_tools(
+        "Search the web and summarize these latest release notes", offered
+    ) == ["custom__read", "web_search", "browse"]
+    assert _route_desktop_client_tools("What's the weather in Tokyo?", offered) == [
+        "custom__read",
+        "weather",
+    ]
+    assert _route_desktop_client_tools("Find the latest release", offered) == [
+        "custom__read",
+        "web_search",
+        "browse",
+    ]
+    assert _route_desktop_client_tools("Read https://example.com/a", offered) == [
+        "custom__read",
+        "browse",
+    ]
+    assert _route_desktop_client_tools(
+        "Give me Tokyo weather and summarize https://example.com/news", offered
+    ) == ["custom__read", "browse", "weather"]
+    assert _route_desktop_client_tools(
+        "Give me Tokyo weather and find the latest space news", offered
+    ) == ["custom__read", "web_search", "browse", "weather"]
+
+
+def test_url_trimming_preserves_balanced_closing_delimiters():
+    assert (
+        _trim_exterior_url_punctuation(
+            "https://en.wikipedia.org/wiki/Function_(mathematics)"
+        )
+        == "https://en.wikipedia.org/wiki/Function_(mathematics)"
+    )
+    assert (
+        _trim_exterior_url_punctuation("https://example.com/news).")
+        == "https://example.com/news"
+    )
+
+
+@pytest.mark.asyncio
+async def test_desktop_web_flow_stages_search_then_browse_then_synthesis():
+    driver = ScriptedDriver(AgentModelTurn(content="v0.14.2"))
+    service = AgentServerService(registry=FakeRegistry(()), chat_driver=driver)
+    created = await service.create(
+        AgentRunCreateRequest(
+            goal="Find the latest Rapid-MLX release",
+            execution="client",
+            tool_names=["web_search", "browse", "weather"],
+        ),
+        model="minicpm5-2b-4bit",
+    )
+
+    waiting = await wait_for_status(
+        service, created.id, AgentRunStatus.AWAITING_TOOL_RESULT
+    )
+    assert waiting.pending_action is not None
+    assert waiting.pending_action.name == "web_search"
+    assert waiting.pending_action.arguments == {
+        "query": "Find the latest Rapid-MLX release"
+    }
+    await service.submit_result(
+        created.id,
+        AgentToolResultRequest(
+            call_id=waiting.pending_action.call_id,
+            content=(
+                'Web search: "newer than https://old.example"\n\n'
+                "1. Rapid-MLX releases\n"
+                "   https://github.com/raullenchai/Rapid-MLX/releases\n"
+                "   Official releases"
+            ),
+            executed=True,
+        ),
+    )
+
+    waiting = await wait_for_status(
+        service, created.id, AgentRunStatus.AWAITING_TOOL_RESULT
+    )
+    assert waiting.pending_action is not None
+    assert waiting.pending_action.name == "browse"
+    assert waiting.pending_action.arguments == {
+        "url": "https://github.com/raullenchai/Rapid-MLX/releases"
+    }
+    await service.submit_result(
+        created.id,
+        AgentToolResultRequest(
+            call_id=waiting.pending_action.call_id,
+            content="Latest release: v0.14.2",
+            executed=True,
+        ),
+    )
+    done = await wait_for_status(service, created.id, AgentRunStatus.COMPLETED)
+
+    assert done.output == "v0.14.2"
+    assert [request[2] for request in driver.requests] == [[]]
+
+
+@pytest.mark.asyncio
+async def test_desktop_browse_continues_pages_and_multiple_ranked_results():
+    driver = ScriptedDriver(AgentModelTurn(content="Compared."))
+    service = AgentServerService(registry=FakeRegistry(()), chat_driver=driver)
+    created = await service.create(
+        AgentRunCreateRequest(
+            goal="Compare the two latest release reports from the web",
+            execution="client",
+            tool_names=["web_search", "browse"],
+        ),
+        model="minicpm5-2b-4bit",
+    )
+
+    search = await wait_for_status(
+        service, created.id, AgentRunStatus.AWAITING_TOOL_RESULT
+    )
+    assert search.pending_action is not None
+    await service.submit_result(
+        created.id,
+        AgentToolResultRequest(
+            call_id=search.pending_action.call_id,
+            content=(
+                "1. First report\n   https://example.com/one\n   First\n\n"
+                "2. Second report\n   https://example.com/two\n   Second"
+            ),
+            executed=True,
+        ),
+    )
+
+    first = await wait_for_status(
+        service, created.id, AgentRunStatus.AWAITING_TOOL_RESULT
+    )
+    assert first.pending_action is not None
+    assert first.pending_action.arguments == {"url": "https://example.com/one"}
+    await service.submit_result(
+        created.id,
+        AgentToolResultRequest(
+            call_id=first.pending_action.call_id,
+            content=json.dumps(
+                {
+                    "url": "https://example.com/one",
+                    "content": "first page",
+                    "has_more": True,
+                    "next_offset": 15000,
+                }
+            ),
+            executed=True,
+        ),
+    )
+
+    continuation = await wait_for_status(
+        service, created.id, AgentRunStatus.AWAITING_TOOL_RESULT
+    )
+    assert continuation.pending_action is not None
+    assert continuation.pending_action.arguments == {
+        "url": "https://example.com/one",
+        "offset": 15000,
+    }
+    await service.submit_result(
+        created.id,
+        AgentToolResultRequest(
+            call_id=continuation.pending_action.call_id,
+            content=json.dumps(
+                {
+                    "url": "https://example.com/one",
+                    "content": "last page",
+                    "has_more": False,
+                }
+            ),
+            executed=True,
+        ),
+    )
+
+    second = await wait_for_status(
+        service, created.id, AgentRunStatus.AWAITING_TOOL_RESULT
+    )
+    assert second.pending_action is not None
+    assert second.pending_action.arguments == {"url": "https://example.com/two"}
+    await service.submit_result(
+        created.id,
+        AgentToolResultRequest(
+            call_id=second.pending_action.call_id,
+            content=json.dumps(
+                {
+                    "url": "https://example.com/two",
+                    "content": "second report",
+                    "has_more": False,
+                }
+            ),
+            executed=True,
+        ),
+    )
+
+    done = await wait_for_status(service, created.id, AgentRunStatus.COMPLETED)
+    assert done.output == "Compared."
+    assert [request[2] for request in driver.requests] == [[]]
+
+
+@pytest.mark.asyncio
+async def test_desktop_direct_url_browses_that_url_without_search():
+    service = AgentServerService(
+        registry=FakeRegistry(()),
+        chat_driver=ScriptedDriver(AgentModelTurn(content="unused")),
+    )
+    created = await service.create(
+        AgentRunCreateRequest(
+            goal="Read https://example.com/notes and summarize it",
+            execution="client",
+            tool_names=["web_search", "browse"],
+        ),
+        model="minicpm5-2b-4bit",
+    )
+    waiting = await wait_for_status(
+        service, created.id, AgentRunStatus.AWAITING_TOOL_RESULT
+    )
+    assert waiting.pending_action is not None
+    assert waiting.pending_action.name == "browse"
+    assert waiting.pending_action.arguments == {"url": "https://example.com/notes"}
+    await service.cancel(created.id)
+
+
+@pytest.mark.asyncio
+async def test_desktop_mixed_weather_and_url_completes_both_steps():
+    driver = ScriptedDriver(
+        AgentModelTurn(
+            tool_calls=[
+                AgentToolCall(
+                    id="weather-call",
+                    name="weather",
+                    arguments={"location": "Tokyo"},
+                )
+            ]
+        ),
+        AgentModelTurn(content="Tokyo is clear; article summarized."),
+    )
+    service = AgentServerService(registry=FakeRegistry(()), chat_driver=driver)
+    created = await service.create(
+        AgentRunCreateRequest(
+            goal=(
+                "Give me Tokyo weather and summarize "
+                "https://en.wikipedia.org/wiki/Function_(mathematics)"
+            ),
+            execution="client",
+            tool_names=["web_search", "browse", "weather"],
+        ),
+        model="minicpm5-2b-4bit",
+    )
+
+    weather = await wait_for_status(
+        service, created.id, AgentRunStatus.AWAITING_TOOL_RESULT
+    )
+    assert weather.pending_action is not None
+    assert weather.pending_action.name == "weather"
+    await service.submit_result(
+        created.id,
+        AgentToolResultRequest(
+            call_id=weather.pending_action.call_id,
+            content="Tokyo: clear, 24 C",
+            executed=True,
+        ),
+    )
+
+    browse = await wait_for_status(
+        service, created.id, AgentRunStatus.AWAITING_TOOL_RESULT
+    )
+    assert browse.pending_action is not None
+    assert browse.pending_action.name == "browse"
+    assert browse.pending_action.arguments == {
+        "url": "https://en.wikipedia.org/wiki/Function_(mathematics)"
+    }
+    await service.submit_result(
+        created.id,
+        AgentToolResultRequest(
+            call_id=browse.pending_action.call_id,
+            content="A function maps inputs to outputs.",
+            executed=True,
+        ),
+    )
+
+    done = await wait_for_status(service, created.id, AgentRunStatus.COMPLETED)
+    assert done.output == "Tokyo is clear; article summarized."
 
 
 @pytest.mark.asyncio

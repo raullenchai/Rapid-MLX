@@ -25,6 +25,53 @@ MINICPM5_2B_PROFILE = AgentProfile(
     max_output_tokens=900,
 )
 
+QWEN35_4B_PROFILE = AgentProfile(
+    name="qwen3.5-4b",
+    max_visible_tools=8,
+    max_tool_rounds=8,
+    repeated_call_limit=2,
+    max_output_tokens=900,
+)
+
+QWEN35_9B_PROFILE = AgentProfile(
+    name="qwen3.5-9b",
+    max_visible_tools=8,
+    max_tool_rounds=8,
+    repeated_call_limit=2,
+    max_output_tokens=900,
+)
+
+LFM25_1B_PROFILE = AgentProfile(
+    name="lfm2.5-1b",
+    # Three Desktop tools plus the two Rapid helpers reserved by the generic
+    # selector. Intent routing still exposes at most one Desktop tool per turn.
+    max_visible_tools=5,
+    max_tool_rounds=4,
+    repeated_call_limit=2,
+    max_output_tokens=700,
+)
+
+
+def _top_model_profile(name: str, *, small: bool = False) -> AgentProfile:
+    """Create a bounded candidate profile without granting product access."""
+
+    return AgentProfile(
+        name=name,
+        max_visible_tools=6 if small else 8,
+        max_tool_rounds=6 if small else 8,
+        repeated_call_limit=2,
+        max_output_tokens=700 if small else 900,
+    )
+
+
+QWEN36_27B_PROFILE = _top_model_profile("qwen3.6-27b")
+QWEN36_35B_PROFILE = _top_model_profile("qwen3.6-35b")
+QWEN38_27B_PROFILE = _top_model_profile("qwen3.8-27b")
+BONSAI_27B_PROFILE = _top_model_profile("bonsai-27b")
+QWEN3_CODER_30B_PROFILE = _top_model_profile("qwen3-coder-30b")
+LING3_TINY_PROFILE = _top_model_profile("ling-3.0-tiny", small=True)
+GPT_OSS_20B_PROFILE = _top_model_profile("gpt-oss-20b")
+
 DEFAULT_PROFILE = AgentProfile(
     name="default",
     max_visible_tools=14,
@@ -59,6 +106,66 @@ class PersonalIntelligenceQualification:
 
 
 PERSONAL_INTELLIGENCE_QUALIFICATIONS = (
+    PersonalIntelligenceQualification(
+        id="qwen3.5-4b-q4-v1",
+        public_identities=frozenset(
+            {"qwen3.5-4b-4bit", "mlx-community/Qwen3.5-4B-MLX-4bit"}
+        ),
+        backing_identities=frozenset(
+            {"qwen3.5-4b-4bit", "mlx-community/Qwen3.5-4B-MLX-4bit"}
+        ),
+        profile=QWEN35_4B_PROFILE,
+        tool_call_parser="hermes",
+        evidence=(
+            "docs/engineering/performance/"
+            "2026-09-15-personal-intelligence-top-model-qualification.md"
+        ),
+    ),
+    PersonalIntelligenceQualification(
+        id="qwen3.5-9b-q4-v1",
+        public_identities=frozenset(
+            {"qwen3.5-9b-4bit", "mlx-community/Qwen3.5-9B-4bit"}
+        ),
+        backing_identities=frozenset(
+            {"qwen3.5-9b-4bit", "mlx-community/Qwen3.5-9B-4bit"}
+        ),
+        profile=QWEN35_9B_PROFILE,
+        tool_call_parser="hermes",
+        evidence=(
+            "docs/engineering/performance/"
+            "2026-09-15-personal-intelligence-top-model-qualification.md"
+        ),
+    ),
+    PersonalIntelligenceQualification(
+        id="qwen3.6-35b-q8-v1",
+        public_identities=frozenset(
+            {"qwen3.6-35b-8bit", "mlx-community/Qwen3.6-35B-A3B-8bit"}
+        ),
+        backing_identities=frozenset(
+            {"qwen3.6-35b-8bit", "mlx-community/Qwen3.6-35B-A3B-8bit"}
+        ),
+        profile=QWEN36_35B_PROFILE,
+        tool_call_parser="qwen3_coder_xml",
+        evidence=(
+            "docs/engineering/performance/"
+            "2026-09-15-personal-intelligence-top-model-qualification.md"
+        ),
+    ),
+    PersonalIntelligenceQualification(
+        id="lfm2.5-1.2b-q4-v1",
+        public_identities=frozenset(
+            {"lfm2.5-1b-4bit", "mlx-community/LFM2.5-1.2B-Instruct-4bit"}
+        ),
+        backing_identities=frozenset(
+            {"lfm2.5-1b-4bit", "mlx-community/LFM2.5-1.2B-Instruct-4bit"}
+        ),
+        profile=LFM25_1B_PROFILE,
+        tool_call_parser="lfm",
+        evidence=(
+            "docs/engineering/performance/"
+            "2026-09-15-personal-intelligence-top-model-qualification.md"
+        ),
+    ),
     PersonalIntelligenceQualification(
         id="minicpm5-2b-q4-v1",
         public_identities=frozenset({"minicpm5-2b-4bit", "openbmb/minicpm5-2b-mlx"}),
@@ -114,6 +221,93 @@ _MINICPM5_2B_CATALOG_IDENTITIES = frozenset(
 _MINICPM5_2B_TRUSTED_REPO = re.compile(
     r"^(?:openbmb|mlx-community)/minicpm5-2b(?:-(?:mlx|4bit|8bit|bf16))?$"
 )
+_EXACT_RUNTIME_PROFILES = {
+    _normalize_identity(identity): profile
+    for profile, identities in (
+        (
+            QWEN35_4B_PROFILE,
+            {
+                "qwen3.5-4b-4bit",
+                "mlx-community/Qwen3.5-4B-MLX-4bit",
+                "qwen3.5-4b-8bit",
+                "mlx-community/Qwen3.5-4B-8bit",
+            },
+        ),
+        (
+            QWEN35_9B_PROFILE,
+            {
+                "qwen3.5-9b-4bit",
+                "mlx-community/Qwen3.5-9B-4bit",
+                "qwen3.5-9b-8bit",
+                "mlx-community/Qwen3.5-9B-8bit",
+            },
+        ),
+        (
+            LFM25_1B_PROFILE,
+            {
+                "lfm2.5-1b-4bit",
+                "mlx-community/LFM2.5-1.2B-Instruct-4bit",
+            },
+        ),
+        (
+            QWEN36_27B_PROFILE,
+            {
+                "qwen3.6-27b-4bit",
+                "mlx-community/Qwen3.6-27B-4bit",
+            },
+        ),
+        (
+            QWEN36_35B_PROFILE,
+            {
+                "qwen3.6-35b-4bit",
+                "mlx-community/Qwen3.6-35B-A3B-4bit",
+                "qwen3.6-35b-8bit",
+                "mlx-community/Qwen3.6-35B-A3B-8bit",
+            },
+        ),
+        (
+            QWEN38_27B_PROFILE,
+            {
+                "qwen3.8-27b-4bit",
+                "rapid-mlx/Qwen3.8-27B-4bit-MTP-MLX",
+                "mlx-community/Qwen3.8-27B-4bit",
+                "qwen3.8-27b-mixed-3.5bpw",
+                "rapid-mlx/Qwen3.8-27B-mixed-3.5bpw-MLX",
+                "qwen3.8-27b-4bit-fp16",
+                "rapid-mlx/Qwen3.8-27B-4bit-MTP-fp16-MLX",
+            },
+        ),
+        (
+            BONSAI_27B_PROFILE,
+            {
+                "bonsai-27b-2bit",
+                "prism-ml/Ternary-Bonsai-27B-mlx-2bit",
+            },
+        ),
+        (
+            QWEN3_CODER_30B_PROFILE,
+            {
+                "qwen3-coder-30b-4bit",
+                "mlx-community/Qwen3-Coder-30B-A3B-Instruct-4bit",
+            },
+        ),
+        (
+            LING3_TINY_PROFILE,
+            {
+                "ling-3.0-tiny-4bit",
+                "rapid-mlx/Ling-3.0-tiny-MLX-4bit",
+            },
+        ),
+        (
+            GPT_OSS_20B_PROFILE,
+            {
+                "gpt-oss-20b",
+                "mlx-community/gpt-oss-20b-MXFP4-Q8",
+            },
+        ),
+    )
+    for identity in identities
+}
 
 
 def _is_minicpm5_2b_config(config: dict[str, Any] | None) -> bool:
@@ -157,6 +351,8 @@ def resolve_agent_profile(
         tool_call_parser == "minicpm" and _is_minicpm5_2b_config(model_config)
     ):
         return MINICPM5_2B_PROFILE
+    if exact_profile := _EXACT_RUNTIME_PROFILES.get(normalized):
+        return exact_profile
     if "minicpm5-2b" in normalized:
         # Preserve the old conservative limits for local names without
         # granting them a verified MiniCPM identity.

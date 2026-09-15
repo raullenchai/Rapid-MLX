@@ -1257,6 +1257,8 @@ struct ChatView: View {
             return false
         }
         let session = agentSession
+        let agentTools = viewModel.personalIntelligenceDefinitions
+        let localContext = viewModel.personalIntelligenceLocalContext()
         guard viewModel.beginAgentTurn(goal, alias: alias, onCancel: {
             session.cancel()
         }) else { return false }
@@ -1264,6 +1266,14 @@ struct ChatView: View {
             goal: goal,
             model: alias,
             expectedProfile: harnessProfile,
+            toolNames: agentTools.map { $0.function.name },
+            localContext: localContext,
+            clientToolExecutor: { action in
+                await viewModel.executePersonalIntelligenceTool(
+                    action,
+                    advertised: agentTools
+                )
+            },
             baseURL: ChatStreamClient.loopbackURL(port: server.activePort),
             bearerToken: server.activeBearer
         )

@@ -391,6 +391,106 @@ final class ChatViewModel {
         tools.definitions.filter { !disabledTools.contains($0.function.name) }
     }
 
+    /// The small, built-in tool surface Personal Intelligence may project to
+    /// the server-owned loop. Keep connector tools and attachment-only reads
+    /// out until their permission/context contracts are represented by that
+    /// loop. The snapshot is frozen by ChatView for the lifetime of one run.
+    var personalIntelligenceDefinitions: [ToolDefinition] {
+        let supported: Set<String> = ["web_search", "browse", "weather"]
+        return builtinDefinitions.filter {
+            supported.contains($0.function.name)
+                && !disabledTools.contains($0.function.name)
+        }
+    }
+
+    /// Bounded, transient context for the server-owned loop. This preserves
+    /// ordinary chat continuity plus the user's existing instructions and
+    /// Memory without copying any of it into public Agent events.
+    func personalIntelligenceLocalContext() -> String? {
+        var sections: [String] = []
+        let global = customInstructions.global.trimmingCharacters(
+            in: .whitespacesAndNewlines
+        )
+        if !global.isEmpty {
+            sections.append("<global_user_instructions>\n\(global)\n</global_user_instructions>")
+        }
+        let conversation = conversationInstructions.trimmingCharacters(
+            in: .whitespacesAndNewlines
+        )
+        if !conversation.isEmpty {
+            sections.append(
+                "<conversation_instructions>\n\(conversation)\n</conversation_instructions>"
+            )
+        }
+        if let memory = memoryStore?.formattedForPrompt() {
+            sections.append(memory)
+        }
+
+        let recent = messages.compactMap { message -> String? in
+            guard message.status == .complete,
+                  message.role == .user || message.role == .assistant else { return nil }
+            let content = message.content.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !content.isEmpty else { return nil }
+            return "\(message.role.rawValue): \(content)"
+        }.suffix(8)
+        if !recent.isEmpty {
+            sections.append(
+                "<recent_conversation>\n\(recent.joined(separator: "\n\n"))\n</recent_conversation>"
+            )
+        }
+
+        guard !sections.isEmpty else { return nil }
+        let scalars = sections.joined(separator: "\n\n").unicodeScalars
+        return String(String.UnicodeScalarView(scalars.prefix(24_000)))
+    }
+
+    /// Execute one server-issued client action through the same schema and
+    /// registry boundary ordinary Chat uses. `executed` means dispatch crossed
+    /// into the concrete built-in tool, not merely that Desktop handled it.
+    func executePersonalIntelligenceTool(
+        _ action: AgentPendingAction,
+        advertised definitions: [ToolDefinition]
+    ) async -> AgentClientToolResult {
+        guard let definition = definitions.first(where: {
+            $0.function.name == action.name
+        }) else {
+            return AgentClientToolResult(
+                content: "The requested tool is not available in this Personal Intelligence run.",
+                isError: true,
+                executed: false
+            )
+        }
+
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+        guard let data = try? encoder.encode(CodableJSON.object(action.arguments)),
+              let arguments = String(data: data, encoding: .utf8) else {
+            return AgentClientToolResult(
+                content: "The tool arguments could not be encoded.",
+                isError: true,
+                executed: false
+            )
+        }
+        let call = ToolCall(id: action.callID, name: action.name, arguments: arguments)
+        let normalized: ToolCall
+        switch NativeToolCallExecutor.normalize(call, for: definition) {
+        case .success(let value):
+            normalized = value
+        case .failure(let rejection):
+            return AgentClientToolResult(
+                content: "tool '\(action.name)' error: \(rejection.reason)",
+                isError: true,
+                executed: false
+            )
+        }
+        let result = await tools.run(normalized)
+        return AgentClientToolResult(
+            content: result.content,
+            isError: result.isError,
+            executed: true
+        )
+    }
+
     /// Just the built-in tools, for Settings → Tools.
     ///
     /// Issue #1716: since the registry became a ``CompositeToolRegistry``,

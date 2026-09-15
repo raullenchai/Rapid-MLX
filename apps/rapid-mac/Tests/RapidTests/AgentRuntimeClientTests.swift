@@ -23,6 +23,7 @@ struct AgentRuntimeClientTests {
             goal: "Find the answer",
             model: "minicpm5-2b-4bit",
             toolNames: ["files__read_file"],
+            localContext: "Preference: concise",
             execution: .client,
             bearerToken: "secret"
         )
@@ -37,6 +38,7 @@ struct AgentRuntimeClientTests {
         #expect(body["model"] as? String == "minicpm5-2b-4bit")
         #expect(body["execution"] as? String == "client")
         #expect(body["tool_names"] as? [String] == ["files__read_file"])
+        #expect(body["local_context"] as? String == "Preference: concise")
     }
 
     @Test("Create can keep MCP execution pinned to the server run")
