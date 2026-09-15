@@ -395,6 +395,13 @@ class K2HorizonToolParser(ToolParser):
             try:
                 calls.extend(self._parse_group(current_text[cursor:end], request))
             except (json.JSONDecodeError, TypeError, ValueError):
+                # A complete but invalid envelope is deliberately surfaced as
+                # content. Latch the same consumed/content-visible state as a
+                # completed group so later deltas are not stranded behind the
+                # implicit-reasoning hold used before the first group.
+                self._tool_group_seen = True
+                self._post_tool_content_visible = True
+                self._pending_tool_start = None
                 if suppress_calls:
                     addition = self._without_tool_groups(current_text[initial_upto:])
                     self._content_upto = len(current_text)

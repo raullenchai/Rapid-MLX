@@ -260,6 +260,21 @@ def test_streaming_malformed_call_never_exposes_prompt_primed_reasoning():
     assert delta == {"content": _group(_xml_call("unknown"))}
 
 
+def test_streaming_malformed_group_does_not_strand_later_visible_text():
+    parser = K2HorizonToolParser()
+    malformed = _group(_xml_call("unknown"))
+    first = parser.extract_tool_calls_streaming(
+        "", malformed, malformed, request=_request()
+    )
+    assert first == {"content": malformed}
+
+    current = malformed + "Visible suffix"
+    assert parser.extract_tool_calls_streaming(
+        malformed, current, "Visible suffix", request=_request()
+    ) == {"content": "Visible suffix"}
+    assert parser.flush_held_content(current) == ""
+
+
 def test_named_choice_rejects_other_declared_tool():
     result = K2HorizonToolParser().extract_tool_calls(
         _group(_xml_call("ping")),
