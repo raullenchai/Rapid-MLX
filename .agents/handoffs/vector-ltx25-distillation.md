@@ -459,3 +459,21 @@ paired regression across 12 samples in either modality. The combined
 `[0,1,3,5,7,8]` chef decode is running. The artifact remains diagnostic and
 must be rejected if identity/frontal framing is not restored regardless of
 the latent result.
+
+Both decoded variants were rejected. The combined candidate took 278.28
+seconds (1.940x), while an early-only version with clean base after the new
+`1 -> 3` adapter took 281.78 seconds. Both omitted almost all of the chef, so
+the targeted early student itself selects the wrong semantic branch despite
+its strong held-out MSE. The projected 4.49% dispatch gain would make the
+combined timing 265.8 seconds (2.031x), but cannot override the quality gate.
+
+Vector is now running a progressive on-policy control. Upstream adds a
+fail-closed rollout dataset materializer that hard-links all unchanged teacher
+components and rewrites only the reached student boundary. It materialized 48
+train and 12 prompt-disjoint validation `1 -> 3` outputs in 97.32/24.39 student
+seconds, preserving step 5 and later teacher files by inode. The old independent
+`3 -> 5` adapter still improves on-policy video/audio MSE by 51.40%/47.08%, so
+input-distribution shift alone is not a sufficient diagnosis. A rank-4 matched
+`3 -> 5` control is in progress under MZR-3's 290 MiB free-space constraint.
+Stop unless it materially exceeds the old adapter and restores the decoded
+chef. Atlas continues to own any public API, default, or release decision.

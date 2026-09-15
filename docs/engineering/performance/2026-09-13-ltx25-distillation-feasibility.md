@@ -255,3 +255,24 @@ held-out trajectories it reduced video MSE by 49.16% and audio MSE by 39.54%
 relative to clean base. Every paired sample stayed within the 5% regression
 limit in both modalities. The combined 241-frame chef decode is now the
 authoritative remaining gate; these latent results alone do not qualify it.
+
+That decode and an adapter-isolation rerun both failed the gate. The combined
+candidate took 278.28 seconds (1.940x versus 539.94 seconds); applying the
+separately measured 4.49% dispatch gain projects 265.8 seconds, or 2.031x.
+However, it omitted almost the entire chef rather than preserving the requested
+front-facing speaker. Keeping only the new `1 -> 3` adapter and clean base for
+the later spans took 281.78 seconds and produced the same failure. The early
+student therefore enters a wrong semantic branch by itself; downstream legacy
+adapters are not required to trigger it. This artifact is rejected regardless
+of its latent MSE and timing.
+
+The next experiment changes the training distribution rather than guessing
+more boundaries. A fail-closed rollout materializer hard-links the immutable
+teacher dataset and replaces only a student's reached boundary, preserving the
+same conditions, seeds, noise lanes, and later teacher targets by inode. It
+materialized all 48 train and 12 prompt-disjoint validation `1 -> 3` outputs in
+97.32 and 24.39 student seconds. The legacy `3 -> 5` adapter still improved MSE
+on these on-policy inputs by 51.40% video and 47.08% audio, so simple exposure
+bias is not a complete explanation. A matched on-policy `3 -> 5` control must
+substantially exceed that reference and restore the decoded subject before any
+additional downstream training or product integration.
