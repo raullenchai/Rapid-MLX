@@ -157,6 +157,14 @@ The next control must initialize every span adapter from the same clean base
 and bind that training provenance into the package. A shared or cumulative
 checkpoint must fail segmented packaging.
 
+The next data control uses the already frozen prompt-disjoint Stage-2 cohort:
+48 train trajectories from 24 prompts and 12 validation trajectories from six
+prompts at the 468-token shape, followed by targeted `0 -> 3` retraining and a
+held-out chef decode. Existing prompt-condition tensors are hard-linked by
+manifest index while every Stage-1 video/audio boundary is freshly captured.
+This avoids approximately 755 MB of duplicate embeddings on the constrained
+qualification host and does not alter inference behavior by machine type.
+
 ## Artifact contract
 
 The accepted adapter should ship inside an immutable model revision beside the

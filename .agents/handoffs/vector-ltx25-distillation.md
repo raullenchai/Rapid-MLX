@@ -419,3 +419,10 @@ without deleting any existing artifacts; each span retains only its final
 checkpoint to fit the remaining disk budget. This does not remove the need for
 broader data: the current Stage-1 train split is only eight trajectories from
 four duplicated prompts and contains no human face or speech example.
+
+The serialized follow-up captures 48 low-cost train trajectories from 24
+prompts and 12 prompt-disjoint validation trajectories from six prompts, then
+retrains only `0 -> 3` and reruns the held-out chef case. Upstream `ce31075`
+reuses exact Stage-2 conditions by same-filesystem hard link, avoiding roughly
+755 MB of duplicate embeddings while freshly capturing every Stage-1 latent
+boundary. Full upstream tests pass (`775 passed, 22 skipped`).
