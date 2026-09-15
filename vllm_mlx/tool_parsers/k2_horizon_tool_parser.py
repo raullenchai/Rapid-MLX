@@ -24,6 +24,8 @@ class K2HorizonToolParser(ToolParser):
     SUPPORTED_FORMATS = frozenset({"json", "xml", "xml_typed"})
     GROUP_START = "<ifm|tool_calls>"
     GROUP_END = "</ifm|tool_calls>"
+    CALL_START = "<ifm|tool_call>"
+    CALL_END = "</ifm|tool_call>"
     ARG_KEY_START = "<ifm|arg_key>"
     ARG_RE = re.compile(
         r"<ifm\|arg_key>(.*?)</ifm\|arg_key>\s*"
@@ -54,6 +56,7 @@ class K2HorizonToolParser(ToolParser):
         self._tool_group_seen = False
         self._post_tool_content_visible = False
         self._pending_tool_start: int | None = None
+        self._pre_tool_scan_upto = 0
         self._post_tool_scan_upto = 0
         self._suppress_calls = False
 
@@ -211,13 +214,38 @@ class K2HorizonToolParser(ToolParser):
         cls, group: str, request: dict[str, Any] | None
     ) -> list[dict[str, Any]]:
         inner = group[len(cls.GROUP_START) : -len(cls.GROUP_END)]
-        matches = list(cls.CALL_RE.finditer(inner))
-        if not matches or cls.CALL_RE.sub("", inner).strip():
-            raise ValueError("malformed IFM tool-call group")
         wire_format = cls._tool_format(request)
+        bodies: list[str] = []
+        if wire_format == "json":
+            decoder = json.JSONDecoder()
+            cursor = 0
+            while True:
+                cursor = cls._skip_whitespace(inner, cursor)
+                if cursor == len(inner):
+                    break
+                if not inner.startswith(cls.CALL_START, cursor):
+                    raise ValueError("malformed IFM tool-call group")
+                cursor = cls._skip_whitespace(inner, cursor + len(cls.CALL_START))
+                body_start = cursor
+                try:
+                    _payload, cursor = decoder.raw_decode(inner, cursor)
+                except json.JSONDecodeError as exc:
+                    raise ValueError("malformed IFM JSON call") from exc
+                bodies.append(inner[body_start:cursor])
+                cursor = cls._skip_whitespace(inner, cursor)
+                if not inner.startswith(cls.CALL_END, cursor):
+                    raise ValueError("malformed IFM tool-call group")
+                cursor += len(cls.CALL_END)
+        else:
+            matches = list(cls.CALL_RE.finditer(inner))
+            if not matches or cls.CALL_RE.sub("", inner).strip():
+                raise ValueError("malformed IFM tool-call group")
+            bodies = [match.group(1) for match in matches]
+        if not bodies:
+            raise ValueError("malformed IFM tool-call group")
         calls = []
-        for match in matches:
-            name, arguments = cls._parse_call(match.group(1), request, wire_format)
+        for body in bodies:
+            name, arguments = cls._parse_call(body, request, wire_format)
             calls.append(
                 {
                     "id": f"call_{uuid.uuid4().hex}",
@@ -228,6 +256,50 @@ class K2HorizonToolParser(ToolParser):
                 }
             )
         return calls
+
+    @staticmethod
+    def _skip_whitespace(text: str, cursor: int) -> int:
+        while cursor < len(text) and text[cursor].isspace():
+            cursor += 1
+        return cursor
+
+    @classmethod
+    def _find_group_end(
+        cls,
+        text: str,
+        start: int,
+        request: dict[str, Any] | None,
+        search_from: int | None = None,
+    ) -> int | None:
+        """Find a complete group without mistaking JSON string bytes for tags."""
+        if cls._tool_format(request) != "json":
+            end = text.find(
+                cls.GROUP_END,
+                search_from
+                if search_from is not None
+                else start + len(cls.GROUP_START),
+            )
+            return end + len(cls.GROUP_END) if end >= 0 else None
+
+        decoder = json.JSONDecoder()
+        cursor = start + len(cls.GROUP_START)
+        call_count = 0
+        try:
+            while True:
+                cursor = cls._skip_whitespace(text, cursor)
+                if text.startswith(cls.GROUP_END, cursor):
+                    return cursor + len(cls.GROUP_END) if call_count else None
+                if not text.startswith(cls.CALL_START, cursor):
+                    return None
+                cursor = cls._skip_whitespace(text, cursor + len(cls.CALL_START))
+                _payload, cursor = decoder.raw_decode(text, cursor)
+                cursor = cls._skip_whitespace(text, cursor)
+                if not text.startswith(cls.CALL_END, cursor):
+                    return None
+                cursor += len(cls.CALL_END)
+                call_count += 1
+        except json.JSONDecodeError:
+            return None
 
     @classmethod
     def _visible_prefix(cls, prefix: str) -> str:
@@ -287,15 +359,14 @@ class K2HorizonToolParser(ToolParser):
         calls: list[dict[str, Any]] = []
         cursor = start
         while cursor >= 0:
-            end = model_output.find(self.GROUP_END, cursor + len(self.GROUP_START))
-            if end < 0:
+            end = self._find_group_end(model_output, cursor, request)
+            if end is None:
                 if suppress_calls:
                     content = self._without_tool_groups(model_output)
                     return ExtractedToolCallInformation(False, [], content or None)
                 return ExtractedToolCallInformation(
                     False, [], self._visible_prefix(model_output)
                 )
-            end += len(self.GROUP_END)
             try:
                 calls.extend(self._parse_group(model_output[cursor:end], request))
             except (json.JSONDecodeError, TypeError, ValueError):
@@ -347,6 +418,11 @@ class K2HorizonToolParser(ToolParser):
             start = self._pending_tool_start
         else:
             start_search = self._content_upto
+            if not self._input_reasoning_sanitized and not self._tool_group_seen:
+                start_search = max(
+                    start_search,
+                    self._pre_tool_scan_upto - len(self.GROUP_START) + 1,
+                )
             if self._tool_group_seen and not self._post_tool_content_visible:
                 start_search = max(
                     start_search,
@@ -373,6 +449,7 @@ class K2HorizonToolParser(ToolParser):
                 # Direct parser callers have not passed through K2's
                 # implicit-reasoning parser. Hold the prefix until a closer
                 # proves which bytes are visible; K2 always primes reasoning.
+                self._pre_tool_scan_upto = len(current_text)
                 return None
             pending = current_text[self._content_upto :]
             held = self._partial_overlap(pending, self.GROUP_START)
@@ -400,15 +477,21 @@ class K2HorizonToolParser(ToolParser):
                     search_from,
                     len(current_text) - len(delta_text) - len(self.GROUP_END) + 1,
                 )
-            end = current_text.find(self.GROUP_END, search_from)
-            if end < 0:
+            group_end = self._find_group_end(
+                current_text,
+                cursor,
+                request,
+                search_from=search_from,
+            )
+            if group_end is None:
                 self._content_upto = cursor
                 self._pending_tool_start = cursor
                 break
-            end += len(self.GROUP_END)
             self._pending_tool_start = None
             try:
-                calls.extend(self._parse_group(current_text[cursor:end], request))
+                calls.extend(
+                    self._parse_group(current_text[cursor:group_end], request)
+                )
             except (json.JSONDecodeError, TypeError, ValueError):
                 # A complete but invalid envelope is deliberately surfaced as
                 # content. Latch the same consumed/content-visible state as a
@@ -421,14 +504,18 @@ class K2HorizonToolParser(ToolParser):
                     addition = self._without_tool_groups(current_text[initial_upto:])
                     self._content_upto = len(current_text)
                 else:
-                    addition = self._visible_prefix(current_text[initial_upto:end])
-                    self._content_upto = end
+                    addition = self._visible_prefix(
+                        current_text[initial_upto:group_end]
+                    )
+                    self._content_upto = group_end
                 return {"content": addition} if addition else None
 
-            next_start = current_text.find(self.GROUP_START, end)
+            next_start = current_text.find(self.GROUP_START, group_end)
             if next_start >= 0:
                 content_parts.append(
-                    self._visible_post_tool_prefix(current_text[end:next_start])
+                    self._visible_post_tool_prefix(
+                        current_text[group_end:next_start]
+                    )
                 )
                 self._post_tool_content_visible = False
                 cursor = next_start
@@ -437,7 +524,7 @@ class K2HorizonToolParser(ToolParser):
             # A valid call makes all following bytes ambiguous until EOF: K2
             # can begin another implicit reasoning lane without an opener.
             # Buffer once, then reveal only the suffix after the final closer.
-            self._content_upto = end
+            self._content_upto = group_end
             self._post_tool_scan_upto = len(current_text)
             self._post_tool_content_visible = False
             break

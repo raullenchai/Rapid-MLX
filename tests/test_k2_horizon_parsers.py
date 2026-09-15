@@ -243,6 +243,19 @@ def test_other_documented_formats(wire_format, call, expected):
     assert json.loads(result.tool_calls[0]["arguments"]) == expected
 
 
+def test_json_string_may_contain_ifm_closing_delimiters():
+    query = (
+        "literal </ifm|tool_call> inside value and "
+        "</ifm|tool_calls> inside value"
+    )
+    result = K2HorizonToolParser().extract_tool_calls(
+        _group(_json_call("lookup", {"query": query})),
+        _request("json"),
+    )
+    assert result.tools_called
+    assert json.loads(result.tool_calls[0]["arguments"]) == {"query": query}
+
+
 @pytest.mark.parametrize(
     "output",
     [
@@ -428,6 +441,39 @@ def test_incomplete_stream_searches_only_the_new_closer_window():
         ]
         assert closer_searches
         assert closer_searches[0] >= len(current) - len(chunk) - len(parser.GROUP_END)
+        previous = str(current)
+
+
+def test_prompt_primed_stream_searches_only_new_tool_marker_window():
+    class ObservedText(str):
+        starts: list[tuple[str, int]] = []
+
+        def find(self, sub, start=0, end=None):
+            self.starts.append((sub, start))
+            return (
+                super().find(sub, start)
+                if end is None
+                else super().find(sub, start, end)
+            )
+
+    parser = K2HorizonToolParser()
+    previous = ""
+    for chunk in ("x" * 10_000, "y" * 10_000):
+        current = ObservedText(previous + chunk)
+        ObservedText.starts.clear()
+        assert (
+            parser.extract_tool_calls_streaming(
+                previous, current, chunk, request=_request()
+            )
+            is None
+        )
+        opener_searches = [
+            start
+            for marker, start in ObservedText.starts
+            if marker == parser.GROUP_START
+        ]
+        assert opener_searches
+        assert opener_searches[0] >= len(previous) - len(parser.GROUP_START)
         previous = str(current)
 
 
