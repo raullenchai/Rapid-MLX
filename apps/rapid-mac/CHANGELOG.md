@@ -17,13 +17,44 @@ can actually understand.
 
 ## [Unreleased]
 
+## [0.14.2] — 2026-09-14
+
+Rapid-MLX 0.14.2 focuses on faster local inference and a safer first Agent
+Mode. It adds an experimental native K2 Horizon runtime, productizes the
+qualified DeepSeek V4.1 lane for 256 GB Macs, and removes several expensive
+re-prefill and tool-loop failure modes from Desktop chat.
+
 ### Added
+- **Experimental Agent Mode in Desktop and Server.** A bounded local agent loop
+  can use configured MCP tools, pause before consequential actions, show a
+  redacted action summary, and resume only after approval. Runs are
+  authenticated, process-local, resource-bounded, and fail closed if the tool
+  registry changes underneath them.
+- **Experimental K2 Horizon 7B support.** Server, Desktop, model discovery,
+  reasoning parsing, and tool calls now share a Rapid-owned native adapter. On
+  an M4 Pro 48 GB Mac it measured 49–51 tok/s through shipped paths, roughly
+  matching Qwen3.5 9B decode speed while using slightly less peak memory.
+- **Experimental DeepSeek V4.1 Flash support for 256 GB Macs.** The pinned
+  2-bit target and mixed-precision DSpark sidecar now have a bounded, serial,
+  deterministic K4 serving path. It measured 19.39 tok/s versus 9.58 tok/s
+  autoregressive (2.02×) with a 218.23 GB peak; the alias remains text-only
+  and explicitly experimental.
 - **What changed after an update.** The first launch on a new version shows a
   one-line "Updated to vX.Y.Z" notice with a link to that release's notes.
   Updates install silently in the background, so until now the only sign that
   anything had changed was the version number in the status bar.
 
 ### Changed
+- **Qwen3.6 35B is substantially faster on the qualified local path.** The
+  native MTP path reached 130.93 tok/s median versus 83.32 tok/s target-only
+  (+57.1%) in the fixed qualification, while exact-output compiled replay
+  improved a separate no-MTP HTTP request by 19.6%. Default-on, fail-closed
+  GDN and MoE kernels retain stock fallbacks outside their qualified shapes.
+- **GLM-5.3 Flash speculative decoding is now owned and qualified by Rapid.**
+  The six-task paired suite improved median throughput from 26.58 to 35.54
+  tok/s (+33.7%) while preserving all 12 reasoning traces and final answers.
+  Existing installs stay on ordinary decoding unless the tagged dependency
+  exposes the required cache protocol.
 - **Editing code in a chat decodes up to twice as fast.** When a reply
   reuses text that is already in the conversation, such as a function you
   asked to rename, annotate, or fix, the engine now copies that text
@@ -3850,7 +3881,8 @@ Older versions: see the
 [GitHub Releases page](https://github.com/machinefi/rapid-desktop/releases)
 for auto-generated notes against earlier tags.
 
-[Unreleased]: https://github.com/raullenchai/Rapid-MLX/compare/rapid-mac-v0.14.1...HEAD
+[Unreleased]: https://github.com/raullenchai/Rapid-MLX/compare/rapid-mac-v0.14.2...HEAD
+[0.14.2]: https://github.com/raullenchai/Rapid-MLX/compare/rapid-mac-v0.14.1...rapid-mac-v0.14.2
 [0.14.1]: https://github.com/raullenchai/Rapid-MLX/compare/rapid-mac-v0.14.0...rapid-mac-v0.14.1
 [0.14.0]: https://github.com/raullenchai/Rapid-MLX/compare/rapid-mac-v0.13.4...rapid-mac-v0.14.0
 [0.13.4]: https://github.com/raullenchai/Rapid-MLX/compare/rapid-mac-v0.13.3...rapid-mac-v0.13.4
