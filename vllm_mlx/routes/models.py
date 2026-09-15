@@ -17,8 +17,8 @@ from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException
 
-from ..agents.codex_catalog import build_codex_model_info
 from ..agent_runtime.profiles import resolve_personal_intelligence_profile
+from ..agents.codex_catalog import build_codex_model_info
 from ..api.models import ModelInfo, ModelsResponse, SpeculativeDecodingInfo
 from ..api.utils import is_mllm_model
 from ..config import get_config
@@ -1040,9 +1040,7 @@ def _build_model_info(model_id: str) -> ModelInfo:
     serving_lane, serving_lane_reason = _served_lane_fields(model_id)
     speculative_decoding = _resolve_speculative_decoding(model_id)
     profile_tool_parser = profile.tool_call_parser if profile is not None else None
-    profile_reasoning_parser = (
-        profile.reasoning_parser if profile is not None else None
-    )
+    profile_reasoning_parser = profile.reasoning_parser if profile is not None else None
     effective_tool_parser, _ = effective_parsers_for(
         model_id, profile_tool_parser, profile_reasoning_parser
     )

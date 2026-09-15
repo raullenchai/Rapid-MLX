@@ -96,6 +96,9 @@ python scripts/qualify_personal_intelligence.py MODEL \
 
 The exact-build target matrix and receipts live in
 `docs/engineering/performance/2026-09-15-personal-intelligence-top-model-qualification.md`.
+Only the complete canonical matrix can set `qualified:true`; subset `--tasks`
+runs are diagnostics. Receipts must use a full source SHA and a reconstruction
+command that checks out that revision before starting the server.
 
 ## Start the server
 
