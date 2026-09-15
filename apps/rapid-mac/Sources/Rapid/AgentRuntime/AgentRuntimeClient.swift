@@ -47,9 +47,15 @@ enum PersonalIntelligenceConfig {
     ) -> String? {
         guard let serverProfile,
               serverProfile.id == alias,
+              let parser = serverProfile.toolCallParser?
+                  .trimmingCharacters(in: .whitespacesAndNewlines),
+              !parser.isEmpty,
               let harness = serverProfile.personalIntelligenceProfile?
                   .trimmingCharacters(in: .whitespacesAndNewlines),
-              !harness.isEmpty else { return nil }
+              !harness.isEmpty,
+              let qualification = serverProfile.personalIntelligenceQualification?
+                  .trimmingCharacters(in: .whitespacesAndNewlines),
+              !qualification.isEmpty else { return nil }
         return harness
     }
 

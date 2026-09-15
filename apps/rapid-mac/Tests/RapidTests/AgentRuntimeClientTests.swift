@@ -183,7 +183,9 @@ struct AgentRuntimeClientTests {
     func personalIntelligenceModelSupport() {
         let qualified = ServerModelProfile(
             id: "minicpm5-2b-4bit",
-            personalIntelligenceProfile: "minicpm5-2b"
+            toolCallParser: "minicpm",
+            personalIntelligenceProfile: "minicpm5-2b",
+            personalIntelligenceQualification: "minicpm5-2b-q4-v1"
         )
         #expect(PersonalIntelligenceConfig.supportsModel(
             "minicpm5-2b-4bit",
@@ -200,6 +202,22 @@ struct AgentRuntimeClientTests {
         #expect(!PersonalIntelligenceConfig.supportsModel(
             "minicpm5-2b-4bit",
             serverProfile: ServerModelProfile(id: "minicpm5-2b-4bit")
+        ))
+        #expect(!PersonalIntelligenceConfig.supportsModel(
+            "minicpm5-2b-4bit",
+            serverProfile: ServerModelProfile(
+                id: "minicpm5-2b-4bit",
+                personalIntelligenceProfile: "minicpm5-2b",
+                personalIntelligenceQualification: "minicpm5-2b-q4-v1"
+            )
+        ))
+        #expect(!PersonalIntelligenceConfig.supportsModel(
+            "minicpm5-2b-4bit",
+            serverProfile: ServerModelProfile(
+                id: "minicpm5-2b-4bit",
+                toolCallParser: "minicpm",
+                personalIntelligenceProfile: "minicpm5-2b"
+            )
         ))
         #expect(PersonalIntelligenceConfig.isEnabled(
             conversationEnabled: true,

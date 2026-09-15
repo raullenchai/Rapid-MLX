@@ -21,7 +21,8 @@ struct PersonalIntelligenceControlTests {
         let miniProfile = ServerModelProfile(
             id: "minicpm5-2b-4bit",
             toolCallParser: "minicpm",
-            personalIntelligenceProfile: "minicpm5-2b"
+            personalIntelligenceProfile: "minicpm5-2b",
+            personalIntelligenceQualification: "minicpm5-2b-q4-v1"
         )
         #expect(
             PersonalIntelligenceConfig.harnessProfile(
