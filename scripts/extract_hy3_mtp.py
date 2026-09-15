@@ -50,7 +50,7 @@ logger = logging.getLogger(__name__)
 # DEDICATED directory, never into the base checkpoint snapshot dir: ``mlx_lm.load``
 # globs ``model*.safetensors`` in the model dir and would try to load the
 # sidecar's 44 keys into the base HYV3 model under strict=True (which fails). The
-# runtime inject (:mod:`vllm_mlx.spec_decode.mtp.hy3_inject`) loads the sidecar
+# runtime inject (:mod:`rapid_mlx.spec_decode.mtp.hy3_inject`) loads the sidecar
 # separately, so it must live in its own repo / directory.
 DEFAULT_BASE_REPO = "mlx-community/Hy3-preview-4bit"
 DEFAULT_UPSTREAM_REPO = "tencent/Hy3-preview"

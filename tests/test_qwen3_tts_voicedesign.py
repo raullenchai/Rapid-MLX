@@ -64,7 +64,7 @@ class TestVoiceDesignRegistry:
         ],
     )
     def test_alias_resolves(self, alias, expected_hf_id):
-        from vllm_mlx.audio.registry import resolve_audio_alias
+        from rapid_mlx.audio.registry import resolve_audio_alias
 
         entry = resolve_audio_alias(alias)
         assert entry is not None, f"{alias!r} did not resolve in the registry"
@@ -79,7 +79,7 @@ class TestVoiceDesignRegistry:
     def test_hf_id_reverse_lookup(self):
         """The full HF id maps back to the qwen3_tts entry so ``serve
         <hf-id>`` forks into audio mode like the short alias does."""
-        from vllm_mlx.audio.registry import resolve_audio_alias
+        from rapid_mlx.audio.registry import resolve_audio_alias
 
         entry = resolve_audio_alias(VOICEDESIGN_BF16)
         assert entry is not None and entry.family == "qwen3_tts"
@@ -89,8 +89,8 @@ class TestVoiceDesignRegistry:
         sentinel (its only allowed voice), NOT a CustomVoice speaker — else
         the voice-omitted / cold-start path would validate against a name the
         VoiceDesign surface no longer advertises."""
-        from vllm_mlx.audio.registry import resolve_audio_alias
-        from vllm_mlx.audio.tts import (
+        from rapid_mlx.audio.registry import resolve_audio_alias
+        from rapid_mlx.audio.tts import (
             QWEN3_TTS_VOICEDESIGN_VOICES,
             QWEN3_TTS_VOICES,
         )
@@ -136,7 +136,7 @@ class _VoiceDesignModel:
 def _voicedesign_engine():
     """A loaded VoiceDesign ``TTSEngine`` whose model is the mandatory-instruct
     fake (no weights, no network)."""
-    from vllm_mlx.audio.tts import TTSEngine
+    from rapid_mlx.audio.tts import TTSEngine
 
     engine = TTSEngine(VOICEDESIGN_BF16)
     engine.model = _VoiceDesignModel()
@@ -146,7 +146,7 @@ def _voicedesign_engine():
 
 class TestVoiceDesignEngine:
     def test_family_and_variant_flag(self):
-        from vllm_mlx.audio.tts import TTSEngine
+        from rapid_mlx.audio.tts import TTSEngine
 
         vd = TTSEngine(VOICEDESIGN_BF16)
         assert vd._model_family == "qwen3_tts"
@@ -162,7 +162,7 @@ class TestVoiceDesignEngine:
         CustomVoice checkpoint to VoiceDesign — the explicit ``customvoice``
         variant token wins. A naive whole-id ``voicedesign`` match would wrongly
         misclassify it (swap its voice surface / force a neutral instruct)."""
-        from vllm_mlx.audio.tts import TTSEngine
+        from rapid_mlx.audio.tts import TTSEngine
 
         cv = TTSEngine("voicedesign-org/Qwen3-TTS-12Hz-1.7B-CustomVoice-bf16")
         assert cv._is_qwen3_voicedesign() is False
@@ -173,7 +173,7 @@ class TestVoiceDesignEngine:
         metadata (its clean canonical ``hf_id``), not off whatever local path
         it happens to be loaded from — so the supported inputs never depend on
         the name heuristic. Pin the module-level classifier directly."""
-        from vllm_mlx.audio.tts import (
+        from rapid_mlx.audio.tts import (
             is_qwen3_voicedesign_model as is_vd,
         )
 
@@ -191,7 +191,7 @@ class TestVoiceDesignEngine:
         parent directory or org namespace. A VoiceDesign checkpoint under a
         ``customvoice`` parent dir (or vice versa) is classified by its own
         name, not the coincidental ancestor token."""
-        from vllm_mlx.audio.tts import is_qwen3_voicedesign_model as is_vd
+        from rapid_mlx.audio.tts import is_qwen3_voicedesign_model as is_vd
 
         # VoiceDesign repo under a 'customvoice' parent dir → VoiceDesign.
         assert is_vd("/srv/customvoice/Qwen3-TTS-VoiceDesign-bf16") is True
@@ -206,7 +206,7 @@ class TestVoiceDesignEngine:
         basename-only check would see the opaque commit hash and misclassify the
         checkpoint. Detection is on the full identifier, so the VoiceDesign
         cache path is still recognised (and the CustomVoice one is not)."""
-        from vllm_mlx.audio.tts import (
+        from rapid_mlx.audio.tts import (
             QWEN3_TTS_VOICEDESIGN_VOICES,
             TTSEngine,
         )
@@ -237,13 +237,13 @@ class TestVoiceDesignEngine:
         (``qwen3-tts-org/VoiceDesign-checkpoint``), a ``voicedesign`` token in
         the ORG of a CustomVoice repo (must stay CustomVoice), and resolved HF
         cache snapshot paths (basename is the commit hash)."""
-        from vllm_mlx.audio import tts as tts_mod
-        from vllm_mlx.audio.tts import (
+        from rapid_mlx.audio import tts as tts_mod
+        from rapid_mlx.audio.tts import (
             QWEN3_TTS_VOICEDESIGN_VOICES,
             QWEN3_TTS_VOICES,
             TTSEngine,
         )
-        from vllm_mlx.routes.audio import _allowed_voices_for
+        from rapid_mlx.routes.audio import _allowed_voices_for
 
         # Cold-start: force snapshot enumeration empty so the route validates
         # against the static per-family classifier (the shared helper) rather
@@ -272,7 +272,7 @@ class TestVoiceDesignEngine:
             assert _allowed_voices_for(model_name) == list(expected), model_name
 
     def test_get_voices_is_describe_sentinel(self):
-        from vllm_mlx.audio.tts import (
+        from rapid_mlx.audio.tts import (
             QWEN3_TTS_VOICEDESIGN_VOICES,
             QWEN3_TTS_VOICES,
         )
@@ -289,7 +289,7 @@ class TestVoiceDesignEngine:
         mandatory ``generate_voice_design`` arg was missing → TypeError deep
         in mlx_audio (the mandatory-arg fake reproduces that). The fix always
         forwards a description, falling back to the neutral narrator."""
-        from vllm_mlx.audio.tts import QWEN3_TTS_VOICEDESIGN_DEFAULT_INSTRUCT
+        from rapid_mlx.audio.tts import QWEN3_TTS_VOICEDESIGN_DEFAULT_INSTRUCT
 
         engine = _voicedesign_engine()
         # Must not raise despite no instruct supplied.
@@ -302,7 +302,7 @@ class TestVoiceDesignEngine:
     def test_generate_empty_instruct_uses_fallback(self):
         """An empty-string ``instruct`` (what a blank ``instructions`` field
         yields) is falsy and must also fall back — never forwarded as ''."""
-        from vllm_mlx.audio.tts import QWEN3_TTS_VOICEDESIGN_DEFAULT_INSTRUCT
+        from rapid_mlx.audio.tts import QWEN3_TTS_VOICEDESIGN_DEFAULT_INSTRUCT
 
         engine = _voicedesign_engine()
         engine.generate("讲一个故事。", voice="describe", instruct="")
@@ -411,7 +411,7 @@ class _RecordingEngine:
                 "voice_seed": voice_seed,
             }
         )
-        from vllm_mlx.audio.tts import AudioOutput
+        from rapid_mlx.audio.tts import AudioOutput
 
         return AudioOutput(
             audio=np.zeros(240, dtype=np.float32), sample_rate=24000, duration=0.01
@@ -427,11 +427,11 @@ def _mount(monkeypatch):
     from fastapi import FastAPI
     from fastapi.testclient import TestClient
 
-    from vllm_mlx.audio import probe as probe_mod
-    from vllm_mlx.audio import tts as tts_mod
-    from vllm_mlx.config import get_config
-    from vllm_mlx.middleware.exception_handlers import install_exception_handlers
-    from vllm_mlx.routes import audio as audio_route
+    from rapid_mlx.audio import probe as probe_mod
+    from rapid_mlx.audio import tts as tts_mod
+    from rapid_mlx.config import get_config
+    from rapid_mlx.middleware.exception_handlers import install_exception_handlers
+    from rapid_mlx.routes import audio as audio_route
 
     _RecordingEngine.instances = []
     _RecordingEngine._real_to_bytes = tts_mod.TTSEngine.to_bytes
@@ -457,7 +457,7 @@ class TestVoiceDesignRoute:
     def test_voice_seed_schema_rejects_invalid_values(self, seed):
         from pydantic import ValidationError
 
-        from vllm_mlx.api.models import AudioSpeechRequest
+        from rapid_mlx.api.models import AudioSpeechRequest
 
         with pytest.raises(ValidationError):
             AudioSpeechRequest(input="hello", voice_seed=seed)
@@ -619,11 +619,11 @@ class TestVoiceDesignRoute:
         from fastapi import FastAPI
         from fastapi.testclient import TestClient
 
-        from vllm_mlx.audio import probe as probe_mod
-        from vllm_mlx.audio import tts as tts_mod
-        from vllm_mlx.config import get_config
-        from vllm_mlx.middleware.exception_handlers import install_exception_handlers
-        from vllm_mlx.routes import audio as audio_route
+        from rapid_mlx.audio import probe as probe_mod
+        from rapid_mlx.audio import tts as tts_mod
+        from rapid_mlx.config import get_config
+        from rapid_mlx.middleware.exception_handlers import install_exception_handlers
+        from rapid_mlx.routes import audio as audio_route
 
         # Fake the mlx_audio.tts.generate.load_model boundary to return a
         # mandatory-instruct VoiceDesign model (no weights, no network).

@@ -24,10 +24,10 @@ except ImportError:
 
 requires_mlx = pytest.mark.skipif(not HAS_MLX, reason="mlx not installed")
 
-# Import tool_logits directly to avoid pulling in pydantic via vllm_mlx.api.__init__
+# Import tool_logits directly to avoid pulling in pydantic via rapid_mlx.api.__init__
 _spec = importlib.util.spec_from_file_location(
     "tool_logits",
-    Path(__file__).parent.parent / "vllm_mlx" / "api" / "tool_logits.py",
+    Path(__file__).parent.parent / "rapid_mlx" / "api" / "tool_logits.py",
 )
 tool_logits = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(tool_logits)

@@ -24,7 +24,7 @@ Bug summaries:
 All four are fixed at the Pydantic model layer (no per-route try/
 except band-aids):
 
-* The exception handlers in ``vllm_mlx/middleware/exception_handlers``
+* The exception handlers in ``rapid_mlx/middleware/exception_handlers``
   detect Anthropic-prefixed paths and rewrap the OpenAI-shaped
   envelope into the Anthropic shape.
 * ``_sanitize_loc`` now applies a closed allowlist of schema-owned
@@ -98,39 +98,39 @@ class _Engine:
 
 
 _IMPORTED_UNDER_LIGHTWEIGHT_ENGINE = (
-    "vllm_mlx.config",
-    "vllm_mlx.config.server_config",
-    "vllm_mlx.engine",
-    "vllm_mlx.engine.base",
-    "vllm_mlx.middleware.auth",
-    "vllm_mlx.service.helpers",
-    "vllm_mlx.routes.anthropic",
-    "vllm_mlx.routes.responses",
+    "rapid_mlx.config",
+    "rapid_mlx.config.server_config",
+    "rapid_mlx.engine",
+    "rapid_mlx.engine.base",
+    "rapid_mlx.middleware.auth",
+    "rapid_mlx.service.helpers",
+    "rapid_mlx.routes.anthropic",
+    "rapid_mlx.routes.responses",
 )
 _PARENT_ATTRS_UNDER_LIGHTWEIGHT_ENGINE = (
-    ("vllm_mlx", "config"),
-    ("vllm_mlx", "engine"),
-    ("vllm_mlx.config", "server_config"),
-    ("vllm_mlx.engine", "base"),
-    ("vllm_mlx.middleware", "auth"),
-    ("vllm_mlx.service", "helpers"),
-    ("vllm_mlx.routes", "anthropic"),
-    ("vllm_mlx.routes", "responses"),
+    ("rapid_mlx", "config"),
+    ("rapid_mlx", "engine"),
+    ("rapid_mlx.config", "server_config"),
+    ("rapid_mlx.engine", "base"),
+    ("rapid_mlx.middleware", "auth"),
+    ("rapid_mlx.service", "helpers"),
+    ("rapid_mlx.routes", "anthropic"),
+    ("rapid_mlx.routes", "responses"),
 )
 _MISSING = object()
 
 
 def _install_lightweight_engine_modules(monkeypatch) -> None:
-    engine_pkg = types.ModuleType("vllm_mlx.engine")
+    engine_pkg = types.ModuleType("rapid_mlx.engine")
     engine_pkg.BaseEngine = _BaseEngine
     engine_pkg.GenerationOutput = _GenerationOutput
 
-    base_mod = types.ModuleType("vllm_mlx.engine.base")
+    base_mod = types.ModuleType("rapid_mlx.engine.base")
     base_mod.BaseEngine = _BaseEngine
     base_mod.GenerationOutput = _GenerationOutput
 
-    monkeypatch.setitem(sys.modules, "vllm_mlx.engine", engine_pkg)
-    monkeypatch.setitem(sys.modules, "vllm_mlx.engine.base", base_mod)
+    monkeypatch.setitem(sys.modules, "rapid_mlx.engine", engine_pkg)
+    monkeypatch.setitem(sys.modules, "rapid_mlx.engine.base", base_mod)
 
 
 def _build_app(monkeypatch):
@@ -147,11 +147,11 @@ def _build_app(monkeypatch):
 
     _install_lightweight_engine_modules(monkeypatch)
 
-    from vllm_mlx.config import reset_config
-    from vllm_mlx.middleware.auth import rate_limiter
-    from vllm_mlx.middleware.exception_handlers import install_exception_handlers
-    from vllm_mlx.routes.anthropic import router as anthropic_router
-    from vllm_mlx.routes.responses import router as responses_router
+    from rapid_mlx.config import reset_config
+    from rapid_mlx.middleware.auth import rate_limiter
+    from rapid_mlx.middleware.exception_handlers import install_exception_handlers
+    from rapid_mlx.routes.anthropic import router as anthropic_router
+    from rapid_mlx.routes.responses import router as responses_router
 
     cfg = reset_config()
     cfg.api_key = None
@@ -218,11 +218,11 @@ def chat_client():
     admission-flow tests. Keeping the chat-router tests on a
     real-engine-imports fixture sidesteps that interaction entirely.
     """
-    from vllm_mlx.config import reset_config
-    from vllm_mlx.middleware.auth import rate_limiter
-    from vllm_mlx.middleware.exception_handlers import install_exception_handlers
-    from vllm_mlx.routes.chat import router as chat_router
-    from vllm_mlx.routes.responses import router as responses_router
+    from rapid_mlx.config import reset_config
+    from rapid_mlx.middleware.auth import rate_limiter
+    from rapid_mlx.middleware.exception_handlers import install_exception_handlers
+    from rapid_mlx.routes.chat import router as chat_router
+    from rapid_mlx.routes.responses import router as responses_router
 
     cfg = reset_config()
     cfg.api_key = None
@@ -806,7 +806,7 @@ class TestEnvelopeInvariants:
         the Anthropic router)."""
         from fastapi import HTTPException
 
-        from vllm_mlx.middleware.exception_handlers import (
+        from rapid_mlx.middleware.exception_handlers import (
             _is_anthropic_path,
             install_exception_handlers,
         )

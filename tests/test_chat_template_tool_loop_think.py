@@ -13,7 +13,7 @@ import jinja2
 import jinja2.sandbox
 import pytest
 
-from vllm_mlx.utils.chat_template import (
+from rapid_mlx.utils.chat_template import (
     _assistant_reasoning_for_template,
     _is_tool_response_message,
     _last_query_index,

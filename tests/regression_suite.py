@@ -3,7 +3,7 @@
 
 Standalone script — the doctor harness invokes it via subprocess
 against a live server (``[py, str(script)]`` in
-``vllm_mlx/doctor/checks/api.py``). NOT meant for pytest collection;
+``rapid_mlx/doctor/checks/api.py``). NOT meant for pytest collection;
 ``tests/conftest.py`` has a ``collect_ignore`` entry for this file
 so the diff-aware ``targeted_tests`` step doesn't try to run it
 without a live server (and so this module avoids a runtime

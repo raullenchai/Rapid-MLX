@@ -29,7 +29,7 @@ pytestmark = pytest.mark.requires_mlx
 
 import json
 
-from vllm_mlx.utils.tokenizer import (
+from rapid_mlx.utils.tokenizer import (
     _neutralize_unbundled_template_types,
     _read_tokenizer_config_json,
 )

@@ -3,7 +3,7 @@
 Tests for API utility functions.
 
 Tests clean_output_text, is_mllm_model, and extract_multimodal_content
-from vllm_mlx/api/utils.py. No MLX dependency.
+from rapid_mlx/api/utils.py. No MLX dependency.
 """
 
 import json
@@ -11,8 +11,8 @@ from pathlib import Path
 
 import pytest
 
-from vllm_mlx.api.models import ContentPart, ImageUrl, Message
-from vllm_mlx.api.utils import (
+from rapid_mlx.api.models import ContentPart, ImageUrl, Message
+from rapid_mlx.api.utils import (
     MLLM_PATTERNS,
     SPECIAL_TOKENS_PATTERN,
     _check_legacy_string_patterns,
@@ -555,7 +555,7 @@ class TestIsMllmModelWeightsPresenceOverride:
 
     def test_qwen35_4b_alias_no_longer_forces_text(self):
         """Runtime capability, not a stale alias pin, now decides this VLM."""
-        from vllm_mlx.model_aliases import resolve_profile
+        from rapid_mlx.model_aliases import resolve_profile
 
         profile = resolve_profile("qwen3.5-4b-4bit")
         assert profile.is_text_only is False
@@ -577,12 +577,12 @@ class TestIsMllmModelCachedMetadata:
 
     @staticmethod
     def _metadata(config):
-        from vllm_mlx.model_metadata import ModelMetadata
+        from rapid_mlx.model_metadata import ModelMetadata
 
         return ModelMetadata(config=config, chat_template=None, snapshot_dir=None)
 
     def test_text_only_config_overrides_substring_match(self, monkeypatch):
-        from vllm_mlx.api import utils as utils_mod
+        from rapid_mlx.api import utils as utils_mod
 
         # Substring "gemma-3" would flag this as MLLM. Metadata says
         # Gemma3ForCausalLM (text-only) → route as text.
@@ -594,7 +594,7 @@ class TestIsMllmModelCachedMetadata:
         assert is_mllm_model("mlx-community/gemma-3-1b-it-4bit") is False
 
     def test_vlm_config_keeps_substring_match(self, monkeypatch):
-        from vllm_mlx.api import utils as utils_mod
+        from rapid_mlx.api import utils as utils_mod
 
         # Substring "gemma-3" matches and metadata also says VLM.
         monkeypatch.setattr(
@@ -610,7 +610,7 @@ class TestIsMllmModelCachedMetadata:
         assert is_mllm_model("mlx-community/gemma-3-27b-it-4bit") is True
 
     def test_hub_unreachable_falls_back_to_substring(self, monkeypatch):
-        from vllm_mlx.api import utils as utils_mod
+        from rapid_mlx.api import utils as utils_mod
 
         # Substring matches; metadata is unavailable (offline / cold cache).
         # Should preserve the legacy True result.
@@ -618,7 +618,7 @@ class TestIsMllmModelCachedMetadata:
         assert is_mllm_model("mlx-community/gemma-3-4b-it-4bit") is True
 
     def test_metadata_detects_vlm_without_name_marker(self, monkeypatch):
-        from vllm_mlx.api import utils as utils_mod
+        from rapid_mlx.api import utils as utils_mod
 
         # A re-packaged checkpoint need not contain a historical name marker.
         # Its cached config plus real checkpoint evidence route it correctly.
@@ -642,7 +642,7 @@ class TestIsMllmModelCachedMetadata:
     def test_cached_inherited_vision_config_without_weights_stays_text(
         self, monkeypatch
     ):
-        from vllm_mlx.api import utils as utils_mod
+        from rapid_mlx.api import utils as utils_mod
 
         monkeypatch.setattr(
             utils_mod,
@@ -666,8 +666,8 @@ class TestIsMllmModelCachedMetadata:
         """An alias that POSITIVELY declares ``is_text_only`` short-circuits
         even against positive checkpoint evidence — the operator pin is
         authoritative for a checkpoint we deliberately serve text-only."""
-        from vllm_mlx.api import utils as utils_mod
-        from vllm_mlx.model_profile import ModelProfile
+        from rapid_mlx.api import utils as utils_mod
+        from rapid_mlx.model_profile import ModelProfile
 
         text_only_profile = ModelProfile(
             hf_path="publisher/vision-config-served-text",
@@ -709,8 +709,8 @@ class TestIsMllmModelCachedMetadata:
         this repackaged VLM was misrouted to the text engine. This test fails
         against the old order and passes after evidence-priority routing.
         """
-        from vllm_mlx.api import utils as utils_mod
-        from vllm_mlx.model_profile import ModelProfile
+        from rapid_mlx.api import utils as utils_mod
+        from rapid_mlx.model_profile import ModelProfile
 
         # A registered non-text alias (e.g. a text-family entry someone
         # repackaged a VLM under). ``is_text_only`` is False, and the alias
@@ -757,8 +757,8 @@ class TestIsMllmModelCachedMetadata:
         ``is_text_only`` pin must short-circuit to text BEFORE the weight-
         evidence path.  Fails before FIX 1 (returns True), passes after.
         """
-        from vllm_mlx.api import utils as utils_mod
-        from vllm_mlx.model_profile import ModelProfile
+        from rapid_mlx.api import utils as utils_mod
+        from rapid_mlx.model_profile import ModelProfile
 
         curated_text_profile = ModelProfile(
             hf_path="mlx-community/Qwen3.5-4B-MLX-4bit",
@@ -790,7 +790,7 @@ class TestIsMllmModelCachedMetadata:
 
     def test_qwen35_4b_positive_checkpoint_evidence_routes_as_vision(self, monkeypatch):
         """The former text pin no longer masks complete vision weights."""
-        from vllm_mlx.api import utils as utils_mod
+        from rapid_mlx.api import utils as utils_mod
 
         monkeypatch.setattr(
             utils_mod,
@@ -820,8 +820,8 @@ class TestIsMllmModelCachedMetadata:
         inconclusive and whose name carries NO legacy VLM substring must fall
         through to the name matcher (False), not be promoted to True.
         """
-        from vllm_mlx.api import utils as utils_mod
-        from vllm_mlx.model_metadata import ModelMetadata
+        from rapid_mlx.api import utils as utils_mod
+        from rapid_mlx.model_metadata import ModelMetadata
 
         # Snapshot dir that HAS checkpoint files (so a file-existence probe
         # would say "evidence available") but the modality verdict is None.
@@ -852,7 +852,7 @@ class TestIsMllmModelCachedMetadata:
         assert is_mllm_model("publisher/plain-repack") is False
 
     def test_hub_helper_rejects_local_path_lookalikes(self):
-        from vllm_mlx.api.utils import _try_read_hub_config_json
+        from rapid_mlx.api.utils import _try_read_hub_config_json
 
         # Defensive: hub helper must not interpret local-path-like strings
         # as repo IDs and trigger a network call.
@@ -871,19 +871,19 @@ class TestMllmBackboneIsHybrid:
 
     @staticmethod
     def _meta(config):
-        from vllm_mlx.model_metadata import ModelMetadata
+        from rapid_mlx.model_metadata import ModelMetadata
 
         return ModelMetadata(config=config, chat_template=None, snapshot_dir=None)
 
     def _patch(self, monkeypatch, config):
-        from vllm_mlx.api import utils as utils_mod
+        from rapid_mlx.api import utils as utils_mod
 
         monkeypatch.setattr(
             utils_mod, "read_model_metadata", lambda name: self._meta(config)
         )
 
     def test_gated_deltanet_layer_types_is_hybrid(self, monkeypatch):
-        from vllm_mlx.api.utils import mllm_backbone_is_hybrid
+        from rapid_mlx.api.utils import mllm_backbone_is_hybrid
 
         # Qwen3.5/3.6 shape: linear_attention layers interleaved with
         # full_attention, config nested under text_config, vision tower present.
@@ -919,8 +919,8 @@ class TestMllmBackboneIsHybrid:
 
         import huggingface_hub
 
-        from vllm_mlx import server
-        from vllm_mlx.api import utils as utils_mod
+        from rapid_mlx import server
+        from rapid_mlx.api import utils as utils_mod
 
         alias = "qwen3.5-2b-4bit"
         repo = "mlx-community/Qwen3.5-2B-MLX-4bit"
@@ -965,7 +965,7 @@ class TestMllmBackboneIsHybrid:
         monkeypatch.setattr(
             huggingface_hub.constants, "HF_HUB_CACHE", str(tmp_path / "hub")
         )
-        from vllm_mlx import cli
+        from rapid_mlx import cli
 
         def fail_on_network(_name):
             raise AssertionError("complete singleton snapshot must stay offline")
@@ -1025,8 +1025,8 @@ class TestMllmBackboneIsHybrid:
         # old process-global alias must not lend its image profile to Qwen.
         monkeypatch.setattr(server, "_model_alias", "z-image-turbo", raising=False)
 
-        from vllm_mlx.model_metadata import read_model_metadata
-        from vllm_mlx.utils.tokenizer import _local_snapshot_if_cached
+        from rapid_mlx.model_metadata import read_model_metadata
+        from rapid_mlx.utils.tokenizer import _local_snapshot_if_cached
 
         metadata = read_model_metadata(repo)
         assert metadata is not None
@@ -1061,8 +1061,8 @@ class TestMllmBackboneIsHybrid:
 
         # A removed/corrupt prior identity is stale process state, not a reason
         # to reject a valid current canonical request.
-        from vllm_mlx import model_aliases
-        from vllm_mlx.user_aliases import UserAliasError
+        from rapid_mlx import model_aliases
+        from rapid_mlx.user_aliases import UserAliasError
 
         real_resolve_model = model_aliases.resolve_model
 
@@ -1082,7 +1082,7 @@ class TestMllmBackboneIsHybrid:
         """Ambiguous, partial, and malformed cache shapes must stay offline-safe."""
         import huggingface_hub
 
-        from vllm_mlx import model_metadata
+        from rapid_mlx import model_metadata
 
         repo = "publisher/model"
         repo_root = tmp_path / "models--publisher--model"
@@ -1108,7 +1108,7 @@ class TestMllmBackboneIsHybrid:
 
         with monkeypatch.context() as scoped:
             scoped.setattr(
-                "vllm_mlx.model_aliases.checkpoint_prefix", lambda _name: "nested/"
+                "rapid_mlx.model_aliases.checkpoint_prefix", lambda _name: "nested/"
             )
             assert model_metadata.resolve_unreferenced_cached_snapshot(repo) is None
 
@@ -1123,7 +1123,7 @@ class TestMllmBackboneIsHybrid:
             assert model_metadata.resolve_unreferenced_cached_snapshot(repo) is None
 
     def test_sliding_and_full_attention_is_not_hybrid(self, monkeypatch):
-        from vllm_mlx.api.utils import mllm_backbone_is_hybrid
+        from rapid_mlx.api.utils import mllm_backbone_is_hybrid
 
         # Gemma-4 shape: sliding_attention + full_attention → RotatingKVCache,
         # which the MLLM engine handles. NOT a linear-attention backbone.
@@ -1145,7 +1145,7 @@ class TestMllmBackboneIsHybrid:
         assert mllm_backbone_is_hybrid("any/gemma4-like") is False
 
     def test_recurrent_model_type_without_layer_types_is_hybrid(self, monkeypatch):
-        from vllm_mlx.api.utils import mllm_backbone_is_hybrid
+        from rapid_mlx.api.utils import mllm_backbone_is_hybrid
 
         # A pure Mamba/recurrent backbone that does not enumerate layer_types.
         self._patch(
@@ -1155,8 +1155,8 @@ class TestMllmBackboneIsHybrid:
         assert mllm_backbone_is_hybrid("any/mamba-vlm") is True
 
     def test_missing_metadata_returns_false(self, monkeypatch):
-        from vllm_mlx.api import utils as utils_mod
-        from vllm_mlx.api.utils import mllm_backbone_is_hybrid
+        from rapid_mlx.api import utils as utils_mod
+        from rapid_mlx.api.utils import mllm_backbone_is_hybrid
 
         # No config → unknown → False (never removes multimodal routing from a
         # checkpoint we cannot positively classify as hybrid).
@@ -1164,7 +1164,7 @@ class TestMllmBackboneIsHybrid:
         assert mllm_backbone_is_hybrid("any/unknown") is False
 
     def test_plain_attention_top_level_config_is_not_hybrid(self, monkeypatch):
-        from vllm_mlx.api.utils import mllm_backbone_is_hybrid
+        from rapid_mlx.api.utils import mllm_backbone_is_hybrid
 
         # Non-nested config, ordinary transformer → not hybrid.
         self._patch(
@@ -1181,7 +1181,7 @@ class TestResolveServingLane:
     def _patch_probes(
         self, monkeypatch, *, is_mllm, hybrid, hybrid_runtime_supported=False
     ):
-        from vllm_mlx.api import utils as utils_mod
+        from rapid_mlx.api import utils as utils_mod
 
         monkeypatch.setattr(utils_mod, "is_mllm_model", lambda n: is_mllm)
         monkeypatch.setattr(
@@ -1197,7 +1197,7 @@ class TestResolveServingLane:
         monkeypatch.setattr(utils_mod, "physical_ram_gb", lambda: 64.0)
 
     def test_hybrid_vlm_auto_downgrades_to_text(self, monkeypatch):
-        from vllm_mlx.api.utils import resolve_serving_lane
+        from rapid_mlx.api.utils import resolve_serving_lane
 
         # Multimodal checkpoint + hybrid backbone, no flags → text lane, marked
         # as an AUTOMATIC fallback (Qwen3.6-27B shape).
@@ -1214,7 +1214,7 @@ class TestResolveServingLane:
     def test_unsupported_vision_contracts_fail_closed(
         self, monkeypatch, architecture_unavailable, cache_mode, reason
     ):
-        from vllm_mlx.api import utils as utils_mod
+        from rapid_mlx.api import utils as utils_mod
 
         monkeypatch.setattr(utils_mod, "is_mllm_model", lambda _name: True)
         monkeypatch.setattr(
@@ -1231,7 +1231,7 @@ class TestResolveServingLane:
         ) == utils_mod.ServingLaneDecision(False, reason, auto_text_fallback=True)
 
     def test_hybrid_vlm_uses_vision_when_runtime_supports_it(self, monkeypatch):
-        from vllm_mlx.api.utils import (
+        from rapid_mlx.api.utils import (
             resolve_serving_lane,
             resolve_serving_lane_decision,
         )
@@ -1251,7 +1251,7 @@ class TestResolveServingLane:
     def test_hybrid_vlm_falls_back_when_measured_vision_floor_does_not_fit(
         self, monkeypatch
     ):
-        from vllm_mlx.api import utils as utils_mod
+        from rapid_mlx.api import utils as utils_mod
 
         self._patch_probes(
             monkeypatch,
@@ -1270,7 +1270,7 @@ class TestResolveServingLane:
         )
 
     def test_hybrid_vlm_uses_vision_at_measured_memory_floor(self, monkeypatch):
-        from vllm_mlx.api import utils as utils_mod
+        from rapid_mlx.api import utils as utils_mod
 
         self._patch_probes(
             monkeypatch,
@@ -1285,7 +1285,7 @@ class TestResolveServingLane:
         ) == utils_mod.ServingLaneDecision(True, "vision_hybrid_runtime_supported")
 
     def test_explicit_vision_honors_measured_memory_floor(self, monkeypatch):
-        from vllm_mlx.api import utils as utils_mod
+        from rapid_mlx.api import utils as utils_mod
 
         self._patch_probes(
             monkeypatch,
@@ -1304,7 +1304,7 @@ class TestResolveServingLane:
         )
 
     def test_automatic_vision_still_honors_measured_memory_floor(self, monkeypatch):
-        from vllm_mlx.api import utils as utils_mod
+        from rapid_mlx.api import utils as utils_mod
 
         self._patch_probes(
             monkeypatch,
@@ -1330,7 +1330,7 @@ class TestResolveServingLane:
     def test_explicit_vision_precedes_automatic_capability_fallbacks(
         self, monkeypatch, architecture_unavailable, cache_mode
     ):
-        from vllm_mlx.api import utils as utils_mod
+        from rapid_mlx.api import utils as utils_mod
 
         monkeypatch.setattr(utils_mod, "is_mllm_model", lambda _name: True)
         monkeypatch.setattr(
@@ -1351,7 +1351,7 @@ class TestResolveServingLane:
         ) == utils_mod.ServingLaneDecision(True, "vision_lane_forced")
 
     def test_unknown_physical_memory_does_not_invent_a_fallback(self, monkeypatch):
-        from vllm_mlx.api import utils as utils_mod
+        from rapid_mlx.api import utils as utils_mod
 
         self._patch_probes(
             monkeypatch,
@@ -1370,7 +1370,7 @@ class TestResolveServingLane:
         [("0.6.15", False), ("0.6.16", True), ("0.7.0", True)],
     )
     def test_hybrid_runtime_version_contract(self, monkeypatch, installed, supported):
-        from vllm_mlx.api import utils as utils_mod
+        from rapid_mlx.api import utils as utils_mod
 
         monkeypatch.setattr(utils_mod, "version", lambda _distribution: installed)
         assert utils_mod.mllm_hybrid_runtime_supported() is supported
@@ -1378,7 +1378,7 @@ class TestResolveServingLane:
     def test_missing_hybrid_runtime_fails_closed(self, monkeypatch):
         from importlib.metadata import PackageNotFoundError
 
-        from vllm_mlx.api import utils as utils_mod
+        from rapid_mlx.api import utils as utils_mod
 
         def missing(_distribution):
             raise PackageNotFoundError
@@ -1398,7 +1398,7 @@ class TestResolveServingLane:
     ):
         from types import SimpleNamespace
 
-        from vllm_mlx.api import utils as utils_mod
+        from rapid_mlx.api import utils as utils_mod
 
         monkeypatch.setattr(
             utils_mod,
@@ -1411,7 +1411,7 @@ class TestResolveServingLane:
     def test_missing_vendored_vision_module_fails_closed(self, monkeypatch):
         from types import SimpleNamespace
 
-        from vllm_mlx.api import utils as utils_mod
+        from rapid_mlx.api import utils as utils_mod
 
         monkeypatch.setattr(
             utils_mod,
@@ -1426,21 +1426,21 @@ class TestResolveServingLane:
         assert utils_mod.mllm_arch_unsupported_but_text_vendored("local/model") is True
 
     def test_genuine_vlm_stays_on_mllm_lane(self, monkeypatch):
-        from vllm_mlx.api.utils import resolve_serving_lane
+        from rapid_mlx.api.utils import resolve_serving_lane
 
         # Multimodal + sliding/full attention (gemma-4) → MLLM lane, no fallback.
         self._patch_probes(monkeypatch, is_mllm=True, hybrid=False)
         assert resolve_serving_lane("any/gemma4-12b") == (True, False)
 
     def test_pure_text_model_is_text_lane_no_fallback(self, monkeypatch):
-        from vllm_mlx.api.utils import resolve_serving_lane
+        from rapid_mlx.api.utils import resolve_serving_lane
 
         # Not multimodal at all → text lane by nature, not an auto-fallback.
         self._patch_probes(monkeypatch, is_mllm=False, hybrid=False)
         assert resolve_serving_lane("any/plain-llm") == (False, False)
 
     def test_explicit_force_text_wins_no_auto_marker(self, monkeypatch):
-        from vllm_mlx.api.utils import resolve_serving_lane
+        from rapid_mlx.api.utils import resolve_serving_lane
 
         # Even a hybrid VLM: an explicit --text-only is NOT an auto-fallback, so
         # diagnostics don't conflate the two. Probes are not consulted.
@@ -1451,7 +1451,7 @@ class TestResolveServingLane:
         )
 
     def test_explicit_force_mllm_keeps_mllm_lane(self, monkeypatch):
-        from vllm_mlx.api.utils import resolve_serving_lane
+        from rapid_mlx.api.utils import resolve_serving_lane
 
         # Explicit --mllm on a hybrid VLM keeps the MLLM lane (the engine will
         # raise its own #352 error naming --mllm — the flag the user set).
@@ -1462,7 +1462,7 @@ class TestResolveServingLane:
             hybrid_runtime_supported=True,
         )
         monkeypatch.setattr(
-            "vllm_mlx.api.utils.physical_ram_gb",
+            "rapid_mlx.api.utils.physical_ram_gb",
             lambda: 64.0,
         )
         assert resolve_serving_lane("any/qwen36-27b", force_mllm=True) == (
@@ -1471,7 +1471,7 @@ class TestResolveServingLane:
         )
 
     def test_force_mllm_on_text_checkpoint_stays_text_forced(self, monkeypatch):
-        from vllm_mlx.api.utils import (
+        from rapid_mlx.api.utils import (
             ServingLaneDecision,
             resolve_serving_lane_decision,
         )
@@ -1487,13 +1487,13 @@ class TestServingLaneDecisionValidation:
     """The SSOT membership checks on ``ServingLaneDecision`` fail fast."""
 
     def test_unknown_reason_is_rejected(self):
-        from vllm_mlx.api.utils import ServingLaneDecision
+        from rapid_mlx.api.utils import ServingLaneDecision
 
         with pytest.raises(ValueError, match="unknown serving_lane_reason"):
             ServingLaneDecision(False, "operator_forced_text")
 
     def test_auto_text_fallback_with_non_downgrade_reason_is_rejected(self):
-        from vllm_mlx.api.utils import ServingLaneDecision
+        from rapid_mlx.api.utils import ServingLaneDecision
 
         # A vision-lane reason is not a silent downgrade, so pairing it with
         # auto_text_fallback=True must fail (it would reach the generic copy).
@@ -1501,13 +1501,13 @@ class TestServingLaneDecisionValidation:
             ServingLaneDecision(True, "vision_supported", auto_text_fallback=True)
 
     def test_downgrade_reason_without_auto_text_fallback_is_rejected(self):
-        from vllm_mlx.api.utils import ServingLaneDecision
+        from rapid_mlx.api.utils import ServingLaneDecision
 
         with pytest.raises(ValueError, match="requires auto_text_fallback=True"):
             ServingLaneDecision(False, "vision_memory_insufficient")
 
     def test_reason_must_match_selected_lane(self):
-        from vllm_mlx.api.utils import ServingLaneDecision
+        from rapid_mlx.api.utils import ServingLaneDecision
 
         with pytest.raises(ValueError, match="requires is_mllm=True"):
             ServingLaneDecision(False, "vision_supported")
@@ -1515,7 +1515,7 @@ class TestServingLaneDecisionValidation:
             ServingLaneDecision(True, "text_checkpoint")
 
     def test_auto_text_fallback_with_downgrade_reason_is_accepted(self):
-        from vllm_mlx.api.utils import ServingLaneDecision
+        from rapid_mlx.api.utils import ServingLaneDecision
 
         decision = ServingLaneDecision(
             False, "vision_memory_insufficient", auto_text_fallback=True
@@ -1524,7 +1524,7 @@ class TestServingLaneDecisionValidation:
         assert decision.auto_text_fallback is True
 
     def test_ssot_members_are_all_constructible(self):
-        from vllm_mlx.api.utils import (
+        from rapid_mlx.api.utils import (
             AUTO_TEXT_FALLBACK_REASONS,
             SERVING_LANE_REASONS,
             VISION_SERVING_LANE_REASONS,
@@ -2061,7 +2061,7 @@ class TestValidateContentBlocksForCapabilities:
         )
 
     def test_text_lane_image_error_has_stable_machine_readable_code(self):
-        from vllm_mlx.api.utils import UnsupportedContentBlockError
+        from rapid_mlx.api.utils import UnsupportedContentBlockError
 
         messages = [
             {
@@ -2103,8 +2103,8 @@ class TestValidateContentBlocksForCapabilities:
         from fastapi import FastAPI
         from fastapi.testclient import TestClient
 
-        from vllm_mlx.config import reset_config
-        from vllm_mlx.routes.chat import router
+        from rapid_mlx.config import reset_config
+        from rapid_mlx.routes.chat import router
 
         class TextLaneEngine:
             is_mllm = False
@@ -2336,7 +2336,7 @@ def test_dflash_runtime_probe_uses_symbol_level_discovery(monkeypatch):
     """The lightweight probe checks the required drafter package itself."""
     import importlib.util
 
-    from vllm_mlx.speculative.dflash.eligibility import have_runtime
+    from rapid_mlx.speculative.dflash.eligibility import have_runtime
 
     probes: list[str] = []
 

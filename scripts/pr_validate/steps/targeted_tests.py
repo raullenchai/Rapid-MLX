@@ -11,8 +11,8 @@ Selection heuristic — deliberately simple, grep-able:
 
 1. For each Python file in the diff, derive the candidate test file
    name(s):
-   - ``vllm_mlx/foo.py`` → ``tests/test_foo.py``
-   - ``vllm_mlx/bar/baz.py`` → ``tests/test_baz.py``
+   - ``rapid_mlx/foo.py`` → ``tests/test_foo.py``
+   - ``rapid_mlx/bar/baz.py`` → ``tests/test_baz.py``
 2. For each non-test Python file, also include any test file whose
    name contains the module's stem.
 3. If the diff hits a test file directly, include it.

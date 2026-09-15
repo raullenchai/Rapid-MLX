@@ -1,6 +1,6 @@
 # Telemetry activation / engagement semantics
 
-**Spec version: `2`** (`vllm_mlx.telemetry.activation_spec.ACTIVATION_SPEC_VERSION`)
+**Spec version: `2`** (`rapid_mlx.telemetry.activation_spec.ACTIVATION_SPEC_VERSION`)
 · Status: **active** · Owner: growth
 
 This document is the single, versioned source of truth for what counts as

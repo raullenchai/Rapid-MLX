@@ -9,7 +9,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from vllm_mlx.patches.glm5_next_runtime import (
+from rapid_mlx.patches.glm5_next_runtime import (
     _install_quantized_lm_head_sanitize,
     _keep_glm5_next_fp32,
     _projection_quantization_is_homogeneous,
@@ -30,7 +30,7 @@ class _Quantized:
 
 @pytest.mark.requires_mlx
 def test_moe_fusion_declines_uninspectable_call_contract() -> None:
-    from vllm_mlx import moe_fusion
+    from rapid_mlx import moe_fusion
 
     class UninspectableSwitchGLU:
         __call__ = 1
@@ -40,7 +40,7 @@ def test_moe_fusion_declines_uninspectable_call_contract() -> None:
 
 @pytest.mark.requires_mlx
 def test_moe_family_discovery_survives_optional_import_failure(monkeypatch) -> None:
-    from vllm_mlx import moe_fusion
+    from rapid_mlx import moe_fusion
 
     real_import = builtins.__import__
 
@@ -57,7 +57,7 @@ def test_moe_family_discovery_survives_optional_import_failure(monkeypatch) -> N
 
 @pytest.mark.requires_mlx
 def test_moe_family_discovery_ignores_incomplete_vlm_module(monkeypatch) -> None:
-    from vllm_mlx import moe_fusion
+    from rapid_mlx import moe_fusion
 
     monkeypatch.setitem(
         sys.modules,
@@ -142,7 +142,7 @@ def test_installer_applies_glm_math_without_changing_shared_models() -> None:
     from mlx_vlm.models.deepseek_v32 import language as deepseek_language
     from mlx_vlm.models.glm5_next import language
 
-    from vllm_mlx.patches import glm5_next_runtime as patch
+    from rapid_mlx.patches import glm5_next_runtime as patch
 
     if patch._has_native_glm5_next_runtime(language):
         pytest.skip("the pinned runtime already owns the corrected GLM math")
@@ -295,7 +295,7 @@ def test_installer_applies_glm_math_without_changing_shared_models() -> None:
 def test_installer_respects_runtime_that_is_already_patched() -> None:
     from mlx_vlm.models.glm5_next import language
 
-    from vllm_mlx.patches import glm5_next_runtime as patch
+    from rapid_mlx.patches import glm5_next_runtime as patch
 
     marker = getattr(language, "_RAPID_MLX_RUNTIME_FIX_INSTALLED", None)
     marker_existed = hasattr(language, "_RAPID_MLX_RUNTIME_FIX_INSTALLED")
@@ -313,7 +313,7 @@ def test_installer_respects_runtime_that_is_already_patched() -> None:
 
 
 def test_native_runtime_probe_requires_the_complete_new_class_family() -> None:
-    from vllm_mlx.patches.glm5_next_runtime import _has_native_glm5_next_runtime
+    from rapid_mlx.patches.glm5_next_runtime import _has_native_glm5_next_runtime
 
     complete = SimpleNamespace(
         Glm5NextAttention=object,
@@ -342,7 +342,7 @@ def test_native_runtime_probe_requires_the_complete_new_class_family() -> None:
 def test_installer_defers_to_complete_native_runtime() -> None:
     from mlx_vlm.models.glm5_next import language
 
-    from vllm_mlx.patches import glm5_next_runtime as patch
+    from rapid_mlx.patches import glm5_next_runtime as patch
 
     native_names = (
         "Glm5NextAttention",

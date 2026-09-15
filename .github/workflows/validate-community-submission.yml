@@ -12,7 +12,7 @@ on:
       - "community-benchmarks/submissions/**"
       - "community-benchmarks/schema.json"
       - "community-benchmarks/scripts/validate.py"
-      - "vllm_mlx/aliases.json"
+      - "rapid_mlx/aliases.json"
 
 permissions:
   contents: read
@@ -82,7 +82,7 @@ jobs:
           # PR #582 round-7 BLOCKING.)
           mkdir -p /tmp/base-validator/community-benchmarks/scripts \
                    /tmp/base-validator/community-benchmarks \
-                   /tmp/base-validator/vllm_mlx
+                   /tmp/base-validator/rapid_mlx
           # ``git show`` on the base ref — these MAY not exist on the
           # base (this PR introduces validate.py itself). When absent,
           # the base-validator pass is a no-op and the head-side run is
@@ -93,8 +93,8 @@ jobs:
               > /tmp/base-validator/community-benchmarks/scripts/validate.py
             git show "$BASE:community-benchmarks/schema.json" \
               > /tmp/base-validator/community-benchmarks/schema.json
-            git show "$BASE:vllm_mlx/aliases.json" \
-              > /tmp/base-validator/vllm_mlx/aliases.json
+            git show "$BASE:rapid_mlx/aliases.json" \
+              > /tmp/base-validator/rapid_mlx/aliases.json
             BASE_VALIDATOR=/tmp/base-validator/community-benchmarks/scripts/validate.py
           else
             BASE_VALIDATOR=""
@@ -133,7 +133,7 @@ jobs:
           SCHEMA_CHANGED=$(git diff --name-only "$BASE" HEAD -- \
             'community-benchmarks/schema.json' \
             'community-benchmarks/scripts/validate.py' \
-            'vllm_mlx/aliases.json')
+            'rapid_mlx/aliases.json')
 
           if [ -n "$SCHEMA_CHANGED" ]; then
             echo "Validation inputs changed in this PR:"

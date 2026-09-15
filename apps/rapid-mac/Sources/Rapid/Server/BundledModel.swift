@@ -66,7 +66,7 @@ enum BundledModel {
     /// ``aliases.json``. Pinned, not derived — bumping the bundled
     /// model is an intentional release action (DMG growth, sniff
     /// re-test, sidecar smoke). Source-of-truth lives in the
-    /// submodule at ``third_party/rapid-mlx/vllm_mlx/aliases.json``;
+    /// submodule at ``third_party/rapid-mlx/rapid_mlx/aliases.json``;
     /// this constant just names the entry we ship weights for.
     static let bundledAlias: String = "lfm2.5-1b-4bit"
 

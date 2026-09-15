@@ -5,7 +5,7 @@
 it is talking to instead of making the operator retype it into a config
 file. Two consumers depend on that today:
 
-* **In-tree** — ``vllm_mlx.agents.adapter.fetch_reasoning_support`` reads
+* **In-tree** — ``rapid_mlx.agents.adapter.fetch_reasoning_support`` reads
   ``reasoning_parser`` to decide whether ``agents dsh --setup`` should
   advertise graded reasoning to DeepSeek Harness (#1984).
 * **Out-of-tree** — the native Rapid-MLX provider for DSH
@@ -35,7 +35,7 @@ import json
 
 import pytest
 
-from vllm_mlx.api.models import ModelInfo
+from rapid_mlx.api.models import ModelInfo
 
 #: Field -> why an external client needs it. Deleting a row here is a
 #: deliberate act that should be visible in review, which is the point.

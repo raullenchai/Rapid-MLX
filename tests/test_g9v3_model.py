@@ -49,7 +49,7 @@ pytestmark = pytest.mark.requires_mlx
 import mlx.core as mx  # noqa: E402
 from mlx.utils import tree_flatten  # noqa: E402
 
-from vllm_mlx.models import g9v3  # noqa: E402
+from rapid_mlx.models import g9v3  # noqa: E402
 
 TINY = dict(
     model_type="g9v3",
@@ -101,7 +101,7 @@ def test_module_contract():
 
 
 def test_register_vendored_archs_makes_mlx_lm_loader_find_it():
-    from vllm_mlx.utils.tokenizer import (
+    from rapid_mlx.utils.tokenizer import (
         _VENDORED_MODEL_TYPES,
         _register_vendored_archs,
     )
@@ -122,7 +122,7 @@ def test_register_vendored_archs_makes_mlx_lm_loader_find_it():
 
 
 def _reset_g9v3_registration(monkeypatch):
-    from vllm_mlx.utils import tokenizer as tok
+    from rapid_mlx.utils import tokenizer as tok
 
     monkeypatch.delitem(sys.modules, "mlx_lm.models.g9v3", raising=False)
     monkeypatch.setattr(tok, "_VENDORED_MODEL_TYPES", set(tok._VENDORED_MODEL_TYPES))
@@ -184,15 +184,15 @@ def test_registration_survives_find_spec_errors(monkeypatch):
 def test_registration_warns_when_vendored_import_fails(monkeypatch, caplog):
     """An import failure of the vendored module is logged, not raised: the
     rest of the loader (and every other vendored family) keeps working."""
-    import vllm_mlx.models
+    import rapid_mlx.models
 
     tok = _reset_g9v3_registration(monkeypatch)
     # ``from ..models import g9v3`` takes the package attribute when it is
     # already bound; drop it so the import goes through sys.modules, where
     # ``None`` makes it raise ImportError.
-    monkeypatch.delattr(vllm_mlx.models, "g9v3", raising=False)
-    monkeypatch.setitem(sys.modules, "vllm_mlx.models.g9v3", None)
-    with caplog.at_level(logging.WARNING, logger="vllm_mlx.utils.tokenizer"):
+    monkeypatch.delattr(rapid_mlx.models, "g9v3", raising=False)
+    monkeypatch.setitem(sys.modules, "rapid_mlx.models.g9v3", None)
+    with caplog.at_level(logging.WARNING, logger="rapid_mlx.utils.tokenizer"):
         tok._register_vendored_archs()
     assert "mlx_lm.models.g9v3" not in sys.modules
     assert "g9v3" not in tok._VENDORED_MODEL_TYPES
@@ -547,7 +547,7 @@ def test_tied_embeddings_variant():
 
 def test_alias_pins_parsers_and_moe_flags():
     aliases = json.loads(
-        (Path(__file__).resolve().parents[1] / "vllm_mlx" / "aliases.json").read_text()
+        (Path(__file__).resolve().parents[1] / "rapid_mlx" / "aliases.json").read_text()
     )
     entry = aliases["g9v3-39a5b-4bit"]
     assert entry["hf_path"] == "rapid-mlx/G9v3-39A5B-MLX-4bit"

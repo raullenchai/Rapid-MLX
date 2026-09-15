@@ -2482,7 +2482,7 @@ final class ServerManager {
         guard !trimmedAlias.isEmpty else { return }
         // Reject anything that could be misread as an extra argv flag
         // or that would inject newlines / control bytes into the log
-        // stream. Alias grammar in vllm_mlx/aliases.json is
+        // stream. Alias grammar in rapid_mlx/aliases.json is
         // ``[a-z0-9._-]`` and the longest registered entry is ~32
         // chars; cap conservatively at 128 so a typo doesn't generate
         // a giant child argv. [codex audit r1 ServerManager.swift:308]
@@ -4586,7 +4586,7 @@ final class ServerManager {
     ///     before we build this list, so it can't be misread as a flag.
     ///   * Explicit ``--cors-origins http://127.0.0.1 http://localhost``
     ///     (issue #306). Without this flag the sidecar defaults to
-    ///     ``["*"]`` (``vllm_mlx/cli.py:899``); a wildcard CORS
+    ///     ``["*"]`` (``rapid_mlx/cli.py:899``); a wildcard CORS
     ///     allowlist combined with #303 (bearer env not yet enforced
     ///     as 401) would let any drive-by webpage drive the user's
     ///     local model via ``fetch``. Today's bundled build (v0.7.37)
@@ -4941,7 +4941,7 @@ final class ServerManager {
         // Forwarding launchd's PATH verbatim breaks every stdio MCP server
         // the user configures: the engine resolves ``uvx`` / ``npx`` /
         // ``docker`` with ``shutil.which`` against THIS PATH and fails with
-        // "Command 'uvx' not found in PATH" (``vllm_mlx/mcp/security.py``).
+        // "Command 'uvx' not found in PATH" (``rapid_mlx/mcp/security.py``).
         // The same config works when the app is launched from a terminal,
         // so the bug only reproduces via Finder/Dock — i.e. only for real
         // users, never in a developer's own terminal-launched run.

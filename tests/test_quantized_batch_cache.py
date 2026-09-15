@@ -30,7 +30,7 @@ pytestmark = pytest.mark.requires_mlx
 import mlx.core as mx
 from mlx_lm.models.cache import BatchKVCache
 
-from vllm_mlx.quantized_batch_cache import (
+from rapid_mlx.quantized_batch_cache import (
     QuantizedBatchKVCache,
     _dequantize,
     _QuantizableKVCache,
@@ -68,7 +68,7 @@ def test_supported_cache_types_without_optional_vision_runtime(monkeypatch):
     """The base install keeps mlx-lm cache support without mlx-vlm."""
     from mlx_lm.models.cache import KVCache, RotatingKVCache
 
-    from vllm_mlx.quantized_batch_cache import supported_kv_cache_types
+    from rapid_mlx.quantized_batch_cache import supported_kv_cache_types
 
     monkeypatch.setitem(sys.modules, "mlx_vlm.models.cache", None)
     plain, rotating = supported_kv_cache_types()
@@ -357,7 +357,7 @@ def test_scheduler_reconstructs_empty_quantized_cache():
     # dequantizing None.
     from mlx_lm.models.cache import KVCache
 
-    from vllm_mlx.scheduler import Scheduler
+    from rapid_mlx.scheduler import Scheduler
 
     q = QuantizedBatchKVCache([0], GS, BITS)  # empty, never written
     layer_state = {
@@ -485,7 +485,7 @@ def test_quantizable_kvcache_empty_merge():
 def test_install_wraps_only_kvcache_layers():
     from mlx_lm.models.cache import KVCache, RotatingKVCache
 
-    from vllm_mlx.quantized_batch_cache import install_quantized_batch_cache
+    from rapid_mlx.quantized_batch_cache import install_quantized_batch_cache
 
     class _FakeBG:
         def _make_new_cache(self):
@@ -505,7 +505,7 @@ def test_install_wraps_only_kvcache_layers():
 
 
 def test_supported_group_size():
-    from vllm_mlx.quantized_batch_cache import supported_group_size
+    from rapid_mlx.quantized_batch_cache import supported_group_size
 
     assert supported_group_size(64, 64) == 64
     assert supported_group_size(128, 64) == 64
@@ -521,7 +521,7 @@ def test_supported_group_size():
 
 
 def test_probe_head_dim():
-    from vllm_mlx.quantized_batch_cache import probe_head_dim
+    from rapid_mlx.quantized_batch_cache import probe_head_dim
 
     class _Args:
         head_dim = 128
@@ -643,7 +643,7 @@ def test_merge_adjusts_group_size_for_head_dim_96():
 def test_normalize_preserves_content_and_type():
     from mlx_lm.models.cache import RotatingKVCache
 
-    from vllm_mlx.quantized_batch_cache import normalize_caches_for_quantization
+    from rapid_mlx.quantized_batch_cache import normalize_caches_for_quantization
 
     restored = _seq_cache(20, 1)
     norm = normalize_caches_for_quantization(
@@ -658,7 +658,7 @@ def test_normalize_preserves_content_and_type():
 def test_prefix_hit_merges_to_quantized_like_miss():
     # A normalized prefix-cache HIT must merge into QuantizedBatchKVCache (same
     # type as a MISS), so mlx-lm never mixes bf16 and quantized batches (#1197).
-    from vllm_mlx.quantized_batch_cache import normalize_caches_for_quantization
+    from rapid_mlx.quantized_batch_cache import normalize_caches_for_quantization
 
     hit = normalize_caches_for_quantization([_seq_cache(20, 1)], GS, BITS)
     merged_hit = hit[0].merge([hit[0]])
@@ -694,7 +694,7 @@ def test_install_leaves_cachelist_untouched():
     # a quantized triple. Only the top-level exact KVCache layer is swapped.
     from mlx_lm.models.cache import CacheList, KVCache
 
-    from vllm_mlx.quantized_batch_cache import install_quantized_batch_cache
+    from rapid_mlx.quantized_batch_cache import install_quantized_batch_cache
 
     class _FakeBG:
         def _make_new_cache(self):
@@ -712,7 +712,7 @@ def test_install_leaves_cachelist_untouched():
 def test_normalize_leaves_cachelist_untouched():
     from mlx_lm.models.cache import CacheList, KVCache
 
-    from vllm_mlx.quantized_batch_cache import normalize_caches_for_quantization
+    from rapid_mlx.quantized_batch_cache import normalize_caches_for_quantization
 
     restored = _seq_cache(15, 1)
     cl = CacheList(_seq_cache(15, 2), _seq_cache(15, 3))
@@ -726,7 +726,7 @@ def test_normalize_leaves_cachelist_untouched():
 
 
 def test_probe_kv_head_dims():
-    from vllm_mlx.quantized_batch_cache import probe_kv_head_dims
+    from rapid_mlx.quantized_batch_cache import probe_kv_head_dims
 
     class _Args:
         head_dim = 128
@@ -788,7 +788,7 @@ def test_probe_kv_head_dims():
 
 
 def test_resolve_kv_quantization():
-    from vllm_mlx.quantized_batch_cache import resolve_kv_quantization
+    from rapid_mlx.quantized_batch_cache import resolve_kv_quantization
 
     # Compatible after coercion (96 -> 32): live enabled, gs=32.
     assert resolve_kv_quantization(96, 96, 64) == (32, False)
@@ -808,8 +808,8 @@ def test_scheduler_wires_resolved_group_size_to_live_hook():
     # (32) into the live install params and leave the retained cache at its
     # configured size (self-coerced later). Exercises
     # Scheduler._init_kv_quantization directly, so deleting the wiring turns red.
-    from vllm_mlx.memory_cache import MemoryCacheConfig
-    from vllm_mlx.scheduler import Scheduler
+    from rapid_mlx.memory_cache import MemoryCacheConfig
+    from rapid_mlx.scheduler import Scheduler
 
     class _Args:
         head_dim = 96
@@ -851,7 +851,7 @@ def test_scheduler_wires_resolved_group_size_to_live_hook():
 def test_scheduler_probe_failure_disables_live_only():
     # An unprobeable model disables only the LIVE cache; the retained cache is
     # never gated by the config-level probe (it self-coerces at quantize time).
-    from vllm_mlx.scheduler import Scheduler
+    from rapid_mlx.scheduler import Scheduler
 
     class _Cfg:
         kv_cache_quantization = True
@@ -874,7 +874,7 @@ def test_live_install_gate_fails_closed_when_init_bypassed():
     # _kv_quant_live_disabled has to read as "disabled" so an unprobed,
     # possibly-incompatible head dim never installs a quantized live cache that
     # would crash on first write. The gate defaults the flag to True.
-    from vllm_mlx.scheduler import Scheduler
+    from rapid_mlx.scheduler import Scheduler
 
     class _Cfg:  # quantization requested, but the probe never ran
         kv_cache_quantization = True
@@ -905,8 +905,8 @@ def test_scheduler_mla_probe_disables_live_but_retained_still_quantizes():
     # _quantize_cache coerces against those, NOT the config head dims.
     from mlx_lm.models.cache import KVCache
 
-    from vllm_mlx.memory_cache import _quantize_cache
-    from vllm_mlx.scheduler import Scheduler
+    from rapid_mlx.memory_cache import _quantize_cache
+    from rapid_mlx.scheduler import Scheduler
 
     class _Args:  # DeepSeek-V3-0324 shape
         hidden_size = 7168
@@ -944,7 +944,7 @@ def test_quantize_cache_coerces_and_skips_per_layer():
     # head_dim=96 -> 32, head_dim=128 -> 64, head_dim=80 -> keep bf16 (no crash).
     from mlx_lm.models.cache import KVCache
 
-    from vllm_mlx.memory_cache import _quantize_cache
+    from rapid_mlx.memory_cache import _quantize_cache
 
     def _layer(dim):
         c = KVCache()
@@ -1045,7 +1045,7 @@ def test_fused_qsdpa_matches_dequant_reference_batched_gqa():
     fix the rank-4 batched mask broadcasts against the GQA repeat axis
     and the outputs diverge by O(1), not O(quant-error).
     """
-    from vllm_mlx.quantized_batch_cache import (
+    from rapid_mlx.quantized_batch_cache import (
         _install_batched_mask_safe_quantized_sdpa,
     )
 
@@ -1094,7 +1094,7 @@ def test_fused_qsdpa_matches_dequant_reference_batched_gqa():
 def test_mask_patch_is_superset_for_stock_shapes():
     """The mask-rank patch must be a no-op for the shapes mlx-lm's own
     QuantizedKVCache path produces (rank-2 causal slice, B=1)."""
-    from vllm_mlx.quantized_batch_cache import (
+    from rapid_mlx.quantized_batch_cache import (
         _install_batched_mask_safe_quantized_sdpa,
     )
 
@@ -1131,7 +1131,7 @@ def test_install_wires_the_mask_patch(monkeypatch):
     (codex r4 blocking #2)."""
     import mlx_lm.models.base as mlx_base
 
-    from vllm_mlx.quantized_batch_cache import install_quantized_batch_cache
+    from rapid_mlx.quantized_batch_cache import install_quantized_batch_cache
 
     # Reset the idempotence marker so this test observes the wiring
     # regardless of which test ran first.

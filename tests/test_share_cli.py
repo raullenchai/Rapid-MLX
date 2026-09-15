@@ -8,7 +8,7 @@ the WS tunnel lifecycle, --chat-frontend validation, and ordered shutdown.
 
 Architecture pivot (2026-06-03): the prior frpc + control-plane stack
 was replaced with a Cloudflare Worker reached over a WebSocket reverse
-tunnel. See ``vllm_mlx/share/ws_tunnel.py`` for the wire protocol.
+tunnel. See ``rapid_mlx/share/ws_tunnel.py`` for the wire protocol.
 """
 
 from __future__ import annotations
@@ -22,8 +22,8 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from vllm_mlx import cli as top_cli
-from vllm_mlx.share import cli as share_cli
+from rapid_mlx import cli as top_cli
+from rapid_mlx.share import cli as share_cli
 
 
 @pytest.fixture(autouse=True)
@@ -1140,7 +1140,7 @@ def test_share_command_skips_download_gate_for_local_alias():
     asserting ``is_repo_cached`` was never called."""
     with (
         patch.object(share_cli, "_pick_port", side_effect=SystemExit(99)),
-        patch("vllm_mlx._download_gate.is_repo_cached") as cached,
+        patch("rapid_mlx._download_gate.is_repo_cached") as cached,
         pytest.raises(SystemExit),
     ):
         share_cli.share_command(_make_args(model="qwen3.5-4b-4bit"))
@@ -1151,7 +1151,7 @@ def test_share_command_skips_download_gate_when_env_override_set():
     """``RAPID_MLX_AUTO_PULL=1`` short-circuits even for an HF repo id."""
     with (
         patch.object(share_cli, "_pick_port", side_effect=SystemExit(99)),
-        patch("vllm_mlx._download_gate.is_repo_cached") as cached,
+        patch("rapid_mlx._download_gate.is_repo_cached") as cached,
         patch.dict("os.environ", {"RAPID_MLX_AUTO_PULL": "1"}, clear=False),
         pytest.raises(SystemExit),
     ):
@@ -1166,7 +1166,7 @@ def test_share_command_skips_download_gate_for_chat_spawn_child():
     with (
         patch.dict("os.environ", {"RAPID_MLX_CHAT_SPAWN": "1"}, clear=False),
         patch(
-            "vllm_mlx._download_gate.is_repo_cached",
+            "rapid_mlx._download_gate.is_repo_cached",
             side_effect=AssertionError("should not be called"),
         ),
     ):
@@ -1179,19 +1179,19 @@ def test_maybe_confirm_download_gates_catalog_alias_offline_via_manifest():
     ``_maybe_confirm_download`` is handed ``args.model`` — the resolved repo
     id — so the checked-in manifest supplies the ~438 GiB footprint and
     ``confirm_or_abort`` is reached instead of silently proceeding."""
-    from vllm_mlx.model_aliases import resolve_model
+    from rapid_mlx.model_aliases import resolve_model
 
     resolved = resolve_model("kimi-k2.6")
     assert "/" in resolved
     fake_sys = SimpleNamespace(stdin=SimpleNamespace(isatty=lambda: True))
     with (
         patch.object(share_cli, "sys", fake_sys),
-        patch("vllm_mlx._download_gate.is_repo_cached", return_value=False),
+        patch("rapid_mlx._download_gate.is_repo_cached", return_value=False),
         patch(
-            "vllm_mlx._download_gate.estimate_download_size_bytes",
+            "rapid_mlx._download_gate.estimate_download_size_bytes",
             side_effect=lambda repo: None if repo != resolved else 470_632_354_731,
         ),
-        patch("vllm_mlx._download_gate.confirm_or_abort") as confirm,
+        patch("rapid_mlx._download_gate.confirm_or_abort") as confirm,
     ):
         # ``_maybe_confirm_download`` passes the resolved repo id down to the
         # size lookup; offline that falls back to the manifest footprint.
@@ -1204,7 +1204,7 @@ def test_maybe_confirm_download_gates_catalog_alias_offline_via_manifest():
 
 
 def test_banner_does_not_inline_key_in_curl_command():
-    from vllm_mlx.share import warning
+    from rapid_mlx.share import warning
 
     out = warning.render(
         "https://rapidserver.quicksilverpro.io/r/abc",
@@ -1223,7 +1223,7 @@ def test_banner_has_cheetah_brand_line():
     leads with the friendly ``rapid-mlx`` identity before the harsh
     security warning. Mirrors the cheetah glyph the desktop app's
     AppIcon ships."""
-    from vllm_mlx.share import warning
+    from rapid_mlx.share import warning
 
     out = warning.render(
         "https://rapidserver.quicksilverpro.io/r/abc",
@@ -1241,7 +1241,7 @@ def test_banner_has_cheetah_brand_line():
 
 
 def test_banner_includes_one_click_chat_link():
-    from vllm_mlx.share import warning
+    from rapid_mlx.share import warning
 
     out = warning.render(
         "https://rapidserver.quicksilverpro.io/r/abc",
@@ -1260,7 +1260,7 @@ def test_banner_chat_link_uses_tunnel_id_param_not_url_parse():
     argument — not by parsing ``url``. The Worker URL has shape
     ``https://rapidserver…/r/<id>`` (path component), so parsing the
     host would yield ``rapidserver…`` instead of the tunnel id."""
-    from vllm_mlx.share import warning
+    from rapid_mlx.share import warning
 
     out = warning.render(
         # Path-shape URL — the Worker route, not a wildcard subdomain.
@@ -1282,7 +1282,7 @@ def test_banner_chat_link_uses_tunnel_id_param_not_url_parse():
 def test_banner_omits_chat_line_when_frontend_is_none():
     """``chat_frontend=None`` suppresses the Chat: row but keeps the
     model + URL + key surfaces."""
-    from vllm_mlx.share import warning
+    from rapid_mlx.share import warning
 
     out = warning.render(
         "https://rapidserver.quicksilverpro.io/r/abc",

@@ -43,7 +43,7 @@ REPO_ROOT = pathlib.Path(__file__).resolve().parent.parent
 # would pin the unusable stream for the rest of the pytest process, so a later
 # scheduler import installs the shim too late and inference fails with
 # "There is no Stream(gpu, 1) in current thread".
-from vllm_mlx import _mlx_compat  # noqa: E402
+from rapid_mlx import _mlx_compat  # noqa: E402
 
 _mlx_compat.install()
 
@@ -196,9 +196,9 @@ def test_scheduler_import_installs_the_guard():
             "m = importlib.import_module('mlx_lm.generate');"
             "assert not getattr(m.PromptProcessingBatch, '_rapid_mlx_slot_guard', False),"
             " 'guard armed before importing the scheduler — test is vacuous';"
-            "importlib.import_module('vllm_mlx.scheduler');"
+            "importlib.import_module('rapid_mlx.scheduler');"
             "assert getattr(m.PromptProcessingBatch, '_rapid_mlx_slot_guard', False),"
-            " 'importing vllm_mlx.scheduler did not install the guard';"
+            " 'importing rapid_mlx.scheduler did not install the guard';"
             "print('WIRED')",
         ],
         capture_output=True,

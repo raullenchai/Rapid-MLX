@@ -49,13 +49,13 @@ import pytest
 from fastapi import FastAPI, Request
 from fastapi.testclient import TestClient
 
-from vllm_mlx.api.anthropic_models import AnthropicRequest
-from vllm_mlx.api.models import (
+from rapid_mlx.api.anthropic_models import AnthropicRequest
+from rapid_mlx.api.models import (
     ChatCompletionRequest,
     CompletionRequest,
     EmbeddingRequest,
 )
-from vllm_mlx.middleware.exception_handlers import install_exception_handlers
+from rapid_mlx.middleware.exception_handlers import install_exception_handlers
 
 
 @pytest.fixture(scope="module")
@@ -469,9 +469,9 @@ def test_resolve_root_model_path_probe_disambiguates_shared_field_name():
     """
     from types import SimpleNamespace
 
-    from vllm_mlx.api.models import EmbeddingRequest
-    from vllm_mlx.api.responses_models import ResponsesRequest
-    from vllm_mlx.middleware.exception_handlers import (
+    from rapid_mlx.api.models import EmbeddingRequest
+    from rapid_mlx.api.responses_models import ResponsesRequest
+    from rapid_mlx.middleware.exception_handlers import (
         _resolve_root_model,
         install_exception_handlers,
     )
@@ -505,9 +505,9 @@ def test_resolve_root_model_path_probe_handles_mounted_prefix():
     """
     from types import SimpleNamespace
 
-    from vllm_mlx.api.models import EmbeddingRequest
-    from vllm_mlx.api.responses_models import ResponsesRequest
-    from vllm_mlx.middleware.exception_handlers import (
+    from rapid_mlx.api.models import EmbeddingRequest
+    from rapid_mlx.api.responses_models import ResponsesRequest
+    from rapid_mlx.middleware.exception_handlers import (
         _resolve_root_model,
         install_exception_handlers,
     )
@@ -567,7 +567,7 @@ def test_path_matches_canonical_prefix_rejects_substring_attacks():
     aware walk with a naive ``in`` / ``startswith`` check (codex r4
     BLOCKING).
     """
-    from vllm_mlx.middleware.exception_handlers import (
+    from rapid_mlx.middleware.exception_handlers import (
         _path_matches_canonical_prefix,
     )
 
@@ -595,8 +595,8 @@ def test_descend_field_picks_correct_union_arm_via_hint():
     components can keep surfacing legitimate field names instead of
     collapsing to ``<field>``.
     """
-    from vllm_mlx.api.responses_models import ResponsesRequest
-    from vllm_mlx.middleware.exception_handlers import (
+    from rapid_mlx.api.responses_models import ResponsesRequest
+    from rapid_mlx.middleware.exception_handlers import (
         _descend_field,
         _walk_loc_with_root,
     )

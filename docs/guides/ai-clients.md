@@ -206,7 +206,7 @@ rapid-mlx agents <name> --setup  # Auto-configure an agent
 rapid-mlx agents hermes --test   # Run the Hermes agent test suite
 ```
 
-Currently supported profiles (in `vllm_mlx/agents/profiles/`):
+Currently supported profiles (in `rapid_mlx/agents/profiles/`):
 
 | Profile | Agent | Auto-setup | Automated Tests |
 |---------|-------|------------|----------------|
@@ -225,5 +225,5 @@ Currently supported profiles (in `vllm_mlx/agents/profiles/`):
 | `smolagents` | smolagents | Env vars | Yes (`test_smolagents_full.py`) |
 
 To add a new agent profile, create a YAML file in
-`vllm_mlx/agents/profiles/` following the structure in
-`aider.yaml`. See `vllm_mlx/agents/base.py` for the data model.
+`rapid_mlx/agents/profiles/` following the structure in
+`aider.yaml`. See `rapid_mlx/agents/base.py` for the data model.

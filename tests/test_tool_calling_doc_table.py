@@ -9,7 +9,7 @@ primary name is a registered name backed by a distinct class.
 import re
 from pathlib import Path
 
-from vllm_mlx.tool_parsers import ToolParserManager
+from rapid_mlx.tool_parsers import ToolParserManager
 
 DOC = Path(__file__).resolve().parent.parent / "docs" / "guides" / "tool-calling.md"
 

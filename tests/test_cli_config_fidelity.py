@@ -8,7 +8,7 @@ Two layers:
      comes back, and proves it stays quiet when correct.
 
 The audit script (scripts/audit_cli_config_fidelity.py) is pure AST and
-imports no mlx/vllm_mlx runtime — it must work on plain Linux CI.
+imports no mlx/rapid_mlx runtime — it must work on plain Linux CI.
 """
 
 from __future__ import annotations
@@ -25,7 +25,7 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 AUDIT = REPO_ROOT / "scripts" / "audit_cli_config_fidelity.py"
-CLI_SOURCE = REPO_ROOT / "vllm_mlx" / "cli.py"
+CLI_SOURCE = REPO_ROOT / "rapid_mlx" / "cli.py"
 
 
 # ---------------------------------------------------------------------------
@@ -33,7 +33,7 @@ CLI_SOURCE = REPO_ROOT / "vllm_mlx" / "cli.py"
 # ---------------------------------------------------------------------------
 
 
-SERVER_SOURCE = REPO_ROOT / "vllm_mlx" / "server.py"
+SERVER_SOURCE = REPO_ROOT / "rapid_mlx" / "server.py"
 
 
 def _serve_command_scheduler_config_kwargs() -> set[str]:
@@ -77,7 +77,7 @@ def test_prefill_step_size_is_plumbed_in_serve_command():
 
 def test_prefill_step_size_is_plumbed_in_server_main():
     """#400 regression for the standalone entry —
-    `python -m vllm_mlx.server --prefill-step-size N` must reach
+    `python -m rapid_mlx.server --prefill-step-size N` must reach
     SchedulerConfig too. Pre-0.6.52 this entrypoint also silently dropped
     the flag; codex round 3 on PR #405 caught it as the same bug class
     in a sibling file the patch already touched.
@@ -86,7 +86,7 @@ def test_prefill_step_size_is_plumbed_in_server_main():
     assert "prefill_step_size" in kwargs, (
         "regression: SchedulerConfig in server.main no longer receives "
         "prefill_step_size — see #400 / PR #405 codex round 3. The "
-        "`python -m vllm_mlx.server` / `mise run` entry must construct a "
+        "`python -m rapid_mlx.server` / `mise run` entry must construct a "
         "SchedulerConfig and pass args.prefill_step_size."
     )
 
@@ -101,7 +101,7 @@ def test_vision_pixel_bounds_are_plumbed_in_both_server_entrypoints():
 
 
 def test_vision_pixel_bounds_cross_validation():
-    from vllm_mlx.cli import _vision_pixel_bounds_error
+    from rapid_mlx.cli import _vision_pixel_bounds_error
 
     assert _vision_pixel_bounds_error(0, 0) is None
     assert _vision_pixel_bounds_error(65_536, 1_048_576) is None
@@ -137,7 +137,7 @@ def test_audit_detects_synthetic_drift(tmp_path):
     fake_cli.write_text(
         textwrap.dedent(
             """
-            from vllm_mlx.scheduler import SchedulerConfig
+            from rapid_mlx.scheduler import SchedulerConfig
 
             def serve_command(args):
                 # args.prefill_step_size is read here (would be from argparse)
@@ -159,7 +159,7 @@ def test_audit_detects_synthetic_drift(tmp_path):
         mod = importlib.import_module("audit_cli_config_fidelity")
         issues = mod.audit(
             cli_path=fake_cli,
-            config_source=REPO_ROOT / "vllm_mlx" / "scheduler.py",
+            config_source=REPO_ROOT / "rapid_mlx" / "scheduler.py",
             config_cls_name="SchedulerConfig",
         )
     finally:
@@ -183,8 +183,8 @@ def test_load_model_prefill_step_size_back_compat_translation(monkeypatch):
     import inspect
     import warnings
 
-    from vllm_mlx import server
-    from vllm_mlx.scheduler import SchedulerConfig
+    from rapid_mlx import server
+    from rapid_mlx.scheduler import SchedulerConfig
 
     # ``dummy-model`` is a placeholder — stub the config-materialization seam so
     # the routing fail-fast doesn't preempt the translation block under test
@@ -209,7 +209,7 @@ def test_load_model_prefill_step_size_back_compat_translation(monkeypatch):
         raise RuntimeError("stop after translation — we only need the kwarg")
 
     # Monkeypatch BatchedEngine to halt after the translation step.
-    import vllm_mlx.engine.batched as batched_mod
+    import rapid_mlx.engine.batched as batched_mod
 
     original = batched_mod.BatchedEngine.__init__
     batched_mod.BatchedEngine.__init__ = fake_engine_init
@@ -247,7 +247,7 @@ def test_audit_no_false_positive_when_field_unused(tmp_path):
     fake_cli.write_text(
         textwrap.dedent(
             """
-            from vllm_mlx.scheduler import SchedulerConfig
+            from rapid_mlx.scheduler import SchedulerConfig
 
             def benchmark_command(args):
                 # This subparser only exposes max_num_seqs — args.prefill_step_size
@@ -265,7 +265,7 @@ def test_audit_no_false_positive_when_field_unused(tmp_path):
         mod = importlib.import_module("audit_cli_config_fidelity")
         issues = mod.audit(
             cli_path=fake_cli,
-            config_source=REPO_ROOT / "vllm_mlx" / "scheduler.py",
+            config_source=REPO_ROOT / "rapid_mlx" / "scheduler.py",
             config_cls_name="SchedulerConfig",
         )
     finally:

@@ -6,7 +6,7 @@ from dataclasses import replace
 
 import pytest
 
-from vllm_mlx.spec_decode.mtp.prepared_state import (
+from rapid_mlx.spec_decode.mtp.prepared_state import (
     PreparedMTPState,
     PreparedStateIdentity,
     PreparedStateMetadata,

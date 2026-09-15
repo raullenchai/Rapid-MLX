@@ -80,8 +80,8 @@ def _stub_engine(monkeypatch):
     # The probe path: pretend mlx_audio is installed.
     import importlib.machinery
 
-    from vllm_mlx.audio import probe
-    from vllm_mlx.routes import audio as audio_route
+    from rapid_mlx.audio import probe
+    from rapid_mlx.routes import audio as audio_route
 
     fake_mlx_audio = types.ModuleType("mlx_audio")
     fake_mlx_audio.__path__ = []
@@ -107,14 +107,14 @@ def _stub_engine(monkeypatch):
     # Patch the STTEngine import inside the audio module so
     # ``_run_stt_request`` picks up our fake engine.
     fake_stt_module = types.SimpleNamespace(STTEngine=_FakeEngine)
-    monkeypatch.setattr("vllm_mlx.audio.stt.STTEngine", _FakeEngine, raising=False)
+    monkeypatch.setattr("rapid_mlx.audio.stt.STTEngine", _FakeEngine, raising=False)
     # The route lazily does ``from ..audio.stt import STTEngine`` so
     # patch the binding inside ``sys.modules`` too.
-    audio_stt_mod = sys.modules.get("vllm_mlx.audio.stt")
+    audio_stt_mod = sys.modules.get("rapid_mlx.audio.stt")
     if audio_stt_mod is not None:
         monkeypatch.setattr(audio_stt_mod, "STTEngine", _FakeEngine)
     else:  # pragma: no cover — first-import fallback
-        monkeypatch.setitem(sys.modules, "vllm_mlx.audio.stt", fake_stt_module)
+        monkeypatch.setitem(sys.modules, "rapid_mlx.audio.stt", fake_stt_module)
 
     # Force-clear the route's module-level engine cache between tests.
     audio_route._stt_engine = None
@@ -126,8 +126,8 @@ def _stub_engine(monkeypatch):
 
 def _mount_audio_app() -> tuple[TestClient, callable]:
     """Mount the audio router on a bare FastAPI app, bypassing auth."""
-    from vllm_mlx.config import get_config
-    from vllm_mlx.routes import audio as audio_route
+    from rapid_mlx.config import get_config
+    from rapid_mlx.routes import audio as audio_route
 
     app = FastAPI()
     app.include_router(audio_route.router)
@@ -353,7 +353,7 @@ class TestSubtitleTimestampRollover:
     def test_timestamp_rollover_carries_correctly(
         self, seconds, expected_srt, expected_vtt
     ):
-        from vllm_mlx.routes.audio import (
+        from rapid_mlx.routes.audio import (
             _format_srt_timestamp,
             _format_vtt_timestamp,
         )
@@ -380,7 +380,7 @@ class TestSubtitleTimestampRollover:
         """
         import re
 
-        from vllm_mlx.routes.audio import (
+        from rapid_mlx.routes.audio import (
             _format_srt_timestamp,
             _format_vtt_timestamp,
         )

@@ -2,7 +2,7 @@
 
 import pytest
 
-from vllm_mlx.utils.chat_template import apply_chat_template
+from rapid_mlx.utils.chat_template import apply_chat_template
 
 MESSAGES = [
     {"role": "system", "content": "You are terse."},

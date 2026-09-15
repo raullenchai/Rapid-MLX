@@ -9,13 +9,13 @@ from types import ModuleType, SimpleNamespace
 import pytest
 from fastapi import HTTPException
 
-from vllm_mlx.speculative.native_mtp.eligibility import (
+from rapid_mlx.speculative.native_mtp.eligibility import (
     GLM53_FLASH_4BIT,
     QWEN36_35B_4BIT,
     NativeMTPUnavailableError,
     resolve_native_mtp_pair,
 )
-from vllm_mlx.speculative.native_mtp.server import _validate_greedy_request
+from rapid_mlx.speculative.native_mtp.server import _validate_greedy_request
 
 try:
     import tomllib
@@ -117,7 +117,7 @@ def test_native_mtp_rejects_logprobs(field: str, value: object) -> None:
 
 
 def test_native_mtp_runtime_probe_is_exact_version(monkeypatch) -> None:
-    from vllm_mlx.speculative.native_mtp import runtime
+    from rapid_mlx.speculative.native_mtp import runtime
 
     monkeypatch.setattr(runtime, "find_spec", lambda _name: object())
     monkeypatch.setattr(runtime, "version", lambda _name: "0.7.1")
@@ -135,7 +135,7 @@ def test_native_mtp_runtime_probe_is_exact_version(monkeypatch) -> None:
 
 
 def test_load_native_mtp_runtime_reports_missing_optional_runtime(monkeypatch) -> None:
-    from vllm_mlx.speculative.native_mtp.runtime import load_runtime
+    from rapid_mlx.speculative.native_mtp.runtime import load_runtime
 
     real_import = builtins.__import__
 
@@ -155,7 +155,7 @@ def test_load_native_mtp_runtime_reports_missing_optional_runtime(monkeypatch) -
 
 
 def test_mtp_extra_carries_the_qualified_native_runtime() -> None:
-    from vllm_mlx.speculative.native_mtp.runtime import QUALIFIED_MLX_VLM_VERSION
+    from rapid_mlx.speculative.native_mtp.runtime import QUALIFIED_MLX_VLM_VERSION
 
     with (Path(__file__).parents[1] / "pyproject.toml").open("rb") as handle:
         extras = tomllib.load(handle)["project"]["optional-dependencies"]
@@ -179,7 +179,7 @@ def _fake_mlx_vlm_modules(monkeypatch, drafter, kind: str = "mtp") -> None:
 
 
 def test_load_native_mtp_runtime_validates_architecture_and_block(monkeypatch) -> None:
-    from vllm_mlx.speculative.native_mtp.runtime import load_runtime
+    from rapid_mlx.speculative.native_mtp.runtime import load_runtime
 
     drafter = SimpleNamespace(
         config=SimpleNamespace(model_type="qwen3_5_mtp", block_size=3),
@@ -221,7 +221,7 @@ def test_load_native_mtp_runtime_validates_architecture_and_block(monkeypatch) -
 
 
 def test_glm_runtime_fails_before_resolving_sidecar(monkeypatch) -> None:
-    from vllm_mlx.speculative.native_mtp import runtime
+    from rapid_mlx.speculative.native_mtp import runtime
 
     drafter = SimpleNamespace(
         config=SimpleNamespace(model_type="glm5_next_mtp", block_size=2)
@@ -243,8 +243,8 @@ def test_glm_runtime_fails_before_resolving_sidecar(monkeypatch) -> None:
 
 
 def test_glm_runtime_structural_probe_and_fail_closed(monkeypatch) -> None:
-    from vllm_mlx.patches import glm5_next_runtime as glm_patch
-    from vllm_mlx.speculative.native_mtp import runtime
+    from rapid_mlx.patches import glm5_next_runtime as glm_patch
+    from rapid_mlx.speculative.native_mtp import runtime
 
     root = ModuleType("mlx_vlm")
     root.__path__ = []
@@ -285,7 +285,7 @@ def test_glm_runtime_structural_probe_and_fail_closed(monkeypatch) -> None:
     mtp.Glm5NextMTPDraftModel = type(
         "Glm5NextMTPDraftModel", (), {"_RAPID_STATELESS_GLM_MTP": True}
     )
-    compat = ModuleType("vllm_mlx.speculative.native_mtp.glm5_compat")
+    compat = ModuleType("rapid_mlx.speculative.native_mtp.glm5_compat")
     compat.install_glm5_mtp_compatibility = lambda: False
     compat._is_stateless_drafter = lambda drafter_type: bool(
         getattr(drafter_type, "_RAPID_STATELESS_GLM_MTP", False)
@@ -301,7 +301,7 @@ def test_glm_runtime_structural_probe_and_fail_closed(monkeypatch) -> None:
         "mlx_vlm.speculative": speculative,
         "mlx_vlm.speculative.drafters": drafters,
         "mlx_vlm.speculative.drafters.glm5_next_mtp": mtp,
-        "vllm_mlx.speculative.native_mtp.glm5_compat": compat,
+        "rapid_mlx.speculative.native_mtp.glm5_compat": compat,
     }.items():
         monkeypatch.setitem(sys.modules, name, module)
     monkeypatch.setattr(glm_patch, "_has_native_glm5_next_runtime", lambda _mod: True)
@@ -324,7 +324,7 @@ def test_glm_runtime_structural_probe_and_fail_closed(monkeypatch) -> None:
 def test_qualified_glm_release_gets_rapid_stateless_adapter() -> None:
     from importlib.metadata import PackageNotFoundError, version
 
-    from vllm_mlx.speculative.native_mtp import runtime
+    from rapid_mlx.speculative.native_mtp import runtime
 
     try:
         installed = version("mlx-vlm")
@@ -349,7 +349,7 @@ def test_qualified_glm_release_gets_rapid_stateless_adapter() -> None:
 
 
 def test_load_glm_runtime_installs_rapid_hooks(monkeypatch) -> None:
-    from vllm_mlx.speculative.native_mtp import runtime, transaction
+    from rapid_mlx.speculative.native_mtp import runtime, transaction
 
     drafter = SimpleNamespace(
         config=SimpleNamespace(model_type="glm5_next_mtp", block_size=2)
@@ -372,7 +372,7 @@ def test_load_glm_runtime_installs_rapid_hooks(monkeypatch) -> None:
 
 
 def test_native_mtp_stats_ignore_non_list_counters() -> None:
-    from vllm_mlx.speculative.native_mtp.runtime import NativeMTPRuntime
+    from rapid_mlx.speculative.native_mtp.runtime import NativeMTPRuntime
 
     drafter = SimpleNamespace(accept_lens=None, draft_lens=(1, 2))
     runtime = NativeMTPRuntime(drafter, "repo", "target", "draft", 3)
@@ -381,8 +381,8 @@ def test_native_mtp_stats_ignore_non_list_counters() -> None:
 
 
 def test_serve_native_mtp_helper_routes_exact_pair(monkeypatch) -> None:
-    from vllm_mlx import cli
-    from vllm_mlx.speculative.native_mtp import server as native_server
+    from rapid_mlx import cli
+    from rapid_mlx.speculative.native_mtp import server as native_server
 
     disk_checks = []
     capacity_checks = []
@@ -459,8 +459,8 @@ def test_serve_native_mtp_helper_routes_exact_pair(monkeypatch) -> None:
 def test_native_mtp_preflight_rejects_wrong_alias_before_runtime_probe(
     monkeypatch,
 ) -> None:
-    from vllm_mlx import cli
-    from vllm_mlx.speculative.native_mtp import runtime
+    from rapid_mlx import cli
+    from rapid_mlx.speculative.native_mtp import runtime
 
     runtime_probes = []
     monkeypatch.setattr(
@@ -482,8 +482,8 @@ def test_native_mtp_preflight_rejects_wrong_alias_before_runtime_probe(
 
 
 def test_native_mtp_preflight_caches_pair(monkeypatch) -> None:
-    from vllm_mlx import cli
-    from vllm_mlx.speculative.native_mtp import runtime
+    from rapid_mlx import cli
+    from rapid_mlx.speculative.native_mtp import runtime
 
     monkeypatch.setattr(runtime, "have_runtime", lambda: True)
     args = SimpleNamespace(
@@ -499,13 +499,13 @@ def test_native_mtp_preflight_caches_pair(monkeypatch) -> None:
 
 
 def test_native_mtp_preflight_is_noop_for_standard_backend() -> None:
-    from vllm_mlx.cli import _preflight_native_mtp_or_exit
+    from rapid_mlx.cli import _preflight_native_mtp_or_exit
 
     assert _preflight_native_mtp_or_exit(SimpleNamespace(mtp_backend=None)) is None
 
 
 def test_native_mtp_preflight_rejects_all_unsupported_features(capsys) -> None:
-    from vllm_mlx.cli import _preflight_native_mtp_or_exit
+    from rapid_mlx.cli import _preflight_native_mtp_or_exit
 
     args = SimpleNamespace(
         mtp_backend="native",
@@ -532,8 +532,8 @@ def test_native_mtp_preflight_rejects_all_unsupported_features(capsys) -> None:
 
 
 def test_native_mtp_preflight_reports_missing_runtime(monkeypatch, capsys) -> None:
-    from vllm_mlx import cli
-    from vllm_mlx.speculative.native_mtp import runtime
+    from rapid_mlx import cli
+    from rapid_mlx.speculative.native_mtp import runtime
 
     monkeypatch.setattr(runtime, "have_runtime", lambda: False)
     args = SimpleNamespace(
@@ -554,8 +554,8 @@ def test_native_mtp_preflight_reports_missing_runtime(monkeypatch, capsys) -> No
 def test_glm_preflight_rejects_old_runtime_before_weight_load(
     monkeypatch, capsys
 ) -> None:
-    from vllm_mlx import cli
-    from vllm_mlx.speculative.native_mtp import runtime
+    from rapid_mlx import cli
+    from rapid_mlx.speculative.native_mtp import runtime
 
     monkeypatch.setattr(runtime, "have_runtime", lambda: True)
     monkeypatch.setattr(runtime, "have_glm_cache_runtime", lambda: False)
@@ -576,7 +576,7 @@ def test_glm_preflight_rejects_old_runtime_before_weight_load(
 
 
 def test_serve_native_mtp_helper_is_noop_for_standard_backend() -> None:
-    from vllm_mlx.cli import _serve_native_mtp_if_requested
+    from rapid_mlx.cli import _serve_native_mtp_if_requested
 
     assert (
         _serve_native_mtp_if_requested(
@@ -591,7 +591,7 @@ def test_serve_native_mtp_helper_is_noop_for_standard_backend() -> None:
 
 
 def test_native_mtp_server_builds_qualified_serial_app(monkeypatch) -> None:
-    from vllm_mlx.speculative.native_mtp import server as native_server
+    from rapid_mlx.speculative.native_mtp import server as native_server
 
     class ImmediateExecutor:
         def submit(self, fn, *args, **kwargs):
@@ -625,11 +625,11 @@ def test_native_mtp_server_builds_qualified_serial_app(monkeypatch) -> None:
     monkeypatch.setattr(native_server, "load_runtime", lambda *args, **kwargs: runtime)
 
     app_kwargs = {}
-    dflash_server = ModuleType("vllm_mlx.speculative.dflash.server")
+    dflash_server = ModuleType("rapid_mlx.speculative.dflash.server")
     dflash_server._dflash_executor = ImmediateExecutor()
     dflash_server._build_app = lambda **kwargs: app_kwargs.update(kwargs) or "app"
     monkeypatch.setitem(
-        sys.modules, "vllm_mlx.speculative.dflash.server", dflash_server
+        sys.modules, "rapid_mlx.speculative.dflash.server", dflash_server
     )
 
     native_server.run_native_mtp_server(
@@ -677,7 +677,7 @@ def test_native_mtp_server_builds_qualified_serial_app(monkeypatch) -> None:
 
 
 def test_native_mtp_server_sanitizes_glm_target_before_load(monkeypatch) -> None:
-    from vllm_mlx.speculative.native_mtp import server as native_server
+    from rapid_mlx.speculative.native_mtp import server as native_server
 
     class ImmediateExecutor:
         def submit(self, fn, *args, **kwargs):
@@ -686,10 +686,10 @@ def test_native_mtp_server_sanitizes_glm_target_before_load(monkeypatch) -> None
             return future
 
     events = []
-    runtime_patch = ModuleType("vllm_mlx.patches.glm5_next_runtime")
+    runtime_patch = ModuleType("rapid_mlx.patches.glm5_next_runtime")
     runtime_patch.install_glm5_next_runtime_fix = lambda: events.append("sanitize")
     monkeypatch.setitem(
-        sys.modules, "vllm_mlx.patches.glm5_next_runtime", runtime_patch
+        sys.modules, "rapid_mlx.patches.glm5_next_runtime", runtime_patch
     )
 
     mlx_vlm = ModuleType("mlx_vlm")
@@ -716,11 +716,11 @@ def test_native_mtp_server_sanitizes_glm_target_before_load(monkeypatch) -> None
     )
     monkeypatch.setattr(native_server, "load_runtime", lambda *args, **kwargs: runtime)
 
-    dflash_server = ModuleType("vllm_mlx.speculative.dflash.server")
+    dflash_server = ModuleType("rapid_mlx.speculative.dflash.server")
     dflash_server._dflash_executor = ImmediateExecutor()
     dflash_server._build_app = lambda **_kwargs: "app"
     monkeypatch.setitem(
-        sys.modules, "vllm_mlx.speculative.dflash.server", dflash_server
+        sys.modules, "rapid_mlx.speculative.dflash.server", dflash_server
     )
 
     native_server.run_native_mtp_server(
@@ -744,7 +744,7 @@ def test_native_mtp_server_sanitizes_glm_target_before_load(monkeypatch) -> None
 
 
 def test_native_mtp_server_reports_missing_optional_runtime(monkeypatch) -> None:
-    from vllm_mlx.speculative.native_mtp import server as native_server
+    from rapid_mlx.speculative.native_mtp import server as native_server
 
     monkeypatch.setitem(sys.modules, "uvicorn", None)
     with pytest.raises(RuntimeError, match=r"rapid-mlx\[mtp\]"):

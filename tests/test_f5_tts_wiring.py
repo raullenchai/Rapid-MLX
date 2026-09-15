@@ -13,9 +13,9 @@ import numpy as np
 import pytest
 from pydantic import ValidationError
 
-from vllm_mlx.api.models import AudioSpeechRequest
-from vllm_mlx.audio.tts import TTSEngine
-from vllm_mlx.routes.audio import _allowed_voices_for, _decode_tts_ref_audio
+from rapid_mlx.api.models import AudioSpeechRequest
+from rapid_mlx.audio.tts import TTSEngine
+from rapid_mlx.routes.audio import _allowed_voices_for, _decode_tts_ref_audio
 
 
 def test_f5_family_is_detected() -> None:

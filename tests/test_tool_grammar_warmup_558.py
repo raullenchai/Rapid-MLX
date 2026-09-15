@@ -12,7 +12,7 @@ import types
 
 import pytest
 
-import vllm_mlx.server as server
+import rapid_mlx.server as server
 
 
 class _StubEngine:
@@ -48,7 +48,7 @@ def _patch(monkeypatch):
         # ``ToolParserManager`` is imported INSIDE the function via
         # ``from .tool_parsers import ToolParserManager``, so patch it on that
         # module (not on ``server``).
-        import vllm_mlx.tool_parsers as tool_parsers
+        import rapid_mlx.tool_parsers as tool_parsers
 
         monkeypatch.setattr(
             tool_parsers.ToolParserManager,
@@ -56,7 +56,7 @@ def _patch(monkeypatch):
             staticmethod(lambda name: parser_cls),
         )
         # HAS_* live on the api.tool_grammar module imported inside the function.
-        import vllm_mlx.api.tool_grammar as tg
+        import rapid_mlx.api.tool_grammar as tg
 
         monkeypatch.setattr(tg, "HAS_LLGUIDANCE", has_llg)
         monkeypatch.setattr(tg, "HAS_LL_TOKENIZER", has_lltok)

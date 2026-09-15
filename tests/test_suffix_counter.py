@@ -14,8 +14,8 @@ from types import SimpleNamespace
 
 import pytest
 
-from vllm_mlx.routes.metrics import _render_suffix_decode_counters
-from vllm_mlx.speculative.suffix_counter import (
+from rapid_mlx.routes.metrics import _render_suffix_decode_counters
+from rapid_mlx.speculative.suffix_counter import (
     SuffixAcceptCounter,
     get_global_counter,
     reset_global_counter,

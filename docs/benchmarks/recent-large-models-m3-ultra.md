@@ -144,7 +144,7 @@ PY
 )"
 
 HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 PYTHONPATH="$SOURCE_TREE" \
-  "$VENV/bin/python" -m vllm_mlx.cli serve qwen3.8-27b-4bit \
+  "$VENV/bin/python" -m rapid_mlx.cli serve qwen3.8-27b-4bit \
   --host 127.0.0.1 --port 8465 --no-thinking
 ```
 

@@ -1,7 +1,7 @@
 import os
 import sys
 
-from vllm_mlx.runtime.process_memory import get_phys_footprint
+from rapid_mlx.runtime.process_memory import get_phys_footprint
 
 
 def test_phys_footprint_is_nonnegative_for_current_process():

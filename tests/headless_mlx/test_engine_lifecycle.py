@@ -7,15 +7,15 @@ from types import SimpleNamespace
 
 import pytest
 
-from vllm_mlx.engine.batched import (  # noqa: E402
+from rapid_mlx.engine.batched import (  # noqa: E402
     ADMISSION_ORPHAN_GRACE_SECONDS,
     BatchedEngine,
     _admission_token_context,
 )
-from vllm_mlx.engine_core import EngineCore  # noqa: E402
-from vllm_mlx.mllm_scheduler import MLLMScheduler  # noqa: E402
-from vllm_mlx.output_collector import RequestOutputCollector  # noqa: E402
-from vllm_mlx.scheduler import BackpressureError, Scheduler  # noqa: E402
+from rapid_mlx.engine_core import EngineCore  # noqa: E402
+from rapid_mlx.mllm_scheduler import MLLMScheduler  # noqa: E402
+from rapid_mlx.output_collector import RequestOutputCollector  # noqa: E402
+from rapid_mlx.scheduler import BackpressureError, Scheduler  # noqa: E402
 
 
 def test_engine_rejects_unknown_serving_lane_reason():
@@ -44,9 +44,9 @@ def test_engine_rejects_reason_for_the_wrong_effective_lane(engine_kwargs, reaso
 
 @pytest.mark.asyncio
 async def test_missing_vision_weights_update_live_lane_reason(monkeypatch):
-    from vllm_mlx.models import mllm as mllm_mod
+    from rapid_mlx.models import mllm as mllm_mod
 
-    monkeypatch.setattr("vllm_mlx.engine.batched.is_mllm_model", lambda _: True)
+    monkeypatch.setattr("rapid_mlx.engine.batched.is_mllm_model", lambda _: True)
 
     class FakeTextOnlyMLLM:
         def __init__(self, model_name, trust_remote_code=True):
@@ -198,7 +198,7 @@ async def test_abort_pause_cancels_request_stalled_before_scheduler_commit():
 async def test_pre_scheduler_abort_returns_terminal_non_streaming_503():
     from fastapi import HTTPException
 
-    from vllm_mlx.service.helpers import _wait_with_disconnect
+    from rapid_mlx.service.helpers import _wait_with_disconnect
 
     engine, _ = _engine()
     preprocessing = asyncio.Event()
@@ -238,7 +238,7 @@ async def test_pre_scheduler_abort_returns_terminal_non_streaming_503():
 async def test_route_boundary_translates_lifecycle_abort_before_helper_binding():
     from fastapi import HTTPException
 
-    from vllm_mlx.service.helpers import _raise_lifecycle_cancel_or_reraise
+    from rapid_mlx.service.helpers import _raise_lifecycle_cancel_or_reraise
 
     engine, _ = _engine()
     adapting = asyncio.Event()
@@ -266,7 +266,7 @@ async def test_route_boundary_translates_lifecycle_abort_before_helper_binding()
 
 @pytest.mark.asyncio
 async def test_route_boundary_preserves_unowned_cancellation():
-    from vllm_mlx.service.helpers import _raise_lifecycle_cancel_or_reraise
+    from rapid_mlx.service.helpers import _raise_lifecycle_cancel_or_reraise
 
     engine, _ = _engine()
     error = asyncio.CancelledError("client disconnected")
@@ -280,7 +280,7 @@ async def test_route_boundary_preserves_unowned_cancellation():
 async def test_pre_scheduler_abort_emits_terminal_streaming_error():
     import json
 
-    from vllm_mlx.service.helpers import _disconnect_guard
+    from rapid_mlx.service.helpers import _disconnect_guard
 
     engine, _ = _engine()
     preprocessing = asyncio.Event()
@@ -323,7 +323,7 @@ async def test_pre_scheduler_abort_emits_terminal_streaming_error():
 
 @pytest.mark.asyncio
 async def test_text_core_reports_scheduler_commit_before_waiting_for_output():
-    from vllm_mlx.request import SamplingParams
+    from rapid_mlx.request import SamplingParams
 
     core = EngineCore.__new__(EngineCore)
     committed = []
@@ -465,7 +465,7 @@ async def test_direct_stream_precommit_failure_releases_admission():
 async def test_engine_precommit_cleanup_preserves_lifecycle_route_translation():
     from fastapi import HTTPException
 
-    from vllm_mlx.service.helpers import _raise_lifecycle_cancel_or_reraise
+    from rapid_mlx.service.helpers import _raise_lifecycle_cancel_or_reraise
 
     engine, scheduler = _engine()
     entered_precommit = asyncio.Event()
@@ -957,7 +957,7 @@ def test_mllm_lifecycle_abort_records_reason_until_terminal_delivery():
 
 
 def test_mllm_abort_remains_queued_until_terminal_delivery():
-    from vllm_mlx.runtime.model_performance import ModelPerformanceLedger
+    from rapid_mlx.runtime.model_performance import ModelPerformanceLedger
 
     scheduler = MLLMScheduler.__new__(MLLMScheduler)
     scheduler.waiting = []
@@ -977,7 +977,7 @@ def test_mllm_abort_remains_queued_until_terminal_delivery():
 
 
 def test_mllm_terminal_delivery_is_counted_by_engine_lifecycle():
-    from vllm_mlx.runtime.model_performance import ModelPerformanceLedger
+    from rapid_mlx.runtime.model_performance import ModelPerformanceLedger
 
     engine, _ = _engine()
     scheduler = MLLMScheduler.__new__(MLLMScheduler)
@@ -1006,7 +1006,7 @@ def test_mllm_terminal_delivery_is_counted_by_engine_lifecycle():
 
 @pytest.mark.asyncio
 async def test_mllm_abort_unblocks_consumer_as_inference_error():
-    from vllm_mlx.request import InferenceAbortedError, RequestOutput
+    from rapid_mlx.request import InferenceAbortedError, RequestOutput
 
     scheduler = MLLMScheduler.__new__(MLLMScheduler)
     scheduler.output_queues = {"active": asyncio.Queue()}
@@ -1028,7 +1028,7 @@ async def test_mllm_abort_unblocks_consumer_as_inference_error():
 
 @pytest.mark.asyncio
 async def test_text_abort_preserves_lifecycle_reason_through_stream_consumer():
-    from vllm_mlx.request import InferenceAbortedError
+    from rapid_mlx.request import InferenceAbortedError
 
     engine = EngineCore.__new__(EngineCore)
     engine.scheduler = SimpleNamespace(abort_request=lambda _request_id: True)
@@ -1050,8 +1050,8 @@ async def test_text_abort_preserves_lifecycle_reason_through_stream_consumer():
 async def test_post_commit_lifecycle_abort_emits_model_replacement_sse():
     import json
 
-    from vllm_mlx.request import InferenceAbortedError
-    from vllm_mlx.service.helpers import _disconnect_guard
+    from rapid_mlx.request import InferenceAbortedError
+    from rapid_mlx.service.helpers import _disconnect_guard
 
     engine, _ = _engine()
 
@@ -1091,11 +1091,11 @@ def test_headless_scheduler_initializers_publish_lifecycle_state(monkeypatch):
 
     tokenizer = SimpleNamespace(eos_token_id=2, encode=lambda _text: [])
     monkeypatch.setattr(
-        "vllm_mlx.mllm_scheduler.MultimodalProcessor",
+        "rapid_mlx.mllm_scheduler.MultimodalProcessor",
         lambda **_kwargs: SimpleNamespace(),
     )
     monkeypatch.setattr(
-        "vllm_mlx.mllm_scheduler.MLLMCacheManager", lambda **_kwargs: object()
+        "rapid_mlx.mllm_scheduler.MLLMCacheManager", lambda **_kwargs: object()
     )
     text = Scheduler(SimpleNamespace(), tokenizer)
     vision = MLLMScheduler(
@@ -1215,8 +1215,8 @@ async def test_mllm_generation_precommit_failures_release_admission():
 
 @pytest.mark.asyncio
 async def test_engine_core_error_and_async_abort_contracts():
-    from vllm_mlx.engine_core import AsyncEngineCore
-    from vllm_mlx.request import InferenceAbortedError, RequestOutput
+    from rapid_mlx.engine_core import AsyncEngineCore
+    from rapid_mlx.request import InferenceAbortedError, RequestOutput
 
     core = EngineCore.__new__(EngineCore)
 
@@ -1256,13 +1256,13 @@ async def test_engine_core_error_and_async_abort_contracts():
     ("module_name", "entrypoint", "request_factory", "cancel_target"),
     [
         (
-            "vllm_mlx.routes.chat",
+            "rapid_mlx.routes.chat",
             "create_chat_completion",
             lambda: (SimpleNamespace(model="gpt-5"), SimpleNamespace()),
             "_create_chat_completion_impl",
         ),
         (
-            "vllm_mlx.routes.completions",
+            "rapid_mlx.routes.completions",
             "create_completion",
             lambda: ("completion-request", SimpleNamespace()),
             "logger.info",
@@ -1310,7 +1310,7 @@ async def test_route_wrappers_translate_owned_cancellation(
     ("module_name", "entrypoint", "body", "cancel_target"),
     [
         (
-            "vllm_mlx.routes.anthropic",
+            "rapid_mlx.routes.anthropic",
             "create_anthropic_message",
             {
                 "model": "claude-local",
@@ -1320,7 +1320,7 @@ async def test_route_wrappers_translate_owned_cancellation(
             "logger.info",
         ),
         (
-            "vllm_mlx.routes.responses",
+            "rapid_mlx.routes.responses",
             "create_response",
             {"model": "gpt-5", "input": "hello"},
             "_log_request",
@@ -1364,7 +1364,7 @@ async def test_json_route_wrappers_translate_owned_cancellation(
 
 
 def test_scheduler_commit_and_reset_lifecycle_edges():
-    from vllm_mlx.request import Request, SamplingParams
+    from rapid_mlx.request import Request, SamplingParams
 
     tokenizer = SimpleNamespace(eos_token_id=2, encode=lambda _text: [1, 2])
     scheduler = Scheduler(SimpleNamespace(), tokenizer)
@@ -1401,7 +1401,7 @@ def test_scheduler_commit_and_reset_lifecycle_edges():
 def test_mllm_commit_abort_distribution_cleanup_and_reset(monkeypatch):
     from collections import deque
 
-    from vllm_mlx.mllm_scheduler import MLLMRequest, MLLMSchedulerOutput
+    from rapid_mlx.mllm_scheduler import MLLMRequest, MLLMSchedulerOutput
 
     scheduler = MLLMScheduler.__new__(MLLMScheduler)
     scheduler._cancel_counter_lock = threading.Lock()
@@ -1474,7 +1474,7 @@ def test_mllm_commit_abort_distribution_cleanup_and_reset(monkeypatch):
         return "generated"
 
     async def stream_outputs(_request_id):
-        from vllm_mlx.request import RequestOutput
+        from rapid_mlx.request import RequestOutput
 
         yield RequestOutput(request_id="generated", finished=True)
 
@@ -1517,8 +1517,8 @@ def test_mllm_commit_abort_distribution_cleanup_and_reset(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_disconnect_helpers_preserve_non_lifecycle_failures():
-    from vllm_mlx.request import ClientRequestError
-    from vllm_mlx.service.helpers import _disconnect_guard, _wait_with_disconnect
+    from rapid_mlx.request import ClientRequestError
+    from rapid_mlx.service.helpers import _disconnect_guard, _wait_with_disconnect
 
     engine, _ = _engine()
 

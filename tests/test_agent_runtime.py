@@ -8,7 +8,7 @@ from threading import Barrier
 import pytest
 from pydantic import ValidationError
 
-from vllm_mlx.agent_runtime import (
+from rapid_mlx.agent_runtime import (
     AgentEvent,
     AgentModelTurn,
     AgentProfile,

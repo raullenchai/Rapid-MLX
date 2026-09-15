@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Contract pins for ``vllm_mlx.telemetry.queue.TelemetryQueue``.
+"""Contract pins for ``rapid_mlx.telemetry.queue.TelemetryQueue``.
 
 Properties to lock down:
 - ``enqueue`` is non-blocking (no network on hot path).
@@ -14,7 +14,7 @@ from __future__ import annotations
 import threading
 import time
 
-from vllm_mlx.telemetry.queue import (
+from rapid_mlx.telemetry.queue import (
     FLUSH_INTERVAL_S,
     FLUSH_THRESHOLD,
     MAX_QUEUE_LEN,

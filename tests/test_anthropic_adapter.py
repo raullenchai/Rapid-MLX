@@ -2,7 +2,7 @@
 """
 Tests for Anthropic-to-OpenAI adapter conversion functions.
 
-Tests all conversion functions in vllm_mlx/api/anthropic_adapter.py.
+Tests all conversion functions in rapid_mlx/api/anthropic_adapter.py.
 These are pure logic tests with no MLX dependency.
 """
 
@@ -10,7 +10,7 @@ import json
 
 import pytest
 
-from vllm_mlx.api.anthropic_adapter import (
+from rapid_mlx.api.anthropic_adapter import (
     _convert_message,
     _convert_stop_reason,
     _convert_tool,
@@ -54,13 +54,13 @@ def assert_tool_use_id_shape(id_str: str) -> None:
     assert tail, f"tool_use.id tail must be non-empty (got {id_str!r})"
 
 
-from vllm_mlx.api.anthropic_models import (
+from rapid_mlx.api.anthropic_models import (
     AnthropicContentBlock,
     AnthropicMessage,
     AnthropicRequest,
     AnthropicToolDef,
 )
-from vllm_mlx.api.models import (
+from rapid_mlx.api.models import (
     AssistantMessage,
     ChatCompletionChoice,
     ChatCompletionResponse,
@@ -600,7 +600,7 @@ class TestOpenaiToAnthropic:
         breakpoints (billed 1.25x), which has no analog on a local
         KV-cache engine.
         """
-        from vllm_mlx.api.models import PromptTokensDetails
+        from rapid_mlx.api.models import PromptTokensDetails
 
         msg = AssistantMessage(content="hi")
         choice = ChatCompletionChoice(message=msg, finish_reason="stop")
@@ -633,7 +633,7 @@ class TestOpenaiToAnthropic:
         equal to the full prompt — every input token is attributed
         to cache.
         """
-        from vllm_mlx.api.models import PromptTokensDetails
+        from rapid_mlx.api.models import PromptTokensDetails
 
         msg = AssistantMessage(content="hi")
         choice = ChatCompletionChoice(message=msg, finish_reason="stop")

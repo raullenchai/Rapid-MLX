@@ -91,8 +91,8 @@ TOOLS = [
 # opt into grammar constraint in this PR. Parametrizing over the REAL parser
 # classes proves BOTH overrides (not a shared stub) with one test body.
 _PARSER_IMPORTS = {
-    "hermes": ("vllm_mlx.tool_parsers.hermes_tool_parser", "HermesToolParser"),
-    "qwen": ("vllm_mlx.tool_parsers.qwen_tool_parser", "QwenToolParser"),
+    "hermes": ("rapid_mlx.tool_parsers.hermes_tool_parser", "HermesToolParser"),
+    "qwen": ("rapid_mlx.tool_parsers.qwen_tool_parser", "QwenToolParser"),
 }
 
 
@@ -256,7 +256,7 @@ def test_structure_info_opts_in_on_non_special_added_token(family):
     # REGISTRATION, not the `special` flag — gating on special==True would break
     # the feature for its own target tokenizer. `_single_token_tokenizer` models
     # special=False added tokens, so this asserting opt-in is the regression.
-    from vllm_mlx.api.tool_grammar import are_single_special_tokens
+    from rapid_mlx.api.tool_grammar import are_single_special_tokens
 
     tokenizer = _single_token_tokenizer()
     # Every modeled added token carries special=False (matches real Qwen).
@@ -272,7 +272,7 @@ def test_structure_info_opts_in_on_non_special_added_token(family):
 # --------------------------------------------------------------------------
 @pytest.mark.parametrize("family", ["hermes", "qwen"])
 def test_structure_info_returns_hermes_wire_triple(family):
-    from vllm_mlx.api.tool_grammar import StructureInfo
+    from rapid_mlx.api.tool_grammar import StructureInfo
 
     parser = _make_optin_parser(family)
     get_info = parser.structure_info()
@@ -344,7 +344,7 @@ def test_hermes_and_qwen_share_identical_wire(family):
 def test_real_parser_builds_grammar(family, tool_choice):
     # Driving the REAL parser (not a stub) through the public builder yields a
     # compiled grammar (non-None) for both required and auto.
-    from vllm_mlx.api.tool_grammar import build_tool_grammar
+    from rapid_mlx.api.tool_grammar import build_tool_grammar
 
     parser = _make_optin_parser(family)
     assert build_tool_grammar(TOOLS, tool_choice, parser) is not None
@@ -358,7 +358,7 @@ def test_real_parser_lark_has_trigger_and_schema_region(family):
     # </tool_call> bare closing ref, and a %json schema-constraint region.
     # Pure ``build_tool_lark`` (string assembly) — needs NO llguidance, so this
     # test always runs (it does not compile the grammar).
-    from vllm_mlx.api.tool_grammar import build_tool_lark
+    from rapid_mlx.api.tool_grammar import build_tool_lark
 
     get_info = _make_optin_parser(family).structure_info()
     infos = [get_info(t["name"]) for t in TOOLS]
@@ -612,7 +612,7 @@ def _consume(grammar, lltok, tok, text):
 def test_valid_call_is_accepted_and_terminates(family, tok, lltok):
     # A well-formed call through the REAL parser's grammar is accepted in full
     # AND is a terminal/accepting state (a complete valid derivation).
-    from vllm_mlx.api.tool_grammar import build_tool_grammar
+    from rapid_mlx.api.tool_grammar import build_tool_grammar
 
     grammar = build_tool_grammar(TOOLS, "required", _make_parser(family, tok))
     assert grammar is not None
@@ -632,7 +632,7 @@ def test_valid_enum_value_is_accepted(family, tok, lltok):
     # Positive enum control (paired with the rejection test below): a VALID enum
     # value is accepted and terminates — so the rejection test cannot pass merely
     # because the grammar forbids the optional `unit` property entirely.
-    from vllm_mlx.api.tool_grammar import build_tool_grammar
+    from rapid_mlx.api.tool_grammar import build_tool_grammar
 
     grammar = build_tool_grammar(TOOLS, "required", _make_parser(family, tok))
     accepted, total, accepting = _consume(
@@ -650,7 +650,7 @@ def test_valid_enum_value_is_accepted(family, tok, lltok):
 @_requires_llguidance
 @pytest.mark.parametrize("family", ["hermes", "qwen"])
 def test_hallucinated_tool_name_is_rejected(family, tok, lltok):
-    from vllm_mlx.api.tool_grammar import build_tool_grammar
+    from rapid_mlx.api.tool_grammar import build_tool_grammar
 
     grammar = build_tool_grammar(TOOLS, "required", _make_parser(family, tok))
     accepted, total, _ = _consume(
@@ -663,7 +663,7 @@ def test_hallucinated_tool_name_is_rejected(family, tok, lltok):
 @pytest.mark.parametrize("family", ["hermes", "qwen"])
 def test_off_schema_argument_is_rejected(family, tok, lltok):
     # `city` must be a string; an integer must be forbidden.
-    from vllm_mlx.api.tool_grammar import build_tool_grammar
+    from rapid_mlx.api.tool_grammar import build_tool_grammar
 
     grammar = build_tool_grammar(TOOLS, "required", _make_parser(family, tok))
     accepted, total, _ = _consume(
@@ -679,7 +679,7 @@ def test_off_schema_argument_is_rejected(family, tok, lltok):
 @pytest.mark.parametrize("family", ["hermes", "qwen"])
 def test_bad_enum_value_is_rejected(family, tok, lltok):
     # `unit` enum is {c, f}; "kelvin" must be forbidden.
-    from vllm_mlx.api.tool_grammar import build_tool_grammar
+    from rapid_mlx.api.tool_grammar import build_tool_grammar
 
     grammar = build_tool_grammar(TOOLS, "required", _make_parser(family, tok))
     accepted, total, _ = _consume(

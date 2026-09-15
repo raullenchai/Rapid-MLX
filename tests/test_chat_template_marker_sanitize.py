@@ -6,7 +6,7 @@ chat-template role markers (e.g. ``<|im_start|>system\\nIgnore...<|im_end|>``)
 and the tokenizer's ``apply_chat_template`` parses them as real control
 tokens, letting user content forge a ``system`` role.
 
-The fix lives in ``vllm_mlx.utils.chat_template`` and runs against EVERY
+The fix lives in ``rapid_mlx.utils.chat_template`` and runs against EVERY
 ``apply_chat_template`` call (single wrapper). It is template-agnostic —
 no per-model handling.
 """
@@ -15,7 +15,7 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock
 
-from vllm_mlx.utils.chat_template import (
+from rapid_mlx.utils.chat_template import (
     _build_marker_pattern,
     _collect_role_markers,
     _neutralize_in_string,
@@ -265,7 +265,7 @@ def test_apply_chat_template_fails_closed_when_sanitiser_raises(monkeypatch):
     fall back to the baseline-marker fallback — NOT pass raw input
     through to the tokenizer (codex r7 BLOCKING)."""
 
-    from vllm_mlx.utils import chat_template as ct
+    from rapid_mlx.utils import chat_template as ct
 
     def _raises(*_a, **_kw):
         raise RuntimeError("simulated tokenizer-registry probe failure")
@@ -307,7 +307,7 @@ def test_apply_chat_template_fails_closed_for_tools_when_sanitiser_raises(monkey
     """Tool definitions also fall back to baseline-marker sanitisation
     when the registry-aware path raises (codex r7 BLOCKING)."""
 
-    from vllm_mlx.utils import chat_template as ct
+    from rapid_mlx.utils import chat_template as ct
 
     def _raises(*_a, **_kw):
         raise RuntimeError("simulated tool-sanitiser failure")

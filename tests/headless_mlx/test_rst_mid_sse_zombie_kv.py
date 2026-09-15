@@ -44,7 +44,7 @@ def _build_engine_core_mock():
     ``add_request`` reads: ``scheduler``, ``_mlx_executor``,
     ``_idle_event``, the collectors / events / stream-state dicts, and
     a ``config`` carrying ``stream_interval``."""
-    from vllm_mlx.engine_core import EngineCore
+    from rapid_mlx.engine_core import EngineCore
 
     eng = EngineCore.__new__(EngineCore)
     # Per-request state (allocated inside add_request)
@@ -87,7 +87,7 @@ async def test_add_request_cancellation_aborts_after_executor_completes():
     import time as _time
     from concurrent.futures import ThreadPoolExecutor
 
-    from vllm_mlx.request import SamplingParams
+    from rapid_mlx.request import SamplingParams
 
     eng = _build_engine_core_mock()
 
@@ -192,7 +192,7 @@ async def test_add_request_success_path_does_not_abort():
     """
     from concurrent.futures import ThreadPoolExecutor
 
-    from vllm_mlx.request import SamplingParams
+    from rapid_mlx.request import SamplingParams
 
     eng = _build_engine_core_mock()
 
@@ -235,7 +235,7 @@ async def test_stream_generate_finally_is_double_safety_net():
     on the scheduler itself (``_do_abort_request`` handles
     double-abort).
     """
-    from vllm_mlx.engine.batched import BatchedEngine
+    from rapid_mlx.engine.batched import BatchedEngine
 
     eng = BatchedEngine("fake-model")
     eng._loaded = True
@@ -259,7 +259,7 @@ async def test_stream_generate_finally_is_double_safety_net():
 
     async def stream_outputs(request_id):
         # Single chunk so the consumer enters the loop body
-        from vllm_mlx.request import RequestOutput
+        from rapid_mlx.request import RequestOutput
 
         try:
             yield RequestOutput(
@@ -331,7 +331,7 @@ async def test_add_request_pure_cancellation_before_executor_runs():
     import time as _time
     from concurrent.futures import ThreadPoolExecutor
 
-    from vllm_mlx.request import SamplingParams
+    from rapid_mlx.request import SamplingParams
 
     eng = _build_engine_core_mock()
 

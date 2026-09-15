@@ -8,7 +8,7 @@ is exercised every gate run. This test keeps that spec well-formed so a
 future maintainer can extend it without silently breaking the gate driver.
 
 This test is pure-CPU / no MLX. It reads the YAML file and, when available,
-cross-checks every alias against ``vllm_mlx/aliases.json``. ``aliases.json``
+cross-checks every alias against ``rapid_mlx/aliases.json``. ``aliases.json``
 is plain data (no mlx import at module load), so the whole module stays out
 of the no-MLX Linux test-matrix constraint.
 
@@ -29,7 +29,7 @@ What it pins (schema v4):
   * A sequence whose name is ``*-aba`` loads the SAME model first and last,
     and a DIFFERENT model in between (the A->B->A invariant).
   * Every step ``model`` is a top-10 alias (v4 dropped the absolute-path form)
-    and resolves in the repo's ``vllm_mlx/aliases.json``.
+    and resolves in the repo's ``rapid_mlx/aliases.json``.
   * Every step carries ``expected_status``; ``replace_group`` constrained to
     ``"assistant"`` or ``null``; ``replace_mode`` constrained to the loader's
     accepted set; optional positive ``timeout_seconds`` on steps and sequences.
@@ -53,7 +53,7 @@ import yaml
 
 _REPO_ROOT = Path(__file__).resolve().parents[1]
 _SEQUENCES_FILE = _REPO_ROOT / "tests" / "integrations" / "top10_sequences.yaml"
-_ALIASES_FILE = _REPO_ROOT / "vllm_mlx" / "aliases.json"
+_ALIASES_FILE = _REPO_ROOT / "rapid_mlx" / "aliases.json"
 _AGENT_SMOKE_FILE = _REPO_ROOT / "tests" / "integrations" / "agent_smoke.sh"
 
 VALID_REPLACE_MODES = frozenset({"reject", "wait", "abort"})
@@ -286,7 +286,7 @@ def test_top_10_aliases_are_strings_and_unique(spec) -> None:
 def test_all_top_10_aliases_resolve_in_aliases_json(spec) -> None:
     keys = set(_aliases())
     for alias in spec["top_10_aliases"]:
-        assert alias in keys, f"top-10 alias {alias!r} is not in vllm_mlx/aliases.json"
+        assert alias in keys, f"top-10 alias {alias!r} is not in rapid_mlx/aliases.json"
 
 
 def _assert_metric_expectation_shape(mx, seq_name, idx) -> None:

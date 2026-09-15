@@ -2,7 +2,7 @@
 
 import pytest
 
-from vllm_mlx.spec_decode.mtp.prompt_lookup import (
+from rapid_mlx.spec_decode.mtp.prompt_lookup import (
     PromptLookupIndex,
     PromptLookupPolicy,
 )
@@ -152,7 +152,7 @@ def test_sampled_prompt_lookup_override_cannot_enable_an_unqualified_family(
     per-family, so ``=1`` on an unqualified family must stay off while ``=0``
     still takes a qualified one off the route.
     """
-    from vllm_mlx.spec_decode.mtp.generator import _effective_prompt_lookup_policy
+    from rapid_mlx.spec_decode.mtp.generator import _effective_prompt_lookup_policy
 
     class _Model:
         mtp_prompt_lookup_supported = True

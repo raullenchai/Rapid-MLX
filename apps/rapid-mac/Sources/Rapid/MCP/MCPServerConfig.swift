@@ -12,9 +12,9 @@ private struct MCPConsentFingerprint: Encodable {
 
 /// One MCP server entry, as it round-trips through `~/.config/rapid-mlx/mcp.json`.
 ///
-/// Mirrors the engine's `MCPServerConfig` (`vllm_mlx/mcp/types.py`) field for
+/// Mirrors the engine's `MCPServerConfig` (`rapid_mlx/mcp/types.py`) field for
 /// field. The engine is the one that actually spawns these processes and
-/// validates them (`vllm_mlx/mcp/security.py`); this type exists so the app can
+/// validates them (`rapid_mlx/mcp/security.py`); this type exists so the app can
 /// author the file the engine reads, and so the editor sheet has something
 /// typed to bind to.
 struct MCPServerConfig: Codable, Equatable, Hashable, Sendable, Identifiable {
@@ -80,7 +80,7 @@ struct MCPServerConfig: Codable, Equatable, Hashable, Sendable, Identifiable {
     /// Longest server name we accept.
     ///
     /// The engine namespaces every tool as `server__tool`
-    /// (`vllm_mlx/mcp/types.py: MCPTool.full_name`), and that composite string
+    /// (`rapid_mlx/mcp/types.py: MCPTool.full_name`), and that composite string
     /// travels as an OpenAI function name — which the spec caps at 64
     /// characters from `[a-zA-Z0-9_-]`. Capping the server half at 32 leaves
     /// room for a realistic tool name plus the two-underscore separator, and

@@ -6,10 +6,10 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from vllm_mlx.reasoning.base import DeltaMessage, ReasoningParser
-from vllm_mlx.reasoning.deepseek_r1_parser import DeepSeekR1DistillReasoningParser
-from vllm_mlx.service.postprocessor import StreamingPostProcessor
-from vllm_mlx.tool_parsers.llama_tool_parser import LlamaToolParser
+from rapid_mlx.reasoning.base import DeltaMessage, ReasoningParser
+from rapid_mlx.reasoning.deepseek_r1_parser import DeepSeekR1DistillReasoningParser
+from rapid_mlx.service.postprocessor import StreamingPostProcessor
+from rapid_mlx.tool_parsers.llama_tool_parser import LlamaToolParser
 
 
 def _make_cfg(**overrides):
@@ -572,7 +572,7 @@ class TestStreamingPostProcessorToolCalls:
         from unittest.mock import patch
 
         with patch(
-            "vllm_mlx.service.postprocessor.parse_tool_calls",
+            "rapid_mlx.service.postprocessor.parse_tool_calls",
             side_effect=RuntimeError("boom"),
         ):
             events = pp.finalize()
@@ -668,7 +668,7 @@ class TestStreamingPostProcessorGemma4StrippedForm:
     """
 
     def _make_pp_with_real_parser(self):
-        from vllm_mlx.tool_parsers.gemma4_tool_parser import Gemma4ToolParser
+        from rapid_mlx.tool_parsers.gemma4_tool_parser import Gemma4ToolParser
 
         parser = Gemma4ToolParser()
         cfg = _make_cfg(
@@ -2439,7 +2439,7 @@ class TestCoverageGaps:
         cfg = _make_cfg(reasoning_parser_name="minimax")
         # Make ToolParserManager.get_tool_parser raise for "minimax"
         with patch(
-            "vllm_mlx.tool_parsers.ToolParserManager.get_tool_parser",
+            "rapid_mlx.tool_parsers.ToolParserManager.get_tool_parser",
             side_effect=KeyError("minimax not found"),
         ):
             pp = StreamingPostProcessor(cfg, tools_requested=True)
@@ -2491,7 +2491,7 @@ class TestCoverageGaps:
         pp.reset()
 
         # sanitize_output returns empty → content becomes None
-        with patch("vllm_mlx.service.postprocessor.sanitize_output", return_value=""):
+        with patch("rapid_mlx.service.postprocessor.sanitize_output", return_value=""):
             out = _make_output("some text", channel="content")
             events = pp.process_chunk(out)
             content_events = [e for e in events if e.type == "content"]
@@ -2549,7 +2549,7 @@ class TestCoverageGaps:
         pp = StreamingPostProcessor(cfg)
         pp.reset()
 
-        with patch("vllm_mlx.service.postprocessor.sanitize_output", return_value=""):
+        with patch("rapid_mlx.service.postprocessor.sanitize_output", return_value=""):
             events = pp.process_chunk(_make_output("text"))
             content_events = [e for e in events if e.type == "content"]
             assert len(content_events) == 0
@@ -2562,7 +2562,7 @@ class TestCoverageGaps:
         pp = StreamingPostProcessor(cfg)
         pp.reset()
 
-        with patch("vllm_mlx.service.postprocessor.sanitize_output", return_value=""):
+        with patch("rapid_mlx.service.postprocessor.sanitize_output", return_value=""):
             events = pp.process_chunk(_make_output("text"))
             content_events = [e for e in events if e.type == "content"]
             assert len(content_events) == 0
@@ -2612,7 +2612,7 @@ class TestCoverageGaps:
 
         # strip_special_tokens returns empty string → content=None, no finish → []
         with patch(
-            "vllm_mlx.service.postprocessor.strip_special_tokens", return_value=""
+            "rapid_mlx.service.postprocessor.strip_special_tokens", return_value=""
         ):
             events = pp.process_chunk(_make_output("some_special_token"))
             assert len(events) == 0
@@ -2626,7 +2626,7 @@ class TestCoverageGaps:
         # Text that sanitizes to nothing
         from unittest.mock import patch
 
-        with patch("vllm_mlx.service.postprocessor.sanitize_output", return_value=""):
+        with patch("rapid_mlx.service.postprocessor.sanitize_output", return_value=""):
             events = pp.process_chunk(_make_output("some text"))
             # sanitize returned empty, no finish → empty list
             content_events = [e for e in events if e.type == "content"]
@@ -2898,7 +2898,7 @@ class TestRequestForwardedToToolParser:
     def test_qwen3_coder_streaming_with_request_extracts_tool_call(self):
         """End-to-end: real qwen3_coder parser + request → structured tool_calls,
         not raw XML in content. Reproduces #171."""
-        from vllm_mlx.tool_parsers.qwen3coder_tool_parser import (
+        from rapid_mlx.tool_parsers.qwen3coder_tool_parser import (
             Qwen3CoderToolParser,
         )
 
@@ -2968,7 +2968,7 @@ class TestRequestForwardedToToolParser:
     @pytest.mark.parametrize("closer", ["</parameter>", "</function>", "</tool_call>"])
     def test_qwen3_coder_finalize_preserves_closer_in_legacy_raw_value(self, closer):
         """#1515: ambiguous raw XML is resolved from the complete EOS buffer."""
-        from vllm_mlx.tool_parsers.qwen3coder_tool_parser import (
+        from rapid_mlx.tool_parsers.qwen3coder_tool_parser import (
             Qwen3CoderToolParser,
         )
 
@@ -3017,7 +3017,7 @@ class TestRequestForwardedToToolParser:
 
     def test_qwen3_coder_finalize_recovers_truncated_legacy_raw_call(self):
         """EOS recovery retains the pre-#1515 malformed-call contract."""
-        from vllm_mlx.tool_parsers.qwen3coder_tool_parser import (
+        from rapid_mlx.tool_parsers.qwen3coder_tool_parser import (
             Qwen3CoderToolParser,
         )
 
@@ -3055,7 +3055,7 @@ class TestRequestForwardedToToolParser:
 
     def test_qwen3_coder_later_legacy_raw_parameter_defers_whole_call(self):
         """A canonical first parameter must not hide a later raw parameter."""
-        from vllm_mlx.tool_parsers.qwen3coder_tool_parser import (
+        from rapid_mlx.tool_parsers.qwen3coder_tool_parser import (
             Qwen3CoderToolParser,
         )
 
@@ -3102,7 +3102,7 @@ class TestRequestForwardedToToolParser:
         assert json.loads(arguments) == {"path": "a.md", "content": value}
 
     def test_qwen3_coder_finalize_targets_later_deferred_call(self):
-        from vllm_mlx.tool_parsers.qwen3coder_tool_parser import (
+        from rapid_mlx.tool_parsers.qwen3coder_tool_parser import (
             Qwen3CoderToolParser,
         )
 

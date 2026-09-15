@@ -14,7 +14,7 @@ from unittest.mock import patch
 
 import pytest
 
-from vllm_mlx.chat_mcp import (
+from rapid_mlx.chat_mcp import (
     ChatMCPRuntime,
     ChatToolEvent,
     _coerce_scalar,
@@ -22,7 +22,7 @@ from vllm_mlx.chat_mcp import (
     _quiet_optional_component_warnings,
     _server_parameters,
 )
-from vllm_mlx.mcp.types import MCPServerConfig, MCPTransport
+from rapid_mlx.mcp.types import MCPServerConfig, MCPTransport
 
 
 class _FakeResult:
@@ -605,7 +605,7 @@ def test_runtime_coerces_scalar_arguments_the_model_mistyped(tmp_path):
 def test_runtime_truncates_oversized_tool_results(tmp_path, monkeypatch):
     """One large read must not be able to consume the whole context budget."""
 
-    monkeypatch.setattr("vllm_mlx.chat_mcp._MAX_TOOL_RESULT_CHARS", 200)
+    monkeypatch.setattr("rapid_mlx.chat_mcp._MAX_TOOL_RESULT_CHARS", 200)
     path = _write_config(
         tmp_path,
         {"alpha": {"command": "python3", "args": ["alpha", "lookup"]}},

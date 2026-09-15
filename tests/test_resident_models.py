@@ -8,8 +8,8 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from vllm_mlx.runtime.model_registry import ModelEntry, ModelRegistry
-from vllm_mlx.runtime.resident_models import (
+from rapid_mlx.runtime.model_registry import ModelEntry, ModelRegistry
+from rapid_mlx.runtime.resident_models import (
     ResidencyRecord,
     ResidentModelBusyError,
     ResidentModelCapacityError,
@@ -73,8 +73,8 @@ async def test_dynamic_resident_auto_detected_hybrid_gets_bounded_prefix_reuse(
     model_path,
 ):
     """Runtime residency must consume the same architecture truth as serve."""
-    from vllm_mlx import server
-    from vllm_mlx.model_profile import ModelProfile
+    from rapid_mlx import server
+    from rapid_mlx.model_profile import ModelProfile
 
     captured = {}
 
@@ -95,9 +95,9 @@ async def test_dynamic_resident_auto_detected_hybrid_gets_bounded_prefix_reuse(
     monkeypatch.setattr(
         server, "resolve_serving_lane", lambda _name, **_kwargs: (False, True)
     )
-    monkeypatch.setattr("vllm_mlx.model_aliases.resolve_profile", lambda _name: None)
+    monkeypatch.setattr("rapid_mlx.model_aliases.resolve_profile", lambda _name: None)
     monkeypatch.setattr(
-        "vllm_mlx.model_auto_config.detect_model_config",
+        "rapid_mlx.model_auto_config.detect_model_config",
         lambda _name: ModelProfile(
             is_hybrid=True,
             is_hybrid_explicit=True,
@@ -118,8 +118,8 @@ async def test_dynamic_resident_auto_detected_hybrid_gets_bounded_prefix_reuse(
 async def test_dynamic_resident_prefix_disable_keeps_hybrid_entries_zero(
     monkeypatch, scheduler_config_stub
 ):
-    from vllm_mlx import server
-    from vllm_mlx.model_profile import ModelProfile
+    from rapid_mlx import server
+    from rapid_mlx.model_profile import ModelProfile
 
     captured = {}
 
@@ -140,9 +140,9 @@ async def test_dynamic_resident_prefix_disable_keeps_hybrid_entries_zero(
     monkeypatch.setattr(
         server, "resolve_serving_lane", lambda _name, **_kwargs: (False, True)
     )
-    monkeypatch.setattr("vllm_mlx.model_aliases.resolve_profile", lambda _name: None)
+    monkeypatch.setattr("rapid_mlx.model_aliases.resolve_profile", lambda _name: None)
     monkeypatch.setattr(
-        "vllm_mlx.model_auto_config.detect_model_config",
+        "rapid_mlx.model_auto_config.detect_model_config",
         lambda _name: ModelProfile(
             is_hybrid=True,
             is_hybrid_explicit=True,
@@ -166,8 +166,8 @@ async def test_dynamic_resident_prefix_disable_keeps_hybrid_entries_zero(
 async def test_dynamic_resident_full_attention_stays_unbounded(
     monkeypatch, scheduler_config_stub
 ):
-    from vllm_mlx import server
-    from vllm_mlx.model_profile import ModelProfile
+    from rapid_mlx import server
+    from rapid_mlx.model_profile import ModelProfile
 
     captured = {}
 
@@ -188,9 +188,9 @@ async def test_dynamic_resident_full_attention_stays_unbounded(
     monkeypatch.setattr(
         server, "resolve_serving_lane", lambda _name, **_kwargs: (False, False)
     )
-    monkeypatch.setattr("vllm_mlx.model_aliases.resolve_profile", lambda _name: None)
+    monkeypatch.setattr("rapid_mlx.model_aliases.resolve_profile", lambda _name: None)
     monkeypatch.setattr(
-        "vllm_mlx.model_auto_config.detect_model_config",
+        "rapid_mlx.model_auto_config.detect_model_config",
         lambda _name: ModelProfile(is_hybrid=False),
     )
 
@@ -210,7 +210,7 @@ async def test_dynamic_resident_loads_singleton_no_refs_snapshot_offline(
 
     import huggingface_hub
 
-    from vllm_mlx import server
+    from rapid_mlx import server
 
     repo = "mlx-community/Qwen3.5-2B-MLX-4bit"
     revision = "93760be4f1f69842a46bc13dbdc0f19e291392a3"
@@ -257,7 +257,7 @@ async def test_dynamic_resident_loads_singleton_no_refs_snapshot_offline(
     def fail_on_network(_name):
         raise AssertionError("singleton snapshot must never need the network")
 
-    monkeypatch.setattr("vllm_mlx.cli._ensure_model_downloaded", fail_on_network)
+    monkeypatch.setattr("rapid_mlx.cli._ensure_model_downloaded", fail_on_network)
     monkeypatch.setattr(server, "_ensure_routing_config", lambda _name: None)
     monkeypatch.setattr(
         server,
@@ -298,7 +298,7 @@ async def test_dynamic_resident_preserves_explicit_subfolder_alias(
     """Residency and startup must apply the same alias-over-marker precedence."""
     from types import SimpleNamespace
 
-    from vllm_mlx import server
+    from rapid_mlx import server
 
     alias = "lfm2.5-2.6b-4bit"
     repo = "LiquidAI/LFM2.5-2.6B-MLX"
@@ -343,8 +343,8 @@ async def test_dynamic_switch_restores_hybrid_text_lane(
     """A large hybrid checkpoint keeps its lane after a small-model switch."""
     import json
 
-    from vllm_mlx import server
-    from vllm_mlx.api import utils as utils_mod
+    from rapid_mlx import server
+    from rapid_mlx.api import utils as utils_mod
 
     large = tmp_path / "qwen35-9b"
     small = tmp_path / "qwen3-06b"
@@ -394,7 +394,7 @@ async def test_dynamic_switch_restores_hybrid_text_lane(
             pass
 
     monkeypatch.setattr(server, "BatchedEngine", FakeEngine)
-    monkeypatch.setattr("vllm_mlx.model_aliases.resolve_profile", lambda _name: None)
+    monkeypatch.setattr("rapid_mlx.model_aliases.resolve_profile", lambda _name: None)
     # Exercise the real resolver across both switches.  Only host capabilities
     # are fixed: the large checkpoint's own metadata must select the hybrid
     # text fallback, while the small text checkpoint must not inherit it.
@@ -559,7 +559,7 @@ def test_residency_snapshot_exposes_live_serving_lane_truth():
 
 
 def test_live_engine_exposes_serving_lane_decision():
-    from vllm_mlx.engine.batched import BatchedEngine
+    from rapid_mlx.engine.batched import BatchedEngine
 
     engine = BatchedEngine.__new__(BatchedEngine)
     engine._is_mllm = True
@@ -572,7 +572,7 @@ def test_live_engine_exposes_serving_lane_decision():
 def test_models_lane_fields_use_matching_live_engine(monkeypatch):
     from types import SimpleNamespace
 
-    from vllm_mlx.routes import models as models_route
+    from rapid_mlx.routes import models as models_route
 
     engine = SimpleNamespace(
         serving_lane="text",
@@ -594,7 +594,7 @@ def test_models_lane_fields_use_matching_live_engine(monkeypatch):
 @pytest.fixture
 def residency_activity_contract(monkeypatch):
     """Exercise the activity SSOT from the MLX-free Linux fixed selector."""
-    from vllm_mlx.runtime.resident_models import _engine_active_requests
+    from rapid_mlx.runtime.resident_models import _engine_active_requests
 
     class ProgressEngine:
         def progress_snapshot(self):
@@ -1998,7 +1998,7 @@ async def test_task_cancel_during_sibling_cleanup_reopens_remaining_sibling():
 async def test_existing_target_cancel_reopens_unretired_sibling(monkeypatch):
     # This contract is about cancellation ownership, not allocator latency.
     monkeypatch.setattr(
-        "vllm_mlx.runtime.resident_models._release_allocator_cache", lambda: None
+        "rapid_mlx.runtime.resident_models._release_allocator_cache", lambda: None
     )
     registry = ModelRegistry()
     primary_engine = BlockingStopLifecycleEngine()
@@ -2201,7 +2201,7 @@ async def test_cancel_secondary_replace_keeps_sibling_charged_and_cleaned():
 async def test_suspended_stop_does_not_block_lease_or_unrelated_op(monkeypatch):
     """LOCK SAFETY: suspended stop must not block unrelated manager ops."""
     monkeypatch.setattr(
-        "vllm_mlx.runtime.resident_models._release_allocator_cache", lambda: None
+        "rapid_mlx.runtime.resident_models._release_allocator_cache", lambda: None
     )
     registry = ModelRegistry()
     primary_engine = BlockingStopLifecycleEngine()
@@ -2809,9 +2809,9 @@ async def test_per_model_performance_reload_replaces_only_the_target_engine():
 
 
 def test_performance_reload_preserves_alias_in_routing_and_models_list(monkeypatch):
-    from vllm_mlx.config import get_config, reset_config
-    from vllm_mlx.routes import models as models_route
-    from vllm_mlx.routes import residency as residency_route
+    from rapid_mlx.config import get_config, reset_config
+    from rapid_mlx.routes import models as models_route
+    from rapid_mlx.routes import residency as residency_route
 
     repo = "mlx-community/Qwen3-0.6B-4bit"
     alias = "qwen3-0.6b-4bit"
@@ -3134,7 +3134,7 @@ async def test_restore_publication_failure_tolerates_cleanup_failures(caplog):
 def test_clearing_resident_primary_disables_legacy_routing_and_readiness(monkeypatch):
     from types import SimpleNamespace
 
-    from vllm_mlx import server
+    from rapid_mlx import server
 
     cfg = SimpleNamespace()
     monkeypatch.setattr(server, "get_config", lambda: cfg)
@@ -3281,11 +3281,11 @@ async def test_soak_load_evict_cycles_stay_inside_ceiling():
 def test_residency_control_plane_load_pin_status_and_unload(monkeypatch):
     from types import SimpleNamespace
 
-    from vllm_mlx.routes.residency import router
+    from rapid_mlx.routes.residency import router
 
     manager, registry, _, _ = manager_fixture(limit_gib=12)
     monkeypatch.setattr(
-        "vllm_mlx.routes.residency.get_config",
+        "rapid_mlx.routes.residency.get_config",
         lambda: SimpleNamespace(residency_manager=manager),
     )
     app = FastAPI()
@@ -3328,12 +3328,12 @@ def test_models_load_requires_strict_json_booleans(monkeypatch):
     """
     from types import SimpleNamespace
 
-    from vllm_mlx.middleware.exception_handlers import install_exception_handlers
-    from vllm_mlx.routes.residency import router
+    from rapid_mlx.middleware.exception_handlers import install_exception_handlers
+    from rapid_mlx.routes.residency import router
 
     manager, registry, _, _ = manager_fixture(limit_gib=12)
     monkeypatch.setattr(
-        "vllm_mlx.routes.residency.get_config",
+        "rapid_mlx.routes.residency.get_config",
         lambda: SimpleNamespace(residency_manager=manager),
     )
     app = FastAPI()
@@ -3382,14 +3382,14 @@ def test_residency_snapshot_reports_primary_running_and_queued_requests(monkeypa
     """Primary requests bypass manager leases but still belong in residency."""
     from types import SimpleNamespace
 
-    from vllm_mlx.routes.residency import router
+    from rapid_mlx.routes.residency import router
 
     manager, registry, _, _ = manager_fixture(limit_gib=12)
     primary = registry.get_engine("chat")
     primary.running = 1
     primary.waiting = 1
     monkeypatch.setattr(
-        "vllm_mlx.routes.residency.get_config",
+        "rapid_mlx.routes.residency.get_config",
         lambda: SimpleNamespace(residency_manager=manager),
     )
     app = FastAPI()
@@ -3406,7 +3406,7 @@ def test_residency_snapshot_reports_primary_running_and_queued_requests(monkeypa
 def test_residency_control_plane_forwards_abort_replacement_policy(monkeypatch):
     from types import SimpleNamespace
 
-    from vllm_mlx.routes.residency import router
+    from rapid_mlx.routes.residency import router
 
     registry = ModelRegistry()
     old_engine = FakeLifecycleEngine()
@@ -3419,7 +3419,7 @@ def test_residency_control_plane_forwards_abort_replacement_policy(monkeypatch):
     manager = ResidentModelManager(registry, loader, memory_reader=lambda: 0)
     manager.register_primary(primary, estimated_bytes=4 * GIB)
     monkeypatch.setattr(
-        "vllm_mlx.routes.residency.get_config",
+        "rapid_mlx.routes.residency.get_config",
         lambda: SimpleNamespace(residency_manager=manager),
     )
     app = FastAPI()
@@ -3454,12 +3454,12 @@ def test_residency_control_plane_returns_typed_replacement_capacity_projection(
 ):
     from types import SimpleNamespace
 
-    from vllm_mlx.middleware.exception_handlers import install_exception_handlers
-    from vllm_mlx.routes.residency import router
+    from rapid_mlx.middleware.exception_handlers import install_exception_handlers
+    from rapid_mlx.routes.residency import router
 
     manager, registry, loaded, _ = manager_fixture(limit_gib=6)
     monkeypatch.setattr(
-        "vllm_mlx.routes.residency.get_config",
+        "rapid_mlx.routes.residency.get_config",
         lambda: SimpleNamespace(residency_manager=manager),
     )
     app = FastAPI()
@@ -3506,16 +3506,16 @@ def test_residency_control_plane_uses_model_path_group_for_destructive_admission
 ):
     from types import SimpleNamespace
 
-    from vllm_mlx.routes.residency import router
+    from rapid_mlx.routes.residency import router
 
     manager, registry, loaded, _ = manager_fixture(limit_gib=6)
     profiles = {
         "chat-alias": SimpleNamespace(modality="text"),
         "repo/image": SimpleNamespace(modality="image-gen"),
     }
-    monkeypatch.setattr("vllm_mlx.routes.residency.resolve_profile", profiles.get)
+    monkeypatch.setattr("rapid_mlx.routes.residency.resolve_profile", profiles.get)
     monkeypatch.setattr(
-        "vllm_mlx.routes.residency.get_config",
+        "rapid_mlx.routes.residency.get_config",
         lambda: SimpleNamespace(residency_manager=manager),
     )
     app = FastAPI()
@@ -3542,15 +3542,15 @@ def test_residency_control_plane_uses_model_path_group_for_destructive_admission
 def test_residency_unknown_model_path_falls_back_to_safe_admission(monkeypatch):
     from types import SimpleNamespace
 
-    from vllm_mlx.routes.residency import router
+    from rapid_mlx.routes.residency import router
 
     manager, registry, loaded, _ = manager_fixture(limit_gib=6)
     monkeypatch.setattr(
-        "vllm_mlx.routes.residency.resolve_profile",
+        "rapid_mlx.routes.residency.resolve_profile",
         lambda name: SimpleNamespace(modality="text") if name == "chat-alias" else None,
     )
     monkeypatch.setattr(
-        "vllm_mlx.routes.residency.get_config",
+        "rapid_mlx.routes.residency.get_config",
         lambda: SimpleNamespace(residency_manager=manager),
     )
     app = FastAPI()
@@ -3576,11 +3576,11 @@ def test_residency_unknown_model_path_falls_back_to_safe_admission(monkeypatch):
 def test_residency_control_plane_preserves_generic_capacity_error(monkeypatch):
     from types import SimpleNamespace
 
-    from vllm_mlx.routes.residency import router
+    from rapid_mlx.routes.residency import router
 
     manager, _, _, _ = manager_fixture(limit_gib=6)
     monkeypatch.setattr(
-        "vllm_mlx.routes.residency.get_config",
+        "rapid_mlx.routes.residency.get_config",
         lambda: SimpleNamespace(residency_manager=manager),
     )
     app = FastAPI()
@@ -3599,11 +3599,11 @@ def test_residency_control_plane_preserves_generic_capacity_error(monkeypatch):
 def test_residency_control_plane_validates_and_forwards_performance(monkeypatch):
     from types import SimpleNamespace
 
-    from vllm_mlx.routes.residency import router
+    from rapid_mlx.routes.residency import router
 
     manager, registry, loaded, _ = manager_fixture(limit_gib=20)
     monkeypatch.setattr(
-        "vllm_mlx.routes.residency.get_config",
+        "rapid_mlx.routes.residency.get_config",
         lambda: SimpleNamespace(residency_manager=manager),
     )
     app = FastAPI()
@@ -3643,7 +3643,7 @@ def test_residency_control_plane_validates_and_forwards_performance(monkeypatch)
         assert conflict.status_code == 422
 
         monkeypatch.setattr(
-            "vllm_mlx.routes.residency.resolve_profile",
+            "rapid_mlx.routes.residency.resolve_profile",
             lambda _name: SimpleNamespace(modality="image-gen"),
         )
         image_override = client.post(
@@ -3662,11 +3662,11 @@ def test_resident_performance_uses_cli_kv_safety_gate(monkeypatch):
     unsupported family is now REJECTED with the shared typed error
     (mapped to 422 by the residency route) instead of being silently
     downgraded to bf16 as before."""
-    from vllm_mlx.kv_cache_dtype import KVCacheQuantizationUnsupportedError
-    from vllm_mlx.runtime.resident_models import resolve_resident_performance
+    from rapid_mlx.kv_cache_dtype import KVCacheQuantizationUnsupportedError
+    from rapid_mlx.runtime.resident_models import resolve_resident_performance
 
     monkeypatch.setattr(
-        "vllm_mlx.cli._gather_kv_cache_dtype_inputs",
+        "rapid_mlx.cli._gather_kv_cache_dtype_inputs",
         lambda _name: ({"sliding_window": 4096}, None),
     )
     with pytest.raises(KVCacheQuantizationUnsupportedError):
@@ -3682,15 +3682,15 @@ def test_residency_route_maps_kv_unsupported_rejection_to_422(monkeypatch):
     actionable 422 BEFORE load, not a 500 from the generic handler."""
     from types import SimpleNamespace
 
-    from vllm_mlx.routes.residency import router
+    from rapid_mlx.routes.residency import router
 
     manager, _, _, _ = manager_fixture(limit_gib=20)
     monkeypatch.setattr(
-        "vllm_mlx.routes.residency.get_config",
+        "rapid_mlx.routes.residency.get_config",
         lambda: SimpleNamespace(residency_manager=manager),
     )
     monkeypatch.setattr(
-        "vllm_mlx.cli._gather_kv_cache_dtype_inputs",
+        "rapid_mlx.cli._gather_kv_cache_dtype_inputs",
         # Sliding-window layout with an explicit quantized-KV perf request:
         # resolve_resident_performance raises KVCacheQuantizationUnsupportedError.
         lambda _name: ({"sliding_window": 4096}, None),
@@ -4159,7 +4159,7 @@ async def test_alignment_role_commit_finalize_is_cancellation_shielded():
     shield, so whether the cancellation is handled by that shield or by the
     ``committed`` rollback branch, the invariant holds: sibling retired,
     alignment record resident."""
-    from vllm_mlx.runtime.resident_models import ResidentRoleAdmission
+    from rapid_mlx.runtime.resident_models import ResidentRoleAdmission
 
     manager, _ = role_manager_fixture(limit_gib=1.0)
     GIB = 1024**3
@@ -4494,7 +4494,7 @@ async def test_capacity_507_envelope_includes_charged_retirement(
     cleanup_state, monkeypatch
 ):
     monkeypatch.setattr(
-        "vllm_mlx.runtime.resident_models._release_allocator_cache", lambda: None
+        "rapid_mlx.runtime.resident_models._release_allocator_cache", lambda: None
     )
     registry = ModelRegistry()
     engine = BlockingStopLifecycleEngine()

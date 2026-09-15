@@ -23,13 +23,13 @@ if not mx.metal.is_available():  # pragma: no cover - CI runners have Metal
 
 from mlx_lm.models import gated_delta as gd
 
-from vllm_mlx import gdn_prefill
+from rapid_mlx import gdn_prefill
 
 
 def _stock_kernel():
     """The unwrapped mlx-lm kernel, regardless of whether install() ran.
 
-    Another test module importing ``vllm_mlx.scheduler`` installs the
+    Another test module importing ``rapid_mlx.scheduler`` installs the
     wrapper at collection time; comparing against the module attribute
     would then be fast-path-versus-fast-path. The wrapper carries the
     true stock implementation on ``._stock``.
@@ -198,7 +198,7 @@ class TestEligibilityGate:
 
 class TestInstall:
     """Each test restores the TRUE stock kernel first: another test module
-    importing ``vllm_mlx.scheduler`` may have installed the wrapper at
+    importing ``rapid_mlx.scheduler`` may have installed the wrapper at
     collection time, and reload+install against an already-wrapped module
     attribute would otherwise test the wrong object.
     """

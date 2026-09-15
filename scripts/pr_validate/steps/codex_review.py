@@ -90,8 +90,8 @@ CODEX_MODEL = (
 # false "missing brace" / "undefined symbol" findings.
 #
 # Previously 120_000. Bumped to 200_000 on PR #551 — a 143 KB PR
-# whose entire runtime (vllm_mlx/runtime/diffusion_lane.py, ~1100
-# new lines + tests) and dispatcher (vllm_mlx/server.py) were the
+# whose entire runtime (rapid_mlx/runtime/diffusion_lane.py, ~1100
+# new lines + tests) and dispatcher (rapid_mlx/server.py) were the
 # specific files getting omitted, leaving codex with only the
 # adjacent test/config/alias files. That produced "alias is live
 # but engine wiring cannot be reviewed" meta-BLOCKING findings on
@@ -251,7 +251,7 @@ Return a numbered list of CONCRETE issues. For each:
 
 Example:
 ```
-1. [BLOCKING] vllm_mlx/routes/chat.py:918 — `assert isinstance(_msg, dict)` is stripped under `python -O`, leaving the guard inert in production. Fix: replace with `if not isinstance(_msg, dict): raise TypeError(...)`.
+1. [BLOCKING] rapid_mlx/routes/chat.py:918 — `assert isinstance(_msg, dict)` is stripped under `python -O`, leaving the guard inert in production. Fix: replace with `if not isinstance(_msg, dict): raise TypeError(...)`.
 2. [NIT] tests/test_x.py:42 — assertion is loose. Fix: replace `assert result` with `assert result.status_code == 200`.
 ```
 

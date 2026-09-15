@@ -10,14 +10,14 @@ from types import SimpleNamespace
 import pytest
 from PIL import Image
 
-from vllm_mlx import _download_gate
-from vllm_mlx.image.engine import (
+from rapid_mlx import _download_gate
+from rapid_mlx.image.engine import (
     ImageGenerationCancelled,
     ImageGenerationEngine,
     ImageRuntimeError,
     _detect_family,
 )
-from vllm_mlx.model_aliases import resolve_profile
+from rapid_mlx.model_aliases import resolve_profile
 
 REPO = "stabilityai/stable-diffusion-xl-base-1.0"
 REVISION = "462165984030d82259a11f4367a4eed129e94a7b"
@@ -48,11 +48,11 @@ def test_sdxl_family_detection(name: str) -> None:
 
 def test_sdxl_alias_has_size_and_native_catalog_adapter() -> None:
     sizes = json.loads(
-        (Path(__file__).parents[1] / "vllm_mlx/model_sizes.json").read_text()
+        (Path(__file__).parents[1] / "rapid_mlx/model_sizes.json").read_text()
     )["sizes"]
     assert sizes[REPO] == 6_941_201_645
 
-    from vllm_mlx.catalog.legacy import _main_capabilities
+    from rapid_mlx.catalog.legacy import _main_capabilities
 
     capabilities = _main_capabilities(resolve_profile("sdxl-base"))
     assert capabilities["runtime_adapter"] == "rapid_mlx/sdxl"
@@ -102,7 +102,7 @@ def test_vendored_runtime_is_torch_free_and_reports_each_step(
 ) -> None:
     import mlx.core as mx
 
-    from vllm_mlx.image.sdxl_runtime import runtime
+    from rapid_mlx.image.sdxl_runtime import runtime
 
     calls = []
 
@@ -153,7 +153,7 @@ def test_vendored_runtime_is_torch_free_and_reports_each_step(
 def test_engine_build_dispatch_progress_cancel_and_validation(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from vllm_mlx.image import sdxl_runtime
+    from rapid_mlx.image import sdxl_runtime
 
     built = []
 
@@ -285,7 +285,7 @@ def test_cold_engine_download_uses_exact_revision_and_data_only_allowlist(
 def test_pull_uses_exact_revision_and_data_allowlist(
     monkeypatch: pytest.MonkeyPatch, requested: str
 ) -> None:
-    from vllm_mlx import cli
+    from rapid_mlx import cli
 
     calls = []
     monkeypatch.setattr(
@@ -310,7 +310,7 @@ def test_pull_uses_exact_revision_and_data_allowlist(
 def test_sdxl_preflight_uses_vendored_runtime_dependencies(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from vllm_mlx.runtime import image_lane
+    from rapid_mlx.runtime import image_lane
 
     probes = []
     monkeypatch.setattr(
@@ -328,7 +328,7 @@ def test_memory_preflight_sizes_only_the_pinned_sdxl_payload(
     import huggingface_hub
     import psutil
 
-    from vllm_mlx import cli
+    from rapid_mlx import cli
 
     monkeypatch.setattr(
         huggingface_hub,
@@ -344,7 +344,7 @@ def test_memory_preflight_sizes_only_the_pinned_sdxl_payload(
 
 
 def test_vendored_runtime_provenance_travels_with_source() -> None:
-    root = Path(__file__).parents[1] / "vllm_mlx/image/sdxl_runtime"
+    root = Path(__file__).parents[1] / "rapid_mlx/image/sdxl_runtime"
     notice = (root / "NOTICE").read_text()
     license_text = (root / "LICENSE").read_text()
     assert "a26b42aee4e31999dbb4429226b66d896d49e1d8" in notice

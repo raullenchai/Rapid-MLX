@@ -57,14 +57,14 @@ class TestHealthzDrainState:
     """``cfg.draining=True`` flips ``/healthz`` from 200 to 503."""
 
     def _make_app(self):
-        from vllm_mlx.routes.health import probe_router
+        from rapid_mlx.routes.health import probe_router
 
         app = FastAPI()
         app.include_router(probe_router)
         return app
 
     def _patch_config(self, **kwargs):
-        from vllm_mlx.config import get_config
+        from rapid_mlx.config import get_config
 
         cfg = get_config()
         originals = {}
@@ -74,7 +74,7 @@ class TestHealthzDrainState:
         return originals
 
     def _restore_config(self, originals):
-        from vllm_mlx.config import get_config
+        from rapid_mlx.config import get_config
 
         cfg = get_config()
         for k, v in originals.items():
@@ -151,7 +151,7 @@ class TestHealthzDrainStateFastPath:
     critical k8s-probe load (which is exactly when drain happens)."""
 
     def _patch_config(self, **kwargs):
-        from vllm_mlx.config import get_config
+        from rapid_mlx.config import get_config
 
         cfg = get_config()
         originals = {}
@@ -161,14 +161,14 @@ class TestHealthzDrainStateFastPath:
         return originals
 
     def _restore_config(self, originals):
-        from vllm_mlx.config import get_config
+        from rapid_mlx.config import get_config
 
         cfg = get_config()
         for k, v in originals.items():
             setattr(cfg, k, v)
 
     def test_fastpath_payload_builder_flips_to_503_when_draining(self):
-        from vllm_mlx.middleware.probe_fastpath import _build_healthz_payload
+        from rapid_mlx.middleware.probe_fastpath import _build_healthz_payload
 
         orig = self._patch_config(
             engine=None,
@@ -185,7 +185,7 @@ class TestHealthzDrainStateFastPath:
             self._restore_config(orig)
 
     def test_fastpath_payload_builder_returns_200_when_not_draining(self):
-        from vllm_mlx.middleware.probe_fastpath import _build_healthz_payload
+        from rapid_mlx.middleware.probe_fastpath import _build_healthz_payload
 
         orig = self._patch_config(
             engine=None,
@@ -237,7 +237,7 @@ class TestServePortCollisionExitCode:
             script = textwrap.dedent(
                 f"""
                 import sys
-                from vllm_mlx.cli import _port_preflight_or_die
+                from rapid_mlx.cli import _port_preflight_or_die
                 _port_preflight_or_die("127.0.0.1", {port}, model="stub")
                 # If preflight didn't exit, that's the bug — exit 0 here
                 # so the test sees a passing subprocess and fails the
@@ -287,7 +287,7 @@ class TestResponsesUnknownRole:
     def test_unknown_role_rejected_by_validator(self):
         from pydantic import ValidationError
 
-        from vllm_mlx.api.responses_models import ResponsesInputItem
+        from rapid_mlx.api.responses_models import ResponsesInputItem
 
         with pytest.raises(ValidationError) as ei:
             ResponsesInputItem(
@@ -307,7 +307,7 @@ class TestResponsesUnknownRole:
     )
     def test_known_roles_accepted_by_validator(self, role):
         """Every documented Responses-API role passes validation."""
-        from vllm_mlx.api.responses_models import ResponsesInputItem
+        from rapid_mlx.api.responses_models import ResponsesInputItem
 
         item = ResponsesInputItem(
             type="message",
@@ -320,7 +320,7 @@ class TestResponsesUnknownRole:
         """``function_call`` / ``function_call_output`` / ``reasoning``
         items have no ``role`` on the wire — the validator must accept
         ``role=None`` so those item types still flow through."""
-        from vllm_mlx.api.responses_models import ResponsesInputItem
+        from rapid_mlx.api.responses_models import ResponsesInputItem
 
         item = ResponsesInputItem(
             type="function_call",
@@ -338,7 +338,7 @@ class TestResponsesUnknownRole:
         called out by name."""
         from pydantic import ValidationError
 
-        from vllm_mlx.api.responses_models import ResponsesRequest
+        from rapid_mlx.api.responses_models import ResponsesRequest
 
         with pytest.raises(ValidationError) as ei:
             ResponsesRequest(
@@ -366,7 +366,7 @@ class TestResponsesUnknownRole:
 @pytest.fixture
 def patched_config():
     """Patches the global cfg singleton for the test then restores."""
-    from vllm_mlx.config import get_config
+    from rapid_mlx.config import get_config
 
     cfg = get_config()
     saved: dict = {}
@@ -395,7 +395,7 @@ class _StubGenerationOutput:
 
 def _build_completions_app(patch_cfg, monkeypatch, *, engine_factory=None):
     """Wire a stub completions app with a MagicMock engine."""
-    from vllm_mlx.routes import completions as comp_route
+    from rapid_mlx.routes import completions as comp_route
 
     app = FastAPI()
     app.include_router(comp_route.router)
@@ -588,7 +588,7 @@ class _LogprobsCapableEngine:
     async def chat(self, messages, **kwargs):
         """Non-streaming branch (logprobs=false). Single output, no
         per-step logprobs distribution."""
-        from vllm_mlx.engine.base import GenerationOutput
+        from rapid_mlx.engine.base import GenerationOutput
 
         return GenerationOutput(
             text="hi",
@@ -603,7 +603,7 @@ class _LogprobsCapableEngine:
     async def stream_chat(self, messages, **kwargs):
         import mlx.core as mx
 
-        from vllm_mlx.engine.base import GenerationOutput
+        from rapid_mlx.engine.base import GenerationOutput
 
         # Fake per-step logprobs: a 1D mlx.array distribution over a
         # tiny vocab so ``argpartition`` is well-defined for both
@@ -625,8 +625,8 @@ class _LogprobsCapableEngine:
 
 
 def _make_chat_client(engine) -> TestClient:
-    from vllm_mlx.config import reset_config
-    from vllm_mlx.routes.chat import router as chat_router
+    from rapid_mlx.config import reset_config
+    from rapid_mlx.routes.chat import router as chat_router
 
     cfg = reset_config()
     cfg.engine = engine
@@ -646,7 +646,7 @@ class TestChatLogprobsBaseSemantic:
 
     @pytest.fixture(autouse=True)
     def _reset(self):
-        from vllm_mlx.config import reset_config
+        from rapid_mlx.config import reset_config
 
         yield
         reset_config()

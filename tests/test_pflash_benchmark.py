@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """Tests for the PFlash bench helper added in #287."""
 
-from vllm_mlx.cli import _build_benchmark_context
+from rapid_mlx.cli import _build_benchmark_context
 
 
 def test_pflash_benchmark_context_can_generate_long_prompts():

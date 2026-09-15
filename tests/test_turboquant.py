@@ -10,7 +10,7 @@ pytestmark = pytest.mark.requires_mlx
 import mlx.core as mx
 import numpy as np
 
-from vllm_mlx.turboquant import (
+from rapid_mlx.turboquant import (
     LLOYD_MAX_BOUNDARIES,
     LLOYD_MAX_CODEBOOKS,
     TurboQuantConfig,
@@ -487,7 +487,7 @@ class TestMemoryCacheIntegration:
 
     def test_compress_decompress_roundtrip(self):
         """Compress then decompress should produce valid KVCache layers."""
-        from vllm_mlx.memory_cache import (
+        from rapid_mlx.memory_cache import (
             _turboquant_compress_cache,
             _turboquant_decompress_cache,
         )
@@ -508,7 +508,7 @@ class TestMemoryCacheIntegration:
 
     def test_compress_memory_reduction(self):
         """Compressed cache should use less total memory."""
-        from vllm_mlx.memory_cache import (
+        from rapid_mlx.memory_cache import (
             _turboquant_compress_cache,
             estimate_kv_cache_memory,
         )
@@ -526,7 +526,7 @@ class TestMemoryCacheIntegration:
 
     def test_none_layers_passthrough(self):
         """None layers should pass through unchanged."""
-        from vllm_mlx.memory_cache import (
+        from rapid_mlx.memory_cache import (
             _turboquant_compress_cache,
             _turboquant_decompress_cache,
         )
@@ -544,7 +544,7 @@ class TestMemoryCacheIntegration:
 
         from mlx_lm.models.cache import KVCache
 
-        from vllm_mlx.memory_cache import _turboquant_compress_cache
+        from rapid_mlx.memory_cache import _turboquant_compress_cache
 
         # Create a mix: KVCache + non-KVCache
         kv = KVCache()
@@ -564,7 +564,7 @@ class TestMemoryCacheIntegration:
 
     def test_trim_cache_offset_with_turboquant(self):
         """_trim_cache_offset should trim TurboQuantKVCache without mutating original."""
-        from vllm_mlx.memory_cache import (
+        from rapid_mlx.memory_cache import (
             _trim_cache_offset,
             _turboquant_compress_cache,
         )
@@ -594,7 +594,7 @@ class TestMemoryCacheIntegration:
 
         from mlx_lm.models.cache import KVCache
 
-        from vllm_mlx.memory_cache import (
+        from rapid_mlx.memory_cache import (
             _trim_cache_offset,
             _turboquant_compress_cache,
         )

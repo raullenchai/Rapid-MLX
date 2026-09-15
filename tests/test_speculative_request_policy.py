@@ -10,7 +10,7 @@ import pytest
 
 @pytest.mark.parametrize("method", [None, "", "none", " NONE ", 7])
 def test_disabled_speculative_methods_have_no_live_policy(method):
-    from vllm_mlx.speculative.request_policy import (
+    from rapid_mlx.speculative.request_policy import (
         resolve_speculative_request_policy,
     )
 
@@ -18,7 +18,7 @@ def test_disabled_speculative_methods_have_no_live_policy(method):
 
 
 def test_mtp_policy_reports_default_tools_as_target_verified():
-    from vllm_mlx.speculative.request_policy import (
+    from rapid_mlx.speculative.request_policy import (
         resolve_speculative_request_policy,
     )
 
@@ -29,7 +29,7 @@ def test_mtp_policy_reports_default_tools_as_target_verified():
 
 
 def test_mtp_policy_keeps_tools_paused_until_live_path_is_verified():
-    from vllm_mlx.speculative.request_policy import (
+    from rapid_mlx.speculative.request_policy import (
         resolve_speculative_request_policy,
     )
 
@@ -39,7 +39,7 @@ def test_mtp_policy_keeps_tools_paused_until_live_path_is_verified():
 
 
 def test_other_speculative_methods_do_not_inherit_mtp_tool_policy():
-    from vllm_mlx.speculative.request_policy import (
+    from rapid_mlx.speculative.request_policy import (
         resolve_speculative_request_policy,
     )
 
@@ -50,7 +50,7 @@ def test_other_speculative_methods_do_not_inherit_mtp_tool_policy():
 
 
 def test_model_profile_reads_policy_from_matching_live_scheduler(monkeypatch):
-    from vllm_mlx.routes import models as models_route
+    from rapid_mlx.routes import models as models_route
 
     scheduler = SimpleNamespace(
         config=SimpleNamespace(spec_decode="mtp", enable_tool_logits_bias=False),
@@ -83,7 +83,7 @@ def test_model_profile_reads_policy_from_matching_live_scheduler(monkeypatch):
 
 
 def test_model_profile_keeps_tools_paused_with_optional_tool_bias(monkeypatch):
-    from vllm_mlx.routes import models as models_route
+    from rapid_mlx.routes import models as models_route
 
     scheduler = SimpleNamespace(
         config=SimpleNamespace(spec_decode="mtp", enable_tool_logits_bias=True),
@@ -110,7 +110,7 @@ def test_model_profile_keeps_tools_paused_with_optional_tool_bias(monkeypatch):
 def test_model_profile_reports_pending_before_lazy_runtime_install(
     monkeypatch,
 ):
-    from vllm_mlx.routes import models as models_route
+    from rapid_mlx.routes import models as models_route
 
     scheduler = SimpleNamespace(
         config=SimpleNamespace(spec_decode="mtp"),
@@ -130,7 +130,7 @@ def test_model_profile_reports_pending_before_lazy_runtime_install(
 def test_model_profile_reports_unavailable_after_runtime_install_gate_miss(
     monkeypatch,
 ):
-    from vllm_mlx.routes import models as models_route
+    from rapid_mlx.routes import models as models_route
 
     scheduler = SimpleNamespace(
         config=SimpleNamespace(spec_decode="mtp"),
@@ -148,7 +148,7 @@ def test_model_profile_reports_unavailable_after_runtime_install_gate_miss(
 
 
 def test_model_profile_reads_legacy_suffix_configuration(monkeypatch):
-    from vllm_mlx.routes import models as models_route
+    from rapid_mlx.routes import models as models_route
 
     scheduler = SimpleNamespace(
         config=SimpleNamespace(
@@ -169,7 +169,7 @@ def test_model_profile_reads_legacy_suffix_configuration(monkeypatch):
 
 
 def test_model_profile_omits_disabled_speculative_configuration(monkeypatch):
-    from vllm_mlx.routes import models as models_route
+    from rapid_mlx.routes import models as models_route
 
     scheduler = SimpleNamespace(
         config=SimpleNamespace(
@@ -184,8 +184,8 @@ def test_model_profile_omits_disabled_speculative_configuration(monkeypatch):
 
 
 def test_model_profile_fails_closed_when_policy_probe_raises(monkeypatch):
-    from vllm_mlx.routes import models as models_route
-    from vllm_mlx.speculative import request_policy
+    from rapid_mlx.routes import models as models_route
+    from rapid_mlx.speculative import request_policy
 
     scheduler = SimpleNamespace(config=SimpleNamespace(spec_decode="mtp"))
     monkeypatch.setattr(models_route, "_engine_for", lambda _model_id: object())
@@ -218,7 +218,7 @@ def _stub_runtime_scheduler(monkeypatch, scheduler_module, **config_overrides):
         lambda _batch_generator: None,
     )
     monkeypatch.setattr(
-        "vllm_mlx.singleton_cache_fastpath.install_singleton_cache_fastpath",
+        "rapid_mlx.singleton_cache_fastpath.install_singleton_cache_fastpath",
         lambda: None,
     )
 
@@ -269,8 +269,8 @@ def test_scheduler_publishes_only_a_successfully_installed_mtp_runtime(
     expected_method,
 ):
     pytest.importorskip("mlx")
-    import vllm_mlx.scheduler as scheduler_module
-    from vllm_mlx.request import SamplingParams
+    import rapid_mlx.scheduler as scheduler_module
+    from rapid_mlx.request import SamplingParams
 
     monkeypatch.setattr(
         scheduler_module,
@@ -296,8 +296,8 @@ def test_scheduler_publishes_other_successfully_installed_runtimes(
     method,
 ):
     pytest.importorskip("mlx")
-    import vllm_mlx.scheduler as scheduler_module
-    from vllm_mlx.request import SamplingParams
+    import rapid_mlx.scheduler as scheduler_module
+    from rapid_mlx.request import SamplingParams
 
     monkeypatch.setattr(
         scheduler_module,
@@ -325,7 +325,7 @@ def test_scheduler_publishes_other_successfully_installed_runtimes(
 
 def test_closing_batch_generator_retires_published_speculative_runtime():
     pytest.importorskip("mlx")
-    import vllm_mlx.scheduler as scheduler_module
+    import rapid_mlx.scheduler as scheduler_module
 
     closed = []
     scheduler = scheduler_module.Scheduler.__new__(scheduler_module.Scheduler)
@@ -342,8 +342,8 @@ def test_closing_batch_generator_retires_published_speculative_runtime():
 
 
 def test_model_card_carries_live_speculative_policy(monkeypatch):
-    from vllm_mlx.api.models import SpeculativeDecodingInfo
-    from vllm_mlx.routes import models as models_route
+    from rapid_mlx.api.models import SpeculativeDecodingInfo
+    from rapid_mlx.routes import models as models_route
 
     expected = SpeculativeDecodingInfo(
         configured=True,
@@ -393,7 +393,7 @@ def test_model_card_carries_live_speculative_policy(monkeypatch):
 def test_model_profile_never_advertises_unattached_runtime(
     monkeypatch, engine, scheduler
 ):
-    from vllm_mlx.routes import models as models_route
+    from rapid_mlx.routes import models as models_route
 
     monkeypatch.setattr(models_route, "_engine_for", lambda _model_id: engine)
     monkeypatch.setattr(models_route, "_scheduler_of", lambda _engine: scheduler)

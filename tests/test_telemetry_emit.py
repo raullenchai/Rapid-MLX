@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Contract pins for ``vllm_mlx.telemetry.emit``.
+"""Contract pins for ``rapid_mlx.telemetry.emit``.
 
 The emit helpers are the only API call sites should touch. They:
 - Refuse to construct a payload when telemetry is disabled.
@@ -21,13 +21,13 @@ def fake_home(tmp_path, monkeypatch):
     monkeypatch.delenv("RAPID_MLX_TELEMETRY", raising=False)
 
     # Reload state so any caches rebuild under the fresh HOME.
-    import vllm_mlx.telemetry.state as state
+    import rapid_mlx.telemetry.state as state
 
     importlib.reload(state)
 
     # Reload emit so it picks up the reloaded state module, and reset
     # its singletons so each test starts clean.
-    import vllm_mlx.telemetry.emit as emit
+    import rapid_mlx.telemetry.emit as emit
 
     importlib.reload(emit)
     emit._reset_for_tests()
@@ -42,7 +42,7 @@ def opted_in(fake_home, monkeypatch):
     ``emit.request`` are deterministic — the probabilistic sampling gate is
     exercised separately in ``test_request_sampling_gate``.
     """
-    from vllm_mlx.telemetry.state import record_consent
+    from rapid_mlx.telemetry.state import record_consent
 
     record_consent(True, rapid_mlx_version="0.0.0+test")
     monkeypatch.setenv("RAPID_MLX_TELEMETRY_REQUEST_SAMPLE", "1")
@@ -52,7 +52,7 @@ def opted_in(fake_home, monkeypatch):
 @pytest.fixture
 def stub_queue(monkeypatch):
     """Replace the singleton queue with an in-memory list capture."""
-    from vllm_mlx.telemetry import emit
+    from rapid_mlx.telemetry import emit
 
     captured: list[dict] = []
 
@@ -68,21 +68,21 @@ def stub_queue(monkeypatch):
 
 
 def test_session_start_no_op_when_disabled(fake_home, stub_queue):
-    from vllm_mlx.telemetry import emit
+    from rapid_mlx.telemetry import emit
 
     emit.session_start(subcommand="serve")
     assert stub_queue == []
 
 
 def test_session_end_no_op_when_disabled(fake_home, stub_queue):
-    from vllm_mlx.telemetry import emit
+    from rapid_mlx.telemetry import emit
 
     emit.session_end(subcommand="serve", duration_seconds=42)
     assert stub_queue == []
 
 
 def test_request_no_op_when_disabled(fake_home, stub_queue):
-    from vllm_mlx.telemetry import emit
+    from rapid_mlx.telemetry import emit
 
     emit.request(
         endpoint="/v1/chat/completions",
@@ -99,7 +99,7 @@ def test_request_no_op_when_disabled(fake_home, stub_queue):
 
 
 def test_error_no_op_when_disabled(fake_home, stub_queue):
-    from vllm_mlx.telemetry import emit
+    from rapid_mlx.telemetry import emit
 
     emit.error(category="model_load_failure", exc=RuntimeError("x"), phase="startup")
     assert stub_queue == []
@@ -113,7 +113,7 @@ def test_session_id_is_stable_under_concurrent_first_callers(fake_home):
     racing ``session_id()`` agree on one value."""
     import threading
 
-    from vllm_mlx.telemetry import emit
+    from rapid_mlx.telemetry import emit
 
     emit._reset_for_tests()
 
@@ -144,8 +144,8 @@ def test_cli_kill_switch_overrides_opt_in(opted_in, stub_queue):
     suppress every emit site, even when the user has previously opted in
     via the consent file. Before this was wired, ``rapid-mlx --no-telemetry
     models`` still POSTed two events to the collector."""
-    from vllm_mlx.telemetry import emit
-    from vllm_mlx.telemetry.state import set_cli_kill_switch
+    from rapid_mlx.telemetry import emit
+    from rapid_mlx.telemetry.state import set_cli_kill_switch
 
     set_cli_kill_switch(True)
     try:
@@ -180,7 +180,7 @@ def test_subcommand_normalized_to_allowlist(opted_in, stub_queue):
     ``str`` slot on ``session_start``/``session_end``, the same shape
     of escape hatch closed for ``endpoint`` / ``category`` / ``phase``.
     Pin known values pass through, unknown collapse to ``"other"``."""
-    from vllm_mlx.telemetry import emit
+    from rapid_mlx.telemetry import emit
 
     emit.session_start(subcommand="serve")
     assert stub_queue[-1]["session"]["subcommand"] == "serve"
@@ -199,7 +199,7 @@ def test_subcommand_aliases_canonicalize(opted_in, stub_queue):
     """CLI ``aliases=`` (argparse reports the typed name) roll into the
     primary command so ``rapid-mlx run``/``update`` count with
     ``chat``/``upgrade`` instead of redacting to ``"other"``."""
-    from vllm_mlx.telemetry import emit
+    from rapid_mlx.telemetry import emit
 
     emit.session_start(subcommand="run")  # alias of `chat`
     assert stub_queue[-1]["session"]["subcommand"] == "chat"
@@ -221,8 +221,8 @@ def test_runtime_payload_carries_every_schema_v1_field(opted_in, stub_queue):
     Pin both runtime payloads expose the full v1 surface."""
     from dataclasses import fields as _fields
 
-    from vllm_mlx.telemetry import emit
-    from vllm_mlx.telemetry.schema import SessionPayload
+    from rapid_mlx.telemetry import emit
+    from rapid_mlx.telemetry.schema import SessionPayload
 
     expected_keys = {f.name for f in _fields(SessionPayload)}
 
@@ -238,7 +238,7 @@ def test_runtime_payload_carries_every_schema_v1_field(opted_in, stub_queue):
 
 
 def test_session_start_envelope_when_enabled(opted_in, stub_queue, monkeypatch):
-    from vllm_mlx.telemetry import emit
+    from rapid_mlx.telemetry import emit
 
     # A random top-level UUID once contained "8000" and false-failed the
     # flag-value leak check. Pin that case so reverting the scoped check
@@ -284,7 +284,7 @@ def test_session_start_envelope_when_enabled(opted_in, stub_queue, monkeypatch):
 
 def test_session_start_activation_flags_emitted(opted_in, stub_queue):
     """#1272: first_session + auto_selected land as plain JSON booleans."""
-    from vllm_mlx.telemetry import emit
+    from rapid_mlx.telemetry import emit
 
     emit.session_start(
         subcommand="chat",
@@ -301,7 +301,7 @@ def test_session_start_activation_flags_emitted(opted_in, stub_queue):
 def test_session_start_activation_flags_default_false(opted_in, stub_queue):
     """Omitting the #1272 flags emits plain ``False`` -- the keys are always
     present so consumers can rely on the shape."""
-    from vllm_mlx.telemetry import emit
+    from rapid_mlx.telemetry import emit
 
     emit.session_start(subcommand="serve")
     session = stub_queue[0]["session"]
@@ -313,7 +313,7 @@ def test_mark_first_session_true_once_then_false(fake_home):
     """#1272 client-side marker: first call claims the machine's first
     session (True); every later call sees the marker and returns False.
     Independent of telemetry consent -- purely a local ``O_EXCL`` marker."""
-    from vllm_mlx.first_run import mark_first_session
+    from rapid_mlx.first_run import mark_first_session
 
     assert mark_first_session() is True
     assert mark_first_session() is False
@@ -322,7 +322,7 @@ def test_mark_first_session_true_once_then_false(fake_home):
 
 def test_session_start_models_loaded_redacted(opted_in, stub_queue):
     """Local paths must collapse to "<local>" — not leak home dirs."""
-    from vllm_mlx.telemetry import emit
+    from rapid_mlx.telemetry import emit
 
     emit.session_start(
         subcommand="serve",
@@ -339,7 +339,7 @@ def test_session_start_models_loaded_redacted(opted_in, stub_queue):
 
 def test_session_start_models_loaded_capped_at_32(opted_in, stub_queue):
     """Don't let a multi-load surface blow up a single payload."""
-    from vllm_mlx.telemetry import emit
+    from rapid_mlx.telemetry import emit
 
     emit.session_start(
         subcommand="serve",
@@ -358,7 +358,7 @@ def test_request_buckets_not_raw_numbers(opted_in, stub_queue):
     test even with bucketing intact. Assert specific fields equal
     expected bucket labels instead.
     """
-    from vllm_mlx.telemetry import emit
+    from rapid_mlx.telemetry import emit
 
     emit.request(
         endpoint="/v1/chat/completions",
@@ -393,8 +393,8 @@ def test_request_payload_carries_every_schema_v1_field(opted_in, stub_queue):
     even when the caller doesn't pass it (defaults must still be emitted)."""
     from dataclasses import fields as _fields
 
-    from vllm_mlx.telemetry import emit
-    from vllm_mlx.telemetry.schema import RequestPayload
+    from rapid_mlx.telemetry import emit
+    from rapid_mlx.telemetry.schema import RequestPayload
 
     expected_keys = {f.name for f in _fields(RequestPayload)}
     emit.request(
@@ -416,7 +416,7 @@ def test_request_payload_carries_every_schema_v1_field(opted_in, stub_queue):
 def test_output_degenerate_defaults_false_and_is_bool(opted_in, stub_queue):
     """Omitting ``output_degenerate`` still emits a plain ``False`` bool — never
     ``None`` / missing — so aggregation can count it without a null branch."""
-    from vllm_mlx.telemetry import emit
+    from rapid_mlx.telemetry import emit
 
     emit.request(
         endpoint="/v1/chat/completions",
@@ -439,7 +439,7 @@ def test_output_degenerate_true_when_caller_flags_it(opted_in, stub_queue):
     passes only the finished value — a truthy result lands as ``True``. This
     field is the ONLY thing derived from completion text, and it is a bool, so
     no text ever crosses into the payload."""
-    from vllm_mlx.telemetry import emit
+    from rapid_mlx.telemetry import emit
 
     emit.request(
         endpoint="/v1/chat/completions",
@@ -467,7 +467,7 @@ def test_completion_health_signals_are_disjoint_booleans(
 ):
     """The collector can distinguish empty from unusually short output while
     exact token counts remain local and the coarse public bucket is unchanged."""
-    from vllm_mlx.telemetry import emit
+    from rapid_mlx.telemetry import emit
 
     emit.request(
         endpoint="/v1/chat/completions",
@@ -493,7 +493,7 @@ def test_error_category_and_phase_normalised_to_allowlist(opted_in, stub_queue):
     threading exception text or user input would have leaked. Pin
     that off-allowlist values collapse to ``"other"`` and known
     values pass through."""
-    from vllm_mlx.telemetry import emit
+    from rapid_mlx.telemetry import emit
 
     # Known good values pass through.
     try:
@@ -521,7 +521,7 @@ def test_error_category_and_phase_normalised_to_allowlist(opted_in, stub_queue):
 
 def test_error_carries_fingerprint_no_message(opted_in, stub_queue):
     """Crash fingerprint excludes message text and module path."""
-    from vllm_mlx.telemetry import emit
+    from rapid_mlx.telemetry import emit
 
     try:
         raise ValueError("/Users/alice/secret.txt: not found")
@@ -545,7 +545,7 @@ def test_session_start_swallows_internal_bug(opted_in, monkeypatch, stub_queue):
     inside ``session_start`` (flag names are pre-extracted in cli.py).
     Pin the same property against the helper that IS still inside the
     emit path: ``normalize_model_path``."""
-    from vllm_mlx.telemetry import emit
+    from rapid_mlx.telemetry import emit
 
     def boom(*args, **kwargs):
         raise RuntimeError("synthetic redact failure")
@@ -557,7 +557,7 @@ def test_session_start_swallows_internal_bug(opted_in, monkeypatch, stub_queue):
 
 def test_emit_does_not_catch_keyboard_interrupt(opted_in, monkeypatch, stub_queue):
     """User intent (Ctrl-C) and SystemExit must propagate."""
-    from vllm_mlx.telemetry import emit
+    from rapid_mlx.telemetry import emit
 
     def interrupt(*args, **kwargs):
         raise KeyboardInterrupt()
@@ -587,7 +587,7 @@ def test_public_emit_signatures_have_no_prompt_or_completion_fields():
     """
     import inspect
 
-    from vllm_mlx.telemetry import emit
+    from rapid_mlx.telemetry import emit
 
     forbidden = {
         "prompt",
@@ -637,7 +637,7 @@ def test_request_endpoint_constrained_to_allowlist(opted_in, stub_queue):
     which was a free-form escape hatch — a caller threading a path
     with a query string (``/v1/chat?key=sk-xxx``) would have leaked
     the value. The helper now normalises to a tiny allowlist."""
-    from vllm_mlx.telemetry import emit
+    from rapid_mlx.telemetry import emit
 
     # Allowed endpoint round-trips verbatim (after strip).
     emit.request(
@@ -699,7 +699,7 @@ def test_request_endpoint_normalizes_full_url_to_path(opted_in, stub_queue):
     ``urlsplit`` extracts ``/v1/chat/completions`` regardless of the
     surrounding scheme/netloc so the match succeeds and the field
     carries the allowlisted route."""
-    from vllm_mlx.telemetry import emit
+    from rapid_mlx.telemetry import emit
 
     emit.request(
         endpoint="https://api.example.com/v1/chat/completions",
@@ -749,7 +749,7 @@ def test_request_endpoints_anthropic_and_completions_allowlisted(opted_in, stub_
     Anthropic surface now lands in the ``claude-code`` bucket instead of
     ``other``.
     """
-    from vllm_mlx.telemetry import emit
+    from rapid_mlx.telemetry import emit
 
     for endpoint in ("/v1/messages", "/v1/completions"):
         emit.request(
@@ -773,7 +773,7 @@ def test_session_models_loaded_does_not_materialize_full_input(opted_in, stub_qu
     large iterables. Pin that only the first 32 entries are even
     pulled from the source by passing a generator that records how
     many items it yields."""
-    from vllm_mlx.telemetry import emit
+    from rapid_mlx.telemetry import emit
 
     pulled: list[int] = []
 
@@ -803,7 +803,7 @@ def test_session_end_hook_fires_exactly_once(fake_home):
     drop the lifecycle end event. Pin: registering a hook + calling
     ``fire_session_end_hook`` twice runs the underlying callable
     exactly once (the latch makes the second call a no-op)."""
-    from vllm_mlx.telemetry import emit
+    from rapid_mlx.telemetry import emit
 
     emit._reset_for_tests()
     calls: list[int] = []
@@ -821,7 +821,7 @@ def test_session_end_hook_swallows_callable_exceptions(fake_home):
     """A buggy hook callable must not crash the lifespan shutdown
     path. ``fire_session_end_hook`` catches BaseException because it
     runs in teardown context where any propagation is purely noise."""
-    from vllm_mlx.telemetry import emit
+    from rapid_mlx.telemetry import emit
 
     emit._reset_for_tests()
 
@@ -837,7 +837,7 @@ def test_session_end_hook_no_op_without_registration(fake_home):
     """If no hook was registered (e.g. cli main exited early before
     the telemetry wiring), ``fire_session_end_hook`` must be a safe
     no-op so the lifespan shutdown path can call it unconditionally."""
-    from vllm_mlx.telemetry import emit
+    from rapid_mlx.telemetry import emit
 
     emit._reset_for_tests()
     emit.fire_session_end_hook()  # must not raise
@@ -851,7 +851,7 @@ def test_safe_does_not_swallow_signature_mismatch(opted_in, stub_queue):
     telemetry," and the integration tests couldn't see the wiring
     bug. ``inspect.signature(fn).bind(...)`` now runs BEFORE the broad
     catch so signature mismatches raise visibly."""
-    from vllm_mlx.telemetry import emit
+    from rapid_mlx.telemetry import emit
 
     # Bad kwarg name — must raise TypeError, NOT become a silent no-op.
     with pytest.raises(TypeError):
@@ -880,7 +880,7 @@ def test_request_model_alias_local_path_redacted(opted_in, stub_queue):
     but it must be funnelled through ``normalize_model_path`` so a local
     checkout path collapses to ``"<local>"`` instead of leaking the
     user's home-directory layout."""
-    from vllm_mlx.telemetry import emit
+    from rapid_mlx.telemetry import emit
 
     emit.request(
         endpoint="/v1/chat/completions",
@@ -907,8 +907,8 @@ def test_flag_values_never_cross_telemetry_boundary(opted_in, stub_queue):
     running ``hash_flag_names`` ourselves, then pass only the
     resulting NAMES into ``session_start`` and verify no value survives
     anywhere in the payload."""
-    from vllm_mlx.telemetry import emit
-    from vllm_mlx.telemetry.redact import hash_flag_names
+    from rapid_mlx.telemetry import emit
+    from rapid_mlx.telemetry.redact import hash_flag_names
 
     secret = "sk-prod-XXXXXXXXXXXXXXXXXXXXXXXX"
     bearer = "Bearer eyJhbGciOiJIUzI1NiJ9.payload.sig"
@@ -948,7 +948,7 @@ def test_error_fingerprint_does_not_echo_exception_message(opted_in, stub_queue)
     """A user's prompt CAN end up in an exception message — e.g. a parser
     crash that prints the offending input. The fingerprint must not echo
     it."""
-    from vllm_mlx.telemetry import emit
+    from rapid_mlx.telemetry import emit
 
     prompt_in_exc = "summarize this confidential email about Q3 numbers"
     try:
@@ -962,7 +962,7 @@ def test_error_fingerprint_does_not_echo_exception_message(opted_in, stub_queue)
 
 
 def _emit_one_request(caller_agent=None):
-    from vllm_mlx.telemetry import emit
+    from rapid_mlx.telemetry import emit
 
     emit.request(
         endpoint="/v1/chat/completions",
@@ -981,7 +981,7 @@ def _emit_one_request(caller_agent=None):
 def test_request_caller_agent_bucketed_never_raw(opted_in, stub_queue, monkeypatch):
     """The inbound UA is bucketed to the allowlist; the raw string (with its
     version + any custom tokens) never reaches the payload."""
-    from vllm_mlx.telemetry import emit
+    from rapid_mlx.telemetry import emit
 
     # Top-level UUIDs are unrelated to the caller-agent input and may
     # coincidentally contain a short raw substring such as "abc".
@@ -1011,7 +1011,7 @@ def test_request_caller_agent_defaults_to_unknown(opted_in, stub_queue):
 def test_request_sampling_gate(opted_in, stub_queue, monkeypatch):
     """The sample rate gates emission AFTER the consent check. rate=0 drops
     everything; a mid rate follows ``random.random()``."""
-    from vllm_mlx.telemetry import emit
+    from rapid_mlx.telemetry import emit
 
     # rate 0 → never emit (even though consent is on).
     monkeypatch.setenv("RAPID_MLX_TELEMETRY_REQUEST_SAMPLE", "0")

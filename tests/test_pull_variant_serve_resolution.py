@@ -33,8 +33,8 @@ from unittest.mock import patch
 import pytest
 from huggingface_hub import RepoFile, RepoFolder
 
-from vllm_mlx import _download_gate
-from vllm_mlx.utils.tokenizer import _resolve_subfolder_checkpoint
+from rapid_mlx import _download_gate
+from rapid_mlx.utils.tokenizer import _resolve_subfolder_checkpoint
 
 # A raw multi-variant repo id with NO catalog alias — ``resolve_subfolder``
 # and ``resolve_model`` both leave it untouched, so only the marker fallback
@@ -156,7 +156,7 @@ def test_serve_resolves_a_pulled_bits_variant(monkeypatch, tmp_path, marker_path
 
 def test_pulled_variant_overrides_catalog_default(monkeypatch, tmp_path, marker_path):
     """An explicit 8-bit pull wins over this repo's catalog 4-bit default."""
-    from vllm_mlx.model_aliases import resolve_subfolder
+    from rapid_mlx.model_aliases import resolve_subfolder
 
     assert resolve_subfolder(CATALOG_REPO) == "4bit", "precondition: catalog default"
 
@@ -187,7 +187,7 @@ def test_explicit_alias_overrides_repo_variant_marker(
     monkeypatch, tmp_path, marker_path
 ):
     """An explicit 4-bit alias keeps its meaning despite an 8-bit repo marker."""
-    from vllm_mlx.model_aliases import resolve_model, resolve_subfolder
+    from rapid_mlx.model_aliases import resolve_model, resolve_subfolder
 
     assert resolve_model(CATALOG_ALIAS) == CATALOG_REPO
     assert resolve_subfolder(CATALOG_ALIAS) == "4bit"
@@ -222,7 +222,7 @@ def test_serving_checkpoint_resolves_explicit_alias_before_lane_selection(
 
     import huggingface_hub
 
-    from vllm_mlx import server
+    from rapid_mlx import server
 
     snapshot = tmp_path / "snapshots" / "01234567"
     checkpoint = snapshot / "4bit"
@@ -285,7 +285,7 @@ def test_serve_escapes_format_marker_glob_metacharacters(
     """A literal format survives the real pull-to-serve marker transition."""
     import argparse
 
-    from vllm_mlx import cli
+    from rapid_mlx import cli
 
     variant = "quant[4]*?"
     snapshot = tmp_path / "snap" / "def"
@@ -458,7 +458,7 @@ def test_pull_persist_failure_still_completes_the_pull(capsys):
     """The best-effort persist in ``pull_command`` must never fail the pull."""
     import argparse
 
-    from vllm_mlx import cli
+    from rapid_mlx import cli
 
     args = argparse.Namespace(
         model="LiquidAI/LFM2.5-2.6B-MLX",
@@ -480,7 +480,7 @@ def test_pull_persist_failure_still_completes_the_pull(capsys):
         patch.object(cli, "_try_mirror_prefetch", return_value=False),
         patch("huggingface_hub.snapshot_download", fake_snapshot),
         patch(
-            "vllm_mlx._download_gate.persist_pulled_variant",
+            "rapid_mlx._download_gate.persist_pulled_variant",
             side_effect=boom_persist,
         ),
     ):
@@ -494,7 +494,7 @@ def test_successful_ordinary_hf_pull_clears_previous_variant(marker_path):
     """Switching back to an ordinary pull must not leave a stale selector."""
     import argparse
 
-    from vllm_mlx import cli
+    from rapid_mlx import cli
 
     _download_gate.persist_pulled_variant(RAW_REPO, "8bit")
     args = argparse.Namespace(
@@ -517,7 +517,7 @@ def test_ordinary_hf_pull_survives_marker_clear_failure(capsys):
     """Cleanup metadata is best-effort after a valid HF pull completes."""
     import argparse
 
-    from vllm_mlx import cli
+    from rapid_mlx import cli
 
     args = argparse.Namespace(
         model=RAW_REPO,
@@ -530,7 +530,7 @@ def test_ordinary_hf_pull_survives_marker_clear_failure(capsys):
         patch.object(cli, "_try_mirror_prefetch", return_value=False),
         patch("huggingface_hub.snapshot_download", return_value="/cache/snapshot"),
         patch(
-            "vllm_mlx._download_gate.clear_pulled_variant",
+            "rapid_mlx._download_gate.clear_pulled_variant",
             side_effect=OSError("read-only cache"),
         ),
     ):
@@ -543,7 +543,7 @@ def test_successful_ordinary_mirror_pull_clears_previous_variant(marker_path):
     """The mirror-success early return applies the same marker transition."""
     import argparse
 
-    from vllm_mlx import cli
+    from rapid_mlx import cli
 
     _download_gate.persist_pulled_variant(RAW_REPO, "8bit")
     args = argparse.Namespace(
@@ -568,7 +568,7 @@ def test_successful_variant_mirror_pull_persists_serving_choice(marker_path):
     """The default mirror path must retain the explicit variant for serve."""
     import argparse
 
-    from vllm_mlx import cli
+    from rapid_mlx import cli
 
     args = argparse.Namespace(
         model=RAW_REPO,
@@ -599,7 +599,7 @@ def test_runtime_asset_override_does_not_touch_model_variant(capsys, marker_path
     """Dependency file filters neither rewrite metadata nor emit a false warning."""
     import argparse
 
-    from vllm_mlx import cli
+    from rapid_mlx import cli
 
     _download_gate.persist_pulled_variant(RAW_REPO, "8bit")
     args = argparse.Namespace(
@@ -626,7 +626,7 @@ def test_ordinary_mirror_pull_survives_marker_clear_failure(capsys):
     """Cleanup metadata is best-effort on the mirror-success early return."""
     import argparse
 
-    from vllm_mlx import cli
+    from rapid_mlx import cli
 
     args = argparse.Namespace(
         model=RAW_REPO,
@@ -643,7 +643,7 @@ def test_ordinary_mirror_pull_survives_marker_clear_failure(capsys):
     with (
         patch.object(cli, "_try_mirror_prefetch", side_effect=mirror_success),
         patch(
-            "vllm_mlx._download_gate.clear_pulled_variant",
+            "rapid_mlx._download_gate.clear_pulled_variant",
             side_effect=OSError("read-only cache"),
         ),
     ):

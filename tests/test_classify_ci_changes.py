@@ -27,7 +27,7 @@ def test_desktop_only_does_not_select_engine():
 
 
 def test_engine_only_does_not_select_desktop():
-    assert classify(["vllm_mlx/server.py"]) == Lanes(
+    assert classify(["rapid_mlx/server.py"]) == Lanes(
         engine=True, desktop=False, docs_only=False
     )
 
@@ -47,7 +47,7 @@ def test_engine_only_does_not_select_desktop():
         "scripts/l1_smoke.sh",
         "tests/test_coherence.py",
         "videox_fun_mlx/pipeline/scheduler.py",
-        "vllm_mlx/server.py",
+        "rapid_mlx/server.py",
     ],
 )
 def test_known_engine_area_does_not_select_desktop(path):
@@ -69,7 +69,7 @@ def test_engine_benchmark_evidence_change_does_not_select_desktop():
             "bench/bench_spec_decode_mtp.py",
             "reports/benchmarks/mtp/result.json",
             "tests/test_mtp_spec_decode.py",
-            "vllm_mlx/spec_decode/mtp/generator.py",
+            "rapid_mlx/spec_decode/mtp/generator.py",
         ]
     ) == Lanes(engine=True, desktop=False, docs_only=False)
 
@@ -110,7 +110,7 @@ def test_unknown_product_area_fails_closed():
 
 def test_cross_lane_rename_selects_removed_product_lane():
     # Workflows pass --no-renames, so a rename is represented by both paths.
-    assert classify(["vllm_mlx/server.py", "docs/server.md"]) == Lanes(
+    assert classify(["rapid_mlx/server.py", "docs/server.md"]) == Lanes(
         engine=True, desktop=False, docs_only=False
     )
     assert classify(["apps/rapid-mac/Sources/App.swift", "docs/App.swift.md"]) == Lanes(

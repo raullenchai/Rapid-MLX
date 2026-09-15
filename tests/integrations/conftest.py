@@ -523,7 +523,7 @@ _DEEPSEEK_R1_XFAIL_REASON = (
 #
 # Note (2026-07-07 revised): gpt-oss + OpenHands remains strict-xfail'd, but
 # the ROOT CAUSE has changed. PR #1051 (channel-scoped user stops in the
-# harmony scheduler path; see ``vllm_mlx/reasoning/harmony_stop.py``) fixed
+# harmony scheduler path; see ``rapid_mlx/reasoning/harmony_stop.py``) fixed
 # the rapid-mlx-side wire bug — a wire-level probe against the running
 # server with ``stop=["</execute_bash>", "</execute_ipython>"]`` now returns
 # non-empty ``content`` and ``finish_reason=stop`` instead of the pre-fix
@@ -570,7 +570,7 @@ _GPTOSS_OPENHANDS_XFAIL_REASON = (
 # Hy3 / Hunyuan 3 is a 295B/21B-active MoE and the 0.11.0 Tier-1 5th
 # family. It has NO cheap alias: the only shipped SKU is the 4-bit
 # ``hy3-preview-4bit`` (166 GB weights on disk, ~156 GB peak unified-memory
-# resident, gated by ``min_memory_gb: 192`` in ``vllm_mlx/aliases.json``).
+# resident, gated by ``min_memory_gb: 192`` in ``rapid_mlx/aliases.json``).
 # This mirrors the DeepSeek V4-Flash situation EXACTLY. Two independent
 # constraints each make it single-node-infeasible in always-on per-PR CI —
 # they are NOT summed, they are evaluated separately:

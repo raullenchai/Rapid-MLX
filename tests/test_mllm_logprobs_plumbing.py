@@ -27,8 +27,8 @@ pytestmark = pytest.mark.requires_mlx
 
 from unittest.mock import MagicMock
 
-from vllm_mlx.mllm_scheduler import MLLMScheduler, MLLMSchedulerConfig
-from vllm_mlx.request import RequestStatus
+from rapid_mlx.mllm_scheduler import MLLMScheduler, MLLMSchedulerConfig
+from rapid_mlx.request import RequestStatus
 
 
 def _make_scheduler() -> MLLMScheduler:
@@ -47,7 +47,7 @@ def _make_scheduler() -> MLLMScheduler:
 
 def _make_mllm_request(scheduler: MLLMScheduler, rid: str):
     """Build a minimal ``MLLMRequest`` in the running state."""
-    from vllm_mlx.mllm_scheduler import MLLMRequest
+    from rapid_mlx.mllm_scheduler import MLLMRequest
 
     req = MLLMRequest(
         request_id=rid,
@@ -149,7 +149,7 @@ def test_mllm_batch_generator_init_does_not_call_new_stream(monkeypatch):
     """
     import mlx.core as mx
 
-    from vllm_mlx.mllm_batch_generator import MLLMBatchGenerator
+    from rapid_mlx.mllm_batch_generator import MLLMBatchGenerator
 
     new_stream_calls: list[object] = []
 
@@ -194,7 +194,7 @@ def test_reloaded_generator_owns_the_new_worker_stream(monkeypatch):
     """A new engine lifetime must not reuse the unloaded worker's stream."""
     import mlx.core as mx
 
-    from vllm_mlx.mllm_batch_generator import MLLMBatchGenerator
+    from rapid_mlx.mllm_batch_generator import MLLMBatchGenerator
 
     old_worker_stream = object()
     new_worker_stream = object()
@@ -235,7 +235,7 @@ def test_mllm_next_evals_outgoing_logprobs_before_response(monkeypatch):
     """
     import mlx.core as mx
 
-    from vllm_mlx.mllm_batch_generator import (
+    from rapid_mlx.mllm_batch_generator import (
         MLLMBatch,
         MLLMBatchGenerator,
         MLLMBatchRequest,

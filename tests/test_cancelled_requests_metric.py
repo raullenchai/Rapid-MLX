@@ -64,8 +64,8 @@ from typing import Any
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from vllm_mlx.request import Request, SamplingParams
-from vllm_mlx.scheduler import Scheduler, SchedulerConfig
+from rapid_mlx.request import Request, SamplingParams
+from rapid_mlx.scheduler import Scheduler, SchedulerConfig
 
 # ---------------------------------------------------------------------------
 # Helpers — real scheduler driven without the live model
@@ -659,7 +659,7 @@ def test_force_abort_bumps_disconnect_subcounter():
     drop the attribution and the operator's "via disconnect" series
     would stay flat through real disconnects.
     """
-    from vllm_mlx.service.helpers import _force_abort_request
+    from rapid_mlx.service.helpers import _force_abort_request
 
     engine = _Engine()
     holder = ["req-disconnect"]
@@ -683,7 +683,7 @@ def test_force_abort_does_not_record_when_sync_abort_rejected():
     returning False for unknown ids; the helper must propagate that
     gate to the sub-counter or the two series will drift.
     """
-    from vllm_mlx.service.helpers import _force_abort_request
+    from rapid_mlx.service.helpers import _force_abort_request
 
     class _RejectingScheduler:
         def __init__(self):
@@ -720,7 +720,7 @@ def test_force_abort_does_not_crash_when_record_method_absent():
     surface that downstream forks / external schedulers depend on.
     A regression here would break every non-rapid_mlx scheduler.
     """
-    from vllm_mlx.service.helpers import _force_abort_request
+    from rapid_mlx.service.helpers import _force_abort_request
 
     class _LegacyScheduler:
         def __init__(self):
@@ -760,7 +760,7 @@ async def test_force_abort_async_fallback_does_not_attribute_on_false_result():
     operators rely on). The fix chains attribution on the awaited
     coroutine result.
     """
-    from vllm_mlx.service.helpers import _force_abort_request
+    from rapid_mlx.service.helpers import _force_abort_request
 
     records: list[str] = []
 
@@ -814,7 +814,7 @@ async def test_force_abort_async_fallback_attributes_on_true_result():
     scheduler, the total counter ticks, and the sub-counter
     attributes the cause.
     """
-    from vllm_mlx.service.helpers import _force_abort_request
+    from rapid_mlx.service.helpers import _force_abort_request
 
     records: list[str] = []
 
@@ -947,7 +947,7 @@ async def test_force_abort_attribution_walks_production_batched_engine_shape():
     must still land on the right scheduler so the (total -
     via_disconnect) gap reflects reality.
     """
-    from vllm_mlx.service.helpers import _force_abort_request
+    from rapid_mlx.service.helpers import _force_abort_request
 
     class _SyncScheduler:
         def __init__(self):
@@ -1023,7 +1023,7 @@ def test_attribution_resolver_honors_is_mllm_before_direct_scheduler():
     ``engine.scheduler`` is only consulted as a fallback when the
     flag is absent entirely.
     """
-    from vllm_mlx.service.helpers import _force_abort_request
+    from rapid_mlx.service.helpers import _force_abort_request
 
     class _SyncSched:
         def __init__(self, name):
@@ -1068,7 +1068,7 @@ def test_force_abort_attribution_walks_active_backend():
     abort resolver; the attribution resolver must follow the same
     rule or it would bump the sub-counter on the wrong scheduler.
     """
-    from vllm_mlx.service.helpers import _force_abort_request
+    from rapid_mlx.service.helpers import _force_abort_request
 
     class _SyncSched:
         def __init__(self, name):
@@ -1148,7 +1148,7 @@ async def test_three_aborted_streaming_requests_advance_counters_by_three():
     ``_RealSchedulerEngine`` so the assertion now pins the actual
     Prometheus-facing counter.
     """
-    from vllm_mlx.service.helpers import _disconnect_guard
+    from rapid_mlx.service.helpers import _disconnect_guard
 
     engine = _RealSchedulerEngine()
 
@@ -1211,7 +1211,7 @@ async def test_two_completed_streaming_requests_leave_counter_unchanged():
     Codex r4 BLOCKING #3 same fix as the abort test above: drive a
     real ``Scheduler`` so the counter assertion has bite.
     """
-    from vllm_mlx.service.helpers import _disconnect_guard
+    from rapid_mlx.service.helpers import _disconnect_guard
 
     engine = _RealSchedulerEngine()
     for i in range(2):
@@ -1263,8 +1263,8 @@ def metrics_client():
     metrics.metrics_client`` so the M-01 counters are exercised
     through the same render path as every other series.
     """
-    from vllm_mlx.config import reset_config
-    from vllm_mlx.routes.metrics import _reset_accumulator_for_tests, router
+    from rapid_mlx.config import reset_config
+    from rapid_mlx.routes.metrics import _reset_accumulator_for_tests, router
 
     cfg = reset_config()
     cfg.model_name = "qwen3-0.6b"

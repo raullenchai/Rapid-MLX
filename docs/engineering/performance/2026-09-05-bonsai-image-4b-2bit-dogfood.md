@@ -46,7 +46,7 @@ RAPID_MLX_AUTO_PULL=1 .venv/bin/rapid-mlx pull bonsai-image-4b-2bit
 /usr/bin/time -l .venv/bin/python - <<'PY'
 import time
 import mlx.core as mx
-from vllm_mlx.image.engine import ImageGenerationEngine
+from rapid_mlx.image.engine import ImageGenerationEngine
 
 mx.reset_peak_memory()
 engine = ImageGenerationEngine(

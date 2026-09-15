@@ -36,7 +36,7 @@ try:
     from scripts.bench_metadata import write_bench_json
 except ModuleNotFoundError:  # Direct execution outside the repository root.
     from bench_metadata import write_bench_json
-from vllm_mlx.speculative.suffix_decoding import SuffixDecodingDrafter
+from rapid_mlx.speculative.suffix_decoding import SuffixDecodingDrafter
 
 # ---------- Workloads ------------------------------------------------------
 #

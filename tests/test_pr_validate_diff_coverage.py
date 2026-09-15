@@ -11,7 +11,7 @@ Two contracts matter most here and are the reason this file exists:
    what the dev-flow proposal set out to avoid.
 
 2. **It only runs when there is production code to measure.** Docs-only,
-   tests-only, and deps-only PRs have no ``vllm_mlx`` lines for
+   tests-only, and deps-only PRs have no ``rapid_mlx`` lines for
    diff-cover to score, so the step must gate itself out cleanly rather
    than spend ~40 s instrumenting the suite for a guaranteed "no lines".
 """
@@ -44,7 +44,7 @@ _DC_WITH_LINES = """\
 Diff Coverage
 Diff: origin/main...HEAD, staged and unstaged changes
 -------------
-vllm_mlx/quantized_batch_cache.py (80.0%): Missing lines 12,45
+rapid_mlx/quantized_batch_cache.py (80.0%): Missing lines 12,45
 -------------
 Total:   10 lines
 Missing: 2 lines
@@ -59,7 +59,7 @@ _DC_FULL = """\
 Diff Coverage
 Diff: origin/main...HEAD
 -------------
-vllm_mlx/foo.py (100%)
+rapid_mlx/foo.py (100%)
 -------------
 Total:   7 lines
 Missing: 0 lines
@@ -207,12 +207,12 @@ def ctx_factory(tmp_path, monkeypatch):
 
 class TestShouldRun:
     def test_runs_on_production_change_medium_blast(self, ctx_factory):
-        ctx = ctx_factory(["vllm_mlx/quantized_batch_cache.py"])
+        ctx = ctx_factory(["rapid_mlx/quantized_batch_cache.py"])
         assert ctx.blast_radius == "medium"
         assert DiffCoverageStep().should_run(ctx) is True
 
     def test_runs_on_production_change_high_blast(self, ctx_factory):
-        ctx = ctx_factory(["vllm_mlx/scheduler.py"])
+        ctx = ctx_factory(["rapid_mlx/scheduler.py"])
         assert ctx.blast_radius == "high"
         assert DiffCoverageStep().should_run(ctx) is True
 
@@ -227,13 +227,13 @@ class TestShouldRun:
         assert DiffCoverageStep().should_run(ctx) is False
 
     def test_skips_deps_only(self, ctx_factory):
-        # pyproject.toml is high blast, yet still nothing under vllm_mlx/.
+        # pyproject.toml is high blast, yet still nothing under rapid_mlx/.
         ctx = ctx_factory(["pyproject.toml"])
         assert ctx.blast_radius == "high"
         assert DiffCoverageStep().should_run(ctx) is False
 
     def test_skips_non_python_production_file(self, ctx_factory):
-        ctx = ctx_factory(["vllm_mlx/py.typed"])
+        ctx = ctx_factory(["rapid_mlx/py.typed"])
         assert DiffCoverageStep().should_run(ctx) is False
 
 
@@ -270,7 +270,7 @@ def _xml_target(cmd: list[str]) -> str | None:
 class TestAdvisoryContract:
     def test_pass_with_finding_on_good_run(self, ctx_factory, monkeypatch):
         _both_tools_present(monkeypatch)
-        ctx = ctx_factory(["vllm_mlx/quantized_batch_cache.py"])
+        ctx = ctx_factory(["rapid_mlx/quantized_batch_cache.py"])
 
         def fake_run(cmd, *a, **k):
             if "pytest" in cmd:
@@ -313,7 +313,7 @@ class TestAdvisoryContract:
         # resolution: the SHA when known, else ``origin/<branch>`` so it
         # resolves in a detached CI checkout (a bare local branch may not).
         _both_tools_present(monkeypatch)
-        ctx = ctx_factory(["vllm_mlx/quantized_batch_cache.py"])
+        ctx = ctx_factory(["rapid_mlx/quantized_batch_cache.py"])
         ctx.base_sha = base_sha
         ctx.base_branch = base_branch
         captured: dict[str, list[str]] = {}
@@ -345,7 +345,7 @@ class TestAdvisoryContract:
         # complete, self-contained spec of the run; the env strip covers the
         # other layer.
         _both_tools_present(monkeypatch)
-        ctx = ctx_factory(["vllm_mlx/quantized_batch_cache.py"])
+        ctx = ctx_factory(["rapid_mlx/quantized_batch_cache.py"])
         captured: dict[str, object] = {}
 
         def fake_run(cmd, cwd, timeout, env=None):
@@ -377,7 +377,7 @@ class TestAdvisoryContract:
         # developer's own ``.coverage`` DB. Assert the instrumented pytest
         # child is handed a COVERAGE_FILE under the run's artifact dir instead.
         _both_tools_present(monkeypatch)
-        ctx = ctx_factory(["vllm_mlx/quantized_batch_cache.py"])
+        ctx = ctx_factory(["rapid_mlx/quantized_batch_cache.py"])
         captured: dict[str, dict | None] = {}
 
         def fake_run(cmd, cwd, timeout, env=None):
@@ -409,7 +409,7 @@ class TestAdvisoryContract:
         # (pass), with a caveat noting the % may under-count. full_unit still
         # owns gating on the red suite.
         _both_tools_present(monkeypatch)
-        ctx = ctx_factory(["vllm_mlx/quantized_batch_cache.py"])
+        ctx = ctx_factory(["rapid_mlx/quantized_batch_cache.py"])
         dc_called = {"n": 0}
 
         def fake_run(cmd, *a, **k):
@@ -437,7 +437,7 @@ class TestAdvisoryContract:
         # collected — no dependable coverage even if a stale-looking xml is
         # present. Must skip BEFORE diff-cover, unlike the exit-1 case.
         _both_tools_present(monkeypatch)
-        ctx = ctx_factory(["vllm_mlx/quantized_batch_cache.py"])
+        ctx = ctx_factory(["rapid_mlx/quantized_batch_cache.py"])
         dc_called = {"n": 0}
 
         def fake_run(cmd, *a, **k):
@@ -461,7 +461,7 @@ class TestAdvisoryContract:
         # A leftover coverage.xml from a previous run must not be able to
         # masquerade as this run's result when pytest fails to write one.
         _both_tools_present(monkeypatch)
-        ctx = ctx_factory(["vllm_mlx/quantized_batch_cache.py"])
+        ctx = ctx_factory(["rapid_mlx/quantized_batch_cache.py"])
         stale = ctx.artifact_path("coverage.xml")
         stale.write_text("<coverage>STALE</coverage>")
 
@@ -479,7 +479,7 @@ class TestAdvisoryContract:
 
     def test_skip_when_no_coverage_xml(self, ctx_factory, monkeypatch):
         _both_tools_present(monkeypatch)
-        ctx = ctx_factory(["vllm_mlx/quantized_batch_cache.py"])
+        ctx = ctx_factory(["rapid_mlx/quantized_batch_cache.py"])
 
         def fake_run(cmd, *a, **k):
             # Clean exit but no xml written (e.g. cov plugin misconfigured).
@@ -499,7 +499,7 @@ class TestAdvisoryContract:
         import scripts.pr_validate.steps.diff_coverage as _dc
 
         _both_tools_present(monkeypatch)
-        ctx = ctx_factory(["vllm_mlx/quantized_batch_cache.py"])
+        ctx = ctx_factory(["rapid_mlx/quantized_batch_cache.py"])
         monkeypatch.setattr(_dc, "_safe_write", lambda *a, **k: False)
 
         def fake_run(cmd, *a, **k):
@@ -514,7 +514,7 @@ class TestAdvisoryContract:
 
     def test_skip_on_pytest_timeout(self, ctx_factory, monkeypatch):
         _both_tools_present(monkeypatch)
-        ctx = ctx_factory(["vllm_mlx/quantized_batch_cache.py"])
+        ctx = ctx_factory(["rapid_mlx/quantized_batch_cache.py"])
 
         def fake_run(cmd, *a, **k):
             raise subprocess.TimeoutExpired(cmd, k.get("timeout", 1))
@@ -528,7 +528,7 @@ class TestAdvisoryContract:
 
     def test_skip_on_diff_cover_timeout(self, ctx_factory, monkeypatch):
         _both_tools_present(monkeypatch)
-        ctx = ctx_factory(["vllm_mlx/quantized_batch_cache.py"])
+        ctx = ctx_factory(["rapid_mlx/quantized_batch_cache.py"])
 
         def fake_run(cmd, *a, **k):
             if "pytest" in cmd:
@@ -549,7 +549,7 @@ class TestAdvisoryContract:
         # codex #1220 r2: a failed/interrupted diff-cover that still
         # printed a parseable footer must NOT be published as success.
         _both_tools_present(monkeypatch)
-        ctx = ctx_factory(["vllm_mlx/quantized_batch_cache.py"])
+        ctx = ctx_factory(["rapid_mlx/quantized_batch_cache.py"])
 
         def fake_run(cmd, *a, **k):
             if "pytest" in cmd:
@@ -571,7 +571,7 @@ class TestAdvisoryContract:
         # codex #1220 r2: artifact_path() does a mkdir that can raise on
         # disk-full / permission errors. That must be caught and skipped,
         # not escape through execute() as a blocking error.
-        ctx = ctx_factory(["vllm_mlx/quantized_batch_cache.py"])
+        ctx = ctx_factory(["rapid_mlx/quantized_batch_cache.py"])
 
         def raising_artifact_path(name):
             raise OSError("Read-only file system")
@@ -584,7 +584,7 @@ class TestAdvisoryContract:
 
     def test_skip_when_diff_cover_finds_no_lines(self, ctx_factory, monkeypatch):
         _both_tools_present(monkeypatch)
-        ctx = ctx_factory(["vllm_mlx/quantized_batch_cache.py"])
+        ctx = ctx_factory(["rapid_mlx/quantized_batch_cache.py"])
 
         def fake_run(cmd, *a, **k):
             if "pytest" in cmd:
@@ -607,7 +607,7 @@ class TestAdvisoryContract:
         # not the "no measurable production lines" message, so a parser break
         # can't silently masquerade as an empty diff.
         _both_tools_present(monkeypatch)
-        ctx = ctx_factory(["vllm_mlx/quantized_batch_cache.py"])
+        ctx = ctx_factory(["rapid_mlx/quantized_batch_cache.py"])
 
         def fake_run(cmd, *a, **k):
             if "pytest" in cmd:
@@ -635,7 +635,7 @@ class TestAdvisoryContract:
             "scripts.pr_validate.steps.diff_coverage.importlib.util.find_spec",
             lambda name, *a, **k: None if name == "pytest_cov" else real(name),
         )
-        ctx = ctx_factory(["vllm_mlx/quantized_batch_cache.py"])
+        ctx = ctx_factory(["rapid_mlx/quantized_batch_cache.py"])
         res = DiffCoverageStep().run(ctx)
         assert res.status == "skip"
         assert "pytest-cov" in res.summary
@@ -644,7 +644,7 @@ class TestAdvisoryContract:
         self, ctx_factory, monkeypatch
     ):
         _both_tools_present(monkeypatch)
-        ctx = ctx_factory(["vllm_mlx/quantized_batch_cache.py"])
+        ctx = ctx_factory(["rapid_mlx/quantized_batch_cache.py"])
 
         def boom(cmd, *a, **k):
             raise RuntimeError("simulated subprocess explosion")
@@ -664,7 +664,7 @@ class TestAdvisoryContract:
         # step must STILL return skip, not let the write error escape as
         # a blocking error.
         _both_tools_present(monkeypatch)
-        ctx = ctx_factory(["vllm_mlx/quantized_batch_cache.py"])
+        ctx = ctx_factory(["rapid_mlx/quantized_batch_cache.py"])
 
         def boom(cmd, *a, **k):
             raise RuntimeError("subprocess explosion")
@@ -686,7 +686,7 @@ class TestAdvisoryContract:
         # thing this advisory step must never do. With Path.exists() raising
         # from anywhere in the flow, run() must STILL resolve to skip.
         _both_tools_present(monkeypatch)
-        ctx = ctx_factory(["vllm_mlx/quantized_batch_cache.py"])
+        ctx = ctx_factory(["rapid_mlx/quantized_batch_cache.py"])
 
         def boom(cmd, *a, **k):
             raise RuntimeError("subprocess explosion")

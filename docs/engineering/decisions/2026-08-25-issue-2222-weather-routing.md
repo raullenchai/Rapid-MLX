@@ -104,10 +104,10 @@ repro the baseline prompt routing, send the exact Desktop request shape via any
 OpenAI-compatible client with both schemas + `tool_choice:auto`.
 
 ```
-python3.12 -m vllm_mlx.cli serve ornith-1.5-9b-bf16 --port 8899 \
+python3.12 -m rapid_mlx.cli serve ornith-1.5-9b-bf16 --port 8899 \
   --tool-call-parser hermes --reasoning-parser qwen3 --log-level DEBUG
 # control
-python3.12 -m vllm_mlx.cli serve qwen3.5-9b-4bit --port 8898 \
+python3.12 -m rapid_mlx.cli serve qwen3.5-9b-4bit --port 8898 \
   --tool-call-parser hermes --reasoning-parser qwen3
 ```
 Baseline evidence captured during investigation: local `/tmp` dumps (not committed).

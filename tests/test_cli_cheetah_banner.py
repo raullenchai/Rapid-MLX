@@ -3,9 +3,9 @@
 Covers three surfaces, all demand-tested against the release contract that the
 banner must NEVER corrupt machine-facing output:
 
-  * ``vllm_mlx._banner.render_banner`` — the artwork + wordmark + version
+  * ``rapid_mlx._banner.render_banner`` — the artwork + wordmark + version
     render, and the ANSI pass on/off under ``color``.
-  * ``vllm_mlx._banner.should_show_banner`` — the interactive-only gate that
+  * ``rapid_mlx._banner.should_show_banner`` — the interactive-only gate that
     ``cli.py`` folds the env flag into and calls before printing. The helper
     is pure/hermetic: it does not execute any subcommand.
   * CLI-level folding through the real ``main()`` (mocked TTY streams + env):
@@ -21,7 +21,7 @@ from __future__ import annotations
 
 import pytest
 
-from vllm_mlx._banner import render_banner, should_show_banner
+from rapid_mlx._banner import render_banner, should_show_banner
 
 # ---------------------------------------------------------------------------
 # Artwork + wordmark + version render
@@ -181,7 +181,7 @@ class _FakeStream:
 
 
 def _run_main(argv, *, stdout_tty=True, stdin_tty=True, env=None):
-    """Drive ``vllm_mlx.cli.main()`` with a mocked TTY/stream and env, and
+    """Drive ``rapid_mlx.cli.main()`` with a mocked TTY/stream and env, and
     return ``(exit_code, stdout_text)``. Uses the ``version`` subcommand as the
     probe: it is the cheapest real subcommand (no model load) whose presence
     lets us assert both that the banner SHOWS on a tty and that it is
@@ -189,7 +189,7 @@ def _run_main(argv, *, stdout_tty=True, stdin_tty=True, env=None):
     import os
     import sys
 
-    from vllm_mlx import cli as cli_mod
+    from rapid_mlx import cli as cli_mod
 
     class _Stdout(_FakeStream):
         pass
@@ -273,7 +273,7 @@ def test_banner_render_hiccup_never_blocks_the_command(monkeypatch):
     font/ANSI edge case), ``main()`` must swallow it and still run the user's
     real command to completion. This also covers the except guard that the
     changed-lines coverage gate requires."""
-    import vllm_mlx._banner as banner_mod
+    import rapid_mlx._banner as banner_mod
 
     def _boom(version, *, color):
         raise RuntimeError("agent-injected render failure")

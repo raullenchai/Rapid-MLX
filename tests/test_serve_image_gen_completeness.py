@@ -29,7 +29,7 @@ def _seed_cache(tmp_path, monkeypatch, *, omit=None):
     ``omit`` drops one ``(component, shard)`` so the layout matches what an
     interrupted pull leaves: every small file present, one big shard absent.
     """
-    from vllm_mlx._download_gate import IMAGE_MODEL_REVISIONS
+    from rapid_mlx._download_gate import IMAGE_MODEL_REVISIONS
 
     repo = "Runpod/FLUX.2-klein-4B-mflux-4bit"
     pinned_sha = IMAGE_MODEL_REVISIONS[repo]
@@ -64,7 +64,7 @@ def _drive_serve(monkeypatch, *, alias=_ALIAS, download_hook=None):
     is pinned at unit level (``test_download_gate`` / ``test_image_lane``)
     rather than by booting a second server here.
     """
-    from vllm_mlx import cli, server
+    from rapid_mlx import cli, server
 
     monkeypatch.setattr(server, "load_model", lambda *_a, **_kw: None)
     monkeypatch.setattr(cli, "_run_uvicorn", lambda *_a, **_kw: None)
@@ -78,13 +78,13 @@ def _drive_serve(monkeypatch, *, alias=_ALIAS, download_hook=None):
     monkeypatch.setattr(cli, "_check_memory_capacity", lambda *_a, **_kw: None)
     monkeypatch.setattr(cli, "_check_alias_min_memory", lambda *_a, **_kw: None)
     monkeypatch.setattr(cli, "_resolve_audio_model_for_serve", lambda _n: None)
-    monkeypatch.setattr("vllm_mlx.api.utils.is_mllm_model", lambda _n: False)
-    monkeypatch.setattr("vllm_mlx.audio.probe.is_audio_model_alias", lambda _n: False)
+    monkeypatch.setattr("rapid_mlx.api.utils.is_mllm_model", lambda _n: False)
+    monkeypatch.setattr("rapid_mlx.audio.probe.is_audio_model_alias", lambda _n: False)
     monkeypatch.setattr(
-        "vllm_mlx._version_check.prompt_upgrade_if_available", lambda: False
+        "rapid_mlx._version_check.prompt_upgrade_if_available", lambda: False
     )
     monkeypatch.setattr(
-        "vllm_mlx._version_check.print_staleness_warning_if_any",
+        "rapid_mlx._version_check.print_staleness_warning_if_any",
         lambda **_kwargs: None,
     )
     monkeypatch.setattr(sys, "argv", ["rapid-mlx", "serve", alias, "--port", "0"])
@@ -100,7 +100,7 @@ def test_complete_image_model_starts_without_network(tmp_path, monkeypatch):
     round-trip on the warm path, which hangs rather than merely slows when DNS
     is poisoned (socket stuck in SYN_SENT, UI stuck on "Starting").
     """
-    from vllm_mlx import cli
+    from rapid_mlx import cli
 
     _seed_cache(tmp_path, monkeypatch)
 
@@ -135,7 +135,7 @@ def test_hidream_skips_unpinned_generic_prefetch(monkeypatch):
     """Its ImageEngine owns the exact-revision, data-only cold pull."""
     calls = []
     monkeypatch.setattr(
-        "vllm_mlx._download_gate.mflux_missing_weights",
+        "rapid_mlx._download_gate.mflux_missing_weights",
         lambda _repo: ["extras/custom_heads.safetensors"],
     )
 
@@ -154,7 +154,7 @@ def test_bonsai_skips_unpinned_generic_prefetch(monkeypatch):
     """Bonsai's ImageEngine owns the exact-revision, data-only cold pull."""
     calls = []
     monkeypatch.setattr(
-        "vllm_mlx._download_gate.mflux_missing_weights",
+        "rapid_mlx._download_gate.mflux_missing_weights",
         lambda _repo: ["transformer-packed-mflux/diffusion_pytorch_model.safetensors"],
     )
 

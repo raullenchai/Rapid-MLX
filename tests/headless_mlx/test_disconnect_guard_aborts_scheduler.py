@@ -34,7 +34,7 @@ import pytest
 
 def test_force_abort_prefers_live_guided_owner_over_text_scheduler():
     """A guided id is not present in the text scheduler it bypasses."""
-    from vllm_mlx.service.helpers import _force_abort_request
+    from rapid_mlx.service.helpers import _force_abort_request
 
     class _Scheduler:
         def abort_request(self, _request_id):
@@ -120,7 +120,7 @@ async def test_response_task_cancellation_publishes_disconnect_state():
     closes it; otherwise it synthesizes a misleading missing-finish warning
     and terminal frame for a connection that no longer exists.
     """
-    from vllm_mlx.service.helpers import _disconnect_guard
+    from rapid_mlx.service.helpers import _disconnect_guard
 
     disconnect_state = [False]
     orphaned_task_errors: list[dict] = []
@@ -177,7 +177,7 @@ async def test_disconnect_fires_force_abort_via_scheduler():
     guard calls into the scheduler DIRECTLY the moment disconnect
     fires — so the very next ``step()`` drops the request.
     """
-    from vllm_mlx.service.helpers import _disconnect_guard
+    from rapid_mlx.service.helpers import _disconnect_guard
 
     engine = _FakeEngine()
     holder: list[str | None] = ["req-runaway-abc"]
@@ -228,7 +228,7 @@ async def test_disconnect_with_unknown_request_id_is_noop():
     returned). The guard MUST NOT crash and MUST NOT make up a
     request id — abort is simply skipped.
     """
-    from vllm_mlx.service.helpers import _disconnect_guard
+    from rapid_mlx.service.helpers import _disconnect_guard
 
     engine = _FakeEngine()
     holder: list[str | None] = [None]  # never populated
@@ -265,7 +265,7 @@ async def test_no_holder_preserves_pre_c01_contract():
     Pinning this prevents the C-01 fix from accidentally requiring
     every existing caller to update its signature.
     """
-    from vllm_mlx.service.helpers import _disconnect_guard
+    from rapid_mlx.service.helpers import _disconnect_guard
 
     engine = _FakeEngine()
 
@@ -326,7 +326,7 @@ async def test_generator_exit_branch_force_aborts_before_close(monkeypatch):
     ``is_disconnected()`` returned False the entire time. Catching
     the branch here closes the second half of the runaway window.
     """
-    from vllm_mlx.service import helpers as _helpers
+    from rapid_mlx.service import helpers as _helpers
 
     engine = _FakeEngine()
     holder: list[str | None] = ["req-runaway-xyz"]
@@ -423,7 +423,7 @@ async def test_finally_does_not_force_abort_on_normal_stream_exhaustion(
     ``finished_normally`` flag and skip the belt-and-suspenders
     when set.
     """
-    from vllm_mlx.service.helpers import _disconnect_guard
+    from rapid_mlx.service.helpers import _disconnect_guard
 
     engine = _FakeEngine()
     holder: list[str | None] = ["req-normal-exit"]
@@ -466,7 +466,7 @@ async def test_force_abort_is_idempotent_against_double_call():
     Pinning this so a future refactor of the abort signal can't
     accidentally reintroduce a duplicate-key error.
     """
-    from vllm_mlx.service.helpers import _force_abort_request
+    from rapid_mlx.service.helpers import _force_abort_request
 
     class _DoubleAbortScheduler:
         def __init__(self):
@@ -502,7 +502,7 @@ async def test_force_abort_resolves_sync_scheduler_via_inner_engine():
     by the time disconnect handling returned. The walk through
     ``engine._engine.scheduler.abort_request`` closes that gap.
     """
-    from vllm_mlx.service.helpers import _force_abort_request
+    from rapid_mlx.service.helpers import _force_abort_request
 
     class _SyncScheduler:
         def __init__(self):
@@ -557,7 +557,7 @@ async def test_force_abort_resolves_sync_mllm_scheduler():
     ``_is_mllm=True``). Symmetric to the text-path resolution
     above.
     """
-    from vllm_mlx.service.helpers import _force_abort_request
+    from rapid_mlx.service.helpers import _force_abort_request
 
     class _SyncMLLMScheduler:
         def __init__(self):
@@ -604,7 +604,7 @@ async def test_force_abort_respects_active_path_when_both_backends_present():
     2. ``_is_mllm = True`` + both backends populated → MUST land on
        ``_mllm_scheduler``, NOT ``_engine.scheduler``.
     """
-    from vllm_mlx.service.helpers import _force_abort_request
+    from rapid_mlx.service.helpers import _force_abort_request
 
     class _SyncScheduler:
         def __init__(self, label: str):
@@ -656,7 +656,7 @@ async def test_force_abort_async_only_fallback_returns_false():
     a coroutine that hasn't run yet doesn't satisfy that, and
     pretending otherwise misleads downstream tests / metrics.
     """
-    from vllm_mlx.service.helpers import _force_abort_request
+    from rapid_mlx.service.helpers import _force_abort_request
 
     abort_calls: list[str] = []
 
@@ -687,7 +687,7 @@ async def test_force_abort_swallows_scheduler_exception():
     cascade through aclose() in ``finally`` is the remaining
     safety net.
     """
-    from vllm_mlx.service.helpers import _force_abort_request
+    from rapid_mlx.service.helpers import _force_abort_request
 
     class _BrokenScheduler:
         def abort_request(self, rid: str) -> bool:
@@ -726,8 +726,8 @@ async def test_batched_engine_publishes_request_id_into_holder():
     """
     from unittest.mock import MagicMock
 
-    from vllm_mlx.engine.batched import BatchedEngine
-    from vllm_mlx.request import RequestOutput
+    from rapid_mlx.engine.batched import BatchedEngine
+    from rapid_mlx.request import RequestOutput
 
     # Build a BatchedEngine instance just enough for stream_generate
     # to reach add_request → publish → stream_outputs.
@@ -797,8 +797,8 @@ async def test_batched_engine_admits_caller_provided_public_request_id():
     """The public SSE id is the scheduler identity used by cancellation."""
     from unittest.mock import MagicMock
 
-    from vllm_mlx.engine.batched import BatchedEngine
-    from vllm_mlx.request import RequestOutput
+    from rapid_mlx.engine.batched import BatchedEngine
+    from rapid_mlx.request import RequestOutput
 
     eng = BatchedEngine.__new__(BatchedEngine)
     eng._loaded = True
@@ -867,8 +867,8 @@ async def test_mllm_scheduler_admits_caller_provided_public_request_id():
     """Vision streams use the same public cancellation identity contract."""
     from unittest.mock import MagicMock
 
-    from vllm_mlx.engine.batched import BatchedEngine
-    from vllm_mlx.request import RequestOutput
+    from rapid_mlx.engine.batched import BatchedEngine
+    from rapid_mlx.request import RequestOutput
 
     eng = BatchedEngine.__new__(BatchedEngine)
     eng._loaded = True
@@ -933,8 +933,8 @@ async def test_mllm_scheduler_admits_caller_provided_public_request_id():
 @pytest.mark.parametrize("outputs", [[], ["first", "second"]])
 async def test_batched_stream_chat_primes_the_routed_engine_stream(outputs):
     """The public stream observes admission before prefixes or output."""
-    from vllm_mlx.engine.base import GenerationOutput
-    from vllm_mlx.engine.batched import BatchedEngine
+    from rapid_mlx.engine.base import GenerationOutput
+    from rapid_mlx.engine.batched import BatchedEngine
 
     engine = BatchedEngine.__new__(BatchedEngine)
     engine._loaded = True
@@ -968,8 +968,8 @@ def test_text_scheduler_rejects_duplicate_public_request_id():
     """A duplicate cannot replace the text request cancellation addresses."""
     from types import SimpleNamespace
 
-    from vllm_mlx.request import Request, SamplingParams
-    from vllm_mlx.scheduler import Scheduler
+    from rapid_mlx.request import Request, SamplingParams
+    from rapid_mlx.scheduler import Scheduler
 
     public_id = "chatcmpl-" + "a" * 32
     tokenizer = SimpleNamespace(eos_token_id=2, encode=lambda _text: [1, 2])

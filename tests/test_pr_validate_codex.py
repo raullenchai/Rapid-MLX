@@ -75,13 +75,13 @@ class TestTruncateDiffAtFileBoundary:
         # large second file overflows. We expect file A to be returned in
         # full (ending exactly at file B's header), file B fully omitted.
         a = _block("scripts/small.py", 200)  # ~12KB
-        b = _block("vllm_mlx/anthropic.py", 3000)  # ~180KB
+        b = _block("rapid_mlx/anthropic.py", 3000)  # ~180KB
         diff = a + b
 
         kept, omitted, truncated = _truncate_diff_at_file_boundary(diff, 100_000)
 
         assert truncated is True
-        assert omitted == ["vllm_mlx/anthropic.py"]
+        assert omitted == ["rapid_mlx/anthropic.py"]
         # Kept content must end at the boundary — last byte is the newline
         # that terminates file A's last hunk line, just before file B's
         # ``diff --git`` header.
@@ -95,13 +95,13 @@ class TestTruncateDiffAtFileBoundary:
         ``"a/foo bar.py" "b/foo bar.py"``. Files with spaces would be invisible
         to the boundary detector → could cut mid-file silently."""
         a = _block("scripts/regular.py", 2000)
-        b = _quoted_block("vllm_mlx/file with space.py", 2000)
+        b = _quoted_block("rapid_mlx/file with space.py", 2000)
         diff = a + b
 
         _kept, omitted, truncated = _truncate_diff_at_file_boundary(diff, 120_000)
 
         assert truncated is True
-        assert "vllm_mlx/file with space.py" in omitted
+        assert "rapid_mlx/file with space.py" in omitted
 
     def test_first_file_overflows_falls_back_to_raw_slice(self):
         """If the first (and only) file is bigger than the limit, we have
@@ -125,14 +125,14 @@ class TestTruncateDiffAtFileBoundary:
         """First file alone overflows AND there are subsequent files —
         first is partially shown, rest are listed as omitted."""
         a = _block("scripts/big.py", 3000)  # ~180KB on its own
-        b = _block("vllm_mlx/anthropic.py", 5)
-        c = _block("vllm_mlx/completions.py", 5)
+        b = _block("rapid_mlx/anthropic.py", 5)
+        c = _block("rapid_mlx/completions.py", 5)
         diff = a + b + c
 
         kept, omitted, truncated = _truncate_diff_at_file_boundary(diff, 120_000)
 
         assert truncated is True
-        assert omitted == ["vllm_mlx/anthropic.py", "vllm_mlx/completions.py"]
+        assert omitted == ["rapid_mlx/anthropic.py", "rapid_mlx/completions.py"]
         # First file is partially shown; we don't promise its boundary.
         assert len(kept.encode()) == 120_000
 
@@ -176,7 +176,7 @@ class TestPathFilter:
         [
             # Accepted — pass dirname through to gh api.
             ("scripts/foo.py", True),
-            ("vllm_mlx/routes/anthropic.py", True),
+            ("rapid_mlx/routes/anthropic.py", True),
             ("..hidden/foo.py", True),  # legitimate name starting with ..
             ("..env/x.py", True),
             ("foo/..hidden/bar.py", True),
@@ -1515,7 +1515,7 @@ class TestRound10TransientMarkersAreStructured:
         [
             # Round-10 attack stderr: bare 401/429 digits in non-auth
             # context. Must NOT be transient — must fail.
-            ("traceback at vllm_mlx/foo.py:401:23", False),
+            ("traceback at rapid_mlx/foo.py:401:23", False),
             ("listening on port 4290", False),
             ("OutOfMemoryError at address 0x4290abcdef", False),
             ("file size 401 bytes exceeded budget", False),

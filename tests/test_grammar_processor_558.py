@@ -204,8 +204,8 @@ def hermes_grammar(tok):
     # REGRESSED and the enforcement suite must FAIL — not silently skip and go
     # green while the feature is broken (codex #558-PR3).
     pytest.importorskip("llguidance")
-    from vllm_mlx.api.tool_grammar import build_tool_grammar
-    from vllm_mlx.tool_parsers.hermes_tool_parser import HermesToolParser
+    from rapid_mlx.api.tool_grammar import build_tool_grammar
+    from rapid_mlx.tool_parsers.hermes_tool_parser import HermesToolParser
 
     parser = HermesToolParser(tokenizer=tok)
     grammar = build_tool_grammar(TOOLS, "required", parser)
@@ -223,7 +223,7 @@ def lltok(tok):
     # ``None`` here is a regression in the LLTokenizer factory, not a sanctioned
     # skip (codex #558-PR3).
     pytest.importorskip("llguidance")
-    from vllm_mlx.api.tool_grammar import build_lltokenizer
+    from rapid_mlx.api.tool_grammar import build_lltokenizer
 
     llt = build_lltokenizer(tok)
     assert llt is not None, (
@@ -237,7 +237,7 @@ def lltok(tok):
 # tool_choice normalization — collision fix (pure Python, always runs).
 # --------------------------------------------------------------------------
 def test_normalize_required_is_enum_not_named():
-    from vllm_mlx.routes.chat import _normalize_tool_choice_for_grammar
+    from rapid_mlx.routes.chat import _normalize_tool_choice_for_grammar
 
     assert _normalize_tool_choice_for_grammar("required") == {"mode": "required"}
 
@@ -246,7 +246,7 @@ def test_normalize_required_is_enum_not_named():
 def test_normalize_auto_and_unset_are_auto_mode(value):
     # PR-5: auto (and unset/None, auto by default) map to the constrainable
     # ``{"mode": "auto"}`` — the optional-call auto grammar, NOT free-form.
-    from vllm_mlx.routes.chat import _normalize_tool_choice_for_grammar
+    from rapid_mlx.routes.chat import _normalize_tool_choice_for_grammar
 
     assert _normalize_tool_choice_for_grammar(value) == {"mode": "auto"}
 
@@ -254,13 +254,13 @@ def test_normalize_auto_and_unset_are_auto_mode(value):
 def test_normalize_none_is_unconstrained():
     # ``"none"`` = the model sees no tools (the #445 handler drops them). No
     # grammar at all -> ``None``.
-    from vllm_mlx.routes.chat import _normalize_tool_choice_for_grammar
+    from rapid_mlx.routes.chat import _normalize_tool_choice_for_grammar
 
     assert _normalize_tool_choice_for_grammar("none") is None
 
 
 def test_normalize_named_object_form():
-    from vllm_mlx.routes.chat import _normalize_tool_choice_for_grammar
+    from rapid_mlx.routes.chat import _normalize_tool_choice_for_grammar
 
     choice = {"type": "function", "function": {"name": "get_time"}}
     assert _normalize_tool_choice_for_grammar(choice) == {
@@ -271,7 +271,7 @@ def test_normalize_named_object_form():
 
 def test_normalize_named_pydantic_shape():
     """A stricter request model must not bypass named-choice consumers."""
-    from vllm_mlx.routes.chat import _normalize_tool_choice_for_grammar
+    from rapid_mlx.routes.chat import _normalize_tool_choice_for_grammar
 
     class _NamedChoice:
         def model_dump(self, *, exclude_none=False):
@@ -290,7 +290,7 @@ def test_normalize_bare_tool_name_string_is_never_named():
     # as a named choice (that requires the object form). Under PR-5 an
     # unrecognized bare string falls through to AUTO (the model may still call
     # or decline), NOT to a named/forced choice.
-    from vllm_mlx.routes.chat import _normalize_tool_choice_for_grammar
+    from rapid_mlx.routes.chat import _normalize_tool_choice_for_grammar
 
     assert _normalize_tool_choice_for_grammar("get_time") == {"mode": "auto"}
 
@@ -299,7 +299,7 @@ def test_normalize_tool_named_required_only_via_object_form():
     # A tool literally named "required": under a bare string it's the enum
     # (mode=required, forces one of ANY tool); it is selectable as a NAMED
     # single tool ONLY via the object form. The two paths can never collide.
-    from vllm_mlx.routes.chat import _normalize_tool_choice_for_grammar
+    from rapid_mlx.routes.chat import _normalize_tool_choice_for_grammar
 
     assert _normalize_tool_choice_for_grammar("required") == {"mode": "required"}
     assert _normalize_tool_choice_for_grammar(
@@ -322,7 +322,7 @@ def test_normalize_malformed_function_degrades_to_none(bad_function):
     # codex #558-PR3 blocking: a dict-shaped tool_choice whose ``function`` is
     # truthy-but-not-a-dict (or a dict without a usable name) must degrade to
     # None (free-form), NOT reach ``.get`` on a non-dict and raise -> HTTP 500.
-    from vllm_mlx.routes.chat import _normalize_tool_choice_for_grammar
+    from rapid_mlx.routes.chat import _normalize_tool_choice_for_grammar
 
     assert (
         _normalize_tool_choice_for_grammar(
@@ -338,7 +338,7 @@ def test_normalize_malformed_function_degrades_to_none(bad_function):
 # runs (no llguidance, no tokenizer).
 # --------------------------------------------------------------------------
 def test_eligible_false_when_no_tools():
-    from vllm_mlx.routes.chat import _tool_grammar_eligible
+    from rapid_mlx.routes.chat import _tool_grammar_eligible
 
     cfg = _CfgStub("hermes")
     req = _RequestStub(tools=None, tool_choice="required")
@@ -346,7 +346,7 @@ def test_eligible_false_when_no_tools():
 
 
 def test_eligible_false_when_no_parser():
-    from vllm_mlx.routes.chat import _tool_grammar_eligible
+    from rapid_mlx.routes.chat import _tool_grammar_eligible
 
     cfg = _CfgStub(None)  # no family parser configured
     req = _RequestStub(tools=[_FunctionTool("get_time")], tool_choice="required")
@@ -355,7 +355,7 @@ def test_eligible_false_when_no_parser():
 
 def test_eligible_false_for_none(choice="none"):
     # ``"none"`` (model sees no tools) must NOT enter the thread-pool offload.
-    from vllm_mlx.routes.chat import _tool_grammar_eligible
+    from rapid_mlx.routes.chat import _tool_grammar_eligible
 
     cfg = _CfgStub("hermes")
     req = _RequestStub(tools=[_FunctionTool("get_time")], tool_choice=choice)
@@ -367,7 +367,7 @@ def test_eligible_true_for_auto_and_unset(choice):
     # PR-5 default-on: auto (and unset/None, auto by default) IS a constrainable
     # mode and MUST be eligible — the auto-path grammar is the whole point of
     # PR-5. Previously (PR-3/4) auto short-circuited to free-form.
-    from vllm_mlx.routes.chat import _tool_grammar_eligible
+    from rapid_mlx.routes.chat import _tool_grammar_eligible
 
     cfg = _CfgStub("hermes")
     req = _RequestStub(tools=[_FunctionTool("get_time")], tool_choice=choice)
@@ -375,7 +375,7 @@ def test_eligible_true_for_auto_and_unset(choice):
 
 
 def test_eligible_true_for_required_and_named():
-    from vllm_mlx.routes.chat import _tool_grammar_eligible
+    from rapid_mlx.routes.chat import _tool_grammar_eligible
 
     cfg = _CfgStub("hermes")
     tools = [_FunctionTool("get_time")]
@@ -388,7 +388,7 @@ def test_eligible_true_for_required_and_named():
 def test_eligible_false_when_explicitly_opted_out(monkeypatch, value):
     # PR-5 is DEFAULT-ON / OPT-OUT: only the explicit ``0``/``off``/``false``
     # values (case-insensitive, whitespace-trimmed) disable the constraint.
-    from vllm_mlx.routes.chat import _tool_grammar_eligible
+    from rapid_mlx.routes.chat import _tool_grammar_eligible
 
     monkeypatch.setenv("RAPID_MLX_CONSTRAIN_TOOLS", value)
     cfg = _CfgStub("hermes")
@@ -401,7 +401,7 @@ def test_eligible_true_for_non_optout_values(monkeypatch, value):
     # PR-5 OPT-OUT: anything that is NOT ``0``/``off``/``false`` leaves the
     # constraint ON — including unrecognized values and the empty string (the
     # denylist is narrow by design).
-    from vllm_mlx.routes.chat import _tool_grammar_eligible
+    from rapid_mlx.routes.chat import _tool_grammar_eligible
 
     monkeypatch.setenv("RAPID_MLX_CONSTRAIN_TOOLS", value)
     cfg = _CfgStub("hermes")
@@ -413,7 +413,7 @@ def test_eligible_true_by_default_when_env_unset(monkeypatch):
     # PR-5 ships ON by default: with the env var ABSENT the constraint activates.
     # Overrides the module autouse opt-in fixture by deleting the var to prove
     # the true unset default, not the fixture-forced ``"1"``.
-    from vllm_mlx.routes.chat import _tool_grammar_eligible
+    from rapid_mlx.routes.chat import _tool_grammar_eligible
 
     monkeypatch.delenv("RAPID_MLX_CONSTRAIN_TOOLS", raising=False)
     cfg = _CfgStub("hermes")
@@ -425,7 +425,7 @@ def test_eligible_true_for_reasonable_schema():
     # A normal-sized, shallow schema is eligible (opt-in enabled by the module
     # autouse fixture). The PR-3b size/depth/count caps must NOT reject ordinary
     # tools.
-    from vllm_mlx.routes.chat import _tool_grammar_eligible
+    from rapid_mlx.routes.chat import _tool_grammar_eligible
 
     ok = _FunctionTool(
         "get_weather",
@@ -444,7 +444,7 @@ def test_eligible_false_for_oversized_schema():
     # codex #558-PR3 blocking (restored in PR-3b): a pathologically LARGE client
     # schema must be rejected before it can drive an unbounded compile on the
     # shared executor.
-    from vllm_mlx.routes.chat import (
+    from rapid_mlx.routes.chat import (
         _TOOL_GRAMMAR_MAX_SCHEMA_BYTES,
         _tool_grammar_eligible,
     )
@@ -470,7 +470,7 @@ def test_eligible_false_for_unicode_escaped_oversized_schema():
     # length is over it must still be rejected. Use emoji (1 code point ->
     # ``😀`` = 12 escaped chars) so a source that is well under the cap
     # by ``len(str())`` blows past it by true serialized bytes.
-    from vllm_mlx.routes.chat import (
+    from rapid_mlx.routes.chat import (
         _TOOL_GRAMMAR_MAX_SCHEMA_BYTES,
         _tool_grammar_eligible,
         _tools_within_grammar_bounds,
@@ -502,8 +502,8 @@ def test_charge_scalar_rejects_giant_int_without_rendering(monkeypatch):
     # rendering it. Prove that DETERMINISTICALLY (no wall-clock): monkeypatch the
     # module's ``json.dumps`` to explode if it is ever handed a large int, and
     # use an int just past the byte cutoff (not a multi-megabyte monster).
-    from vllm_mlx.routes import chat as chat_mod
-    from vllm_mlx.routes.chat import (
+    from rapid_mlx.routes import chat as chat_mod
+    from rapid_mlx.routes.chat import (
         _TOOL_GRAMMAR_MAX_SCHEMA_BYTES,
         _BoundsExceededError,
         _charge_json_scalar_bytes,
@@ -566,7 +566,7 @@ def test_int_digit_lower_bound_does_not_over_reject_exactly_fitting_scalar():
     # exactly fits the remaining budget could be spuriously rejected. Prove the
     # corrected ``((b-1)*3)//10 + 1`` bound accepts every single-digit int with a
     # 1-byte budget, and never OVER-estimates any int's real decimal length.
-    from vllm_mlx.routes.chat import _BoundsExceededError, _charge_json_scalar_bytes
+    from rapid_mlx.routes.chat import _BoundsExceededError, _charge_json_scalar_bytes
 
     # 8 and 9 (bit_length 4) each fit a 1-byte budget — the old formula rejected.
     for v in (0, 1, 7, 8, 9):
@@ -600,7 +600,7 @@ def test_walker_charges_commas_between_not_before_first_member():
     # OVER-count by more than the fixed key-quote overhead (tight).
     import json
 
-    from vllm_mlx.routes.chat import (
+    from rapid_mlx.routes.chat import (
         _TOOL_GRAMMAR_MAX_SCHEMA_BYTES,
         _BoundsExceededError,
         _walk_size_and_depth,
@@ -640,7 +640,7 @@ def test_walker_charges_commas_between_not_before_first_member():
 
     # Exact-boundary: a single scalar just at the cap is accepted; one byte over
     # is rejected. Build a string whose ASCII escaped length is the budget.
-    from vllm_mlx.routes.chat import _charge_json_scalar_bytes
+    from rapid_mlx.routes.chat import _charge_json_scalar_bytes
 
     # ``json.dumps("a"*n)`` == n + 2 (surrounding quotes). Pick n so it exactly
     # consumes the whole budget.
@@ -656,7 +656,7 @@ def test_walker_charges_commas_between_not_before_first_member():
 def test_eligible_false_for_overdeep_schema():
     # codex #558-PR3 blocking (restored in PR-3b): a pathologically DEEP nested
     # schema is rejected.
-    from vllm_mlx.routes.chat import (
+    from rapid_mlx.routes.chat import (
         _TOOL_GRAMMAR_MAX_SCHEMA_DEPTH,
         _tool_grammar_eligible,
     )
@@ -680,7 +680,7 @@ def test_depth_cap_counts_containers_only_not_scalar_leaves():
     # doesn't). Build a chain of EXACTLY ``MAX`` nested objects with a scalar leaf
     # at the bottom: the scalar sits at container-depth ``MAX`` and must be
     # accepted; adding ONE more container tips it over and must reject.
-    from vllm_mlx.routes.chat import (
+    from rapid_mlx.routes.chat import (
         _TOOL_GRAMMAR_MAX_SCHEMA_DEPTH,
         _BoundsExceededError,
         _walk_size_and_depth,
@@ -711,7 +711,7 @@ def test_eligible_false_for_oversized_tool_name():
     # codex #558-PR3 blocking (restored in PR-3b): the bound must include tool
     # NAMES, not just parameters — an oversized name is compiled into the grammar
     # too and must count against the byte cap.
-    from vllm_mlx.routes.chat import (
+    from rapid_mlx.routes.chat import (
         _TOOL_GRAMMAR_MAX_SCHEMA_BYTES,
         _tool_grammar_eligible,
     )
@@ -726,7 +726,7 @@ def test_eligible_false_for_oversized_tool_name():
 def test_eligible_false_for_too_many_tools():
     # codex #558-PR3 blocking (restored in PR-3b): a pathological tool COUNT
     # (huge alternation width) must be rejected before the compile.
-    from vllm_mlx.routes.chat import _TOOL_GRAMMAR_MAX_TOOLS, _tool_grammar_eligible
+    from rapid_mlx.routes.chat import _TOOL_GRAMMAR_MAX_TOOLS, _tool_grammar_eligible
 
     tools = [
         _FunctionTool(f"tool_{i}", parameters={"type": "object", "properties": {}})
@@ -743,7 +743,7 @@ def test_eligible_false_for_too_many_tools():
 # free-form fallback survives ONLY on the explicit opt-OUT path.
 # --------------------------------------------------------------------------
 def _oversized_tool():
-    from vllm_mlx.routes.chat import _TOOL_GRAMMAR_MAX_SCHEMA_BYTES
+    from rapid_mlx.routes.chat import _TOOL_GRAMMAR_MAX_SCHEMA_BYTES
 
     big_props = {
         f"field_{i}": {"type": "string", "description": "x" * 64}
@@ -761,7 +761,7 @@ def test_oversized_schema_raises_400_on_active_path(monkeypatch, choice):
     # covers required AND the new auto path.
     from fastapi import HTTPException
 
-    from vllm_mlx.routes.chat import _enforce_tool_grammar_bounds_or_400
+    from rapid_mlx.routes.chat import _enforce_tool_grammar_bounds_or_400
 
     monkeypatch.setenv("RAPID_MLX_CONSTRAIN_TOOLS", "1")
     cfg = _CfgStub("hermes")
@@ -776,7 +776,7 @@ def test_oversized_schema_raises_400_on_active_path(monkeypatch, choice):
 def test_oversized_schema_falls_back_when_opted_out(monkeypatch, value):
     # When the operator has explicitly opted OUT, the legacy free-form fallback
     # is preserved — an oversized schema must NOT 400 (backward compat).
-    from vllm_mlx.routes.chat import _enforce_tool_grammar_bounds_or_400
+    from rapid_mlx.routes.chat import _enforce_tool_grammar_bounds_or_400
 
     monkeypatch.setenv("RAPID_MLX_CONSTRAIN_TOOLS", value)
     cfg = _CfgStub("hermes")
@@ -789,7 +789,7 @@ def test_oversized_schema_falls_back_when_opted_out(monkeypatch, value):
 def test_oversized_schema_no_400_for_none_choice(monkeypatch, choice):
     # ``"none"`` is not a constrainable mode (the model sees no tools), so the
     # active path is inactive and an oversized schema does not 400.
-    from vllm_mlx.routes.chat import _enforce_tool_grammar_bounds_or_400
+    from rapid_mlx.routes.chat import _enforce_tool_grammar_bounds_or_400
 
     monkeypatch.setenv("RAPID_MLX_CONSTRAIN_TOOLS", "1")
     cfg = _CfgStub("hermes")
@@ -799,7 +799,7 @@ def test_oversized_schema_no_400_for_none_choice(monkeypatch, choice):
 
 def test_reasonable_schema_no_400_on_active_path(monkeypatch):
     # A normal, in-bounds schema must NOT 400 on the active path.
-    from vllm_mlx.routes.chat import _enforce_tool_grammar_bounds_or_400
+    from rapid_mlx.routes.chat import _enforce_tool_grammar_bounds_or_400
 
     monkeypatch.setenv("RAPID_MLX_CONSTRAIN_TOOLS", "1")
     cfg = _CfgStub("hermes")
@@ -827,7 +827,7 @@ _NON_GRAMMAR_PARSER = "mistral"
 
 def test_supports_grammar_probe_matches_capability():
     # The cheap route probe reports True only for grammar-capable parsers.
-    from vllm_mlx.routes.chat import _tool_parser_supports_grammar
+    from rapid_mlx.routes.chat import _tool_parser_supports_grammar
 
     assert _tool_parser_supports_grammar(_CfgStub("hermes")) is True
     assert _tool_parser_supports_grammar(_CfgStub("qwen")) is True
@@ -846,7 +846,7 @@ def test_oversized_schema_still_400_for_grammar_capable_parser(
     # on an oversized schema across every constrainable tool_choice.
     from fastapi import HTTPException
 
-    from vllm_mlx.routes.chat import _enforce_tool_grammar_bounds_or_400
+    from rapid_mlx.routes.chat import _enforce_tool_grammar_bounds_or_400
 
     monkeypatch.setenv("RAPID_MLX_CONSTRAIN_TOOLS", "1")
     cfg = _CfgStub(parser)
@@ -862,7 +862,7 @@ def test_oversized_schema_falls_back_for_non_grammar_parser(monkeypatch, choice)
     # #1144 core fix: a non-grammar-capable parser (structure_info -> None) with
     # an oversized schema must NOT 400 — it was never going to be constrained, so
     # it falls back to free-form exactly like the pre-#558 behavior.
-    from vllm_mlx.routes.chat import (
+    from rapid_mlx.routes.chat import (
         _enforce_tool_grammar_bounds_or_400,
         _tool_grammar_constraint_active,
     )
@@ -879,7 +879,7 @@ def test_oversized_schema_falls_back_for_non_grammar_parser(monkeypatch, choice)
 def test_normal_schema_free_form_for_non_grammar_parser(monkeypatch, choice):
     # #1144: a non-grammar-capable parser with a normal in-bounds schema stays
     # free-form — never eligible for the constrained offload, never 400.
-    from vllm_mlx.routes.chat import (
+    from rapid_mlx.routes.chat import (
         _enforce_tool_grammar_bounds_or_400,
         _tool_grammar_eligible,
     )
@@ -902,7 +902,7 @@ def test_normal_schema_free_form_for_non_grammar_parser(monkeypatch, choice):
 # = False). required/named remain constrained.
 # --------------------------------------------------------------------------
 def test_auto_safe_probe_matches_capability():
-    from vllm_mlx.routes.chat import _tool_parser_auto_safe
+    from rapid_mlx.routes.chat import _tool_parser_auto_safe
 
     # Single-special-token-trigger families are auto-safe.
     assert _tool_parser_auto_safe(_CfgStub("hermes")) is True
@@ -919,7 +919,7 @@ def test_harmony_auto_path_inactive_free_form(choice):
     # Harmony is grammar-capable, but on AUTO the constraint path is INACTIVE
     # (declines the grammar) — so it composes like a free-form path: no grammar,
     # and (below) no #561 400 on an oversized schema.
-    from vllm_mlx.routes.chat import _tool_grammar_constraint_active
+    from rapid_mlx.routes.chat import _tool_grammar_constraint_active
 
     cfg = _CfgStub("harmony")
     ok = _FunctionTool(
@@ -932,7 +932,7 @@ def test_harmony_auto_path_inactive_free_form(choice):
 def test_harmony_required_and_named_paths_active():
     # required/named ARE constrained for harmony (a forced call is what the
     # caller asked for).
-    from vllm_mlx.routes.chat import _tool_grammar_constraint_active
+    from rapid_mlx.routes.chat import _tool_grammar_constraint_active
 
     cfg = _CfgStub("harmony")
     ok = _FunctionTool(
@@ -949,7 +949,7 @@ def test_harmony_auto_oversized_schema_no_400(monkeypatch, choice):
     # AUTO non-regression: harmony gaining required/named grammar support must
     # NOT start 400-ing oversized schemas on the auto path (it declines the auto
     # grammar, so an oversized schema stays free-form — exactly as before).
-    from vllm_mlx.routes.chat import _enforce_tool_grammar_bounds_or_400
+    from rapid_mlx.routes.chat import _enforce_tool_grammar_bounds_or_400
 
     monkeypatch.setenv("RAPID_MLX_CONSTRAIN_TOOLS", "1")
     cfg = _CfgStub("harmony")
@@ -961,7 +961,7 @@ def test_harmony_required_oversized_schema_400(monkeypatch):
     # But required DOES keep the #561 hard 400 for harmony (it is constrained).
     from fastapi import HTTPException
 
-    from vllm_mlx.routes.chat import _enforce_tool_grammar_bounds_or_400
+    from rapid_mlx.routes.chat import _enforce_tool_grammar_bounds_or_400
 
     monkeypatch.setenv("RAPID_MLX_CONSTRAIN_TOOLS", "1")
     cfg = _CfgStub("harmony")
@@ -982,19 +982,19 @@ def test_supports_grammar_marker_declared_for_in_tree_parsers():
     # would otherwise mask a missing marker and make this a tautology.
     #
     # SCOPE (#1149 codex): restrict to IN-TREE parser classes (module under
-    # ``vllm_mlx.tool_parsers``). An out-of-tree parser MAY legitimately override
+    # ``rapid_mlx.tool_parsers``). An out-of-tree parser MAY legitimately override
     # ``structure_info`` WITHOUT the marker and still work via the inference net
     # (proven in ``test_supports_grammar_infers_capability_without_marker``), so
     # asserting the marker on it would contradict that compatibility contract.
-    from vllm_mlx.tool_parsers import ToolParserManager
-    from vllm_mlx.tool_parsers.abstract_tool_parser import ToolParser
+    from rapid_mlx.tool_parsers import ToolParserManager
+    from rapid_mlx.tool_parsers.abstract_tool_parser import ToolParser
 
     names = ToolParserManager.list_registered()
     assert names, "no tool parsers registered"
     checked = 0
     for name in names:
         cls = ToolParserManager.get_tool_parser(name)
-        if not cls.__module__.startswith("vllm_mlx.tool_parsers"):
+        if not cls.__module__.startswith("rapid_mlx.tool_parsers"):
             continue  # out-of-tree parser: covered by the inference net, not the marker
         checked += 1
         overrides_structure_info = cls.structure_info is not ToolParser.structure_info
@@ -1012,8 +1012,8 @@ def test_supports_grammar_infers_capability_without_marker():
     # structural inference — no silent regression of grammar / #561 enforcement.
     # A plain parser (no override, no marker) is NOT capable. This exercises the
     # inference branch independently of the in-tree marker guard above.
-    from vllm_mlx.tool_parsers import ToolParserManager
-    from vllm_mlx.tool_parsers.abstract_tool_parser import ToolParser
+    from rapid_mlx.tool_parsers import ToolParserManager
+    from rapid_mlx.tool_parsers.abstract_tool_parser import ToolParser
 
     class _OverrideNoMarker(ToolParser):
         EXPECTED_WIRE_FORMATS = ("tool_call_json",)
@@ -1042,7 +1042,7 @@ def test_offline_skip_classifies_http_status():
     # codex #558-PR3 blocking: only TRANSIENT signals skip; a permanent 4xx
     # (bad creds / deleted artifact / invalid revision) must FAIL, not silently
     # green the suite.
-    from vllm_mlx.routes import chat  # noqa: F401  (ensure module import order)
+    from rapid_mlx.routes import chat  # noqa: F401  (ensure module import order)
 
     class _Resp:
         def __init__(self, code):
@@ -1099,7 +1099,7 @@ def test_route_offload_gated_on_eligibility_in_source():
     # The route delegates the whole thing to ``_offload_tool_grammar_build``.
     import inspect
 
-    from vllm_mlx.routes import chat as chat_mod
+    from rapid_mlx.routes import chat as chat_mod
 
     # The route calls the extracted helper (which owns the gate + admission).
     # r3 #5: the call now spans lines (messages/resolved_thinking threaded in for
@@ -1133,7 +1133,7 @@ def test_route_offload_uses_dedicated_bounded_pool_not_semaphore_in_source():
     # surface.
     import inspect
 
-    from vllm_mlx.routes import chat as chat_mod
+    from rapid_mlx.routes import chat as chat_mod
 
     src = inspect.getsource(chat_mod._offload_tool_grammar_build)
     assert "_get_tool_grammar_build_executor()" in src, (
@@ -1192,7 +1192,7 @@ def test_offload_at_capacity_never_submits():
     # not called at capacity but IS called under capacity.
     import asyncio
 
-    from vllm_mlx.routes import chat as chat_mod
+    from rapid_mlx.routes import chat as chat_mod
 
     class _MockFuture:
         def add_done_callback(self, _cb):
@@ -1258,7 +1258,7 @@ def test_bounded_admission_rejects_at_capacity():
     # (running + queued) compiles so the executor's submission queue can't grow
     # unbounded. Past the cap, admission is refused (request falls back to
     # free-form).
-    from vllm_mlx.routes import chat as chat_mod
+    from rapid_mlx.routes import chat as chat_mod
 
     # Snapshot + reset the module counter so the test is order-independent.
     saved = chat_mod._tool_grammar_inflight
@@ -1296,7 +1296,7 @@ def test_admission_slot_not_released_until_compile_finishes_on_cancel():
     import threading
     from concurrent.futures import ThreadPoolExecutor
 
-    from vllm_mlx.routes import chat as chat_mod
+    from rapid_mlx.routes import chat as chat_mod
 
     saved = chat_mod._tool_grammar_inflight
     saved_ex_getter = chat_mod._get_tool_grammar_build_executor
@@ -1385,7 +1385,7 @@ def test_cancelled_caller_does_not_cancel_a_queued_compile():
     import threading
     from concurrent.futures import ThreadPoolExecutor
 
-    from vllm_mlx.routes import chat as chat_mod
+    from rapid_mlx.routes import chat as chat_mod
 
     saved = chat_mod._tool_grammar_inflight
     saved_ex_getter = chat_mod._get_tool_grammar_build_executor
@@ -1501,8 +1501,8 @@ def test_ineligible_request_never_enters_heavy_build_path(
     # gate short-circuits (as it must), it's never called and we get ``None``;
     # if the gate were bypassed, the RuntimeError would surface. This proves the
     # gate behaviorally, independent of any source-position check.
-    from vllm_mlx.api import tool_grammar as tg_mod
-    from vllm_mlx.routes import chat as chat_mod
+    from rapid_mlx.api import tool_grammar as tg_mod
+    from rapid_mlx.routes import chat as chat_mod
 
     monkeypatch.setenv("RAPID_MLX_CONSTRAIN_TOOLS", env)
 
@@ -1527,7 +1527,7 @@ def test_ineligible_request_never_enters_heavy_build_path(
 # --------------------------------------------------------------------------
 @_requires_llguidance
 def test_build_lltokenizer_from_wire_tokenizer(tok):
-    from vllm_mlx.api.tool_grammar import build_lltokenizer
+    from rapid_mlx.api.tool_grammar import build_lltokenizer
 
     llt = build_lltokenizer(tok)
     assert llt is not None
@@ -1538,7 +1538,7 @@ def test_build_lltokenizer_from_wire_tokenizer(tok):
 def test_build_lltokenizer_none_on_junk_tokenizer():
     # A tokenizer with no fast internals and no backend_tokenizer -> None
     # (caller degrades to free-form), never an exception.
-    from vllm_mlx.api.tool_grammar import build_lltokenizer
+    from rapid_mlx.api.tool_grammar import build_lltokenizer
 
     class _Junk:
         is_fast = False
@@ -1578,7 +1578,7 @@ def test_processor_baselines_past_prompt(tok, hermes_grammar, lltok):
     # ever reach the matcher. A valid call over a non-empty prompt must pass.
     import mlx.core as mx
 
-    from vllm_mlx.api.tool_grammar import GrammarLogitsProcessor
+    from rapid_mlx.api.tool_grammar import GrammarLogitsProcessor
 
     prompt_ids = tok.encode(
         "You are a helpful assistant. What's the weather in Paris?",
@@ -1622,7 +1622,7 @@ def test_processor_consumes_only_new_tail_each_step(tok, hermes_grammar, lltok):
     """
     import mlx.core as mx
 
-    from vllm_mlx.api.tool_grammar import GrammarLogitsProcessor
+    from rapid_mlx.api.tool_grammar import GrammarLogitsProcessor
 
     prompt_ids = tok.encode("Weather please.", add_special_tokens=False)
     assert prompt_ids, "expected a non-empty prompt for the tail-consume test"
@@ -1691,7 +1691,7 @@ def test_processor_negative_controls_over_prompt(tok, hermes_grammar, lltok):
     # The load-bearing #558 proof, exercised through the cumulative-baseline
     # path (non-empty prompt). A hallucinated tool name, an off-schema
     # argument, and a bad enum are all grammar-blocked mid-stream.
-    from vllm_mlx.api.tool_grammar import GrammarLogitsProcessor
+    from rapid_mlx.api.tool_grammar import GrammarLogitsProcessor
 
     prompt_ids = tok.encode("Weather please.", add_special_tokens=False)
 
@@ -1751,7 +1751,7 @@ def test_stop_token_readmitted_only_at_accepting_state(tok, hermes_grammar, llto
     import mlx.core as mx
     import numpy as np
 
-    from vllm_mlx.api.tool_grammar import GrammarLogitsProcessor
+    from rapid_mlx.api.tool_grammar import GrammarLogitsProcessor
 
     stop_id = tok.convert_tokens_to_ids("<|im_start|>")
     assert isinstance(stop_id, int) and stop_id >= 0, (
@@ -1807,7 +1807,7 @@ def test_stop_token_readmitted_only_at_accepting_state(tok, hermes_grammar, llto
 def test_model_stop_token_ids_unions_all_surfaces():
     """The helper unions every eos surface the scheduler halts on (0.10.16
     P1-①), so the processor re-admits EXACTLY the ids that end generation."""
-    from vllm_mlx.api.tool_grammar import model_stop_token_ids
+    from rapid_mlx.api.tool_grammar import model_stop_token_ids
 
     class _Tok:
         _eos_token_ids = {1, 106}
@@ -1834,11 +1834,11 @@ def test_named_grammar_constrains_to_single_tool(tok, lltok):
     # A NAMED choice narrows to one tool. Building the grammar over a
     # 1-element list with "required" forces exactly that tool; a call naming a
     # DIFFERENT (also-provided) tool is rejected.
-    from vllm_mlx.api.tool_grammar import (
+    from rapid_mlx.api.tool_grammar import (
         GrammarLogitsProcessor,
         build_tool_grammar,
     )
-    from vllm_mlx.tool_parsers.hermes_tool_parser import HermesToolParser
+    from rapid_mlx.tool_parsers.hermes_tool_parser import HermesToolParser
 
     parser = HermesToolParser(tokenizer=tok)
     only_time = [t for t in TOOLS if t["name"] == "get_time"]
@@ -1878,11 +1878,11 @@ def test_tool_named_required_collision_end_to_end(tok, lltok):
     # grammar collapsing to the "required" enum over all tools. We build the
     # named grammar the way chat.py routing does: pre-narrow to the target +
     # "required" quantifier.
-    from vllm_mlx.api.tool_grammar import (
+    from rapid_mlx.api.tool_grammar import (
         GrammarLogitsProcessor,
         build_tool_grammar,
     )
-    from vllm_mlx.tool_parsers.hermes_tool_parser import HermesToolParser
+    from rapid_mlx.tool_parsers.hermes_tool_parser import HermesToolParser
 
     collide_tools = [
         {
@@ -1948,7 +1948,7 @@ def test_processor_reset_clears_baseline(tok, hermes_grammar, lltok):
     # processor can be reused for a fresh sequence.
     import mlx.core as mx
 
-    from vllm_mlx.api.tool_grammar import GrammarLogitsProcessor
+    from rapid_mlx.api.tool_grammar import GrammarLogitsProcessor
 
     proc = GrammarLogitsProcessor(lltok, hermes_grammar, tokenizer=tok)
     prompt_ids = tok.encode("hi", add_special_tokens=False)
@@ -1969,7 +1969,7 @@ def test_processor_preserves_padded_vocab_shape(tok, hermes_grammar, lltok):
     import mlx.core as mx
     import numpy as np
 
-    from vllm_mlx.api.tool_grammar import GrammarLogitsProcessor
+    from rapid_mlx.api.tool_grammar import GrammarLogitsProcessor
 
     proc = GrammarLogitsProcessor(lltok, hermes_grammar, tokenizer=tok)
     prompt_ids = tok.encode("hi", add_special_tokens=False)
@@ -1987,7 +1987,7 @@ def test_processor_equal_vocab_shape_unchanged(tok, hermes_grammar, lltok):
     # shape is unchanged (no concat path).
     import mlx.core as mx
 
-    from vllm_mlx.api.tool_grammar import GrammarLogitsProcessor
+    from rapid_mlx.api.tool_grammar import GrammarLogitsProcessor
 
     proc = GrammarLogitsProcessor(lltok, hermes_grammar, tokenizer=tok)
     prompt_ids = tok.encode("hi", add_special_tokens=False)
@@ -2009,7 +2009,7 @@ def test_processor_narrower_model_head_than_tokenizer(tok, hermes_grammar, lltok
     import mlx.core as mx
     import numpy as np
 
-    from vllm_mlx.api.tool_grammar import GrammarLogitsProcessor
+    from rapid_mlx.api.tool_grammar import GrammarLogitsProcessor
 
     proc = GrammarLogitsProcessor(lltok, hermes_grammar, tokenizer=tok)
     prompt_ids = tok.encode("hi", add_special_tokens=False)
@@ -2038,7 +2038,7 @@ def test_processor_narrower_model_head_than_tokenizer(tok, hermes_grammar, lltok
 def test_get_lltokenizer_caches(tok):
     # codex #558-PR3 (nit): the ~1s LLTokenizer build must be cached per
     # tokenizer, not rebuilt on every request.
-    from vllm_mlx.api.tool_grammar import get_lltokenizer
+    from rapid_mlx.api.tool_grammar import get_lltokenizer
 
     a = get_lltokenizer(tok)
     b = get_lltokenizer(tok)
@@ -2052,7 +2052,7 @@ def test_get_lltokenizer_transient_failure_is_retried(monkeypatch):
     # grammar enforcement — it's retried up to the budget, and a subsequent
     # success is cached. A distinct dummy tokenizer avoids poisoning the shared
     # module-scoped ``tok`` fixture's cache.
-    import vllm_mlx.api.tool_grammar as tg_mod
+    import rapid_mlx.api.tool_grammar as tg_mod
 
     class _DummyTok:
         pass
@@ -2084,7 +2084,7 @@ def test_get_lltokenizer_transient_failure_is_retried(monkeypatch):
 def test_get_lltokenizer_seals_after_budget(monkeypatch):
     # codex #558-PR3 nit: a PERSISTENT failure is eventually sealed as
     # unavailable (bounded retries) so we don't rebuild-and-fail forever.
-    import vllm_mlx.api.tool_grammar as tg_mod
+    import rapid_mlx.api.tool_grammar as tg_mod
 
     class _DummyTok:
         pass
@@ -2116,8 +2116,8 @@ def test_missing_parameters_flattens_to_closed_schema_in_production_path(
     # capture the schema it flattens a no-``parameters`` tool into. Absent /
     # null ``parameters`` must become a CLOSED empty-object schema; an explicit
     # ``{}`` (allow-any) and an explicit schema must pass through verbatim.
-    from vllm_mlx.api import tool_grammar as tg_mod
-    from vllm_mlx.routes import chat as chat_mod
+    from rapid_mlx.api import tool_grammar as tg_mod
+    from rapid_mlx.routes import chat as chat_mod
 
     captured = {}
 
@@ -2169,8 +2169,8 @@ def test_parallel_tool_calls_false_threads_single_call(tok, monkeypatch):
     # codex #558-PR3 blocking: ``parallel_tool_calls=False`` must build an
     # exactly-one-call grammar (``single_call=True`` to the builder); ``True`` /
     # unset keep the one-or-more ``required`` grammar.
-    from vllm_mlx.api import tool_grammar as tg_mod
-    from vllm_mlx.routes import chat as chat_mod
+    from rapid_mlx.api import tool_grammar as tg_mod
+    from rapid_mlx.routes import chat as chat_mod
 
     captured = {}
 
@@ -2207,8 +2207,8 @@ def test_route_threads_reasoning_sentinels_from_configured_parser(tok, monkeypat
     its single-special-token reasoning markers and threads them into
     ``build_tool_grammar`` so the grammar's free prefix tolerates ``<think>``.
     A cfg WITHOUT a reasoning parser threads ``()`` (non-reasoning grammar)."""
-    from vllm_mlx.api import tool_grammar as tg_mod
-    from vllm_mlx.routes import chat as chat_mod
+    from rapid_mlx.api import tool_grammar as tg_mod
+    from rapid_mlx.routes import chat as chat_mod
 
     # Guard: the assertion is only meaningful if this tokenizer carries
     # <think>/</think> as single special tokens (it does on pinned Qwen3.5).
@@ -2248,8 +2248,8 @@ def test_broken_grammar_yields_none_so_fallback_stays_active(tok, monkeypatch):
     # a broken processor so the route keeps the forced-prefix / free-form
     # fallback active — never set an inert ``grammar_logits_processor`` that
     # both disables the fallback AND leaves output unconstrained.
-    from vllm_mlx.api import tool_grammar as tg_mod
-    from vllm_mlx.routes import chat as chat_mod
+    from rapid_mlx.api import tool_grammar as tg_mod
+    from rapid_mlx.routes import chat as chat_mod
 
     # Real builder path, but force the processor to report itself broken.
     class _BrokenProc:
@@ -2284,7 +2284,7 @@ def test_broken_processor_reports_is_broken_and_masks_nothing():
 
     import mlx.core as mx
 
-    from vllm_mlx.api.tool_grammar import GrammarLogitsProcessor
+    from rapid_mlx.api.tool_grammar import GrammarLogitsProcessor
 
     class _FakeMatcher:
         def __init__(self, *a, **k):
@@ -2296,7 +2296,7 @@ def test_broken_processor_reports_is_broken_and_masks_nothing():
     class _FakeLLTok:
         vocab_size = 8
 
-    import vllm_mlx.api.tool_grammar as tg
+    import rapid_mlx.api.tool_grammar as tg
 
     # Patch the matcher + bitmask allocation so we don't need real llguidance
     # internals for this pure broken-path assertion.
@@ -2335,7 +2335,7 @@ def test_rejected_committed_token_drops_constraint_and_stops_masking():
     import mlx.core as mx
     import numpy as np
 
-    from vllm_mlx.api.tool_grammar import GrammarLogitsProcessor
+    from rapid_mlx.api.tool_grammar import GrammarLogitsProcessor
 
     class _RejectingMatcher:
         """Accepts the first committed token, then rejects everything after."""
@@ -2368,7 +2368,7 @@ def test_rejected_committed_token_drops_constraint_and_stops_masking():
     class _FakeLLTok:
         vocab_size = 8
 
-    import vllm_mlx.api.tool_grammar as tg
+    import rapid_mlx.api.tool_grammar as tg
 
     orig_matcher = tg.LLMatcher
     orig_alloc = tg.allocate_token_bitmask
@@ -2442,7 +2442,7 @@ def test_forced_prefix_block_is_gated_on_grammar_absence():
     # ~600-line ``_create_chat_completion_impl``).
     import inspect
 
-    from vllm_mlx.routes import chat as chat_mod
+    from rapid_mlx.routes import chat as chat_mod
 
     src = inspect.getsource(chat_mod._create_chat_completion_impl)
     glp_pos = src.find("_glp = await _offload_tool_grammar_build(")
@@ -2485,7 +2485,7 @@ def _line1_fake_env():
     """
     import mlx.core as mx
 
-    import vllm_mlx.api.tool_grammar as tg
+    import rapid_mlx.api.tool_grammar as tg
 
     state = {"consumed": [], "fills": 0}
 
@@ -2543,7 +2543,7 @@ def test_line1_reasoning_end_id_sets_initial_gate_closed():
     # With a token-id gate supplied, the mask starts OFF (reasoning not ended);
     # with NEITHER a token nor an id, the grammar constrains from token 0 (PATH
     # A, the non-reasoning default is unchanged).
-    from vllm_mlx.api.tool_grammar import GrammarLogitsProcessor
+    from rapid_mlx.api.tool_grammar import GrammarLogitsProcessor
 
     class _FakeLLTok:
         vocab_size = 8
@@ -2571,7 +2571,7 @@ def test_line1_token_id_gate_holds_then_opens_and_excludes_boundary():
     import mlx.core as mx
     import numpy as np
 
-    from vllm_mlx.api.tool_grammar import GrammarLogitsProcessor
+    from rapid_mlx.api.tool_grammar import GrammarLogitsProcessor
 
     class _FakeLLTok:
         vocab_size = 8
@@ -2623,7 +2623,7 @@ def test_line1_think_exclusion_masks_tool_start_during_gate_closed():
     import mlx.core as mx
     import numpy as np
 
-    from vllm_mlx.api.tool_grammar import GrammarLogitsProcessor
+    from rapid_mlx.api.tool_grammar import GrammarLogitsProcessor
 
     class _FakeLLTok:
         vocab_size = 8
@@ -2667,7 +2667,7 @@ def test_line1_no_exclusion_when_gate_absent():
     import mlx.core as mx
     import numpy as np
 
-    from vllm_mlx.api.tool_grammar import GrammarLogitsProcessor
+    from rapid_mlx.api.tool_grammar import GrammarLogitsProcessor
 
     class _FakeLLTok:
         vocab_size = 8
@@ -2690,7 +2690,7 @@ def test_line1_no_exclusion_when_gate_absent():
 def test_line1_resolve_tool_start_exclusion_ids():
     # The trigger resolver keeps ONLY a single-special-token opener (surgical mask)
     # and declines multi-token / missing triggers (best-effort no-op).
-    from vllm_mlx.routes.chat import _resolve_tool_start_exclusion_ids
+    from rapid_mlx.routes.chat import _resolve_tool_start_exclusion_ids
 
     class _SI:
         def __init__(self, trigger):
@@ -2764,7 +2764,7 @@ def test_line1_completion_limit_declines_uncoverable_schema():
     # (minLength / minItems / minProperties / pattern / nested-required / $ref /
     # combinators) DECLINE a bounded request to the (non-regressive) forced-prefix
     # fallback.
-    from vllm_mlx.routes.chat import (
+    from rapid_mlx.routes.chat import (
         _line1_completion_limit_ok,
         _line1_min_call_tokens,
         _line1_schema_has_uncoverable_constraint,
@@ -2850,7 +2850,7 @@ def test_line1_completion_limit_declines_uncoverable_schema():
     # codex r9 #2: an ARRAY-valued (union) ``type`` must be priced by the smallest
     # allowed member, not the 2-byte unknown default. ``["boolean"]`` needs >=4 bytes
     # ("true"); the common nullable ``["string","null"]`` stays a 2-byte string.
-    from vllm_mlx.routes.chat import _line1_min_value_bytes
+    from rapid_mlx.routes.chat import _line1_min_value_bytes
 
     assert _line1_min_value_bytes({"type": ["boolean"]}) >= 4
     assert _line1_min_value_bytes({"type": ["string", "null"]}) == 2
@@ -3015,7 +3015,7 @@ def test_line1_completion_limit_declines_uncoverable_schema():
 
 def test_compute_forced_tool_prefix_helper():
     # r4 #3 — the shared forced-prefix helper the reconcile path reuses.
-    from vllm_mlx.routes.chat import _compute_forced_tool_prefix
+    from rapid_mlx.routes.chat import _compute_forced_tool_prefix
 
     class _Cfg:
         tool_call_parser = "hermes"
@@ -3057,7 +3057,7 @@ def test_line1_string_gate_not_run_when_id_gate_active():
     # think→boundary→answer sequence driven purely by the id gate.
     import mlx.core as mx
 
-    from vllm_mlx.api.tool_grammar import GrammarLogitsProcessor
+    from rapid_mlx.api.tool_grammar import GrammarLogitsProcessor
 
     class _FakeLLTok:
         vocab_size = 8
@@ -3106,7 +3106,7 @@ def test_line1_should_probe_seed_predicate():
     # thinking on/off x tools/no-tools — the predicate that decides whether the
     # (synchronous) seed-state render runs and, transitively, whether line①
     # engages.
-    from vllm_mlx.routes.chat import _line1_should_probe_seed
+    from rapid_mlx.routes.chat import _line1_should_probe_seed
 
     # Engages: forced (required OR named) + thinking + a set budget + tools.
     assert _line1_should_probe_seed(_L1Req(tool_choice="required"), True) is True
@@ -3162,7 +3162,7 @@ def test_line1_completion_limit_ok_predicate():
     # codex #4 / r2 #2: the completion-limit guard in isolation. max_tokens must
     # leave room for the force-close + a minimal constrained call past the budget,
     # and the floor SCALES with the tool name + required schema (not a flat const).
-    from vllm_mlx.routes.chat import (
+    from rapid_mlx.routes.chat import (
         _LINE1_CALL_ENVELOPE_TOKENS,
         _line1_completion_limit_ok,
         _line1_min_call_tokens,
@@ -3214,8 +3214,8 @@ def test_line1_context_room_ok_predicate(monkeypatch):
     # AFTER the prompt is counted. Proves room for the coupled budget + a minimal
     # call ONLY on the ``max_tokens=None`` path (where the request-time context
     # guard reserves zero completion room); conservative on every missing signal.
-    import vllm_mlx.routes.chat as chat_mod
-    from vllm_mlx.routes.chat import (
+    import rapid_mlx.routes.chat as chat_mod
+    from rapid_mlx.routes.chat import (
         _LINE1_CALL_ENVELOPE_TOKENS,
         _line1_context_room_ok,
     )
@@ -3285,7 +3285,7 @@ def test_line1_stop_conflicts_with_forced_output():
     # codex r12 #3 / r13 #1: a client stop overlapping the FORCED wire opener would
     # truncate the gated path's GENERATED call (forced-prefix prompt-injects that
     # opener, immune), so the gate must decline when such an overlap exists.
-    from vllm_mlx.routes.chat import _line1_stop_conflicts_with_forced_output as _conf
+    from rapid_mlx.routes.chat import _line1_stop_conflicts_with_forced_output as _conf
 
     forced = '<tool_call>\n{"name": "get_weather", "arguments": '
     assert _conf(["<tool_call>"], forced) is True  # opener substring -> conflict
@@ -3313,7 +3313,7 @@ def test_line1_stop_conflicts_with_forced_output():
 def test_line1_forced_wire_openers():
     # r13 #1: openers derive from structure_info triggers INDEPENDENTLY of the fixed
     # function name (so required+multi-tool is covered), plus the named envelope.
-    from vllm_mlx.routes.chat import _line1_forced_wire_openers
+    from rapid_mlx.routes.chat import _line1_forced_wire_openers
 
     class _SI:
         def __init__(self, trigger):
@@ -3339,7 +3339,7 @@ def test_line1_forced_wire_openers():
     assert any('"name": "alpha"' in o for o in openers)
     assert any('"name": "beta"' in o for o in openers)
     # a stop matching a non-selected candidate name still conflicts (conservative).
-    from vllm_mlx.routes.chat import _line1_stop_conflicts_with_forced_output as _conf
+    from rapid_mlx.routes.chat import _line1_stop_conflicts_with_forced_output as _conf
 
     assert _conf(["alpha"], openers) is True
     assert _conf(['", "arguments": '], openers) is True  # mandatory boundary text
@@ -3372,8 +3372,8 @@ def test_line1_gated_tool_call_preserves_reasoning_content():
     # reasoning_text, _ = extract(raw_text)``) — never from the suffix — which is
     # exactly what the "fix" recommends the code already does. Lock it so the
     # false positive cannot be re-litigated into a real regression.
-    from vllm_mlx.reasoning.deepseek_r1_parser import DeepSeekR1ReasoningParser
-    from vllm_mlx.service.helpers import _finalize_content_and_reasoning
+    from rapid_mlx.reasoning.deepseek_r1_parser import DeepSeekR1ReasoningParser
+    from rapid_mlx.service.helpers import _finalize_content_and_reasoning
 
     rp = DeepSeekR1ReasoningParser()
     raw = "<think>pick the tool</think>\nSure, calling it:\n"
@@ -3395,7 +3395,7 @@ def test_line1_split_reasoning_for_tool_parse():
     # post-</think> content the tool parser should see. FAILS CLOSED — NEVER returns
     # the raw full text (that would re-expose an in-<think> marker on an engaged
     # gate); on no-parser / parser-error it falls back to a literal </think> split.
-    from vllm_mlx.routes.chat import _line1_split_reasoning_for_tool_parse
+    from rapid_mlx.routes.chat import _line1_split_reasoning_for_tool_parse
 
     class _RP:
         def __init__(self, result):
@@ -3466,8 +3466,8 @@ def test_line1_streaming_redirect_gated_on_gate():
     import inspect
     from unittest.mock import MagicMock
 
-    from vllm_mlx.routes import chat as chat_mod
-    from vllm_mlx.service.postprocessor import StreamingPostProcessor
+    from rapid_mlx.routes import chat as chat_mod
+    from rapid_mlx.service.postprocessor import StreamingPostProcessor
 
     def _cfg():
         cfg = MagicMock()
@@ -3513,7 +3513,7 @@ def test_line1_route_threads_predicate_into_offload_build():
     # this asserts the route actually WIRES them on the live path, not dead code.
     import inspect
 
-    from vllm_mlx.routes import chat as chat_mod
+    from rapid_mlx.routes import chat as chat_mod
 
     src = inspect.getsource(chat_mod._create_chat_completion_impl)
     # r3 #5 (DoS): the seed-state render runs INSIDE the admission-gated build
@@ -3610,8 +3610,8 @@ def test_line1_route_threads_predicate_into_offload_build():
 def test_line1_probe_seed_behavior(monkeypatch):
     # r3 #5: the seed probe is SYNCHRONOUS (runs inside the admission-gated build
     # slot, not on the shared default executor) and degrades gracefully.
-    from vllm_mlx.routes import chat as chat_mod
-    from vllm_mlx.routes.chat import _LINE1_SEED_UNSET, _line1_probe_seed
+    from rapid_mlx.routes import chat as chat_mod
+    from rapid_mlx.routes.chat import _LINE1_SEED_UNSET, _line1_probe_seed
 
     class _Cfg:
         model_path = "qwen3.5-4b"
@@ -3651,7 +3651,7 @@ def test_line1_probe_seed_behavior(monkeypatch):
 def test_line1_reasoning_gate_id_property_exposes_gate():
     # Option B: the route reads ``reasoning_gate_id`` to decide whether to couple
     # the budget. A gated processor exposes its ``</think>`` id; a plain one None.
-    from vllm_mlx.api.tool_grammar import GrammarLogitsProcessor
+    from rapid_mlx.api.tool_grammar import GrammarLogitsProcessor
 
     class _FakeLLTok:
         vocab_size = 8
@@ -3676,8 +3676,8 @@ def test_line1_allow_tools_couples_budget_to_gate(monkeypatch):
     # is LIFTED, coupling the budget to the gate (SGLang / vLLM shape). We also
     # assert the already-rendered prefix is THREADED through (codex #3: no second
     # synchronous render).
-    import vllm_mlx.api.reasoning_budget as rb
-    from vllm_mlx.routes import chat as chat_mod
+    import rapid_mlx.api.reasoning_budget as rb
+    from rapid_mlx.routes import chat as chat_mod
 
     sentinel = object()
     calls = []

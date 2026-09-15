@@ -21,8 +21,8 @@ pytestmark = pytest.mark.requires_mlx
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
-from vllm_mlx.request import Request, SamplingParams
-from vllm_mlx.scheduler import _PREFILL_TILE_ROWS, Scheduler, SchedulerConfig
+from rapid_mlx.request import Request, SamplingParams
+from rapid_mlx.scheduler import _PREFILL_TILE_ROWS, Scheduler, SchedulerConfig
 
 
 def _make_scheduler_with_cache():
@@ -939,7 +939,7 @@ class TestScheduleWaitingInsertDispatch:
 
     def test_real_schedule_registers_tool_guard_as_transactional_mtp_safe(self):
         """An ordinary tools request keeps MTP without admitting other processors."""
-        from vllm_mlx.repetition_guard import AgentRepetitionLogitsProcessor
+        from rapid_mlx.repetition_guard import AgentRepetitionLogitsProcessor
 
         scheduler = _make_scheduler_with_cache()
         scheduler.config.hybrid_cache_entries = 8
@@ -972,8 +972,8 @@ class TestScheduleWaitingInsertDispatch:
 
     def test_real_schedule_registers_builtin_grammar_as_transactional_mtp_safe(self):
         """The exact request grammar and guard share MTP's admitted row."""
-        from vllm_mlx.api.tool_grammar import GrammarLogitsProcessor
-        from vllm_mlx.repetition_guard import AgentRepetitionLogitsProcessor
+        from rapid_mlx.api.tool_grammar import GrammarLogitsProcessor
+        from rapid_mlx.repetition_guard import AgentRepetitionLogitsProcessor
 
         scheduler = _make_scheduler_with_cache()
         scheduler.config.hybrid_cache_entries = 8
@@ -1011,7 +1011,7 @@ class TestScheduleWaitingInsertDispatch:
 
     def test_real_schedule_registers_reasoning_budget_as_transactional_mtp_safe(self):
         """A thinking-budget request keeps MTP: the budget joins the admitted row (#3044)."""
-        from vllm_mlx.api.reasoning_budget import ReasoningBudgetLogitsProcessor
+        from rapid_mlx.api.reasoning_budget import ReasoningBudgetLogitsProcessor
 
         scheduler = _make_scheduler_with_cache()
         scheduler.config.hybrid_cache_entries = 8
@@ -1044,8 +1044,8 @@ class TestScheduleWaitingInsertDispatch:
 
     def test_real_schedule_keeps_reasoning_budget_last_behind_the_tool_guard(self):
         """Row order is the contract: guard first, budget last (its force mask wins)."""
-        from vllm_mlx.api.reasoning_budget import ReasoningBudgetLogitsProcessor
-        from vllm_mlx.repetition_guard import AgentRepetitionLogitsProcessor
+        from rapid_mlx.api.reasoning_budget import ReasoningBudgetLogitsProcessor
+        from rapid_mlx.repetition_guard import AgentRepetitionLogitsProcessor
 
         scheduler = _make_scheduler_with_cache()
         scheduler.config.hybrid_cache_entries = 8
@@ -1080,7 +1080,7 @@ class TestScheduleWaitingInsertDispatch:
 
     def test_real_schedule_rejects_reasoning_budget_lookalike_from_mtp(self):
         """Only the exact built-in budget type is MTP-safe; a subclass fails closed."""
-        from vllm_mlx.api.reasoning_budget import ReasoningBudgetLogitsProcessor
+        from rapid_mlx.api.reasoning_budget import ReasoningBudgetLogitsProcessor
 
         class _Lookalike(ReasoningBudgetLogitsProcessor):
             pass
@@ -1116,7 +1116,7 @@ class TestScheduleWaitingInsertDispatch:
 
     def test_real_schedule_rejects_transactional_grammar_lookalike_from_mtp(self):
         """Named methods do not make an unknown stateful processor MTP-safe."""
-        from vllm_mlx.repetition_guard import AgentRepetitionLogitsProcessor
+        from rapid_mlx.repetition_guard import AgentRepetitionLogitsProcessor
 
         class CustomGrammarProcessor:
             def __call__(self, _tokens, logits):
@@ -1166,7 +1166,7 @@ class TestScheduleWaitingInsertDispatch:
         """Rejected speculative suffixes never advance the persistent matcher."""
         import mlx.core as mx
 
-        from vllm_mlx.api import tool_grammar as tg
+        from rapid_mlx.api import tool_grammar as tg
 
         class _Matcher:
             def __init__(self, consumed=()):
@@ -1228,7 +1228,7 @@ class TestScheduleWaitingInsertDispatch:
         """Cancellation restores non-matcher state at the same boundary."""
         import mlx.core as mx
 
-        from vllm_mlx.api import tool_grammar as tg
+        from rapid_mlx.api import tool_grammar as tg
 
         class _Matcher:
             def __init__(self, consumed=()):

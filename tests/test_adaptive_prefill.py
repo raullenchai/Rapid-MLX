@@ -8,7 +8,7 @@ pytestmark = pytest.mark.requires_mlx
 
 from types import SimpleNamespace
 
-from vllm_mlx.scheduler import Scheduler, SchedulerConfig
+from rapid_mlx.scheduler import Scheduler, SchedulerConfig
 
 
 def _scheduler(*, prompt_tokens=100_000, active=0, rss=0, cap=100_000):

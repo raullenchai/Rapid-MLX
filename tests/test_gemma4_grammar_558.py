@@ -130,7 +130,7 @@ def _gemma4_structure_info(name: str):
     """The gemma4 wire triple, exactly as ``Gemma4ToolParser`` ships it
     (``arg_style="gemma4"``). Declared test-locally so the pure-Python golden
     tests need no tokenizer."""
-    from vllm_mlx.api.tool_grammar import StructureInfo
+    from rapid_mlx.api.tool_grammar import StructureInfo
 
     return StructureInfo(
         begin=f"<|tool_call>call:{name}{{",
@@ -144,7 +144,7 @@ def _gemma4_structure_info(name: str):
 def _hermes_json_structure_info(name: str):
     """A hermes ``<tool_call>`` JSON-body wire triple (``arg_style="json"``, the
     default) — the regression baseline the E4 change must not perturb."""
-    from vllm_mlx.api.tool_grammar import StructureInfo
+    from rapid_mlx.api.tool_grammar import StructureInfo
 
     return StructureInfo(
         begin=f'<tool_call>\n{{"name": "{name}", "arguments": ',
@@ -193,7 +193,7 @@ _GEMMA4_GOLDEN_LARK = (
 
 
 def test_gemma4_lark_matches_golden():
-    from vllm_mlx.api.tool_grammar import build_tool_lark
+    from rapid_mlx.api.tool_grammar import build_tool_lark
 
     lark = build_tool_lark(GEMMA4_TOOLS, "required", [_gemma4_structure_info("run")])
     assert lark == _GEMMA4_GOLDEN_LARK
@@ -203,7 +203,7 @@ def test_gemma4_lark_frame_and_sentinels():
     # The call frame: <|tool_call> trigger + <tool_call|> close + the <|"|> string
     # marker are all BARE special-token refs (never quoted byte literals the single
     # token could not satisfy). ``call:run{`` / ``}`` are ordinary byte literals.
-    from vllm_mlx.api.tool_grammar import build_tool_lark
+    from rapid_mlx.api.tool_grammar import build_tool_lark
 
     lark = build_tool_lark(GEMMA4_TOOLS, "required", [_gemma4_structure_info("run")])
     assert " <|tool_call> " in lark  # bare trigger ref
@@ -228,7 +228,7 @@ def test_gemma4_string_value_uses_greedy_rule_not_lazy():
     # EXCLUDES the byte spelling of ``<|"|>`` via llguidance's native regex And/Not
     # (``& ~/(?s:.*)<\|"\|>(?s:.*)/``) so the model cannot spell the marker with
     # ordinary bytes mid-value (codex r4 — the REAL under-constraint fix).
-    from vllm_mlx.api.tool_grammar import build_tool_lark
+    from rapid_mlx.api.tool_grammar import build_tool_lark
 
     lark = build_tool_lark(GEMMA4_TOOLS, "required", [_gemma4_structure_info("run")])
     assert 'gemma_str_value: <|"|> GEMMA_STR_TEXT <|"|>' in lark
@@ -246,7 +246,7 @@ def test_gemma4_comma_and_required_optional_framing():
     # carries its OWN leading comma inside a ``( ... )?`` group (first-present
     # construction, now emitted as an O(n) ``g0_rest<i>`` suffix chain).
     # ``code``/``lang`` required; ``timeout``/``verbose`` optional.
-    from vllm_mlx.api.tool_grammar import build_tool_lark
+    from rapid_mlx.api.tool_grammar import build_tool_lark
 
     lark = build_tool_lark(GEMMA4_TOOLS, "required", [_gemma4_structure_info("run")])
     # Required ``code`` is the first-present head (no leading comma), deferring its
@@ -264,7 +264,7 @@ def test_gemma4_comma_and_required_optional_framing():
 def test_gemma4_enum_is_per_value_wrapped_alternation():
     # A STRING enum renders as an alternation with each value wrapped in its OWN
     # ``<|"|>`` marker pair (NOT one shared wrapper, NOT %json, NOT the greedy rule).
-    from vllm_mlx.api.tool_grammar import build_tool_lark
+    from rapid_mlx.api.tool_grammar import build_tool_lark
 
     lark = build_tool_lark(GEMMA4_TOOLS, "required", [_gemma4_structure_info("run")])
     assert '(<|"|> "python" <|"|> | <|"|> "cpp" <|"|>)' in lark
@@ -273,7 +273,7 @@ def test_gemma4_enum_is_per_value_wrapped_alternation():
 def test_gemma4_all_optional_wraps_body_in_optional_group():
     # A tool with NO required field wraps the whole first-present alternation in an
     # outer ``( ... )?`` so an empty ``{}`` body is admitted.
-    from vllm_mlx.api.tool_grammar import build_tool_lark
+    from rapid_mlx.api.tool_grammar import build_tool_lark
 
     lark = build_tool_lark(GEMMA4_OPT_TOOL, "required", [_gemma4_structure_info("cfg")])
     # First-present alternation over {a-first, b-first}, wrapped in an outer ``?``;
@@ -296,7 +296,7 @@ def test_gemma4_optional_grammar_is_linear_size_not_quadratic():
     # nonterminal — NOT the old inline construction that regenerated the entire
     # remaining suffix for every first-present alternative (O(n^2) grammar size AND
     # construction time, a request-controlled CPU/memory amplifier).
-    from vllm_mlx.api.tool_grammar import build_tool_lark
+    from rapid_mlx.api.tool_grammar import build_tool_lark
 
     def _build(n):
         props = {f"p{i:02d}": {"type": "integer"} for i in range(n)}
@@ -339,7 +339,7 @@ def test_gemma4_dictsort_order_is_case_insensitive():
     # Jinja ``dictsort`` (default ``case_sensitive=False``) -> sort by the LOWERCASED
     # key. A case-SENSITIVE ``sorted`` would order uppercase keys before lowercase
     # ones and force the model off the order it was trained to emit.
-    from vllm_mlx.api.tool_grammar import build_tool_lark
+    from rapid_mlx.api.tool_grammar import build_tool_lark
 
     props = {  # insertion order deliberately NEITHER sorted order
         "Zebra": {"type": "string"},
@@ -372,7 +372,7 @@ def test_gemma4_dictsort_case_collision_is_stable_insertion_order():
     # A case-insensitive collision (``a`` vs ``A``) keeps the schema's INSERTION
     # order via Python's stable sort -> EXACTLY Jinja ``dictsort``'s tiebreak (a
     # secondary case-sensitive sort would instead force ``A`` before ``a``).
-    from vllm_mlx.api.tool_grammar import build_tool_lark
+    from rapid_mlx.api.tool_grammar import build_tool_lark
 
     props = {"a": {"type": "string"}, "A": {"type": "string"}}  # 'a' inserted first
     tool = [
@@ -392,7 +392,7 @@ def test_gemma4_dictsort_case_collision_is_stable_insertion_order():
 
 def test_gemma4_noarg_tool_has_empty_body():
     # A no-argument tool renders the bare ``call:NAME{}`` frame (empty body).
-    from vllm_mlx.api.tool_grammar import build_tool_lark
+    from rapid_mlx.api.tool_grammar import build_tool_lark
 
     noarg = [
         {
@@ -413,7 +413,7 @@ def test_gemma4_noarg_tool_has_empty_body():
 def test_gemma4_ref_defs_propagated_into_value_schema():
     # A ``$ref`` object value carries the parent's ``$defs`` into its per-value
     # ``%json`` sub-schema so the ``$ref`` resolves.
-    from vllm_mlx.api.tool_grammar import build_tool_lark
+    from rapid_mlx.api.tool_grammar import build_tool_lark
 
     lark = build_tool_lark(
         GEMMA4_OBJ_TOOL, "required", [_gemma4_structure_info("place")]
@@ -440,7 +440,7 @@ def test_gemma4_ref_defs_propagated_into_value_schema():
 # E4 change (and the shared-guard policy refactor) must not perturb JSON families.
 # --------------------------------------------------------------------------
 def test_json_family_grammar_has_no_gemma4_constructs():
-    from vllm_mlx.api.tool_grammar import build_tool_lark
+    from rapid_mlx.api.tool_grammar import build_tool_lark
 
     infos = [_hermes_json_structure_info(t["name"]) for t in GEMMA4_TOOLS]
     lark = build_tool_lark(GEMMA4_TOOLS, "required", infos)
@@ -455,7 +455,7 @@ def test_json_family_grammar_byte_identical_to_baseline():
     # The exact hermes forced golden (identical to test_qwen3coder_xml_grammar_558's
     # baseline). Pinning it proves E4 left the JSON-family grammar byte-for-byte
     # unchanged.
-    from vllm_mlx.api.tool_grammar import build_tool_lark
+    from rapid_mlx.api.tool_grammar import build_tool_lark
 
     tools = [
         {
@@ -524,7 +524,7 @@ def _single_token_tokenizer():
 
 
 def _make_gemma4(tokenizer=None):
-    from vllm_mlx.tool_parsers.gemma4_tool_parser import Gemma4ToolParser
+    from rapid_mlx.tool_parsers.gemma4_tool_parser import Gemma4ToolParser
 
     return Gemma4ToolParser(tokenizer=tokenizer)
 
@@ -546,7 +546,7 @@ def test_gemma4_structure_info_opts_out_when_marker_missing():
 
 
 def test_gemma4_structure_info_returns_gemma4_wire_triple():
-    from vllm_mlx.api.tool_grammar import StructureInfo
+    from rapid_mlx.api.tool_grammar import StructureInfo
 
     get_info = _make_gemma4(tokenizer=_single_token_tokenizer()).structure_info()
     assert callable(get_info), "opt-in must return a name->StructureInfo factory"
@@ -563,7 +563,7 @@ def test_gemma4_structure_info_returns_gemma4_wire_triple():
 
 @pytest.mark.real_hf_cache
 def test_gemma4_supports_grammar_and_auto_unsafe():
-    from vllm_mlx.tool_parsers.gemma4_tool_parser import Gemma4ToolParser
+    from rapid_mlx.tool_parsers.gemma4_tool_parser import Gemma4ToolParser
 
     assert Gemma4ToolParser.SUPPORTS_GRAMMAR is True
     assert Gemma4ToolParser.supports_grammar() is True
@@ -631,7 +631,7 @@ def tok():
 def lltok(tok):
     """Build an llguidance LLTokenizer via the module's own resolver. Skip ONLY
     when the runtime bridge is genuinely unavailable (mirrors E3 finding 5)."""
-    from vllm_mlx.api.tool_grammar import HAS_LL_TOKENIZER, build_lltokenizer
+    from rapid_mlx.api.tool_grammar import HAS_LL_TOKENIZER, build_lltokenizer
 
     if not HAS_LL_TOKENIZER:
         pytest.skip(
@@ -649,7 +649,7 @@ def lltok(tok):
 
 def _gemma4_grammar(tools, tool_choice, tok):
     """Compile the gemma4 grammar through the REAL parser (opted-in on ``tok``)."""
-    from vllm_mlx.api.tool_grammar import build_tool_grammar
+    from rapid_mlx.api.tool_grammar import build_tool_grammar
 
     return build_tool_grammar(tools, tool_choice, _make_gemma4(tok))
 
@@ -701,7 +701,7 @@ def _parse(wire, tools):
 
 @_requires_llguidance
 def test_gemma4_finding_tokenizer_llguidance_integration_not_broken(tok):
-    from vllm_mlx.api.tool_grammar import HAS_LL_TOKENIZER, build_lltokenizer
+    from rapid_mlx.api.tool_grammar import HAS_LL_TOKENIZER, build_lltokenizer
 
     if not HAS_LL_TOKENIZER:
         pytest.skip("llguidance runtime bridge (llguidance.hf / LLTokenizer) absent")
@@ -1080,7 +1080,7 @@ def test_gemma4_nested_json_braces_in_object_value_round_trip():
     # call. (codex described ``_recover_incomplete_gemma4_calls``, the best-effort
     # fallback that runs ONLY on the non-streaming finalize path when the balanced
     # scanner found ZERO complete calls — never for this well-formed wire.)
-    from vllm_mlx.tool_parsers.gemma4_tool_parser import (
+    from rapid_mlx.tool_parsers.gemma4_tool_parser import (
         GEMMA4_TOOL_TRAILER,
         _scan_gemma4_tool_calls,
     )
@@ -1137,7 +1137,7 @@ def test_gemma4_nested_json_braces_object_prop_grammar_accepts(tok, lltok):
 # differs ONLY in the two wire-specific leaf checks.
 # ==========================================================================
 def test_gemma4_representable_common_and_noarg():
-    from vllm_mlx.api.tool_grammar import _gemma4_schema_representable as rep
+    from rapid_mlx.api.tool_grammar import _gemma4_schema_representable as rep
 
     assert rep(GEMMA4_TOOLS[0]["parameters"]) is True
     assert rep(GEMMA4_OPT_TOOL[0]["parameters"]) is True
@@ -1149,7 +1149,7 @@ def test_gemma4_representable_common_and_noarg():
 def test_gemma4_representable_shares_structural_allowlist_with_xml():
     # The structural allowlist (object-level keywords, string facets, required
     # totality, $ref) is SHARED, so gemma4 opts out on exactly the same shapes.
-    from vllm_mlx.api.tool_grammar import _gemma4_schema_representable as rep
+    from rapid_mlx.api.tool_grammar import _gemma4_schema_representable as rep
 
     assert rep(False) is False
     assert rep({"type": "object", "required": ["a"]}) is False  # property-less
@@ -1170,10 +1170,10 @@ def test_gemma4_representable_shares_structural_allowlist_with_xml():
 def test_gemma4_key_safety_is_word_only_stricter_than_xml():
     # gemma4 emits a BARE ``KEY:``; the parser reads ``\w+``, so only ``\w+`` keys
     # round-trip — STRICTER than XML (which allows ``-``/``.``).
-    from vllm_mlx.api.tool_grammar import (
+    from rapid_mlx.api.tool_grammar import (
         _gemma4_schema_representable as g_rep,
     )
-    from vllm_mlx.api.tool_grammar import (
+    from rapid_mlx.api.tool_grammar import (
         _xml_schema_representable as x_rep,
     )
 
@@ -1192,10 +1192,10 @@ def test_gemma4_enum_delimiter_safety_differs_from_xml():
     # A gemma4 string value is bounded ONLY by ``<|"|>``, so an enum value
     # containing ``<``/``>``/newlines is SAFE (unlike XML). A value containing the
     # ``<|"|>`` marker opts out.
-    from vllm_mlx.api.tool_grammar import (
+    from rapid_mlx.api.tool_grammar import (
         _gemma4_schema_representable as g_rep,
     )
-    from vllm_mlx.api.tool_grammar import (
+    from rapid_mlx.api.tool_grammar import (
         _xml_schema_representable as x_rep,
     )
 
@@ -1218,10 +1218,10 @@ def test_gemma4_enum_all_structural_markers_opt_out():
     # rendering of it inside an enum value can never be produced at runtime and would
     # compile to a DEAD alternation branch. Faithful-or-opt-out: opt the whole
     # request out instead of emitting an unreachable branch.
-    from vllm_mlx.api.tool_grammar import (
+    from rapid_mlx.api.tool_grammar import (
         _GEMMA4_STRUCTURAL_MARKERS,
     )
-    from vllm_mlx.api.tool_grammar import (
+    from rapid_mlx.api.tool_grammar import (
         _gemma4_schema_representable as g_rep,
     )
 
@@ -1258,7 +1258,7 @@ def test_gemma4_enum_all_structural_markers_opt_out():
 def test_gemma4_enum_type_consistency_shared():
     # The shared enum guard still rejects value/declared-type mismatch and
     # unsupported siblings.
-    from vllm_mlx.api.tool_grammar import _gemma4_schema_representable as rep
+    from rapid_mlx.api.tool_grammar import _gemma4_schema_representable as rep
 
     assert rep({"properties": {"n": {"type": "integer", "enum": ["x"]}}}) is False
     assert rep({"properties": {"s": {"enum": ["a", "bb"], "minLength": 2}}}) is False
@@ -1273,7 +1273,7 @@ def test_gemma4_enum_tokenizer_complete_opt_out_and_none_fallback():
     # special token, not only the five hard-coded structural markers. ``<bos>`` is a
     # registered special token but NOT one of the five markers, so it is caught ONLY
     # by the tokenizer-complete check, not the 5-marker substring blacklist.
-    from vllm_mlx.api.tool_grammar import _gemma4_schema_representable as rep
+    from rapid_mlx.api.tool_grammar import _gemma4_schema_representable as rep
 
     # A fake tokenizer that registers ``<bos>`` as a single added token (id 2) — the
     # same surface ``_is_registered_added_token`` probes. ``<bos>`` is deliberately
@@ -1393,7 +1393,7 @@ def test_gemma4_build_tool_grammar_opts_out_enum_with_any_special_token(special,
     # atomically, never its bytes). ``build_tool_grammar`` must OPT OUT (None ->
     # free-form) once the model tokenizer is threaded into the guard, even though the
     # structural 5-marker check alone would MISS these. A clean enum still builds.
-    from vllm_mlx.api.tool_grammar import _GEMMA4_STRUCTURAL_MARKERS
+    from rapid_mlx.api.tool_grammar import _GEMMA4_STRUCTURAL_MARKERS
 
     # Precondition: OUTSIDE the hard-coded marker set (only the tokenizer-complete
     # check can reject it) AND a single registered special token on THIS tokenizer

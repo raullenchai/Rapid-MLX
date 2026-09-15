@@ -2,7 +2,7 @@
 """Property-based invariants for the quantized live KV cache (#1208-tied).
 
 The quantized continuous-batching KV cache
-(``vllm_mlx/quantized_batch_cache.py``) is the exact code path behind the
+(``rapid_mlx/quantized_batch_cache.py``) is the exact code path behind the
 ``--kv-cache-dtype int8/int4`` flag. Bug #1208 was a *dimension-probe*
 gap in that path — the class of failure where a group size is chosen that
 does not actually divide the head dim, or a round-trip silently corrupts
@@ -32,7 +32,7 @@ import numpy as np
 from hypothesis import example, given, settings
 from hypothesis import strategies as st
 
-from vllm_mlx.quantized_batch_cache import (
+from rapid_mlx.quantized_batch_cache import (
     _dequantize,
     _quantize,
     supported_group_size,

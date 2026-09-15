@@ -26,7 +26,7 @@ from typing import Any
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from vllm_mlx.config import reset_config
+from rapid_mlx.config import reset_config
 
 _CONTEXT_WINDOW = 40960
 
@@ -131,7 +131,7 @@ def _huge_text(approx_tokens: int) -> str:
 def _extract_error(body: dict) -> dict:
     """Pull the OpenAI-style error envelope out of a FastAPI response.
 
-    The structured 400 handler in ``vllm_mlx/server.py`` unwraps
+    The structured 400 handler in ``rapid_mlx/server.py`` unwraps
     ``HTTPException(detail={"error": {...}})`` into a top-level
     ``{"error": {...}}`` body. When the route is mounted on a bare
     FastAPI app (these tests do that to avoid the full server
@@ -155,7 +155,7 @@ def _extract_error(body: dict) -> dict:
 def test_chat_completions_rejects_over_context_window():
     """``/v1/chat/completions`` must surface the structured 400
     envelope when ``prompt + max_tokens > context_window``."""
-    from vllm_mlx.routes.chat import router as chat_router
+    from rapid_mlx.routes.chat import router as chat_router
 
     client = _make_app([chat_router])
 
@@ -180,7 +180,7 @@ def test_completions_rejects_over_context_window():
     """``/v1/completions`` (raw-prompt API) must enforce the same
     cap. The helper here is ``enforce_context_length_for_prompt``
     — no chat template applied."""
-    from vllm_mlx.routes.completions import router as completions_router
+    from rapid_mlx.routes.completions import router as completions_router
 
     client = _make_app([completions_router])
 
@@ -203,7 +203,7 @@ def test_anthropic_messages_rejects_over_context_window():
     """``/v1/messages`` (Anthropic shape) must enforce the same cap.
     Anthropic SDKs branch on ``error.type`` so we pin the envelope
     matches the chat lane."""
-    from vllm_mlx.routes.anthropic import router as anthropic_router
+    from rapid_mlx.routes.anthropic import router as anthropic_router
 
     client = _make_app([anthropic_router])
 
@@ -227,7 +227,7 @@ def test_responses_rejects_over_context_window():
     same cap. The route re-extracts multimodal content before the
     gate, so this also pins that the gate fires on the re-extracted
     text-only shape."""
-    from vllm_mlx.routes.responses import router as responses_router
+    from rapid_mlx.routes.responses import router as responses_router
 
     client = _make_app([responses_router])
 
@@ -251,8 +251,8 @@ def test_chat_completions_passes_when_within_context_window():
     <= context_window`` must NOT be rejected. Locks in that the
     enforcement is bounded — over-strict gates would block legitimate
     long-context requests."""
-    from vllm_mlx.engine.base import GenerationOutput
-    from vllm_mlx.routes.chat import router as chat_router
+    from rapid_mlx.engine.base import GenerationOutput
+    from rapid_mlx.routes.chat import router as chat_router
 
     # Build the app, then swap in a chat impl that returns a real
     # response (the default stub raises on .chat to catch silent

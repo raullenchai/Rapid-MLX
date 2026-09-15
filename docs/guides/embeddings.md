@@ -115,7 +115,7 @@ Create embeddings for the given input text(s).
 ### Direct usage without server
 
 ```python
-from vllm_mlx.embedding import EmbeddingEngine
+from rapid_mlx.embedding import EmbeddingEngine
 
 engine = EmbeddingEngine("mlx-community/all-MiniLM-L6-v2-4bit")
 engine.load()

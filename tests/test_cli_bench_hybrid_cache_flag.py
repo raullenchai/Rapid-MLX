@@ -35,14 +35,14 @@ pytestmark = pytest.mark.requires_mlx
 import sys
 from unittest import mock
 
-import vllm_mlx.cli as cli
+import rapid_mlx.cli as cli
 
 # Pre-import ``engine_core`` so its module-level ``SchedulerConfig | None``
 # annotation evaluates against the REAL class BEFORE any test patches
-# ``vllm_mlx.scheduler.SchedulerConfig``. ``bench_command`` imports it lazily
+# ``rapid_mlx.scheduler.SchedulerConfig``. ``bench_command`` imports it lazily
 # (``from .engine_core import ...``); with the module already in ``sys.modules``
 # that is a pure name rebind — the class body never re-runs under the patch.
-import vllm_mlx.engine_core as _engine_core  # noqa: E402,F401
+import rapid_mlx.engine_core as _engine_core  # noqa: E402,F401
 
 
 class _StopBenchError(Exception):
@@ -74,12 +74,12 @@ def _run_bench_capturing_scheduler_config(argv: list[str]) -> dict:
         # ``bench_command`` binds ``load_model_with_fallback`` (the
         # gemma4-aware router, not bare ``mlx_lm.load``) — patch at source.
         mock.patch(
-            "vllm_mlx.utils.tokenizer.load_model_with_fallback",
+            "rapid_mlx.utils.tokenizer.load_model_with_fallback",
             return_value=(object(), object()),
         ),
         # ``bench_command`` does ``from .scheduler import SchedulerConfig`` —
         # patch on the scheduler module so the local import binds the mock.
-        mock.patch("vllm_mlx.scheduler.SchedulerConfig", _fake_scheduler_config),
+        mock.patch("rapid_mlx.scheduler.SchedulerConfig", _fake_scheduler_config),
         mock.patch.object(sys, "argv", ["rapid-mlx", *argv]),
         # Guarantee the non-interactive path so the download gate never
         # touches the HF API even if a runner attaches a TTY.
@@ -145,7 +145,7 @@ def test_bench_rejects_negative_hybrid_cache_entries():
     ``MemoryCacheConfig`` construction raises. Fully offline: no engine boot,
     no network (the helper mocks every model-loading / disk / network
     boundary)."""
-    from vllm_mlx.memory_cache import MemoryCacheConfig
+    from rapid_mlx.memory_cache import MemoryCacheConfig
 
     captured = _run_bench_capturing_scheduler_config(
         [

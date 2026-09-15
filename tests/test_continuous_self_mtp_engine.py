@@ -11,7 +11,7 @@ import pytest
 
 MODULE_PATH = (
     Path(__file__).parents[1]
-    / "vllm_mlx"
+    / "rapid_mlx"
     / "spec_decode"
     / "mtp"
     / "continuous_engine.py"
@@ -193,7 +193,7 @@ def test_rapid_forward_seams_use_return_hidden_and_n_confirmed():
 
 def test_fixed_membership_prepare_attach_propose_commit_detach_lifecycle():
     runtime, compute, caches, _calls = _runtime()
-    from vllm_mlx.spec_decode.mtp.accept_counter import MTPAcceptCounter
+    from rapid_mlx.spec_decode.mtp.accept_counter import MTPAcceptCounter
 
     lane1_counter = MTPAcceptCounter()
     lane2_counter = MTPAcceptCounter()
@@ -205,7 +205,7 @@ def test_fixed_membership_prepare_attach_propose_commit_detach_lifecycle():
     assert [lane.uid for lane in batch.lanes] == [1, 2]
     assert batch.membership_epoch == 1
 
-    from vllm_mlx.spec_decode.mtp.accept_counter import (
+    from rapid_mlx.spec_decode.mtp.accept_counter import (
         get_global_counter,
         reset_global_counter_for_tests,
     )

@@ -25,7 +25,7 @@ try:
 except ModuleNotFoundError:  # pragma: no cover — Python 3.10 only
     import tomli as tomllib
 
-from vllm_mlx.agents.adapter import (
+from rapid_mlx.agents.adapter import (
     _deep_merge,
     _hermes_supported_toolsets,
     _merge_file_config,
@@ -34,7 +34,7 @@ from vllm_mlx.agents.adapter import (
     fetch_context_window,
     setup_agent_config,
 )
-from vllm_mlx.agents.base import AgentConfigSpec, AgentProfile
+from rapid_mlx.agents.base import AgentConfigSpec, AgentProfile
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -120,7 +120,7 @@ class TestContextLengthPlaceholder:
 class TestHermesToolsets:
     def test_hermes_yaml_uses_cross_version_toolsets(self):
         """Hermes setup must only enable toolsets shared by supported versions."""
-        from vllm_mlx.agents import get_profile, load_profiles
+        from rapid_mlx.agents import get_profile, load_profiles
 
         load_profiles()
         profile = get_profile("hermes")
@@ -153,7 +153,7 @@ class TestHermesToolsets:
             )
         )
         monkeypatch.setattr(
-            "vllm_mlx.agents.adapter._hermes_supported_toolsets",
+            "rapid_mlx.agents.adapter._hermes_supported_toolsets",
             lambda: {
                 "terminal",
                 "file",
@@ -461,7 +461,7 @@ class TestMergeOnWrite:
             )
         )
         monkeypatch.setattr(
-            "vllm_mlx.agents.adapter._hermes_supported_toolsets",
+            "rapid_mlx.agents.adapter._hermes_supported_toolsets",
             lambda: {"terminal", "file", "image_gen"},
         )
 
@@ -591,7 +591,7 @@ class TestFetchContextWindow:
             {"id": "model-b", "context_window": 131072},
         ]
         monkeypatch.setattr(
-            "vllm_mlx.agents.adapter._fetch_models", lambda _url: models
+            "rapid_mlx.agents.adapter._fetch_models", lambda _url: models
         )
         assert fetch_context_window("http://x/v1", "model-b") == 131072
 
@@ -599,7 +599,7 @@ class TestFetchContextWindow:
         """Single-model serve: fallback to the only entry when no exact match."""
         models = [{"id": "only-model", "context_window": 65536}]
         monkeypatch.setattr(
-            "vllm_mlx.agents.adapter._fetch_models", lambda _url: models
+            "rapid_mlx.agents.adapter._fetch_models", lambda _url: models
         )
         assert fetch_context_window("http://x/v1", "unknown") == 65536
 
@@ -610,12 +610,12 @@ class TestFetchContextWindow:
             {"id": "model-b", "context_window": 131072},
         ]
         monkeypatch.setattr(
-            "vllm_mlx.agents.adapter._fetch_models", lambda _url: models
+            "rapid_mlx.agents.adapter._fetch_models", lambda _url: models
         )
         assert fetch_context_window("http://x/v1", "model-c") is None
 
     def test_empty_models(self, monkeypatch):
-        monkeypatch.setattr("vllm_mlx.agents.adapter._fetch_models", lambda _url: [])
+        monkeypatch.setattr("rapid_mlx.agents.adapter._fetch_models", lambda _url: [])
         assert fetch_context_window("http://x/v1", "any") is None
 
 
@@ -756,7 +756,7 @@ class TestTomlMerge:
         any of it to matter, and the codex profile is the only caller that
         can prove it.
         """
-        from vllm_mlx.agents import get_profile
+        from rapid_mlx.agents import get_profile
 
         monkeypatch.setenv("HOME", str(tmp_path))
         codex_home = tmp_path / ".codex"

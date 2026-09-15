@@ -2,7 +2,7 @@
 """Regression tests for F-141 — scoped tool-param schema enforcement.
 
 Before this fix, ``_validate_tool_call_params`` (in
-``vllm_mlx/service/helpers.py``) was log-only: when the model emitted
+``rapid_mlx/service/helpers.py``) was log-only: when the model emitted
 arguments that violated the declared JSON schema for a tool, the engine
 wrote a ``logger.warning(...)`` and returned the bad payload to the
 client as a normal 200. F-141 ports the validator to ENFORCEMENT: a
@@ -37,7 +37,7 @@ import json
 import pytest
 from fastapi import HTTPException
 
-from vllm_mlx.api.models import FunctionCall, ToolCall
+from rapid_mlx.api.models import FunctionCall, ToolCall
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -72,7 +72,7 @@ class TestEnforcement:
 
     def test_enum_violation_raises_400(self):
         """enum: model emits ``"purple"`` against ``enum:["red","green","blue"]``."""
-        from vllm_mlx.service.helpers import _validate_tool_call_params
+        from rapid_mlx.service.helpers import _validate_tool_call_params
 
         tools = [
             _tool(
@@ -92,7 +92,7 @@ class TestEnforcement:
 
     def test_type_violation_raises_400(self):
         """type: schema says ``integer``, model emits string ``"twentyfive"``."""
-        from vllm_mlx.service.helpers import _validate_tool_call_params
+        from rapid_mlx.service.helpers import _validate_tool_call_params
 
         tools = [_tool("set_age", {"age": {"type": "integer"}})]
         calls = [_call("set_age", '{"age": "twentyfive"}')]
@@ -105,7 +105,7 @@ class TestEnforcement:
 
     def test_range_violation_raises_400(self):
         """minimum/maximum: ``score=200`` against ``maximum:100``."""
-        from vllm_mlx.service.helpers import _validate_tool_call_params
+        from rapid_mlx.service.helpers import _validate_tool_call_params
 
         tools = [
             _tool(
@@ -123,7 +123,7 @@ class TestEnforcement:
 
     def test_min_below_floor_raises_400(self):
         """Symmetric direction: ``score=-5`` against ``minimum:0``."""
-        from vllm_mlx.service.helpers import _validate_tool_call_params
+        from rapid_mlx.service.helpers import _validate_tool_call_params
 
         tools = [
             _tool(
@@ -140,7 +140,7 @@ class TestEnforcement:
 
     def test_length_violation_raises_400(self):
         """minLength: ``username="bob"`` (len 3) against ``minLength:5``."""
-        from vllm_mlx.service.helpers import _validate_tool_call_params
+        from rapid_mlx.service.helpers import _validate_tool_call_params
 
         tools = [
             _tool(
@@ -161,7 +161,7 @@ class TestEnforcement:
 
     def test_max_length_violation_raises_400(self):
         """maxLength: 30-char username against ``maxLength:20``."""
-        from vllm_mlx.service.helpers import _validate_tool_call_params
+        from rapid_mlx.service.helpers import _validate_tool_call_params
 
         long_name = "x" * 30
         tools = [
@@ -191,20 +191,20 @@ class TestUnionTypes:
     the union-type path."""
 
     def test_union_string_or_null_accepts_string(self):
-        from vllm_mlx.service.helpers import _validate_tool_call_params
+        from rapid_mlx.service.helpers import _validate_tool_call_params
 
         tools = [_tool("nick", {"name": {"type": ["string", "null"]}})]
         _validate_tool_call_params([_call("nick", '{"name": "alice"}')], tools)
 
     def test_union_string_or_null_accepts_null(self):
-        from vllm_mlx.service.helpers import _validate_tool_call_params
+        from rapid_mlx.service.helpers import _validate_tool_call_params
 
         tools = [_tool("nick", {"name": {"type": ["string", "null"]}})]
         _validate_tool_call_params([_call("nick", '{"name": null}')], tools)
 
     def test_union_string_or_null_rejects_integer(self):
         """Integer should NOT match a ``["string", "null"]`` union."""
-        from vllm_mlx.service.helpers import _validate_tool_call_params
+        from rapid_mlx.service.helpers import _validate_tool_call_params
 
         tools = [_tool("nick", {"name": {"type": ["string", "null"]}})]
         with pytest.raises(HTTPException) as exc_info:
@@ -227,7 +227,7 @@ class TestValidPasses:
     rejecting good payloads."""
 
     def test_valid_enum_passes(self):
-        from vllm_mlx.service.helpers import _validate_tool_call_params
+        from rapid_mlx.service.helpers import _validate_tool_call_params
 
         tools = [
             _tool(
@@ -239,7 +239,7 @@ class TestValidPasses:
         _validate_tool_call_params(calls, tools)  # no raise
 
     def test_valid_all_constraints_pass(self):
-        from vllm_mlx.service.helpers import _validate_tool_call_params
+        from rapid_mlx.service.helpers import _validate_tool_call_params
 
         tools = [
             _tool(
@@ -265,7 +265,7 @@ class TestValidPasses:
 
     def test_boundary_inclusive_passes(self):
         """JSON Schema ``minimum``/``maximum`` are inclusive."""
-        from vllm_mlx.service.helpers import _validate_tool_call_params
+        from rapid_mlx.service.helpers import _validate_tool_call_params
 
         tools = [
             _tool(
@@ -277,7 +277,7 @@ class TestValidPasses:
         _validate_tool_call_params([_call("set_score", '{"score": 100}')], tools)
 
     def test_schema_valid_repeated_string_argument_is_allowed(self):
-        from vllm_mlx.service.helpers import _validate_tool_call_params
+        from rapid_mlx.service.helpers import _validate_tool_call_params
 
         tools = [_tool("exec_command", {"cmd": {"type": "string"}})]
         repeated = "grep -rn get_stats " + ("metrics " * 200)
@@ -286,7 +286,7 @@ class TestValidPasses:
         _validate_tool_call_params(calls, tools)
 
     def test_long_diverse_string_argument_is_allowed(self):
-        from vllm_mlx.service.helpers import _validate_tool_call_params
+        from rapid_mlx.service.helpers import _validate_tool_call_params
 
         tools = [_tool("apply_patch", {"patch": {"type": "string"}})]
         diverse = " ".join(f"line_{index}" for index in range(200))
@@ -316,7 +316,7 @@ class TestDeferredPassThrough:
 
     def test_required_missing_key_raises(self):
         """Required properties are enforced before a tool reaches an agent."""
-        from vllm_mlx.service.helpers import _validate_tool_call_params
+        from rapid_mlx.service.helpers import _validate_tool_call_params
 
         tools = [
             _tool(
@@ -331,7 +331,7 @@ class TestDeferredPassThrough:
 
     @pytest.mark.parametrize("arguments", ["", "[]", '"text"'])
     def test_required_mode_rejects_non_object_arguments(self, arguments):
-        from vllm_mlx.service.helpers import _validate_tool_call_params
+        from rapid_mlx.service.helpers import _validate_tool_call_params
 
         tools = [_tool("f", {"x": {"type": "string"}})]
         tools[0]["function"]["parameters"]["required"] = ["x"]
@@ -342,7 +342,7 @@ class TestDeferredPassThrough:
 
     def test_schema_valid_repetitive_string_is_not_rejected(self):
         """Repeated patches/test fixtures remain valid executable input."""
-        from vllm_mlx.service.helpers import _validate_tool_call_params
+        from rapid_mlx.service.helpers import _validate_tool_call_params
 
         tools = [_tool("apply", {"patch": {"type": "string"}})]
         payload = json.dumps({"patch": "+same line\n" * 200})
@@ -351,7 +351,7 @@ class TestDeferredPassThrough:
     def test_one_of_violation_does_not_raise(self):
         """``oneOf`` (and ``anyOf`` / ``allOf``) violations remain
         advisory — multi-branch schema traversal is a separate lift."""
-        from vllm_mlx.service.helpers import _validate_tool_call_params
+        from rapid_mlx.service.helpers import _validate_tool_call_params
 
         tools = [_tool("f", {"x": {"oneOf": [{"const": "a"}, {"const": "b"}]}})]
         _validate_tool_call_params([_call("f", '{"x": "c"}')], tools)

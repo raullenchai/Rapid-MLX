@@ -11,9 +11,9 @@ import pytest
 from tokenizers import Tokenizer, models
 from transformers import PreTrainedTokenizerFast
 
-from vllm_mlx.model_aliases import list_profiles, resolve_profile
-from vllm_mlx.utils.chat_template import apply_chat_template
-from vllm_mlx.utils.chat_template_registry import (
+from rapid_mlx.model_aliases import list_profiles, resolve_profile
+from rapid_mlx.utils.chat_template import apply_chat_template
+from rapid_mlx.utils.chat_template_registry import (
     bundled_chat_template,
     resolve_chat_template,
     resolve_profile_chat_template,
@@ -135,7 +135,7 @@ def test_unknown_registry_id_fails_closed() -> None:
 
 @pytest.mark.parametrize("invalid", [391, "unknown-template"])
 def test_alias_schema_rejects_invalid_template_id(invalid) -> None:
-    from vllm_mlx.model_aliases import _coerce
+    from rapid_mlx.model_aliases import _coerce
 
     expected = "must be a string" if not isinstance(invalid, str) else "not in"
     with pytest.raises(ValueError, match=expected):
@@ -146,7 +146,7 @@ def test_alias_schema_rejects_invalid_template_id(invalid) -> None:
 
 
 def _stub_text_loader(monkeypatch, tokenizer):
-    from vllm_mlx.utils import tokenizer as tokenizer_module
+    from rapid_mlx.utils import tokenizer as tokenizer_module
 
     model = object()
     monkeypatch.setattr(
@@ -215,7 +215,7 @@ def test_text_loader_preserves_unidentified_local_checkpoint(monkeypatch) -> Non
 
 
 def test_engine_resolves_or_preserves_profile_contract(monkeypatch) -> None:
-    from vllm_mlx.engine import batched as batched_module
+    from rapid_mlx.engine import batched as batched_module
 
     monkeypatch.setattr(batched_module, "is_mllm_model", lambda name: False)
 
@@ -233,8 +233,8 @@ def test_engine_resolves_or_preserves_profile_contract(monkeypatch) -> None:
 
 @pytest.mark.asyncio
 async def test_text_engine_threads_preserved_contract_to_loader(monkeypatch) -> None:
-    from vllm_mlx.engine import batched as batched_module
-    from vllm_mlx.utils import tokenizer as tokenizer_module
+    from rapid_mlx.engine import batched as batched_module
+    from rapid_mlx.utils import tokenizer as tokenizer_module
 
     captured = {}
 
@@ -245,14 +245,14 @@ async def test_text_engine_threads_preserved_contract_to_loader(monkeypatch) -> 
         captured.update(kwargs)
         raise LoadBoundaryReachedError
 
-    engine_core = ModuleType("vllm_mlx.engine_core")
+    engine_core = ModuleType("rapid_mlx.engine_core")
     engine_core.AsyncEngineCore = object
     engine_core.EngineConfig = object
     engine_core._init_mlx_step_thread = lambda: None
-    scheduler = ModuleType("vllm_mlx.scheduler")
+    scheduler = ModuleType("rapid_mlx.scheduler")
     scheduler.SchedulerConfig = object
-    monkeypatch.setitem(sys.modules, "vllm_mlx.engine_core", engine_core)
-    monkeypatch.setitem(sys.modules, "vllm_mlx.scheduler", scheduler)
+    monkeypatch.setitem(sys.modules, "rapid_mlx.engine_core", engine_core)
+    monkeypatch.setitem(sys.modules, "rapid_mlx.scheduler", scheduler)
     monkeypatch.setattr(tokenizer_module, "load_model_with_fallback", fake_load)
 
     engine = object.__new__(batched_module.BatchedEngine)
@@ -304,7 +304,7 @@ def test_lazy_text_loader_resolves_profile_template_once(monkeypatch) -> None:
 async def test_mllm_start_resolves_profile_template_at_processor_load(
     monkeypatch,
 ) -> None:
-    from vllm_mlx.engine import batched as batched_module
+    from rapid_mlx.engine import batched as batched_module
 
     processor = _tokenizer()
 
@@ -336,22 +336,22 @@ async def test_mllm_start_resolves_profile_template_at_processor_load(
             "prefill_step_size": SimpleNamespace(default=2048),
         }
 
-    engine_core = ModuleType("vllm_mlx.engine_core")
+    engine_core = ModuleType("rapid_mlx.engine_core")
     engine_core._init_mlx_step_thread = lambda: None
-    mllm_scheduler = ModuleType("vllm_mlx.mllm_scheduler")
+    mllm_scheduler = ModuleType("rapid_mlx.mllm_scheduler")
     mllm_scheduler.MLLMScheduler = FakeScheduler
     mllm_scheduler.MLLMSchedulerConfig = FakeMLLMSchedulerConfig
-    mllm_module = ModuleType("vllm_mlx.models.mllm")
+    mllm_module = ModuleType("rapid_mlx.models.mllm")
     mllm_module.MLXMultimodalLM = FakeMultimodalLM
     mllm_module.TextOnlyCheckpointError = type(
         "TextOnlyCheckpointError", (RuntimeError,), {}
     )
-    scheduler = ModuleType("vllm_mlx.scheduler")
+    scheduler = ModuleType("rapid_mlx.scheduler")
     scheduler.SchedulerConfig = FakeSchedulerConfig
-    monkeypatch.setitem(sys.modules, "vllm_mlx.engine_core", engine_core)
-    monkeypatch.setitem(sys.modules, "vllm_mlx.mllm_scheduler", mllm_scheduler)
-    monkeypatch.setitem(sys.modules, "vllm_mlx.models.mllm", mllm_module)
-    monkeypatch.setitem(sys.modules, "vllm_mlx.scheduler", scheduler)
+    monkeypatch.setitem(sys.modules, "rapid_mlx.engine_core", engine_core)
+    monkeypatch.setitem(sys.modules, "rapid_mlx.mllm_scheduler", mllm_scheduler)
+    monkeypatch.setitem(sys.modules, "rapid_mlx.models.mllm", mllm_module)
+    monkeypatch.setitem(sys.modules, "rapid_mlx.scheduler", scheduler)
     monkeypatch.setattr(batched_module, "_probe_mllm_cache_type", lambda model: None)
 
     engine = object.__new__(batched_module.BatchedEngine)
@@ -376,7 +376,7 @@ async def test_dynamic_residency_preserves_profile_contract_for_local_path(
     monkeypatch, scheduler_config_stub
 ) -> None:
     pytest.importorskip("uvicorn")
-    from vllm_mlx import server
+    from rapid_mlx import server
 
     captured = {}
 
@@ -445,7 +445,7 @@ def test_text_loader_preserves_named_explicit_template_overrides(
 
 
 def test_renderer_does_not_resolve_or_mutate_templates() -> None:
-    source = Path("vllm_mlx/utils/chat_template.py").read_text()
+    source = Path("rapid_mlx/utils/chat_template.py").read_text()
     assert "resolve_chat_template" not in source
     assert "upgrade_stale_gemma4_chat_template" not in source
 

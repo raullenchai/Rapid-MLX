@@ -2,7 +2,7 @@
 
 import unittest
 
-from vllm_mlx.api.utils import StreamingToolCallFilter
+from rapid_mlx.api.utils import StreamingToolCallFilter
 
 
 class TestStreamingToolCallFilter(unittest.TestCase):
@@ -131,7 +131,7 @@ class TestStreamingToolCallFilter(unittest.TestCase):
 
     def test_buffer_cap_on_unclosed_block(self):
         """Buffer should be capped if tool call block never closes."""
-        from vllm_mlx.api.utils import _MAX_TOOL_BUFFER_BYTES
+        from rapid_mlx.api.utils import _MAX_TOOL_BUFFER_BYTES
 
         f = StreamingToolCallFilter()
         f.process("<minimax:tool_call>")
@@ -242,7 +242,7 @@ class TestStreamingToolCallFilterGemma4(unittest.TestCase):
     def test_gemma4_buffer_cap_on_unclosed_envelope(self):
         """The 1 MB cap protects against pathologically unclosed envelopes
         even for the asymmetric gemma4 markers."""
-        from vllm_mlx.api.utils import _MAX_TOOL_BUFFER_BYTES
+        from rapid_mlx.api.utils import _MAX_TOOL_BUFFER_BYTES
 
         f = StreamingToolCallFilter()
         f.process("<|tool_call>")
@@ -280,7 +280,7 @@ class TestToolCallTagsRegistry(unittest.TestCase):
     """Verify the gemma4 markers are wired up in the global tags list."""
 
     def test_gemma4_pair_registered(self):
-        from vllm_mlx.api.utils import get_tool_call_tags
+        from rapid_mlx.api.utils import get_tool_call_tags
 
         tags = get_tool_call_tags()
         assert ("<|tool_call>", "<tool_call|>") in tags, (
@@ -290,7 +290,7 @@ class TestToolCallTagsRegistry(unittest.TestCase):
         )
 
     def test_deepseek_v4_dsml_pair_registered(self):
-        from vllm_mlx.api.utils import get_tool_call_tags
+        from rapid_mlx.api.utils import get_tool_call_tags
 
         tags = get_tool_call_tags()
         assert ("<｜DSML｜tool_calls>", "</｜DSML｜tool_calls>") in tags

@@ -72,7 +72,7 @@ python3.12 bench/bench_continuous_mtp_server.py \
 The two server conditions differed only in the continuous scheduler fields:
 
 ```bash
-HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 python3.12 -m vllm_mlx.cli serve \
+HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 python3.12 -m rapid_mlx.cli serve \
   "$TARGET_MODEL" --host 127.0.0.1 --port 8475 \
   --max-num-seqs 4 --max-concurrent-requests 4 \
   --disable-prefix-cache --no-thinking --force-spec-decode \

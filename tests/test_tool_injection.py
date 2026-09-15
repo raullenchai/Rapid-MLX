@@ -3,7 +3,7 @@
 
 import copy
 
-from vllm_mlx.utils.chat_template import (
+from rapid_mlx.utils.chat_template import (
     _build_tool_injection_text,
     _inject_tools_into_messages,
     apply_chat_template,
@@ -199,7 +199,7 @@ class TestApplyChatTemplateToolInjection:
 
 
 try:
-    from vllm_mlx.tool_parsers.mistral_tool_parser import MistralToolParser
+    from rapid_mlx.tool_parsers.mistral_tool_parser import MistralToolParser
 
     _has_mistral_parser = True
 except ImportError:

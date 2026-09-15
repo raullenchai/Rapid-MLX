@@ -28,20 +28,20 @@ def fake_home(tmp_path, monkeypatch):
     # Force-reload the state module so any cached path objects (there
     # shouldn't be any, but defence in depth) get rebuilt under the new
     # HOME.
-    import vllm_mlx.telemetry.state as state
+    import rapid_mlx.telemetry.state as state
 
     importlib.reload(state)
     return tmp_path
 
 
 def test_default_is_off(fake_home):
-    from vllm_mlx.telemetry.state import is_enabled
+    from rapid_mlx.telemetry.state import is_enabled
 
     assert is_enabled() is False
 
 
 def test_consent_round_trip(fake_home):
-    from vllm_mlx.telemetry.state import (
+    from rapid_mlx.telemetry.state import (
         get_consent_state,
         is_enabled,
         record_consent,
@@ -53,7 +53,7 @@ def test_consent_round_trip(fake_home):
     assert state is not None
     assert state.consent is True
     assert state.prompted_version == "0.6.33"
-    from vllm_mlx.telemetry.state import CURRENT_CONSENT_SCHEMA_VERSION
+    from rapid_mlx.telemetry.state import CURRENT_CONSENT_SCHEMA_VERSION
 
     assert state.schema_version == CURRENT_CONSENT_SCHEMA_VERSION
     assert state.prompted_at.endswith("Z")
@@ -67,7 +67,7 @@ def test_prior_v1_consent_is_reprompted_after_activation_added(fake_home):
     adding a new collected data type under stale consent would be a breach."""
     import yaml
 
-    from vllm_mlx.telemetry.state import (
+    from rapid_mlx.telemetry.state import (
         consent_path,
         get_consent_state,
         is_enabled,
@@ -98,7 +98,7 @@ def test_reset_state_raises_when_a_path_cannot_be_removed(fake_home):
     aggregated OSError naming what it could not remove."""
     import pytest
 
-    from vllm_mlx.telemetry import emit, state
+    from rapid_mlx.telemetry import emit, state
 
     # A normally-removable consent file...
     state.record_consent(True, rapid_mlx_version="0.0.0+test")
@@ -127,7 +127,7 @@ def test_env_kill_switch_wins_over_consent(fake_home, monkeypatch):
     override it, CI runs would silently leak data the user thought they
     had disabled.
     """
-    from vllm_mlx.telemetry.state import is_enabled, record_consent
+    from rapid_mlx.telemetry.state import is_enabled, record_consent
 
     record_consent(True, rapid_mlx_version="0.6.33")
     assert is_enabled() is True
@@ -137,7 +137,7 @@ def test_env_kill_switch_wins_over_consent(fake_home, monkeypatch):
 
 def test_cli_flag_wins_over_consent(fake_home):
     """Even with consent=True and no env var, --no-telemetry forces off."""
-    from vllm_mlx.telemetry.state import is_enabled, record_consent
+    from rapid_mlx.telemetry.state import is_enabled, record_consent
 
     record_consent(True, rapid_mlx_version="0.6.33")
     assert is_enabled() is True
@@ -151,7 +151,7 @@ def test_env_force_on_is_ignored(fake_home, monkeypatch):
     mistyped env var could enable telemetry without the user ever
     consenting. Default-off when no consent file exists is the contract.
     """
-    from vllm_mlx.telemetry.state import is_enabled
+    from rapid_mlx.telemetry.state import is_enabled
 
     monkeypatch.setenv("RAPID_MLX_TELEMETRY", "1")
     assert is_enabled() is False  # still off — no stored consent
@@ -161,7 +161,7 @@ def test_env_force_on_is_ignored(fake_home, monkeypatch):
 
 @pytest.mark.parametrize("falsy", ["0", "false", "FALSE", "no", "off", "  0  ", ""])
 def test_env_falsy_values_all_disable(fake_home, monkeypatch, falsy):
-    from vllm_mlx.telemetry.state import is_enabled, record_consent
+    from rapid_mlx.telemetry.state import is_enabled, record_consent
 
     record_consent(True, rapid_mlx_version="0.6.33")
     monkeypatch.setenv("RAPID_MLX_TELEMETRY", falsy)
@@ -169,7 +169,7 @@ def test_env_falsy_values_all_disable(fake_home, monkeypatch, falsy):
 
 
 def test_client_id_idempotent(fake_home):
-    from vllm_mlx.telemetry.state import get_or_create_client_id
+    from rapid_mlx.telemetry.state import get_or_create_client_id
 
     first = get_or_create_client_id()
     assert first
@@ -185,7 +185,7 @@ def test_client_id_user_zeroed_uuid_preserved(fake_home):
     only to anonymous aggregate counts. If we silently overwrote, we'd
     break the documented user contract.
     """
-    from vllm_mlx.telemetry.state import client_id_path, get_or_create_client_id
+    from rapid_mlx.telemetry.state import client_id_path, get_or_create_client_id
 
     zero = "00000000-0000-0000-0000-000000000000"
     path = client_id_path()
@@ -195,7 +195,7 @@ def test_client_id_user_zeroed_uuid_preserved(fake_home):
 
 
 def test_reset_state_removes_both_files(fake_home):
-    from vllm_mlx.telemetry.state import (
+    from rapid_mlx.telemetry.state import (
         client_id_path,
         consent_path,
         get_or_create_client_id,
@@ -217,7 +217,7 @@ def test_reset_state_removes_both_files(fake_home):
 def test_consent_source_reports_origin(fake_home, monkeypatch):
     """The status command shows users *why* telemetry is in its current
     state — verify each source string is correctly reported."""
-    from vllm_mlx.telemetry.state import consent_source, record_consent
+    from rapid_mlx.telemetry.state import consent_source, record_consent
 
     assert "default" in consent_source()
     record_consent(True, rapid_mlx_version="0.6.33")
@@ -232,7 +232,7 @@ def test_corrupt_consent_file_treated_as_unprompted(fake_home):
     """A garbage consent file must NOT crash the CLI — we treat it as
     'never prompted' so the next interactive run re-asks the user.
     Crashing here would block every serve invocation."""
-    from vllm_mlx.telemetry.state import consent_path, get_consent_state
+    from rapid_mlx.telemetry.state import consent_path, get_consent_state
 
     path = consent_path()
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -244,7 +244,7 @@ def test_consent_file_atomic_write(fake_home):
     """``record_consent`` writes via temp + rename so a SIGINT mid-write
     can't leave a half-file. The .tmp file should NOT be present after
     a successful write."""
-    from vllm_mlx.telemetry.state import consent_path, record_consent
+    from rapid_mlx.telemetry.state import consent_path, record_consent
 
     record_consent(True, rapid_mlx_version="0.6.33")
     leftover = consent_path().with_suffix(consent_path().suffix + ".tmp")
@@ -256,7 +256,7 @@ def test_record_consent_cleans_up_stale_tmp(fake_home):
     record_consent must overwrite it cleanly and leave nothing behind."""
     import yaml
 
-    from vllm_mlx.telemetry.state import (
+    from rapid_mlx.telemetry.state import (
         consent_path,
         get_consent_state,
         record_consent,
@@ -285,7 +285,7 @@ def test_schema_version_mismatch_treated_as_unprompted(fake_home):
     Phase 2+."""
     import yaml
 
-    from vllm_mlx.telemetry.state import consent_path, get_consent_state
+    from rapid_mlx.telemetry.state import consent_path, get_consent_state
 
     cpath = consent_path()
     cpath.parent.mkdir(parents=True, exist_ok=True)
@@ -305,7 +305,7 @@ def test_schema_version_mismatch_treated_as_unprompted(fake_home):
 def test_do_not_track_disables_like_orca(fake_home, monkeypatch):
     """``DO_NOT_TRACK=1`` / ``true`` win over stored consent; other values
     are ignored rather than guessed."""
-    import vllm_mlx.telemetry.state as state
+    import rapid_mlx.telemetry.state as state
 
     state.record_consent(True, rapid_mlx_version="0.0.0")
     assert state.is_enabled()
@@ -320,7 +320,7 @@ def test_do_not_track_disables_like_orca(fake_home, monkeypatch):
 
 def test_ci_markers_disable_telemetry(fake_home, monkeypatch):
     """A build machine is never a user: any CI marker present forces OFF."""
-    import vllm_mlx.telemetry.state as state
+    import rapid_mlx.telemetry.state as state
 
     state.record_consent(True, rapid_mlx_version="0.0.0")
     assert state.is_enabled()
@@ -335,7 +335,7 @@ def test_ci_markers_disable_telemetry(fake_home, monkeypatch):
 
 
 def test_kill_switch_reason_precedence(fake_home, monkeypatch):
-    import vllm_mlx.telemetry.state as state
+    import rapid_mlx.telemetry.state as state
 
     state.record_consent(True, rapid_mlx_version="0.0.0")
     monkeypatch.setenv("GITHUB_ACTIONS", "true")

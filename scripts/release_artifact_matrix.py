@@ -15,7 +15,7 @@ It installs the wheel into a fresh SERVER venv (release artifact + declared
 extras only), starts the console script from an empty working directory, then
 drives the integration clients from a SEPARATE CLIENT venv (test/SDK deps)
 against the running server over HTTP.  Two isolations matter here: keeping the
-server out of the source checkout (otherwise Python can import ``vllm_mlx/``
+server out of the source checkout (otherwise Python can import ``rapid_mlx/``
 from the tree and falsely validate the source instead of the candidate
 artifact), and keeping the client SDK dependencies out of the server venv
 (otherwise a client's transitive dependency could satisfy a runtime import the

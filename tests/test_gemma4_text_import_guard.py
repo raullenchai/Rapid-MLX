@@ -13,7 +13,7 @@ import json
 import sys
 from pathlib import Path
 
-from vllm_mlx.models.gemma4_text import load_gemma4_text
+from rapid_mlx.models.gemma4_text import load_gemma4_text
 
 
 def _write_minimal_gemma4_config(tmp_path: Path) -> Path:
@@ -88,7 +88,7 @@ def test_is_gemma4_model_uses_hf_hub_download_not_snapshot(monkeypatch) -> None:
     """
     from huggingface_hub import hf_hub_download as _real_hf_hub_download  # noqa: F401
 
-    import vllm_mlx.models.gemma4_text as gemma_mod
+    import rapid_mlx.models.gemma4_text as gemma_mod
 
     called: dict[str, object] = {}
 

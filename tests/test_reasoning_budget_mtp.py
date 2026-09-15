@@ -18,7 +18,7 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
-from vllm_mlx.api.reasoning_budget import ReasoningBudgetLogitsProcessor
+from rapid_mlx.api.reasoning_budget import ReasoningBudgetLogitsProcessor
 
 THINK_END = 99
 THINK_START = 50

@@ -8,7 +8,7 @@ These cover the bundled wave-6 fix:
   HTTP 500 ``Internal server error`` because ``await request.json()``
   raises :class:`json.JSONDecodeError` and the only catch-all was the
   global ``Exception`` handler. A dedicated 400 handler is now wired
-  in ``vllm_mlx.server`` and is also installed on per-route test apps
+  in ``rapid_mlx.server`` and is also installed on per-route test apps
   via :func:`install_exception_handlers`.
 
 * F-160 / F-167 — ``/v1/messages/count_tokens`` silently returned
@@ -86,37 +86,37 @@ class _Engine:
 
 
 def _install_lightweight_engine_modules(monkeypatch):
-    engine_pkg = types.ModuleType("vllm_mlx.engine")
+    engine_pkg = types.ModuleType("rapid_mlx.engine")
     engine_pkg.BaseEngine = _BaseEngine
     engine_pkg.GenerationOutput = _GenerationOutput
 
-    base_mod = types.ModuleType("vllm_mlx.engine.base")
+    base_mod = types.ModuleType("rapid_mlx.engine.base")
     base_mod.BaseEngine = _BaseEngine
     base_mod.GenerationOutput = _GenerationOutput
 
-    monkeypatch.setitem(sys.modules, "vllm_mlx.engine", engine_pkg)
-    monkeypatch.setitem(sys.modules, "vllm_mlx.engine.base", base_mod)
+    monkeypatch.setitem(sys.modules, "rapid_mlx.engine", engine_pkg)
+    monkeypatch.setitem(sys.modules, "rapid_mlx.engine.base", base_mod)
 
 
 _IMPORTED_UNDER_LIGHTWEIGHT_ENGINE = (
-    "vllm_mlx.config",
-    "vllm_mlx.config.server_config",
-    "vllm_mlx.engine",
-    "vllm_mlx.engine.base",
-    "vllm_mlx.middleware.auth",
-    "vllm_mlx.service.helpers",
-    "vllm_mlx.routes.anthropic",
-    "vllm_mlx.routes.responses",
+    "rapid_mlx.config",
+    "rapid_mlx.config.server_config",
+    "rapid_mlx.engine",
+    "rapid_mlx.engine.base",
+    "rapid_mlx.middleware.auth",
+    "rapid_mlx.service.helpers",
+    "rapid_mlx.routes.anthropic",
+    "rapid_mlx.routes.responses",
 )
 _PARENT_ATTRS_UNDER_LIGHTWEIGHT_ENGINE = (
-    ("vllm_mlx", "config"),
-    ("vllm_mlx", "engine"),
-    ("vllm_mlx.config", "server_config"),
-    ("vllm_mlx.engine", "base"),
-    ("vllm_mlx.middleware", "auth"),
-    ("vllm_mlx.service", "helpers"),
-    ("vllm_mlx.routes", "anthropic"),
-    ("vllm_mlx.routes", "responses"),
+    ("rapid_mlx", "config"),
+    ("rapid_mlx", "engine"),
+    ("rapid_mlx.config", "server_config"),
+    ("rapid_mlx.engine", "base"),
+    ("rapid_mlx.middleware", "auth"),
+    ("rapid_mlx.service", "helpers"),
+    ("rapid_mlx.routes", "anthropic"),
+    ("rapid_mlx.routes", "responses"),
 )
 _MISSING = object()
 
@@ -143,10 +143,10 @@ def _build_app(monkeypatch, *, with_handlers: bool = True):
 
     _install_lightweight_engine_modules(monkeypatch)
 
-    from vllm_mlx.config import reset_config
-    from vllm_mlx.middleware.auth import rate_limiter
-    from vllm_mlx.routes.anthropic import router as anthropic_router
-    from vllm_mlx.routes.responses import router as responses_router
+    from rapid_mlx.config import reset_config
+    from rapid_mlx.middleware.auth import rate_limiter
+    from rapid_mlx.routes.anthropic import router as anthropic_router
+    from rapid_mlx.routes.responses import router as responses_router
 
     cfg = reset_config()
     cfg.api_key = None  # turn off auth so the test focuses on validation
@@ -160,7 +160,7 @@ def _build_app(monkeypatch, *, with_handlers: bool = True):
 
     app = FastAPI()
     if with_handlers:
-        from vllm_mlx.middleware.exception_handlers import (
+        from rapid_mlx.middleware.exception_handlers import (
             install_exception_handlers,
         )
 
@@ -418,13 +418,13 @@ def test_count_tokens_accepts_explicit_null_model(client):
 
 
 def test_audio_resolve_stt_model_known_alias():
-    from vllm_mlx.routes.audio import _resolve_stt_model
+    from rapid_mlx.routes.audio import _resolve_stt_model
 
     assert _resolve_stt_model("whisper-small") == "mlx-community/whisper-small-mlx"
 
 
 def test_audio_resolve_stt_model_passthrough_repo_path():
-    from vllm_mlx.routes.audio import _resolve_stt_model
+    from rapid_mlx.routes.audio import _resolve_stt_model
 
     # Anything containing a "/" is treated as a HuggingFace repo id —
     # the STT engine attempts to load it directly.
@@ -436,7 +436,7 @@ def test_audio_resolve_stt_model_rejects_bogus_name():
     raise a structured 404 BEFORE any STT engine load is attempted."""
     from fastapi import HTTPException
 
-    from vllm_mlx.routes.audio import _resolve_stt_model
+    from rapid_mlx.routes.audio import _resolve_stt_model
 
     with pytest.raises(HTTPException) as exc_info:
         _resolve_stt_model("definitely-not-a-whisper")
@@ -457,8 +457,8 @@ def test_audio_route_accepts_model_via_query_for_back_compat(monkeypatch):
     from fastapi import FastAPI
     from fastapi.testclient import TestClient
 
-    monkeypatch.setattr("vllm_mlx.middleware.auth.verify_api_key", lambda: None)
-    from vllm_mlx.routes.audio import router
+    monkeypatch.setattr("rapid_mlx.middleware.auth.verify_api_key", lambda: None)
+    from rapid_mlx.routes.audio import router
 
     app = FastAPI()
     app.include_router(router)
@@ -490,8 +490,8 @@ def test_audio_route_form_field_overrides_query(monkeypatch):
     from fastapi import FastAPI
     from fastapi.testclient import TestClient
 
-    monkeypatch.setattr("vllm_mlx.middleware.auth.verify_api_key", lambda: None)
-    from vllm_mlx.routes.audio import router
+    monkeypatch.setattr("rapid_mlx.middleware.auth.verify_api_key", lambda: None)
+    from rapid_mlx.routes.audio import router
 
     app = FastAPI()
     app.include_router(router)
@@ -510,7 +510,7 @@ def test_audio_route_form_field_overrides_query(monkeypatch):
 def test_audio_resolve_stt_model_rejects_empty_string():
     from fastapi import HTTPException
 
-    from vllm_mlx.routes.audio import _resolve_stt_model
+    from rapid_mlx.routes.audio import _resolve_stt_model
 
     with pytest.raises(HTTPException) as exc_info:
         _resolve_stt_model("")
@@ -524,7 +524,7 @@ def test_decode_error_response_shape():
     """The shared ``_decode_error_response`` builder yields the OpenAI
     envelope. Exercised via the public app + via the helper, but the
     direct call protects the shape from drift."""
-    from vllm_mlx.middleware.exception_handlers import _decode_error_response
+    from rapid_mlx.middleware.exception_handlers import _decode_error_response
 
     exc = None
     try:

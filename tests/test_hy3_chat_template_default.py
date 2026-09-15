@@ -19,7 +19,7 @@ from __future__ import annotations
 
 import pytest
 
-from vllm_mlx.utils.chat_template import _looks_like_hy3, apply_chat_template
+from rapid_mlx.utils.chat_template import _looks_like_hy3, apply_chat_template
 
 
 @pytest.mark.parametrize(

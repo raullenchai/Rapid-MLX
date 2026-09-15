@@ -20,8 +20,8 @@ import sys
 
 import pytest
 
-from vllm_mlx import cli
-from vllm_mlx.cli import _resolve_audio_download_alias
+from rapid_mlx import cli
+from rapid_mlx.cli import _resolve_audio_download_alias
 
 # --- pure helper -----------------------------------------------------------
 

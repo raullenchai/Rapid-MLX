@@ -39,7 +39,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from vllm_mlx.utils.chat_template import (
+from rapid_mlx.utils.chat_template import (
     _normalize_assistant_tool_call_arguments,
     apply_chat_template,
 )

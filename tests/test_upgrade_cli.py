@@ -13,8 +13,8 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from vllm_mlx import _version_check as vc
-from vllm_mlx.cli import upgrade_command
+from rapid_mlx import _version_check as vc
+from rapid_mlx.cli import upgrade_command
 
 
 def _stub_brew_with_upgrade_available(monkeypatch):
@@ -162,7 +162,7 @@ def _cli_help_stdout(*argv: str):
     import sys
 
     return subprocess.run(
-        [sys.executable, "-m", "vllm_mlx.cli", *argv],
+        [sys.executable, "-m", "rapid_mlx.cli", *argv],
         capture_output=True,
         text=True,
         timeout=60,

@@ -49,7 +49,7 @@ import json
 
 import pytest
 
-from vllm_mlx.tool_parsers.ui_tars_tool_parser import (
+from rapid_mlx.tool_parsers.ui_tars_tool_parser import (
     UI_TARS_COMPUTER_USE_SYSTEM_PROMPT,
     maybe_inject_ui_tars_system_prompt,
     request_declares_computer_tool,
@@ -121,7 +121,7 @@ class TestRequestDeclaresComputerTool:
         # ToolDefinition objects (not dicts). Detector must
         # tolerate this — the helper is called from the route
         # BEFORE any model_dump rewrite.
-        from vllm_mlx.api.models import ToolDefinition
+        from rapid_mlx.api.models import ToolDefinition
 
         t = ToolDefinition(
             type="function",
@@ -408,7 +408,7 @@ class TestResponsesLaneComputerCallEmission:
         Computer-Use-pinned UI-TARS turn. Used to drive
         ``openai_to_responses`` under test.
         """
-        from vllm_mlx.api.models import (
+        from rapid_mlx.api.models import (
             AssistantMessage,
             ChatCompletionChoice,
             ChatCompletionResponse,
@@ -441,8 +441,8 @@ class TestResponsesLaneComputerCallEmission:
         # F-R2-D fix: a request with computer_20251022 + a
         # synthesized computer tool_call MUST produce a
         # ``computer_call`` output item (not ``function_call``).
-        from vllm_mlx.api.responses_adapter import openai_to_responses
-        from vllm_mlx.api.responses_models import ResponsesRequest
+        from rapid_mlx.api.responses_adapter import openai_to_responses
+        from rapid_mlx.api.responses_models import ResponsesRequest
 
         req = ResponsesRequest(
             model="ui-tars-1.5-7b-4bit",
@@ -578,7 +578,7 @@ class TestR6M1ReasoningGateDecoupling:
     def test_plain_chat_thought_blank_line_surfaces_as_reasoning(self):
         # Plain chat lane: no Action: anywhere, blank line separates
         # the thought from the follow-up answer.
-        from vllm_mlx.reasoning.ui_tars_parser import UiTarsReasoningParser
+        from rapid_mlx.reasoning.ui_tars_parser import UiTarsReasoningParser
 
         parser = UiTarsReasoningParser()
         reasoning, content = parser.extract_reasoning(
@@ -591,7 +591,7 @@ class TestR6M1ReasoningGateDecoupling:
         # Edge case: the model emitted only a Thought: block, no
         # follow-up answer (truncated / cut off). The reasoning
         # channel still surfaces it.
-        from vllm_mlx.reasoning.ui_tars_parser import UiTarsReasoningParser
+        from rapid_mlx.reasoning.ui_tars_parser import UiTarsReasoningParser
 
         parser = UiTarsReasoningParser()
         reasoning, content = parser.extract_reasoning("Thought: I'm uncertain.")
@@ -603,7 +603,7 @@ class TestR6M1ReasoningGateDecoupling:
         # Generic ``<think>...</think>`` tag (a model checkpoint that
         # learned both UI-TARS Thought: AND the standard think-tag
         # convention may emit either). Both should populate reasoning.
-        from vllm_mlx.reasoning.ui_tars_parser import UiTarsReasoningParser
+        from rapid_mlx.reasoning.ui_tars_parser import UiTarsReasoningParser
 
         parser = UiTarsReasoningParser()
         reasoning, content = parser.extract_reasoning(
@@ -618,7 +618,7 @@ class TestR6M1ReasoningGateDecoupling:
         # Positive control: pre-r6-B contract is preserved — the
         # Action lane still routes the Thought: preamble to
         # reasoning and everything from ``Action:`` onward to content.
-        from vllm_mlx.reasoning.ui_tars_parser import UiTarsReasoningParser
+        from rapid_mlx.reasoning.ui_tars_parser import UiTarsReasoningParser
 
         parser = UiTarsReasoningParser()
         reasoning, content = parser.extract_reasoning(
@@ -630,7 +630,7 @@ class TestR6M1ReasoningGateDecoupling:
     def test_no_preamble_routes_all_to_content(self):
         # Defense-in-depth: a response with NO thought block at all
         # routes the entire buffer to content (no spurious reasoning).
-        from vllm_mlx.reasoning.ui_tars_parser import UiTarsReasoningParser
+        from rapid_mlx.reasoning.ui_tars_parser import UiTarsReasoningParser
 
         parser = UiTarsReasoningParser()
         reasoning, content = parser.extract_reasoning(
@@ -651,7 +651,7 @@ class TestR6M1ReasoningGateDecoupling:
         # thoughts only); multi-line plain prose without a blank-line
         # boundary falls through to "no preamble" and the entire
         # text is routed to content.
-        from vllm_mlx.reasoning.ui_tars_parser import UiTarsReasoningParser
+        from rapid_mlx.reasoning.ui_tars_parser import UiTarsReasoningParser
 
         parser = UiTarsReasoningParser()
         reasoning, content = parser.extract_reasoning(
@@ -667,7 +667,7 @@ class TestR6M1ReasoningGateDecoupling:
         # Positive control for the restricted shape #4b: a single-line
         # truncated thought (no newline at all) still surfaces as
         # reasoning. This is the EOS branch the codex r4 fix narrows.
-        from vllm_mlx.reasoning.ui_tars_parser import UiTarsReasoningParser
+        from rapid_mlx.reasoning.ui_tars_parser import UiTarsReasoningParser
 
         parser = UiTarsReasoningParser()
         reasoning, content = parser.extract_reasoning("Thought: I'm uncertain.")
@@ -680,7 +680,7 @@ class TestR6M1ReasoningGateDecoupling:
         # response is truncated before any follow-up). The
         # ``[^\n]*?`` body matches the line, then ``\s*\Z`` consumes
         # the trailing newline / whitespace.
-        from vllm_mlx.reasoning.ui_tars_parser import UiTarsReasoningParser
+        from rapid_mlx.reasoning.ui_tars_parser import UiTarsReasoningParser
 
         parser = UiTarsReasoningParser()
         reasoning, content = parser.extract_reasoning("Thought: I'm uncertain.\n")
@@ -690,7 +690,7 @@ class TestR6M1ReasoningGateDecoupling:
     def test_thought_blank_line_boundary_multi_line_thought(self):
         # Multi-line thought body terminated by a real blank-line
         # boundary still works — shape #4 (not #4b) handles this.
-        from vllm_mlx.reasoning.ui_tars_parser import UiTarsReasoningParser
+        from rapid_mlx.reasoning.ui_tars_parser import UiTarsReasoningParser
 
         parser = UiTarsReasoningParser()
         reasoning, content = parser.extract_reasoning(
@@ -732,7 +732,7 @@ class TestR6M2CoordinateKeyTranslation:
         """Synthesize the OAI chat response a UI-TARS click would
         produce; reused across the Anthropic + Responses asserts.
         """
-        from vllm_mlx.api.models import (
+        from rapid_mlx.api.models import (
             AssistantMessage,
             ChatCompletionChoice,
             ChatCompletionResponse,
@@ -766,7 +766,7 @@ class TestR6M2CoordinateKeyTranslation:
     # --- Anthropic /v1/messages ------------------------------------------
 
     def test_anthropic_click_emits_coordinate_not_point(self):
-        from vllm_mlx.api.anthropic_adapter import openai_to_anthropic
+        from rapid_mlx.api.anthropic_adapter import openai_to_anthropic
 
         chat_resp = self._click_chat_response({"action": "click", "point": [500, 300]})
         anth = openai_to_anthropic(chat_resp, model="ui-tars-1.5-7b-4bit")
@@ -781,7 +781,7 @@ class TestR6M2CoordinateKeyTranslation:
     def test_anthropic_drag_emits_start_coordinate_and_coordinate(self):
         # Anthropic Computer-Use spec: drag uses ``start_coordinate``
         # plus ``coordinate`` (the END point). NOT ``end_coordinate``.
-        from vllm_mlx.api.anthropic_adapter import openai_to_anthropic
+        from rapid_mlx.api.anthropic_adapter import openai_to_anthropic
 
         chat_resp = self._click_chat_response(
             {
@@ -807,8 +807,8 @@ class TestR6M2CoordinateKeyTranslation:
     def test_anthropic_non_computer_tool_input_untouched(self):
         # Vanilla function tool whose arguments happen to carry a
         # ``point`` key — the gated translation MUST NOT rewrite it.
-        from vllm_mlx.api.anthropic_adapter import openai_to_anthropic
-        from vllm_mlx.api.models import (
+        from rapid_mlx.api.anthropic_adapter import openai_to_anthropic
+        from rapid_mlx.api.models import (
             AssistantMessage,
             ChatCompletionChoice,
             ChatCompletionResponse,
@@ -850,8 +850,8 @@ class TestR6M2CoordinateKeyTranslation:
     # --- OpenAI /v1/responses ---------------------------------------------
 
     def test_responses_click_emits_coordinate_not_point(self):
-        from vllm_mlx.api.responses_adapter import openai_to_responses
-        from vllm_mlx.api.responses_models import ResponsesRequest
+        from rapid_mlx.api.responses_adapter import openai_to_responses
+        from rapid_mlx.api.responses_models import ResponsesRequest
 
         chat_resp = self._click_chat_response({"action": "click", "point": [500, 300]})
         req = ResponsesRequest(
@@ -887,7 +887,7 @@ class TestR6M2CoordinateKeyTranslation:
         # normalisation is exercised by
         # ``test_chat_completions_lane_emits_coordinate_via_route_normaliser``
         # below.
-        from vllm_mlx.tool_parsers.ui_tars_tool_parser import UiTarsToolParser
+        from rapid_mlx.tool_parsers.ui_tars_tool_parser import UiTarsToolParser
 
         parser = UiTarsToolParser(tokenizer=None)
         parser.reset()
@@ -909,8 +909,8 @@ class TestR6M2CoordinateKeyTranslation:
         # uses. Codex r1 HIGH 2 flagged that an earlier draft
         # surfaced the Anthropic shape on the Responses lane — a
         # behavior regression for drag.
-        from vllm_mlx.api.responses_adapter import openai_to_responses
-        from vllm_mlx.api.responses_models import ResponsesRequest
+        from rapid_mlx.api.responses_adapter import openai_to_responses
+        from rapid_mlx.api.responses_models import ResponsesRequest
 
         chat_resp = self._click_chat_response(
             {
@@ -953,7 +953,7 @@ class TestR6M2CoordinateKeyTranslation:
         # The mapper must be safe to call twice — already-translated
         # keys stay translated (defense-in-depth for a future
         # double-translation refactor).
-        from vllm_mlx.tool_parsers.ui_tars_tool_parser import (
+        from rapid_mlx.tool_parsers.ui_tars_tool_parser import (
             translate_to_anthropic_spec_keys,
         )
 
@@ -964,7 +964,7 @@ class TestR6M2CoordinateKeyTranslation:
     def test_anthropic_translator_preserves_non_coord_kwargs(self):
         # Non-coord kwargs (action, content, key, direction, …)
         # pass through verbatim.
-        from vllm_mlx.tool_parsers.ui_tars_tool_parser import (
+        from rapid_mlx.tool_parsers.ui_tars_tool_parser import (
             translate_to_anthropic_spec_keys,
         )
 
@@ -976,7 +976,7 @@ class TestR6M2CoordinateKeyTranslation:
 
     def test_responses_translator_folds_drag_into_path(self):
         # Direct probe of the helper: point pair → spec path array.
-        from vllm_mlx.tool_parsers.ui_tars_tool_parser import (
+        from rapid_mlx.tool_parsers.ui_tars_tool_parser import (
             translate_to_responses_spec_keys,
         )
 
@@ -998,7 +998,7 @@ class TestR6M2CoordinateKeyTranslation:
         # as the UI-TARS-native name so the downstream consumer can
         # detect the gap rather than receive a truncated single-point
         # ``path`` that looks valid.
-        from vllm_mlx.tool_parsers.ui_tars_tool_parser import (
+        from rapid_mlx.tool_parsers.ui_tars_tool_parser import (
             translate_to_responses_spec_keys,
         )
 
@@ -1012,7 +1012,7 @@ class TestR6M2CoordinateKeyTranslation:
     def test_responses_translator_handles_single_point_verb(self):
         # Single-point verb on the Responses lane: ``point`` →
         # ``coordinate``, same as the Anthropic translator.
-        from vllm_mlx.tool_parsers.ui_tars_tool_parser import (
+        from rapid_mlx.tool_parsers.ui_tars_tool_parser import (
             translate_to_responses_spec_keys,
         )
 
@@ -1043,7 +1043,7 @@ class TestR7H1ChatLaneCoordinateParity:
     """
 
     def test_click_arguments_normalised_to_coordinate(self):
-        from vllm_mlx.tool_parsers.ui_tars_tool_parser import (
+        from rapid_mlx.tool_parsers.ui_tars_tool_parser import (
             normalize_ui_tars_chat_tool_call_arguments,
         )
 
@@ -1055,7 +1055,7 @@ class TestR7H1ChatLaneCoordinateParity:
 
     def test_drag_arguments_folded_to_path_array(self):
         # OpenAI Computer-Use spec drag shape: ``path=[{"x","y"}, …]``.
-        from vllm_mlx.tool_parsers.ui_tars_tool_parser import (
+        from rapid_mlx.tool_parsers.ui_tars_tool_parser import (
             normalize_ui_tars_chat_tool_call_arguments,
         )
 
@@ -1075,7 +1075,7 @@ class TestR7H1ChatLaneCoordinateParity:
         # A vanilla function tool whose schema happens to use a
         # ``point`` key MUST pass through verbatim — the chat-lane
         # translator gate prevents collateral rewriting.
-        from vllm_mlx.tool_parsers.ui_tars_tool_parser import (
+        from rapid_mlx.tool_parsers.ui_tars_tool_parser import (
             normalize_ui_tars_chat_tool_call_arguments,
         )
 
@@ -1088,7 +1088,7 @@ class TestR7H1ChatLaneCoordinateParity:
         # translator surfaces the bytes unchanged — the downstream
         # tool-call schema validator is the right site to reject
         # malformed arguments, not the key translator.
-        from vllm_mlx.tool_parsers.ui_tars_tool_parser import (
+        from rapid_mlx.tool_parsers.ui_tars_tool_parser import (
             normalize_ui_tars_chat_tool_call_arguments,
         )
 
@@ -1099,7 +1099,7 @@ class TestR7H1ChatLaneCoordinateParity:
         # Black-box: drive the chat-route helper that streaming +
         # non-streaming both call so the test fails if either site
         # bypasses the translation.
-        from vllm_mlx.routes.chat import _normalize_ui_tars_tcs_for_chat
+        from rapid_mlx.routes.chat import _normalize_ui_tars_tcs_for_chat
 
         tcs = [
             {
@@ -1131,7 +1131,7 @@ class TestR7H1ChatLaneCoordinateParity:
         assert json.loads(out[1]["function"]["arguments"]) == {"point": [10, 20]}
 
     def test_chat_lane_none_and_empty_tool_lists_pass_through(self):
-        from vllm_mlx.routes.chat import _normalize_ui_tars_tcs_for_chat
+        from rapid_mlx.routes.chat import _normalize_ui_tars_tcs_for_chat
 
         assert _normalize_ui_tars_tcs_for_chat(None) is None
         assert _normalize_ui_tars_tcs_for_chat([]) == []
@@ -1140,7 +1140,7 @@ class TestR7H1ChatLaneCoordinateParity:
         # Defense-in-depth: the upstream postprocessor may reference
         # the same event.tool_calls list elsewhere; the normaliser
         # must return new dicts rather than mutating in place.
-        from vllm_mlx.routes.chat import _normalize_ui_tars_tcs_for_chat
+        from rapid_mlx.routes.chat import _normalize_ui_tars_tcs_for_chat
 
         tcs = [
             {
@@ -1180,14 +1180,14 @@ class TestR7H1NonStreamChatResponseBuilder:
         # ``normalize_ui_tars_chat_tool_call_arguments`` over each
         # parsed tool_call. Build a chat response the way the route
         # would and assert the serialized JSON carries the spec key.
-        from vllm_mlx.api.models import (
+        from rapid_mlx.api.models import (
             AssistantMessage,
             ChatCompletionChoice,
             ChatCompletionResponse,
             FunctionCall,
             ToolCall,
         )
-        from vllm_mlx.tool_parsers.ui_tars_tool_parser import (
+        from rapid_mlx.tool_parsers.ui_tars_tool_parser import (
             normalize_ui_tars_chat_tool_call_arguments,
         )
 
@@ -1254,7 +1254,7 @@ class TestR10C2NoReasoningAliasOnChatWire:
     """
 
     def test_chunk_delta_serializer_emits_only_reasoning_content(self):
-        from vllm_mlx.api.models import (
+        from rapid_mlx.api.models import (
             ChatCompletionChunk,
             ChatCompletionChunkChoice,
             ChatCompletionChunkDelta,
@@ -1281,7 +1281,7 @@ class TestR10C2NoReasoningAliasOnChatWire:
         # ``reasoning_content``. Any consumer walking both keys (e.g.
         # ``openai-agents`` ``Runner.run_streamed``) would otherwise
         # double-count every reasoning token.
-        from vllm_mlx.api.models import (
+        from rapid_mlx.api.models import (
             AssistantMessage,
             ChatCompletionChunkDelta,
         )
@@ -1304,7 +1304,7 @@ class TestR10C2NoReasoningAliasOnChatWire:
         # Empty / unset reasoning_content MUST NOT introduce either a
         # ``reasoning_content`` or ``reasoning`` key — pure-content
         # deltas stay terse.
-        from vllm_mlx.api.models import ChatCompletionChunkDelta
+        from rapid_mlx.api.models import ChatCompletionChunkDelta
 
         delta = ChatCompletionChunkDelta(content="hello")
         payload = json.loads(delta.model_dump_json(exclude_none=True))
@@ -1347,7 +1347,7 @@ class TestR10C2NoReasoningAliasOnChatWire:
         # keys) must be absent.
         import inspect
 
-        import vllm_mlx.routes.chat as _chat_mod
+        import rapid_mlx.routes.chat as _chat_mod
 
         route_src = inspect.getsource(_chat_mod)
         # R10-C2 invariant — the dup-emission template must be gone.
@@ -1377,7 +1377,7 @@ class TestR7M6ComputerUsePreviewAlias:
     """
 
     def test_alias_accepted_by_validator(self):
-        from vllm_mlx.api.responses_adapter import validate_responses_tool_types
+        from rapid_mlx.api.responses_adapter import validate_responses_tool_types
 
         # No exception — accepted.
         validate_responses_tool_types(
@@ -1392,7 +1392,7 @@ class TestR7M6ComputerUsePreviewAlias:
 
     def test_canonical_still_accepted(self):
         # Positive control — the canonical name remains supported.
-        from vllm_mlx.api.responses_adapter import validate_responses_tool_types
+        from rapid_mlx.api.responses_adapter import validate_responses_tool_types
 
         validate_responses_tool_types(
             [{"type": "computer_20251022", "display_width": 1280}]
@@ -1403,7 +1403,7 @@ class TestR7M6ComputerUsePreviewAlias:
         # canonical name so downstream readers (the adapter's
         # Computer-Use detector, the input-item builder, …) only
         # ever see the canonical type.
-        from vllm_mlx.api.responses_adapter import normalize_responses_tool_types
+        from rapid_mlx.api.responses_adapter import normalize_responses_tool_types
 
         tools = [
             {
@@ -1418,7 +1418,7 @@ class TestR7M6ComputerUsePreviewAlias:
         assert tools[0]["display_width"] == 1280
 
     def test_normalizer_is_idempotent(self):
-        from vllm_mlx.api.responses_adapter import normalize_responses_tool_types
+        from rapid_mlx.api.responses_adapter import normalize_responses_tool_types
 
         tools = [{"type": "computer_20251022"}]
         normalize_responses_tool_types(tools)
@@ -1431,14 +1431,14 @@ class TestR7M6ComputerUsePreviewAlias:
         # rewrites the type — otherwise a request that hit the
         # detector pre-normalisation would silently skip the
         # Computer-Use routing.
-        from vllm_mlx.api.responses_adapter import _is_computer_use_tool
+        from rapid_mlx.api.responses_adapter import _is_computer_use_tool
 
         assert _is_computer_use_tool({"type": "computer_use_preview"}) is True
         assert _is_computer_use_tool({"type": "computer_20251022"}) is True
 
     def test_request_uses_computer_use_honours_alias(self):
-        from vllm_mlx.api.responses_adapter import request_uses_computer_use
-        from vllm_mlx.api.responses_models import ResponsesRequest
+        from rapid_mlx.api.responses_adapter import request_uses_computer_use
+        from rapid_mlx.api.responses_models import ResponsesRequest
 
         req = ResponsesRequest(
             model="ui-tars-1.5-7b-4bit",
@@ -1468,7 +1468,7 @@ class TestR7M6ComputerUsePreviewAlias:
         # contract still holds for every other type.
         from fastapi import HTTPException
 
-        from vllm_mlx.api.responses_adapter import validate_responses_tool_types
+        from rapid_mlx.api.responses_adapter import validate_responses_tool_types
 
         with pytest.raises(HTTPException) as exc:
             validate_responses_tool_types([{"type": ttype}])
@@ -1499,7 +1499,7 @@ class TestR7M6ComputerUsePreviewAlias:
         # tool-related rejection.
         from fastapi import HTTPException
 
-        from vllm_mlx.api.responses_adapter import validate_responses_tool_types
+        from rapid_mlx.api.responses_adapter import validate_responses_tool_types
 
         with pytest.raises(HTTPException) as exc:
             validate_responses_tool_types([{"type": "web_search"}])

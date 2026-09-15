@@ -5,8 +5,8 @@ from __future__ import annotations
 
 import pytest
 
-from vllm_mlx.model_aliases import list_profiles
-from vllm_mlx.model_auto_config import detect_model_config
+from rapid_mlx.model_aliases import list_profiles
+from rapid_mlx.model_auto_config import detect_model_config
 
 _CANONICAL_ALIASES = (
     (

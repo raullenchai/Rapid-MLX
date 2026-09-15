@@ -45,9 +45,9 @@ def _reset_mtp_module_state():
     Three pieces of cross-test state leak in the full pytest sweep and
     surface as the 7-failure transient cluster (PASS in isolation):
 
-    * ``vllm_mlx.spec_decode.mtp.cache_patch._patched`` — sticky install
+    * ``rapid_mlx.spec_decode.mtp.cache_patch._patched`` — sticky install
       gate; ``_unpatch_for_tests()`` clears it.
-    * ``vllm_mlx.spec_decode.mtp.accept_counter._global_counter`` —
+    * ``rapid_mlx.spec_decode.mtp.accept_counter._global_counter`` —
       monotonic counter singleton (monotonicity is a public contract);
       ``reset_global_counter_for_tests()`` is the explicit hatch.
     * **``mlx_lm.generate.generation_stream``** — the module-level
@@ -85,10 +85,10 @@ def _reset_mtp_module_state():
 
     import mlx.core as mx
 
-    from vllm_mlx.spec_decode.mtp.accept_counter import (
+    from rapid_mlx.spec_decode.mtp.accept_counter import (
         reset_global_counter_for_tests,
     )
-    from vllm_mlx.spec_decode.mtp.cache_patch import _unpatch_for_tests
+    from rapid_mlx.spec_decode.mtp.cache_patch import _unpatch_for_tests
 
     _unpatch_for_tests()
     reset_global_counter_for_tests()
@@ -119,7 +119,7 @@ def _reset_mtp_module_state():
 
 def test_detect_eligibility_qwen3_5_chain():
     """Qwen3.5 dense with mtp_num_hidden_layers=1 → CHAIN."""
-    from vllm_mlx.spec_decode.mtp import (
+    from rapid_mlx.spec_decode.mtp import (
         MTPEligibility,
         detect_mtp_eligibility,
     )
@@ -130,7 +130,7 @@ def test_detect_eligibility_qwen3_5_chain():
 
 def test_detect_eligibility_qwen3_5_moe_chain():
     """Qwen3.5 MoE with mtp_num_hidden_layers=1 → CHAIN (same path)."""
-    from vllm_mlx.spec_decode.mtp import (
+    from rapid_mlx.spec_decode.mtp import (
         MTPEligibility,
         detect_mtp_eligibility,
     )
@@ -141,7 +141,7 @@ def test_detect_eligibility_qwen3_5_moe_chain():
 
 def test_detect_eligibility_qwen3_5_accepts_text_config_mtp_layers():
     """MLX community Qwen3.5/3.6 configs store MTP metadata in text_config."""
-    from vllm_mlx.spec_decode.mtp import (
+    from rapid_mlx.spec_decode.mtp import (
         MTPEligibility,
         detect_mtp_eligibility,
     )
@@ -158,7 +158,7 @@ def test_detect_eligibility_qwen3_5_accepts_text_config_mtp_layers():
 
 def test_detect_eligibility_qwen4_exp_accepts_nested_mtp_layer():
     """Flash-Next advertises its native MTP head in nested text_config."""
-    from vllm_mlx.spec_decode.mtp import (
+    from rapid_mlx.spec_decode.mtp import (
         MTPEligibility,
         detect_mtp_eligibility,
     )
@@ -175,7 +175,7 @@ def test_detect_eligibility_qwen4_exp_accepts_nested_mtp_layer():
 
 def test_detect_eligibility_qwen3_5_tree_reserved():
     """mtp_num_hidden_layers >= 2 → TREE (reserved, not implemented)."""
-    from vllm_mlx.spec_decode.mtp import (
+    from rapid_mlx.spec_decode.mtp import (
         MTPEligibility,
         detect_mtp_eligibility,
     )
@@ -186,7 +186,7 @@ def test_detect_eligibility_qwen3_5_tree_reserved():
 
 def test_detect_eligibility_non_qwen35_models_rejected():
     """Llama / Mistral / Qwen3 / Qwen3-Next must NOT match the MTP path."""
-    from vllm_mlx.spec_decode.mtp import (
+    from rapid_mlx.spec_decode.mtp import (
         MTPEligibility,
         detect_mtp_eligibility,
     )
@@ -211,7 +211,7 @@ def test_detect_eligibility_qwen3_5_stripped_checkpoint():
     """Qwen3.5 model with mtp_num_hidden_layers=0 (MTP weights stripped)
     must reject — operator gets a clear ``re-convert from HF`` hint.
     """
-    from vllm_mlx.spec_decode.mtp import (
+    from rapid_mlx.spec_decode.mtp import (
         MTPEligibility,
         detect_mtp_eligibility,
     )
@@ -252,7 +252,7 @@ def test_detect_eligibility_gemma4_dense_unified_stays_none_even_with_mtp_layers
     supported until the assistant-sidecar path passes greedy-lossless
     server A/B validation.
     """
-    from vllm_mlx.spec_decode.mtp import (
+    from rapid_mlx.spec_decode.mtp import (
         MTPEligibility,
         detect_mtp_eligibility,
     )
@@ -268,7 +268,7 @@ def test_detect_eligibility_gemma4_dense_unified_stripped_none():
     head; ``mtp_num_hidden_layers`` is either absent or 0. Detection
     must collapse to NONE so ``--spec-decode mtp`` is rejected at boot.
     """
-    from vllm_mlx.spec_decode.mtp import (
+    from rapid_mlx.spec_decode.mtp import (
         MTPEligibility,
         detect_mtp_eligibility,
     )
@@ -297,7 +297,7 @@ def test_detect_eligibility_gemma4_multimodal_not_on_allowlist_none():
     once a verified sidecar or assistant drafter lands for the
     multimodal lineage.
     """
-    from vllm_mlx.spec_decode.mtp import (
+    from rapid_mlx.spec_decode.mtp import (
         MTPEligibility,
         detect_mtp_eligibility,
     )
@@ -322,7 +322,7 @@ def test_detect_eligibility_gemma4_vision_tower_still_none():
     ``image_token_id``, ``architectures``) to lock the "ignore
     sub-configs, gate on top-level model_type" contract.
     """
-    from vllm_mlx.spec_decode.mtp import (
+    from rapid_mlx.spec_decode.mtp import (
         MTPEligibility,
         detect_mtp_eligibility,
     )
@@ -350,7 +350,7 @@ def test_detect_eligibility_gemma_lookalikes_still_rejected():
     getting confused would put the wrong model class through the MTP
     inject path.
     """
-    from vllm_mlx.spec_decode.mtp import (
+    from rapid_mlx.spec_decode.mtp import (
         MTPEligibility,
         detect_mtp_eligibility,
     )
@@ -377,7 +377,7 @@ def test_detect_eligibility_handles_string_and_float_config():
     """Hand-edited / HF re-uploaded configs may carry strings / floats —
     detection coerces rather than crashing.
     """
-    from vllm_mlx.spec_decode.mtp import (
+    from rapid_mlx.spec_decode.mtp import (
         MTPEligibility,
         detect_mtp_eligibility,
     )
@@ -400,7 +400,7 @@ def test_detect_eligibility_handles_string_and_float_config():
 
 
 def test_detect_eligibility_none_or_non_dict_returns_none():
-    from vllm_mlx.spec_decode.mtp import (
+    from rapid_mlx.spec_decode.mtp import (
         MTPEligibility,
         detect_mtp_eligibility,
     )
@@ -420,7 +420,7 @@ def test_detect_eligibility_aliases_json_schema_untouched():
     This test pins the contract by passing an aliases.json-shaped
     dict that lacks those keys and asserting detection still works.
     """
-    from vllm_mlx.spec_decode.mtp import (
+    from rapid_mlx.spec_decode.mtp import (
         MTPEligibility,
         detect_mtp_eligibility,
     )
@@ -441,7 +441,7 @@ def test_detect_eligibility_aliases_json_schema_untouched():
 
 
 def test_accept_counter_starts_zero_and_snapshot_is_consistent():
-    from vllm_mlx.spec_decode.mtp.accept_counter import MTPAcceptCounter
+    from rapid_mlx.spec_decode.mtp.accept_counter import MTPAcceptCounter
 
     counter = MTPAcceptCounter()
     snap = counter.snapshot()
@@ -453,7 +453,7 @@ def test_accept_counter_starts_zero_and_snapshot_is_consistent():
 
 def test_accept_counter_record_attempt_and_accept():
     """5 attempts, 3 accepts → ratio 0.6, tokens_saved = 3."""
-    from vllm_mlx.spec_decode.mtp.accept_counter import MTPAcceptCounter
+    from rapid_mlx.spec_decode.mtp.accept_counter import MTPAcceptCounter
 
     counter = MTPAcceptCounter()
     for _ in range(5):
@@ -471,7 +471,7 @@ def test_accept_counter_reject_is_noop_for_counter_state():
     """``record_reject`` is symmetry-only — rejections are derived from
     ``attempts - accepts``. Calling reject must NOT bump any counter.
     """
-    from vllm_mlx.spec_decode.mtp.accept_counter import MTPAcceptCounter
+    from rapid_mlx.spec_decode.mtp.accept_counter import MTPAcceptCounter
 
     counter = MTPAcceptCounter()
     counter.record_attempt()
@@ -484,7 +484,7 @@ def test_accept_counter_reject_is_noop_for_counter_state():
 
 def test_accept_counter_rejects_negative_tokens_saved():
     """``record_accept(tokens_saved=-1)`` is a programmer error — fail loud."""
-    from vllm_mlx.spec_decode.mtp.accept_counter import MTPAcceptCounter
+    from rapid_mlx.spec_decode.mtp.accept_counter import MTPAcceptCounter
 
     counter = MTPAcceptCounter()
     with pytest.raises(ValueError, match="non-negative"):
@@ -492,7 +492,7 @@ def test_accept_counter_rejects_negative_tokens_saved():
 
 
 def test_accept_counter_reset_for_tests_resets_all_three():
-    from vllm_mlx.spec_decode.mtp.accept_counter import MTPAcceptCounter
+    from rapid_mlx.spec_decode.mtp.accept_counter import MTPAcceptCounter
 
     counter = MTPAcceptCounter()
     counter.record_attempt()
@@ -504,7 +504,7 @@ def test_accept_counter_reset_for_tests_resets_all_three():
 
 def test_global_counter_singleton_identity():
     """``get_global_counter`` returns the same instance across calls."""
-    from vllm_mlx.spec_decode.mtp.accept_counter import get_global_counter
+    from rapid_mlx.spec_decode.mtp.accept_counter import get_global_counter
 
     a = get_global_counter()
     b = get_global_counter()
@@ -517,7 +517,7 @@ def test_accept_counter_snapshot_under_concurrent_writes_is_safe():
     """
     import threading
 
-    from vllm_mlx.spec_decode.mtp.accept_counter import MTPAcceptCounter
+    from rapid_mlx.spec_decode.mtp.accept_counter import MTPAcceptCounter
 
     counter = MTPAcceptCounter()
     n_writers = 4
@@ -552,7 +552,7 @@ def test_cache_patch_installs_rollback_state_slot():
     """
     from mlx_lm.models.cache import ArraysCache
 
-    from vllm_mlx.spec_decode.mtp.cache_patch import (
+    from rapid_mlx.spec_decode.mtp.cache_patch import (
         _is_patched_for_tests,
         _unpatch_for_tests,
         patch_arrays_cache_rollback_state,
@@ -584,7 +584,7 @@ def test_snapshot_rollback_predicate_tracks_the_gated_delta_install():
     verify was NOT installed would admit copy-drafts that cannot be rolled
     back. Toggle the install and require the answer to follow it.
     """
-    from vllm_mlx.spec_decode.mtp.cache_patch import (
+    from rapid_mlx.spec_decode.mtp.cache_patch import (
         _unpatch_for_tests,
         gated_delta_snapshot_rollback_installed,
         patch_arrays_cache_rollback_state,
@@ -605,7 +605,7 @@ def test_snapshot_rollback_predicate_tracks_the_gated_delta_install():
 
 def test_cache_patch_is_idempotent():
     """Second call returns False — already-installed is not an error."""
-    from vllm_mlx.spec_decode.mtp.cache_patch import (
+    from rapid_mlx.spec_decode.mtp.cache_patch import (
         patch_arrays_cache_rollback_state,
     )
 
@@ -625,8 +625,8 @@ def test_qwen35_k3_verify_fuses_recurrence_without_changing_boundaries(
     from mlx_lm.models.cache import ArraysCache
     from mlx_lm.models.qwen3_5 import GatedDeltaNet, TextModelArgs
 
-    from vllm_mlx.kernels import qwen4_gdn_verify
-    from vllm_mlx.spec_decode.mtp.cache_patch import (
+    from rapid_mlx.kernels import qwen4_gdn_verify
+    from rapid_mlx.spec_decode.mtp.cache_patch import (
         patch_gated_delta_net_for_mtp,
     )
 
@@ -712,7 +712,7 @@ def test_qwen35_k3_verify_fuses_recurrence_without_changing_boundaries(
 
 
 def _serve_help_stdout() -> str:
-    """Run ``python -m vllm_mlx.cli serve --help`` and return stdout.
+    """Run ``python -m rapid_mlx.cli serve --help`` and return stdout.
 
     Mirrors :mod:`tests.test_kv_cache_dtype_cli` — the serve parser is
     inlined into ``main()``, so subprocess inspection is the canonical
@@ -722,7 +722,7 @@ def _serve_help_stdout() -> str:
     import sys
 
     proc = subprocess.run(
-        [sys.executable, "-m", "vllm_mlx.cli", "serve", "--help"],
+        [sys.executable, "-m", "rapid_mlx.cli", "serve", "--help"],
         capture_output=True,
         text=True,
         timeout=60,
@@ -748,7 +748,7 @@ def test_cli_spec_decode_flag_is_hidden_but_recognized():
         [
             sys.executable,
             "-m",
-            "vllm_mlx.cli",
+            "rapid_mlx.cli",
             "serve",
             "qwen3.5-4b-4bit",
             "--spec-decode",
@@ -772,7 +772,7 @@ def test_cli_spec_decode_mtp_legacy_choice_absent_from_help():
         [
             sys.executable,
             "-m",
-            "vllm_mlx.cli",
+            "rapid_mlx.cli",
             "serve",
             "--help",
         ],
@@ -785,7 +785,7 @@ def test_cli_spec_decode_mtp_legacy_choice_absent_from_help():
 
 
 def test_scheduler_config_default_spec_decode_is_none():
-    from vllm_mlx.scheduler import SchedulerConfig
+    from rapid_mlx.scheduler import SchedulerConfig
 
     cfg = SchedulerConfig()
     assert cfg.spec_decode == "none"
@@ -793,14 +793,14 @@ def test_scheduler_config_default_spec_decode_is_none():
 
 def test_scheduler_config_spec_decode_round_trip():
     """Field round-trips ``mtp`` from kwargs."""
-    from vllm_mlx.scheduler import SchedulerConfig
+    from rapid_mlx.scheduler import SchedulerConfig
 
     cfg = SchedulerConfig(spec_decode="mtp")
     assert cfg.spec_decode == "mtp"
 
 
 def test_scheduler_config_spec_decode_suffix_translates_to_suffix_flag():
-    from vllm_mlx.scheduler import SchedulerConfig
+    from rapid_mlx.scheduler import SchedulerConfig
 
     cfg = SchedulerConfig(spec_decode="suffix")
 
@@ -813,14 +813,14 @@ def test_scheduler_config_spec_decode_suffix_translates_to_suffix_flag():
 
 
 def test_scheduler_config_rejects_unknown_spec_decode():
-    from vllm_mlx.scheduler import SchedulerConfig
+    from rapid_mlx.scheduler import SchedulerConfig
 
     with pytest.raises(ValueError, match="spec_decode='typo'.*not supported"):
         SchedulerConfig(spec_decode="typo")
 
 
 def test_scheduler_config_translates_deprecated_mtp_kwargs():
-    from vllm_mlx.scheduler import SchedulerConfig
+    from rapid_mlx.scheduler import SchedulerConfig
 
     with pytest.warns(DeprecationWarning, match="enable_mtp=True"):
         cfg = SchedulerConfig(
@@ -836,7 +836,7 @@ def test_scheduler_config_translates_deprecated_mtp_kwargs():
 
 def test_scheduler_config_rejects_unsupported_migrated_mtp_optimistic():
     """PR #1050 hard-reject: mtp_optimistic under unified interface."""
-    from vllm_mlx.scheduler import SchedulerConfig
+    from rapid_mlx.scheduler import SchedulerConfig
 
     with pytest.raises(ValueError, match="mtp_optimistic=True.*not supported"):
         SchedulerConfig(spec_decode="mtp", mtp_optimistic=True)
@@ -847,14 +847,14 @@ def test_scheduler_config_rejects_legacy_enable_mtp_with_optimistic():
     ``mtp_optimistic=True`` because __post_init__ normalizes it to
     ``spec_decode='mtp'`` and the vendored installer ignores optimistic.
     """
-    from vllm_mlx.scheduler import SchedulerConfig
+    from rapid_mlx.scheduler import SchedulerConfig
 
     with pytest.raises(ValueError, match="mtp_optimistic=True.*not supported"):
         SchedulerConfig(enable_mtp=True, mtp_optimistic=True)
 
 
 def test_scheduler_config_rejects_deprecated_mtp_with_other_spec_decode():
-    from vllm_mlx.scheduler import SchedulerConfig
+    from rapid_mlx.scheduler import SchedulerConfig
 
     with pytest.raises(ValueError, match="enable_mtp=True.*spec_decode='suffix'"):
         SchedulerConfig(enable_mtp=True, spec_decode="suffix")
@@ -874,7 +874,7 @@ def test_scheduler_config_rejects_deprecated_mtp_with_other_spec_decode():
     ],
 )
 def test_scheduler_config_rejects_deprecated_mtp_with_other_backends(kwargs, match):
-    from vllm_mlx.scheduler import SchedulerConfig
+    from rapid_mlx.scheduler import SchedulerConfig
 
     with (
         pytest.warns(DeprecationWarning, match="enable_mtp=True"),
@@ -897,7 +897,7 @@ def test_scheduler_config_rejects_deprecated_mtp_with_other_backends(kwargs, mat
     ],
 )
 def test_scheduler_config_rejects_multiple_spec_decode_backends(kwargs, match):
-    from vllm_mlx.scheduler import SchedulerConfig
+    from rapid_mlx.scheduler import SchedulerConfig
 
     with pytest.raises(ValueError, match=match):
         SchedulerConfig(**kwargs)
@@ -913,8 +913,8 @@ def test_metrics_renders_spec_decode_counters_zero_at_cold_start():
     present with value 0 (engine-independence rationale — same as
     response_format and mxfp4 guardrail counters).
     """
-    from vllm_mlx.routes.metrics import _render_spec_decode_mtp_counters
-    from vllm_mlx.spec_decode.mtp.accept_counter import (
+    from rapid_mlx.routes.metrics import _render_spec_decode_mtp_counters
+    from rapid_mlx.spec_decode.mtp.accept_counter import (
         reset_global_counter_for_tests,
     )
 
@@ -936,8 +936,8 @@ def test_metrics_renders_spec_decode_counters_zero_at_cold_start():
 
 def test_metrics_renders_post_acceptance_counters():
     """After 4 attempts / 3 accepts, the metric values must reflect it."""
-    from vllm_mlx.routes.metrics import _render_spec_decode_mtp_counters
-    from vllm_mlx.spec_decode.mtp.accept_counter import (
+    from rapid_mlx.routes.metrics import _render_spec_decode_mtp_counters
+    from rapid_mlx.spec_decode.mtp.accept_counter import (
         get_global_counter,
         reset_global_counter_for_tests,
     )
@@ -978,8 +978,8 @@ def test_metrics_renders_zero_ratio_when_no_attempts():
     fallback is a family sniff on model_name / model_path with a
     stable ``"unknown"`` residual so the label set never changes.
     """
-    from vllm_mlx.routes.metrics import _render_spec_decode_mtp_counters
-    from vllm_mlx.spec_decode.mtp.accept_counter import (
+    from rapid_mlx.routes.metrics import _render_spec_decode_mtp_counters
+    from rapid_mlx.spec_decode.mtp.accept_counter import (
         reset_global_counter_for_tests,
     )
 
@@ -1001,8 +1001,8 @@ def test_metrics_family_falls_back_to_gemma4_on_model_name():
     label must reflect Gemma 4 rather than the misleading Qwen
     fallback that broke per-family dashboards in 0.9.12.
     """
-    from vllm_mlx.routes.metrics import _render_spec_decode_mtp_counters
-    from vllm_mlx.spec_decode.mtp.accept_counter import (
+    from rapid_mlx.routes.metrics import _render_spec_decode_mtp_counters
+    from rapid_mlx.spec_decode.mtp.accept_counter import (
         reset_global_counter_for_tests,
     )
 
@@ -1018,8 +1018,8 @@ def test_metrics_family_falls_back_to_gemma4_on_model_name():
 
 
 def test_metrics_family_falls_back_to_flash_next_on_model_path():
-    from vllm_mlx.routes.metrics import _render_spec_decode_mtp_counters
-    from vllm_mlx.spec_decode.mtp.accept_counter import (
+    from rapid_mlx.routes.metrics import _render_spec_decode_mtp_counters
+    from rapid_mlx.spec_decode.mtp.accept_counter import (
         reset_global_counter_for_tests,
     )
 
@@ -1039,11 +1039,11 @@ def test_metrics_includes_park_and_k_chosen_counters():
     present at cold-start (zero-valued) so dashboards discover the
     series before the first controller round lands.
     """
-    from vllm_mlx.routes.metrics import _render_spec_decode_mtp_counters
-    from vllm_mlx.spec_decode.mtp.accept_counter import (
+    from rapid_mlx.routes.metrics import _render_spec_decode_mtp_counters
+    from rapid_mlx.spec_decode.mtp.accept_counter import (
         reset_global_counter_for_tests,
     )
-    from vllm_mlx.spec_decode.mtp.draft_k_controller_v2 import (
+    from rapid_mlx.spec_decode.mtp.draft_k_controller_v2 import (
         reset_controllers,
     )
 
@@ -1077,11 +1077,11 @@ def test_metrics_k_cost_curve_absent_cold_then_present_after_rounds():
     than "no round has been measured", and a dashboard dividing by it
     would show an infinite speedup. Absence is the honest cold state.
     """
-    from vllm_mlx.routes.metrics import _render_spec_decode_mtp_counters
-    from vllm_mlx.spec_decode.mtp.accept_counter import (
+    from rapid_mlx.routes.metrics import _render_spec_decode_mtp_counters
+    from rapid_mlx.spec_decode.mtp.accept_counter import (
         reset_global_counter_for_tests,
     )
-    from vllm_mlx.spec_decode.mtp.draft_k_controller_v2 import (
+    from rapid_mlx.spec_decode.mtp.draft_k_controller_v2 import (
         get_or_create_controller,
         reset_controllers,
     )
@@ -1121,11 +1121,11 @@ def test_cost_curves_are_not_blended_across_controllers():
     would attribute the busier model's curve to whichever model they
     happened to be looking at.
     """
-    from vllm_mlx.routes.metrics import _render_spec_decode_mtp_counters
-    from vllm_mlx.spec_decode.mtp.accept_counter import (
+    from rapid_mlx.routes.metrics import _render_spec_decode_mtp_counters
+    from rapid_mlx.spec_decode.mtp.accept_counter import (
         reset_global_counter_for_tests,
     )
-    from vllm_mlx.spec_decode.mtp.draft_k_controller_v2 import (
+    from rapid_mlx.spec_decode.mtp.draft_k_controller_v2 import (
         cost_curves_by_controller,
         get_or_create_controller,
         reset_controllers,
@@ -1167,7 +1167,7 @@ def test_metrics_route_includes_spec_decode_series_at_cold_start():
     carry the spec_decode series before any engine is up — matches the
     response_format + mxfp4 pre-engine surface convention.
     """
-    from vllm_mlx.routes.metrics import _render_prometheus
+    from rapid_mlx.routes.metrics import _render_prometheus
 
     class _Cfg:
         engine = None
@@ -1195,7 +1195,7 @@ def _seed_controller_at_frontier(ctrl, k: int, high_accept: bool = True) -> None
     False means acceptance oscillates so ``expected_committed`` is
     non-trivial.
     """
-    from vllm_mlx.spec_decode.mtp.draft_k_controller_v2 import (
+    from rapid_mlx.spec_decode.mtp.draft_k_controller_v2 import (
         ACCEPTANCE_MIN_SAMPLES,
     )
 
@@ -1218,7 +1218,7 @@ def test_starvation_probe_forces_undersampled_k_at_max_k_cap():
     bootstrap. Without the starvation probe, ``pick_k`` would return
     K=3 forever once the EV comparator settled on it.
     """
-    from vllm_mlx.spec_decode.mtp.draft_k_controller_v2 import (
+    from rapid_mlx.spec_decode.mtp.draft_k_controller_v2 import (
         DepthController,
         reset_controllers,
     )
@@ -1262,7 +1262,7 @@ def test_starvation_probe_argmin_over_rolling_window():
     prevents a briefly-explored K from being immune to future probing
     once its all-time count catches up.
     """
-    from vllm_mlx.spec_decode.mtp.draft_k_controller_v2 import (
+    from rapid_mlx.spec_decode.mtp.draft_k_controller_v2 import (
         STARVATION_PROBE_INTERVAL,
         DepthController,
         reset_controllers,
@@ -1299,7 +1299,7 @@ def test_starvation_probe_interval_doubles_and_caps():
     does not overflow. Reset on EV pick change (``sel``) so a new
     selection gets an undisturbed interval.
     """
-    from vllm_mlx.spec_decode.mtp.draft_k_controller_v2 import (
+    from rapid_mlx.spec_decode.mtp.draft_k_controller_v2 import (
         DEPTH_PROBE_INTERVAL_MAX,
         STARVATION_PROBE_INTERVAL,
         DepthController,
@@ -1327,7 +1327,7 @@ def test_starvation_probe_no_double_pick_when_probe_matches_current_depth():
     the probe counter still consumes its slot (interval doubles) — this
     keeps the cadence deterministic. Verify the probe counter resets.
     """
-    from vllm_mlx.spec_decode.mtp.draft_k_controller_v2 import (
+    from rapid_mlx.spec_decode.mtp.draft_k_controller_v2 import (
         DepthController,
         reset_controllers,
     )
@@ -1350,7 +1350,7 @@ def test_starvation_probe_no_double_pick_when_probe_matches_current_depth():
     assert ctrl._round_probe_interval >= 4
     assert ctrl._round_probe_interval <= 512
     # Prev interval starts at the starvation probe base.
-    from vllm_mlx.spec_decode.mtp.draft_k_controller_v2 import (
+    from rapid_mlx.spec_decode.mtp.draft_k_controller_v2 import (
         STARVATION_PROBE_INTERVAL,
     )
 
@@ -1362,7 +1362,7 @@ def test_starvation_probe_resets_when_ev_pick_changes():
     interval must reset to the base — the new selection deserves a
     full interval of undisturbed operation.
     """
-    from vllm_mlx.spec_decode.mtp.draft_k_controller_v2 import (
+    from rapid_mlx.spec_decode.mtp.draft_k_controller_v2 import (
         STARVATION_PROBE_INTERVAL,
         DepthController,
         reset_controllers,
@@ -1400,7 +1400,7 @@ def _seeded_controller(max_k=3, cost_ms=(65.0, 73.0, 88.0, 110.0), accept=0.8):
     acceptance rate; both are applied often enough to pass
     ``ACCEPTANCE_MIN_SAMPLES`` so the frontier actually moves.
     """
-    from vllm_mlx.spec_decode.mtp.draft_k_controller_v2 import (
+    from rapid_mlx.spec_decode.mtp.draft_k_controller_v2 import (
         DepthController,
         reset_controllers,
     )
@@ -1434,7 +1434,7 @@ def test_acceptance_sample_string_reports_only_trusted_positions():
     """Positions past the frontier read back an inherited rate, not a
     measured one, so publishing them would pass off the search policy as
     data. The string stops at the frontier for that reason."""
-    from vllm_mlx.spec_decode.mtp.draft_k_controller_v2 import (
+    from rapid_mlx.spec_decode.mtp.draft_k_controller_v2 import (
         ACCEPTANCE_MIN_SAMPLES,
         AcceptanceModel,
     )
@@ -1454,7 +1454,7 @@ def test_acceptance_sample_string_reports_only_trusted_positions():
 def test_expected_tps_string_is_empty_until_two_depths_are_sampled():
     """One cost sample gives a point, not a slope; a tok/s figure derived
     from it would be an extrapolation reported as a measurement."""
-    from vllm_mlx.spec_decode.mtp.draft_k_controller_v2 import (
+    from rapid_mlx.spec_decode.mtp.draft_k_controller_v2 import (
         DepthController,
         reset_controllers,
     )
@@ -1505,7 +1505,7 @@ def test_record_logs_diagnostics_on_the_configured_cadence(caplog):
     DEBUG run at all."""
     import logging
 
-    from vllm_mlx.spec_decode.mtp.draft_k_controller_v2 import (
+    from rapid_mlx.spec_decode.mtp.draft_k_controller_v2 import (
         DIAGNOSTICS_LOG_INTERVAL,
         DepthController,
         reset_controllers,
@@ -1514,7 +1514,7 @@ def test_record_logs_diagnostics_on_the_configured_cadence(caplog):
     reset_controllers()
     ctrl = DepthController(max_k=3)
     with caplog.at_level(
-        logging.DEBUG, logger="vllm_mlx.spec_decode.mtp.draft_k_controller_v2"
+        logging.DEBUG, logger="rapid_mlx.spec_decode.mtp.draft_k_controller_v2"
     ):
         for _ in range(DIAGNOSTICS_LOG_INTERVAL - 1):
             ctrl.record(1, 73.0, [True])
@@ -1530,7 +1530,7 @@ def test_record_logs_diagnostics_on_the_configured_cadence(caplog):
 def test_record_does_not_build_the_diagnostics_line_below_debug(monkeypatch):
     """The line walks both models' curves, so paying for it on a default
     INFO server would be a per-round cost for output nobody reads."""
-    from vllm_mlx.spec_decode.mtp.draft_k_controller_v2 import (
+    from rapid_mlx.spec_decode.mtp.draft_k_controller_v2 import (
         DIAGNOSTICS_LOG_INTERVAL,
         DepthController,
         reset_controllers,
@@ -1547,7 +1547,7 @@ def test_record_does_not_build_the_diagnostics_line_below_debug(monkeypatch):
 
     import logging
 
-    logger = logging.getLogger("vllm_mlx.spec_decode.mtp.draft_k_controller_v2")
+    logger = logging.getLogger("rapid_mlx.spec_decode.mtp.draft_k_controller_v2")
     old_level, logger.level = logger.level, logging.INFO
     old_propagate, logger.propagate = logger.propagate, False
     try:
@@ -1567,7 +1567,7 @@ def test_record_does_not_build_the_diagnostics_line_below_debug(monkeypatch):
 
 def test_build_mtp_module_rejects_zero_layers():
     """``num_layers < 1`` is a programmer error — fail loud."""
-    from vllm_mlx.spec_decode.mtp.head import build_mtp_module
+    from rapid_mlx.spec_decode.mtp.head import build_mtp_module
 
     class _FakeArgs:
         hidden_size = 32
@@ -1627,7 +1627,7 @@ def test_build_mtp_module_constructs_with_real_qwen3_5_args():
     ``TextModelArgs`` schema (not just our synthetic dict). We use a
     minimal Qwen3.5 args instance (small dims so the test stays fast).
     """
-    from vllm_mlx.spec_decode.mtp.head import build_mtp_module
+    from rapid_mlx.spec_decode.mtp.head import build_mtp_module
 
     args = _tiny_text_model_args()
     head = build_mtp_module(args, 1)
@@ -1669,7 +1669,7 @@ def test_inject_mtp_support_attaches_four_surfaces():
     """Inject must add ``mtp_forward``, ``make_mtp_cache``, and accept
     ``return_hidden`` / ``n_confirmed`` in ``__call__``.
     """
-    from vllm_mlx.spec_decode.mtp.qwen3_5_inject import (
+    from rapid_mlx.spec_decode.mtp.qwen3_5_inject import (
         inject_mtp_support,
         validate_mtp_support,
     )
@@ -1698,14 +1698,14 @@ def test_inject_mtp_support_attaches_four_surfaces():
     # policy is where the ceiling lives: the generator honours whatever it (or
     # an operator override) says, so a default of anything else would be the
     # whole feature mis-sized.
-    from vllm_mlx.spec_decode.mtp.prompt_lookup import MAX_COPY_DRAFT_TOKENS
+    from rapid_mlx.spec_decode.mtp.prompt_lookup import MAX_COPY_DRAFT_TOKENS
 
     assert policy.max_tokens == MAX_COPY_DRAFT_TOKENS
 
 
 def test_inject_mtp_support_mirrors_batch_seam_to_outer_wrapper():
     """The scheduler may retain the outer model returned by mlx-lm."""
-    from vllm_mlx.spec_decode.mtp.qwen3_5_inject import inject_mtp_support
+    from rapid_mlx.spec_decode.mtp.qwen3_5_inject import inject_mtp_support
 
     try:
         inner = _build_tiny_qwen3_5_text_model()
@@ -1732,7 +1732,7 @@ def test_inject_mtp_support_rejects_non_qwen35_model():
     """A non-Qwen3.5 model (no ``args.mtp_num_hidden_layers``) must
     return False and not patch anything.
     """
-    from vllm_mlx.spec_decode.mtp.qwen3_5_inject import inject_mtp_support
+    from rapid_mlx.spec_decode.mtp.qwen3_5_inject import inject_mtp_support
 
     class _FakeArgs:
         hidden_size = 32
@@ -1750,7 +1750,7 @@ def test_inject_mtp_support_rejects_stripped_checkpoint():
     """Qwen3.5 with mtp_num_hidden_layers=0 (operator passed
     pre-PR-#990 checkpoint) → inject returns False.
     """
-    from vllm_mlx.spec_decode.mtp.qwen3_5_inject import inject_mtp_support
+    from rapid_mlx.spec_decode.mtp.qwen3_5_inject import inject_mtp_support
 
     class _FakeArgs:
         hidden_size = 32
@@ -1776,7 +1776,7 @@ def test_inject_mtp_support_refuses_no_sidecar_by_default():
     With this fix, ``inject_mtp_support(model)`` (no sidecar, no
     opt-in) must return False and leave the model unmodified.
     """
-    from vllm_mlx.spec_decode.mtp.qwen3_5_inject import (
+    from rapid_mlx.spec_decode.mtp.qwen3_5_inject import (
         inject_mtp_support,
         validate_mtp_support,
     )
@@ -1829,8 +1829,8 @@ def test_inject_mtp_support_loads_synthetic_sidecar():
     import mlx.core as _mx
     from mlx.utils import tree_flatten
 
-    from vllm_mlx.spec_decode.mtp.head import build_mtp_module
-    from vllm_mlx.spec_decode.mtp.qwen3_5_inject import (
+    from rapid_mlx.spec_decode.mtp.head import build_mtp_module
+    from rapid_mlx.spec_decode.mtp.qwen3_5_inject import (
         inject_mtp_support,
         validate_mtp_support,
     )
@@ -1899,7 +1899,7 @@ def _write_synthetic_sidecar(model, tmp_dir, contract=None):
     import mlx.core as _mx
     from mlx.utils import tree_flatten
 
-    from vllm_mlx.spec_decode.mtp.head import build_mtp_module
+    from rapid_mlx.spec_decode.mtp.head import build_mtp_module
 
     args = model.args
     template = build_mtp_module(args, int(args.mtp_num_hidden_layers))
@@ -1926,7 +1926,7 @@ def test_return_hidden_hands_the_drafter_the_tensor_the_lm_head_scored():
     """
     import mlx.core as _mx
 
-    from vllm_mlx.spec_decode.mtp.qwen3_5_inject import inject_mtp_support
+    from rapid_mlx.spec_decode.mtp.qwen3_5_inject import inject_mtp_support
 
     try:
         model = _build_tiny_qwen3_5_text_model()
@@ -1961,7 +1961,7 @@ def test_mtplx_manifest_can_still_pin_the_pre_norm_base_hidden():
 
     import mlx.core as _mx
 
-    from vllm_mlx.spec_decode.mtp.qwen3_5_inject import inject_mtp_support
+    from rapid_mlx.spec_decode.mtp.qwen3_5_inject import inject_mtp_support
 
     try:
         model = _build_tiny_qwen3_5_text_model()
@@ -1999,8 +1999,8 @@ def test_inject_mtp_support_refuses_synthetic_sidecar_missing_tensor():
     import mlx.core as _mx
     from mlx.utils import tree_flatten
 
-    from vllm_mlx.spec_decode.mtp.head import build_mtp_module
-    from vllm_mlx.spec_decode.mtp.qwen3_5_inject import inject_mtp_support
+    from rapid_mlx.spec_decode.mtp.head import build_mtp_module
+    from rapid_mlx.spec_decode.mtp.qwen3_5_inject import inject_mtp_support
 
     try:
         model = _build_tiny_qwen3_5_text_model()
@@ -2047,8 +2047,8 @@ def test_infer_sidecar_fc_quantization_recovers_bits_and_group_size(bits, group_
     import mlx.nn as _nn
     from mlx.utils import tree_flatten
 
-    from vllm_mlx.spec_decode.mtp.head import build_mtp_module
-    from vllm_mlx.spec_decode.mtp.qwen3_5_inject import (
+    from rapid_mlx.spec_decode.mtp.head import build_mtp_module
+    from rapid_mlx.spec_decode.mtp.qwen3_5_inject import (
         _infer_sidecar_fc_quantization,
     )
 
@@ -2082,8 +2082,8 @@ def test_infer_sidecar_fc_quantization_full_precision_returns_none():
     metadata required (fixes the metadata-less-FP-sidecar regression)."""
     from mlx.utils import tree_flatten
 
-    from vllm_mlx.spec_decode.mtp.head import build_mtp_module
-    from vllm_mlx.spec_decode.mtp.qwen3_5_inject import _infer_sidecar_fc_quantization
+    from rapid_mlx.spec_decode.mtp.head import build_mtp_module
+    from rapid_mlx.spec_decode.mtp.qwen3_5_inject import _infer_sidecar_fc_quantization
 
     try:
         base = _build_tiny_qwen3_5_text_model()
@@ -2100,11 +2100,11 @@ def test_infer_sidecar_fc_quantization_full_precision_returns_none():
 
 def test_mtp_quantization_pairing_warning_for_mismatch_only(caplog):
     """Known mixed precision warns once; a matched pairing stays silent."""
-    from vllm_mlx.spec_decode.mtp.qwen3_5_inject import (
+    from rapid_mlx.spec_decode.mtp.qwen3_5_inject import (
         _warn_if_mtp_quantization_mismatch,
     )
 
-    logger_name = "vllm_mlx.spec_decode.mtp.qwen3_5_inject"
+    logger_name = "rapid_mlx.spec_decode.mtp.qwen3_5_inject"
     with caplog.at_level("WARNING", logger=logger_name):
         _warn_if_mtp_quantization_mismatch(
             {"bits": 8, "group_size": 64},
@@ -2133,8 +2133,8 @@ def test_infer_sidecar_fc_quantization_raises_on_malformed_packing():
     raises ``ValueError`` so the caller refuses rather than mis-pack."""
     import mlx.core as _mx
 
-    from vllm_mlx.spec_decode.mtp.head import build_mtp_module
-    from vllm_mlx.spec_decode.mtp.qwen3_5_inject import _infer_sidecar_fc_quantization
+    from rapid_mlx.spec_decode.mtp.head import build_mtp_module
+    from rapid_mlx.spec_decode.mtp.qwen3_5_inject import _infer_sidecar_fc_quantization
 
     try:
         base = _build_tiny_qwen3_5_text_model()
@@ -2208,8 +2208,8 @@ def test_inject_quantizes_mtp_to_sidecar_bits_not_base_bits(tmp_path):
     import mlx.nn as _nn
     from mlx.utils import tree_flatten
 
-    from vllm_mlx.spec_decode.mtp.head import build_mtp_module
-    from vllm_mlx.spec_decode.mtp.qwen3_5_inject import (
+    from rapid_mlx.spec_decode.mtp.head import build_mtp_module
+    from rapid_mlx.spec_decode.mtp.qwen3_5_inject import (
         _detect_base_quantization,
         inject_mtp_support,
         validate_mtp_support,
@@ -2277,8 +2277,8 @@ def test_inject_keeps_mtp_full_precision_for_fp_sidecar(tmp_path):
     import mlx.nn as _nn
     from mlx.utils import tree_flatten
 
-    from vllm_mlx.spec_decode.mtp.head import build_mtp_module
-    from vllm_mlx.spec_decode.mtp.qwen3_5_inject import (
+    from rapid_mlx.spec_decode.mtp.head import build_mtp_module
+    from rapid_mlx.spec_decode.mtp.qwen3_5_inject import (
         inject_mtp_support,
         validate_mtp_support,
     )
@@ -2330,8 +2330,8 @@ def test_inject_refuses_explicit_sidecar_with_malformed_packing(tmp_path):
     import mlx.nn as _nn
     from mlx.utils import tree_flatten
 
-    from vllm_mlx.spec_decode.mtp.head import build_mtp_module
-    from vllm_mlx.spec_decode.mtp.qwen3_5_inject import inject_mtp_support
+    from rapid_mlx.spec_decode.mtp.head import build_mtp_module
+    from rapid_mlx.spec_decode.mtp.qwen3_5_inject import inject_mtp_support
 
     try:
         base = _build_tiny_qwen3_5_text_model()
@@ -2371,7 +2371,7 @@ def test_inject_refuses_corrupt_sidecar_file_without_raising(tmp_path):
     download, disk error) must degrade the same way: refuse injection,
     never abort the request mid-generation.
     """
-    from vllm_mlx.spec_decode.mtp.qwen3_5_inject import inject_mtp_support
+    from rapid_mlx.spec_decode.mtp.qwen3_5_inject import inject_mtp_support
 
     try:
         base = _build_tiny_qwen3_5_text_model()
@@ -2411,8 +2411,8 @@ def test_inject_refuses_when_materialization_raises_without_propagating(
     import mlx.core as _mx
     from mlx.utils import tree_flatten
 
-    from vllm_mlx.spec_decode.mtp.head import build_mtp_module
-    from vllm_mlx.spec_decode.mtp.qwen3_5_inject import inject_mtp_support
+    from rapid_mlx.spec_decode.mtp.head import build_mtp_module
+    from rapid_mlx.spec_decode.mtp.qwen3_5_inject import inject_mtp_support
 
     try:
         base = _build_tiny_qwen3_5_text_model()
@@ -2458,8 +2458,8 @@ def test_inject_refuses_sidecar_with_shape_mismatched_non_fc_tensor(tmp_path):
     import mlx.nn as _nn
     from mlx.utils import tree_flatten
 
-    from vllm_mlx.spec_decode.mtp.head import build_mtp_module
-    from vllm_mlx.spec_decode.mtp.qwen3_5_inject import inject_mtp_support
+    from rapid_mlx.spec_decode.mtp.head import build_mtp_module
+    from rapid_mlx.spec_decode.mtp.qwen3_5_inject import inject_mtp_support
 
     try:
         base = _build_tiny_qwen3_5_text_model()
@@ -2503,8 +2503,8 @@ def test_inject_refuses_sidecar_with_dtype_mismatched_packed_weight(tmp_path):
     import mlx.nn as _nn
     from mlx.utils import tree_flatten
 
-    from vllm_mlx.spec_decode.mtp.head import build_mtp_module
-    from vllm_mlx.spec_decode.mtp.qwen3_5_inject import inject_mtp_support
+    from rapid_mlx.spec_decode.mtp.head import build_mtp_module
+    from rapid_mlx.spec_decode.mtp.qwen3_5_inject import inject_mtp_support
 
     try:
         base = _build_tiny_qwen3_5_text_model()
@@ -2548,8 +2548,8 @@ def test_inject_refuses_mixed_bit_sidecar_fail_safe(tmp_path):
     import mlx.nn as _nn
     from mlx.utils import tree_flatten
 
-    from vllm_mlx.spec_decode.mtp.head import build_mtp_module
-    from vllm_mlx.spec_decode.mtp.qwen3_5_inject import inject_mtp_support
+    from rapid_mlx.spec_decode.mtp.head import build_mtp_module
+    from rapid_mlx.spec_decode.mtp.qwen3_5_inject import inject_mtp_support
 
     try:
         base = _build_tiny_qwen3_5_text_model()
@@ -2595,8 +2595,8 @@ def test_inject_refuses_when_module_quantize_raises_fail_safe(tmp_path):
     import mlx.nn as _nn
     from mlx.utils import tree_flatten
 
-    from vllm_mlx.spec_decode.mtp.head import build_mtp_module
-    from vllm_mlx.spec_decode.mtp.qwen3_5_inject import inject_mtp_support
+    from rapid_mlx.spec_decode.mtp.head import build_mtp_module
+    from rapid_mlx.spec_decode.mtp.qwen3_5_inject import inject_mtp_support
 
     try:
         base = _build_tiny_qwen3_5_text_model()
@@ -2640,8 +2640,8 @@ def test_inject_catches_module_quantize_exception_deterministically(
     import mlx.nn as _nn
     from mlx.utils import tree_flatten
 
-    from vllm_mlx.spec_decode.mtp.head import build_mtp_module
-    from vllm_mlx.spec_decode.mtp.qwen3_5_inject import inject_mtp_support
+    from rapid_mlx.spec_decode.mtp.head import build_mtp_module
+    from rapid_mlx.spec_decode.mtp.qwen3_5_inject import inject_mtp_support
 
     try:
         base = _build_tiny_qwen3_5_text_model()
@@ -2867,8 +2867,8 @@ def test_generator_emits_first_token_from_backbone_then_draft():
     complicates the script. With prompt length 1, ``prefill_step``
     skips and the decode loop sees the single prompt token directly.
     """
-    from vllm_mlx.spec_decode.mtp.accept_counter import MTPAcceptCounter
-    from vllm_mlx.spec_decode.mtp.generator import mtp_generate_step
+    from rapid_mlx.spec_decode.mtp.accept_counter import MTPAcceptCounter
+    from rapid_mlx.spec_decode.mtp.generator import mtp_generate_step
 
     backbone = [7, 11, 13]
     mtp = [11]
@@ -2911,8 +2911,8 @@ def test_generator_emits_first_token_from_backbone_then_draft():
 
 def test_generator_sampled_verify_accepts_matching_draft():
     """The probabilistic verifier is active when temperature is non-zero."""
-    from vllm_mlx.spec_decode.mtp.accept_counter import MTPAcceptCounter
-    from vllm_mlx.spec_decode.mtp.generator import mtp_generate_step
+    from rapid_mlx.spec_decode.mtp.accept_counter import MTPAcceptCounter
+    from rapid_mlx.spec_decode.mtp.generator import mtp_generate_step
 
     counter = MTPAcceptCounter()
     emitted = list(
@@ -2939,9 +2939,9 @@ def test_generator_sampled_verify_accepts_matching_draft():
 
 def test_generator_sampled_verify_uses_request_local_rng():
     """Sampled MTP consumes only the request-owned carried key."""
-    from vllm_mlx._seeded_sampler import RequestSeededRNG
-    from vllm_mlx.spec_decode.mtp.accept_counter import MTPAcceptCounter
-    from vllm_mlx.spec_decode.mtp.generator import mtp_generate_step
+    from rapid_mlx._seeded_sampler import RequestSeededRNG
+    from rapid_mlx.spec_decode.mtp.accept_counter import MTPAcceptCounter
+    from rapid_mlx.spec_decode.mtp.generator import mtp_generate_step
 
     lane_rng = RequestSeededRNG(42)
     emitted = list(
@@ -2967,7 +2967,7 @@ def test_generator_sampled_verify_uses_request_local_rng():
 
 def test_mtp_request_rng_and_greedy_sampler_publish_state_contract():
     """Apple MTP lane covers the request-local state exposed to the scheduler."""
-    from vllm_mlx._seeded_sampler import RequestSeededRNG, make_seeded_sampler
+    from rapid_mlx._seeded_sampler import RequestSeededRNG, make_seeded_sampler
 
     carried = RequestSeededRNG(42)
     initial = carried.key
@@ -2985,9 +2985,9 @@ def test_generator_accepted_draft_reports_target_logprobs(monkeypatch):
     """An accepted proposal exposes p_target, never the drafter's q row."""
     import mlx_lm.sample_utils as sample_utils
 
-    import vllm_mlx.spec_decode.mtp.generator as generator_mod
-    from vllm_mlx.spec_decode.mtp.accept_counter import MTPAcceptCounter
-    from vllm_mlx.spec_decode.mtp.generator import mtp_generate_step
+    import rapid_mlx.spec_decode.mtp.generator as generator_mod
+    from rapid_mlx.spec_decode.mtp.accept_counter import MTPAcceptCounter
+    from rapid_mlx.spec_decode.mtp.generator import mtp_generate_step
 
     class _DistinctDistributionsModel(_MockedQwen35Model):
         def _rows(self, target_ids, batch, boost):
@@ -3054,9 +3054,9 @@ def test_generator_sampled_k3_draws_acceptance_independently_per_position(
     monkeypatch,
 ):
     """K>1 rejection sampling must not correlate acceptance decisions."""
-    import vllm_mlx.spec_decode.mtp.generator as generator_mod
-    from vllm_mlx.spec_decode.mtp.accept_counter import MTPAcceptCounter
-    from vllm_mlx.spec_decode.mtp.generator import mtp_generate_step
+    import rapid_mlx.spec_decode.mtp.generator as generator_mod
+    from rapid_mlx.spec_decode.mtp.accept_counter import MTPAcceptCounter
+    from rapid_mlx.spec_decode.mtp.generator import mtp_generate_step
 
     real_uniform = generator_mod.mx.random.uniform
     shapes: list[tuple[int, ...] | None] = []
@@ -3084,7 +3084,7 @@ def test_generator_sampled_k3_draws_acceptance_independently_per_position(
 
 def test_generator_penalty_processor_continues_existing_token_context():
     """The first MTP target sample sees the same history as mlx-lm."""
-    from vllm_mlx.spec_decode.mtp.generator import mtp_generate_step
+    from rapid_mlx.spec_decode.mtp.generator import mtp_generate_step
 
     observed: list[list[int]] = []
 
@@ -3108,7 +3108,7 @@ def test_generator_penalty_processor_continues_existing_token_context():
 
 def test_generator_penalty_processor_carries_full_k3_draft_history():
     """Each chained draft sees main_tok plus every preceding proposal."""
-    from vllm_mlx.spec_decode.mtp.generator import mtp_generate_step
+    from rapid_mlx.spec_decode.mtp.generator import mtp_generate_step
 
     observed: list[list[int]] = []
 
@@ -3140,7 +3140,7 @@ def test_generator_penalty_processor_carries_full_k3_draft_history():
 
 
 def test_prompt_lookup_point_mass_residual_removes_proposed_token():
-    from vllm_mlx.spec_decode.mtp.generator import (
+    from rapid_mlx.spec_decode.mtp.generator import (
         _point_mass_residual_distribution,
     )
 
@@ -3155,8 +3155,8 @@ def test_prompt_lookup_point_mass_residual_removes_proposed_token():
 
 def test_generator_fixed_k3_accepts_three_drafts_in_one_verify():
     """Fixed-depth mode must honor max_k=3 instead of silently using K=1."""
-    from vllm_mlx.spec_decode.mtp.accept_counter import MTPAcceptCounter
-    from vllm_mlx.spec_decode.mtp.generator import mtp_generate_step
+    from rapid_mlx.spec_decode.mtp.accept_counter import MTPAcceptCounter
+    from rapid_mlx.spec_decode.mtp.generator import mtp_generate_step
 
     counter = MTPAcceptCounter()
     emitted = list(
@@ -3192,9 +3192,9 @@ def test_generator_commits_tool_guard_state_only_as_tokens_are_delivered(
     max_k, committed, drafts, targets, intervention_position
 ):
     """K=2/K=3 verification cannot commit a not-yet-delivered guard hit."""
-    from vllm_mlx.repetition_guard import AgentRepetitionLogitsProcessor
-    from vllm_mlx.spec_decode.mtp.accept_counter import MTPAcceptCounter
-    from vllm_mlx.spec_decode.mtp.generator import mtp_generate_step
+    from rapid_mlx.repetition_guard import AgentRepetitionLogitsProcessor
+    from rapid_mlx.spec_decode.mtp.accept_counter import MTPAcceptCounter
+    from rapid_mlx.spec_decode.mtp.generator import mtp_generate_step
 
     near_loop = list(range(24)) + list(range(25 - max_k))
 
@@ -3239,9 +3239,9 @@ def test_generator_commits_tool_guard_state_only_as_tokens_are_delivered(
 
 def test_generator_rejection_discards_later_tool_guard_state():
     """A guard hit on a rejected K=3 suffix never consumes its safety cap."""
-    from vllm_mlx.repetition_guard import AgentRepetitionLogitsProcessor
-    from vllm_mlx.spec_decode.mtp.accept_counter import MTPAcceptCounter
-    from vllm_mlx.spec_decode.mtp.generator import mtp_generate_step
+    from rapid_mlx.repetition_guard import AgentRepetitionLogitsProcessor
+    from rapid_mlx.spec_decode.mtp.accept_counter import MTPAcceptCounter
+    from rapid_mlx.spec_decode.mtp.generator import mtp_generate_step
 
     pattern = list(range(24))
     committed = pattern + pattern[:-2]
@@ -3267,7 +3267,7 @@ def test_generator_rejection_discards_later_tool_guard_state():
 
 def test_tool_guard_ordinary_decode_still_uses_committed_output():
     """The refactored ordinary entry point retains its scheduler-owned history."""
-    from vllm_mlx.repetition_guard import AgentRepetitionLogitsProcessor
+    from rapid_mlx.repetition_guard import AgentRepetitionLogitsProcessor
 
     pattern = list(range(12))
     processor = AgentRepetitionLogitsProcessor(pattern * 5)
@@ -3278,8 +3278,8 @@ def test_tool_guard_ordinary_decode_still_uses_committed_output():
 
 def test_generator_restores_tool_guard_state_when_target_processor_raises():
     """A verify-time processor exception restores the pre-proposal boundary."""
-    from vllm_mlx.spec_decode.mtp.accept_counter import MTPAcceptCounter
-    from vllm_mlx.spec_decode.mtp.generator import mtp_generate_step
+    from rapid_mlx.spec_decode.mtp.accept_counter import MTPAcceptCounter
+    from rapid_mlx.spec_decode.mtp.generator import mtp_generate_step
 
     class FusedDraftModel(_MockedQwen35Model):
         def mtp_greedy(self, hidden, next_token_ids, mtp_cache):
@@ -3343,9 +3343,9 @@ def test_generator_budget_forces_think_end_on_the_verify_row_and_rolls_back_draf
     resampled; row 1 had tentatively counted the draft, and the generator's
     restore to the accepted row-0 boundary must drop that count again.
     """
-    from vllm_mlx.api.reasoning_budget import ReasoningBudgetLogitsProcessor
-    from vllm_mlx.spec_decode.mtp.accept_counter import MTPAcceptCounter
-    from vllm_mlx.spec_decode.mtp.generator import mtp_generate_step
+    from rapid_mlx.api.reasoning_budget import ReasoningBudgetLogitsProcessor
+    from rapid_mlx.spec_decode.mtp.accept_counter import MTPAcceptCounter
+    from rapid_mlx.spec_decode.mtp.generator import mtp_generate_step
 
     think_end = 5
 
@@ -3392,7 +3392,7 @@ def test_quantized_argmax_matches_materialized_qlinear_logits():
     """The fused greedy kernel must select the exact qlinear argmax."""
     import mlx.nn as nn
 
-    from vllm_mlx.spec_decode.mtp.quantized_argmax import quantized_argmax
+    from rapid_mlx.spec_decode.mtp.quantized_argmax import quantized_argmax
 
     dense = nn.Linear(1024, 4096, bias=False)
     dense.set_dtype(mx.bfloat16)
@@ -3408,8 +3408,8 @@ def test_quantized_argmax_matches_materialized_qlinear_logits():
 
 def test_generator_k3_restores_ssm_state_at_partial_accept_boundary():
     """Rejecting draft 2 restores GDN state after y + accepted draft 1."""
-    from vllm_mlx.spec_decode.mtp.accept_counter import MTPAcceptCounter
-    from vllm_mlx.spec_decode.mtp.generator import mtp_generate_step
+    from rapid_mlx.spec_decode.mtp.accept_counter import MTPAcceptCounter
+    from rapid_mlx.spec_decode.mtp.generator import mtp_generate_step
 
     class SnapshotSSMCache:
         rollback_state = None
@@ -3464,8 +3464,8 @@ def test_generator_k3_restores_ssm_state_at_partial_accept_boundary():
 
 def test_generator_legacy_ssm_snapshot_is_limited_to_one_token():
     """The legacy tuple restores K=1 and fails closed for a K>1 rollback."""
-    from vllm_mlx.spec_decode.mtp.accept_counter import MTPAcceptCounter
-    from vllm_mlx.spec_decode.mtp.generator import mtp_generate_step
+    from rapid_mlx.spec_decode.mtp.accept_counter import MTPAcceptCounter
+    from rapid_mlx.spec_decode.mtp.generator import mtp_generate_step
 
     class LegacySSMCache:
         rollback_state = None
@@ -3535,9 +3535,9 @@ def test_generator_rolls_back_verify_round_on_early_materialization_abort(
     uncommitted draft from both target and MTP caches.
     """
 
-    import vllm_mlx.spec_decode.mtp.generator as generator_mod
-    from vllm_mlx.spec_decode.mtp.accept_counter import MTPAcceptCounter
-    from vllm_mlx.spec_decode.mtp.generator import mtp_generate_step
+    import rapid_mlx.spec_decode.mtp.generator as generator_mod
+    from rapid_mlx.spec_decode.mtp.accept_counter import MTPAcceptCounter
+    from rapid_mlx.spec_decode.mtp.generator import mtp_generate_step
 
     model_cache = _CountingKVCache()
     mtp_cache = _CountingKVCache()
@@ -3594,8 +3594,8 @@ def test_generator_rejection_path_does_not_count_as_accept():
 
     Yields: (7, False), (12, False).
     """
-    from vllm_mlx.spec_decode.mtp.accept_counter import MTPAcceptCounter
-    from vllm_mlx.spec_decode.mtp.generator import mtp_generate_step
+    from rapid_mlx.spec_decode.mtp.accept_counter import MTPAcceptCounter
+    from rapid_mlx.spec_decode.mtp.generator import mtp_generate_step
 
     backbone = [7, 12, 99]  # 99 is for the bonus slot — unused on reject
     mtp = [11, 22]  # 22 is for the next draft after reject (cold-start MTP)
@@ -3635,7 +3635,7 @@ def test_copy_draft_width_stays_inside_one_quantized_matmul_tile():
     at 32 rows against 647.52 at 33. This is a cost-model contract, not a
     style preference -- a future rung of 32 would silently cost 89%.
     """
-    from vllm_mlx.spec_decode.mtp.prompt_lookup import (
+    from rapid_mlx.spec_decode.mtp.prompt_lookup import (
         COPY_DRAFT_FREE_WIDTH_FLOOR,
         COPY_DRAFT_MIN_WIDTH,
         COPY_DRAFT_PROBE_WIDTH,
@@ -3667,10 +3667,10 @@ def test_generator_honours_an_operator_ceiling_past_the_tile_edge(monkeypatch):
     verified and widens only into acceptance the turn has actually earned,
     so a high ceiling costs nothing until the matches reach it.
     """
-    import vllm_mlx.spec_decode.mtp.generator as generator_mod
-    from vllm_mlx.spec_decode.mtp.accept_counter import MTPAcceptCounter
-    from vllm_mlx.spec_decode.mtp.generator import mtp_generate_step
-    from vllm_mlx.spec_decode.mtp.prompt_lookup import (
+    import rapid_mlx.spec_decode.mtp.generator as generator_mod
+    from rapid_mlx.spec_decode.mtp.accept_counter import MTPAcceptCounter
+    from rapid_mlx.spec_decode.mtp.generator import mtp_generate_step
+    from rapid_mlx.spec_decode.mtp.prompt_lookup import (
         COPY_DRAFT_PROBE_WIDTH,
         CopyDraftGate,
     )
@@ -3736,8 +3736,8 @@ def test_generator_honours_an_operator_ceiling_past_the_tile_edge(monkeypatch):
 
 def test_generator_prompt_lookup_verifies_prompt_continuation(monkeypatch):
     """A prompt suffix match bypasses MTP drafting but still uses target verify."""
-    from vllm_mlx.spec_decode.mtp.accept_counter import MTPAcceptCounter
-    from vllm_mlx.spec_decode.mtp.generator import mtp_generate_step
+    from rapid_mlx.spec_decode.mtp.accept_counter import MTPAcceptCounter
+    from rapid_mlx.spec_decode.mtp.generator import mtp_generate_step
 
     monkeypatch.setenv("RAPID_MLX_MTP_PROMPT_LOOKUP", "1")
     monkeypatch.setenv("RAPID_MLX_MTP_PROMPT_LOOKUP_MIN_NGRAM", "2")
@@ -3810,9 +3810,9 @@ def test_generator_prompt_lookup_verifies_prompt_continuation(monkeypatch):
 
 def test_generator_prompt_lookup_falls_through_when_cache_cannot_recover(monkeypatch):
     """A matching prompt never bypasses a failed full-width cache preflight."""
-    import vllm_mlx.spec_decode.mtp.generator as generator_mod
-    from vllm_mlx.spec_decode.mtp.accept_counter import MTPAcceptCounter
-    from vllm_mlx.spec_decode.mtp.generator import (
+    import rapid_mlx.spec_decode.mtp.generator as generator_mod
+    from rapid_mlx.spec_decode.mtp.accept_counter import MTPAcceptCounter
+    from rapid_mlx.spec_decode.mtp.generator import (
         _safe_prompt_lookup_draft_count,
         mtp_generate_step,
     )
@@ -3860,7 +3860,7 @@ def test_safe_draft_count_admits_snapshot_only_caches_only_when_declared():
     sniffed off the cache because ``rollback_state`` lives on the CLASS: its
     presence says the slot exists, not that these layers fill it.
     """
-    from vllm_mlx.spec_decode.mtp.generator import _safe_prompt_lookup_draft_count
+    from rapid_mlx.spec_decode.mtp.generator import _safe_prompt_lookup_draft_count
 
     class _ArraysCacheLike:
         """No ``trim``, no ``restore_rollback`` -- only the snapshot slot."""
@@ -3891,9 +3891,9 @@ def test_generator_admits_prompt_lookup_on_declared_snapshot_rollback(monkeypatc
     through the wide lookup block, so the copied tail unwinds through the
     snapshot rather than through a trim that does not exist.
     """
-    import vllm_mlx.spec_decode.mtp.generator as generator_mod
-    from vllm_mlx.spec_decode.mtp.accept_counter import MTPAcceptCounter
-    from vllm_mlx.spec_decode.mtp.generator import mtp_generate_step
+    import rapid_mlx.spec_decode.mtp.generator as generator_mod
+    from rapid_mlx.spec_decode.mtp.accept_counter import MTPAcceptCounter
+    from rapid_mlx.spec_decode.mtp.generator import mtp_generate_step
 
     monkeypatch.setenv("RAPID_MLX_MTP_PROMPT_LOOKUP", "1")
     monkeypatch.setenv("RAPID_MLX_MTP_PROMPT_LOOKUP_MIN_NGRAM", "2")
@@ -4005,8 +4005,8 @@ def test_generator_admits_prompt_lookup_on_declared_snapshot_rollback(monkeypatc
 
 def test_generator_fails_closed_when_trim_breaks_its_contract():
     """A short target-cache trim aborts rather than emitting from stale state."""
-    from vllm_mlx.spec_decode.mtp.accept_counter import MTPAcceptCounter
-    from vllm_mlx.spec_decode.mtp.generator import mtp_generate_step
+    from rapid_mlx.spec_decode.mtp.accept_counter import MTPAcceptCounter
+    from rapid_mlx.spec_decode.mtp.generator import mtp_generate_step
 
     class ShortTrimCache(_CountingKVCache):
         def trim(self, n):
@@ -4031,8 +4031,8 @@ def test_prompt_lookup_requires_an_audited_model_capability(monkeypatch):
     """An env opt-in cannot force unaudited MTP backends into prompt lookup."""
     from types import SimpleNamespace
 
-    from vllm_mlx.spec_decode.mtp.generator import _prompt_lookup_is_enabled
-    from vllm_mlx.spec_decode.mtp.prompt_lookup import PromptLookupPolicy
+    from rapid_mlx.spec_decode.mtp.generator import _prompt_lookup_is_enabled
+    from rapid_mlx.spec_decode.mtp.prompt_lookup import PromptLookupPolicy
 
     monkeypatch.delenv("RAPID_MLX_MTP_PROMPT_LOOKUP", raising=False)
     assert not _prompt_lookup_is_enabled(
@@ -4064,8 +4064,8 @@ def test_generator_prompt_lookup_partial_reject_keeps_mtp_cache_aligned(
     monkeypatch,
 ):
     """Only the accepted lookup prefix is appended to MTP history."""
-    from vllm_mlx.spec_decode.mtp.accept_counter import MTPAcceptCounter
-    from vllm_mlx.spec_decode.mtp.generator import mtp_generate_step
+    from rapid_mlx.spec_decode.mtp.accept_counter import MTPAcceptCounter
+    from rapid_mlx.spec_decode.mtp.generator import mtp_generate_step
 
     monkeypatch.setenv("RAPID_MLX_MTP_PROMPT_LOOKUP", "1")
     monkeypatch.setenv("RAPID_MLX_MTP_PROMPT_LOOKUP_MIN_NGRAM", "2")
@@ -4115,9 +4115,9 @@ def test_generator_prompt_lookup_rolls_back_on_verify_materialization_abort(
     monkeypatch,
 ):
     """A cancelled PLD verify drops every uncommitted target position."""
-    import vllm_mlx.spec_decode.mtp.generator as generator_mod
-    from vllm_mlx.spec_decode.mtp.accept_counter import MTPAcceptCounter
-    from vllm_mlx.spec_decode.mtp.generator import mtp_generate_step
+    import rapid_mlx.spec_decode.mtp.generator as generator_mod
+    from rapid_mlx.spec_decode.mtp.accept_counter import MTPAcceptCounter
+    from rapid_mlx.spec_decode.mtp.generator import mtp_generate_step
 
     monkeypatch.setenv("RAPID_MLX_MTP_PROMPT_LOOKUP", "1")
     monkeypatch.setenv("RAPID_MLX_MTP_PROMPT_LOOKUP_MIN_NGRAM", "2")
@@ -4172,8 +4172,8 @@ def test_generator_runs_with_int4_quantized_kv_cache_kwargs():
     purpose is: ``mtp_generate_step(prompt, model, kv_bits=4, ...)``
     must complete a generation without raising.
     """
-    from vllm_mlx.spec_decode.mtp.accept_counter import MTPAcceptCounter
-    from vllm_mlx.spec_decode.mtp.generator import mtp_generate_step
+    from rapid_mlx.spec_decode.mtp.accept_counter import MTPAcceptCounter
+    from rapid_mlx.spec_decode.mtp.generator import mtp_generate_step
 
     backbone = [7, 11, 13]
     mtp = [11]
@@ -4197,8 +4197,8 @@ def test_generator_runs_with_int4_quantized_kv_cache_kwargs():
 
 def test_generator_runs_with_bf16_default_kv_cache():
     """Smoke: ``kv_bits=None`` (bf16 / unquantized) path also works."""
-    from vllm_mlx.spec_decode.mtp.accept_counter import MTPAcceptCounter
-    from vllm_mlx.spec_decode.mtp.generator import mtp_generate_step
+    from rapid_mlx.spec_decode.mtp.accept_counter import MTPAcceptCounter
+    from rapid_mlx.spec_decode.mtp.generator import mtp_generate_step
 
     backbone = [7, 11, 13]
     mtp = [11]
@@ -4230,8 +4230,8 @@ def test_generator_records_counter_on_accept_and_reject():
       MTP cache_commit (consumes 2: discard, draft=21)
       verify backbone → 23 (reject), bonus=99 (unused)
     """
-    from vllm_mlx.spec_decode.mtp.accept_counter import MTPAcceptCounter
-    from vllm_mlx.spec_decode.mtp.generator import mtp_generate_step
+    from rapid_mlx.spec_decode.mtp.accept_counter import MTPAcceptCounter
+    from rapid_mlx.spec_decode.mtp.generator import mtp_generate_step
 
     backbone = [
         7,  # cold-start primary
@@ -4297,12 +4297,12 @@ def test_drafter_wall_time_is_charged_to_the_round_that_consumes_it():
     """
     import time as _time
 
-    from vllm_mlx.spec_decode.mtp.accept_counter import MTPAcceptCounter
-    from vllm_mlx.spec_decode.mtp.draft_k_controller_v2 import (
+    from rapid_mlx.spec_decode.mtp.accept_counter import MTPAcceptCounter
+    from rapid_mlx.spec_decode.mtp.draft_k_controller_v2 import (
         get_or_create_controller,
         reset_controllers,
     )
-    from vllm_mlx.spec_decode.mtp.generator import mtp_generate_step
+    from rapid_mlx.spec_decode.mtp.generator import mtp_generate_step
 
     FORWARD_S = 0.010  # every backbone forward
     DRAFT_S = 0.050  # every drafter call, deliberately the larger term
@@ -4372,12 +4372,12 @@ def test_fixed_k_mode_still_records_the_cost_curve():
 
     Behaviour must not change: K stays pinned at 1, so no round parks.
     """
-    from vllm_mlx.spec_decode.mtp.accept_counter import MTPAcceptCounter
-    from vllm_mlx.spec_decode.mtp.draft_k_controller_v2 import (
+    from rapid_mlx.spec_decode.mtp.accept_counter import MTPAcceptCounter
+    from rapid_mlx.spec_decode.mtp.draft_k_controller_v2 import (
         get_or_create_controller,
         reset_controllers,
     )
-    from vllm_mlx.spec_decode.mtp.generator import mtp_generate_step
+    from rapid_mlx.spec_decode.mtp.generator import mtp_generate_step
 
     reset_controllers()
     backbone = [7] + [11, 13] * 20
@@ -4430,7 +4430,7 @@ def test_derive_controller_key_is_stable_and_discriminating():
     collision between different models would let one model's learned
     costs drive the other's depth selection.
     """
-    from vllm_mlx.spec_decode.mtp.draft_k_controller_v2 import (
+    from rapid_mlx.spec_decode.mtp.draft_k_controller_v2 import (
         derive_controller_key,
     )
 
@@ -4543,7 +4543,7 @@ def test_derive_controller_key_reads_quantization_off_the_modules():
     4-bit and an 8-bit build of one architecture sharing a cost curve.
     The quantized modules themselves always carry it.
     """
-    from vllm_mlx.spec_decode.mtp.draft_k_controller_v2 import (
+    from rapid_mlx.spec_decode.mtp.draft_k_controller_v2 import (
         derive_controller_key,
     )
 
@@ -4593,7 +4593,7 @@ def test_resolve_model_identity_prefers_engine_checkpoint_over_stale_config():
     which constructs the engine; this test deliberately does not, so keep the
     two distinct (codex #1441).
     """
-    from vllm_mlx.scheduler import SchedulerConfig
+    from rapid_mlx.scheduler import SchedulerConfig
 
     assert "model_name" in {f.name for f in dataclasses.fields(SchedulerConfig)}, (
         "SchedulerConfig lost the model_name field the controller key "
@@ -4601,7 +4601,7 @@ def test_resolve_model_identity_prefers_engine_checkpoint_over_stale_config():
     )
     assert SchedulerConfig().model_name is None
 
-    from vllm_mlx.engine_core import _resolve_model_identity
+    from rapid_mlx.engine_core import _resolve_model_identity
 
     engine_a = types.SimpleNamespace(model_name="engine/a", model_path=None)
     engine_b = types.SimpleNamespace(model_name="engine/b", model_path=None)
@@ -4659,7 +4659,7 @@ def test_engine_core_init_wires_resolved_model_name_onto_a_scheduler_copy(
     None (or mutate the caller's object); both are caught here and neither is
     caught by the ``_resolve_model_identity``-only test above (codex #1441).
     """
-    from vllm_mlx import engine_core as ec
+    from rapid_mlx import engine_core as ec
 
     captured: dict = {}
 
@@ -4707,7 +4707,7 @@ def test_mtp_controller_key_separates_sidecars():
     key ignoring the sidecar would let the first head's profile drive
     depth selection for a different head after a reload.
     """
-    from vllm_mlx.scheduler import _mtp_controller_key
+    from rapid_mlx.scheduler import _mtp_controller_key
 
     base = _mtp_controller_key("qwen3.6-35b", None)
     a = _mtp_controller_key("qwen3.6-35b", "mlx-community/Head-A")
@@ -4734,7 +4734,7 @@ def test_mtp_controller_key_separates_sidecars():
 
 def test_scheduler_config_preserves_the_historical_positional_prefix():
     """New fields append after, rather than shifting, the historical tail."""
-    from vllm_mlx.scheduler import SchedulerConfig
+    from rapid_mlx.scheduler import SchedulerConfig
 
     names = [f.name for f in dataclasses.fields(SchedulerConfig)]
     historical_prefix = [
@@ -4806,12 +4806,12 @@ def test_fixed_k_observer_leaves_the_ceiling_to_whoever_selects_depth():
     but its ceiling remains provisional: the first selecting auto-K caller
     may still replace it with its own configured ceiling.
     """
-    from vllm_mlx.spec_decode.mtp.accept_counter import MTPAcceptCounter
-    from vllm_mlx.spec_decode.mtp.draft_k_controller_v2 import (
+    from rapid_mlx.spec_decode.mtp.accept_counter import MTPAcceptCounter
+    from rapid_mlx.spec_decode.mtp.draft_k_controller_v2 import (
         get_or_create_controller,
         reset_controllers,
     )
-    from vllm_mlx.spec_decode.mtp.generator import mtp_generate_step
+    from rapid_mlx.spec_decode.mtp.generator import mtp_generate_step
 
     def _observe_only(max_k):
         """Run a fixed-K generation, which records but never selects."""
@@ -4861,7 +4861,7 @@ def test_promoted_ceiling_records_and_selects_deeper_depths_lazily():
     observations made while provisional (codex #1441 r1: the promotion must
     not leave K=1-sized state that a later K=3 run overruns).
     """
-    from vllm_mlx.spec_decode.mtp.draft_k_controller_v2 import (
+    from rapid_mlx.spec_decode.mtp.draft_k_controller_v2 import (
         ACCEPTANCE_MIN_SAMPLES,
         get_or_create_controller,
         reset_controllers,
@@ -4933,7 +4933,7 @@ def test_copy_draft_gate_stays_open_until_both_series_are_sampled():
     """An unproven gate never refuses: the only way to price a copy-draft is
     to verify one, so a turn that has not yet run three of each kind is given
     the benefit of the doubt."""
-    from vllm_mlx.spec_decode.mtp.prompt_lookup import (
+    from rapid_mlx.spec_decode.mtp.prompt_lookup import (
         COPY_DRAFT_GATE_MIN_SAMPLES,
         CopyDraftGate,
     )
@@ -4955,7 +4955,7 @@ def test_copy_draft_gate_refuses_copy_drafts_that_lose_on_throughput():
     """The Qwen3.6-27B shape: a copy-draft accepts ~4 rows and still pays for
     the whole 11-row verify, so it commits fewer tokens per millisecond than
     the K=1 rounds it replaced."""
-    from vllm_mlx.spec_decode.mtp.prompt_lookup import CopyDraftGate
+    from rapid_mlx.spec_decode.mtp.prompt_lookup import CopyDraftGate
 
     gate = CopyDraftGate()
     # 5 committed per 117 ms copy-draft round against 1.95 per 37 ms MTP round.
@@ -4970,7 +4970,7 @@ def test_copy_draft_gate_refuses_copy_drafts_that_lose_on_throughput():
 def test_copy_draft_gate_admits_copy_drafts_that_win_on_throughput():
     """The Qwen3.8-27B shape: ~10 committed rows on the ``quantized_matmul``
     plateau beat 1.9 committed rows at K=1, so the gate stays out of the way."""
-    from vllm_mlx.spec_decode.mtp.prompt_lookup import CopyDraftGate
+    from rapid_mlx.spec_decode.mtp.prompt_lookup import CopyDraftGate
 
     gate = CopyDraftGate()
     _feed(gate, copy_rounds=[(10, 342.0)] * 3, base_rounds=[(2, 92.0)] * 3)
@@ -4990,7 +4990,7 @@ def test_copy_draft_gate_is_not_flipped_by_one_missed_copy_draft():
     next several. Measured on a Qwen3.8-27B-4bit rename turn that copy-drafts
     win by more than 20%, an alpha of 0.3 refused 52 proposals.
     """
-    from vllm_mlx.spec_decode.mtp.prompt_lookup import (
+    from rapid_mlx.spec_decode.mtp.prompt_lookup import (
         COPY_DRAFT_ACCEPTANCE_EWMA_ALPHA,
         CopyDraftGate,
     )
@@ -5026,7 +5026,7 @@ def test_copy_draft_gate_probes_a_standing_refusal_with_exponential_backoff():
     stops quoting the prompt and starts again has to be able to win the gate
     back. So a standing refusal is re-tested on a doubling cadence rather
     than being permanent."""
-    from vllm_mlx.spec_decode.mtp.prompt_lookup import (
+    from rapid_mlx.spec_decode.mtp.prompt_lookup import (
         COPY_DRAFT_GATE_PROBE_INTERVAL,
         CopyDraftGate,
     )
@@ -5049,7 +5049,7 @@ def test_copy_draft_gate_probes_a_standing_refusal_with_exponential_backoff():
 def test_copy_draft_gate_resets_its_cadence_when_copy_drafts_win_again():
     """Winning on merit clears the backoff, so a later downturn is re-tested
     at the base interval instead of inheriting a long-backed-off cadence."""
-    from vllm_mlx.spec_decode.mtp.prompt_lookup import (
+    from rapid_mlx.spec_decode.mtp.prompt_lookup import (
         COPY_DRAFT_GATE_PROBE_INTERVAL,
         CopyDraftGate,
     )
@@ -5074,7 +5074,7 @@ def test_copy_draft_gate_ignores_rounds_that_committed_nothing():
     """A round that delivered no token, or whose clock read non-positive, is
     not a throughput sample -- folding it in would divide by a number the
     round never measured."""
-    from vllm_mlx.spec_decode.mtp.prompt_lookup import CopyDraftGate
+    from rapid_mlx.spec_decode.mtp.prompt_lookup import CopyDraftGate
 
     gate = CopyDraftGate()
     _feed(
@@ -5095,10 +5095,10 @@ def test_generator_prices_both_round_kinds_into_the_copy_draft_gate(monkeypatch)
     their forward plus the drafter cost carried into them. Pin that both
     arrive, and that ``committed`` is the count the caller actually received.
     """
-    import vllm_mlx.spec_decode.mtp.generator as generator_mod
-    from vllm_mlx.spec_decode.mtp.accept_counter import MTPAcceptCounter
-    from vllm_mlx.spec_decode.mtp.generator import mtp_generate_step
-    from vllm_mlx.spec_decode.mtp.prompt_lookup import CopyDraftGate
+    import rapid_mlx.spec_decode.mtp.generator as generator_mod
+    from rapid_mlx.spec_decode.mtp.accept_counter import MTPAcceptCounter
+    from rapid_mlx.spec_decode.mtp.generator import mtp_generate_step
+    from rapid_mlx.spec_decode.mtp.prompt_lookup import CopyDraftGate
 
     monkeypatch.setenv("RAPID_MLX_MTP_PROMPT_LOOKUP", "1")
     monkeypatch.setenv("RAPID_MLX_MTP_PROMPT_LOOKUP_MIN_NGRAM", "2")
@@ -5150,10 +5150,10 @@ def test_generator_drops_copy_drafts_the_gate_refuses(monkeypatch):
     """A refused proposal is dropped, not narrowed, and is booked separately
     from a cache fall-through so an operator can tell "this turn's copies did
     not pay" from "this target cannot unwind a copy"."""
-    import vllm_mlx.spec_decode.mtp.generator as generator_mod
-    from vllm_mlx.spec_decode.mtp.accept_counter import MTPAcceptCounter
-    from vllm_mlx.spec_decode.mtp.generator import mtp_generate_step
-    from vllm_mlx.spec_decode.mtp.prompt_lookup import CopyDraftGate
+    import rapid_mlx.spec_decode.mtp.generator as generator_mod
+    from rapid_mlx.spec_decode.mtp.accept_counter import MTPAcceptCounter
+    from rapid_mlx.spec_decode.mtp.generator import mtp_generate_step
+    from rapid_mlx.spec_decode.mtp.prompt_lookup import CopyDraftGate
 
     monkeypatch.setenv("RAPID_MLX_MTP_PROMPT_LOOKUP", "1")
     monkeypatch.setenv("RAPID_MLX_MTP_PROMPT_LOOKUP_MIN_NGRAM", "2")
@@ -5198,7 +5198,7 @@ def test_copy_draft_observe_rejects_counts_that_cannot_describe_a_round():
     cut only shortens it -- so a violation is a bug upstream, and the state it
     would corrupt is worth more than the round it would cost.
     """
-    from vllm_mlx.spec_decode.mtp.prompt_lookup import (
+    from rapid_mlx.spec_decode.mtp.prompt_lookup import (
         COPY_DRAFT_PROBE_WIDTH,
         CopyDraftGate,
     )
@@ -5229,7 +5229,7 @@ def test_copy_draft_gate_forgets_a_verdict_older_than_its_window():
     that: the counterfactual is computed in the test, and at these rates a
     pooled accumulator would still be admitting proposals here.
     """
-    from vllm_mlx.spec_decode.mtp.prompt_lookup import (
+    from rapid_mlx.spec_decode.mtp.prompt_lookup import (
         COPY_DRAFT_GATE_WINDOW,
         CopyDraftGate,
     )
@@ -5287,7 +5287,7 @@ def test_copy_draft_gate_window_holds_exactly_its_last_rounds():
     window of losing rounds has gone in, nothing older can still be in the
     average, so the rate is exactly one losing round's rate.
     """
-    from vllm_mlx.spec_decode.mtp.prompt_lookup import (
+    from rapid_mlx.spec_decode.mtp.prompt_lookup import (
         COPY_DRAFT_GATE_WINDOW,
         CopyDraftGate,
     )
@@ -5317,7 +5317,7 @@ def test_copy_draft_observe_rejects_a_copy_round_without_its_sizing_counts():
     losing throughput while every test stayed green. The counts are
     therefore required for a copy-draft round and absent by default.
     """
-    from vllm_mlx.spec_decode.mtp.prompt_lookup import (
+    from rapid_mlx.spec_decode.mtp.prompt_lookup import (
         COPY_DRAFT_PROBE_WIDTH,
         CopyDraftGate,
     )
@@ -5343,7 +5343,7 @@ def test_copy_draft_width_cap_probes_narrow_while_unmeasured():
     below the tile edge the rows are not cheap -- two rows cost a rounding
     error over the round they replace where eight already spend three
     quarters of a full-width block -- so the first blocks probe at two."""
-    from vllm_mlx.spec_decode.mtp.prompt_lookup import (
+    from rapid_mlx.spec_decode.mtp.prompt_lookup import (
         COPY_DRAFT_GATE_MIN_SAMPLES,
         COPY_DRAFT_PROBE_WIDTH,
         CopyDraftGate,
@@ -5364,7 +5364,7 @@ def test_copy_draft_width_cap_probes_narrow_while_unmeasured():
 def test_copy_draft_width_cap_narrows_to_measured_acceptance():
     """The Qwen3.6-27B shape: copies that accept ~4 rows get a block sized
     for ~4 rows, not the 31-row block the ladder would hand a long match."""
-    from vllm_mlx.spec_decode.mtp.prompt_lookup import CopyDraftGate
+    from rapid_mlx.spec_decode.mtp.prompt_lookup import CopyDraftGate
 
     gate = CopyDraftGate()
     for _ in range(6):
@@ -5391,7 +5391,7 @@ def test_copy_draft_width_cap_stops_narrowing_inside_the_free_band():
     because acceptance is censored by the width proposed, so a cap that
     tracked it forever would never discover a longer match.
     """
-    from vllm_mlx.spec_decode.mtp.prompt_lookup import CopyDraftGate
+    from rapid_mlx.spec_decode.mtp.prompt_lookup import CopyDraftGate
 
     # ``proposed`` above ``accepted`` on every round: these are blocks the
     # target cut short, which is the branch that reads the acceptance EWMA.
@@ -5431,7 +5431,7 @@ def test_copy_draft_width_doubles_while_the_block_comes_back_full():
     edge in four steps off a two-row probe where 1.5x headroom would take
     fifteen, and every step is paid for by the rows the step before delivered.
     """
-    from vllm_mlx.spec_decode.mtp.prompt_lookup import CopyDraftGate
+    from rapid_mlx.spec_decode.mtp.prompt_lookup import CopyDraftGate
 
     gate = CopyDraftGate()
     for _ in range(5):
@@ -5463,7 +5463,7 @@ def test_copy_draft_width_climbs_one_tile_at_a_time():
     the strength of an eight-row match would buy the second tile for a single
     row.
     """
-    from vllm_mlx.spec_decode.mtp.prompt_lookup import (
+    from rapid_mlx.spec_decode.mtp.prompt_lookup import (
         COPY_DRAFT_TILE_ROWS,
         CopyDraftGate,
     )
@@ -5494,7 +5494,7 @@ def test_copy_draft_width_stops_doubling_on_the_first_short_block():
     """The doubling is not a schedule, it is a response to a censored
     measurement: the first block the target cuts short is a real measurement
     of the match, and from there the width comes from that number."""
-    from vllm_mlx.spec_decode.mtp.prompt_lookup import CopyDraftGate
+    from rapid_mlx.spec_decode.mtp.prompt_lookup import CopyDraftGate
 
     gate = CopyDraftGate()
     for _ in range(5):
@@ -5528,7 +5528,7 @@ def test_copy_draft_width_keeps_headroom_above_a_measured_short_block():
     pinned here on a turn whose matches lengthen mid-answer, through to the
     saturated block that hands the whole ceiling back.
     """
-    from vllm_mlx.spec_decode.mtp.prompt_lookup import CopyDraftGate
+    from rapid_mlx.spec_decode.mtp.prompt_lookup import CopyDraftGate
 
     gate = CopyDraftGate()
     # Three eight-row blocks the match cut short at four rows: a real
@@ -5577,7 +5577,7 @@ def test_copy_draft_width_narrows_on_the_first_short_block_after_a_full_ladder()
     rounds is a 31-row verify -- about four baseline rounds -- returning four
     tokens.
     """
-    from vllm_mlx.spec_decode.mtp.prompt_lookup import (
+    from rapid_mlx.spec_decode.mtp.prompt_lookup import (
         COPY_DRAFT_FREE_WIDTH_FLOOR,
         CopyDraftGate,
     )
@@ -5621,7 +5621,7 @@ def test_copy_draft_width_needs_a_filled_tile_to_buy_the_next_one():
     1.5x of 21 is 32. Crossing an edge is earned by filling the tile below
     it, never by extrapolating past it.
     """
-    from vllm_mlx.spec_decode.mtp.prompt_lookup import (
+    from rapid_mlx.spec_decode.mtp.prompt_lookup import (
         COPY_DRAFT_TILE_ROWS,
         CopyDraftGate,
     )
@@ -5668,7 +5668,7 @@ def test_copy_draft_width_never_pays_for_a_tile_it_cannot_fill():
     at a tile edge or fits inside the first tile, where the rows are already
     paid for.
     """
-    from vllm_mlx.spec_decode.mtp.prompt_lookup import (
+    from rapid_mlx.spec_decode.mtp.prompt_lookup import (
         COPY_DRAFT_TILE_ROWS,
         CopyDraftGate,
     )
@@ -5716,7 +5716,7 @@ def test_copy_draft_width_cap_never_collapses_below_a_usable_block():
     """A run of fully rejected copies must not size the next block to zero
     rows: whether copying is worth anything at all is the gate's call, and
     the gate can still refuse."""
-    from vllm_mlx.spec_decode.mtp.prompt_lookup import (
+    from rapid_mlx.spec_decode.mtp.prompt_lookup import (
         COPY_DRAFT_MIN_WIDTH,
         CopyDraftGate,
     )
@@ -5739,7 +5739,7 @@ def test_copy_draft_width_cap_never_exceeds_what_the_match_offers():
     two-row request: the caller slices the match by whatever comes back, so
     a width past the end of the match is a width that claims rows nobody
     found."""
-    from vllm_mlx.spec_decode.mtp.prompt_lookup import (
+    from rapid_mlx.spec_decode.mtp.prompt_lookup import (
         COPY_DRAFT_MIN_WIDTH,
         CopyDraftGate,
     )
@@ -5758,10 +5758,10 @@ def test_copy_draft_width_cap_never_exceeds_what_the_match_offers():
 
 def test_generator_sizes_copy_drafts_through_the_gate(monkeypatch):
     """The sizer is on the proposal path, not just available to it."""
-    import vllm_mlx.spec_decode.mtp.generator as generator_mod
-    from vllm_mlx.spec_decode.mtp.accept_counter import MTPAcceptCounter
-    from vllm_mlx.spec_decode.mtp.generator import mtp_generate_step
-    from vllm_mlx.spec_decode.mtp.prompt_lookup import CopyDraftGate
+    import rapid_mlx.spec_decode.mtp.generator as generator_mod
+    from rapid_mlx.spec_decode.mtp.accept_counter import MTPAcceptCounter
+    from rapid_mlx.spec_decode.mtp.generator import mtp_generate_step
+    from rapid_mlx.spec_decode.mtp.prompt_lookup import CopyDraftGate
 
     monkeypatch.setenv("RAPID_MLX_MTP_PROMPT_LOOKUP", "1")
     monkeypatch.setenv("RAPID_MLX_MTP_PROMPT_LOOKUP_MIN_NGRAM", "2")
@@ -5861,12 +5861,12 @@ def test_family_injector_still_imports_without_mlx():
                     raise ImportError("blocked: " + name)
                 return None
 
-        for name in [m for m in sys.modules if m.split(".")[0] in {"mlx", "vllm_mlx"}]:
+        for name in [m for m in sys.modules if m.split(".")[0] in {"mlx", "rapid_mlx"}]:
             del sys.modules[name]
         sys.meta_path.insert(0, Blocker())
 
-        import vllm_mlx.spec_decode.mtp.qwen3_5_inject as inject
-        from vllm_mlx.spec_decode.mtp.prompt_lookup import MAX_COPY_DRAFT_TOKENS
+        import rapid_mlx.spec_decode.mtp.qwen3_5_inject as inject
+        from rapid_mlx.spec_decode.mtp.prompt_lookup import MAX_COPY_DRAFT_TOKENS
 
         assert MAX_COPY_DRAFT_TOKENS == 31, MAX_COPY_DRAFT_TOKENS
         assert inject.MAX_COPY_DRAFT_TOKENS == MAX_COPY_DRAFT_TOKENS
@@ -5893,7 +5893,7 @@ def test_prompt_lookup_exports_everything_it_asks_callers_to_use():
     name. Pinning the two together means the next constant added here cannot
     quietly fall out of the public list.
     """
-    from vllm_mlx.spec_decode.mtp import prompt_lookup
+    from rapid_mlx.spec_decode.mtp import prompt_lookup
 
     # Defined here, not merely visible here: a name imported for internal use
     # (``dataclass`` today) is not part of this module's surface. Modules are

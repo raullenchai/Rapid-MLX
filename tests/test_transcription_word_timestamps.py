@@ -121,8 +121,8 @@ class _FakeEngine:
 @pytest.fixture
 def _stub_engine(monkeypatch):
     """Stub the STTEngine + mlx_audio probe so the route runs without weights."""
-    from vllm_mlx.audio import probe
-    from vllm_mlx.routes import audio as audio_route
+    from rapid_mlx.audio import probe
+    from rapid_mlx.routes import audio as audio_route
 
     fake_mlx_audio = types.ModuleType("mlx_audio")
     fake_mlx_audio.__path__ = []
@@ -145,8 +145,8 @@ def _stub_engine(monkeypatch):
 
     probe._reset_probe_cache()
 
-    monkeypatch.setattr("vllm_mlx.audio.stt.STTEngine", _FakeEngine, raising=False)
-    audio_stt_mod = sys.modules.get("vllm_mlx.audio.stt")
+    monkeypatch.setattr("rapid_mlx.audio.stt.STTEngine", _FakeEngine, raising=False)
+    audio_stt_mod = sys.modules.get("rapid_mlx.audio.stt")
     if audio_stt_mod is not None:
         monkeypatch.setattr(audio_stt_mod, "STTEngine", _FakeEngine)
 
@@ -157,8 +157,8 @@ def _stub_engine(monkeypatch):
 
 
 def _mount_audio_app() -> tuple[TestClient, callable]:
-    from vllm_mlx.config import get_config
-    from vllm_mlx.routes import audio as audio_route
+    from rapid_mlx.config import get_config
+    from rapid_mlx.routes import audio as audio_route
 
     app = FastAPI()
     app.include_router(audio_route.router)
@@ -187,7 +187,7 @@ def _post(client, data):
 
 class TestRequestModel:
     def test_accepts_timestamp_granularities(self):
-        from vllm_mlx.api.models import AudioTranscriptionRequest
+        from rapid_mlx.api.models import AudioTranscriptionRequest
 
         req = AudioTranscriptionRequest(
             model="whisper-large-v3",
@@ -197,7 +197,7 @@ class TestRequestModel:
         assert req.timestamp_granularities == ["word", "segment"]
 
     def test_default_is_none(self):
-        from vllm_mlx.api.models import AudioTranscriptionRequest
+        from rapid_mlx.api.models import AudioTranscriptionRequest
 
         assert AudioTranscriptionRequest().timestamp_granularities is None
 
@@ -209,13 +209,13 @@ class TestRequestModel:
 
 class TestNormaliseGranularities:
     def test_none_and_empty_resolve_to_none(self):
-        from vllm_mlx.routes.audio import _normalise_timestamp_granularities
+        from rapid_mlx.routes.audio import _normalise_timestamp_granularities
 
         assert _normalise_timestamp_granularities(None) is None
         assert _normalise_timestamp_granularities([]) is None
 
     def test_lowercases_and_dedups(self):
-        from vllm_mlx.routes.audio import _normalise_timestamp_granularities
+        from rapid_mlx.routes.audio import _normalise_timestamp_granularities
 
         assert _normalise_timestamp_granularities(["Word", "word", "SEGMENT"]) == [
             "word",
@@ -225,7 +225,7 @@ class TestNormaliseGranularities:
     def test_invalid_value_raises_400(self):
         from fastapi import HTTPException
 
-        from vllm_mlx.routes.audio import _normalise_timestamp_granularities
+        from rapid_mlx.routes.audio import _normalise_timestamp_granularities
 
         with pytest.raises(HTTPException) as exc:
             _normalise_timestamp_granularities(["words"])
@@ -240,7 +240,7 @@ class TestNormaliseGranularities:
 
 class TestVerboseJsonBuilder:
     def test_words_omitted_by_default(self):
-        from vllm_mlx.routes.audio import _build_verbose_json_body
+        from rapid_mlx.routes.audio import _build_verbose_json_body
 
         body = _build_verbose_json_body(_FakeWordResult(), timestamp_granularities=None)
         # Default (no granularities) is unchanged: segments present, no words.
@@ -248,7 +248,7 @@ class TestVerboseJsonBuilder:
         assert "words" not in body
 
     def test_segment_only_has_no_words(self):
-        from vllm_mlx.routes.audio import _build_verbose_json_body
+        from rapid_mlx.routes.audio import _build_verbose_json_body
 
         body = _build_verbose_json_body(
             _FakeWordResult(), timestamp_granularities=["segment"]
@@ -257,7 +257,7 @@ class TestVerboseJsonBuilder:
         assert "words" not in body
 
     def test_word_only_emits_words_and_drops_segments(self):
-        from vllm_mlx.routes.audio import _build_verbose_json_body
+        from rapid_mlx.routes.audio import _build_verbose_json_body
 
         body = _build_verbose_json_body(
             _FakeWordResult(), timestamp_granularities=["word"]
@@ -274,7 +274,7 @@ class TestVerboseJsonBuilder:
             assert isinstance(w["end"], float)
 
     def test_both_granularities_emit_both(self):
-        from vllm_mlx.routes.audio import _build_verbose_json_body
+        from rapid_mlx.routes.audio import _build_verbose_json_body
 
         body = _build_verbose_json_body(
             _FakeWordResult(), timestamp_granularities=["word", "segment"]
@@ -283,7 +283,7 @@ class TestVerboseJsonBuilder:
         assert len(body["words"]) == 2
 
     def test_non_whisper_result_yields_empty_words_not_crash(self):
-        from vllm_mlx.routes.audio import _build_verbose_json_body
+        from rapid_mlx.routes.audio import _build_verbose_json_body
 
         # A backend that produced no per-word data must degrade to an
         # empty words array, never raise.
@@ -311,7 +311,7 @@ class _RecordingModel:
 
 class TestEngineForwarding:
     def _make_engine(self, model_name):
-        from vllm_mlx.audio.stt import STTEngine
+        from rapid_mlx.audio.stt import STTEngine
 
         eng = STTEngine(model_name, enable_vad_pretrim=False)
         eng._loaded = True
@@ -479,13 +479,13 @@ class TestRequestModelValidation:
     def test_rejects_unknown_value(self):
         from pydantic import ValidationError
 
-        from vllm_mlx.api.models import AudioTranscriptionRequest
+        from rapid_mlx.api.models import AudioTranscriptionRequest
 
         with pytest.raises(ValidationError):
             AudioTranscriptionRequest(timestamp_granularities=["frame"])
 
     def test_normalises_and_dedups(self):
-        from vllm_mlx.api.models import AudioTranscriptionRequest
+        from rapid_mlx.api.models import AudioTranscriptionRequest
 
         req = AudioTranscriptionRequest(
             timestamp_granularities=["Word", "word", "SEGMENT"]
@@ -495,7 +495,7 @@ class TestRequestModelValidation:
 
 class TestMalformedWordTimings:
     def test_non_finite_and_non_numeric_words_dropped(self):
-        from vllm_mlx.routes.audio import _iter_words_for_verbose
+        from rapid_mlx.routes.audio import _iter_words_for_verbose
 
         class _Result:
             segments = [

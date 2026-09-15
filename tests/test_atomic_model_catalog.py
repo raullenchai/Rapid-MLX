@@ -11,8 +11,8 @@ from types import SimpleNamespace
 
 import pytest
 
-import vllm_mlx.catalog.registry as registry_module
-from vllm_mlx.catalog import (
+import rapid_mlx.catalog.registry as registry_module
+from rapid_mlx.catalog import (
     AtomicRegistry,
     CatalogValidationError,
     ContractValidator,
@@ -28,7 +28,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 def test_packaged_schemas_are_exact_proto_copies() -> None:
-    packaged = ROOT / "vllm_mlx" / "catalog" / "schemas"
+    packaged = ROOT / "rapid_mlx" / "catalog" / "schemas"
     copies = {
         ROOT
         / "proto/model-runtime/v1/model-identity.schema.json": "model-identity.schema.json",
@@ -78,7 +78,7 @@ def test_rcj_is_stable_and_rejects_nonportable_numbers() -> None:
 
 
 def test_legacy_projection_covers_image_edit_and_vision_profiles() -> None:
-    from vllm_mlx.catalog.legacy import _main_capabilities
+    from rapid_mlx.catalog.legacy import _main_capabilities
 
     image = SimpleNamespace(
         modality="image-gen",
@@ -154,8 +154,8 @@ def test_legacy_projection_is_complete_deduplicated_and_schema_valid() -> None:
 def test_legacy_projection_includes_uncached_user_aliases(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from vllm_mlx.model_aliases import list_builtin_aliases
-    from vllm_mlx.user_aliases import set_user_alias
+    from rapid_mlx.model_aliases import list_builtin_aliases
+    from rapid_mlx.user_aliases import set_user_alias
 
     monkeypatch.setenv(
         "RAPID_MLX_USER_ALIASES_FILE", str(tmp_path / "user-aliases.json")
@@ -239,7 +239,7 @@ def test_shadow_bundle_preserves_legacy_alias_surface() -> None:
 
 
 def test_shadow_report_names_alias_and_recommendation_drift() -> None:
-    from vllm_mlx.catalog.legacy import build_shadow_report
+    from rapid_mlx.catalog.legacy import build_shadow_report
 
     bundle = build_catalog_bundle()
     snapshot = copy.deepcopy(bundle["snapshot"])

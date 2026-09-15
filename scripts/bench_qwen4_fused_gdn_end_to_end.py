@@ -61,11 +61,11 @@ def run(args):
     from mlx_lm.sample_utils import make_sampler
     from mlx_lm.utils import load
 
-    from vllm_mlx.models.qwen4_exp import (
+    from rapid_mlx.models.qwen4_exp import (
         qwen4_fused_gdn_stats,
         set_qwen4_fused_gdn_mode,
     )
-    from vllm_mlx.utils.tokenizer import _register_vendored_archs
+    from rapid_mlx.utils.tokenizer import _register_vendored_archs
 
     _register_vendored_archs()
     mx.set_default_device(mx.gpu)

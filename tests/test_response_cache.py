@@ -32,7 +32,7 @@ import pytest
 
 pytestmark = pytest.mark.requires_mlx
 
-from vllm_mlx.response_cache import (
+from rapid_mlx.response_cache import (
     UNCACHEABLE,
     ResponseCache,
     configure_response_cache,
@@ -588,14 +588,14 @@ def test_stale_epoch_get_cannot_read_new_model_entry():
 
 
 def test_scheduler_config_rejects_negative_response_cache_entries():
-    from vllm_mlx.scheduler import SchedulerConfig
+    from rapid_mlx.scheduler import SchedulerConfig
 
     with pytest.raises(ValueError, match=r"response_cache_entries must be >= 0"):
         SchedulerConfig(response_cache_entries=-1)
 
 
 def test_scheduler_config_default_response_cache_entries_is_zero():
-    from vllm_mlx.scheduler import SchedulerConfig
+    from rapid_mlx.scheduler import SchedulerConfig
 
     assert SchedulerConfig().response_cache_entries == 0
     assert SchedulerConfig(response_cache_entries=32).response_cache_entries == 32

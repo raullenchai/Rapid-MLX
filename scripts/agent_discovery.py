@@ -27,7 +27,7 @@ import httpx
 #
 # Kept broad to prevent re-surfacing already-triaged repos on discovery
 # sweeps. Presence here does NOT imply Tier-1 support — that list is in
-# ``vllm_mlx/agents/profiles/`` (10 YAMLs as of 0.10.2). Kept here:
+# ``rapid_mlx/agents/profiles/`` (10 YAMLs as of 0.10.2). Kept here:
 # demoted / removed profiles (openclaude, goose, cline, continue) and
 # non-Tier-1 UIs (librechat, open-webui, cursor, copilot, claw-code).
 KNOWN_AGENTS = {

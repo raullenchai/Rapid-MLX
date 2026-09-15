@@ -150,7 +150,7 @@ def _xml_structure_info(name: str):
     ships it (``arg_style="xml"``). Declared test-locally so the pure-Python
     golden tests need no tokenizer; the enforcement tests below drive the REAL
     parser instead."""
-    from vllm_mlx.api.tool_grammar import StructureInfo
+    from rapid_mlx.api.tool_grammar import StructureInfo
 
     return StructureInfo(
         begin=f"<tool_call>\n<function={name}>\n",
@@ -164,7 +164,7 @@ def _xml_structure_info(name: str):
 def _hermes_json_structure_info(name: str):
     """A hermes ``<tool_call>`` JSON-body wire triple (``arg_style="json"``,
     the default) — the regression baseline the XML change must not perturb."""
-    from vllm_mlx.api.tool_grammar import StructureInfo
+    from rapid_mlx.api.tool_grammar import StructureInfo
 
     return StructureInfo(
         begin=f'<tool_call>\n{{"name": "{name}", "arguments": ',
@@ -198,7 +198,7 @@ _XML_GOLDEN_LARK = (
 
 
 def test_xml_lark_matches_golden():
-    from vllm_mlx.api.tool_grammar import build_tool_lark
+    from rapid_mlx.api.tool_grammar import build_tool_lark
 
     lark = build_tool_lark(XML_TOOLS, "required", [_xml_structure_info("run_code")])
     assert lark == _XML_GOLDEN_LARK
@@ -208,7 +208,7 @@ def test_xml_lark_frame_and_sentinels():
     # The function/parameter frame: <tool_call> trigger + </tool_call> close as
     # BARE special-token refs (never quoted byte literals the single token could
     # not satisfy), the <function=NAME> header, and per-parameter blocks.
-    from vllm_mlx.api.tool_grammar import build_tool_lark
+    from rapid_mlx.api.tool_grammar import build_tool_lark
 
     lark = build_tool_lark(XML_TOOLS, "required", [_xml_structure_info("run_code")])
     assert " <tool_call> " in lark  # bare trigger ref
@@ -222,7 +222,7 @@ def test_xml_lark_frame_and_sentinels():
 
 
 def test_xml_string_value_uses_json_string_not_delimiter_lazy_rule():
-    from vllm_mlx.api.tool_grammar import build_tool_lark
+    from rapid_mlx.api.tool_grammar import build_tool_lark
 
     lark = build_tool_lark(XML_TOOLS, "required", [_xml_structure_info("run_code")])
     assert '"<parameter=code>\\n" %json {"type": "string"}' in lark
@@ -235,7 +235,7 @@ def test_xml_string_value_uses_json_string_not_delimiter_lazy_rule():
 def test_xml_required_vs_optional_framing():
     # Required params are mandatory (no quantifier); optional params are wrapped
     # in ``( ... )?``. ``code``/``language`` required; ``timeout``/``verbose`` not.
-    from vllm_mlx.api.tool_grammar import build_tool_lark
+    from rapid_mlx.api.tool_grammar import build_tool_lark
 
     lark = build_tool_lark(XML_TOOLS, "required", [_xml_structure_info("run_code")])
     # Required string: bare (not inside a ``( ... )?`` group).
@@ -257,7 +257,7 @@ def test_xml_required_vs_optional_framing():
 def test_xml_enum_is_literal_alternation():
     # An enum value renders as an alternation of the literal enum values (raw
     # string form for string enums), NOT ``%json`` and NOT the lazy string rule.
-    from vllm_mlx.api.tool_grammar import build_tool_lark
+    from rapid_mlx.api.tool_grammar import build_tool_lark
 
     lark = build_tool_lark(XML_TOOLS, "required", [_xml_structure_info("run_code")])
     assert '("python" | "cpp") "\\n</parameter>\\n"' in lark
@@ -267,7 +267,7 @@ def test_xml_ref_defs_propagated_into_value_schema():
     # A ``$ref`` value must carry the parent's ``$defs`` into its per-value
     # ``%json`` sub-schema so the ``$ref`` resolves. Golden-compare the emitted
     # ``%json`` payload.
-    from vllm_mlx.api.tool_grammar import build_tool_lark
+    from rapid_mlx.api.tool_grammar import build_tool_lark
 
     lark = build_tool_lark(XML_REF_TOOL, "required", [_xml_structure_info("place")])
     expected_schema = {
@@ -288,7 +288,7 @@ def test_xml_ref_defs_propagated_into_value_schema():
 
 
 def test_xml_no_string_param_tool_has_no_string_helper_rule():
-    from vllm_mlx.api.tool_grammar import build_tool_lark
+    from rapid_mlx.api.tool_grammar import build_tool_lark
 
     int_only = [
         {
@@ -311,7 +311,7 @@ def test_xml_no_string_param_tool_has_no_string_helper_rule():
 # the XML change must not leak the XML string constructs into JSON families.
 # --------------------------------------------------------------------------
 def test_json_family_grammar_has_no_xml_constructs():
-    from vllm_mlx.api.tool_grammar import build_tool_lark
+    from rapid_mlx.api.tool_grammar import build_tool_lark
 
     infos = [_hermes_json_structure_info(t["name"]) for t in XML_TOOLS]
     lark = build_tool_lark(XML_TOOLS, "required", infos)
@@ -327,7 +327,7 @@ def test_json_family_grammar_byte_identical_to_pre_xml_baseline():
     # The exact hermes forced golden (identical to the checked-in golden in
     # test_tool_grammar_558.py). Pinning it here proves the XML feature left the
     # JSON-family grammar byte-for-byte unchanged.
-    from vllm_mlx.api.tool_grammar import build_tool_lark
+    from rapid_mlx.api.tool_grammar import build_tool_lark
 
     tools = [
         {
@@ -399,7 +399,7 @@ def _single_token_tokenizer():
 
 
 def _make_qwen3coder(tokenizer=None):
-    from vllm_mlx.tool_parsers.qwen3coder_tool_parser import Qwen3CoderToolParser
+    from rapid_mlx.tool_parsers.qwen3coder_tool_parser import Qwen3CoderToolParser
 
     return Qwen3CoderToolParser(tokenizer=tokenizer)
 
@@ -416,7 +416,7 @@ def test_qwen3coder_structure_info_opts_out_on_multitoken_tokenizer():
 
 
 def test_qwen3coder_structure_info_returns_xml_wire_triple():
-    from vllm_mlx.api.tool_grammar import StructureInfo
+    from rapid_mlx.api.tool_grammar import StructureInfo
 
     get_info = _make_qwen3coder(tokenizer=_single_token_tokenizer()).structure_info()
     assert callable(get_info), "opt-in must return a name->StructureInfo factory"
@@ -487,7 +487,7 @@ def lltok(tok):
     unavailability the ``tok`` fixture treats as an offline skip). When the bridge
     IS importable AND ``tok`` loaded (cached) but ``build_lltokenizer`` returns
     ``None``, that is a broken integration and MUST FAIL — never silently pass."""
-    from vllm_mlx.api.tool_grammar import HAS_LL_TOKENIZER, build_lltokenizer
+    from rapid_mlx.api.tool_grammar import HAS_LL_TOKENIZER, build_lltokenizer
 
     if not HAS_LL_TOKENIZER:
         pytest.skip(
@@ -506,7 +506,7 @@ def lltok(tok):
 
 def _xml_grammar(tools, tool_choice, tok):
     """Compile the XML grammar through the REAL parser (opted-in on ``tok``)."""
-    from vllm_mlx.api.tool_grammar import build_tool_grammar
+    from rapid_mlx.api.tool_grammar import build_tool_grammar
 
     return build_tool_grammar(tools, tool_choice, _make_qwen3coder(tok))
 
@@ -565,7 +565,7 @@ def test_finding5_tokenizer_llguidance_integration_not_broken(tok):
     # enforcement suite would silently pass on skips. Assert it directly so the
     # breakage surfaces as a FAILURE (only ``tok``'s narrow offline/cache-miss
     # path is a sanctioned skip; we are here only because ``tok`` loaded).
-    from vllm_mlx.api.tool_grammar import HAS_LL_TOKENIZER, build_lltokenizer
+    from rapid_mlx.api.tool_grammar import HAS_LL_TOKENIZER, build_lltokenizer
 
     if not HAS_LL_TOKENIZER:
         pytest.skip("llguidance runtime bridge (llguidance.hf / LLTokenizer) absent")
@@ -725,7 +725,7 @@ def test_roundtrip_nested_object_value():
 def test_representable_common_and_noarg_schemas():
     # The common case + a genuine no-arg tool MUST stay representable (no
     # regression): typed properties, enums, required + optional, empty body.
-    from vllm_mlx.api.tool_grammar import _xml_schema_representable as rep
+    from rapid_mlx.api.tool_grammar import _xml_schema_representable as rep
 
     assert rep(XML_TOOLS_CONSTRAINABLE[0]["parameters"]) is True
     assert rep(XML_REF_TOOL[0]["parameters"]) is True  # $ref -> object
@@ -738,7 +738,7 @@ def test_representable_common_and_noarg_schemas():
 
 
 def test_representable_rejects_f1_property_less_but_nontrivial():
-    from vllm_mlx.api.tool_grammar import _xml_schema_representable as rep
+    from rapid_mlx.api.tool_grammar import _xml_schema_representable as rep
 
     # F1: `false` schema (accepts no instance).
     assert rep(False) is False
@@ -751,7 +751,7 @@ def test_representable_rejects_f1_property_less_but_nontrivial():
 
 
 def test_representable_rejects_f2_string_facets():
-    from vllm_mlx.api.tool_grammar import _xml_schema_representable as rep
+    from rapid_mlx.api.tool_grammar import _xml_schema_representable as rep
 
     for facet in ("pattern", "minLength", "maxLength", "format", "const"):
         params = {
@@ -776,7 +776,7 @@ def test_representable_rejects_f2_string_facets():
 
 
 def test_representable_rejects_f4_object_level_keywords():
-    from vllm_mlx.api.tool_grammar import _xml_schema_representable as rep
+    from rapid_mlx.api.tool_grammar import _xml_schema_representable as rep
 
     props = {"a": {"type": "string"}, "b": {"type": "string"}}
     for kw, val in (
@@ -795,7 +795,7 @@ def test_representable_rejects_f4_object_level_keywords():
 
 
 def test_representable_rejects_f5_delimiter_unsafe_keys():
-    from vllm_mlx.api.tool_grammar import _xml_schema_representable as rep
+    from rapid_mlx.api.tool_grammar import _xml_schema_representable as rep
 
     # The property type is an INTEGER here on purpose: since #1996 a top-level
     # string opts out on its own, which would make every case below pass for the
@@ -807,7 +807,7 @@ def test_representable_rejects_f5_delimiter_unsafe_keys():
 
 
 def test_representable_unresolvable_ref_opts_out():
-    from vllm_mlx.api.tool_grammar import _xml_schema_representable as rep
+    from rapid_mlx.api.tool_grammar import _xml_schema_representable as rep
 
     # A property `$ref` that does not resolve locally is unrepresentable.
     assert rep({"properties": {"c": {"$ref": "#/$defs/missing"}, "$defs": {}}}) is False
@@ -826,7 +826,7 @@ def test_representable_allowlist_positive_control():
     # allowlist over-opting-out the common case. A top-level free-form string is
     # deliberately absent — #1996 made that the one shape this wire opts out of,
     # and its own test owns that case.
-    from vllm_mlx.api.tool_grammar import _xml_schema_representable as rep
+    from rapid_mlx.api.tool_grammar import _xml_schema_representable as rep
 
     schema = {
         "type": "object",
@@ -853,7 +853,7 @@ def test_representable_allowlist_positive_control():
 def test_representable_rejects_round2_minmax_properties():
     # A blacklist keyed on `dependentRequired`/composition MISSED these object-size
     # keywords; the allowlist opts out because they are not top-level-allowed keys.
-    from vllm_mlx.api.tool_grammar import _xml_schema_representable as rep
+    from rapid_mlx.api.tool_grammar import _xml_schema_representable as rep
 
     base = {"type": "object", "properties": {"a": {"type": "string"}}}
     assert rep({**base, "minProperties": 1}) is False
@@ -864,7 +864,7 @@ def test_representable_rejects_round2_required_undeclared_property():
     # `required` names a property that is NOT declared -> it would never be emitted
     # and thus silently unenforced -> opt out (finding 3). (Distinct from the F1
     # property-less case: here real properties ARE present.)
-    from vllm_mlx.api.tool_grammar import _xml_schema_representable as rep
+    from rapid_mlx.api.tool_grammar import _xml_schema_representable as rep
 
     assert (
         rep(
@@ -881,7 +881,7 @@ def test_representable_rejects_round2_required_undeclared_property():
 def test_representable_rejects_round2_property_schema_false():
     # A property schema that is literally `false` (accepts NO value) is not a dict
     # in the allowlist -> opt out (finding 1). `true` likewise.
-    from vllm_mlx.api.tool_grammar import _xml_schema_representable as rep
+    from rapid_mlx.api.tool_grammar import _xml_schema_representable as rep
 
     assert rep({"type": "object", "properties": {"a": False}}) is False
     assert rep({"type": "object", "properties": {"a": True}}) is False
@@ -890,7 +890,7 @@ def test_representable_rejects_round2_property_schema_false():
 def test_representable_rejects_round2_ref_with_sibling_enum():
     # A `$ref` carrying SIBLING keys (here `enum`) would DROP those siblings on
     # resolution -> opt out (finding 4), never silently ignore the enum.
-    from vllm_mlx.api.tool_grammar import _xml_schema_representable as rep
+    from rapid_mlx.api.tool_grammar import _xml_schema_representable as rep
 
     assert (
         rep(
@@ -907,7 +907,7 @@ def test_representable_rejects_round2_ref_with_sibling_enum():
 def test_representable_rejects_round2_additional_properties_schema():
     # `additionalProperties` as a SCHEMA (or `True`) can't be constrained on the
     # XML wire -> opt out; only a literal `False` is representable.
-    from vllm_mlx.api.tool_grammar import _xml_schema_representable as rep
+    from rapid_mlx.api.tool_grammar import _xml_schema_representable as rep
 
     # Integer prop: a top-level string would opt out on its own (#1996) and the
     # ``False`` control could never be True.
@@ -920,7 +920,7 @@ def test_representable_rejects_round2_additional_properties_schema():
 def test_representable_rejects_round2_property_names():
     # `propertyNames` constrains KEY names — unenforceable on the delimiter wire
     # and not a top-level-allowed key -> opt out.
-    from vllm_mlx.api.tool_grammar import _xml_schema_representable as rep
+    from rapid_mlx.api.tool_grammar import _xml_schema_representable as rep
 
     assert (
         rep(
@@ -942,7 +942,7 @@ def test_representable_rejects_round2_property_names():
 def test_representable_enum_positive_control_clean_string_enum():
     # A clean string enum with only annotation keys stays representable (a literal
     # alternation — the tightest constraint). Guards against over-opting-out.
-    from vllm_mlx.api.tool_grammar import _xml_schema_representable as rep
+    from rapid_mlx.api.tool_grammar import _xml_schema_representable as rep
 
     assert rep(
         {"properties": {"u": {"type": "string", "enum": ["celsius", "fahrenheit"]}}}
@@ -956,7 +956,7 @@ def test_representable_enum_positive_control_clean_string_enum():
 def test_representable_enum_value_type_mismatch_opts_out():
     # codex r3 #2: an enum whose declared type contradicts its values is
     # schema-invalid on the wire -> opt out.
-    from vllm_mlx.api.tool_grammar import _xml_schema_representable as rep
+    from rapid_mlx.api.tool_grammar import _xml_schema_representable as rep
 
     assert rep({"properties": {"n": {"type": "integer", "enum": ["x"]}}}) is False
     # bool is NOT an integer here (excluded from int/number).
@@ -971,7 +971,7 @@ def test_representable_enum_unsupported_sibling_opts_out():
     # codex r3 #2: a validation sibling next to an enum (``minLength`` / ``pattern``
     # / ``minItems`` / any non-annotation key) is NOT enforced by a bare
     # alternation -> opt out rather than silently drop it.
-    from vllm_mlx.api.tool_grammar import _xml_schema_representable as rep
+    from rapid_mlx.api.tool_grammar import _xml_schema_representable as rep
 
     assert rep({"properties": {"s": {"enum": ["a", "bb"], "minLength": 2}}}) is False
     assert (
@@ -985,7 +985,7 @@ def test_representable_enum_delimiter_bearing_value_opts_out():
     # codex r3 #3: an enum value carrying the close delimiter (or any ``<``/``>``/
     # newline) is grammar-accepted but truncates at the parser's FIRST
     # ``</parameter>`` -> opt out rather than emit a wire-breaking literal.
-    from vllm_mlx.api.tool_grammar import _xml_schema_representable as rep
+    from rapid_mlx.api.tool_grammar import _xml_schema_representable as rep
 
     assert (
         rep({"properties": {"s": {"type": "string", "enum": ["a</parameter>b"]}}})
@@ -1003,7 +1003,7 @@ def test_representable_total_required_guard_never_raises():
     # codex r3 #4 (REAL CRASH): a malformed ``required`` must OPT OUT, never raise.
     # ``set(required)`` on an UNHASHABLE member (list/dict) raised ``TypeError``
     # OUTSIDE the builder's exception handling -> a 500 on arbitrary client JSON.
-    from vllm_mlx.api.tool_grammar import _xml_schema_representable as rep
+    from rapid_mlx.api.tool_grammar import _xml_schema_representable as rep
 
     # Integer prop for the same reason as above (#1996): the control at the end
     # of this test asserts a well-formed ``required`` stays representable.
@@ -1028,7 +1028,7 @@ def test_xml_ref_to_string_uses_json_string_path():
     # Grammar-string level: a `$ref` -> string property emits the LAZY raw value
     # rule, NOT `%json` (whose quotes the parser would keep). The tool's only
     # param is a `$ref` -> string, so the whole grammar has NO `%json` at all.
-    from vllm_mlx.api.tool_grammar import build_tool_lark
+    from rapid_mlx.api.tool_grammar import build_tool_lark
 
     lark = build_tool_lark(
         XML_REF_STRING_TOOL, "required", [_xml_structure_info("geo")]
@@ -1040,7 +1040,7 @@ def test_xml_ref_to_string_uses_json_string_path():
 def test_xml_ref_to_object_still_uses_json():
     # The complementary case: a `$ref` -> OBJECT still rides `%json` (over the
     # original `$ref` + merged `$defs`, which llguidance resolves internally).
-    from vllm_mlx.api.tool_grammar import build_tool_lark
+    from rapid_mlx.api.tool_grammar import build_tool_lark
 
     lark = build_tool_lark(XML_REF_TOOL, "required", [_xml_structure_info("place")])
     assert '"<parameter=origin>\\n" %json' in lark

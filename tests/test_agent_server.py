@@ -7,7 +7,7 @@ from collections.abc import Sequence
 import pytest
 from pydantic import ValidationError
 
-from vllm_mlx.agent_runtime import (
+from rapid_mlx.agent_runtime import (
     AgentModelTurn,
     AgentRunStatus,
     AgentToolCall,
@@ -16,7 +16,7 @@ from vllm_mlx.agent_runtime import (
     ToolSpec,
     resolve_agent_profile,
 )
-from vllm_mlx.agent_runtime.server import (
+from rapid_mlx.agent_runtime.server import (
     AgentApprovalRequest,
     AgentRunCapacityError,
     AgentRunConflictError,
@@ -679,7 +679,7 @@ async def test_cancel_wins_when_model_driver_swallows_task_cancellation():
 
 @pytest.mark.asyncio
 async def test_cancel_keeps_noncooperative_generation_non_terminal(monkeypatch):
-    import vllm_mlx.agent_runtime.server as agent_server
+    import rapid_mlx.agent_runtime.server as agent_server
 
     started = asyncio.Event()
     swallowed = asyncio.Event()
@@ -1096,7 +1096,7 @@ def test_approval_summary_bounds_depth_items_keys_and_text():
 
 
 def test_minicpm_shape_rejects_missing_metadata():
-    from vllm_mlx.agent_runtime.profiles import _is_minicpm5_2b_config
+    from rapid_mlx.agent_runtime.profiles import _is_minicpm5_2b_config
 
     assert _is_minicpm5_2b_config(None) is False
 
@@ -1249,8 +1249,8 @@ async def test_assistant_history_uses_json_arguments_not_python_repr():
 def test_mcp_projection_uses_declared_risk_and_skips_unsupported_schemas():
     from types import SimpleNamespace
 
-    from vllm_mlx.config import reset_config
-    from vllm_mlx.mcp.types import MCPTool
+    from rapid_mlx.config import reset_config
+    from rapid_mlx.mcp.types import MCPTool
 
     cfg = reset_config()
     cfg.mcp_manager = SimpleNamespace(
@@ -1279,8 +1279,8 @@ def test_mcp_projection_uses_declared_risk_and_skips_unsupported_schemas():
 async def test_mcp_execution_preserves_sandbox_and_audit():
     from types import SimpleNamespace
 
-    from vllm_mlx.config import reset_config
-    from vllm_mlx.mcp.types import MCPToolResult
+    from rapid_mlx.config import reset_config
+    from rapid_mlx.mcp.types import MCPToolResult
 
     audited = []
 
@@ -1316,8 +1316,8 @@ async def test_mcp_execution_preserves_sandbox_and_audit():
 async def test_mcp_audit_failure_never_rewrites_committed_tool_outcome(caplog):
     from types import SimpleNamespace
 
-    from vllm_mlx.config import reset_config
-    from vllm_mlx.mcp.types import MCPToolResult
+    from rapid_mlx.config import reset_config
+    from rapid_mlx.mcp.types import MCPToolResult
 
     class Sandbox:
         def validate_tool_execution(self, *_args):
@@ -1362,8 +1362,8 @@ async def test_mcp_snapshot_never_executes_against_reloaded_registry():
     from contextlib import asynccontextmanager
     from types import SimpleNamespace
 
-    from vllm_mlx.config import reset_config
-    from vllm_mlx.mcp.types import MCPTool, MCPToolResult
+    from rapid_mlx.config import reset_config
+    from rapid_mlx.mcp.types import MCPTool, MCPToolResult
 
     calls = []
 
@@ -1437,9 +1437,9 @@ async def test_mcp_snapshot_never_executes_against_reloaded_registry():
 async def test_pinned_mcp_dispatch_leases_generation_until_call_finishes():
     from types import SimpleNamespace
 
-    from vllm_mlx.agent_runtime.server import _PinnedMCPManager
-    from vllm_mlx.mcp.manager import MCPClientManager
-    from vllm_mlx.mcp.types import MCPTool, MCPToolResult
+    from rapid_mlx.agent_runtime.server import _PinnedMCPManager
+    from rapid_mlx.mcp.manager import MCPClientManager
+    from rapid_mlx.mcp.types import MCPTool, MCPToolResult
 
     both_calls_started = asyncio.Event()
     release_call = asyncio.Event()
@@ -1520,8 +1520,8 @@ async def test_pinned_mcp_targets_fail_closed_on_lookup_errors():
     from contextlib import asynccontextmanager
     from types import SimpleNamespace
 
-    from vllm_mlx.agent_runtime.server import _PinnedMCPManager
-    from vllm_mlx.mcp.types import MCPTool
+    from rapid_mlx.agent_runtime.server import _PinnedMCPManager
+    from rapid_mlx.mcp.types import MCPTool
 
     tool = MCPTool("same", "tool", "tool", {"type": "object"})
 
@@ -1562,8 +1562,8 @@ async def test_pinned_mcp_untyped_transport_failure_stays_unknown():
     from contextlib import asynccontextmanager
     from types import SimpleNamespace
 
-    from vllm_mlx.agent_runtime.server import _PinnedMCPManager
-    from vllm_mlx.mcp.types import MCPTool
+    from rapid_mlx.agent_runtime.server import _PinnedMCPManager
+    from rapid_mlx.mcp.types import MCPTool
 
     tool = MCPTool("same", "tool", "tool", {"type": "object"})
 
@@ -1607,8 +1607,8 @@ async def test_pinned_mcp_untyped_transport_failure_stays_unknown():
 def test_mcp_snapshot_and_listing_map_manager_failures():
     from types import SimpleNamespace
 
-    from vllm_mlx.agent_runtime.server import AgentToolRegistryUnavailableError
-    from vllm_mlx.config import reset_config
+    from rapid_mlx.agent_runtime.server import AgentToolRegistryUnavailableError
+    from rapid_mlx.config import reset_config
 
     class BrokenManager:
         config = SimpleNamespace(agent_read_only_tools=[], default_timeout=30.0)
@@ -1631,7 +1631,7 @@ def test_mcp_snapshot_and_listing_map_manager_failures():
 async def test_mcp_bare_and_dispatch_failure_paths_are_audited():
     from types import SimpleNamespace
 
-    from vllm_mlx.config import reset_config
+    from rapid_mlx.config import reset_config
 
     audited = []
 
@@ -1687,9 +1687,9 @@ async def test_mcp_bare_and_dispatch_failure_paths_are_audited():
 
 @pytest.mark.asyncio
 async def test_run_never_switches_to_replacement_model_generation():
-    from vllm_mlx.config import reset_config
-    from vllm_mlx.runtime.model_registry import ModelEntry, ModelRegistry
-    from vllm_mlx.service.helpers import get_engine
+    from rapid_mlx.config import reset_config
+    from rapid_mlx.runtime.model_registry import ModelEntry, ModelRegistry
+    from rapid_mlx.service.helpers import get_engine
 
     first_engine = object()
     replacement_engine = object()
@@ -1755,9 +1755,9 @@ async def test_run_never_switches_to_replacement_model_generation():
 def test_exact_model_generation_access_and_single_engine_binding():
     from fastapi import HTTPException
 
-    from vllm_mlx.config import reset_config
-    from vllm_mlx.runtime.model_registry import ModelEntry, ModelRegistry
-    from vllm_mlx.service.helpers import bind_model_generation, get_engine
+    from rapid_mlx.config import reset_config
+    from rapid_mlx.runtime.model_registry import ModelEntry, ModelRegistry
+    from rapid_mlx.service.helpers import bind_model_generation, get_engine
 
     accessed = []
     engine = object()
@@ -1783,8 +1783,8 @@ def test_exact_model_generation_access_and_single_engine_binding():
 async def test_mcp_sandbox_rejection_is_reported_as_unexecuted():
     from types import SimpleNamespace
 
-    from vllm_mlx.config import reset_config
-    from vllm_mlx.mcp.security import MCPSecurityError
+    from rapid_mlx.config import reset_config
+    from rapid_mlx.mcp.security import MCPSecurityError
 
     executed = []
     audited = []
@@ -1824,7 +1824,7 @@ async def test_mcp_sandbox_rejection_is_reported_as_unexecuted():
 async def test_mcp_unavailable_and_disappeared_calls_are_unexecuted():
     from types import SimpleNamespace
 
-    from vllm_mlx.config import reset_config
+    from rapid_mlx.config import reset_config
 
     call = AgentToolCall(id="call", name="files__read_file", arguments={})
     cfg = reset_config()
@@ -1865,7 +1865,7 @@ async def test_mcp_unavailable_and_disappeared_calls_are_unexecuted():
 async def test_mcp_registry_lookup_failure_is_audited_and_unexecuted():
     from types import SimpleNamespace
 
-    from vllm_mlx.config import reset_config
+    from rapid_mlx.config import reset_config
 
     audited = []
 
@@ -1897,7 +1897,7 @@ async def test_mcp_registry_lookup_failure_is_audited_and_unexecuted():
 async def test_mcp_sandbox_internal_failure_is_unexecuted_and_audited():
     from types import SimpleNamespace
 
-    from vllm_mlx.config import reset_config
+    from rapid_mlx.config import reset_config
 
     audited = []
     dispatched = []
@@ -1936,8 +1936,8 @@ async def test_mcp_sandbox_internal_failure_is_unexecuted_and_audited():
 async def test_mcp_result_shapes_and_execution_exception_are_audited():
     from types import SimpleNamespace
 
-    from vllm_mlx.config import reset_config
-    from vllm_mlx.mcp.types import MCPToolResult
+    from rapid_mlx.config import reset_config
+    from rapid_mlx.mcp.types import MCPToolResult
 
     audited = []
 
@@ -2013,8 +2013,8 @@ async def test_mcp_result_shapes_and_execution_exception_are_audited():
 async def test_registry_without_mcp_keeps_local_tools_and_internal_request_live():
     from types import SimpleNamespace
 
-    from vllm_mlx.agent_runtime.server import _InternalRequest
-    from vllm_mlx.config import reset_config
+    from rapid_mlx.agent_runtime.server import _InternalRequest
+    from rapid_mlx.config import reset_config
 
     reset_config()
     registry = MCPToolRegistry()
@@ -2319,7 +2319,7 @@ async def test_close_cancels_active_work_and_rejects_new_runs():
 
 @pytest.mark.asyncio
 async def test_close_fails_boundedly_if_generation_does_not_stop(monkeypatch):
-    import vllm_mlx.agent_runtime.server as agent_server
+    import rapid_mlx.agent_runtime.server as agent_server
 
     started = asyncio.Event()
     release = asyncio.Event()
@@ -2355,7 +2355,7 @@ async def test_close_fails_boundedly_if_generation_does_not_stop(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_close_fails_boundedly_if_dispatched_tool_exceeds_deadline(monkeypatch):
-    import vllm_mlx.agent_runtime.server as agent_server
+    import rapid_mlx.agent_runtime.server as agent_server
 
     started = asyncio.Event()
     release = asyncio.Event()

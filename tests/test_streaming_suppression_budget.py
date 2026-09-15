@@ -20,7 +20,7 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock
 
-from vllm_mlx.service.postprocessor import (
+from rapid_mlx.service.postprocessor import (
     _MAX_TOOL_SUPPRESSION_BYTES,
     StreamingPostProcessor,
 )

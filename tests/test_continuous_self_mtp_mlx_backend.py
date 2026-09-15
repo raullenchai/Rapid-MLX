@@ -10,8 +10,8 @@ from types import ModuleType, SimpleNamespace
 import numpy as np
 import pytest
 
-from vllm_mlx.spec_decode.mtp import mlx_backend as backend_module
-from vllm_mlx.spec_decode.mtp.continuous_engine import (
+from rapid_mlx.spec_decode.mtp import mlx_backend as backend_module
+from rapid_mlx.spec_decode.mtp.continuous_engine import (
     ContinuousSelfMTPCapabilities,
     ContinuousSelfMTPConfig,
     ContinuousSelfMTPRuntime,
@@ -26,10 +26,10 @@ from vllm_mlx.spec_decode.mtp.continuous_engine import (
     prepare_self_mtp_lane,
     propose_batched_self_mtp,
 )
-from vllm_mlx.spec_decode.mtp.continuous_engine import (
+from rapid_mlx.spec_decode.mtp.continuous_engine import (
     ContinuousSelfMTPUnsupportedError as ContinuousSelfMTPUnsupported,
 )
-from vllm_mlx.spec_decode.mtp.mlx_backend import (
+from rapid_mlx.spec_decode.mtp.mlx_backend import (
     RapidMLXSelfMTPBackend,
     RapidRaggedCacheAdapter,
 )
@@ -429,7 +429,7 @@ def test_cache_adapter_rejects_quantized_and_windowed_classes(name):
 def test_backend_has_no_eager_mlx_import_and_uses_only_rapid_forward_seams():
     source = (
         Path(__file__).parents[1]
-        / "vllm_mlx"
+        / "rapid_mlx"
         / "spec_decode"
         / "mtp"
         / "mlx_backend.py"

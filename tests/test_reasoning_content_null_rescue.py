@@ -29,7 +29,7 @@ History
 Default (issue #858) is now ON.
 ``RAPID_MLX_REASONING_CUTOFF_NOTICE=disabled`` (or ``0`` / ``false`` /
 ``no`` / ``off``) opts out for power callers that want strict-null. The
-helper lives in ``vllm_mlx.service.helpers._apply_reasoning_cutoff_notice``
+helper lives in ``rapid_mlx.service.helpers._apply_reasoning_cutoff_notice``
 and is the single source of truth for ``/v1/chat/completions``,
 ``/v1/responses``, and ``/v1/messages``.
 """
@@ -40,7 +40,7 @@ import json
 
 import pytest
 
-from vllm_mlx.service.helpers import (
+from rapid_mlx.service.helpers import (
     REASONING_CUTOFF_SENTINEL,
     RESCUE_TAIL_LENGTH,
     _apply_reasoning_cutoff_notice,
@@ -587,7 +587,7 @@ class TestR12_8RescuePayloadShape:
         must NOT be misclassified as a synthetic rescue payload.
         ``is_rescue_payload`` returns False for these false-positives.
         """
-        from vllm_mlx.api.constants import is_rescue_payload
+        from rapid_mlx.api.constants import is_rescue_payload
 
         assert is_rescue_payload(real_content) is False, (
             f"{description}: should NOT be classified as rescue; "
@@ -614,7 +614,7 @@ class TestR12_8RescuePayloadShape:
         ``_build_reasoning_rescue_payload`` MUST be recognized by
         ``is_rescue_payload`` so the non-stream Responses adapter
         correctly excludes them from ``downstream_output_seen``."""
-        from vllm_mlx.api.constants import is_rescue_payload
+        from rapid_mlx.api.constants import is_rescue_payload
 
         assert is_rescue_payload(rescue_content) is True, (
             f"{description}: should be classified as rescue; "
@@ -625,7 +625,7 @@ class TestR12_8RescuePayloadShape:
         """``is_rescue_payload(None)`` and ``is_rescue_payload("")`` MUST
         return False — the rescue helper always returns at least the
         sentinel, so an empty/None content is never a rescue."""
-        from vllm_mlx.api.constants import is_rescue_payload
+        from rapid_mlx.api.constants import is_rescue_payload
 
         assert is_rescue_payload(None) is False
         assert is_rescue_payload("") is False
@@ -850,12 +850,12 @@ def _finalize_route_assembly(
     Returns ``(final_content, reasoning_text)`` exactly as the route
     layer would set them on the AssistantMessage.
     """
-    from vllm_mlx.api.utils import (
+    from rapid_mlx.api.utils import (
         clean_output_text,
         sanitize_output,
         strip_thinking_tags,
     )
-    from vllm_mlx.service.helpers import (
+    from rapid_mlx.service.helpers import (
         _finalize_content_and_reasoning,
         _rescue_silent_drop_from_reasoning,
     )
@@ -897,12 +897,12 @@ def _parser_cases():
 
     Each entry: ``(name, parser_class, raw_open_only, raw_closed_trunc,
     raw_stop_cut_mid, raw_happy)``."""
-    from vllm_mlx.reasoning.deepseek_r1_parser import (
+    from rapid_mlx.reasoning.deepseek_r1_parser import (
         DeepSeekR1ReasoningParser,
         VibeThinkerReasoningParser,
     )
-    from vllm_mlx.reasoning.glm4_parser import Glm4ReasoningParser
-    from vllm_mlx.reasoning.qwen3_parser import Qwen3ReasoningParser
+    from rapid_mlx.reasoning.glm4_parser import Glm4ReasoningParser
+    from rapid_mlx.reasoning.qwen3_parser import Qwen3ReasoningParser
 
     think_open_only = "<think>Let me think about 17*23. 17 * 20 = 340. 17 * 3 ="
     think_closed_trunc = "<think>17 * 23 = 391.</think>The answer is 39"
@@ -1231,7 +1231,7 @@ class _StreamEngine:
         return "PROMPT"
 
     async def stream_chat(self, messages, **kwargs):
-        from vllm_mlx.engine.base import GenerationOutput
+        from rapid_mlx.engine.base import GenerationOutput
 
         self.stream_calls.append({"messages": messages, "kwargs": kwargs})
         accumulated = ""
@@ -1276,9 +1276,9 @@ def _stream_post(
     from fastapi import FastAPI
     from fastapi.testclient import TestClient
 
-    from vllm_mlx.config import reset_config
-    from vllm_mlx.reasoning.qwen3_parser import Qwen3ReasoningParser
-    from vllm_mlx.routes.chat import router as chat_router
+    from rapid_mlx.config import reset_config
+    from rapid_mlx.reasoning.qwen3_parser import Qwen3ReasoningParser
+    from rapid_mlx.routes.chat import router as chat_router
 
     cfg = reset_config()
     cfg.engine = _StreamEngine(
@@ -1442,9 +1442,9 @@ def test_streaming_happy_path_no_sentinel_when_content_streamed(monkeypatch):
     from fastapi import FastAPI
     from fastapi.testclient import TestClient
 
-    from vllm_mlx.config import reset_config
-    from vllm_mlx.engine.base import GenerationOutput
-    from vllm_mlx.routes.chat import router as chat_router
+    from rapid_mlx.config import reset_config
+    from rapid_mlx.engine.base import GenerationOutput
+    from rapid_mlx.routes.chat import router as chat_router
 
     class _ContentEngine:
         preserve_native_tool_format = False
@@ -1525,7 +1525,7 @@ def test_anthropic_route_helper_call_site_present():
     so the env-knob behaviour applies uniformly to Anthropic SDK
     consumers. Source-level grep guards against a future refactor that
     deletes the call site but leaves the import intact."""
-    src = _route_source("vllm_mlx.routes.anthropic")
+    src = _route_source("rapid_mlx.routes.anthropic")
     assert "_apply_reasoning_cutoff_notice(" in src, (
         "Anthropic route must invoke the cutoff sentinel helper "
         "(not just import it) — single source of truth"
@@ -1534,7 +1534,7 @@ def test_anthropic_route_helper_call_site_present():
 
 def test_responses_route_helper_call_site_present():
     """Same call-site grep for ``/v1/responses``."""
-    src = _route_source("vllm_mlx.routes.responses")
+    src = _route_source("rapid_mlx.routes.responses")
     assert "_apply_reasoning_cutoff_notice(" in src, (
         "Responses route must invoke the cutoff sentinel helper "
         "(not just import it) — single source of truth"
@@ -1545,7 +1545,7 @@ def test_chat_route_helper_call_site_present():
     """Same call-site grep for ``/v1/chat/completions``. The chat
     module hosts BOTH the non-stream and stream paths, so the helper
     must be invoked twice."""
-    src = _route_source("vllm_mlx.routes.chat")
+    src = _route_source("rapid_mlx.routes.chat")
     invocation_count = src.count("_apply_reasoning_cutoff_notice(")
     assert invocation_count >= 2, (
         "Chat route must invoke the cutoff sentinel helper from "
@@ -1580,7 +1580,7 @@ class _EngineLengthCutMidThink:
         return 4
 
     async def chat(self, messages, **kwargs):
-        from vllm_mlx.engine.base import GenerationOutput
+        from rapid_mlx.engine.base import GenerationOutput
 
         self.chat_calls.append({"messages": messages, "kwargs": kwargs})
         return GenerationOutput(
@@ -1600,7 +1600,7 @@ class _EngineLengthCutMidThink:
 def _seed_length_cut_engine(cfg):
     """Common cfg shape for the route-wiring behavioral tests:
     qwen3 reasoning parser + length-cut mock engine."""
-    from vllm_mlx.reasoning.qwen3_parser import Qwen3ReasoningParser
+    from rapid_mlx.reasoning.qwen3_parser import Qwen3ReasoningParser
 
     cfg.engine = _EngineLengthCutMidThink()
     cfg.model_name = "test-model"
@@ -1620,8 +1620,8 @@ def test_chat_route_opt_out_no_sentinel_on_length_cut(monkeypatch):
     from fastapi import FastAPI
     from fastapi.testclient import TestClient
 
-    from vllm_mlx.config import reset_config
-    from vllm_mlx.routes.chat import router as chat_router
+    from rapid_mlx.config import reset_config
+    from rapid_mlx.routes.chat import router as chat_router
 
     cfg = reset_config()
     _seed_length_cut_engine(cfg)
@@ -1670,8 +1670,8 @@ def test_chat_route_enabled_surfaces_sentinel_on_length_cut(monkeypatch):
     from fastapi import FastAPI
     from fastapi.testclient import TestClient
 
-    from vllm_mlx.config import reset_config
-    from vllm_mlx.routes.chat import router as chat_router
+    from rapid_mlx.config import reset_config
+    from rapid_mlx.routes.chat import router as chat_router
 
     cfg = reset_config()
     _seed_length_cut_engine(cfg)
@@ -1728,8 +1728,8 @@ def test_chat_route_default_env_surfaces_sentinel_regression_858(monkeypatch):
     from fastapi import FastAPI
     from fastapi.testclient import TestClient
 
-    from vllm_mlx.config import reset_config
-    from vllm_mlx.routes.chat import router as chat_router
+    from rapid_mlx.config import reset_config
+    from rapid_mlx.routes.chat import router as chat_router
 
     cfg = reset_config()
     _seed_length_cut_engine(cfg)
@@ -1774,8 +1774,8 @@ def test_anthropic_route_opt_out_no_sentinel_on_length_cut(monkeypatch):
     from fastapi import FastAPI
     from fastapi.testclient import TestClient
 
-    from vllm_mlx.config import reset_config
-    from vllm_mlx.routes.anthropic import router as anthropic_router
+    from rapid_mlx.config import reset_config
+    from rapid_mlx.routes.anthropic import router as anthropic_router
 
     cfg = reset_config()
     _seed_length_cut_engine(cfg)
@@ -1826,8 +1826,8 @@ def test_anthropic_route_enabled_surfaces_sentinel(monkeypatch):
     from fastapi import FastAPI
     from fastapi.testclient import TestClient
 
-    from vllm_mlx.config import reset_config
-    from vllm_mlx.routes.anthropic import router as anthropic_router
+    from rapid_mlx.config import reset_config
+    from rapid_mlx.routes.anthropic import router as anthropic_router
 
     cfg = reset_config()
     _seed_length_cut_engine(cfg)
@@ -1875,8 +1875,8 @@ def test_responses_route_opt_out_no_sentinel_on_length_cut(monkeypatch):
     from fastapi import FastAPI
     from fastapi.testclient import TestClient
 
-    from vllm_mlx.config import reset_config
-    from vllm_mlx.routes.responses import router as responses_router
+    from rapid_mlx.config import reset_config
+    from rapid_mlx.routes.responses import router as responses_router
 
     cfg = reset_config()
     _seed_length_cut_engine(cfg)
@@ -1923,8 +1923,8 @@ def test_responses_route_enabled_surfaces_sentinel(monkeypatch):
     from fastapi import FastAPI
     from fastapi.testclient import TestClient
 
-    from vllm_mlx.config import reset_config
-    from vllm_mlx.routes.responses import router as responses_router
+    from rapid_mlx.config import reset_config
+    from rapid_mlx.routes.responses import router as responses_router
 
     cfg = reset_config()
     _seed_length_cut_engine(cfg)

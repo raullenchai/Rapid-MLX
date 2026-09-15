@@ -45,13 +45,13 @@ also cover the ``max_tokens``-cut variant (same accumulator state as
 
 import pytest
 
-from vllm_mlx.reasoning.deepseek_r1_parser import (
+from rapid_mlx.reasoning.deepseek_r1_parser import (
     DeepSeekR1ReasoningParser,
     VibeThinkerReasoningParser,
 )
-from vllm_mlx.reasoning.gemma4_parser import Gemma4ReasoningParser
-from vllm_mlx.reasoning.glm4_parser import Glm4ReasoningParser
-from vllm_mlx.reasoning.qwen3_parser import Qwen3ReasoningParser
+from rapid_mlx.reasoning.gemma4_parser import Gemma4ReasoningParser
+from rapid_mlx.reasoning.glm4_parser import Glm4ReasoningParser
+from rapid_mlx.reasoning.qwen3_parser import Qwen3ReasoningParser
 
 
 def _simulate_anthropic_stream(
@@ -139,7 +139,7 @@ class TestRegisteredParsersAcceptNewSignature:
     """
 
     def test_all_registered_parsers_accept_finalize_kwargs(self):
-        from vllm_mlx.reasoning import get_parser, list_parsers
+        from rapid_mlx.reasoning import get_parser, list_parsers
 
         for name in list_parsers():
             parser_cls = get_parser(name)
@@ -163,8 +163,8 @@ class TestRegisteredParsersAcceptNewSignature:
                 )
 
     def test_finalize_streaming_compat_accepts_legacy_override(self):
-        from vllm_mlx.reasoning import finalize_streaming_compat
-        from vllm_mlx.reasoning.base import DeltaMessage, ReasoningParser
+        from rapid_mlx.reasoning import finalize_streaming_compat
+        from rapid_mlx.reasoning.base import DeltaMessage, ReasoningParser
 
         class LegacyFinalizeParser(ReasoningParser):
             def extract_reasoning(self, model_output, enable_thinking=None):
@@ -1019,7 +1019,7 @@ class TestNonStreamingHelperSymmetry:
     def test_non_streaming_unclosed_think_routes_to_reasoning_only(
         self, name, parser_cls
     ):
-        from vllm_mlx.service.helpers import _finalize_content_and_reasoning
+        from rapid_mlx.service.helpers import _finalize_content_and_reasoning
 
         raw_text = "<think>Let me think about 5+7."
         cleaned_text = raw_text
@@ -1042,8 +1042,8 @@ class TestNonStreamingHelperSymmetry:
         )
 
     def test_gemma4_non_streaming_mid_thought(self):
-        from vllm_mlx.api.utils import clean_output_text, strip_thinking_tags
-        from vllm_mlx.service.helpers import _finalize_content_and_reasoning
+        from rapid_mlx.api.utils import clean_output_text, strip_thinking_tags
+        from rapid_mlx.service.helpers import _finalize_content_and_reasoning
 
         raw_text = "<|channel>thought\nLet me think about 5+7. The answer is "
         cleaned_text = raw_text

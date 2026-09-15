@@ -36,14 +36,14 @@ def telemetry_on(tmp_path, monkeypatch):
     monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.delenv("RAPID_MLX_TELEMETRY", raising=False)
 
-    import vllm_mlx.telemetry.emit as emit
-    import vllm_mlx.telemetry.state as state
+    import rapid_mlx.telemetry.emit as emit
+    import rapid_mlx.telemetry.state as state
 
     importlib.reload(state)
     importlib.reload(emit)
     emit._reset_for_tests()
 
-    from vllm_mlx.telemetry.state import record_consent
+    from rapid_mlx.telemetry.state import record_consent
 
     record_consent(True, rapid_mlx_version="0.0.0+test")
     monkeypatch.setenv("RAPID_MLX_TELEMETRY_REQUEST_SAMPLE", "1")
@@ -53,7 +53,7 @@ def telemetry_on(tmp_path, monkeypatch):
 @pytest.fixture
 def captured(monkeypatch):
     """Capture every ``emit.request`` payload into a list."""
-    from vllm_mlx.telemetry import emit
+    from rapid_mlx.telemetry import emit
 
     captured: list[dict] = []
 
@@ -99,7 +99,7 @@ def _capture_request(monkeypatch, captured):
     test can assert on raw values (e.g. exact ``ttft_ms``) that are otherwise
     bucketed in the wire payload. Mirrors the emit.request-capture pattern in
     ``test_telemetry_streaming_request_wiring.py``."""
-    from vllm_mlx.telemetry import emit
+    from rapid_mlx.telemetry import emit
 
     def _wrapper(**kw):
         captured.append(kw)
@@ -164,8 +164,8 @@ class _AnthropicEngine:
 def _anthropic_client(
     engine: _AnthropicEngine, *, reasoning_parser_name: str | None = None
 ) -> TestClient:
-    from vllm_mlx.config import reset_config
-    from vllm_mlx.routes.anthropic import router
+    from rapid_mlx.config import reset_config
+    from rapid_mlx.routes.anthropic import router
 
     cfg = reset_config()
     cfg.engine = engine
@@ -330,7 +330,7 @@ def test_anthropic_stream_ttft_ignores_parser_suppressed_reasoning(
     calls: list[dict] = []
     _capture_request(monkeypatch, calls)
     monkeypatch.setattr(
-        "vllm_mlx.reasoning.get_parser", lambda _name: _HeldPrefixParser
+        "rapid_mlx.reasoning.get_parser", lambda _name: _HeldPrefixParser
     )
 
     engine = _HeldPrefixEngine()
@@ -479,7 +479,7 @@ def _completions_client(monkeypatch, stream_generate=None):
     default places the post-first-token gap AFTER the first generated chunk —
     the correct shape for proving true TTFT on a plain (non-echo) stream.
     """
-    from vllm_mlx.routes import completions as completions_mod
+    from rapid_mlx.routes import completions as completions_mod
 
     fake_engine = MagicMock()
 
@@ -543,8 +543,8 @@ def _completions_client(monkeypatch, stream_generate=None):
     monkeypatch.setattr(completions_mod, "_wait_with_disconnect", _passthrough)
 
     with (
-        patch("vllm_mlx.middleware.auth.verify_api_key", new=lambda *a, **k: None),
-        patch("vllm_mlx.middleware.auth.check_rate_limit", new=lambda *a, **k: None),
+        patch("rapid_mlx.middleware.auth.verify_api_key", new=lambda *a, **k: None),
+        patch("rapid_mlx.middleware.auth.check_rate_limit", new=lambda *a, **k: None),
     ):
         app = FastAPI()
         app.include_router(completions_mod.router)

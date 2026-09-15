@@ -76,7 +76,7 @@ def _mask_mlx_vlm(monkeypatch):
 
 def test_mlx_vlm_available_returns_false_when_missing(monkeypatch):
     """R-10 probe must return False on a base install with no extras."""
-    from vllm_mlx.models.mllm import mlx_vlm_available
+    from rapid_mlx.models.mllm import mlx_vlm_available
 
     _mask_mlx_vlm(monkeypatch)
     assert mlx_vlm_available() is False
@@ -86,7 +86,7 @@ def test_require_mlx_vlm_or_exit_prints_hint_and_exits(monkeypatch, capsys):
     """R-10 fix: boot guard must emit the actionable install hint to
     stderr and ``sys.exit(2)`` — same shape as
     :func:`require_mlx_embeddings_or_exit`."""
-    from vllm_mlx.models.mllm import require_mlx_vlm_or_exit
+    from rapid_mlx.models.mllm import require_mlx_vlm_or_exit
 
     _mask_mlx_vlm(monkeypatch)
 
@@ -112,13 +112,13 @@ def test_require_mlx_vlm_or_exit_prints_hint_and_exits(monkeypatch, capsys):
 def test_require_mlx_vlm_or_exit_is_noop_when_installed(monkeypatch):
     """When ``mlx_vlm`` IS installed (or its spec is fakable), the
     guard returns silently — no SystemExit, no stderr output."""
-    from vllm_mlx.models.mllm import VisionRuntimeStatus, require_mlx_vlm_or_exit
+    from rapid_mlx.models.mllm import VisionRuntimeStatus, require_mlx_vlm_or_exit
 
     # Force the runtime probe to report OK without touching sys.modules.
     # ``require_mlx_vlm_or_exit`` now branches on ``vision_runtime_status()``
     # directly (single authoritative probe), so patch that.
     monkeypatch.setattr(
-        "vllm_mlx.models.mllm.vision_runtime_status",
+        "rapid_mlx.models.mllm.vision_runtime_status",
         lambda: (VisionRuntimeStatus.OK, None),
     )
 
@@ -134,7 +134,7 @@ def test_engine_side_require_mlx_vlm_still_raises_importerror(
     skip the CLI guard (test harnesses, direct ``MLXMultimodalLM``
     use) still need an actionable message rather than a raw
     ``ModuleNotFoundError`` from deep inside the load path."""
-    from vllm_mlx.models.mllm import _require_mlx_vlm
+    from rapid_mlx.models.mllm import _require_mlx_vlm
 
     _mask_mlx_vlm(monkeypatch)
 

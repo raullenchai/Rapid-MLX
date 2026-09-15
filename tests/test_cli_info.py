@@ -15,7 +15,7 @@ import io
 import sys
 from unittest.mock import patch
 
-from vllm_mlx import cli
+from rapid_mlx import cli
 
 
 def _run_info(model_name: str) -> str:

@@ -23,7 +23,7 @@ pytestmark = pytest.mark.requires_mlx
 import mlx.nn as nn
 from mlx_lm.models.switch_layers import QuantizedSwitchLinear, SwitchGLU, SwitchLinear
 
-from vllm_mlx import moe_fusion
+from rapid_mlx import moe_fusion
 
 # Small MoE geometry: E experts, k active, quantization-friendly dims.
 E, HID, INTER, K = 8, 64, 128, 2
@@ -160,8 +160,8 @@ class TestRewriteSemantics:
         import mlx_vlm
         import mlx_vlm.utils
 
-        from vllm_mlx.models import mllm
-        from vllm_mlx.utils import tokenizer as tokenizer_utils
+        from rapid_mlx.models import mllm
+        from rapid_mlx.utils import tokenizer as tokenizer_utils
 
         model = TinyVLMMoE(n_layers=1)
         model.config = type("Config", (), {})()
@@ -232,8 +232,8 @@ class TestRewriteSemantics:
         import mlx_vlm
         import mlx_vlm.utils
 
-        from vllm_mlx.models import mllm
-        from vllm_mlx.utils import tokenizer as tokenizer_utils
+        from rapid_mlx.models import mllm
+        from rapid_mlx.utils import tokenizer as tokenizer_utils
 
         model = TinyVLMMoE(n_layers=1)
         model.config = type("Config", (), {})()

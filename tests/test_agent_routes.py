@@ -8,8 +8,8 @@ from fastapi import FastAPI
 from fastapi.responses import Response
 from fastapi.testclient import TestClient
 
-from vllm_mlx.agent_runtime import AgentRunStatus, ToolRisk, ToolSpec
-from vllm_mlx.agent_runtime.server import (
+from rapid_mlx.agent_runtime import AgentRunStatus, ToolRisk, ToolSpec
+from rapid_mlx.agent_runtime.server import (
     AgentEventsView,
     AgentRunCapacityError,
     AgentRunConflictError,
@@ -20,16 +20,16 @@ from vllm_mlx.agent_runtime.server import (
     AgentToolSelectionError,
     generate_chat_turn,
 )
-from vllm_mlx.api.models import (
+from rapid_mlx.api.models import (
     AssistantMessage,
     ChatCompletionChoice,
     ChatCompletionResponse,
     FunctionCall,
     ToolCall,
 )
-from vllm_mlx.config import get_config, reset_config
-from vllm_mlx.middleware.auth import check_rate_limit, verify_api_key
-from vllm_mlx.routes import agents as agent_routes
+from rapid_mlx.config import get_config, reset_config
+from rapid_mlx.middleware.auth import check_rate_limit, verify_api_key
+from rapid_mlx.routes import agents as agent_routes
 
 
 @pytest.mark.asyncio
@@ -63,7 +63,7 @@ async def test_chat_driver_reuses_non_stream_route_and_decodes_tool_call(monkeyp
             media_type="application/json",
         )
 
-    from vllm_mlx.routes import chat as chat_routes
+    from rapid_mlx.routes import chat as chat_routes
 
     monkeypatch.setattr(chat_routes, "create_chat_completion", fake_chat)
     settings = AgentRunCreateRequest(goal="Read notes")
@@ -106,7 +106,7 @@ async def test_chat_driver_rejects_output_limit_truncation(monkeypatch):
     async def fake_chat(*_args):
         return Response(content=response.model_dump_json(exclude_none=True))
 
-    from vllm_mlx.routes import chat as chat_routes
+    from rapid_mlx.routes import chat as chat_routes
 
     monkeypatch.setattr(chat_routes, "create_chat_completion", fake_chat)
 
@@ -143,7 +143,7 @@ async def test_chat_driver_fails_closed_on_malformed_tool_arguments(
     async def fake_chat(*_args):
         return Response(content=response.model_dump_json(exclude_none=True))
 
-    from vllm_mlx.routes import chat as chat_routes
+    from rapid_mlx.routes import chat as chat_routes
 
     monkeypatch.setattr(chat_routes, "create_chat_completion", fake_chat)
 
@@ -158,7 +158,7 @@ async def test_chat_driver_fails_closed_on_malformed_tool_arguments(
 
 @pytest.mark.asyncio
 async def test_chat_driver_rejects_unsuccessful_or_ambiguous_response(monkeypatch):
-    from vllm_mlx.routes import chat as chat_routes
+    from rapid_mlx.routes import chat as chat_routes
 
     async def unavailable(*_args):
         return Response(status_code=503)
@@ -549,7 +549,7 @@ def test_agent_create_maps_registry_lookup_and_single_metadata_failures(monkeypa
 
 
 def test_http_error_maps_registry_unavailable_to_503():
-    from vllm_mlx.agent_runtime.server import AgentToolRegistryUnavailableError
+    from rapid_mlx.agent_runtime.server import AgentToolRegistryUnavailableError
 
     error = agent_routes._http_error(
         AgentToolRegistryUnavailableError("registry unavailable")

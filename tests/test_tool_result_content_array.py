@@ -13,14 +13,14 @@ via ``json.dumps(default=str)`` inside
 instead of "4".
 
 Fix:
-* ``vllm_mlx/routes/chat.py`` — accept ``str``, ``None`` or a text-only
+* ``rapid_mlx/routes/chat.py`` — accept ``str``, ``None`` or a text-only
   content-parts array on a ``tool`` role and 400 anything else (non-text
   parts would be silently dropped by the renderer = the F-111 footgun).
-* ``vllm_mlx/api/utils.py::extract_multimodal_content`` — flatten the
+* ``rapid_mlx/api/utils.py::extract_multimodal_content`` — flatten the
   text-only array to a plain string at the API boundary so the
   ``json.dumps(default=str)`` hazard downstream never sees a pydantic
   ``ContentPart`` instance.
-* ``vllm_mlx/utils/chat_template.py::_normalize_text_only_content_arrays``
+* ``rapid_mlx/utils/chat_template.py::_normalize_text_only_content_arrays``
   — defence-in-depth: any text-only content array reaching the
   template wrapper (engine tests, the speculative server, the gradio
   app) is flattened to a string before render.
@@ -38,12 +38,12 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from vllm_mlx.api.models import ContentPart, Message
-from vllm_mlx.api.utils import extract_multimodal_content
-from vllm_mlx.config import reset_config
-from vllm_mlx.engine.base import GenerationOutput
-from vllm_mlx.routes.chat import router as chat_router
-from vllm_mlx.utils.chat_template import (
+from rapid_mlx.api.models import ContentPart, Message
+from rapid_mlx.api.utils import extract_multimodal_content
+from rapid_mlx.config import reset_config
+from rapid_mlx.engine.base import GenerationOutput
+from rapid_mlx.routes.chat import router as chat_router
+from rapid_mlx.utils.chat_template import (
     _is_text_only_content_array,
     _join_text_parts,
     _normalize_text_only_content_arrays,

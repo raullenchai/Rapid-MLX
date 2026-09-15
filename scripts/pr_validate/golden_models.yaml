@@ -122,7 +122,7 @@ families:
     candidates:
       # Added 2026-06-16 (v0.7.15) to close the DiffusionEngine coverage
       # gap. ``modality: text-diffusion`` aliases route via
-      # ``vllm_mlx/runtime/diffusion_lane.py::DiffusionEngine`` →
+      # ``rapid_mlx/runtime/diffusion_lane.py::DiffusionEngine`` →
       # ``mlx_vlm.generate.diffusion.stream_diffusion_generate`` —
       # completely independent from BatchedEngine (the AR LLM path the
       # other families cover). Without an entry here, any PR that
@@ -156,7 +156,7 @@ families:
       # Added 2026-05-21 to close the router-allowlist coverage gap surfaced
       # by Bug A (v0.6.62 tool-call streaming regression). The two families
       # routed through OutputRouter — `gemma4` and `harmony`
-      # (vllm_mlx/engine/batched.py:_OUTPUT_ROUTER_ALLOWLIST) — were both
+      # (rapid_mlx/engine/batched.py:_OUTPUT_ROUTER_ALLOWLIST) — were both
       # absent from this matrix when Bug A shipped, so no PR could have
       # caught the regression at the integration layer. Gemma 4 remains
       # excluded (see note below — model-side instruction-following
@@ -235,7 +235,7 @@ overrides:
   # against the upstream Qwen3.6 base template. Hermes parser handles
   # both Hermes-style JSON (<tool_call>{"name":...}</tool_call>) and
   # the bare-XML fallback (<function=...>) via BARE_FUNCTION_PATTERN
-  # in vllm_mlx/tool_parsers/hermes_tool_parser.py, so the same
+  # in rapid_mlx/tool_parsers/hermes_tool_parser.py, so the same
   # override is correct for both candidates and either picked entry
   # (8-bit primary or 4-bit fallback) parses cleanly.
   "unsloth/Qwen3.6-27B-MLX-8bit":
@@ -250,7 +250,7 @@ overrides:
   "mlx-community/gpt-oss-20b-MXFP4-Q8":
     args: ["--enable-auto-tool-choice", "--tool-call-parser", "harmony"]
   # DiffusionGemma uses the gemma4 tool-call wire format (alias profile
-  # in ``vllm_mlx/aliases.json`` declares ``tool_call_parser: gemma4``;
+  # in ``rapid_mlx/aliases.json`` declares ``tool_call_parser: gemma4``;
   # auto-detect picks it through the alias). Explicit override mirrors
   # the qwen / harmony convention above for grep-traceability at the
   # validation surface.
@@ -264,7 +264,7 @@ overrides:
 #
 # NAMING: these are SDKs (Anthropic, LangChain, Pydantic-AI), NOT the coding
 # agents in ``docs/agents/matrix.md`` (Codex CLI, Claude Code, …) and NOT the
-# profiles in ``vllm_mlx/agents/``. Three different lists have historically
+# profiles in ``rapid_mlx/agents/``. Three different lists have historically
 # been called "the agent matrix"; this one is the SDK matrix that pr_validate
 # runs per-PR. The coding-agent matrix lives in
 # ``tests/integrations/test_agents_matrix.py`` and is not run by pr_validate.

@@ -30,9 +30,9 @@ from unittest.mock import MagicMock, call, patch
 
 import pytest
 
-from vllm_mlx.share import cli as share_cli
-from vllm_mlx.share import quicksilver as qs
-from vllm_mlx.share import ws_tunnel
+from rapid_mlx.share import cli as share_cli
+from rapid_mlx.share import quicksilver as qs
+from rapid_mlx.share import ws_tunnel
 
 SHARE_KEY = "qspsk-" + "k" * 32
 PROVIDER_KEY = "qsppk-" + "p" * 32
@@ -1363,7 +1363,7 @@ def test_heartbeat_404_beats_on_and_logs_once(caplog):
 
     with (
         patch.object(qs, "_open", fake_urlopen),
-        caplog.at_level(logging.INFO, logger="vllm_mlx.share.quicksilver"),
+        caplog.at_level(logging.INFO, logger="rapid_mlx.share.quicksilver"),
     ):
         hb._beat_once()
         hb._beat_once()
@@ -1450,7 +1450,7 @@ def test_heartbeat_stop_warns_when_thread_survives_join(caplog):
     hb = _hb()
     hb._thread = MagicMock()
     hb._thread.is_alive.return_value = True
-    with caplog.at_level(logging.WARNING, logger="vllm_mlx.share.quicksilver"):
+    with caplog.at_level(logging.WARNING, logger="rapid_mlx.share.quicksilver"):
         hb.stop()
     assert "one final request" in caplog.text
 
@@ -1591,7 +1591,7 @@ def test_run_share_serve_uses_served_model_name_catalog_id():
 
 def test_top_level_cli_accepts_known_quicksilver_catalog_id(monkeypatch):
     """The global alias guard must let the pool resolver map catalog ids."""
-    from vllm_mlx import cli as top_cli
+    from rapid_mlx import cli as top_cli
 
     called = MagicMock()
     monkeypatch.setattr(
@@ -2377,7 +2377,7 @@ def test_save_cache_preserves_primary_error_when_tmp_cleanup_fails():
 
 
 def test_resolve_serve_hf_path_uses_profile_and_falls_back():
-    import vllm_mlx.model_aliases as aliases
+    import rapid_mlx.model_aliases as aliases
 
     with patch.object(aliases, "resolve_profile", return_value={"hf_path": "org/repo"}):
         assert qs._resolve_serve_hf_path("alias") == "org/repo"
@@ -2393,9 +2393,9 @@ def test_wire_urls_require_a_host_even_with_secure_scheme():
 
 
 def test_hardware_info_is_best_effort(monkeypatch):
-    import vllm_mlx
+    import rapid_mlx
 
-    monkeypatch.delattr(vllm_mlx, "__version__")
+    monkeypatch.delattr(rapid_mlx, "__version__")
     with patch.object(qs.subprocess, "run", side_effect=OSError("no sysctl")):
         assert qs._hardware_info() == {}
 

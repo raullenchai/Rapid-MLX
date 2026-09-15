@@ -21,7 +21,7 @@ import pytest
 
 pytestmark = pytest.mark.requires_mlx
 
-from vllm_mlx.speculative.suffix_decoding import (
+from rapid_mlx.speculative.suffix_decoding import (
     DraftStats,
     SuffixDecodingDrafter,
 )
@@ -243,8 +243,8 @@ class TestInstallSuffixDecoding:
         """
         from unittest.mock import MagicMock
 
-        from vllm_mlx.model_auto_config import ModelConfig
-        from vllm_mlx.scheduler import _install_suffix_decoding
+        from rapid_mlx.model_auto_config import ModelConfig
+        from rapid_mlx.scheduler import _install_suffix_decoding
 
         bg, gb = self._make_fake_bg()
         orig_step = gb._step
@@ -277,8 +277,8 @@ class TestInstallSuffixDecoding:
         """Default ``supports_spec_decode=True`` → step/next replaced + stats attached."""
         from unittest.mock import MagicMock
 
-        from vllm_mlx.model_auto_config import ModelConfig
-        from vllm_mlx.scheduler import _install_suffix_decoding
+        from rapid_mlx.model_auto_config import ModelConfig
+        from rapid_mlx.scheduler import _install_suffix_decoding
 
         bg, gb = self._make_fake_bg()
         orig_step = gb._step
@@ -316,7 +316,7 @@ class TestInstallSuffixDecoding:
         """``profile=None`` → install proceeds (default-on for unknown families)."""
         from unittest.mock import MagicMock
 
-        from vllm_mlx.scheduler import _install_suffix_decoding
+        from rapid_mlx.scheduler import _install_suffix_decoding
 
         bg, gb = self._make_fake_bg()
         orig_step = gb._step
@@ -340,7 +340,7 @@ class TestInstallSuffixDecoding:
         install logs a warning and returns without patching anything."""
         from unittest.mock import MagicMock
 
-        from vllm_mlx.scheduler import _install_suffix_decoding
+        from rapid_mlx.scheduler import _install_suffix_decoding
 
         # bg WITHOUT _generation_batch — simulates pre-0.31 mlx-lm
         class _BG:
@@ -372,7 +372,7 @@ class TestInstallSuffixDecoding:
         """
         from unittest.mock import MagicMock
 
-        from vllm_mlx.scheduler import _install_suffix_decoding
+        from rapid_mlx.scheduler import _install_suffix_decoding
 
         bg, _gb = self._make_fake_bg()
 
@@ -399,8 +399,8 @@ class TestInstallSuffixDecoding:
 
         import mlx.core as mx
 
-        from vllm_mlx import scheduler
-        from vllm_mlx.speculative import suffix_decoding
+        from rapid_mlx import scheduler
+        from rapid_mlx.speculative import suffix_decoding
 
         class Drafter:
             def __init__(self, **_kwargs):
@@ -481,7 +481,7 @@ class TestInstallSuffixDecoding:
     def test_advance_rejects_unconvertible_cache_size(self, bad_size):
         from types import SimpleNamespace
 
-        from vllm_mlx.cache_rollback import can_advance
+        from rapid_mlx.cache_rollback import can_advance
 
         cache = SimpleNamespace(
             can_trim=lambda _n: True,
@@ -516,7 +516,7 @@ class TestInstallSuffixDecoding:
         """
         from unittest.mock import MagicMock
 
-        from vllm_mlx.scheduler import _install_suffix_decoding
+        from rapid_mlx.scheduler import _install_suffix_decoding
 
         bg, _gb = self._make_fake_bg()
 
@@ -555,8 +555,8 @@ class TestInstallSuffixDecoding:
         from types import SimpleNamespace
         from unittest.mock import MagicMock
 
-        from vllm_mlx.scheduler import _install_suffix_decoding
-        from vllm_mlx.speculative.suffix_decoding import SuffixDecodingDrafter
+        from rapid_mlx.scheduler import _install_suffix_decoding
+        from rapid_mlx.speculative.suffix_decoding import SuffixDecodingDrafter
 
         bg, gb = self._make_fake_bg()
         # The wrapped next() will call _orig_next() which returns a single
@@ -603,8 +603,8 @@ class TestInstallSuffixDecoding:
         """
         from unittest.mock import MagicMock
 
-        from vllm_mlx.scheduler import _install_suffix_decoding
-        from vllm_mlx.speculative.suffix_decoding import SuffixDecodingDrafter
+        from rapid_mlx.scheduler import _install_suffix_decoding
+        from rapid_mlx.speculative.suffix_decoding import SuffixDecodingDrafter
 
         bg, gb = self._make_fake_bg()
 
@@ -649,8 +649,8 @@ class TestInstallSuffixDecoding:
         ``still_present`` as surviving the failed call."""
         from unittest.mock import MagicMock
 
-        from vllm_mlx.scheduler import _install_suffix_decoding
-        from vllm_mlx.speculative.suffix_decoding import SuffixDecodingDrafter
+        from rapid_mlx.scheduler import _install_suffix_decoding
+        from rapid_mlx.speculative.suffix_decoding import SuffixDecodingDrafter
 
         bg, gb = self._make_fake_bg()
 

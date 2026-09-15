@@ -3,12 +3,12 @@
 
 Scope: every layer that doesn't require loading an MLX model:
 
-- ``vllm_mlx.community_bench.hardware`` — the allowlist guard,
+- ``rapid_mlx.community_bench.hardware`` — the allowlist guard,
   ``is_apple_silicon`` gate, version probes.
-- ``vllm_mlx.community_bench.runner`` — pure helpers (``_stat``,
+- ``rapid_mlx.community_bench.runner`` — pure helpers (``_stat``,
   ``_build_synthetic_prompt``, ``_prompt_hash``,
   ``_make_sampling_params_factory``, ``standardized_config_dict``).
-- ``vllm_mlx.community_bench.submission`` — payload builder, slugs,
+- ``rapid_mlx.community_bench.submission`` — payload builder, slugs,
   consent prompt, filename, manual-fallback printing,
   ``submit_interactive`` end-to-end with monkeypatched git/gh.
 - ``community-benchmarks/scripts/validate.py`` — every failure mode
@@ -40,7 +40,7 @@ pytestmark = pytest.mark.requires_mlx
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SCRIPTS_DIR = REPO_ROOT / "community-benchmarks" / "scripts"
 SCHEMA_PATH = REPO_ROOT / "community-benchmarks" / "schema.json"
-ALIASES_PATH = REPO_ROOT / "vllm_mlx" / "aliases.json"
+ALIASES_PATH = REPO_ROOT / "rapid_mlx" / "aliases.json"
 
 
 # ---------------------------------------------------------------------------
@@ -56,7 +56,7 @@ def test_run_rejects_disallowed_binary() -> None:
     guard directly so a refactor that quietly inlines the subprocess
     call still trips this check.
     """
-    from vllm_mlx.community_bench import hardware
+    from rapid_mlx.community_bench import hardware
 
     with pytest.raises(RuntimeError, match="disallowed binary"):
         hardware._run(["/bin/ls", "/"], timeout=1.0)
@@ -66,7 +66,7 @@ def test_run_rejects_empty_argv() -> None:
     """Empty cmd[] used to raise IndexError on ``cmd[0]``; the contract
     promises RuntimeError on every bad input. (Codex PR #582 round-7
     BLOCKING.)"""
-    from vllm_mlx.community_bench import hardware
+    from rapid_mlx.community_bench import hardware
 
     with pytest.raises(RuntimeError, match="disallowed binary"):
         hardware._run([], timeout=1.0)
@@ -74,7 +74,7 @@ def test_run_rejects_empty_argv() -> None:
 
 def test_run_executes_allowlisted_binary(tmp_path: Path) -> None:
     """A known-good allowlisted binary returns its stripped stdout."""
-    from vllm_mlx.community_bench import hardware
+    from rapid_mlx.community_bench import hardware
 
     if sys.platform != "darwin":
         pytest.skip("sw_vers only exists on macOS")
@@ -86,7 +86,7 @@ def test_run_executes_allowlisted_binary(tmp_path: Path) -> None:
 
 def test_is_apple_silicon_matches_platform() -> None:
     """Sanity check the gate matches the actual host."""
-    from vllm_mlx.community_bench import hardware
+    from rapid_mlx.community_bench import hardware
 
     expected = sys.platform == "darwin" and os.uname().machine == "arm64"
     assert hardware.is_apple_silicon() is expected
@@ -94,7 +94,7 @@ def test_is_apple_silicon_matches_platform() -> None:
 
 def test_collect_refuses_non_apple_silicon(monkeypatch) -> None:
     """Calling ``collect()`` off Apple Silicon must raise."""
-    from vllm_mlx.community_bench import hardware
+    from rapid_mlx.community_bench import hardware
 
     monkeypatch.setattr(hardware, "is_apple_silicon", lambda: False)
     with pytest.raises(RuntimeError, match="Apple-Silicon-only"):
@@ -103,7 +103,7 @@ def test_collect_refuses_non_apple_silicon(monkeypatch) -> None:
 
 def test_rapid_mlx_version_resolves() -> None:
     """The probe should at least return a string (real version or 'unknown')."""
-    from vllm_mlx.community_bench import hardware
+    from rapid_mlx.community_bench import hardware
 
     v = hardware._rapid_mlx_version()
     assert isinstance(v, str) and v
@@ -116,13 +116,13 @@ def test_rapid_mlx_version_resolves() -> None:
 
 def test_stat_single_value() -> None:
     """``_stat`` with one sample uses pstdev (0), not raising sample stdev."""
-    from vllm_mlx.community_bench.runner import _stat
+    from rapid_mlx.community_bench.runner import _stat
 
     assert _stat([5.0]) == {"median": 5.0, "min": 5.0, "max": 5.0, "stddev": 0.0}
 
 
 def test_stat_multi_value() -> None:
-    from vllm_mlx.community_bench.runner import _stat
+    from rapid_mlx.community_bench.runner import _stat
 
     s = _stat([1.0, 2.0, 3.0, 4.0, 5.0])
     assert s["median"] == 3.0
@@ -139,7 +139,7 @@ def test_synthetic_prompt_deterministic() -> None:
     string is just a join of stringified ids) to keep the test free of
     model weights.
     """
-    from vllm_mlx.community_bench import runner
+    from rapid_mlx.community_bench import runner
 
     class _StubTokenizer:
         vocab_size = 32_000
@@ -156,7 +156,7 @@ def test_synthetic_prompt_deterministic() -> None:
 
 def test_synthetic_prompt_seed_varies() -> None:
     """Different seed ⇒ different prompt (probabilistically certain for n=100)."""
-    from vllm_mlx.community_bench import runner
+    from rapid_mlx.community_bench import runner
 
     class _StubTokenizer:
         vocab_size = 32_000
@@ -172,7 +172,7 @@ def test_synthetic_prompt_seed_varies() -> None:
 def test_synthetic_prompt_rejects_tiny_vocab() -> None:
     """A pathologically small vocab raises rather than silently producing
     a degenerate prompt."""
-    from vllm_mlx.community_bench import runner
+    from rapid_mlx.community_bench import runner
 
     class _TinyTok:
         vocab_size = 50
@@ -185,7 +185,7 @@ def test_synthetic_prompt_rejects_tiny_vocab() -> None:
 
 
 def test_registered_token_ids_match_dataset_golden_vector() -> None:
-    from vllm_mlx.community_bench import runner
+    from rapid_mlx.community_bench import runner
 
     class _Tokenizer:
         vocab_size = 1000
@@ -204,7 +204,7 @@ def test_registered_token_ids_match_dataset_golden_vector() -> None:
 
 
 def test_registered_token_ids_require_special_token_evidence() -> None:
-    from vllm_mlx.community_bench import runner
+    from rapid_mlx.community_bench import runner
 
     class _Tokenizer:
         vocab_size = 1000
@@ -216,7 +216,7 @@ def test_registered_token_ids_require_special_token_evidence() -> None:
 def test_registered_bucket_feeds_token_ids_directly(monkeypatch) -> None:
     import asyncio
 
-    from vllm_mlx.community_bench import runner
+    from rapid_mlx.community_bench import runner
 
     class _Tokenizer:
         vocab_size = 1000
@@ -285,7 +285,7 @@ def test_registered_bucket_feeds_token_ids_directly(monkeypatch) -> None:
 
 
 def test_prompt_hash_stable() -> None:
-    from vllm_mlx.community_bench.runner import _prompt_hash
+    from rapid_mlx.community_bench.runner import _prompt_hash
 
     h = _prompt_hash([1, 2, 3], [4, 5, 6])
     assert len(h) == 16 and all(c in "0123456789abcdef" for c in h)
@@ -294,7 +294,7 @@ def test_prompt_hash_stable() -> None:
 
 
 def test_make_sampling_params_factory() -> None:
-    from vllm_mlx.community_bench import runner
+    from rapid_mlx.community_bench import runner
 
     greedy = runner._make_sampling_params_factory("greedy")
     sampled = runner._make_sampling_params_factory("sampled")
@@ -324,7 +324,7 @@ def test_bench_sampling_always_ignores_eos() -> None:
     MUST set ``ignore_eos=True``. If a future refactor drops the flag,
     the bench fails again on the same models that hit it the first time.
     """
-    from vllm_mlx.community_bench import runner
+    from rapid_mlx.community_bench import runner
 
     for sampling_mode in ("greedy", "sampled"):
         factory = runner._make_sampling_params_factory(sampling_mode)
@@ -350,8 +350,8 @@ def test_scheduler_honours_ignore_eos() -> None:
     were deleted. Deleting the ``ignore_eos`` branch from
     ``_assemble_stop_tokens`` now fails this test.
     """
-    from vllm_mlx.request import SamplingParams
-    from vllm_mlx.scheduler import _assemble_stop_tokens
+    from rapid_mlx.request import SamplingParams
+    from rapid_mlx.scheduler import _assemble_stop_tokens
 
     model_eos_tokens = {2, 151645, 151643}  # arbitrary stand-in EOS ids
 
@@ -401,14 +401,14 @@ def test_scheduler_batch_generator_reuse_key_includes_ignore_eos() -> None:
     the same refactor updated the test in lockstep; calling the real
     method makes that escape impossible.
     """
-    # vllm_mlx.scheduler imports mlx unconditionally at module top, so
+    # rapid_mlx.scheduler imports mlx unconditionally at module top, so
     # this test only runs where Apple Silicon mlx is installed; on Linux
     # CI it skips. pr_validate (PR #612 round 1) classified it as a
     # regression for failing on Linux with ModuleNotFoundError — the
     # skip restores the correct "no mlx → no opinion" semantics.
     pytest.importorskip("mlx")
-    from vllm_mlx.request import SamplingParams
-    from vllm_mlx.scheduler import Scheduler
+    from rapid_mlx.request import SamplingParams
+    from rapid_mlx.scheduler import Scheduler
 
     sentinel = object()
     create_calls = []
@@ -508,8 +508,8 @@ def test_scheduler_batch_generator_reuses_across_different_sampler_params() -> N
     sampler params don't need to match for reuse.
     """
     pytest.importorskip("mlx")
-    from vllm_mlx.request import SamplingParams
-    from vllm_mlx.scheduler import Scheduler
+    from rapid_mlx.request import SamplingParams
+    from rapid_mlx.scheduler import Scheduler
 
     sentinel = object()
     create_calls = []
@@ -575,8 +575,8 @@ def test_scheduler_batch_generator_reuse_key_includes_stop_token_ids() -> None:
     triggers a rebuild (or, with an active batch, a requeue).
     """
     pytest.importorskip("mlx")
-    from vllm_mlx.request import SamplingParams
-    from vllm_mlx.scheduler import Scheduler
+    from rapid_mlx.request import SamplingParams
+    from rapid_mlx.scheduler import Scheduler
 
     sentinel = object()
     create_calls = []
@@ -651,7 +651,7 @@ def test_scheduler_batch_generator_reuse_key_includes_stop_token_ids() -> None:
 def test_standardized_config_dict_matches_schema_consts() -> None:
     """The hardcoded constants in ``config`` must equal the schema's
     ``const`` values — schema validation depends on this."""
-    from vllm_mlx.community_bench.runner import standardized_config_dict
+    from rapid_mlx.community_bench.runner import standardized_config_dict
 
     cfg = standardized_config_dict("greedy", "deadbeefcafebabe")
     schema = json.loads(SCHEMA_PATH.read_text())
@@ -679,7 +679,7 @@ def test_standardized_config_dict_matches_schema_consts() -> None:
 
 def _stub_bench_result(sampling: str = "greedy"):
     """Build a ``BenchResult`` with plausible numbers for payload tests."""
-    from vllm_mlx.community_bench.runner import (
+    from rapid_mlx.community_bench.runner import (
         BenchResult,
         BucketResult,
         RoundResult,
@@ -698,7 +698,7 @@ def _stub_bench_result(sampling: str = "greedy"):
 
 
 def _stub_hw_sw():
-    from vllm_mlx.community_bench.hardware import Hardware, Software
+    from rapid_mlx.community_bench.hardware import Hardware, Software
 
     hw = Hardware(chip="Apple M4 Pro", ram_gb=24, cpu_cores=12, gpu_cores=20)
     sw = Software(macos="26.5.1", rapid_mlx="0.7.6", mlx="0.31.2", python="3.12.13")
@@ -708,7 +708,7 @@ def _stub_hw_sw():
 def test_build_payload_matches_schema() -> None:
     """The payload built from real-shaped inputs must validate."""
     jsonschema = pytest.importorskip("jsonschema")
-    from vllm_mlx.community_bench.submission import build_submission_payload
+    from rapid_mlx.community_bench.submission import build_submission_payload
 
     hw, sw = _stub_hw_sw()
     payload = build_submission_payload(
@@ -725,12 +725,12 @@ def test_build_payload_matches_schema() -> None:
 
 
 def test_build_payload_omits_optional_fields_when_none() -> None:
-    from vllm_mlx.community_bench.runner import (
+    from rapid_mlx.community_bench.runner import (
         BenchResult,
         BucketResult,
         RoundResult,
     )
-    from vllm_mlx.community_bench.submission import build_submission_payload
+    from rapid_mlx.community_bench.submission import build_submission_payload
 
     rounds = [RoundResult(40, 500, 100) for _ in range(5)]
     bench = BenchResult(
@@ -755,7 +755,7 @@ def test_build_payload_omits_optional_fields_when_none() -> None:
 
 
 def test_slugify() -> None:
-    from vllm_mlx.community_bench.submission import _slugify
+    from rapid_mlx.community_bench.submission import _slugify
 
     assert _slugify("Apple M3 Ultra") == "apple-m3-ultra"
     assert _slugify("Qwen3.5-9B-4bit") == "qwen3-5-9b-4bit"
@@ -766,7 +766,7 @@ def test_submission_filename_shape() -> None:
     """Filename must match the regex the validator enforces."""
     import re
 
-    from vllm_mlx.community_bench.submission import _submission_filename
+    from rapid_mlx.community_bench.submission import _submission_filename
 
     payload = {
         "submitted_at": "2026-06-15T10:30:00+00:00",
@@ -780,7 +780,7 @@ def test_submission_filename_shape() -> None:
 
 
 def test_ask_consent_yes() -> None:
-    from vllm_mlx.community_bench.submission import _ask_consent
+    from rapid_mlx.community_bench.submission import _ask_consent
 
     stdin = io.StringIO("y\n")
     stdout = io.StringIO()
@@ -806,7 +806,7 @@ def test_ask_consent_yes() -> None:
 
 def test_ask_consent_default_no() -> None:
     """Empty input (just Enter) cancels — defaults are safe."""
-    from vllm_mlx.community_bench.submission import _ask_consent
+    from rapid_mlx.community_bench.submission import _ask_consent
 
     stdin = io.StringIO("\n")
     stdout = io.StringIO()
@@ -819,7 +819,7 @@ def test_ask_consent_eof_is_no() -> None:
     Running ``rapid-mlx bench --submit < /dev/null`` in CI should never
     fire a PR off — explicit opt-in only.
     """
-    from vllm_mlx.community_bench.submission import _ask_consent
+    from rapid_mlx.community_bench.submission import _ask_consent
 
     stdin = io.StringIO("")
     stdout = io.StringIO()
@@ -827,7 +827,7 @@ def test_ask_consent_eof_is_no() -> None:
 
 
 def test_ask_consent_anything_other_than_y_is_no() -> None:
-    from vllm_mlx.community_bench.submission import _ask_consent
+    from rapid_mlx.community_bench.submission import _ask_consent
 
     for ans in ["n\n", "no\n", "Yes please\n", "definitely\n"]:
         # "Yes please" is interesting: ``Yes`` would pass but ``Yes please``
@@ -840,12 +840,12 @@ def test_ask_consent_anything_other_than_y_is_no() -> None:
 
 def test_submit_interactive_user_cancels(tmp_path: Path, monkeypatch) -> None:
     """A 'no' answer must not write a local copy or hit the network."""
-    from vllm_mlx.community_bench import submission as sub
+    from rapid_mlx.community_bench import submission as sub
 
     monkeypatch.setenv("RAPID_MLX_HOME", str(tmp_path))
     called = []
     monkeypatch.setattr(
-        "vllm_mlx.community_bench.upload.post_submission",
+        "rapid_mlx.community_bench.upload.post_submission",
         lambda *a, **k: called.append(1) or {"ok": True},
     )
     payload = {
@@ -872,12 +872,12 @@ def test_submit_interactive_does_not_require_a_git_checkout(
     of Rapid-MLX with an upstream remote — i.e. every pip/brew install. A
     plain empty directory must now submit successfully.
     """
-    from vllm_mlx.community_bench import submission as sub
+    from rapid_mlx.community_bench import submission as sub
 
     monkeypatch.setenv("RAPID_MLX_HOME", str(tmp_path))
     sent = {}
     monkeypatch.setattr(
-        "vllm_mlx.community_bench.upload.post_submission",
+        "rapid_mlx.community_bench.upload.post_submission",
         lambda payload, **k: sent.update(payload) or {"ok": True},
     )
     payload = {
@@ -897,15 +897,15 @@ def test_submit_interactive_saves_local_copy_before_sending(
     tmp_path: Path, monkeypatch
 ) -> None:
     """A network failure must never cost the contributor their run."""
-    from vllm_mlx.community_bench import submission as sub
-    from vllm_mlx.community_bench.upload import SubmitError
+    from rapid_mlx.community_bench import submission as sub
+    from rapid_mlx.community_bench.upload import SubmitError
 
     monkeypatch.setenv("RAPID_MLX_HOME", str(tmp_path))
 
     def boom(*a, **k):
         raise SubmitError("network is down")
 
-    monkeypatch.setattr("vllm_mlx.community_bench.upload.post_submission", boom)
+    monkeypatch.setattr("rapid_mlx.community_bench.upload.post_submission", boom)
     payload = {
         "schema_version": 3,
         "submission_id": "abcdef012345",
@@ -938,12 +938,12 @@ def test_the_archived_copy_is_the_submission_that_was_sent(
     identifier is now attached before consent, which also makes the archive
     diffable against what the board publishes.
     """
-    from vllm_mlx.community_bench import submission as sub
+    from rapid_mlx.community_bench import submission as sub
 
     monkeypatch.setenv("RAPID_MLX_HOME", str(tmp_path))
     sent = {}
     monkeypatch.setattr(
-        "vllm_mlx.community_bench.upload.post_submission",
+        "rapid_mlx.community_bench.upload.post_submission",
         lambda payload, **k: sent.update(payload) or {"ok": True},
     )
     payload = {
@@ -975,7 +975,7 @@ def test_find_upstream_remote_accepts_ssh_and_https(
     """``_find_upstream_remote`` must accept all git URL forms with or
     without the trailing ``.git`` suffix and on either ``origin`` or a
     fork-style ``upstream`` remote."""
-    from vllm_mlx.community_bench.submission import _find_upstream_remote
+    from rapid_mlx.community_bench.submission import _find_upstream_remote
 
     # Numeric-prefixed dirs avoid case-insensitive filesystem
     # collisions — macOS APFS folds case by default, so two URL
@@ -1008,7 +1008,7 @@ def test_find_upstream_remote_accepts_fork_with_upstream(
     """Standard community fork: origin is the user's fork, upstream is
     raullenchai/Rapid-MLX. Both must be recognized so the contributor
     can submit. (Codex PR #582 round-6 BLOCKING.)"""
-    from vllm_mlx.community_bench.submission import (
+    from rapid_mlx.community_bench.submission import (
         _find_upstream_remote,
         _origin_is_safe_github,
     )
@@ -1053,7 +1053,7 @@ def test_origin_is_safe_github_rejects_malicious_pushurl(tmp_path) -> None:
     fail the gate — ``git push origin`` honours pushurl, so a fetch-URL-
     only check would push the payload to the attacker. (Codex PR #582
     round-7 BLOCKING.)"""
-    from vllm_mlx.community_bench.submission import _origin_is_safe_github
+    from rapid_mlx.community_bench.submission import _origin_is_safe_github
 
     subprocess.run(
         ["git", "init", "-q", str(tmp_path)], check=True, capture_output=True
@@ -1094,7 +1094,7 @@ def test_origin_is_safe_github_allows_renamed_repo_for_metadata_check(
     tmp_path,
 ) -> None:
     """Local safety accepts renamed repos; GitHub verifies fork parent later."""
-    from vllm_mlx.community_bench.submission import _origin_is_safe_github
+    from rapid_mlx.community_bench.submission import _origin_is_safe_github
 
     subprocess.run(
         ["git", "init", "-q", str(tmp_path)], check=True, capture_output=True
@@ -1118,7 +1118,7 @@ def test_origin_is_safe_github_allows_renamed_repo_for_metadata_check(
 
 def test_origin_is_safe_github_rejects_invalid_owner(tmp_path) -> None:
     """Remote URL owners must match GitHub's login grammar."""
-    from vllm_mlx.community_bench.submission import _origin_is_safe_github
+    from rapid_mlx.community_bench.submission import _origin_is_safe_github
 
     subprocess.run(
         ["git", "init", "-q", str(tmp_path)], check=True, capture_output=True
@@ -1144,7 +1144,7 @@ def test_origin_is_safe_github_accepts_upstream_fetch_with_fork_pushurl(
     tmp_path,
 ) -> None:
     """The standard triangular workflow may fetch upstream and push a fork."""
-    from vllm_mlx.community_bench.submission import (
+    from rapid_mlx.community_bench.submission import (
         _find_contributor_push_target,
         _origin_is_safe_github,
     )
@@ -1204,7 +1204,7 @@ def test_find_fork_remote_rejects_same_owner_different_repo_pushurl(
     tmp_path,
 ) -> None:
     """A fork fetch URL cannot bless a same-owner push to another repo."""
-    from vllm_mlx.community_bench.submission import _find_fork_remote
+    from rapid_mlx.community_bench.submission import _find_fork_remote
 
     subprocess.run(
         ["git", "init", "-q", str(tmp_path)], check=True, capture_output=True
@@ -1244,7 +1244,7 @@ def test_find_contributor_push_target_requires_metadata_for_renamed_origin(
     tmp_path,
 ) -> None:
     """No-gh recovery does not guess whether a renamed origin is a fork."""
-    from vllm_mlx.community_bench.submission import (
+    from rapid_mlx.community_bench.submission import (
         _find_contributor_push_target,
     )
 
@@ -1287,7 +1287,7 @@ def test_find_contributor_push_target_prefers_origin_then_cli_remote(
     tmp_path, monkeypatch
 ) -> None:
     """Recovery never selects an arbitrary collaborator's fork remote."""
-    from vllm_mlx.community_bench.submission import (
+    from rapid_mlx.community_bench.submission import (
         _find_contributor_push_target,
     )
 
@@ -1307,7 +1307,7 @@ def test_find_contributor_push_target_prefers_origin_then_cli_remote(
         )
 
     monkeypatch.setattr(
-        "vllm_mlx.community_bench.submission._github_repo_is_writable_upstream_fork",
+        "rapid_mlx.community_bench.submission._github_repo_is_writable_upstream_fork",
         lambda _repo, path: path in {"origin-owner/rapid-mlx", "submitter/rapid-mlx"},
     )
     assert _find_contributor_push_target(tmp_path, verify_fork=True) == (
@@ -1341,7 +1341,7 @@ def test_make_pr_via_gh_branches_from_upstream_and_uses_owner_head(
     FETCH_HEAD (not local HEAD) so the contributor's other work isn't
     swept in, and (b) pass ``--head <owner>:<branch>`` so gh finds the
     branch on the fork. (Codex PR #582 round-7 BLOCKING.)"""
-    from vllm_mlx.community_bench import submission as sub_mod
+    from rapid_mlx.community_bench import submission as sub_mod
 
     captured: list[list[str]] = []
 
@@ -1419,7 +1419,7 @@ def test_make_pr_via_gh_direct_clone_contributor_creates_fork(
     push there, and open the PR with an owner-qualified head.  This is the
     exact checkout shape reported in #1066.
     """
-    from vllm_mlx.community_bench import submission as sub_mod
+    from rapid_mlx.community_bench import submission as sub_mod
 
     captured: list[list[str]] = []
     fork_added = False
@@ -1537,7 +1537,7 @@ def test_find_upstream_remote_rejects_evil_github_lookalike(
     """``endswith('github.com/raullenchai/rapid-mlx')`` accepts
     ``evilgithub.com/raullenchai/rapid-mlx``; our parser must not.
     (Codex PR #582 round-6 BLOCKING — URL spoofing.)"""
-    from vllm_mlx.community_bench.submission import _find_upstream_remote
+    from rapid_mlx.community_bench.submission import _find_upstream_remote
 
     subprocess.run(
         ["git", "init", "-q", str(tmp_path)], check=True, capture_output=True
@@ -2066,7 +2066,7 @@ def test_submission_make_pr_uses_repo_cwd(tmp_path, monkeypatch) -> None:
     user happened to be in when they ran ``rapid-mlx bench --submit``.
     (Codex PR #582 round-2 BLOCKING.)
     """
-    from vllm_mlx.community_bench import submission as sub_mod
+    from rapid_mlx.community_bench import submission as sub_mod
 
     calls: list[dict] = []
 
@@ -2140,7 +2140,7 @@ def test_state_aware_fallback_skips_already_completed_steps(
     branch already exists and is already pushed. (Codex PR #582
     round-5 BLOCKING.)
     """
-    from vllm_mlx.community_bench import submission as sub_mod
+    from rapid_mlx.community_bench import submission as sub_mod
 
     payload = {
         "submission_id": "abcdef012345",
@@ -2176,7 +2176,7 @@ def test_state_aware_fallback_preserves_pushed_fork_head_owner(
     tmp_path, monkeypatch
 ) -> None:
     """A post-push API outage cannot erase the selected fork PR head."""
-    from vllm_mlx.community_bench import submission as sub_mod
+    from rapid_mlx.community_bench import submission as sub_mod
 
     payload = {
         "submission_id": "abcdef012345",
@@ -2217,7 +2217,7 @@ def test_state_aware_fallback_excludes_failed_push_remote(
     tmp_path, monkeypatch
 ) -> None:
     """Recovery must not repeat a push to the remote that just failed."""
-    from vllm_mlx.community_bench import submission as sub_mod
+    from rapid_mlx.community_bench import submission as sub_mod
 
     payload = {
         "submission_id": "abcdef012345",
@@ -2259,7 +2259,7 @@ def test_manual_fallback_without_gh_points_at_web_ui(tmp_path, monkeypatch) -> N
     paste-to-issue escape hatch so they can finish the submission
     without installing extra tooling. (Subagent-friction report, #4.)
     """
-    from vllm_mlx.community_bench import submission as sub_mod
+    from rapid_mlx.community_bench import submission as sub_mod
 
     payload = {
         "submission_id": "abcdef012345",
@@ -2308,7 +2308,7 @@ def test_manual_fallback_without_gh_does_not_trust_unverified_fork_origin(
     tmp_path, monkeypatch
 ) -> None:
     """Without GitHub metadata, even a fork-looking origin is not reused."""
-    from vllm_mlx.community_bench import submission as sub_mod
+    from rapid_mlx.community_bench import submission as sub_mod
 
     payload = {
         "submission_id": "abcdef012345",
@@ -2357,7 +2357,7 @@ def test_manual_fallback_without_gh_direct_clone_uses_fork_first(
     An explicitly labelled direct-push option remains available to maintainers.
     This contributor path is the one that failed with 403 in #1066.
     """
-    from vllm_mlx.community_bench import submission as sub_mod
+    from rapid_mlx.community_bench import submission as sub_mod
 
     payload = {
         "submission_id": "abcdef012345",
@@ -2406,7 +2406,7 @@ def test_manual_fallback_avoids_existing_fork_remote_name(
     tmp_path, monkeypatch
 ) -> None:
     """Printed recovery commands must not overwrite an unrelated remote."""
-    from vllm_mlx.community_bench import submission as sub_mod
+    from rapid_mlx.community_bench import submission as sub_mod
 
     subprocess.run(
         ["git", "init", "-q", str(tmp_path)], check=True, capture_output=True
@@ -2460,7 +2460,7 @@ def test_manual_fallback_does_not_print_repo_controlled_shell_args(
     """Recovery commands use a fixed fetch URL and quote commit metadata."""
     import shlex
 
-    from vllm_mlx.community_bench import submission as sub_mod
+    from rapid_mlx.community_bench import submission as sub_mod
 
     subprocess.run(
         ["git", "init", "-q", str(tmp_path)], check=True, capture_output=True
@@ -2522,7 +2522,7 @@ def test_manual_fallback_compare_url_quotes_owner_and_branch(
     validated upstream, but pinning the quoting at this layer guards
     against future loosening. (Codex PR #600 round-2 BLOCKING.)
     """
-    from vllm_mlx.community_bench import submission as sub_mod
+    from rapid_mlx.community_bench import submission as sub_mod
 
     payload = {
         "submission_id": "abcdef012345",
@@ -2566,7 +2566,7 @@ def test_manual_fallback_url_encodes_alias_special_chars(tmp_path, monkeypatch) 
     URL. Bare ``.replace(' ', '%20')`` produced malformed URLs for
     realistic aliases like ``qwen3.6/27b``. (Codex PR #600 round-1 NIT.)
     """
-    from vllm_mlx.community_bench import submission as sub_mod
+    from rapid_mlx.community_bench import submission as sub_mod
 
     payload = {
         "submission_id": "abcdef012345",
@@ -2606,7 +2606,7 @@ def test_manual_fallback_with_gh_keeps_gh_command(tmp_path, monkeypatch) -> None
     later git step failed mid-sequence). Pins that we don't drop the
     gh path while fixing the gh-missing one.
     """
-    from vllm_mlx.community_bench import submission as sub_mod
+    from rapid_mlx.community_bench import submission as sub_mod
 
     payload = {
         "submission_id": "abcdef012345",
@@ -2636,7 +2636,7 @@ def test_manual_fallback_with_unauthenticated_gh_uses_web(
     tmp_path, monkeypatch
 ) -> None:
     """An installed but unusable gh binary must not block web recovery."""
-    from vllm_mlx.community_bench import submission as sub_mod
+    from rapid_mlx.community_bench import submission as sub_mod
 
     payload = {
         "submission_id": "abcdef012345",
@@ -2664,7 +2664,7 @@ def test_manual_fallback_with_gh_quotes_head_owner(tmp_path, monkeypatch) -> Non
     """A repo-controlled owner cannot inject shell syntax via ``--head``."""
     import shlex
 
-    from vllm_mlx.community_bench import submission as sub_mod
+    from rapid_mlx.community_bench import submission as sub_mod
 
     payload = {
         "submission_id": "abcdef012345",
@@ -2703,7 +2703,7 @@ def test_decode_tps_formula_uses_n_minus_one(monkeypatch) -> None:
     """
     import asyncio
 
-    from vllm_mlx.community_bench import runner
+    from rapid_mlx.community_bench import runner
 
     class _FakeOutput:
         def __init__(
@@ -2749,7 +2749,7 @@ def test_decode_tps_formula_uses_n_minus_one(monkeypatch) -> None:
     monkeypatch.setattr(runner.time, "perf_counter", lambda: next(times))
 
     async def _run():
-        from vllm_mlx.request import SamplingParams
+        from rapid_mlx.request import SamplingParams
 
         return await runner._run_one_round(
             _FakeEngine(),
@@ -2775,7 +2775,7 @@ def test_run_one_round_rejects_eos_early_stop(monkeypatch) -> None:
     (Codex PR #582 round-6 BLOCKING.)"""
     import asyncio
 
-    from vllm_mlx.community_bench import runner
+    from rapid_mlx.community_bench import runner
 
     class _FakeOutput:
         def __init__(
@@ -2813,7 +2813,7 @@ def test_run_one_round_rejects_eos_early_stop(monkeypatch) -> None:
     monkeypatch.setattr(runner.time, "perf_counter", lambda: next(times))
 
     async def _run():
-        from vllm_mlx.request import SamplingParams
+        from rapid_mlx.request import SamplingParams
 
         return await runner._run_one_round(
             _FakeEngine(),
@@ -2859,12 +2859,12 @@ def test_validate_path_check_works_from_relocated_validator(
     relocated = tmp_path / "community-benchmarks" / "scripts"
     relocated.mkdir(parents=True)
     (tmp_path / "community-benchmarks").mkdir(exist_ok=True)
-    (tmp_path / "vllm_mlx").mkdir(parents=True, exist_ok=True)
+    (tmp_path / "rapid_mlx").mkdir(parents=True, exist_ok=True)
     (relocated / "validate.py").write_bytes((SCRIPTS_DIR / "validate.py").read_bytes())
     (tmp_path / "community-benchmarks" / "schema.json").write_bytes(
         SCHEMA_PATH.read_bytes()
     )
-    (tmp_path / "vllm_mlx" / "aliases.json").write_bytes(ALIASES_PATH.read_bytes())
+    (tmp_path / "rapid_mlx" / "aliases.json").write_bytes(ALIASES_PATH.read_bytes())
 
     r = subprocess.run(
         [sys.executable, str(relocated / "validate.py"), str(path)],
@@ -2913,12 +2913,12 @@ def test_relocated_validator_catches_duplicate_id(
     # mirroring the GHA workflow.
     relocated = tmp_path / "community-benchmarks" / "scripts"
     relocated.mkdir(parents=True)
-    (tmp_path / "vllm_mlx").mkdir(parents=True, exist_ok=True)
+    (tmp_path / "rapid_mlx").mkdir(parents=True, exist_ok=True)
     (relocated / "validate.py").write_bytes((SCRIPTS_DIR / "validate.py").read_bytes())
     (tmp_path / "community-benchmarks" / "schema.json").write_bytes(
         SCHEMA_PATH.read_bytes()
     )
-    (tmp_path / "vllm_mlx" / "aliases.json").write_bytes(ALIASES_PATH.read_bytes())
+    (tmp_path / "rapid_mlx" / "aliases.json").write_bytes(ALIASES_PATH.read_bytes())
 
     # Invoke the RELOCATED validator on file B. Pre-fix this would have
     # silently passed because /tmp/.../submissions/ is empty (no
@@ -2956,8 +2956,8 @@ def test_submit_flow_guard_consults_original_alias(monkeypatch, capsys) -> None:
     """
     from argparse import Namespace
 
-    from vllm_mlx import cli as cli_mod
-    from vllm_mlx.community_bench import hardware as hw
+    from rapid_mlx import cli as cli_mod
+    from rapid_mlx.community_bench import hardware as hw
 
     # Pretend we're on Apple Silicon so the gate above this one passes.
     # ``is_apple_silicon`` is imported inside _run_submit_flow, so we
@@ -3003,8 +3003,8 @@ def test_submit_flow_guard_rejects_hf_path_when_no_original_alias(
     keys."""
     from argparse import Namespace
 
-    from vllm_mlx import cli as cli_mod
-    from vllm_mlx.community_bench import hardware as hw
+    from rapid_mlx import cli as cli_mod
+    from rapid_mlx.community_bench import hardware as hw
 
     monkeypatch.setattr(hw, "is_apple_silicon", lambda: True)
 

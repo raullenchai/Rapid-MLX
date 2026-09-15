@@ -23,8 +23,8 @@ from types import SimpleNamespace
 
 import pytest
 
-from vllm_mlx import cli
-from vllm_mlx.cli import _legacy_prefix_cache_dropped_flags
+from rapid_mlx import cli
+from rapid_mlx.cli import _legacy_prefix_cache_dropped_flags
 
 
 def _args(**overrides):
@@ -158,10 +158,10 @@ def _stub_heavy_serve_deps(monkeypatch) -> dict:
     """
     import uvicorn
 
-    from vllm_mlx import _version_check
-    from vllm_mlx import server as server_mod
-    from vllm_mlx.middleware import auth as auth_mod
-    from vllm_mlx.middleware import request_logging as reqlog_mod
+    from rapid_mlx import _version_check
+    from rapid_mlx import server as server_mod
+    from rapid_mlx.middleware import auth as auth_mod
+    from rapid_mlx.middleware import request_logging as reqlog_mod
 
     captured: dict = {}
 

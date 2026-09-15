@@ -34,7 +34,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from vllm_mlx.service.helpers import (
+from rapid_mlx.service.helpers import (
     _THINKING_FLAG_HONORING_PARSERS,
     enable_thinking_warning_header,
 )

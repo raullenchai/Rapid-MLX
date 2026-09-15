@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from vllm_mlx.quantization.glm53_rmq import TensorDescriptor
+from rapid_mlx.quantization.glm53_rmq import TensorDescriptor
 
 mx = pytest.importorskip("mlx.core")
 

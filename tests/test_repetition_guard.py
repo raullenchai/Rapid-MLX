@@ -11,13 +11,13 @@ from unittest.mock import MagicMock
 
 import mlx.core as mx
 
-from vllm_mlx.repetition_guard import (
+from rapid_mlx.repetition_guard import (
     AgentRepetitionLogitsProcessor,
     detect_repeated_token_suffix,
     predict_repeated_token_suffix,
 )
-from vllm_mlx.request import Request, RequestStatus, SamplingParams
-from vllm_mlx.scheduler import Scheduler, SchedulerConfig
+from rapid_mlx.request import Request, RequestStatus, SamplingParams
+from rapid_mlx.scheduler import Scheduler, SchedulerConfig
 
 
 def _scheduler() -> Scheduler:

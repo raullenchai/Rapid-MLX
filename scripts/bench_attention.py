@@ -39,7 +39,7 @@ try:
     from scripts.bench_metadata import write_bench_json
 except ModuleNotFoundError:  # Direct execution outside the repository root.
     from bench_metadata import write_bench_json
-from vllm_mlx.optimizations import detect_hardware
+from rapid_mlx.optimizations import detect_hardware
 
 
 def measure_matmul_peak(dtype: mx.Dtype, sizes=(4096, 8192)) -> float:

@@ -47,7 +47,7 @@ mx = pytest.importorskip("mlx.core")
 
 def _tiny_hy3_args(**overrides):
     """Minimal ``hy_v3.ModelArgs`` for a fake HY3 target."""
-    from vllm_mlx.models.hy_v3 import ModelArgs
+    from rapid_mlx.models.hy_v3 import ModelArgs
 
     defaults = dict(
         model_type="hy_v3",
@@ -73,13 +73,13 @@ def _tiny_hy3_args(**overrides):
 
 
 def _build_tiny_hy3_model(**overrides):
-    from vllm_mlx.models.hy_v3 import Model
+    from rapid_mlx.models.hy_v3 import Model
 
     return Model(_tiny_hy3_args(**overrides))
 
 
 def _resolve_inner(model):
-    from vllm_mlx.spec_decode.mtp.hy3_inject import _resolve_inner_model
+    from rapid_mlx.spec_decode.mtp.hy3_inject import _resolve_inner_model
 
     return _resolve_inner_model(model)
 
@@ -91,7 +91,7 @@ def _resolve_inner(model):
 
 def test_detect_hy3_num_nextn_chain():
     """HY3 with ``num_nextn_predict_layers == 1`` → CHAIN."""
-    from vllm_mlx.spec_decode.mtp import MTPEligibility, detect_mtp_eligibility
+    from rapid_mlx.spec_decode.mtp import MTPEligibility, detect_mtp_eligibility
 
     config = {"model_type": "hy_v3", "num_nextn_predict_layers": 1}
     assert detect_mtp_eligibility(config) is MTPEligibility.CHAIN
@@ -99,7 +99,7 @@ def test_detect_hy3_num_nextn_chain():
 
 def test_detect_hy3_num_nextn_under_text_config():
     """HY3 nextn count nested under ``text_config`` still resolves CHAIN."""
-    from vllm_mlx.spec_decode.mtp import MTPEligibility, detect_mtp_eligibility
+    from rapid_mlx.spec_decode.mtp import MTPEligibility, detect_mtp_eligibility
 
     config = {"model_type": "hy_v3", "text_config": {"num_nextn_predict_layers": 1}}
     assert detect_mtp_eligibility(config) is MTPEligibility.CHAIN
@@ -107,7 +107,7 @@ def test_detect_hy3_num_nextn_under_text_config():
 
 def test_detect_hy3_zero_nextn_rejected():
     """HY3 with ``num_nextn_predict_layers == 0`` (stripped) → NONE."""
-    from vllm_mlx.spec_decode.mtp import MTPEligibility, detect_mtp_eligibility
+    from rapid_mlx.spec_decode.mtp import MTPEligibility, detect_mtp_eligibility
 
     config = {"model_type": "hy_v3", "num_nextn_predict_layers": 0}
     assert detect_mtp_eligibility(config) is MTPEligibility.NONE
@@ -115,7 +115,7 @@ def test_detect_hy3_zero_nextn_rejected():
 
 def test_detect_hy3_mtp_key_fallback():
     """HY3 also accepts the Qwen-style ``mtp_num_hidden_layers`` fallback."""
-    from vllm_mlx.spec_decode.mtp import MTPEligibility, detect_mtp_eligibility
+    from rapid_mlx.spec_decode.mtp import MTPEligibility, detect_mtp_eligibility
 
     config = {"model_type": "hy_v3", "mtp_num_hidden_layers": 1}
     assert detect_mtp_eligibility(config) is MTPEligibility.CHAIN
@@ -125,7 +125,7 @@ def test_detect_qwen35_does_not_read_num_nextn():
     """Cross-contamination guard: Qwen3.5 must NOT pick up HY3's
     ``num_nextn_predict_layers`` key — its head lives under
     ``mtp_num_hidden_layers`` only."""
-    from vllm_mlx.spec_decode.mtp import MTPEligibility, detect_mtp_eligibility
+    from rapid_mlx.spec_decode.mtp import MTPEligibility, detect_mtp_eligibility
 
     config = {"model_type": "qwen3_5", "num_nextn_predict_layers": 1}
     assert detect_mtp_eligibility(config) is MTPEligibility.NONE
@@ -134,7 +134,7 @@ def test_detect_qwen35_does_not_read_num_nextn():
 def test_detect_deepseek_v3_num_nextn_still_off_allowlist():
     """``deepseek_v3`` uses the same nextn convention but is NOT on the
     MTP allowlist — must stay NONE (no accidental promotion)."""
-    from vllm_mlx.spec_decode.mtp import MTPEligibility, detect_mtp_eligibility
+    from rapid_mlx.spec_decode.mtp import MTPEligibility, detect_mtp_eligibility
 
     config = {"model_type": "deepseek_v3", "num_nextn_predict_layers": 1}
     assert detect_mtp_eligibility(config) is MTPEligibility.NONE
@@ -151,7 +151,7 @@ def test_build_hy3_mtp_module_param_tree():
     backbone MoE layer (so the sidecar tree lines up 1:1)."""
     from mlx.utils import tree_flatten
 
-    from vllm_mlx.spec_decode.mtp.hy3_head import build_hy3_mtp_module
+    from rapid_mlx.spec_decode.mtp.hy3_head import build_hy3_mtp_module
 
     args = _tiny_hy3_args()
     mtp = build_hy3_mtp_module(args, 1)
@@ -176,7 +176,7 @@ def test_build_hy3_mtp_module_param_tree():
 
 def test_build_hy3_mtp_module_rejects_multi_layer():
     """HY3 ships exactly one next-n layer; >1 must refuse loudly."""
-    from vllm_mlx.spec_decode.mtp.hy3_head import build_hy3_mtp_module
+    from rapid_mlx.spec_decode.mtp.hy3_head import build_hy3_mtp_module
 
     args = _tiny_hy3_args()
     with pytest.raises(ValueError):
@@ -194,7 +194,7 @@ def test_inject_attaches_four_surfaces_random_init():
     """``allow_random_init=True`` attaches ``mtp`` / ``mtp_forward`` /
     ``make_mtp_cache`` / ``__call__(return_hidden, n_confirmed)`` and a
     forward through them produces the right shapes."""
-    from vllm_mlx.spec_decode.mtp.hy3_inject import (
+    from rapid_mlx.spec_decode.mtp.hy3_inject import (
         inject_hy3_mtp_support,
         validate_hy3_mtp_support,
     )
@@ -248,7 +248,7 @@ def test_inject_forward_warm_cache_offset():
     """
     from mlx_lm.models.cache import KVCache
 
-    from vllm_mlx.spec_decode.mtp.hy3_inject import inject_hy3_mtp_support
+    from rapid_mlx.spec_decode.mtp.hy3_inject import inject_hy3_mtp_support
 
     model = _build_tiny_hy3_model()
     assert inject_hy3_mtp_support(model, allow_random_init=True) is True
@@ -276,7 +276,7 @@ def test_inject_forward_warm_cache_offset():
 
 def test_validate_false_before_inject():
     """A vanilla HY3 model has none of the MTP surfaces."""
-    from vllm_mlx.spec_decode.mtp.hy3_inject import validate_hy3_mtp_support
+    from rapid_mlx.spec_decode.mtp.hy3_inject import validate_hy3_mtp_support
 
     model = _build_tiny_hy3_model()
     assert validate_hy3_mtp_support(model) is False
@@ -289,7 +289,7 @@ def test_validate_false_before_inject():
 
 def test_inject_refuses_unresolvable_sidecar():
     """A sidecar path that resolves to nothing → False, model unmodified."""
-    from vllm_mlx.spec_decode.mtp.hy3_inject import (
+    from rapid_mlx.spec_decode.mtp.hy3_inject import (
         inject_hy3_mtp_support,
         validate_hy3_mtp_support,
     )
@@ -305,8 +305,8 @@ def test_inject_refuses_sidecar_missing_tensor(tmp_path):
     head), mirroring the qwen3_5 coverage check."""
     from mlx.utils import tree_flatten
 
-    from vllm_mlx.spec_decode.mtp.hy3_head import build_hy3_mtp_module
-    from vllm_mlx.spec_decode.mtp.hy3_inject import (
+    from rapid_mlx.spec_decode.mtp.hy3_head import build_hy3_mtp_module
+    from rapid_mlx.spec_decode.mtp.hy3_inject import (
         inject_hy3_mtp_support,
         validate_hy3_mtp_support,
     )
@@ -335,8 +335,8 @@ def test_inject_loads_synthetic_full_sidecar(tmp_path):
     inject → validate → True."""
     from mlx.utils import tree_flatten
 
-    from vllm_mlx.spec_decode.mtp.hy3_head import build_hy3_mtp_module
-    from vllm_mlx.spec_decode.mtp.hy3_inject import (
+    from rapid_mlx.spec_decode.mtp.hy3_head import build_hy3_mtp_module
+    from rapid_mlx.spec_decode.mtp.hy3_inject import (
         inject_hy3_mtp_support,
         validate_hy3_mtp_support,
     )
@@ -368,8 +368,8 @@ def test_inject_accepts_bf16_sidecar_against_fp32_template(tmp_path):
     """
     from mlx.utils import tree_flatten
 
-    from vllm_mlx.spec_decode.mtp.hy3_head import build_hy3_mtp_module
-    from vllm_mlx.spec_decode.mtp.hy3_inject import (
+    from rapid_mlx.spec_decode.mtp.hy3_head import build_hy3_mtp_module
+    from rapid_mlx.spec_decode.mtp.hy3_inject import (
         inject_hy3_mtp_support,
         validate_hy3_mtp_support,
     )
@@ -399,8 +399,8 @@ def test_inject_refuses_integer_packed_wrong_kind(tmp_path):
     head looks like)."""
     from mlx.utils import tree_flatten
 
-    from vllm_mlx.spec_decode.mtp.hy3_head import build_hy3_mtp_module
-    from vllm_mlx.spec_decode.mtp.hy3_inject import (
+    from rapid_mlx.spec_decode.mtp.hy3_head import build_hy3_mtp_module
+    from rapid_mlx.spec_decode.mtp.hy3_inject import (
         inject_hy3_mtp_support,
         validate_hy3_mtp_support,
     )
@@ -442,8 +442,8 @@ def test_inject_refuses_same_shape_wrong_integer_dtype(tmp_path):
     import mlx.nn as nn
     from mlx.utils import tree_flatten
 
-    from vllm_mlx.spec_decode.mtp.hy3_head import build_hy3_mtp_module
-    from vllm_mlx.spec_decode.mtp.hy3_inject import (
+    from rapid_mlx.spec_decode.mtp.hy3_head import build_hy3_mtp_module
+    from rapid_mlx.spec_decode.mtp.hy3_inject import (
         _detect_base_quantization,
         inject_hy3_mtp_support,
         validate_hy3_mtp_support,
@@ -497,8 +497,8 @@ def test_inject_quantized_base_packed_sidecar_round_trip(tmp_path):
     import mlx.nn as nn
     from mlx.utils import tree_flatten
 
-    from vllm_mlx.spec_decode.mtp.hy3_head import build_hy3_mtp_module
-    from vllm_mlx.spec_decode.mtp.hy3_inject import (
+    from rapid_mlx.spec_decode.mtp.hy3_head import build_hy3_mtp_module
+    from rapid_mlx.spec_decode.mtp.hy3_inject import (
         _detect_base_quantization,
         inject_hy3_mtp_support,
         validate_hy3_mtp_support,
@@ -551,7 +551,7 @@ def test_inject_refuses_multi_nextn_layer_config():
     """A HY3 config advertising num_nextn_predict_layers=2 must fail-closed to
     False (HY3's head builder only supports exactly 1 layer), NOT crash boot
     with a builder ValueError (codex R4 BLOCKING #1)."""
-    from vllm_mlx.spec_decode.mtp.hy3_inject import (
+    from rapid_mlx.spec_decode.mtp.hy3_inject import (
         inject_hy3_mtp_support,
         validate_hy3_mtp_support,
     )
@@ -566,7 +566,7 @@ def test_inject_returns_false_on_corrupt_sidecar(tmp_path):
     """A truncated / malformed sidecar file must be caught and turned into a
     False return (this function's documented contract), NOT propagate an
     exception that aborts server boot (codex R4 BLOCKING #2)."""
-    from vllm_mlx.spec_decode.mtp.hy3_inject import (
+    from rapid_mlx.spec_decode.mtp.hy3_inject import (
         inject_hy3_mtp_support,
         validate_hy3_mtp_support,
     )
@@ -589,7 +589,7 @@ def test_inject_returns_false_on_corrupt_sidecar(tmp_path):
 def test_inject_refuses_model_without_num_nextn():
     """A HY3-shaped model whose config advertises no next-n layer builds
     no head (num_nextn_predict_layers=0)."""
-    from vllm_mlx.spec_decode.mtp.hy3_inject import (
+    from rapid_mlx.spec_decode.mtp.hy3_inject import (
         inject_hy3_mtp_support,
         validate_hy3_mtp_support,
     )
@@ -608,17 +608,17 @@ def test_inject_refuses_model_without_num_nextn():
 def test_dispatch_tables_route_hy_v3():
     """``hy_v3`` is registered in both dispatch tables → the family
     inject / validate entry points."""
-    from vllm_mlx.spec_decode.mtp.dispatch import (
+    from rapid_mlx.spec_decode.mtp.dispatch import (
         _MTP_INJECT_DISPATCH,
         _MTP_VALIDATE_DISPATCH,
     )
 
     assert _MTP_INJECT_DISPATCH["hy_v3"] == (
-        "vllm_mlx.spec_decode.mtp.hy3_inject",
+        "rapid_mlx.spec_decode.mtp.hy3_inject",
         "inject_hy3_mtp_support",
     )
     assert _MTP_VALIDATE_DISPATCH["hy_v3"] == (
-        "vllm_mlx.spec_decode.mtp.hy3_inject",
+        "rapid_mlx.spec_decode.mtp.hy3_inject",
         "validate_hy3_mtp_support",
     )
 
@@ -627,7 +627,7 @@ def test_dispatch_inject_routes_and_attaches():
     """End-to-end through the dispatcher: ``dispatch_mtp_inject(model,
     'hy_v3', allow_random_init=True)`` attaches the surfaces, and
     ``dispatch_mtp_validate`` confirms them."""
-    from vllm_mlx.spec_decode.mtp import (
+    from rapid_mlx.spec_decode.mtp import (
         dispatch_mtp_inject,
         dispatch_mtp_validate,
     )
@@ -645,7 +645,7 @@ def test_dispatch_inject_routes_and_attaches():
 def test_default_sidecar_repo_constant():
     """The module exposes the published-sidecar default so a bare
     ``--speculative-config '{"method":"mtp"}'`` boot auto-resolves it."""
-    from vllm_mlx.spec_decode.mtp import hy3_inject
+    from rapid_mlx.spec_decode.mtp import hy3_inject
 
     assert hy3_inject.DEFAULT_HY3_MTP_SIDECAR == "mlx-community/Hy3-preview-MTP-4bit"
 
@@ -660,8 +660,8 @@ def test_inject_resolver_reads_mtp_num_hidden_layers_fallback():
     that only carries ``mtp_num_hidden_layers`` (the hand-converted alias)
     must be resolvable by the inject resolver too — otherwise detection deems
     it eligible but inject refuses (codex BLOCKING #2)."""
-    from vllm_mlx.spec_decode.mtp import MTPEligibility, detect_mtp_eligibility
-    from vllm_mlx.spec_decode.mtp.hy3_inject import (
+    from rapid_mlx.spec_decode.mtp import MTPEligibility, detect_mtp_eligibility
+    from rapid_mlx.spec_decode.mtp.hy3_inject import (
         inject_hy3_mtp_support,
         validate_hy3_mtp_support,
     )
@@ -680,7 +680,7 @@ def test_inject_resolver_reads_mtp_num_hidden_layers_fallback():
 def test_default_sidecar_pinned_revision_constant():
     """The default sidecar carries an immutable pinned revision (codex
     BLOCKING #1) — never resolves a mutable HEAD in production."""
-    from vllm_mlx.spec_decode.mtp import hy3_inject
+    from rapid_mlx.spec_decode.mtp import hy3_inject
 
     rev = hy3_inject.DEFAULT_HY3_MTP_SIDECAR_REVISION
     assert isinstance(rev, str) and len(rev) == 40  # full commit SHA
@@ -691,7 +691,7 @@ def test_default_sidecar_refused_on_quant_mismatch(monkeypatch):
     """The default (4-bit gs64) sidecar is refused when the base is a
     different quant (codex BLOCKING #3) — it would load shape-incompatible
     tensors. An explicit sidecar bypasses the gate."""
-    from vllm_mlx.spec_decode.mtp import hy3_inject
+    from rapid_mlx.spec_decode.mtp import hy3_inject
 
     model = _build_tiny_hy3_model()
 

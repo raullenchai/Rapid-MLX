@@ -9,8 +9,8 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from vllm_mlx.config import get_config
-from vllm_mlx.routes.health import admin_router
+from rapid_mlx.config import get_config
+from rapid_mlx.routes.health import admin_router
 
 
 @pytest.fixture(autouse=True)

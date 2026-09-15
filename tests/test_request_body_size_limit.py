@@ -21,8 +21,8 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 # NIT from codex round 1: ``RequestBodyLimitMiddleware`` is pure ASGI
-# logic with no mlx-lm import path — ``vllm_mlx.middleware.body_size``
-# only pulls in ``vllm_mlx.config.server_config`` (a dataclass) and
+# logic with no mlx-lm import path — ``rapid_mlx.middleware.body_size``
+# only pulls in ``rapid_mlx.config.server_config`` (a dataclass) and
 # stdlib. Empirically verified: the module loads under an import hook
 # that blocks ``mlx*``. So we no longer ``importorskip("mlx.core")``
 # here — the security gate gets exercised on every runner, including
@@ -34,7 +34,7 @@ def _isolate_config():
     """Each test starts from a clean ServerConfig singleton so the
     8 MiB default isn't carried over from a previous test that
     monkey-patched ``max_request_bytes``."""
-    from vllm_mlx.config.server_config import get_config, reset_config
+    from rapid_mlx.config.server_config import get_config, reset_config
 
     reset_config()
     yield
@@ -43,11 +43,11 @@ def _isolate_config():
 
 
 def _build_app() -> FastAPI:
-    """A minimal FastAPI app wired exactly like ``vllm_mlx.server`` —
+    """A minimal FastAPI app wired exactly like ``rapid_mlx.server`` —
     the request-body middleware plus a tiny POST handler under one of
     the guarded path prefixes. Keeps the body-size guard the only
     moving piece under test."""
-    from vllm_mlx.middleware.body_size import install_request_body_limit_middleware
+    from rapid_mlx.middleware.body_size import install_request_body_limit_middleware
 
     app = FastAPI()
 
@@ -79,7 +79,7 @@ def test_honest_content_length_over_cap_returns_413():
     ``test_body_never_reaches_handler_on_413`` below covers the
     "did we actually read the bytes" property.
     """
-    from vllm_mlx.config.server_config import get_config
+    from rapid_mlx.config.server_config import get_config
 
     get_config().max_request_bytes = 1024  # 1 KiB cap
 
@@ -102,7 +102,7 @@ def test_body_just_under_cap_passes_through():
     and return its normal response. Catches regressions where the
     middleware is overly aggressive (e.g. off-by-one on the boundary,
     or rejection of every POST regardless of size)."""
-    from vllm_mlx.config.server_config import get_config
+    from rapid_mlx.config.server_config import get_config
 
     get_config().max_request_bytes = 16 * 1024  # 16 KiB cap
 
@@ -119,7 +119,7 @@ def test_disabled_when_cap_is_zero():
     """``--max-request-bytes 0`` (the documented escape hatch)
     must disable the cap entirely. Operators with their own DoS
     controls upstream rely on this."""
-    from vllm_mlx.config.server_config import get_config
+    from rapid_mlx.config.server_config import get_config
 
     get_config().max_request_bytes = 0
 
@@ -139,7 +139,7 @@ def test_unguarded_path_is_not_capped():
     or anything else outside those prefixes must pass through even
     if their body would exceed the cap. Without this scoping, a
     health-check tool that POSTs JSON would 413 spuriously."""
-    from vllm_mlx.config.server_config import get_config
+    from rapid_mlx.config.server_config import get_config
 
     get_config().max_request_bytes = 512  # tiny cap
 
@@ -161,7 +161,7 @@ def test_audio_path_is_excluded_from_generic_cap():
     We assert by ensuring our generic middleware does NOT respond
     to ``/v1/audio/transcriptions`` even when the body advertises
     a length that would otherwise exceed our cap."""
-    from vllm_mlx.config.server_config import get_config
+    from rapid_mlx.config.server_config import get_config
 
     get_config().max_request_bytes = 1024
 
@@ -191,8 +191,8 @@ def test_body_never_reaches_handler_on_413():
     A receive-tracer counts how often the inner ASGI app sees a
     body message. If the middleware does its job, that count is 0.
     """
-    from vllm_mlx.config.server_config import get_config
-    from vllm_mlx.middleware.body_size import RequestBodyLimitMiddleware
+    from rapid_mlx.config.server_config import get_config
+    from rapid_mlx.middleware.body_size import RequestBodyLimitMiddleware
 
     get_config().max_request_bytes = 1024
 
@@ -262,8 +262,8 @@ def test_chunked_streaming_body_aborts_mid_stream():
 
     Without this guard, a Transfer-Encoding: chunked client could
     stream gigabytes before any byte-count gate fired."""
-    from vllm_mlx.config.server_config import get_config
-    from vllm_mlx.middleware.body_size import RequestBodyLimitMiddleware
+    from rapid_mlx.config.server_config import get_config
+    from rapid_mlx.middleware.body_size import RequestBodyLimitMiddleware
 
     get_config().max_request_bytes = 1024  # 1 KiB cap
 
@@ -349,8 +349,8 @@ def test_no_double_response_when_handler_already_sent_headers():
     the read loop; the middleware catches ``_BodyTooLargeError`` and must
     silently let the response complete (logged warning, no double 413).
     """
-    from vllm_mlx.config.server_config import get_config
-    from vllm_mlx.middleware.body_size import RequestBodyLimitMiddleware
+    from rapid_mlx.config.server_config import get_config
+    from rapid_mlx.middleware.body_size import RequestBodyLimitMiddleware
 
     get_config().max_request_bytes = 1024
 
@@ -433,7 +433,7 @@ def test_get_request_is_not_capped():
     etc. A spuriously large GET shouldn't be possible in HTTP/1.1
     anyway, but we still want zero per-request overhead on read
     paths."""
-    from vllm_mlx.config.server_config import get_config
+    from rapid_mlx.config.server_config import get_config
 
     get_config().max_request_bytes = 1  # absurdly tiny — every body would fail
 
@@ -461,8 +461,8 @@ def test_oversized_body_returns_413_before_auth_check():
     ordering load-bearing — anyone moving the body cap *behind* the
     auth dependency will fail it and have to think about it.
     """
-    from vllm_mlx.config.server_config import get_config
-    from vllm_mlx.middleware.body_size import install_request_body_limit_middleware
+    from rapid_mlx.config.server_config import get_config
+    from rapid_mlx.middleware.body_size import install_request_body_limit_middleware
 
     get_config().max_request_bytes = 1024  # 1 KiB cap
 
@@ -503,14 +503,14 @@ def test_oversized_body_returns_413_before_auth_check():
 
 def test_cli_flag_overrides_config_default():
     """The ``--max-request-bytes`` flag is wired through
-    ``vllm_mlx.server._max_request_bytes`` and ``_sync_config`` into
+    ``rapid_mlx.server._max_request_bytes`` and ``_sync_config`` into
     ``ServerConfig.max_request_bytes``. We don't exercise the full
     CLI here (too heavy — needs model load) but we do assert the
     wiring: writing the module global and calling ``_sync_config``
     propagates the value to the config singleton the middleware
     reads."""
-    import vllm_mlx.server as server_mod
-    from vllm_mlx.config.server_config import get_config
+    import rapid_mlx.server as server_mod
+    from rapid_mlx.config.server_config import get_config
 
     original = server_mod._max_request_bytes
     try:

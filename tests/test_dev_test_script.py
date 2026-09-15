@@ -57,7 +57,7 @@ def test_github_ci_uses_the_same_whole_repository_ruff_scope():
     workflow = (Path(__file__).parents[1] / ".github/workflows/ci.yml").read_text()
     assert "run: ruff check ." in workflow
     assert "run: ruff format --check ." in workflow
-    assert "ruff check vllm_mlx/ tests/" not in workflow
+    assert "ruff check rapid_mlx/ tests/" not in workflow
 
 
 def test_repository_format_gate_excludes_markdown_examples():

@@ -32,8 +32,8 @@ The full path from "I want to release" to "users on `brew upgrade` see the new v
 
    Builds the wheel from the working tree and installs it into a fresh
    venv with only PyPI deps, then imports every module the published
-   entrypoints would import (`vllm_mlx`, `vllm_mlx.scheduler`,
-   `vllm_mlx.server`, `vllm_mlx.cli`). Catches the failure mode that
+   entrypoints would import (`rapid_mlx`, `rapid_mlx.scheduler`,
+   `rapid_mlx.server`, `rapid_mlx.cli`). Catches the failure mode that
    shipped in v0.6.53 (#408): code that imports cleanly on the dev
    machine because the dev mlx has a symbol that hasn't appeared in any
    released wheel yet. Every other gate (`make smoke`, the
@@ -137,7 +137,7 @@ Cache: `~/.cache/rapid-mlx/version_check.json` (24h TTL). Network timeout: 2s. *
 
 If your PR adds a model alias or profile, it ships **without** a version bump — the version-check guard now *forbids* a stray bump in a non-bump PR. The release is cut later in a dedicated bump PR (batch-then-cut SOP). The flow:
 
-1. Add the entry to `vllm_mlx/aliases.json` and (if it has non-default capabilities) to `vllm_mlx/model_auto_config.py`.
+1. Add the entry to `rapid_mlx/aliases.json` and (if it has non-default capabilities) to `rapid_mlx/model_auto_config.py`.
 2. Add tests as appropriate.
 3. Optional but recommended: run the eligibility bench (see [issue #269](https://github.com/raullenchai/Rapid-MLX/issues/269)) and paste tier classification into the `ModelConfig` entry.
 4. Merge the alias PR with **no** version change. When you're ready to release, cut a dedicated `chore: bump version to X.Y.Z` PR (see [Cutting a release](#cutting-a-release)) — that bump commit triggers the auto-release pipeline and ships the batched aliases.
@@ -239,7 +239,7 @@ For focused diagnosis only, `scripts/coherence_sweep.sh` still accepts explicit 
 
 G7b covers the live-server harness path that `pr-validate`'s unit-level profile tests can't reach. Split in two parts so each is honestly scoped:
 
-- **Part A** — `rapid-mlx agents codex / opencode / hermes / aider / langchain --test`. Smoke-tests `/v1/chat/completions` parser/router behavior for the five first-class harnesses. `AgentTestRunner` (`vllm_mlx/agents/testing.py`) only knows the Chat Completions endpoint today, so this part does **not** exercise `/v1/responses`.
+- **Part A** — `rapid-mlx agents codex / opencode / hermes / aider / langchain --test`. Smoke-tests `/v1/chat/completions` parser/router behavior for the five first-class harnesses. `AgentTestRunner` (`rapid_mlx/agents/testing.py`) only knows the Chat Completions endpoint today, so this part does **not** exercise `/v1/responses`.
 - **Part B** — direct curl probes against `/v1/responses` (one non-stream, one SSE). Verifies the Codex-CLI shim added in v0.7.10 is reachable and emits at minimum `response.created` and `response.completed` in the right order. Part B is the only thing in the entire CI + M3 gauntlet that actually touches the Responses route at request time. If you change the route's event sequence, Part B is what catches it.
 
 The remaining seven profiles (`goose`, `openhands`, `cline`, `openclaude`, `pydanticai`, `smolagents`, `generic`) are intentionally not in Part A:

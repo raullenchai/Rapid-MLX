@@ -50,10 +50,10 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from vllm_mlx.config import reset_config
-from vllm_mlx.engine.base import GenerationOutput
-from vllm_mlx.reasoning.qwen3_parser import Qwen3ReasoningParser
-from vllm_mlx.routes.chat import (
+from rapid_mlx.config import reset_config
+from rapid_mlx.engine.base import GenerationOutput
+from rapid_mlx.reasoning.qwen3_parser import Qwen3ReasoningParser
+from rapid_mlx.routes.chat import (
     _contains_structural_tool_wire_leak,
     _contains_tool_wire_literal,
     _forced_tool_call_prefix,
@@ -63,13 +63,13 @@ from vllm_mlx.routes.chat import (
     _strip_forced_tool_section,
     _synthesize_forced_tool_call,
 )
-from vllm_mlx.routes.chat import router as chat_router
-from vllm_mlx.service.helpers import (
+from rapid_mlx.routes.chat import router as chat_router
+from rapid_mlx.service.helpers import (
     _TOOL_USE_REQUIRED_SUFFIX,
     _TOOL_USE_SYSTEM_SUFFIX,
 )
-from vllm_mlx.tool_parsers.deepseekv31_tool_parser import DeepSeekV31ToolParser
-from vllm_mlx.tool_parsers.hermes_tool_parser import HermesToolParser
+from rapid_mlx.tool_parsers.deepseekv31_tool_parser import DeepSeekV31ToolParser
+from rapid_mlx.tool_parsers.hermes_tool_parser import HermesToolParser
 
 # ──────────────────────────────────────────────────────────────────
 # Test harness — recording mock engine + client builder
@@ -346,7 +346,7 @@ def test_t2_deepseek_v3_parser_consumes_assembled_envelope():
     string."""
     import json as _json
 
-    from vllm_mlx.tool_parsers.deepseek_v3_tool_parser import (
+    from rapid_mlx.tool_parsers.deepseek_v3_tool_parser import (
         DeepSeekV3ToolParser,
     )
 

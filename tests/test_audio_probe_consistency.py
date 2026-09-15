@@ -16,7 +16,7 @@ something downstream was wonky), the endpoints disagreed: voices
 said yes, speech said no. Diego logged this in dogfood 0.8.3.
 
 Fix: every audio route consults the SAME
-:func:`vllm_mlx.audio.probe.require_mlx_audio` helper. The
+:func:`rapid_mlx.audio.probe.require_mlx_audio` helper. The
 ``find_spec`` presence check + cached late-import covers both
 "extra not installed" and "installed-but-runtime-broken" failure
 modes with the same 503 envelope.
@@ -41,7 +41,7 @@ def _reset_audio_probe():
     most once per process. Tests that monkeypatch the import path
     need to drop the cache so the next call re-probes.
     """
-    from vllm_mlx.audio import probe
+    from rapid_mlx.audio import probe
 
     probe._reset_probe_cache()
     yield
@@ -49,8 +49,8 @@ def _reset_audio_probe():
 
 
 def _mount_audio_app():
-    from vllm_mlx.config import get_config
-    from vllm_mlx.routes import audio as audio_route
+    from rapid_mlx.config import get_config
+    from rapid_mlx.routes import audio as audio_route
 
     app = FastAPI()
     app.include_router(audio_route.router)
@@ -198,7 +198,7 @@ class TestProbeWiredFromOneSource:
         from pathlib import Path
 
         route_file = (
-            Path(__file__).resolve().parents[1] / "vllm_mlx" / "routes" / "audio.py"
+            Path(__file__).resolve().parents[1] / "rapid_mlx" / "routes" / "audio.py"
         )
         source = route_file.read_text()
         decorator = "@router."
@@ -224,7 +224,7 @@ class TestProbeWiredFromOneSource:
         assert "require_mlx_audio" in body, (
             "F-D05 regression: /v1/audio/speech no longer calls "
             "require_mlx_audio(). Every audio route must consult the "
-            "shared probe — see vllm_mlx/audio/probe.py."
+            "shared probe — see rapid_mlx/audio/probe.py."
         )
 
     def test_voices_route_calls_require_mlx_audio(self):
@@ -245,14 +245,14 @@ class TestProbeWiredFromOneSource:
     def test_probe_module_no_top_level_mlx_audio_import(self):
         """The probe itself must not import ``mlx_audio`` at module
         top level — otherwise the base install (no ``[audio]`` extra)
-        crashes on ``from vllm_mlx.audio.probe import require_mlx_audio``,
+        crashes on ``from rapid_mlx.audio.probe import require_mlx_audio``,
         defeating the whole point of the lazy probe. Mirror the
         invariant H-08's ``test_mlx_embeddings_not_imported_at_module_top_level``
         already pins for embeddings."""
         from pathlib import Path
 
         probe_file = (
-            Path(__file__).resolve().parents[1] / "vllm_mlx" / "audio" / "probe.py"
+            Path(__file__).resolve().parents[1] / "rapid_mlx" / "audio" / "probe.py"
         )
         for lineno, line in enumerate(probe_file.read_text().splitlines(), 1):
             stripped = line.lstrip()
@@ -316,7 +316,7 @@ class TestProbeCoversBothLanes:
 
         monkeypatch.setattr(builtins, "__import__", _broken_stt)
 
-        from vllm_mlx.audio import probe
+        from rapid_mlx.audio import probe
 
         v = probe.mlx_audio_available("stt")
         assert v.ok is False, "STT-only breakage must trip the STT probe — F2 BLOCKING."
@@ -344,7 +344,7 @@ class TestProbeCoversBothLanes:
 
         monkeypatch.setattr(builtins, "__import__", _broken_stt_only)
 
-        from vllm_mlx.audio import probe
+        from rapid_mlx.audio import probe
 
         # TTS lane must still work — only STT is broken.
         v_tts = probe.mlx_audio_available("tts")
@@ -375,7 +375,7 @@ class TestProbeCoversBothLanes:
 
         monkeypatch.setattr(builtins, "__import__", _broken_tts_only)
 
-        from vllm_mlx.audio import probe
+        from rapid_mlx.audio import probe
 
         v_stt = probe.mlx_audio_available("stt")
         assert v_stt.ok is True, (
@@ -392,7 +392,7 @@ class TestProbeCoversBothLanes:
         from pathlib import Path
 
         probe_file = (
-            Path(__file__).resolve().parents[1] / "vllm_mlx" / "audio" / "probe.py"
+            Path(__file__).resolve().parents[1] / "rapid_mlx" / "audio" / "probe.py"
         )
         source = probe_file.read_text()
         assert "mlx_audio.tts" in source, "TTS submodule probe missing"
@@ -412,7 +412,7 @@ class TestProbeCaching:
 
     def test_verdict_is_cached_after_first_call(self, _reset_audio_probe):
         pytest.importorskip("mlx_audio")
-        from vllm_mlx.audio import probe
+        from rapid_mlx.audio import probe
 
         # First call populates the cache for the TTS lane.
         v1 = probe.mlx_audio_available("tts")
@@ -425,7 +425,7 @@ class TestProbeCaching:
         assert v1 is v2
 
     def test_reset_cache_forces_reprobe(self, monkeypatch, _reset_audio_probe):
-        from vllm_mlx.audio import probe
+        from rapid_mlx.audio import probe
 
         # Force a False verdict to be cached.
         _install_missing_mlx_audio(monkeypatch)

@@ -577,7 +577,7 @@ enum CommunityBenchmarkRunStatus {
 
     /// Record-separator prefix the CLI puts on machine-readable progress
     /// lines under `--json --progress`. Mirrors `PROGRESS_TAG` in
-    /// `vllm_mlx/community_bench/cli.py`.
+    /// `rapid_mlx/community_bench/cli.py`.
     static let progressTag = "\u{1e}"
 
     /// A tagged progress line with its marker removed and whitespace

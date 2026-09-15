@@ -22,14 +22,14 @@ from pathlib import Path
 
 import pytest
 
-from vllm_mlx.model_aliases import (
+from rapid_mlx.model_aliases import (
     _coerce,
     resolve_model,
     resolve_profile,
     resolve_subfolder,
     subfolder_allow_patterns,
 )
-from vllm_mlx.utils.tokenizer import _resolve_subfolder_checkpoint
+from rapid_mlx.utils.tokenizer import _resolve_subfolder_checkpoint
 
 ALIAS = "lfm2.5-2.6b-4bit"
 REPO = "LiquidAI/LFM2.5-2.6B-MLX"
@@ -64,7 +64,7 @@ def test_hf_path_stays_a_bare_repo_id():
 
 def test_most_aliases_have_no_subfolder():
     """Guard against a copy-paste that pins a subfolder repo-wide."""
-    from vllm_mlx.model_aliases import list_profiles
+    from rapid_mlx.model_aliases import list_profiles
 
     with_subfolder = {
         alias for alias, p in list_profiles().items() if p.subfolder is not None
@@ -134,7 +134,7 @@ def test_two_aliases_on_one_repo_with_different_subfolders_is_rejected():
     and 8-bit legitimately disagree, and picking the first would serve the
     wrong weights under the right name. Fail at registry load instead.
     """
-    from vllm_mlx.model_aliases import _assert_subfolder_is_unambiguous
+    from rapid_mlx.model_aliases import _assert_subfolder_is_unambiguous
 
     profiles = {
         "m-4bit": _coerce("m-4bit", {"hf_path": REPO, "subfolder": "4bit"}),
@@ -145,7 +145,7 @@ def test_two_aliases_on_one_repo_with_different_subfolders_is_rejected():
 
 
 def test_two_aliases_on_one_repo_agreeing_is_fine():
-    from vllm_mlx.model_aliases import _assert_subfolder_is_unambiguous
+    from rapid_mlx.model_aliases import _assert_subfolder_is_unambiguous
 
     profiles = {
         "a": _coerce("a", {"hf_path": REPO, "subfolder": "4bit"}),
@@ -156,7 +156,7 @@ def test_two_aliases_on_one_repo_agreeing_is_fine():
 
 def test_shipped_registry_is_unambiguous():
     """The real aliases.json, not a fixture."""
-    from vllm_mlx.model_aliases import _assert_subfolder_is_unambiguous, list_profiles
+    from rapid_mlx.model_aliases import _assert_subfolder_is_unambiguous, list_profiles
 
     _assert_subfolder_is_unambiguous(list_profiles())
 
@@ -409,7 +409,7 @@ def test_missing_subfolder_after_download_raises(monkeypatch, tmp_path):
 
 
 def test_prefix_is_empty_for_flat_repos_so_callers_can_prepend_blindly():
-    from vllm_mlx.model_aliases import checkpoint_prefix
+    from rapid_mlx.model_aliases import checkpoint_prefix
 
     assert checkpoint_prefix(REPO) == "4bit/"
     assert checkpoint_prefix("mlx-community/LFM2.5-8B-A1B-MLX-4bit") == ""
@@ -424,7 +424,7 @@ def test_metadata_read_looks_inside_the_checkpoint(monkeypatch, tmp_path):
     selecting the serving lane`` — a hard startup failure. ``config.json``
     is at ``4bit/config.json``, so the root probe found nothing and the
     MLLM-vs-text routing had no evidence to work from."""
-    import vllm_mlx.model_metadata as mm
+    import rapid_mlx.model_metadata as mm
 
     snapshot = tmp_path / "snapshots" / "cafe"
     (snapshot / "4bit").mkdir(parents=True)
@@ -456,7 +456,7 @@ def test_size_estimate_counts_only_the_alias_checkpoint(monkeypatch):
     """Symptom: ``Estimated size: 18.7 GiB`` on a 1.6 GB model, then a
     kernel-panic warning and a confirm prompt. The repo holds eight
     complete quantizations; seven of them are not being downloaded."""
-    import vllm_mlx._download_gate as gate
+    import rapid_mlx._download_gate as gate
 
     class Sib:
         def __init__(self, name, size):
@@ -483,7 +483,7 @@ def test_size_estimate_counts_only_the_alias_checkpoint(monkeypatch):
 
 
 def test_size_estimate_unchanged_for_flat_repos(monkeypatch):
-    import vllm_mlx._download_gate as gate
+    import rapid_mlx._download_gate as gate
 
     class Sib:
         def __init__(self, name, size):
@@ -502,7 +502,7 @@ def test_cache_probe_descends_before_asking_if_complete(tmp_path):
     """Symptom: the download gate re-prompts on every serve because a
     fully-cached checkpoint reads as absent — ``model*.safetensors`` is
     inside ``4bit/``, and the loader glob is non-recursive."""
-    from vllm_mlx._download_gate import _descend_to_checkpoint
+    from rapid_mlx._download_gate import _descend_to_checkpoint
 
     snap = tmp_path / "sha"
     (snap / "4bit").mkdir(parents=True)
@@ -516,7 +516,7 @@ def test_cache_probe_descends_before_asking_if_complete(tmp_path):
 def test_cache_probe_does_not_invent_a_directory(tmp_path):
     """Publisher reorganised the repo: report the root (which will then
     read as incomplete) rather than a path that does not exist."""
-    from vllm_mlx._download_gate import _descend_to_checkpoint
+    from rapid_mlx._download_gate import _descend_to_checkpoint
 
     snap = tmp_path / "sha"
     snap.mkdir()
@@ -537,7 +537,7 @@ def test_mirror_runs_subfolder_repos_with_allow_patterns(monkeypatch):
     R2 copy and routed the desktop through a HF path that could hang at
     "Starting…".
     """
-    import vllm_mlx.cli as cli
+    import rapid_mlx.cli as cli
 
     seen: list[list[str] | None] = []
 
@@ -545,7 +545,7 @@ def test_mirror_runs_subfolder_repos_with_allow_patterns(monkeypatch):
         seen.append(kw.get("allow_patterns"))
         return True
 
-    import vllm_mlx._mirror as mirror
+    import rapid_mlx._mirror as mirror
 
     monkeypatch.setattr(mirror, "download_with_mirror_fallback", tripwire)
 
@@ -565,7 +565,7 @@ def test_mirror_filter_discards_unselected_siblings_before_io(monkeypatch, tmp_p
 
     import huggingface_hub
 
-    import vllm_mlx._mirror as mirror
+    import rapid_mlx._mirror as mirror
 
     info = SimpleNamespace(
         sha="deadbeef",
@@ -599,7 +599,7 @@ def test_registry_fails_closed_on_every_load_not_just_the_first(monkeypatch):
     """
     import json as _json
 
-    import vllm_mlx.model_aliases as ma
+    import rapid_mlx.model_aliases as ma
 
     ambiguous = {
         "m-4bit": {"hf_path": REPO, "subfolder": "4bit"},
@@ -680,7 +680,7 @@ def test_lfm_family_declares_a_reasoning_parser():
 
 
 def test_declared_parser_separates_the_output_these_models_actually_emit():
-    from vllm_mlx.reasoning import get_parser
+    from rapid_mlx.reasoning import get_parser
 
     parser = get_parser("qwen3")()
 
@@ -704,7 +704,7 @@ def test_unclosed_think_does_not_leak_into_content():
     """The 256-token observation: both models were still reasoning when the
     budget ran out, so NO closing tag was ever emitted. Whatever the split,
     a bare ``<think>`` must not reach the content field."""
-    from vllm_mlx.reasoning import get_parser
+    from rapid_mlx.reasoning import get_parser
 
     parser = get_parser("qwen3")()
     truncated = "<think>We need to produce exactly three sentences. The content"
@@ -724,7 +724,7 @@ def test_pull_narrows_to_the_checkpoint_and_says_so(monkeypatch, capsys, tmp_pat
     """
     import argparse
 
-    import vllm_mlx.cli as cli
+    import rapid_mlx.cli as cli
 
     snapshot = tmp_path / "snap"
     (snapshot / "4bit").mkdir(parents=True)
@@ -751,7 +751,7 @@ def test_pull_of_a_flat_repo_is_unfiltered(monkeypatch, tmp_path):
     """The generic contract is untouched for every ordinary repo."""
     import argparse
 
-    import vllm_mlx.cli as cli
+    import rapid_mlx.cli as cli
 
     seen: dict = {}
 
@@ -806,7 +806,7 @@ def test_disk_check_keeps_the_prefix_when_the_cache_probe_throws(monkeypatch):
     """
     import huggingface_hub
 
-    import vllm_mlx.cli as cli
+    import rapid_mlx.cli as cli
 
     monkeypatch.setattr(
         huggingface_hub,
@@ -885,7 +885,7 @@ def test_local_snapshot_resolves_a_cached_repo_to_its_path_offline(monkeypatch):
     """
     import huggingface_hub
 
-    from vllm_mlx.utils import tokenizer as tok
+    from rapid_mlx.utils import tokenizer as tok
 
     calls: list[bool] = []
 
@@ -895,7 +895,7 @@ def test_local_snapshot_resolves_a_cached_repo_to_its_path_offline(monkeypatch):
         return "/cache/models--org--warm-repo/snapshots/abc"
 
     monkeypatch.setattr(huggingface_hub, "snapshot_download", fake_snapshot_download)
-    monkeypatch.setattr("vllm_mlx._download_gate.is_repo_cached", lambda _name: True)
+    monkeypatch.setattr("rapid_mlx._download_gate.is_repo_cached", lambda _name: True)
 
     resolved = tok._local_snapshot_if_cached("org/warm-repo")
     assert resolved == "/cache/models--org--warm-repo/snapshots/abc"
@@ -907,29 +907,29 @@ def test_local_snapshot_leaves_a_cold_repo_untouched(monkeypatch):
     the loader's own online pull still runs. snapshot_download is a tripwire."""
     import huggingface_hub
 
-    from vllm_mlx.utils import tokenizer as tok
+    from rapid_mlx.utils import tokenizer as tok
 
     def tripwire(repo_id, **kwargs):
         raise AssertionError("a cold repo must not be resolved from the cache")
 
     monkeypatch.setattr(huggingface_hub, "snapshot_download", tripwire)
-    monkeypatch.setattr("vllm_mlx._download_gate.is_repo_cached", lambda _name: False)
+    monkeypatch.setattr("rapid_mlx._download_gate.is_repo_cached", lambda _name: False)
 
     assert tok._local_snapshot_if_cached("org/cold-repo") == "org/cold-repo"
 
 
 def test_local_snapshot_uses_unique_complete_offline_revision(monkeypatch):
     """The loader receives the same verified local path the CLI admitted."""
-    from vllm_mlx.utils import tokenizer as tok
+    from rapid_mlx.utils import tokenizer as tok
 
     complete = "/cache/models--org--model/snapshots/complete"
-    monkeypatch.setattr("vllm_mlx._download_gate.is_repo_cached", lambda _name: False)
+    monkeypatch.setattr("rapid_mlx._download_gate.is_repo_cached", lambda _name: False)
     monkeypatch.setattr(
-        "vllm_mlx.model_metadata.resolve_unreferenced_cached_snapshot",
+        "rapid_mlx.model_metadata.resolve_unreferenced_cached_snapshot",
         lambda _name: None,
     )
     monkeypatch.setattr(
-        "vllm_mlx.model_metadata.resolve_offline_cached_snapshot",
+        "rapid_mlx.model_metadata.resolve_offline_cached_snapshot",
         lambda _name: Path(complete),
     )
 
@@ -942,13 +942,13 @@ def test_local_snapshot_falls_back_when_the_local_resolve_fails(monkeypatch):
     try — never propagate a resolve error out of a supposedly-warm start."""
     import huggingface_hub
 
-    from vllm_mlx.utils import tokenizer as tok
+    from rapid_mlx.utils import tokenizer as tok
 
     def boom(repo_id, **kwargs):
         raise OSError("cache surprised us")
 
     monkeypatch.setattr(huggingface_hub, "snapshot_download", boom)
-    monkeypatch.setattr("vllm_mlx._download_gate.is_repo_cached", lambda _name: True)
+    monkeypatch.setattr("rapid_mlx._download_gate.is_repo_cached", lambda _name: True)
 
     assert tok._local_snapshot_if_cached("org/warm-repo") == "org/warm-repo"
 
@@ -963,7 +963,7 @@ def test_local_snapshot_uses_one_complete_immutable_revision_without_main_ref(
 
     import huggingface_hub
 
-    from vllm_mlx.utils import tokenizer as tok
+    from rapid_mlx.utils import tokenizer as tok
 
     repo_root = tmp_path / "models--mlx-community--Qwen3.5-2B-MLX-4bit"
     revision = "93760be4f1f69842a46bc13dbdc0f19e291392a3"
@@ -989,8 +989,8 @@ def test_local_snapshot_uses_one_complete_immutable_revision_without_main_ref(
 
 
 def test_auto_config_key_keeps_alias_identity_for_subfolder_alias():
-    from vllm_mlx.cli import _auto_config_lookup_key
-    from vllm_mlx.model_auto_config import detect_model_config
+    from rapid_mlx.cli import _auto_config_lookup_key
+    from rapid_mlx.model_auto_config import detect_model_config
 
     assert _auto_config_lookup_key(ALIAS) == ALIAS
     assert _auto_config_lookup_key(REPO) == REPO
@@ -1000,8 +1000,8 @@ def test_auto_config_key_keeps_alias_identity_for_subfolder_alias():
 
 
 def test_auto_config_key_resolves_checkpoint_for_profile_less_repo(monkeypatch):
-    from vllm_mlx import cli as cli_mod
-    from vllm_mlx.utils import tokenizer as tok
+    from rapid_mlx import cli as cli_mod
+    from rapid_mlx.utils import tokenizer as tok
 
     calls: list[str] = []
     monkeypatch.setattr(

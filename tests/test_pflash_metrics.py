@@ -44,9 +44,9 @@ from typing import Any
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from vllm_mlx.pflash import PFlashConfig
-from vllm_mlx.request import Request, SamplingParams
-from vllm_mlx.scheduler import Scheduler, SchedulerConfig
+from rapid_mlx.pflash import PFlashConfig
+from rapid_mlx.request import Request, SamplingParams
+from rapid_mlx.scheduler import Scheduler, SchedulerConfig
 
 # ---------------------------------------------------------------------------
 # Scheduler-side: counters accumulate on the PFlash bypass path
@@ -232,8 +232,8 @@ def metrics_client():
     Mirrors ``test_metrics_route.metrics_client`` so the PFlash counters
     are exercised through the same render path as every other series.
     """
-    from vllm_mlx.config import reset_config
-    from vllm_mlx.routes.metrics import _reset_accumulator_for_tests, router
+    from rapid_mlx.config import reset_config
+    from rapid_mlx.routes.metrics import _reset_accumulator_for_tests, router
 
     cfg = reset_config()
     cfg.model_name = "qwen3.5-4b"

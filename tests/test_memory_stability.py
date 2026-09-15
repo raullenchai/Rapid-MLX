@@ -17,8 +17,8 @@ pytestmark = pytest.mark.requires_mlx
 import time
 from unittest.mock import MagicMock, patch
 
-from vllm_mlx.request import SamplingParams
-from vllm_mlx.scheduler import Scheduler, SchedulerConfig
+from rapid_mlx.request import SamplingParams
+from rapid_mlx.scheduler import Scheduler, SchedulerConfig
 
 
 def _make_scheduler(
@@ -134,7 +134,7 @@ class TestClearCacheInterval:
         assert scheduler._step_count == 0
         assert scheduler._clear_cache_interval == 32
 
-    @patch("vllm_mlx.scheduler.mx")
+    @patch("rapid_mlx.scheduler.mx")
     def test_clear_cache_called_periodically(self, mock_mx):
         """Verify mx.clear_cache() is called every _clear_cache_interval steps."""
         scheduler = _make_scheduler()
@@ -147,7 +147,7 @@ class TestClearCacheInterval:
         # Should have been called at step 4 and 8
         assert mock_mx.clear_cache.call_count >= 2
 
-    @patch("vllm_mlx.scheduler.mx")
+    @patch("rapid_mlx.scheduler.mx")
     def test_clear_cache_called_on_cleanup(self, mock_mx):
         """Verify mx.clear_cache() is called when requests finish."""
         scheduler = _make_scheduler()
@@ -157,7 +157,7 @@ class TestClearCacheInterval:
 
         mock_mx.clear_cache.assert_called()
 
-    @patch("vllm_mlx.scheduler.mx")
+    @patch("rapid_mlx.scheduler.mx")
     def test_clear_cache_not_called_on_empty_cleanup(self, mock_mx):
         """Verify mx.clear_cache() is NOT called when no requests finish."""
         scheduler = _make_scheduler()
@@ -170,7 +170,7 @@ class TestClearCacheInterval:
 class TestIncrementalCacheEval:
     """Tests for incremental per-layer cache evaluation in _cleanup_finished()."""
 
-    @patch("vllm_mlx.scheduler.mx")
+    @patch("rapid_mlx.scheduler.mx")
     def test_incremental_eval_called_per_layer(self, mock_mx):
         """Verify mx.eval is called per layer during cleanup, not as one batch."""
         scheduler = _make_scheduler()
@@ -200,7 +200,7 @@ class TestIncrementalCacheEval:
         # Second call with layer 2 keys/values
         assert eval_calls[1] == ((mock_keys_2, mock_values_2),)
 
-    @patch("vllm_mlx.scheduler.mx")
+    @patch("rapid_mlx.scheduler.mx")
     def test_no_eval_when_no_extracted_cache(self, mock_mx):
         """Verify mx.eval is not called when request has no extracted cache."""
         scheduler = _make_scheduler()
@@ -217,7 +217,7 @@ class TestIncrementalCacheEval:
         # mx.eval should NOT have been called (only mx.clear_cache for cleanup)
         mock_mx.eval.assert_not_called()
 
-    @patch("vllm_mlx.scheduler.mx")
+    @patch("rapid_mlx.scheduler.mx")
     def test_no_eager_eval_in_extraction_path(self, mock_mx):
         """Verify mx.eval(mx.array(0)) is NOT called during cache extraction."""
         scheduler = _make_scheduler()
@@ -264,7 +264,7 @@ class TestIncrementalCacheEval:
 class TestMemoryStats:
     """Tests for Metal memory stats in get_stats()."""
 
-    @patch("vllm_mlx.scheduler.mx")
+    @patch("rapid_mlx.scheduler.mx")
     def test_metal_stats_included(self, mock_mx):
         """Verify Metal memory stats appear in get_stats()."""
         mock_mx.metal.is_available.return_value = True
@@ -279,7 +279,7 @@ class TestMemoryStats:
         assert stats["metal_peak_memory_gb"] == 15.0
         assert stats["metal_cache_memory_gb"] == 2.0
 
-    @patch("vllm_mlx.scheduler.mx")
+    @patch("rapid_mlx.scheduler.mx")
     def test_metal_stats_graceful_on_error(self, mock_mx):
         """Verify get_stats() works even if Metal stats fail."""
         mock_mx.metal.is_available.side_effect = RuntimeError("no metal")

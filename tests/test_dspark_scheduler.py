@@ -12,7 +12,7 @@ from types import SimpleNamespace
 
 import mlx.core as mx
 
-from vllm_mlx.scheduler import (
+from rapid_mlx.scheduler import (
     _adapt_dspark_depth,
     _install_dspark,
     _replay_dspark_committed,
@@ -20,8 +20,8 @@ from vllm_mlx.scheduler import (
 
 
 def test_pooling_cache_rolls_back_across_compression_boundary() -> None:
-    from vllm_mlx.models.deepseek_v4_cache import DeepseekV4PoolingCache
-    from vllm_mlx.models.deepseek_v4_rollback import armed, trim_all
+    from rapid_mlx.models.deepseek_v4_cache import DeepseekV4PoolingCache
+    from rapid_mlx.models.deepseek_v4_rollback import armed, trim_all
 
     cache = DeepseekV4PoolingCache(4)
     # Establish three pending values, then verify four inputs. Keeping the
@@ -41,8 +41,8 @@ def test_pooling_cache_rolls_back_across_compression_boundary() -> None:
 def test_pooling_cache_multitoken_preflight_is_atomic_without_undo() -> None:
     from mlx_lm.models.cache import CacheList, KVCache
 
-    from vllm_mlx.cache_rollback import can_trim, trim_all
-    from vllm_mlx.models.deepseek_v4_cache import PoolingCache
+    from rapid_mlx.cache_rollback import can_trim, trim_all
+    from rapid_mlx.models.deepseek_v4_cache import PoolingCache
 
     kv = KVCache()
     values = mx.ones((1, 1, 5, 2))
@@ -61,7 +61,7 @@ def test_pooling_cache_multitoken_preflight_is_atomic_without_undo() -> None:
 
 
 def test_trim_transaction_restores_earlier_cache_when_later_trim_fails() -> None:
-    from vllm_mlx.cache_rollback import trim_all
+    from rapid_mlx.cache_rollback import trim_all
 
     class CursorCache:
         def __init__(self, offset, *, fail=False):
@@ -85,8 +85,8 @@ def test_trim_transaction_restores_earlier_cache_when_later_trim_fails() -> None
 
 def test_trim_transaction_accepts_turboquant_void_return_contract() -> None:
     """TurboQuant mutates its scalar cursor and deliberately returns None."""
-    from vllm_mlx.cache_rollback import can_trim, trim_all
-    from vllm_mlx.turboquant import TurboQuantConfig, TurboQuantKVCache
+    from rapid_mlx.cache_rollback import can_trim, trim_all
+    from rapid_mlx.turboquant import TurboQuantConfig, TurboQuantKVCache
 
     keys = mx.zeros((1, 1, 5, 2))
     values = mx.zeros((1, 1, 5, 1))
@@ -105,7 +105,7 @@ def test_trim_transaction_accepts_turboquant_void_return_contract() -> None:
 
 
 def test_trim_transaction_rejects_void_return_without_cursor_change() -> None:
-    from vllm_mlx.cache_rollback import trim_all
+    from rapid_mlx.cache_rollback import trim_all
 
     class BrokenVoidCache:
         def __init__(self):
@@ -123,7 +123,7 @@ def test_trim_transaction_rejects_void_return_without_cursor_change() -> None:
 
 
 def test_trim_admission_guards_and_custom_checkpoint_restore() -> None:
-    from vllm_mlx.cache_rollback import can_trim, trim_all
+    from rapid_mlx.cache_rollback import can_trim, trim_all
 
     class CustomCache:
         def __init__(self):
@@ -182,7 +182,7 @@ def test_trim_admission_guards_and_custom_checkpoint_restore() -> None:
 
 
 def test_pooling_checkpoint_restore_covers_scalar_and_batch_state() -> None:
-    from vllm_mlx.models.deepseek_v4_cache import (
+    from rapid_mlx.models.deepseek_v4_cache import (
         BatchDeepseekV4PoolingCache,
         DeepseekV4PoolingCache,
     )
@@ -205,8 +205,8 @@ def test_pooling_checkpoint_restore_covers_scalar_and_batch_state() -> None:
 
 
 def test_batch_pooling_cache_rolls_back_across_compression_boundary() -> None:
-    from vllm_mlx.models.deepseek_v4_cache import BatchDeepseekV4PoolingCache
-    from vllm_mlx.models.deepseek_v4_rollback import armed, trim_all
+    from rapid_mlx.models.deepseek_v4_cache import BatchDeepseekV4PoolingCache
+    from rapid_mlx.models.deepseek_v4_rollback import armed, trim_all
 
     cache = BatchDeepseekV4PoolingCache(ratio=4, left_padding=[0])
     cache.accumulate_windows(mx.ones((1, 3, 4)), mx.ones((1, 3, 4)), 0)
@@ -223,11 +223,11 @@ def test_batch_pooling_cache_rolls_back_across_compression_boundary() -> None:
 
 
 def test_deepseek_pooling_undo_without_completed_window_restores_overlap() -> None:
-    from vllm_mlx.models.deepseek_v4_cache import (
+    from rapid_mlx.models.deepseek_v4_cache import (
         BatchDeepseekV4PoolingCache,
         DeepseekV4PoolingCache,
     )
-    from vllm_mlx.models.deepseek_v4_rollback import armed, trim_all
+    from rapid_mlx.models.deepseek_v4_rollback import armed, trim_all
 
     scalar = DeepseekV4PoolingCache(4)
     scalar.accumulate_windows(mx.ones((1, 3, 4)), mx.ones((1, 3, 4)), 0)
@@ -247,7 +247,7 @@ def test_deepseek_pooling_undo_without_completed_window_restores_overlap() -> No
 def test_rotating_cache_rolls_back_after_rotation() -> None:
     from mlx_lm.models.cache import RotatingKVCache
 
-    from vllm_mlx.models.deepseek_v4_rollback import (
+    from rapid_mlx.models.deepseek_v4_rollback import (
         armed,
         install_rotating_undo,
         trim_all,
@@ -281,7 +281,7 @@ def test_rotating_cache_rolls_back_after_rotation() -> None:
 def test_batch_rotating_cache_rolls_back_after_rotation() -> None:
     from mlx_lm.models.cache import BatchRotatingKVCache
 
-    from vllm_mlx.models.deepseek_v4_rollback import (
+    from rapid_mlx.models.deepseek_v4_rollback import (
         armed,
         install_rotating_undo,
         trim_all,
@@ -313,7 +313,7 @@ def test_rotating_undo_supports_legacy_cache_without_amount_preflight(
 ) -> None:
     from mlx_lm.models import cache as mlx_cache
 
-    from vllm_mlx.models import deepseek_v4_rollback as rollback
+    from rapid_mlx.models import deepseek_v4_rollback as rollback
 
     class LegacyRotating:
         def __init__(self):
@@ -395,7 +395,7 @@ def test_replay_dspark_committed_excludes_unsurfaced_drafts() -> None:
 
 
 def test_prompt_capture_does_not_fabricate_dspark_history_after_prefix_hit() -> None:
-    from vllm_mlx.models.deepseek_v4 import Model
+    from rapid_mlx.models.deepseek_v4 import Model
 
     fake = SimpleNamespace(
         _dspark_prime_ctx=None,

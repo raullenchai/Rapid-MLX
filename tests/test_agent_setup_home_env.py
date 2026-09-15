@@ -21,8 +21,8 @@ from pathlib import Path
 
 import pytest
 
-from vllm_mlx.agents import get_profile
-from vllm_mlx.agents.adapter import _resolve_config_path, setup_agent_config
+from rapid_mlx.agents import get_profile
+from rapid_mlx.agents.adapter import _resolve_config_path, setup_agent_config
 
 
 @pytest.mark.parametrize(
@@ -151,8 +151,8 @@ def test_a_user_profile_cannot_drop_the_redirect():
     real config — reintroduced by a file whose author was thinking about
     models, not about config safety.
     """
-    from vllm_mlx.agents import _keep_home_env
-    from vllm_mlx.agents.base import AgentConfigSpec
+    from rapid_mlx.agents import _keep_home_env
+    from rapid_mlx.agents.base import AgentConfigSpec
 
     builtin = get_profile("codex")
     assert builtin.config.home_env == "CODEX_HOME"
@@ -185,7 +185,7 @@ def test_a_version_that_declares_its_own_home_env_keeps_it():
     """
     from dataclasses import replace as _replace
 
-    from vllm_mlx.agents.base import AgentConfigSpec, AgentVersionSpec
+    from rapid_mlx.agents.base import AgentConfigSpec, AgentVersionSpec
 
     profile = get_profile("hermes")
     relocated = AgentConfigSpec(

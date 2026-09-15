@@ -23,7 +23,7 @@ import pytest
 def fake_home(tmp_path, monkeypatch):
     monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.delenv("RAPID_MLX_TELEMETRY", raising=False)
-    import vllm_mlx.telemetry.state as state
+    import rapid_mlx.telemetry.state as state
 
     importlib.reload(state)
     return tmp_path
@@ -44,7 +44,7 @@ def _run_cli(*args, env_overrides=None, home=None):
     if env_overrides:
         env.update(env_overrides)
     return subprocess.run(
-        [sys.executable, "-m", "vllm_mlx.cli", *args],
+        [sys.executable, "-m", "rapid_mlx.cli", *args],
         capture_output=True,
         text=True,
         env=env,
@@ -310,7 +310,7 @@ def test_help_lists_telemetry_subcommand():
     so users discover it. Regression target: someone refactors the
     subparsers and accidentally drops the registration."""
     r = subprocess.run(
-        [sys.executable, "-m", "vllm_mlx.cli", "--help"],
+        [sys.executable, "-m", "rapid_mlx.cli", "--help"],
         capture_output=True,
         text=True,
         timeout=15,
@@ -322,7 +322,7 @@ def test_help_lists_telemetry_subcommand():
 
 def test_telemetry_help_lists_all_five_actions():
     r = subprocess.run(
-        [sys.executable, "-m", "vllm_mlx.cli", "telemetry", "--help"],
+        [sys.executable, "-m", "rapid_mlx.cli", "telemetry", "--help"],
         capture_output=True,
         text=True,
         timeout=15,

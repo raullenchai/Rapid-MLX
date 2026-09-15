@@ -14,7 +14,7 @@ Fix: declare both fields and normalize them to the modern slots via a
 provided, matching OpenAI's documented deprecation behavior.
 """
 
-from vllm_mlx.api.models import (
+from rapid_mlx.api.models import (
     ChatCompletionRequest,
     Message,
     ToolDefinition,

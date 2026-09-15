@@ -21,9 +21,9 @@ pytestmark = pytest.mark.requires_mlx
 
 from unittest.mock import MagicMock
 
-from vllm_mlx.pflash import PFlashConfig
-from vllm_mlx.request import Request, SamplingParams
-from vllm_mlx.scheduler import Scheduler, SchedulerConfig
+from rapid_mlx.pflash import PFlashConfig
+from rapid_mlx.request import Request, SamplingParams
+from rapid_mlx.scheduler import Scheduler, SchedulerConfig
 
 
 class DummyTokenizer:

@@ -14,26 +14,26 @@ pytestmark = pytest.mark.requires_mlx
 
 import mlx.core as mx
 
-import vllm_mlx.models.deepseek_v41_native.load as native_load
+import rapid_mlx.models.deepseek_v41_native.load as native_load
 
 sys.path.insert(0, str(Path(__file__).parents[1] / "scripts"))
 
-from vllm_mlx.models.deepseek_v41_native.attention import (  # noqa: E402
+from rapid_mlx.models.deepseek_v41_native.attention import (  # noqa: E402
     Attention,
     GroupedOutputLinear,
 )
-from vllm_mlx.models.deepseek_v41_native.cache import ModelCache  # noqa: E402
-from vllm_mlx.models.deepseek_v41_native.compressor import (  # noqa: E402
+from rapid_mlx.models.deepseek_v41_native.cache import ModelCache  # noqa: E402
+from rapid_mlx.models.deepseek_v41_native.compressor import (  # noqa: E402
     Compressor,
     CompressorState,
 )
-from vllm_mlx.models.deepseek_v41_native.config import ModelArgs  # noqa: E402
-from vllm_mlx.models.deepseek_v41_native.load import (  # noqa: E402
+from rapid_mlx.models.deepseek_v41_native.config import ModelArgs  # noqa: E402
+from rapid_mlx.models.deepseek_v41_native.load import (  # noqa: E402
     reshape_grouped_wo_a,
     resolve_indexed_shard,
     supports_engram_ssd_offload,
 )
-from vllm_mlx.models.deepseek_v41_native.model import Model  # noqa: E402
+from rapid_mlx.models.deepseek_v41_native.model import Model  # noqa: E402
 
 
 def test_reshape_grouped_wo_a_restores_quantized_parameter_axes() -> None:
@@ -229,7 +229,7 @@ def _patch_minimal_offload_loader(monkeypatch):
 def test_load_wires_disk_engram_and_skips_its_resident_tensors(
     tmp_path, monkeypatch
 ) -> None:
-    from vllm_mlx.models.deepseek_v41_native.engram import (
+    from rapid_mlx.models.deepseek_v41_native.engram import (
         DiskQuantizedEngramEmbedding,
     )
 
@@ -320,7 +320,7 @@ def test_load_rejects_offload_without_affine_engram_quantization(
 
 
 def test_load_preserves_resident_affine_engram_path(tmp_path, monkeypatch) -> None:
-    from vllm_mlx.models.deepseek_v41_native.engram import QuantizedEngramEmbedding
+    from rapid_mlx.models.deepseek_v41_native.engram import QuantizedEngramEmbedding
 
     _write_offload_fixture(tmp_path)
     _patch_minimal_offload_loader(monkeypatch)

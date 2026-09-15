@@ -168,7 +168,7 @@ for MODEL in $MODELS; do
   else
     SERVE_ARGS+=(--no-thinking)
   fi
-  "$PY" -m vllm_mlx.cli serve "$MODEL" "${SERVE_ARGS[@]}" > "$LOG" 2>&1 &
+  "$PY" -m rapid_mlx.cli serve "$MODEL" "${SERVE_ARGS[@]}" > "$LOG" 2>&1 &
   CURRENT_PID=$!
   echo "$CURRENT_PID" > "$PIDFILE"
 

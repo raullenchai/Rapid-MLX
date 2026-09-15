@@ -7,7 +7,7 @@ JSON in, OpenAI JSON out. No weights, no Metal, no engine. The whole
 that reason.
 
 Then this PR taught the adapter to consult ``get_config()`` for the
-mid-conversation-system flag, and ``vllm_mlx.config`` transitively did::
+mid-conversation-system flag, and ``rapid_mlx.config`` transitively did::
 
     config/__init__ -> config.server_config -> engine.base
                     -> engine_core -> import mlx.core
@@ -85,7 +85,7 @@ def test_the_blocker_actually_blocks() -> None:
 def test_config_is_importable_without_mlx() -> None:
     proc = _run_without_mlx(
         """
-        from vllm_mlx.config import ServerConfig, get_config
+        from rapid_mlx.config import ServerConfig, get_config
 
         cfg = get_config()
         assert isinstance(cfg, ServerConfig)
@@ -103,9 +103,9 @@ def test_anthropic_adapter_translates_without_mlx(flag: bool) -> None:
     """The flag lookup itself must not need an engine, either way."""
     proc = _run_without_mlx(
         f"""
-        from vllm_mlx.api.anthropic_adapter import anthropic_to_openai
-        from vllm_mlx.api.anthropic_models import AnthropicMessage, AnthropicRequest
-        from vllm_mlx.config import get_config
+        from rapid_mlx.api.anthropic_adapter import anthropic_to_openai
+        from rapid_mlx.api.anthropic_models import AnthropicMessage, AnthropicRequest
+        from rapid_mlx.config import get_config
 
         get_config().relocate_mid_conversation_system = {flag}
 
@@ -152,8 +152,8 @@ def test_annotations_resolve_to_the_real_engine_type_without_mlx() -> None:
         """
         import typing
 
-        from vllm_mlx.config import ServerConfig
-        from vllm_mlx.engine.base import BaseEngine
+        from rapid_mlx.config import ServerConfig
+        from rapid_mlx.engine.base import BaseEngine
 
         hints = typing.get_type_hints(ServerConfig)
         assert "engine" in hints, sorted(hints)
@@ -166,7 +166,7 @@ def test_annotations_resolve_to_the_real_engine_type_without_mlx() -> None:
 
 
 def test_engine_package_defers_its_mlx_dependent_members() -> None:
-    """``import vllm_mlx.engine`` must not pull MLX in on its own.
+    """``import rapid_mlx.engine`` must not pull MLX in on its own.
 
     This is the property the config fix rests on. ``base`` is stdlib-pure
     and stays eager; ``engine_core`` and ``batched`` are PEP 562 lazies.
@@ -175,11 +175,11 @@ def test_engine_package_defers_its_mlx_dependent_members() -> None:
         """
         import sys
 
-        import vllm_mlx.engine as engine
+        import rapid_mlx.engine as engine
 
         # The property the config fix rests on: the package alone is cheap.
         assert "mlx" not in sys.modules, "importing the package pulled MLX in"
-        assert "vllm_mlx.engine_core" not in sys.modules
+        assert "rapid_mlx.engine_core" not in sys.modules
         assert engine.BaseEngine.__name__ == "BaseEngine"
 
         # The deferred members are still reachable by name...
@@ -212,8 +212,8 @@ def test_anthropic_streaming_reasoning_uses_the_reasoning_sanitizer() -> None:
     """
     import inspect
 
-    from vllm_mlx.api.utils import sanitize_reasoning_for_stream
-    from vllm_mlx.routes import anthropic as route
+    from rapid_mlx.api.utils import sanitize_reasoning_for_stream
+    from rapid_mlx.routes import anthropic as route
 
     # The reasoning channel strips the closer; whitespace is preserved
     # because streaming clients concatenate deltas verbatim.

@@ -11,7 +11,7 @@ Tests cover:
 
 import pytest
 
-from vllm_mlx.reasoning import (
+from rapid_mlx.reasoning import (
     DeltaMessage,
     ReasoningParser,
     get_parser,
@@ -494,7 +494,7 @@ class TestAPIModelsIntegration:
 
     def test_assistant_message_with_reasoning(self):
         """Test that AssistantMessage can hold reasoning content."""
-        from vllm_mlx.api.models import AssistantMessage
+        from rapid_mlx.api.models import AssistantMessage
 
         msg = AssistantMessage(
             content="The answer is 42.",
@@ -506,7 +506,7 @@ class TestAPIModelsIntegration:
 
     def test_assistant_message_reasoning_none(self):
         """Test AssistantMessage with no reasoning."""
-        from vllm_mlx.api.models import AssistantMessage
+        from rapid_mlx.api.models import AssistantMessage
 
         msg = AssistantMessage(content="Simple response without reasoning.")
         assert msg.content == "Simple response without reasoning."
@@ -514,7 +514,7 @@ class TestAPIModelsIntegration:
 
     def test_chat_completion_chunk_delta_with_reasoning(self):
         """Test that ChatCompletionChunkDelta can hold reasoning_content."""
-        from vllm_mlx.api.models import ChatCompletionChunkDelta
+        from rapid_mlx.api.models import ChatCompletionChunkDelta
 
         delta = ChatCompletionChunkDelta(reasoning_content="thinking...")
         assert delta.reasoning_content == "thinking..."
@@ -526,7 +526,7 @@ class TestAPIModelsIntegration:
 
     def test_delta_transition(self):
         """Test delta during transition from reasoning to content."""
-        from vllm_mlx.api.models import ChatCompletionChunkDelta
+        from rapid_mlx.api.models import ChatCompletionChunkDelta
 
         # During transition, both might have values
         delta = ChatCompletionChunkDelta(
@@ -1084,12 +1084,12 @@ class TestGlm4Parser:
 
     @pytest.fixture
     def parser(self):
-        from vllm_mlx.reasoning import get_parser
+        from rapid_mlx.reasoning import get_parser
 
         return get_parser("glm4")()
 
     def test_registry_includes_glm4(self):
-        from vllm_mlx.reasoning import list_parsers
+        from rapid_mlx.reasoning import list_parsers
 
         assert "glm4" in list_parsers()
 
@@ -1214,14 +1214,14 @@ class TestGlm5Parser:
 
     @pytest.fixture
     def parser(self):
-        from vllm_mlx.reasoning import get_parser
+        from rapid_mlx.reasoning import get_parser
 
         parser = get_parser("glm5")()
         parser.configure_request(prompt_thinking_active=True)
         return parser
 
     def test_registry_includes_glm5(self):
-        from vllm_mlx.reasoning import list_parsers
+        from rapid_mlx.reasoning import list_parsers
 
         assert "glm5" in list_parsers()
 
@@ -1253,7 +1253,7 @@ class TestGlm5Parser:
         assert "".join(content_parts) == "STREAM_OK"
 
     def test_no_prompt_priming_keeps_plain_non_streaming_content(self):
-        from vllm_mlx.reasoning import get_parser
+        from rapid_mlx.reasoning import get_parser
 
         parser = get_parser("glm5")()
         parser.configure_request(prompt_thinking_active=False)

@@ -36,10 +36,10 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from vllm_mlx.service.postprocessor import StreamingPostProcessor
-from vllm_mlx.tool_parsers import ToolParserManager
-from vllm_mlx.tool_parsers.deepseek_v3_tool_parser import DeepSeekV3ToolParser
-from vllm_mlx.tool_parsers.deepseekv31_tool_parser import DeepSeekV31ToolParser
+from rapid_mlx.service.postprocessor import StreamingPostProcessor
+from rapid_mlx.tool_parsers import ToolParserManager
+from rapid_mlx.tool_parsers.deepseek_v3_tool_parser import DeepSeekV3ToolParser
+from rapid_mlx.tool_parsers.deepseekv31_tool_parser import DeepSeekV31ToolParser
 
 # Wire-format building blocks — all fullwidth pipes (U+FF5C).
 TC_OPEN = "<｜tool▁calls▁begin｜>"

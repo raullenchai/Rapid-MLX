@@ -30,8 +30,8 @@ pytestmark = pytest.mark.requires_mlx
 import asyncio
 import contextlib
 
-import vllm_mlx.engine_core as engine_core
-from vllm_mlx.engine_core import EngineCore, _resolve_hybrid_throttle
+import rapid_mlx.engine_core as engine_core
+from rapid_mlx.engine_core import EngineCore, _resolve_hybrid_throttle
 
 # ---------------------------------------------------------------- throttle
 
@@ -198,7 +198,7 @@ def test_warmup_detection_uses_profile_probe():
     (``_detect_hybrid_for_warmup``) must follow the engine's fail-closed
     ``_is_hybrid_model()`` probe — NOT ``_hybrid_throttle``, which no
     longer implies is-hybrid now that the #115 throttle defaults OFF."""
-    from vllm_mlx.server import _detect_hybrid_for_warmup
+    from rapid_mlx.server import _detect_hybrid_for_warmup
 
     assert _detect_hybrid_for_warmup(_WarmupEngine(hybrid_probe=lambda: True)) is True
     assert _detect_hybrid_for_warmup(_WarmupEngine(hybrid_probe=lambda: False)) is False
@@ -215,7 +215,7 @@ def test_warmup_detection_falls_back_to_arrays_cache():
     lost — it is retained, and this pins it)."""
     from mlx_lm.models.cache import ArraysCache, KVCache
 
-    from vllm_mlx.server import _detect_hybrid_for_warmup
+    from rapid_mlx.server import _detect_hybrid_for_warmup
 
     class _HybridModel:
         def make_cache(self):
@@ -233,7 +233,7 @@ def test_warmup_detection_falls_back_to_arrays_cache():
 
 
 def test_warmup_detection_mllm_excluded():
-    from vllm_mlx.server import _detect_hybrid_for_warmup
+    from rapid_mlx.server import _detect_hybrid_for_warmup
 
     assert _detect_hybrid_for_warmup(_WarmupEngine(is_mllm=True)) is False
 
@@ -243,7 +243,7 @@ def test_warmup_detection_mllm_wins_over_hybrid_probe():
     BLOCKING): an MLLM engine whose probe answers True must still take
     the bare-warmup path. Unreachable today (hybrid VLMs auto-downgrade
     to the text lane, #352) but must fail closed if that ever changes."""
-    from vllm_mlx.server import _detect_hybrid_for_warmup
+    from rapid_mlx.server import _detect_hybrid_for_warmup
 
     eng = _WarmupEngine(hybrid_probe=lambda: True, is_mllm=True)
     assert _detect_hybrid_for_warmup(eng) is False

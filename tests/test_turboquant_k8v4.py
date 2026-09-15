@@ -34,7 +34,7 @@ from unittest.mock import patch
 import mlx.core as mx
 import numpy as np
 
-from vllm_mlx.turboquant import (
+from rapid_mlx.turboquant import (
     MODELS_INCOMPATIBLE_WITH_TURBOQUANT,
     SKIP_REASON_MLA,
     SKIP_REASON_SLIDING,
@@ -380,7 +380,7 @@ class TestFusedKernel:
         # binding return None. The wrapper must transparently fall back
         # to the unfused path.
         with patch(
-            "vllm_mlx.turboquant.turboquant_k8_encode_fused",
+            "rapid_mlx.turboquant.turboquant_k8_encode_fused",
             wraps=lambda k, s: turboquant_k8_encode(k, s),
         ):
             # We exercise the path through TurboQuantKVCache so the
@@ -401,11 +401,11 @@ class TestFusedKernel:
 
     def test_fused_kernel_cache_reset(self):
         """The kernel cache is reset cleanly — reused calls remain valid."""
-        from vllm_mlx.kernels.turboquant_fused import reset_kernel_cache_for_tests
+        from rapid_mlx.kernels.turboquant_fused import reset_kernel_cache_for_tests
 
         reset_kernel_cache_for_tests()
         # After reset the status helper still returns a valid label.
-        from vllm_mlx.kernels.turboquant_fused import is_metal_available
+        from rapid_mlx.kernels.turboquant_fused import is_metal_available
 
         assert isinstance(is_metal_available(), bool)
 
@@ -537,7 +537,7 @@ class TestCLIFlag:
         """
         import inspect
 
-        from vllm_mlx import cli
+        from rapid_mlx import cli
 
         # The check moved out of ``serve_command`` into the extracted
         # ``kv_cache_flag_conflict`` predicate (#1717) so it could be tested
@@ -568,10 +568,10 @@ class TestCLIFlag:
 
 
 # ---------------------------------------------------------------------------
-# 8b. #969 — ``python -m vllm_mlx.server`` entrypoint parity
+# 8b. #969 — ``python -m rapid_mlx.server`` entrypoint parity
 # ---------------------------------------------------------------------------
 #
-# Pre-fix, the standalone ``python -m vllm_mlx.server`` argparse:
+# Pre-fix, the standalone ``python -m rapid_mlx.server`` argparse:
 #   * rejected the ``"none"`` off-switch added in #962 (``choices`` set
 #     to ``["v4", "k8v4"]`` only), and
 #   * silently dropped every TurboQuant value at the ``SchedulerConfig``
@@ -595,7 +595,7 @@ def _extract_server_argparse_choices(flag_name: str) -> list[str] | None:
     import ast
 
     source = (
-        __import__("pathlib").Path(__file__).parent.parent / "vllm_mlx" / "server.py"
+        __import__("pathlib").Path(__file__).parent.parent / "rapid_mlx" / "server.py"
     ).read_text()
     tree = ast.parse(source)
     for node in ast.walk(tree):
@@ -617,7 +617,7 @@ def _extract_server_argparse_choices(flag_name: str) -> list[str] | None:
 
 
 class TestServerEntrypointParity:
-    """#969 — the standalone ``python -m vllm_mlx.server`` entrypoint
+    """#969 — the standalone ``python -m rapid_mlx.server`` entrypoint
     must honor ``--kv-cache-turboquant`` at parity with ``cli.py``.
     """
 
@@ -631,7 +631,7 @@ class TestServerEntrypointParity:
             "--kv-cache-turboquant argparse entry missing from server.main"
         )
         assert "none" in choices, (
-            f"--kv-cache-turboquant on `python -m vllm_mlx.server` must "
+            f"--kv-cache-turboquant on `python -m rapid_mlx.server` must "
             f"accept the ``none`` off-switch added in #962 (got choices="
             f"{choices!r}). Pre-fix, argparse rejected the off-switch "
             f"outright."
@@ -651,7 +651,7 @@ class TestServerEntrypointParity:
         import ast
         from pathlib import Path
 
-        source = (Path(__file__).parent.parent / "vllm_mlx" / "server.py").read_text()
+        source = (Path(__file__).parent.parent / "rapid_mlx" / "server.py").read_text()
         tree = ast.parse(source)
         # Find the ``main`` function and its ``SchedulerConfig(...)`` call.
         main_func = next(
@@ -720,7 +720,7 @@ class TestServerEntrypointParity:
         """
         from types import SimpleNamespace
 
-        from vllm_mlx.turboquant import turboquant_scheduler_kwargs
+        from rapid_mlx.turboquant import turboquant_scheduler_kwargs
 
         # All-off shape.
         off = turboquant_scheduler_kwargs(
@@ -767,7 +767,7 @@ class TestMetrics:
     def test_render_turboquant_metrics_disabled(self):
         from types import SimpleNamespace
 
-        from vllm_mlx.routes.metrics import (
+        from rapid_mlx.routes.metrics import (
             _render_turboquant_metrics,
             _reset_turboquant_state_for_tests,
         )
@@ -787,7 +787,7 @@ class TestMetrics:
     def test_render_turboquant_metrics_k8v4_mode(self):
         from types import SimpleNamespace
 
-        from vllm_mlx.routes.metrics import (
+        from rapid_mlx.routes.metrics import (
             _render_turboquant_metrics,
             _reset_turboquant_state_for_tests,
         )
@@ -807,7 +807,7 @@ class TestMetrics:
     def test_record_skip_increments_counter(self):
         from types import SimpleNamespace
 
-        from vllm_mlx.routes.metrics import (
+        from rapid_mlx.routes.metrics import (
             _render_turboquant_metrics,
             _reset_turboquant_state_for_tests,
             record_turboquant_skip,
@@ -825,7 +825,7 @@ class TestMetrics:
     def test_unknown_skip_reason_folds_to_other(self):
         from types import SimpleNamespace
 
-        from vllm_mlx.routes.metrics import (
+        from rapid_mlx.routes.metrics import (
             _render_turboquant_metrics,
             _reset_turboquant_state_for_tests,
             record_turboquant_skip,
@@ -853,13 +853,13 @@ class TestResolveTurboquantModeDefault:
     def test_verified_alias_flips_to_k8v4(self, monkeypatch):
         from types import SimpleNamespace
 
-        from vllm_mlx import turboquant as tq_mod
+        from rapid_mlx import turboquant as tq_mod
 
         def _stub_detect(_name: str):
             return SimpleNamespace(turboquant_tier="k8v4_verified")
 
         monkeypatch.setattr(
-            "vllm_mlx.model_auto_config.detect_model_config", _stub_detect
+            "rapid_mlx.model_auto_config.detect_model_config", _stub_detect
         )
 
         assert (
@@ -870,7 +870,7 @@ class TestResolveTurboquantModeDefault:
         )
 
     def test_explicit_v4_overrides_default(self):
-        from vllm_mlx.turboquant import resolve_turboquant_mode_default
+        from rapid_mlx.turboquant import resolve_turboquant_mode_default
 
         assert (
             resolve_turboquant_mode_default(
@@ -880,7 +880,7 @@ class TestResolveTurboquantModeDefault:
         )
 
     def test_legacy_quantization_suppresses_autoflip(self):
-        from vllm_mlx.turboquant import resolve_turboquant_mode_default
+        from rapid_mlx.turboquant import resolve_turboquant_mode_default
 
         assert (
             resolve_turboquant_mode_default(
@@ -891,7 +891,7 @@ class TestResolveTurboquantModeDefault:
         )
 
     def test_unknown_tier_preserves_today_behaviour(self):
-        from vllm_mlx.turboquant import resolve_turboquant_mode_default
+        from rapid_mlx.turboquant import resolve_turboquant_mode_default
 
         assert (
             resolve_turboquant_mode_default(self._args(), model_name="qwen3.5-4b-4bit")
@@ -903,7 +903,7 @@ def test_codec_preserves_input_dtype():
     """Round-trip bf16 K + V through TurboQuantKVCache must return bf16."""
     from types import SimpleNamespace
 
-    from vllm_mlx.turboquant import TurboQuantConfig, TurboQuantKVCache
+    from rapid_mlx.turboquant import TurboQuantConfig, TurboQuantKVCache
 
     seq, head_dim = 64, 128
     keys = mx.random.normal(shape=(1, 4, seq, head_dim)).astype(mx.bfloat16)
@@ -960,7 +960,7 @@ def test_k8v4_default_on_whitelist_matches_aliases_json():
     import json
     from pathlib import Path
 
-    aliases_path = Path(__file__).resolve().parent.parent / "vllm_mlx" / "aliases.json"
+    aliases_path = Path(__file__).resolve().parent.parent / "rapid_mlx" / "aliases.json"
     aliases = json.loads(aliases_path.read_text())
 
     on = {
@@ -973,7 +973,7 @@ def test_k8v4_default_on_whitelist_matches_aliases_json():
         "K8V4 default-on roster drifted from the 0.9 whitelist.\n"
         f"  extra (in aliases.json but not whitelist): {sorted(on - K8V4_DEFAULT_ON_ALIASES_0_9)}\n"
         f"  missing (in whitelist but not aliases.json): {sorted(K8V4_DEFAULT_ON_ALIASES_0_9 - on)}\n"
-        "Update vllm_mlx/aliases.json AND the K8V4_DEFAULT_ON_ALIASES_0_9 "
+        "Update rapid_mlx/aliases.json AND the K8V4_DEFAULT_ON_ALIASES_0_9 "
         "frozenset above in lockstep, and re-frame the release notes claim "
         "if the matrix changes."
     )

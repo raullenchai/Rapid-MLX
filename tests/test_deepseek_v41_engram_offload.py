@@ -11,7 +11,7 @@ pytestmark = pytest.mark.requires_mlx
 
 import mlx.core as mx
 
-from vllm_mlx.models.deepseek_v41_native.engram import (
+from rapid_mlx.models.deepseek_v41_native.engram import (
     DiskQuantizedEngramEmbedding,
     QuantizedEngramEmbedding,
 )

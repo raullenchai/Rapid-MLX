@@ -241,7 +241,7 @@ class RapidMLXEngine(Engine):
             [
                 "python3.12",
                 "-m",
-                "vllm_mlx.cli",
+                "rapid_mlx.cli",
                 "serve",
                 model.mlx_path,
                 "--port",

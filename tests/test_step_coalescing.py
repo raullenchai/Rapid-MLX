@@ -18,7 +18,7 @@ pytestmark = pytest.mark.requires_mlx
 
 from types import SimpleNamespace
 
-from vllm_mlx.engine_core import EngineCore
+from rapid_mlx.engine_core import EngineCore
 
 
 def _out(finished=(), has_work=True):

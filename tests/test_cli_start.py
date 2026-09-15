@@ -6,7 +6,7 @@ download, spawns ``serve`` as a foreground parent-owned child (or reuses a
 compatible server), then prints/applies agent config. These tests cover the
 orchestration decisions without touching the network, the HF cache, or
 spawning real servers — every side effect is monkeypatched at the module
-boundary of ``vllm_mlx.run.cli`` (and the source modules it imports from
+boundary of ``rapid_mlx.run.cli`` (and the source modules it imports from
 inside each helper).
 """
 
@@ -18,9 +18,9 @@ import types
 
 import pytest
 
-import vllm_mlx.recommendations as rec
-from vllm_mlx import _download_gate as dg
-from vllm_mlx.run import cli as run_cli
+import rapid_mlx.recommendations as rec
+from rapid_mlx import _download_gate as dg
+from rapid_mlx.run import cli as run_cli
 
 
 def _make_args(**overrides) -> argparse.Namespace:
@@ -145,7 +145,7 @@ def test_select_no_recommended_models_errors(monkeypatch, capsys):
 
 def test_select_generic_uses_starter(monkeypatch):
     """No profile and no model -> the first-run chat starter alias."""
-    from vllm_mlx import first_run as fr
+    from rapid_mlx import first_run as fr
 
     monkeypatch.setattr(fr, "select_chat_default", lambda: ("qwen3.5-4b-4bit", True))
     picked = run_cli._select_model(explicit=None, profile=None, no_download=False)
@@ -242,7 +242,7 @@ def test_spawn_foreground_child_env(monkeypatch):
     assert captured["cmd"][:6] == [
         real_subprocess.sys.executable,
         "-m",
-        "vllm_mlx.cli",
+        "rapid_mlx.cli",
         "serve",
         "qwen3.5-9b-4bit",
         "--host",
@@ -271,7 +271,7 @@ def test_reuse_compatible_server_attaches_no_spawn(monkeypatch, capsys):
     args = _make_args()
     toggles = {"attached": False}
 
-    from vllm_mlx.agents import adapter as ad
+    from rapid_mlx.agents import adapter as ad
 
     fetched = []
     monkeypatch.setattr(
@@ -302,7 +302,7 @@ def test_reuse_compatible_server_attaches_no_spawn(monkeypatch, capsys):
 def test_reuse_incompatible_server_refuses(monkeypatch, capsys):
     """Port serving a different model -> clean refusal (exit 1)."""
     args = _make_args()
-    from vllm_mlx.agents import adapter as ad
+    from rapid_mlx.agents import adapter as ad
 
     monkeypatch.setattr(ad, "_fetch_models", lambda base: [{"id": "other-model"}])
     monkeypatch.setattr(run_cli, "_hf_id", lambda a: "qwen3.5-9b-4bit")
@@ -321,7 +321,7 @@ def test_reuse_incompatible_server_refuses(monkeypatch, capsys):
 def test_reuse_occupied_not_rapidmlx_refuses(monkeypatch, capsys):
     """Port occupied by a non-rapid-mlx listener -> clean refusal."""
     args = _make_args()
-    from vllm_mlx.agents import adapter as ad
+    from rapid_mlx.agents import adapter as ad
 
     monkeypatch.setattr(ad, "_fetch_models", lambda base: [])
     monkeypatch.setattr(run_cli, "_hf_id", lambda a: "qwen3.5-9b-4bit")
@@ -359,8 +359,8 @@ def test_start_command_dry_run_no_side_effects(monkeypatch, capsys):
 
 
 def _patch_profile_lookup(monkeypatch, profile):
-    """Patch ``vllm_mlx.agents.get_profile`` (imported inside start_command)."""
-    import vllm_mlx.agents as agents_mod
+    """Patch ``rapid_mlx.agents.get_profile`` (imported inside start_command)."""
+    import rapid_mlx.agents as agents_mod
 
     monkeypatch.setattr(agents_mod, "get_profile", lambda n: profile)
 
@@ -620,7 +620,7 @@ def test_wait_child_propagates_exit_code(monkeypatch):
 
 def test_start_registers_subcommand():
     """``start`` is a registered subcommand of the top-level CLI."""
-    from vllm_mlx.cli import build_parser
+    from rapid_mlx.cli import build_parser
 
     choices = build_parser()._subparsers._group_actions[0].choices
     assert "start" in choices
@@ -635,7 +635,7 @@ def test_start_main_dispatch_routes(monkeypatch):
     """
     import sys
 
-    from vllm_mlx import cli
+    from rapid_mlx import cli
 
     captured = {}
 
@@ -644,9 +644,9 @@ def test_start_main_dispatch_routes(monkeypatch):
         return 0
 
     monkeypatch.setattr(sys, "argv", ["rapid-mlx", "start", "hermes", "--dry-run"])
-    # The dispatch does ``from vllm_mlx.run.cli import start_command`` inside
+    # The dispatch does ``from rapid_mlx.run.cli import start_command`` inside
     # main(); patch the true source module so that import picks up the fake.
-    monkeypatch.setattr("vllm_mlx.run.cli.start_command", fake_start)
+    monkeypatch.setattr("rapid_mlx.run.cli.start_command", fake_start)
     cli.main()
     assert captured["args"].profile == "hermes"
     assert captured["args"].dry_run is True
@@ -656,10 +656,10 @@ def test_start_main_dispatch_propagates_exit_code(monkeypatch):
     """A nonzero start_command return raises SystemExit(code) at dispatch."""
     import sys
 
-    from vllm_mlx import cli
+    from rapid_mlx import cli
 
     monkeypatch.setattr(sys, "argv", ["rapid-mlx", "start", "nope", "--dry-run"])
-    monkeypatch.setattr("vllm_mlx.run.cli.start_command", lambda args: 3)
+    monkeypatch.setattr("rapid_mlx.run.cli.start_command", lambda args: 3)
     # The dispatch's ``if code: raise SystemExit(code)`` fires -> SystemExit(3).
     with pytest.raises(SystemExit) as exc:
         cli.main()
@@ -668,7 +668,7 @@ def test_start_main_dispatch_propagates_exit_code(monkeypatch):
 
 def test_run_alias_still_routes_to_chat(monkeypatch):
     """Regression guard: #150 must NOT hijack ``run`` (stays a chat alias)."""
-    from vllm_mlx.cli import build_parser
+    from rapid_mlx.cli import build_parser
 
     # ``run`` resolves to the chat parser: it accepts chat-only flags.
     ns = build_parser().parse_args(["run", "qwen3.5-4b-4bit", "--think"]).__dict__
@@ -679,7 +679,7 @@ def test_run_alias_still_routes_to_chat(monkeypatch):
 
 def test_start_help_is_distinct_from_chat():
     """``start`` help must not advertise chat flags (distinct verb)."""
-    from vllm_mlx.cli import build_parser
+    from rapid_mlx.cli import build_parser
 
     choices = build_parser()._subparsers._group_actions[0].choices
     start_p = choices["start"]
@@ -712,7 +712,7 @@ def test_hf_id_real_resolves(monkeypatch):
     """Real ``_hf_id`` maps an alias via resolve_model (and degrades on error)."""
 
     monkeypatch.setattr(
-        "vllm_mlx.model_aliases.resolve_model",
+        "rapid_mlx.model_aliases.resolve_model",
         lambda name: "mlx-community/Resolved-4bit",
     )
     assert run_cli._hf_id("anything") == "mlx-community/Resolved-4bit"
@@ -721,7 +721,7 @@ def test_hf_id_real_resolves(monkeypatch):
     def boom(name):
         raise RuntimeError("boom")
 
-    monkeypatch.setattr("vllm_mlx.model_aliases.resolve_model", boom)
+    monkeypatch.setattr("rapid_mlx.model_aliases.resolve_model", boom)
     assert run_cli._hf_id("flat-name") == "flat-name"
 
 
@@ -762,7 +762,7 @@ def test_consent_size_estimate_raises_handled(monkeypatch):
 
 def test_wait_ready_wrapper(monkeypatch):
     """_wait_ready delegates to cli._wait_for_chat_server, returns "ready"."""
-    from vllm_mlx import cli as cli_mod
+    from rapid_mlx import cli as cli_mod
 
     got = {}
     monkeypatch.setattr(
@@ -776,7 +776,7 @@ def test_wait_ready_wrapper(monkeypatch):
 
 def test_wait_ready_reports_exit(monkeypatch, capsys):
     """A serve child that exits early -> "exited" + clean message."""
-    from vllm_mlx import cli as cli_mod
+    from rapid_mlx import cli as cli_mod
 
     class DeadProc:
         returncode = 1
@@ -795,7 +795,7 @@ def test_wait_ready_reports_exit(monkeypatch, capsys):
 
 def test_wait_ready_reports_timeout(monkeypatch, capsys):
     """A readiness timeout -> "timeout" (child STILL alive) + clean message."""
-    from vllm_mlx import cli as cli_mod
+    from rapid_mlx import cli as cli_mod
 
     class AliveProc:
         def poll(self):
@@ -811,7 +811,7 @@ def test_wait_ready_reports_timeout(monkeypatch, capsys):
 
 def test_wait_ready_keyboard_interrupt(monkeypatch, capsys):
     """A Ctrl-C during readiness -> "exited" without a raw traceback."""
-    from vllm_mlx import cli as cli_mod
+    from rapid_mlx import cli as cli_mod
 
     def intr(base_url, proc, timeout_s=None):
         raise KeyboardInterrupt
@@ -823,7 +823,7 @@ def test_wait_ready_keyboard_interrupt(monkeypatch, capsys):
 
 def test_port_is_busy_wrapper(monkeypatch):
     """_port_is_busy delegates to cli._port_is_busy."""
-    from vllm_mlx import cli as cli_mod
+    from rapid_mlx import cli as cli_mod
 
     monkeypatch.setattr(cli_mod, "_port_is_busy", lambda h, p: h == "127.0.0.1")
     assert run_cli._port_is_busy("127.0.0.1", 8000) is True
@@ -833,7 +833,7 @@ def test_port_is_busy_wrapper(monkeypatch):
 def test_reuse_dry_run_branch(monkeypatch, capsys):
     """Reuse handler under --dry-run probes before promising an attach."""
     args = _make_args(dry_run=True)
-    from vllm_mlx.agents import adapter as ad
+    from rapid_mlx.agents import adapter as ad
 
     monkeypatch.setattr(ad, "_fetch_models", lambda base: [{"id": "m"}])
     monkeypatch.setattr(run_cli, "_hf_id", lambda model: model)
@@ -856,7 +856,7 @@ def test_reuse_dry_run_branch(monkeypatch, capsys):
 def test_reuse_dry_run_refuses_incompatible_server(monkeypatch, capsys):
     """Dry-run reports the same incompatible-port failure as a real start."""
     args = _make_args(dry_run=True)
-    from vllm_mlx.agents import adapter as ad
+    from rapid_mlx.agents import adapter as ad
 
     monkeypatch.setattr(ad, "_fetch_models", lambda base: [{"id": "other"}])
     monkeypatch.setattr(run_cli, "_hf_id", lambda model: model)
@@ -905,7 +905,7 @@ def test_attach_generic_profile_is_none(monkeypatch, capsys):
 def test_attach_no_setup_prints_instructions(monkeypatch, capsys):
     """--no-setup prints instructions without writing config."""
     args = _make_args(no_setup=True)
-    from vllm_mlx.agents import adapter as ad
+    from rapid_mlx.agents import adapter as ad
 
     monkeypatch.setattr(
         ad, "get_setup_instructions", lambda *a, **k: "  instructions here"
@@ -923,8 +923,8 @@ def test_attach_first_class_template_fetch_context(monkeypatch, capsys):
     prof = _first_class_profile()
     prof.config = _FakeCfg(template="  {context_length}")
 
-    import vllm_mlx.agents.setup as setup_mod
-    from vllm_mlx.agents import adapter as ad
+    import rapid_mlx.agents.setup as setup_mod
+    from rapid_mlx.agents import adapter as ad
 
     fetches = {}
     monkeypatch.setattr(
@@ -951,8 +951,8 @@ def test_attach_first_class_context_fetch_fails(monkeypatch, capsys):
     prof = _first_class_profile()
     prof.config = _FakeCfg(template="  {context_length}")
 
-    import vllm_mlx.agents.setup as setup_mod
-    from vllm_mlx.agents import adapter as ad
+    import rapid_mlx.agents.setup as setup_mod
+    from rapid_mlx.agents import adapter as ad
 
     def boom(base_url, model):
         raise RuntimeError("server not ready")
@@ -981,8 +981,8 @@ def test_attach_deepseek_reasoning_probe_fails_open(monkeypatch):
     prof.display_name = "DeepSeek Harness"
     prof.config = _FakeCfg(template=None)
 
-    import vllm_mlx.agents.setup as setup_mod
-    from vllm_mlx.agents import adapter as ad
+    import rapid_mlx.agents.setup as setup_mod
+    from rapid_mlx.agents import adapter as ad
 
     monkeypatch.setattr(
         ad,
@@ -1006,7 +1006,7 @@ def test_attach_first_class_unchanged(monkeypatch, capsys):
     prof = _first_class_profile()
     prof.config = _FakeCfg(template=None)
 
-    import vllm_mlx.agents.setup as setup_mod
+    import rapid_mlx.agents.setup as setup_mod
 
     monkeypatch.setattr(
         setup_mod,
@@ -1024,8 +1024,8 @@ def test_attach_first_class_build_fails(monkeypatch, capsys):
     prof = _first_class_profile()
     prof.config = _FakeCfg(template=None)
 
-    import vllm_mlx.agents.setup as setup_mod
-    from vllm_mlx.agents import adapter as ad
+    import rapid_mlx.agents.setup as setup_mod
+    from rapid_mlx.agents import adapter as ad
 
     monkeypatch.setattr(
         setup_mod,
@@ -1048,7 +1048,7 @@ def test_attach_first_class_apply_fails(monkeypatch, capsys):
     prof = _first_class_profile()
     prof.config = _FakeCfg(template=None)
 
-    import vllm_mlx.agents.setup as setup_mod
+    import rapid_mlx.agents.setup as setup_mod
 
     monkeypatch.setattr(
         setup_mod, "build_setup_plan", lambda *a, **k: _SetupPlanFake(changed=True)
@@ -1070,7 +1070,7 @@ def test_attach_first_class_consent_cancelled(monkeypatch, capsys):
     prof = _first_class_profile()
     prof.config = _FakeCfg(template=None)
 
-    import vllm_mlx.agents.setup as setup_mod
+    import rapid_mlx.agents.setup as setup_mod
 
     monkeypatch.setattr(
         setup_mod, "build_setup_plan", lambda *a, **k: _SetupPlanFake(changed=True)
@@ -1090,7 +1090,7 @@ def test_attach_generic_writer_success(monkeypatch, capsys):
     prof = _FakeProfile(name="hermes", recommended_models=["qwen3.5-9b-4bit"])
     prof.config = _FakeCfg(template=None)
 
-    from vllm_mlx.agents import adapter as ad
+    from rapid_mlx.agents import adapter as ad
 
     called = {}
     monkeypatch.setattr(
@@ -1151,7 +1151,7 @@ def test_attach_generic_writer_cannot(monkeypatch, capsys):
     prof = _FakeProfile(name="hermes", recommended_models=["qwen3.5-9b-4bit"])
     prof.config = _FakeCfg(template=None)
 
-    from vllm_mlx.agents import adapter as ad
+    from rapid_mlx.agents import adapter as ad
 
     monkeypatch.setattr(
         ad, "setup_agent_config", lambda *a, **k: "Cannot find the agent binary"
@@ -1173,7 +1173,7 @@ def test_attach_generic_writer_exception_falls_back(monkeypatch, capsys, dry_run
     prof = _FakeProfile(name="hermes", recommended_models=["qwen3.5-9b-4bit"])
     prof.config = _FakeCfg(template=None)
 
-    from vllm_mlx.agents import adapter as ad
+    from rapid_mlx.agents import adapter as ad
 
     monkeypatch.setattr(
         ad,
@@ -1195,7 +1195,7 @@ def test_attach_env_profile_prints_exports_without_write_consent(monkeypatch, ca
     args = _make_args()
     prof = _FakeProfile(name="langchain")
     prof.config = _FakeCfg(config_type="env")
-    from vllm_mlx.agents import adapter as ad
+    from rapid_mlx.agents import adapter as ad
 
     calls = []
     monkeypatch.setattr(
@@ -1224,7 +1224,7 @@ def test_attach_env_profile_exception_falls_back(monkeypatch, capsys):
     args = _make_args()
     prof = _FakeProfile(name="langchain")
     prof.config = _FakeCfg(config_type="env")
-    from vllm_mlx.agents import adapter as ad
+    from rapid_mlx.agents import adapter as ad
 
     monkeypatch.setattr(
         ad,
@@ -1243,7 +1243,7 @@ def test_attach_env_profile_exception_falls_back(monkeypatch, capsys):
 
 def test_cached_context_window_reads_text_config(monkeypatch):
     """Dry-run can preview the eventual context value without network access."""
-    import vllm_mlx.model_metadata as metadata_mod
+    import rapid_mlx.model_metadata as metadata_mod
 
     requested = []
     monkeypatch.setattr(run_cli, "_hf_id", lambda alias: "org/resolved-model")
@@ -1263,7 +1263,7 @@ def test_cached_context_window_reads_text_config(monkeypatch):
 
 def test_cached_context_window_metadata_error_is_unknown(monkeypatch):
     """Broken cache metadata defers setup preview rather than crashing start."""
-    import vllm_mlx.model_metadata as metadata_mod
+    import rapid_mlx.model_metadata as metadata_mod
 
     monkeypatch.setattr(
         metadata_mod,
@@ -1275,7 +1275,7 @@ def test_cached_context_window_metadata_error_is_unknown(monkeypatch):
 
 def test_print_instructions_first_class(monkeypatch, capsys):
     """_print_instructions renders first-class instructions."""
-    from vllm_mlx.agents import adapter as ad
+    from rapid_mlx.agents import adapter as ad
 
     monkeypatch.setattr(ad, "get_setup_instructions", lambda *a, **k: "  render me")
     run_cli._print_instructions(_FakeProfile(), "http://b", "m")
@@ -1284,7 +1284,7 @@ def test_print_instructions_first_class(monkeypatch, capsys):
 
 def test_print_instructions_exception(monkeypatch, capsys):
     """_print_instructions tolerates a rendering failure."""
-    from vllm_mlx.agents import adapter as ad
+    from rapid_mlx.agents import adapter as ad
 
     monkeypatch.setattr(
         ad,
@@ -1324,7 +1324,7 @@ def test_print_dry_run_ram_unavailable_skips_line(monkeypatch, capsys):
 
 
 def test_print_unknown_agent(monkeypatch, capsys):
-    import vllm_mlx.agents as agents_mod
+    import rapid_mlx.agents as agents_mod
 
     monkeypatch.setattr(
         agents_mod, "list_profiles", lambda: [_FakeProfile(name="codex")]
@@ -1546,7 +1546,7 @@ def test_start_maps_forwarded_signal_to_shell_exit(monkeypatch):
 
 
 def test_fits_host_uses_alias_minimum(monkeypatch):
-    import vllm_mlx.model_aliases as aliases
+    import rapid_mlx.model_aliases as aliases
 
     monkeypatch.setattr(rec, "recommendation_footprint_gb", lambda alias: None)
     monkeypatch.setattr(
@@ -1645,8 +1645,8 @@ def test_reap_forwarded_child_already_exited_and_escalates(monkeypatch):
 
 
 def test_attach_deepseek_dry_run_uses_cached_reasoning_profile(monkeypatch):
-    import vllm_mlx.agents.setup as setup_mod
-    import vllm_mlx.model_aliases as aliases
+    import rapid_mlx.agents.setup as setup_mod
+    import rapid_mlx.model_aliases as aliases
 
     args = _make_args(dry_run=True)
     prof = _FakeProfile(name="deepseek-harness")
@@ -1667,7 +1667,7 @@ def test_attach_deepseek_dry_run_uses_cached_reasoning_profile(monkeypatch):
 
 
 def test_attach_first_class_dry_run_does_not_write(monkeypatch, capsys):
-    import vllm_mlx.agents.setup as setup_mod
+    import rapid_mlx.agents.setup as setup_mod
 
     args = _make_args(dry_run=True)
     prof = _first_class_profile()
@@ -1685,7 +1685,7 @@ def test_attach_first_class_dry_run_does_not_write(monkeypatch, capsys):
 
 
 def test_attach_generic_dry_run_and_cancel_paths(monkeypatch, capsys):
-    from vllm_mlx.agents import adapter as ad
+    from rapid_mlx.agents import adapter as ad
 
     prof = _FakeProfile(name="hermes", config=_FakeCfg())
     calls = []
@@ -1710,7 +1710,7 @@ def test_attach_generic_dry_run_and_cancel_paths(monkeypatch, capsys):
     "result", [RuntimeError("write failed"), "Cannot write config"]
 )
 def test_attach_generic_write_failure_paths(monkeypatch, capsys, result):
-    from vllm_mlx.agents import adapter as ad
+    from rapid_mlx.agents import adapter as ad
 
     prof = _FakeProfile(name="hermes", config=_FakeCfg())
     calls = 0
@@ -1746,7 +1746,7 @@ def test_confirm_config_write_noninteractive_yes_and_interrupt(monkeypatch):
 
 
 def test_cached_context_window_rejects_invalid_candidates(monkeypatch):
-    import vllm_mlx.model_metadata as metadata_mod
+    import rapid_mlx.model_metadata as metadata_mod
 
     monkeypatch.setattr(
         metadata_mod,

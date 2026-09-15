@@ -25,7 +25,7 @@ pytest tests/
 pytest tests/test_paged_cache.py -v
 
 # Run with coverage
-pytest --cov=vllm_mlx tests/
+pytest --cov=rapid_mlx tests/
 ```
 
 ### Test Precision Policy

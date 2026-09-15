@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import re
 
-from vllm_mlx import cli
+from rapid_mlx import cli
 
 
 def _capture_unknown_model_help(capsys, name: str = "totally-unknown-xyz") -> str:

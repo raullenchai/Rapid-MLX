@@ -33,9 +33,9 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from vllm_mlx.api.tool_calling import parse_tool_calls
-from vllm_mlx.service.postprocessor import StreamingPostProcessor
-from vllm_mlx.tool_parsers import ToolParserManager
+from rapid_mlx.api.tool_calling import parse_tool_calls
+from rapid_mlx.service.postprocessor import StreamingPostProcessor
+from rapid_mlx.tool_parsers import ToolParserManager
 
 
 def _make_cfg_for_parser(parser_name: str) -> MagicMock:

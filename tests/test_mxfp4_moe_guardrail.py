@@ -2,7 +2,7 @@
 """R15 task #297 — load-time guardrail for the MoE+MXFP4+multi-device cliff.
 
 Covers the detection matrix for the two upstream MLX issues exposed by
-``vllm_mlx/_mxfp4_moe_guardrail.py``:
+``rapid_mlx/_mxfp4_moe_guardrail.py``:
 
 * mlx#3402 — MoE + MXFP4 + multi-device throughput cliff
   (3-of-3 → fire; any 2-of-3 → silent).
@@ -22,7 +22,7 @@ import logging
 
 import pytest
 
-from vllm_mlx import _mxfp4_moe_guardrail as g
+from rapid_mlx import _mxfp4_moe_guardrail as g
 
 
 @pytest.fixture(autouse=True)
@@ -527,7 +527,7 @@ def test_all_mxfp4_aliases_carry_is_moe_metadata():
     added without ``is_moe: true`` will trip this test, so the
     guardrail can never silently regress to inert again.
     """
-    from vllm_mlx.model_aliases import list_profiles, resolve_profile
+    from rapid_mlx.model_aliases import list_profiles, resolve_profile
 
     mxfp4_aliases: list[str] = []
     for alias, profile in list_profiles().items():
@@ -561,7 +561,7 @@ def test_all_nvfp4_aliases_carry_is_moe_metadata():
     NVFP4 aliases shipped, but a future one added without ``is_moe``
     would silently bypass the dynamic-range-loss warning.
     """
-    from vllm_mlx.model_aliases import list_profiles, resolve_profile
+    from rapid_mlx.model_aliases import list_profiles, resolve_profile
 
     nvfp4_aliases = [
         alias
@@ -583,8 +583,8 @@ def test_render_prometheus_lines_exposes_both_counters():
     """The pure render helper emits HELP/TYPE/sample for both counters.
 
     This test deliberately calls ``render_prometheus_lines()`` directly
-    instead of going through ``vllm_mlx.routes.metrics``. The route
-    module's transitive import closure pulls in ``vllm_mlx.config`` →
+    instead of going through ``rapid_mlx.routes.metrics``. The route
+    module's transitive import closure pulls in ``rapid_mlx.config`` →
     ``BaseEngine`` → the engine stack, which codex rounds 3/4 flagged
     as too heavy for a focused unit test. The new pure helper lives
     in the guardrail module so a single ``import`` is enough.

@@ -8,8 +8,8 @@ import hashlib
 import sys
 from pathlib import Path
 
-from vllm_mlx import __version__
-from vllm_mlx.doctor import env_health as eh
+from rapid_mlx import __version__
+from rapid_mlx.doctor import env_health as eh
 
 
 def _status(**changes):
@@ -50,7 +50,7 @@ def _runtime_with_metadata(tmp_path, version=__version__):
     executable.write_text(
         f"#!{interpreter}\nimport re\n"
         "import sys\n"
-        "from vllm_mlx.cli import cli_entrypoint\n"
+        "from rapid_mlx.cli import cli_entrypoint\n"
         "if __name__ == '__main__':\n"
         r"    sys.argv[0] = re.sub(r'(-script\.pyw|\.exe)?$', '', sys.argv[0])"
         "\n"
@@ -414,7 +414,7 @@ def test_service_section_platform_and_collector_paths(monkeypatch):
     section = eh.section_always_on_service(platform_name="linux")
     assert section.checks[0].id == "service.platform"
 
-    import vllm_mlx.headless_service.status as service_status
+    import rapid_mlx.headless_service.status as service_status
 
     monkeypatch.setattr(
         service_status,
@@ -447,11 +447,11 @@ def test_service_section_covers_runtime_and_owner_failure_variants(
     # has nothing to do with the service. Pin doctor's version so the branch
     # under test is the one that runs.
     #
-    # Patched on ``vllm_mlx``, not on ``env_health``: the comparison does
-    # ``from vllm_mlx import __version__`` inside the function body, so it
+    # Patched on ``rapid_mlx``, not on ``env_health``: the comparison does
+    # ``from rapid_mlx import __version__`` inside the function body, so it
     # re-reads the package attribute on every call and ``env_health`` has no
     # ``__version__`` of its own to patch.
-    monkeypatch.setattr("vllm_mlx.__version__", "1.2.3")
+    monkeypatch.setattr("rapid_mlx.__version__", "1.2.3")
     missing = tmp_path / "missing-rapid-mlx"
     section = eh.section_always_on_service(
         status_data=_status(owner=None, executable=str(missing)),

@@ -37,7 +37,7 @@ pytestmark = pytest.mark.requires_mlx
 
 import mlx.core as mx  # noqa: E402
 
-from vllm_mlx.models import bailing_hybrid as bh  # noqa: E402
+from rapid_mlx.models import bailing_hybrid as bh  # noqa: E402
 
 TINY = dict(
     model_type="bailing_hybrid",
@@ -76,7 +76,7 @@ def _clear_vendored_register():
 
 
 def test_register_vendored_archs_makes_mlx_lm_loader_find_it():
-    from vllm_mlx.utils.tokenizer import (
+    from rapid_mlx.utils.tokenizer import (
         _VENDORED_MODEL_TYPES,
         _register_vendored_archs,
     )
@@ -165,7 +165,7 @@ def test_sanitize_expert_stack_conv_remap_and_mtp_drop():
 
 
 def test_detect_model_config_routes_ling():
-    from vllm_mlx.model_auto_config import detect_model_config
+    from rapid_mlx.model_auto_config import detect_model_config
 
     for name in (
         "inclusionAI/Ling-3.0-tiny",
@@ -199,7 +199,7 @@ def test_detect_model_config_routes_ling():
 def test_glm47_parser_handles_bailing_wire():
     """The Bailing V3 template renders NAME immediately followed by
     <arg_key> (no newline) — glm47 must still extract the call."""
-    from vllm_mlx.tool_parsers.glm47_tool_parser import Glm47ToolParser
+    from rapid_mlx.tool_parsers.glm47_tool_parser import Glm47ToolParser
 
     p = Glm47ToolParser(None)
     wire = (
@@ -216,7 +216,7 @@ def test_glm47_parser_handles_bailing_wire():
 
 def test_glm47_parser_accepts_null_tools_from_plain_chat_request():
     """OpenAI request serialization includes ``tools: null`` for plain chat."""
-    from vllm_mlx.tool_parsers.glm47_tool_parser import Glm47ToolParser
+    from rapid_mlx.tool_parsers.glm47_tool_parser import Glm47ToolParser
 
     parser = Glm47ToolParser(None)
     result = parser.extract_tool_calls("A normal answer", {"tools": None})
@@ -291,7 +291,7 @@ def test_alias_pins_ling_configuration():
     from pathlib import Path
 
     aliases = json.loads(
-        (Path(__file__).parent.parent / "vllm_mlx" / "aliases.json").read_text()
+        (Path(__file__).parent.parent / "rapid_mlx" / "aliases.json").read_text()
     )
     entry = aliases["ling-3.0-tiny-4bit"]
     assert entry["hf_path"] == "rapid-mlx/Ling-3.0-tiny-MLX-4bit"

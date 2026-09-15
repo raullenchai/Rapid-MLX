@@ -44,10 +44,10 @@ pytestmark = pytest.mark.requires_mlx
 import mlx.core as mx
 from pydantic import ValidationError
 
-from vllm_mlx._seeded_sampler import make_seeded_sampler
-from vllm_mlx.api.models import ChatCompletionRequest, CompletionRequest
-from vllm_mlx.request import SamplingParams
-from vllm_mlx.service.helpers import build_extended_sampling_kwargs
+from rapid_mlx._seeded_sampler import make_seeded_sampler
+from rapid_mlx.api.models import ChatCompletionRequest, CompletionRequest
+from rapid_mlx.request import SamplingParams
+from rapid_mlx.service.helpers import build_extended_sampling_kwargs
 
 # =============================================================================
 # Layer 1 — Pydantic models preserve the seed field
@@ -100,8 +100,8 @@ def test_responses_request_preserves_seed_through_adapter():
     the downstream ``build_extended_sampling_kwargs`` → engine path
     sees the value.
     """
-    from vllm_mlx.api.responses_adapter import responses_to_openai
-    from vllm_mlx.api.responses_models import ResponsesRequest
+    from rapid_mlx.api.responses_adapter import responses_to_openai
+    from rapid_mlx.api.responses_models import ResponsesRequest
 
     req = ResponsesRequest(model="qwen3-0.6b-8bit", input="hi", seed=42)
     assert req.seed == 42, "ResponsesRequest dropped seed at parse"
@@ -121,7 +121,7 @@ def test_responses_request_rejects_bool_seed():
     ChatCompletionRequest with ``seed=1``, and the chat-layer bool
     rejection is bypassed. ResponsesRequest must enforce the same
     contract at its own parse layer."""
-    from vllm_mlx.api.responses_models import ResponsesRequest
+    from rapid_mlx.api.responses_models import ResponsesRequest
 
     with pytest.raises(ValidationError):
         ResponsesRequest(model="qwen3-0.6b-8bit", input="hi", seed=True)
@@ -139,7 +139,7 @@ def test_responses_request_rejects_negative_seed():
     ``test_responses_request_accepts_above_uint32_seed`` below) and
     only rejects the negative form. Same fix on chat / completions /
     responses for cross-surface parity."""
-    from vllm_mlx.api.responses_models import ResponsesRequest
+    from rapid_mlx.api.responses_models import ResponsesRequest
 
     with pytest.raises(ValidationError):
         ResponsesRequest(model="qwen3-0.6b-8bit", input="hi", seed=-1)
@@ -150,7 +150,7 @@ def test_responses_request_accepts_above_uint32_seed():
     layer rather than 422'ing at parse time. The downstream fold
     (``seed & 0xFFFFFFFF`` in ``make_seeded_sampler``) maps them
     deterministically to the backend's uint32 PRNG-key range."""
-    from vllm_mlx.api.responses_models import ResponsesRequest
+    from rapid_mlx.api.responses_models import ResponsesRequest
 
     big_seed = 0x1_00000000
     req = ResponsesRequest(model="qwen3-0.6b-8bit", input="hi", seed=big_seed)
@@ -598,7 +598,7 @@ def test_apply_argmax_rescue_preserves_nonempty_mask_excluding_argmax():
     argmax_keep, mask)`` because the non-empty mask would be replaced
     by a single-True argmax instead of returned unchanged.
     """
-    from vllm_mlx._seeded_sampler import _apply_argmax_rescue
+    from rapid_mlx._seeded_sampler import _apply_argmax_rescue
 
     # Build a [1, 8] non-empty mask that explicitly EXCLUDES argmax
     # position 0. Token 0 is argmax; tokens 1 and 3 are kept by some
@@ -693,7 +693,7 @@ def test_scheduler_seeded_request_skips_cache():
     # (model load, async loop) so we mimic just the cache surface.
     from collections import OrderedDict
 
-    from vllm_mlx.scheduler import Scheduler
+    from rapid_mlx.scheduler import Scheduler
 
     class _Stub:
         _sampler_cache: OrderedDict = OrderedDict()
@@ -733,7 +733,7 @@ def test_scheduler_unseeded_request_uses_cache():
     requests rely on for batched-sampler eligibility)."""
     from collections import OrderedDict
 
-    from vllm_mlx.scheduler import Scheduler
+    from rapid_mlx.scheduler import Scheduler
 
     class _Stub:
         _sampler_cache: OrderedDict = OrderedDict()

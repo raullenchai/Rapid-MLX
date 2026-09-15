@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import pytest
 
-from vllm_mlx.patches.glm5_next_forget_gate_quant import (
+from rapid_mlx.patches.glm5_next_forget_gate_quant import (
     _remap_quantized_forget_gate_tensors,
 )
 
@@ -36,11 +36,11 @@ def test_quantization_metadata_follows_forget_gate_weight_rename() -> None:
 def test_installer_wraps_released_sanitizer_once_in_clean_process() -> None:
     from mlx_vlm.models.glm5_next import language
 
-    from vllm_mlx.patches import glm5_next_forget_gate_quant as patch
+    from rapid_mlx.patches import glm5_next_forget_gate_quant as patch
 
     monkeypatch = pytest.MonkeyPatch()
     monkeypatch.setattr(
-        "vllm_mlx.patches.glm5_next_runtime._has_native_glm5_next_runtime",
+        "rapid_mlx.patches.glm5_next_runtime._has_native_glm5_next_runtime",
         lambda _language: False,
     )
 
@@ -81,7 +81,7 @@ def test_installer_self_retires_on_native_glm_runtime(
 ) -> None:
     from mlx_vlm.models.glm5_next import language
 
-    from vllm_mlx.patches import glm5_next_forget_gate_quant as patch
+    from rapid_mlx.patches import glm5_next_forget_gate_quant as patch
 
     original = language.LanguageModel.sanitize
     marker = getattr(language, "_RAPID_MLX_FORGET_GATE_QUANT_INSTALLED", None)
@@ -90,7 +90,7 @@ def test_installer_self_retires_on_native_glm_runtime(
     if marker_existed:
         del language._RAPID_MLX_FORGET_GATE_QUANT_INSTALLED
     monkeypatch.setattr(
-        "vllm_mlx.patches.glm5_next_runtime._has_native_glm5_next_runtime",
+        "rapid_mlx.patches.glm5_next_runtime._has_native_glm5_next_runtime",
         lambda _language: True,
     )
 
@@ -110,7 +110,7 @@ def test_installer_self_retires_on_native_glm_runtime(
 def test_installer_respects_quant_runtime_that_is_already_patched() -> None:
     from mlx_vlm.models.glm5_next import language
 
-    from vllm_mlx.patches import glm5_next_forget_gate_quant as patch
+    from rapid_mlx.patches import glm5_next_forget_gate_quant as patch
 
     marker = getattr(language, "_RAPID_MLX_FORGET_GATE_QUANT_INSTALLED", None)
     marker_existed = hasattr(language, "_RAPID_MLX_FORGET_GATE_QUANT_INSTALLED")

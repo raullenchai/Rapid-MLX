@@ -173,7 +173,7 @@ Examples:
 
     # Load model first (so user doesn't wait after recording)
     print("Loading model...")
-    from vllm_mlx.audio.stt import STTEngine
+    from rapid_mlx.audio.stt import STTEngine
 
     engine = STTEngine(model_name)
     engine.load()

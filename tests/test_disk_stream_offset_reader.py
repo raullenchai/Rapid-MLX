@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""``vllm_mlx.offset_reader`` — byte-offset / direct-name expert-bundle fetch.
+"""``rapid_mlx.offset_reader`` — byte-offset / direct-name expert-bundle fetch.
 
 Tickets: ``.scratch/rapid-mlx-disk-stream/issues/01-registry-offset-reader-lfm25.md``
 (``"stacked"`` layout, LFM2.5) and
@@ -42,8 +42,8 @@ from pathlib import Path
 
 import mlx.core as mx
 
-from vllm_mlx.offset_reader import fetch_expert_bundle
-from vllm_mlx.registry import (
+from rapid_mlx.offset_reader import fetch_expert_bundle
+from rapid_mlx.registry import (
     ExpertTensorTemplate,
     StreamingAdapter,
     get_adapter,
@@ -156,7 +156,7 @@ def test_fetch_expert_bundle_different_experts_are_distinct(stacked_checkpoint):
 def test_fetch_expert_bundle_stacked_layout_resolves_checkpoint_directory(
     stacked_checkpoint,
 ):
-    """Real CLI bug repro: ``_resolve_model_path`` (``vllm_mlx/utils/
+    """Real CLI bug repro: ``_resolve_model_path`` (``rapid_mlx/utils/
     tokenizer.py``) hands ``disk_stream_patch.install`` a checkpoint
     *directory* (the HF-cache snapshot dir), not a bare file — the
     ``"direct"`` layout already handled this via ``_resolve_shard_path``,
@@ -339,12 +339,12 @@ def test_fetch_expert_bundle_direct_layout_resolves_shard_via_index_json(tmp_pat
     }
     (tmp_path / "model.safetensors.index.json").write_text(json.dumps(index))
 
-    from vllm_mlx.offset_reader import _fetch_tensor_slice
+    from rapid_mlx.offset_reader import _fetch_tensor_slice
 
     got = _fetch_tensor_slice(shard_a, name)  # sanity: value really is in shard_a
     assert mx.array_equal(got, expected)
 
-    from vllm_mlx.offset_reader import _resolve_shard_path
+    from rapid_mlx.offset_reader import _resolve_shard_path
 
     assert _resolve_shard_path(tmp_path, name) == shard_a
     assert _resolve_shard_path(tmp_path, other_name) == shard_b
@@ -360,7 +360,7 @@ def test_resolve_shard_path_rejects_absolute_shard_name_outside_checkpoint_dir(
     (``Path("/ckpt") / "/etc/passwd" == Path("/etc/passwd")``), so without
     a containment check this would resolve straight to the outside file.
     """
-    from vllm_mlx.offset_reader import _resolve_shard_path
+    from rapid_mlx.offset_reader import _resolve_shard_path
 
     checkpoint_dir = tmp_path / "checkpoint"
     checkpoint_dir.mkdir()
@@ -382,7 +382,7 @@ def test_resolve_shard_path_rejects_dotdot_relative_shard_name(tmp_path):
     instead of an absolute one — the other half of the path-traversal
     surface flagged in the security review.
     """
-    from vllm_mlx.offset_reader import _resolve_shard_path
+    from rapid_mlx.offset_reader import _resolve_shard_path
 
     checkpoint_dir = tmp_path / "checkpoint"
     checkpoint_dir.mkdir()
@@ -401,7 +401,7 @@ def test_resolve_shard_path_rejects_dotdot_relative_shard_name(tmp_path):
 
 def test_resolve_shard_path_rejects_basename_symlink_escape(tmp_path):
     """A lexical basename is still unsafe when the file itself is a symlink."""
-    from vllm_mlx.offset_reader import _resolve_shard_path
+    from rapid_mlx.offset_reader import _resolve_shard_path
 
     checkpoint_dir = tmp_path / "checkpoint"
     checkpoint_dir.mkdir()
@@ -445,7 +445,7 @@ def test_fetch_tensor_slice_raises_on_uneven_stacking(tmp_path):
     own declared ``shape[0]`` (num_experts) must raise a clear ``ValueError``
     naming the tensor, not silently mis-slice.
     """
-    from vllm_mlx.offset_reader import _fetch_tensor_slice
+    from rapid_mlx.offset_reader import _fetch_tensor_slice
 
     path = tmp_path / "model.safetensors"
     # shape (3, 2, 2) F32 = 48 bytes total, but data_offsets claims only 47
@@ -464,7 +464,7 @@ def test_fetch_tensor_slice_raises_on_byte_range_size_mismatch(tmp_path):
     shape x dtype size (a corrupted/inconsistent header) must raise a clear
     ``ValueError`` rather than silently reshaping the wrong amount of data.
     """
-    from vllm_mlx.offset_reader import _fetch_tensor_slice
+    from rapid_mlx.offset_reader import _fetch_tensor_slice
 
     path = tmp_path / "model.safetensors"
     # shape (2, 2) F32 expects 16 bytes; data_offsets claims only 12.
@@ -482,7 +482,7 @@ def test_fetch_tensor_slice_raises_on_short_read(tmp_path):
     promises, the resulting short read must raise a clear ``ValueError``
     instead of silently returning a too-small/garbage array.
     """
-    from vllm_mlx.offset_reader import _fetch_tensor_slice
+    from rapid_mlx.offset_reader import _fetch_tensor_slice
 
     path = tmp_path / "model.safetensors"
     # shape (2, 2) F32 = 16 bytes, header says data_offsets=[0, 16], but the
@@ -501,7 +501,7 @@ def test_resolve_shard_path_raises_keyerror_on_missing_tensor(tmp_path):
     (as opposed to a hit) must raise a clear ``KeyError`` naming the tensor,
     not silently return a bogus/None-derived path.
     """
-    from vllm_mlx.offset_reader import _resolve_shard_path
+    from rapid_mlx.offset_reader import _resolve_shard_path
 
     checkpoint_dir = tmp_path / "checkpoint"
     checkpoint_dir.mkdir()
@@ -527,7 +527,7 @@ def test_fetch_expert_bundle_parses_header_once_per_shard_not_per_tensor(
     """A single-shard 9-tensor bundle fetch must parse that shard's header
     exactly once, not once per tensor (9x).
     """
-    import vllm_mlx.offset_reader as offset_reader_module
+    import rapid_mlx.offset_reader as offset_reader_module
 
     path, _sources = stacked_checkpoint
     adapter = _stacked_fixture_adapter()
@@ -553,7 +553,7 @@ def test_fetch_expert_bundle_parses_index_json_once_per_call(tmp_path, monkeypat
     """A sharded 'direct'-layout checkpoint's ``index.json`` must be parsed
     once per ``fetch_expert_bundle`` call, not once per tensor lookup (9x).
     """
-    import vllm_mlx.offset_reader as offset_reader_module
+    import rapid_mlx.offset_reader as offset_reader_module
 
     adapter = _direct_fixture_adapter()
     tensors = {}

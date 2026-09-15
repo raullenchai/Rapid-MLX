@@ -27,11 +27,11 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from vllm_mlx.config import reset_config
-from vllm_mlx.engine.base import GenerationOutput
-from vllm_mlx.routes.anthropic import router as anthropic_router
-from vllm_mlx.runtime.model_registry import ModelEntry, ModelRegistry
-from vllm_mlx.service.helpers import _resolve_reasoning_enabled
+from rapid_mlx.config import reset_config
+from rapid_mlx.engine.base import GenerationOutput
+from rapid_mlx.routes.anthropic import router as anthropic_router
+from rapid_mlx.runtime.model_registry import ModelEntry, ModelRegistry
+from rapid_mlx.service.helpers import _resolve_reasoning_enabled
 
 
 class _NonStreamingEngineEmittingReasoning:

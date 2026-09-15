@@ -22,7 +22,7 @@ from unittest.mock import MagicMock, patch
 
 import numpy as np
 
-from vllm_mlx.embedding import EmbeddingEngine
+from rapid_mlx.embedding import EmbeddingEngine
 
 
 def _mock_engine() -> EmbeddingEngine:
@@ -49,7 +49,7 @@ def _mock_engine() -> EmbeddingEngine:
     return eng
 
 
-@patch("vllm_mlx.embedding.mx.clear_cache")
+@patch("rapid_mlx.embedding.mx.clear_cache")
 def test_embed_releases_buffers_after_batch(mock_clear):
     eng = _mock_engine()
     result = eng.embed(["hello", "world"])
@@ -57,7 +57,7 @@ def test_embed_releases_buffers_after_batch(mock_clear):
     mock_clear.assert_called_once()
 
 
-@patch("vllm_mlx.embedding.mx.clear_cache")
+@patch("rapid_mlx.embedding.mx.clear_cache")
 def test_embed_tokens_releases_buffers_after_batch(mock_clear):
     eng = _mock_engine()
     result = eng.embed_tokens([[1, 2], [3, 4]])
@@ -65,7 +65,7 @@ def test_embed_tokens_releases_buffers_after_batch(mock_clear):
     mock_clear.assert_called_once()
 
 
-@patch("vllm_mlx.embedding.mx.clear_cache")
+@patch("rapid_mlx.embedding.mx.clear_cache")
 def test_clear_cache_runs_after_tolist(mock_clear):
     """The release must happen AFTER ``.tolist()`` materializes the Python
     lists — otherwise it would drop the buffers still backing the result."""
@@ -79,7 +79,7 @@ def test_clear_cache_runs_after_tolist(mock_clear):
     assert order == ["tolist", "clear"]
 
 
-@patch("vllm_mlx.embedding.mx.clear_cache")
+@patch("rapid_mlx.embedding.mx.clear_cache")
 def test_empty_token_batch_does_not_clear(mock_clear):
     """No forward pass runs for an empty batch, so there is nothing to
     release and clear_cache must not be called."""
@@ -91,7 +91,7 @@ def test_empty_token_batch_does_not_clear(mock_clear):
     eng._model.assert_not_called()
 
 
-@patch("vllm_mlx.embedding.mx.clear_cache")
+@patch("rapid_mlx.embedding.mx.clear_cache")
 def test_embed_tokens_ragged_batch_releases_buffers(mock_clear):
     """The leak is triggered by varied-length batches (each new padded size
     is a buffer the MLX pool can't reuse), so cover the ragged case: the

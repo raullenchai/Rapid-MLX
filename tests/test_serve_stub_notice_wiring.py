@@ -27,8 +27,8 @@ from unittest.mock import patch
 
 import pytest
 
-from vllm_mlx import cli
-from vllm_mlx.model_aliases import resolve_model
+from rapid_mlx import cli
+from rapid_mlx.model_aliases import resolve_model
 
 _ALIAS = "qwen3.5-4b-4bit"
 
@@ -96,8 +96,8 @@ def _quiet_version_check(monkeypatch):
     """Neutralise serve_command's interactive upgrade prompt deterministically.
 
     serve_command reaches the upgrade prompt via a FUNCTION-SCOPE import —
-    ``from vllm_mlx._version_check import prompt_upgrade_if_available``
-    (cli.py) — so the name is looked up on ``vllm_mlx._version_check`` at call
+    ``from rapid_mlx._version_check import prompt_upgrade_if_available``
+    (cli.py) — so the name is looked up on ``rapid_mlx._version_check`` at call
     time, NOT bound into the ``cli`` module namespace. Patching either
     ``cli`` (no such attribute — a no-op) or a specific module is therefore
     fragile / import-target-dependent.

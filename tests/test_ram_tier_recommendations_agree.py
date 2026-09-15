@@ -22,7 +22,7 @@ import pytest
 
 REPO = Path(__file__).resolve().parents[1]
 INSTALL_SH = REPO / "install.sh"
-RECOMMENDATIONS = REPO / "vllm_mlx/model_recommendations.json"
+RECOMMENDATIONS = REPO / "rapid_mlx/model_recommendations.json"
 README = REPO / "README.md"
 
 
@@ -112,7 +112,7 @@ def test_the_banner_prints_a_bare_command_where_no_flags_are_needed():
 
 def test_every_recommended_alias_exists():
     """A typo'd alias turns the install banner into a 404 at first run."""
-    from vllm_mlx.model_aliases import list_aliases
+    from rapid_mlx.model_aliases import list_aliases
 
     known = list_aliases()
     installer_aliases = set()
@@ -315,7 +315,7 @@ def _parse_bundled() -> tuple[str, str]:
 
 def test_quickstart_starter_exists():
     """An unknown starter alias breaks first run for every new user."""
-    from vllm_mlx.model_aliases import list_aliases
+    from rapid_mlx.model_aliases import list_aliases
 
     alias, _ = _parse_quickstart_default()
     assert alias in list_aliases(), f"Quickstart starter is unknown alias {alias!r}"
@@ -325,7 +325,7 @@ def test_quickstart_pinned_repo_matches_the_registry():
     """``hfRepo`` drives the bytes-on-disk progress bar. If it names a
     different repo than the alias resolves to, the download completes
     while the bar sits at 0% — the first-impression path, silently wrong."""
-    from vllm_mlx.model_aliases import resolve_model
+    from rapid_mlx.model_aliases import resolve_model
 
     alias, repo = _parse_quickstart_default()
     assert resolve_model(alias) == repo, (
@@ -394,7 +394,7 @@ def test_retired_starters_are_real_aliases():
     """A typo here silently rescues nobody: the carve-out compares against
     the persisted ``rapid.serve.lastAlias``, so a misspelled entry just
     never matches and the stranded cohort stays stranded."""
-    from vllm_mlx.model_aliases import list_aliases
+    from rapid_mlx.model_aliases import list_aliases
 
     known = list_aliases()
     for alias in _parse_retired_starters():

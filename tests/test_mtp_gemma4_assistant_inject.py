@@ -52,10 +52,10 @@ def _reset_mtp_state():
     """
     import sys
 
-    from vllm_mlx.spec_decode.mtp.accept_counter import (
+    from rapid_mlx.spec_decode.mtp.accept_counter import (
         reset_global_counter_for_tests,
     )
-    from vllm_mlx.spec_decode.mtp.cache_patch import _unpatch_for_tests
+    from rapid_mlx.spec_decode.mtp.cache_patch import _unpatch_for_tests
 
     _unpatch_for_tests()
     reset_global_counter_for_tests()
@@ -189,7 +189,7 @@ def test_build_assistant_model_args_parses_google_shape():
     ``config.json`` (verified against
     ``google/gemma-4-12B-it-assistant`` at PR-3 authoring time).
     """
-    from vllm_mlx.spec_decode.mtp.gemma4_inject import _build_assistant_model_args
+    from rapid_mlx.spec_decode.mtp.gemma4_inject import _build_assistant_model_args
 
     cfg = _google_shaped_assistant_config(hidden=64, backbone=128, n_layers=4)
     args = _build_assistant_model_args(cfg, target_backbone_hidden=128)
@@ -217,7 +217,7 @@ def test_build_assistant_model_args_rejects_mismatched_backbone_hidden():
     would not fit; refusing loudly beats a silent shape error at
     forward time.
     """
-    from vllm_mlx.spec_decode.mtp.gemma4_inject import _build_assistant_model_args
+    from rapid_mlx.spec_decode.mtp.gemma4_inject import _build_assistant_model_args
 
     cfg = _google_shaped_assistant_config(hidden=64, backbone=128)
     # Target's hidden_size mismatches assistant's backbone_hidden_size.
@@ -246,7 +246,7 @@ def test_build_assistant_model_matches_google_weight_tree():
     """
     from mlx.utils import tree_flatten
 
-    from vllm_mlx.spec_decode.mtp.gemma4_inject import (
+    from rapid_mlx.spec_decode.mtp.gemma4_inject import (
         _build_assistant_model,
         _build_assistant_model_args,
     )
@@ -313,7 +313,7 @@ def test_inject_attaches_four_surfaces_under_random_init():
     """
     import inspect
 
-    from vllm_mlx.spec_decode.mtp.gemma4_inject import (
+    from rapid_mlx.spec_decode.mtp.gemma4_inject import (
         inject_mtp_support,
         validate_mtp_support,
     )
@@ -362,7 +362,7 @@ def test_inject_loads_synthetic_google_shaped_sidecar(tmp_path):
     """
     from mlx.utils import tree_flatten
 
-    from vllm_mlx.spec_decode.mtp.gemma4_inject import (
+    from rapid_mlx.spec_decode.mtp.gemma4_inject import (
         _build_assistant_model,
         _build_assistant_model_args,
         inject_mtp_support,
@@ -409,7 +409,7 @@ def test_inject_refuses_sidecar_missing_tensor(tmp_path):
     """
     from mlx.utils import tree_flatten
 
-    from vllm_mlx.spec_decode.mtp.gemma4_inject import (
+    from rapid_mlx.spec_decode.mtp.gemma4_inject import (
         _build_assistant_model,
         _build_assistant_model_args,
         inject_mtp_support,
@@ -448,7 +448,7 @@ def test_inject_refuses_sidecar_missing_tensor(tmp_path):
 
 def test_inject_refuses_no_sidecar_by_default():
     """Default ``allow_random_init=False`` + no sidecar → False + unmodified."""
-    from vllm_mlx.spec_decode.mtp.gemma4_inject import inject_mtp_support
+    from rapid_mlx.spec_decode.mtp.gemma4_inject import inject_mtp_support
 
     try:
         target = _build_tiny_gemma4_target_model()
@@ -473,7 +473,7 @@ def test_inject_refuses_non_assistant_model_type(tmp_path):
     is REFUSED — prevents accidentally loading a base Gemma 4 checkpoint
     or an unrelated MTP head.
     """
-    from vllm_mlx.spec_decode.mtp.gemma4_inject import inject_mtp_support
+    from rapid_mlx.spec_decode.mtp.gemma4_inject import inject_mtp_support
 
     cfg = _google_shaped_assistant_config(hidden=64, backbone=128, n_layers=4)
     # Corrupt the model_type — pretend this is a base Gemma 4 dump.
@@ -501,7 +501,7 @@ def test_build_assistant_model_args_rejects_layer_types_length_mismatch():
     fail closed at build time — a bad list would crash later inside
     ``DecoderLayer.Attention`` with an opaque IndexError.
     """
-    from vllm_mlx.spec_decode.mtp.gemma4_inject import _build_assistant_model_args
+    from rapid_mlx.spec_decode.mtp.gemma4_inject import _build_assistant_model_args
 
     cfg = _google_shaped_assistant_config(hidden=64, backbone=128, n_layers=4)
     # Corrupt: 3 layer types for 4 layers.
@@ -521,7 +521,7 @@ def test_make_mtp_cache_slots_are_generator_safe():
     method): empty ``KVCache`` slots must survive every generator
     walk without raising.
     """
-    from vllm_mlx.spec_decode.mtp.gemma4_inject import inject_mtp_support
+    from rapid_mlx.spec_decode.mtp.gemma4_inject import inject_mtp_support
 
     try:
         target = _build_tiny_gemma4_target_model()
@@ -569,7 +569,7 @@ def test_dispatcher_does_not_route_gemma4_families_to_this_module():
     server A/B found greedy output divergence, so the dispatcher must not
     expose Gemma 4 MTP yet.
     """
-    from vllm_mlx.spec_decode.mtp import dispatch as _dispatch
+    from rapid_mlx.spec_decode.mtp import dispatch as _dispatch
 
     for mt in ("gemma4", "gemma4_unified", "gemma4_text", "gemma4_unified_text"):
         assert mt not in _dispatch._MTP_INJECT_DISPATCH
@@ -578,17 +578,17 @@ def test_dispatcher_does_not_route_gemma4_families_to_this_module():
 
 def test_dispatcher_still_routes_qwen3_5():
     """Qwen3.5 routing is unaffected — locks the shared table entries."""
-    from vllm_mlx.spec_decode.mtp import dispatch as _dispatch
+    from rapid_mlx.spec_decode.mtp import dispatch as _dispatch
 
     for mt in ("qwen3_5", "qwen3_5_moe"):
         assert mt in _dispatch._MTP_INJECT_DISPATCH
         module_path, _ = _dispatch._MTP_INJECT_DISPATCH[mt]
-        assert module_path == "vllm_mlx.spec_decode.mtp.qwen3_5_inject"
+        assert module_path == "rapid_mlx.spec_decode.mtp.qwen3_5_inject"
 
 
 def test_dispatcher_returns_false_for_unknown_model_type():
     """Fail-closed on unknown model_type — no KeyError, no fallback."""
-    from vllm_mlx.spec_decode.mtp.dispatch import dispatch_mtp_inject
+    from rapid_mlx.spec_decode.mtp.dispatch import dispatch_mtp_inject
 
     result = dispatch_mtp_inject(
         object(),
@@ -603,8 +603,8 @@ def test_dispatcher_swallows_family_exceptions(monkeypatch):
     family injector raises (loader bug, weight shape mismatch, etc.).
     Codex round-3 blocker: unwrapped ``fn(...)`` calls could propagate.
     """
-    from vllm_mlx.spec_decode.mtp import dispatch as _dispatch
-    from vllm_mlx.spec_decode.mtp import qwen3_5_inject
+    from rapid_mlx.spec_decode.mtp import dispatch as _dispatch
+    from rapid_mlx.spec_decode.mtp import qwen3_5_inject
 
     def _raising_inject(model, mtp_sidecar=None, *, allow_random_init=False):
         raise RuntimeError("simulated loader crash inside qwen3_5_inject")
@@ -621,8 +621,8 @@ def test_dispatcher_swallows_family_exceptions(monkeypatch):
 
 def test_dispatcher_validate_swallows_family_exceptions(monkeypatch):
     """Same as above but for ``dispatch_mtp_validate``."""
-    from vllm_mlx.spec_decode.mtp import dispatch as _dispatch
-    from vllm_mlx.spec_decode.mtp import qwen3_5_inject
+    from rapid_mlx.spec_decode.mtp import dispatch as _dispatch
+    from rapid_mlx.spec_decode.mtp import qwen3_5_inject
 
     def _raising_validate(model):
         raise RuntimeError("simulated validator crash")
@@ -687,8 +687,8 @@ def test_dispatcher_does_not_call_gemma4_inject(monkeypatch):
     This is the runtime guard that prevents an explicit sidecar flag from
     reaching the unvalidated assistant path.
     """
-    from vllm_mlx.spec_decode.mtp import dispatch as _dispatch
-    from vllm_mlx.spec_decode.mtp import gemma4_inject
+    from rapid_mlx.spec_decode.mtp import dispatch as _dispatch
+    from rapid_mlx.spec_decode.mtp import gemma4_inject
 
     calls: list[dict] = []
 
@@ -731,7 +731,7 @@ def test_inject_delegates_surfaces_to_outer_wrapper():
     contract (all callers unwrap outer → inner before invoking the
     extended signature).
     """
-    from vllm_mlx.spec_decode.mtp.gemma4_inject import inject_mtp_support
+    from rapid_mlx.spec_decode.mtp.gemma4_inject import inject_mtp_support
 
     try:
         inner = _build_tiny_gemma4_target_model()
@@ -780,7 +780,7 @@ def test_inject_refuses_sidecar_with_shape_mismatched_tensor(tmp_path):
     """
     from mlx.utils import tree_flatten
 
-    from vllm_mlx.spec_decode.mtp.gemma4_inject import (
+    from rapid_mlx.spec_decode.mtp.gemma4_inject import (
         _build_assistant_model,
         _build_assistant_model_args,
         inject_mtp_support,
@@ -824,7 +824,7 @@ def test_validate_refuses_when_outer_wrapper_missing_delegated_surface():
     later AttributeErrors inside the generator is worse than a red
     validate up front.
     """
-    from vllm_mlx.spec_decode.mtp.gemma4_inject import (
+    from rapid_mlx.spec_decode.mtp.gemma4_inject import (
         inject_mtp_support,
         validate_mtp_support,
     )
@@ -876,7 +876,7 @@ def test_inject_refuses_sidecar_with_vocab_size_mismatch(tmp_path):
     """
     from mlx.utils import tree_flatten
 
-    from vllm_mlx.spec_decode.mtp.gemma4_inject import (
+    from rapid_mlx.spec_decode.mtp.gemma4_inject import (
         _build_assistant_model,
         _build_assistant_model_args,
         inject_mtp_support,
@@ -918,7 +918,7 @@ def test_mtp_forward_rejects_batch_greater_than_one():
     per-request. Rejecting B>1 up front prevents cross-request K/V
     leakage until the follow-up multi-request path lands.
     """
-    from vllm_mlx.spec_decode.mtp.gemma4_inject import inject_mtp_support
+    from rapid_mlx.spec_decode.mtp.gemma4_inject import inject_mtp_support
 
     try:
         target = _build_tiny_gemma4_target_model()
@@ -959,7 +959,7 @@ def test_injected_class_exposes_mtp_max_batch_size_static_gate():
     trivial to implement (``getattr(model, 'mtp_max_batch_size', 1)
     >= batch_size`` at scheduler entry).
     """
-    from vllm_mlx.spec_decode.mtp.gemma4_inject import inject_mtp_support
+    from rapid_mlx.spec_decode.mtp.gemma4_inject import inject_mtp_support
 
     try:
         target = _build_tiny_gemma4_target_model()
@@ -978,7 +978,7 @@ def test_resolve_sidecar_refuses_non_hf_shape_local_typo(tmp_path):
     and attempted via ``snapshot_download``. Refuse immediately as an
     unresolvable local path instead of spending a network round-trip.
     """
-    from vllm_mlx.spec_decode.mtp.gemma4_inject import _resolve_sidecar_dir
+    from rapid_mlx.spec_decode.mtp.gemma4_inject import _resolve_sidecar_dir
 
     # Absolute path to a non-existent dir.
     result = _resolve_sidecar_dir(str(tmp_path / "does-not-exist-typo"))
@@ -1011,7 +1011,7 @@ def test_inject_random_init_refuses_when_target_has_no_vocab_size():
     vocab_size. This test constructs a target whose args carry
     ``vocab_size = 0`` and asserts refusal.
     """
-    from vllm_mlx.spec_decode.mtp.gemma4_inject import inject_mtp_support
+    from rapid_mlx.spec_decode.mtp.gemma4_inject import inject_mtp_support
 
     try:
         target = _build_tiny_gemma4_target_model()
@@ -1036,7 +1036,7 @@ def test_inject_refuses_when_target_tail_layer_types_mismatch(tmp_path):
     """
     from mlx.utils import tree_flatten
 
-    from vllm_mlx.spec_decode.mtp.gemma4_inject import (
+    from rapid_mlx.spec_decode.mtp.gemma4_inject import (
         _build_assistant_model,
         _build_assistant_model_args,
         inject_mtp_support,
@@ -1085,7 +1085,7 @@ def test_mtp_forward_rejects_populated_mtp_cache():
     """
     from mlx_lm.models.cache import KVCache
 
-    from vllm_mlx.spec_decode.mtp.gemma4_inject import inject_mtp_support
+    from rapid_mlx.spec_decode.mtp.gemma4_inject import inject_mtp_support
 
     try:
         target = _build_tiny_gemma4_target_model()
@@ -1136,7 +1136,7 @@ def test_mtp_forward_rejects_negative_row_offset():
     """
     from mlx_lm.models.cache import KVCache
 
-    from vllm_mlx.spec_decode.mtp.gemma4_inject import inject_mtp_support
+    from rapid_mlx.spec_decode.mtp.gemma4_inject import inject_mtp_support
 
     try:
         target = _build_tiny_gemma4_target_model()
@@ -1189,7 +1189,7 @@ def test_inject_refuses_when_target_layer_types_shorter_than_assistant(tmp_path)
     """
     from mlx.utils import tree_flatten
 
-    from vllm_mlx.spec_decode.mtp.gemma4_inject import (
+    from rapid_mlx.spec_decode.mtp.gemma4_inject import (
         _build_assistant_model,
         _build_assistant_model_args,
         inject_mtp_support,
@@ -1231,7 +1231,7 @@ def test_find_safetensors_refuses_multi_file_even_with_model_safetensors(tmp_pat
     name shortcut returned early and would silently ignore any
     shards side-by-side.
     """
-    from vllm_mlx.spec_decode.mtp.gemma4_inject import _find_safetensors
+    from rapid_mlx.spec_decode.mtp.gemma4_inject import _find_safetensors
 
     d = tmp_path / "multi"
     d.mkdir()
@@ -1252,7 +1252,7 @@ def test_validate_refuses_when_outer_mtp_is_none():
     ``hasattr``-only check yet deliver no drafter to the generator.
     Assert the outer-wrapper validate now catches this.
     """
-    from vllm_mlx.spec_decode.mtp.gemma4_inject import (
+    from rapid_mlx.spec_decode.mtp.gemma4_inject import (
         inject_mtp_support,
         validate_mtp_support,
     )
@@ -1285,7 +1285,7 @@ def test_validate_refuses_when_outer_mtp_max_batch_size_wrong_value():
     yet let a scheduler dispatch B=2 requests into ``mtp_forward``'s
     batch=1-only path. Refuse on wrong value.
     """
-    from vllm_mlx.spec_decode.mtp.gemma4_inject import (
+    from rapid_mlx.spec_decode.mtp.gemma4_inject import (
         inject_mtp_support,
         validate_mtp_support,
     )
@@ -1374,7 +1374,7 @@ def test_mtp_forward_returns_per_position_shape():
     """
     from mlx_lm.models.cache import KVCache
 
-    from vllm_mlx.spec_decode.mtp.gemma4_inject import inject_mtp_support
+    from rapid_mlx.spec_decode.mtp.gemma4_inject import inject_mtp_support
 
     try:
         target = _build_matched_head_dim_target_model()
@@ -1434,7 +1434,7 @@ def test_inject_refuses_sidecar_with_nonpositive_vocab_size(tmp_path):
     """
     from mlx.utils import tree_flatten
 
-    from vllm_mlx.spec_decode.mtp.gemma4_inject import (
+    from rapid_mlx.spec_decode.mtp.gemma4_inject import (
         _build_assistant_model,
         _build_assistant_model_args,
         inject_mtp_support,
@@ -1489,7 +1489,7 @@ def test_dispatcher_swallows_family_import_exception(monkeypatch):
     """
     import importlib as _il
 
-    from vllm_mlx.spec_decode.mtp import dispatch as _dispatch
+    from rapid_mlx.spec_decode.mtp import dispatch as _dispatch
 
     def _boom(name):
         raise RuntimeError(f"synthetic import failure for {name}")

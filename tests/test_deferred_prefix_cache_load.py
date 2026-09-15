@@ -28,7 +28,7 @@ def test_deferred_load_prefix_cache_runs_off_event_loop(monkeypatch):
     If ``_deferred_load_prefix_cache`` loses its ``asyncio.to_thread`` wrap,
     the sleep blocks the loop and the ticker count collapses to 1.
     """
-    from vllm_mlx import server as _server_mod
+    from rapid_mlx import server as _server_mod
 
     def _slow_load():
         # Block ~600ms on the worker thread — production wrap is
@@ -72,7 +72,7 @@ def test_deferred_load_prefix_cache_runs_off_event_loop(monkeypatch):
 
 def test_deferred_load_prefix_cache_no_op_when_engine_missing(monkeypatch):
     """No model loaded (``_engine is None``) → helper returns silently."""
-    from vllm_mlx import server as _server_mod
+    from rapid_mlx import server as _server_mod
 
     monkeypatch.setattr(_server_mod, "_engine", None)
     asyncio.run(_server_mod._deferred_load_prefix_cache())  # must not raise
@@ -81,7 +81,7 @@ def test_deferred_load_prefix_cache_no_op_when_engine_missing(monkeypatch):
 def test_deferred_load_prefix_cache_no_op_when_engine_lacks_loader(monkeypatch):
     """Engine without ``load_cache_from_disk`` (e.g. embedding-only) → no-op;
     the loader function must never be called."""
-    from vllm_mlx import server as _server_mod
+    from rapid_mlx import server as _server_mod
 
     called = {"n": 0}
 
@@ -101,7 +101,7 @@ def test_deferred_load_prefix_cache_swallows_errors(monkeypatch, caplog):
     """A failing disk load must NOT crash the lifespan — a cold cache only
     costs a few early prefix recomputes. The helper logs a warning and
     returns instead of propagating."""
-    from vllm_mlx import server as _server_mod
+    from rapid_mlx import server as _server_mod
 
     def _boom():
         raise RuntimeError("corrupt cache index")
@@ -127,7 +127,7 @@ def test_deferred_load_prefix_cache_honors_autoload_opt_out(monkeypatch, caplog)
     The opt-out must return before touching either the cache directory or the
     engine loader; persisted files remain available for explicit import.
     """
-    from vllm_mlx import server as _server_mod
+    from rapid_mlx import server as _server_mod
 
     class _ExplodingEngine:
         def load_cache_from_disk(self, *args, **kwargs):
@@ -149,7 +149,7 @@ def test_deferred_load_prefix_cache_honors_autoload_opt_out(monkeypatch, caplog)
 
 def test_autoload_opt_out_does_not_disable_explicit_loader(monkeypatch):
     """The Desktop startup policy must not change the general load operation."""
-    from vllm_mlx.runtime import cache as _cache_mod
+    from rapid_mlx.runtime import cache as _cache_mod
 
     calls = []
 
@@ -180,7 +180,7 @@ def test_drain_awaits_load_to_completion(monkeypatch):
     ``await`` for a ``cancel()``, the flag is still unset when the drain
     returns and the assert fires.
     """
-    from vllm_mlx import server as _server_mod
+    from rapid_mlx import server as _server_mod
 
     finished = {"done": False}
 
@@ -213,7 +213,7 @@ def test_drain_awaits_load_to_completion(monkeypatch):
 def test_drain_no_op_when_no_load_task(monkeypatch):
     """No deferred load was scheduled (embedding-only server, or engine without
     a loader) → the shutdown drain is a silent no-op."""
-    from vllm_mlx import server as _server_mod
+    from rapid_mlx import server as _server_mod
 
     monkeypatch.setattr(_server_mod, "_prefix_cache_load_task", None)
     asyncio.run(_server_mod._drain_deferred_prefix_cache_load())  # must not raise

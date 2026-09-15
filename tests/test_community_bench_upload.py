@@ -13,7 +13,7 @@ import urllib.error
 
 import pytest
 
-from vllm_mlx.community_bench import upload
+from rapid_mlx.community_bench import upload
 
 
 @pytest.fixture(autouse=True)
@@ -167,7 +167,7 @@ def test_consent_text_describes_what_actually_happens() -> None:
     """
     import io
 
-    from vllm_mlx.community_bench.submission import _ask_consent
+    from rapid_mlx.community_bench.submission import _ask_consent
 
     out = io.StringIO()
     _ask_consent(
@@ -199,7 +199,7 @@ def test_builder_output_validates_against_the_repo_schema() -> None:
 
     import jsonschema
 
-    from vllm_mlx.community_bench.submission import build_submission_payload
+    from rapid_mlx.community_bench.submission import build_submission_payload
 
     class _Stat:
         def to_schema_dict(self):
@@ -233,7 +233,7 @@ def test_builder_output_validates_against_the_repo_schema() -> None:
         short = _Stat()
         long = _Stat()
 
-    from vllm_mlx.community_bench.hardware import Hardware, Software
+    from rapid_mlx.community_bench.hardware import Hardware, Software
 
     hw = Hardware(chip="Apple M2 Pro", ram_gb=32, cpu_cores=10, gpu_cores=16)
     sw = Software(macos="26.5.2", rapid_mlx="0.11.9", mlx="0.31.2", python="3.12.13")
@@ -448,12 +448,12 @@ def test_consent_names_the_actual_destination(tmp_path, monkeypatch) -> None:
     """
     import io
 
-    from vllm_mlx.community_bench import submission as sub
+    from rapid_mlx.community_bench import submission as sub
 
     monkeypatch.setenv("RAPID_MLX_HOME", str(tmp_path))
     monkeypatch.setenv(upload.BOARD_URL_ENV, "https://elsewhere.example/api")
     monkeypatch.setattr(
-        "vllm_mlx.community_bench.upload.post_submission",
+        "rapid_mlx.community_bench.upload.post_submission",
         lambda payload, **k: {"ok": True},
     )
     out = io.StringIO()
@@ -536,12 +536,12 @@ def test_committing_adopts_a_concurrent_winner(tmp_path, monkeypatch) -> None:
 def test_declining_consent_writes_nothing_at_all(tmp_path, monkeypatch) -> None:
     import io
 
-    from vllm_mlx.community_bench import submission as sub
+    from rapid_mlx.community_bench import submission as sub
 
     monkeypatch.setenv("RAPID_MLX_HOME", str(tmp_path))
     sent = []
     monkeypatch.setattr(
-        "vllm_mlx.community_bench.upload.post_submission",
+        "rapid_mlx.community_bench.upload.post_submission",
         lambda *a, **k: sent.append(1) or {"ok": True},
     )
     rc = sub.submit_interactive(
@@ -564,7 +564,7 @@ def test_an_invalid_board_url_is_a_controlled_error(tmp_path, monkeypatch) -> No
     """Not a traceback: the documented contract is a non-zero return."""
     import io
 
-    from vllm_mlx.community_bench import submission as sub
+    from rapid_mlx.community_bench import submission as sub
 
     monkeypatch.setenv("RAPID_MLX_HOME", str(tmp_path))
     monkeypatch.setenv(upload.BOARD_URL_ENV, "http://evil.example/api")

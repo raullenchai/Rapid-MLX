@@ -24,7 +24,7 @@ try:
 except ImportError:
     pytest.skip("qwen4_exp reference module is not installed", allow_module_level=True)
 
-from vllm_mlx.models.qwen4_exp import PLELayer, TextModel, TextModelArgs
+from rapid_mlx.models.qwen4_exp import PLELayer, TextModel, TextModelArgs
 
 
 def _tiny_config(**overrides):

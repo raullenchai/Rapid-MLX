@@ -13,8 +13,8 @@ from __future__ import annotations
 
 import pytest
 
-from vllm_mlx.reasoning import get_parser
-from vllm_mlx.reasoning.hy3_parser import Hy3ReasoningParser, _normalize_hy3_tags
+from rapid_mlx.reasoning import get_parser
+from rapid_mlx.reasoning.hy3_parser import Hy3ReasoningParser, _normalize_hy3_tags
 
 
 def test_parser_is_registered():

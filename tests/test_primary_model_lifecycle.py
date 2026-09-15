@@ -3,7 +3,7 @@ from unittest.mock import AsyncMock, Mock
 
 import pytest
 
-from vllm_mlx.runtime.primary_lifecycle import PrimaryModelLifecycle
+from rapid_mlx.runtime.primary_lifecycle import PrimaryModelLifecycle
 
 
 class FakeEngine:
@@ -280,7 +280,7 @@ async def test_shutdown_load_drain_propagates_external_cancellation():
 
 @pytest.mark.asyncio
 async def test_demand_warmup_runs_off_the_event_loop(monkeypatch):
-    from vllm_mlx import server
+    from rapid_mlx import server
 
     engine = FakeEngine(loaded=True)
     engine.generate_warmup = Mock()
@@ -313,8 +313,8 @@ async def test_active_request_restarts_idle_window():
 
 @pytest.mark.asyncio
 async def test_route_release_starts_full_idle_window():
-    from vllm_mlx.config import reset_config
-    from vllm_mlx.service.helpers import _release_admission_unless_committed
+    from rapid_mlx.config import reset_config
+    from rapid_mlx.service.helpers import _release_admission_unless_committed
 
     now = [10.0]
     engine = FakeEngine(loaded=True)
@@ -407,8 +407,8 @@ async def test_partial_failed_load_is_cleaned_and_retryable():
 
 @pytest.mark.asyncio
 async def test_streaming_release_starts_idle_window_after_final_chunk():
-    from vllm_mlx.config import reset_config
-    from vllm_mlx.service.helpers import _disconnect_guard
+    from rapid_mlx.config import reset_config
+    from rapid_mlx.service.helpers import _disconnect_guard
 
     class ConnectedRequest:
         async def is_disconnected(self) -> bool:
@@ -448,8 +448,8 @@ async def test_streaming_release_starts_idle_window_after_final_chunk():
 
 @pytest.mark.asyncio
 async def test_non_generation_route_decorator_releases_primary_owner():
-    from vllm_mlx.config import reset_config
-    from vllm_mlx.routes.anthropic import _release_primary_request_after_route
+    from rapid_mlx.config import reset_config
+    from rapid_mlx.routes.anthropic import _release_primary_request_after_route
 
     engine = FakeEngine(loaded=True)
     lifecycle = PrimaryModelLifecycle(engine, idle_unload_seconds=5)
@@ -469,9 +469,9 @@ async def test_non_generation_route_decorator_releases_primary_owner():
 
 @pytest.mark.asyncio
 async def test_ready_engine_wakes_only_the_configured_primary():
-    from vllm_mlx.config import reset_config
-    from vllm_mlx.runtime.model_registry import ModelEntry, ModelRegistry
-    from vllm_mlx.service.helpers import get_ready_engine
+    from rapid_mlx.config import reset_config
+    from rapid_mlx.runtime.model_registry import ModelEntry, ModelRegistry
+    from rapid_mlx.service.helpers import get_ready_engine
 
     primary = FakeEngine()
     secondary = FakeEngine(loaded=True)
@@ -496,8 +496,8 @@ async def test_ready_engine_wakes_only_the_configured_primary():
 
 
 def test_residency_state_callback_is_bound_to_engine_identity():
-    from vllm_mlx.runtime.model_registry import ModelEntry, ModelRegistry
-    from vllm_mlx.runtime.resident_models import ResidentModelManager
+    from rapid_mlx.runtime.model_registry import ModelEntry, ModelRegistry
+    from rapid_mlx.runtime.resident_models import ResidentModelManager
 
     old_engine = FakeEngine(loaded=True)
     new_engine = FakeEngine(loaded=True)
@@ -517,8 +517,8 @@ def test_residency_state_callback_is_bound_to_engine_identity():
 
 @pytest.mark.asyncio
 async def test_ready_probe_reports_standby_as_available():
-    from vllm_mlx.config import reset_config
-    from vllm_mlx.routes.health import health_ready
+    from rapid_mlx.config import reset_config
+    from rapid_mlx.routes.health import health_ready
 
     engine = FakeEngine()
     cfg = reset_config()
@@ -853,7 +853,7 @@ async def test_allocator_release_failure_is_best_effort(caplog):
 
 @pytest.mark.asyncio
 async def test_monitor_logs_failures_and_propagates_cancellation(monkeypatch, caplog):
-    from vllm_mlx.runtime import primary_lifecycle as lifecycle_module
+    from rapid_mlx.runtime import primary_lifecycle as lifecycle_module
 
     engine = FakeEngine(loaded=True)
     lifecycle = PrimaryModelLifecycle(engine, idle_unload_seconds=4)
@@ -886,8 +886,8 @@ async def test_monitor_logs_failures_and_propagates_cancellation(monkeypatch, ca
 async def test_ensure_engine_ready_releases_on_cancel_and_failure():
     from fastapi import HTTPException
 
-    from vllm_mlx.config import reset_config
-    from vllm_mlx.service.helpers import ensure_engine_ready
+    from rapid_mlx.config import reset_config
+    from rapid_mlx.service.helpers import ensure_engine_ready
 
     engine = FakeEngine()
     cfg = reset_config()
@@ -912,8 +912,8 @@ async def test_ensure_engine_ready_releases_on_cancel_and_failure():
 
 @pytest.mark.asyncio
 async def test_route_ownership_helpers_cover_all_lease_shapes():
-    from vllm_mlx.config import reset_config
-    from vllm_mlx.service.helpers import _release_route_ownership
+    from rapid_mlx.config import reset_config
+    from rapid_mlx.service.helpers import _release_route_ownership
 
     engine = FakeEngine(loaded=True)
     lifecycle = PrimaryModelLifecycle(engine, idle_unload_seconds=5)
@@ -943,8 +943,8 @@ async def test_route_ownership_helpers_cover_all_lease_shapes():
 
 @pytest.mark.asyncio
 async def test_stream_cleanup_releases_lifecycle_when_admission_release_raises():
-    from vllm_mlx.config import reset_config
-    from vllm_mlx.service import helpers
+    from rapid_mlx.config import reset_config
+    from rapid_mlx.service import helpers
 
     class ConnectedRequest:
         async def is_disconnected(self) -> bool:
@@ -1009,8 +1009,8 @@ async def test_stream_cleanup_releases_lifecycle_when_admission_release_raises()
 async def test_health_probe_rejects_lifecycle_error():
     from fastapi import HTTPException
 
-    from vllm_mlx.config import reset_config
-    from vllm_mlx.routes.health import health_ready
+    from rapid_mlx.config import reset_config
+    from rapid_mlx.routes.health import health_ready
 
     engine = FakeEngine()
     lifecycle = PrimaryModelLifecycle(engine, lazy_load=True)
@@ -1029,7 +1029,7 @@ async def test_health_probe_rejects_lifecycle_error():
 async def test_primary_server_lifecycle_helpers(monkeypatch):
     from types import SimpleNamespace
 
-    from vllm_mlx import server
+    from rapid_mlx import server
 
     class HybridEngine(FakeEngine):
         async def stream_chat(self, **_kwargs):
@@ -1090,8 +1090,8 @@ async def test_primary_server_lifecycle_helpers(monkeypatch):
 
 
 def test_configure_primary_lifecycle_resets_existing_state(monkeypatch):
-    from vllm_mlx import server
-    from vllm_mlx.config import reset_config
+    from rapid_mlx import server
+    from rapid_mlx.config import reset_config
 
     cfg = reset_config()
     cfg.primary_model_lifecycle = object()
@@ -1109,10 +1109,10 @@ def test_configure_primary_lifecycle_resets_existing_state(monkeypatch):
 async def test_resident_primary_handoff_detaches_or_rejects(monkeypatch):
     from types import SimpleNamespace
 
-    from vllm_mlx import server
-    from vllm_mlx.config import reset_config
-    from vllm_mlx.runtime.model_registry import ModelEntry
-    from vllm_mlx.runtime.resident_models import ResidentModelBusyError
+    from rapid_mlx import server
+    from rapid_mlx.config import reset_config
+    from rapid_mlx.runtime.model_registry import ModelEntry
+    from rapid_mlx.runtime.resident_models import ResidentModelBusyError
 
     cfg = reset_config()
     old = FakeEngine(loaded=True)
@@ -1144,10 +1144,10 @@ async def test_lifespan_primary_lifecycle_modes(
 ):
     from types import SimpleNamespace
 
-    from vllm_mlx import server
-    from vllm_mlx.config import reset_config
-    from vllm_mlx.routes import audio, video
-    from vllm_mlx.runtime import audio_worker
+    from rapid_mlx import server
+    from rapid_mlx.config import reset_config
+    from rapid_mlx.routes import audio, video
+    from rapid_mlx.runtime import audio_worker
 
     engine = FakeEngine()
     manager = SimpleNamespace(
@@ -1190,8 +1190,8 @@ async def test_lifespan_primary_lifecycle_modes(
 
 @pytest.mark.asyncio
 async def test_lifespan_rejects_unsupported_lazy_engine(monkeypatch):
-    from vllm_mlx import server
-    from vllm_mlx.config import reset_config
+    from rapid_mlx import server
+    from rapid_mlx.config import reset_config
 
     reset_config()
     monkeypatch.setattr(server, "_engine", object())
@@ -1204,7 +1204,7 @@ async def test_lifespan_rejects_unsupported_lazy_engine(monkeypatch):
 
 
 def test_serve_parser_exposes_primary_standby_options():
-    from vllm_mlx.cli import build_parser
+    from rapid_mlx.cli import build_parser
 
     args = build_parser().parse_args(
         [

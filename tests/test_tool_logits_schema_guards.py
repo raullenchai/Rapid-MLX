@@ -3,7 +3,7 @@
 Regression tests for F-140 (retires F-031).
 
 Three unguarded ``.get()``/``.items()`` calls in
-``vllm_mlx/api/tool_logits.py`` at lines 42, 43, and 419 turned a wide
+``rapid_mlx/api/tool_logits.py`` at lines 42, 43, and 419 turned a wide
 family of malformed tool-schema shapes into an unmapped
 ``AttributeError`` — surfacing as HTTP 500 (instead of a clean 400/422)
 and, on the route layer's older envelope, leaking the raw Python error
@@ -24,7 +24,7 @@ from __future__ import annotations
 
 import pytest
 
-from vllm_mlx.api.tool_logits import _extract_param_schemas, validate_param_value
+from rapid_mlx.api.tool_logits import _extract_param_schemas, validate_param_value
 
 # ---------------------------------------------------------------------------
 # F-140 known crash shapes — must NOT raise AttributeError

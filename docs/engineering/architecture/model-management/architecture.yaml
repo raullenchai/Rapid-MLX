@@ -17,7 +17,7 @@ components:
     phase: 2
     owner: atlas
     summary: Stable family identity independent of release and quantization.
-    files: [vllm_mlx/model_profile.py, vllm_mlx/model_aliases.py, vllm_mlx/aliases.json]
+    files: [rapid_mlx/model_profile.py, rapid_mlx/model_aliases.py, rapid_mlx/aliases.json]
     tests: [tests/test_aliases_contract.py]
     missing: First-class stable family ID separate from alias metadata.
   model_release:
@@ -37,7 +37,7 @@ components:
     phase: 2
     owner: atlas
     summary: Quantization, modality, format, and stable variant aliases.
-    files: [vllm_mlx/model_profile.py, vllm_mlx/aliases.json]
+    files: [rapid_mlx/model_profile.py, rapid_mlx/aliases.json]
     tests: [tests/test_aliases_contract.py]
     missing: First-class variant ID and quantization identity.
   artifact:
@@ -47,7 +47,7 @@ components:
     phase: 2
     owner: atlas
     summary: Immutable repository revision, file manifest, tokenizer, and config.
-    files: [proto/model-runtime/v1/model-identity.schema.json, proto/model-catalog/v1/model-registry-record.schema.json, vllm_mlx/catalog/registry.py]
+    files: [proto/model-runtime/v1/model-identity.schema.json, proto/model-catalog/v1/model-registry-record.schema.json, rapid_mlx/catalog/registry.py]
     tests: [tests/test_community_benchmark_proto.py, tests/test_atomic_model_catalog.py]
     missing: Runtime collector, immutable upstream revision resolution, and signed publication policy.
   capabilities:
@@ -57,7 +57,7 @@ components:
     phase: 2
     owner: atlas
     summary: What a variant can do, without quality judgement or default selection.
-    files: [vllm_mlx/model_profile.py, proto/model-catalog/v2/model-alias.schema.json]
+    files: [rapid_mlx/model_profile.py, proto/model-catalog/v2/model-alias.schema.json]
     tests: [tests/test_aliases_contract.py]
     missing: Separate capability contract from the general ModelProfile.
   runtime_compatibility:
@@ -67,7 +67,7 @@ components:
     phase: 2
     owner: atlas
     summary: Runtime ranges and hard feature/safety constraints.
-    files: [vllm_mlx/model_profile.py, vllm_mlx/model_auto_config.py]
+    files: [rapid_mlx/model_profile.py, rapid_mlx/model_auto_config.py]
     tests: [tests/test_aliases_contract.py]
     missing: Versioned compatibility record bound to an artifact revision.
   alias_metadata:
@@ -77,7 +77,7 @@ components:
     phase: 2
     owner: pixel
     summary: Mutable user-facing names, branding, descriptions, icons, and aliases.
-    files: [vllm_mlx/aliases.json, vllm_mlx/audio/aliases.json, proto/model-catalog/v2/model-alias.schema.json, vllm_mlx/catalog/legacy.py]
+    files: [rapid_mlx/aliases.json, rapid_mlx/audio/aliases.json, proto/model-catalog/v2/model-alias.schema.json, rapid_mlx/catalog/legacy.py]
     tests: [tests/test_aliases_contract.py, tests/test_atomic_model_catalog.py]
     migrations: [migrations/002-aliases-to-atomic-contracts.md]
     missing: Replace bridge inference with explicit generated capabilities and resolve immutable identities.
@@ -158,7 +158,7 @@ components:
     phase: 2
     owner: vector
     summary: Proposed knobs and supporting evidence before production promotion.
-    files: [vllm_mlx/model_profile.py, vllm_mlx/aliases.json, vllm_mlx/cli.py]
+    files: [rapid_mlx/model_profile.py, rapid_mlx/aliases.json, rapid_mlx/cli.py]
     tests: [tests/test_recurrent_prefill_auto_default.py]
     evidence: [../../performance/2026-08-22-long-context-service-prefill.md]
     migrations: [migrations/001-prefill-profile-extraction.md]
@@ -170,7 +170,7 @@ components:
     phase: 2
     owner: vector
     summary: Promoted, production-eligible runtime defaults with audit and rollback.
-    files: [vllm_mlx/model_profile.py, vllm_mlx/aliases.json, vllm_mlx/cli.py]
+    files: [rapid_mlx/model_profile.py, rapid_mlx/aliases.json, rapid_mlx/cli.py]
     tests: [tests/test_recurrent_prefill_auto_default.py]
     evidence: [../../performance/2026-08-22-long-context-service-prefill.md]
     migrations: [migrations/001-prefill-profile-extraction.md]
@@ -182,7 +182,7 @@ components:
     phase: 4
     owner: atlas
     summary: Ordered qualified variants with reason codes, tradeoffs, and limitations.
-    files: [vllm_mlx/model_recommendations.json, vllm_mlx/recommendations.py, proto/model-catalog/v1/recommendation-policy.schema.json, vllm_mlx/catalog/legacy.py, apps/rapid-mac/Sources/Rapid/Server/RAMBucketedDefault.swift]
+    files: [rapid_mlx/model_recommendations.json, rapid_mlx/recommendations.py, proto/model-catalog/v1/recommendation-policy.schema.json, rapid_mlx/catalog/legacy.py, apps/rapid-mac/Sources/Rapid/Server/RAMBucketedDefault.swift]
     tests: [tests/test_ram_tier_recommendations_agree.py, tests/test_atomic_model_catalog.py, apps/rapid-mac/Tests/RapidTests/RAMBucketedDefaultTests.swift]
     missing: Explicit qualification gate and promoted evidence provenance.
   ranked_recommendation_set:
@@ -212,7 +212,7 @@ components:
     phase: 4
     owner: atlas
     summary: Selects a qualified model variant; never a performance profile.
-    files: [vllm_mlx/model_aliases.py]
+    files: [rapid_mlx/model_aliases.py]
     tests: [tests/test_aliases_contract.py]
     missing: First-class qualified selection decision.
   selected_model_variant:
@@ -232,7 +232,7 @@ components:
     phase: 1
     owner: atlas
     summary: Explicit advanced runtime knobs; user value wins within hard constraints.
-    files: [vllm_mlx/cli.py, vllm_mlx/server.py]
+    files: [rapid_mlx/cli.py, rapid_mlx/server.py]
     tests: [tests/test_recurrent_prefill_auto_default.py, tests/test_cli_config_fidelity.py]
     missing: Typed override layer shared across CLI, Server, and Desktop.
   runtime_resolver:
@@ -242,7 +242,7 @@ components:
     phase: 1
     owner: atlas
     summary: Sole authority for resolving how the selected variant runs.
-    files: [vllm_mlx/cli.py, vllm_mlx/server.py]
+    files: [rapid_mlx/cli.py, rapid_mlx/server.py]
     tests: [tests/test_recurrent_prefill_auto_default.py, tests/test_cli_config_fidelity.py]
     migrations: [migrations/002-effective-runtime-config.md]
     missing: One API shared by every entry point and typed runtime overrides.
@@ -264,7 +264,7 @@ components:
     phase: 1
     owner: pixel
     summary: Consumes the atomic catalog for model placement and effective config for runtime behavior.
-    files: [vllm_mlx/cli.py, apps/rapid-mac/Sources/Rapid/Server/ModelCatalog.swift, apps/rapid-mac/Sources/Rapid/Server/RAMBucketedDefault.swift, apps/rapid-mac/Sources/Rapid/UI/SettingsModelManagementPanel.swift]
+    files: [rapid_mlx/cli.py, apps/rapid-mac/Sources/Rapid/Server/ModelCatalog.swift, apps/rapid-mac/Sources/Rapid/Server/RAMBucketedDefault.swift, apps/rapid-mac/Sources/Rapid/UI/SettingsModelManagementPanel.swift]
     tests: [tests/test_recurrent_prefill_auto_default.py, apps/rapid-mac/Tests/RapidTests/AtomicModelCatalogTests.swift, apps/rapid-mac/Tests/RapidTests/RAMBucketedDefaultTests.swift]
     evidence: [../../performance/2026-08-22-long-context-service-prefill.md]
     missing: Resolved-config provenance/reason presentation.
@@ -275,7 +275,7 @@ components:
     phase: 1
     owner: atlas
     summary: Exposes the shared atomic catalog while consuming the same resolved configuration and provenance.
-    files: [vllm_mlx/cli.py, vllm_mlx/server.py, vllm_mlx/catalog/legacy.py]
+    files: [rapid_mlx/cli.py, rapid_mlx/server.py, rapid_mlx/catalog/legacy.py]
     tests: [tests/test_cli_config_fidelity.py, tests/test_cli_models_json.py, tests/test_atomic_model_catalog.py]
     missing: Central resolved-config contract, immutable model resolver, and provenance API.
   actual_runtime_telemetry:

@@ -13,7 +13,7 @@ import Observation
 /// root, the same key Claude Desktop and VS Code use), so a config the user
 /// already has can be dropped in, and one authored here can be lifted out. The
 /// engine accepts both that key and its own historical `servers`
-/// (`vllm_mlx/mcp/config.py: select_server_map`).
+/// (`rapid_mlx/mcp/config.py: select_server_map`).
 @MainActor
 @Observable
 final class MCPConfigStore {
@@ -56,7 +56,7 @@ final class MCPConfigStore {
     }
 
     /// `~/.config/rapid-mlx/mcp.json` — the first entry of the engine's own
-    /// search path (`vllm_mlx/mcp/config.py: CONFIG_SEARCH_PATHS`). Resolved
+    /// search path (`rapid_mlx/mcp/config.py: CONFIG_SEARCH_PATHS`). Resolved
     /// from the real home directory rather than `NSHomeDirectory()`, which a
     /// sandboxed context would redirect into a container the engine child
     /// would never look in.

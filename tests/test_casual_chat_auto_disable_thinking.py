@@ -64,13 +64,13 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from vllm_mlx.api import response_format_metrics
-from vllm_mlx.api.models import ChatCompletionRequest
-from vllm_mlx.api.responses_models import ResponsesRequest
-from vllm_mlx.config import reset_config
-from vllm_mlx.engine.base import GenerationOutput
-from vllm_mlx.middleware.exception_handlers import install_exception_handlers
-from vllm_mlx.service.helpers import (
+from rapid_mlx.api import response_format_metrics
+from rapid_mlx.api.models import ChatCompletionRequest
+from rapid_mlx.api.responses_models import ResponsesRequest
+from rapid_mlx.config import reset_config
+from rapid_mlx.engine.base import GenerationOutput
+from rapid_mlx.middleware.exception_handlers import install_exception_handlers
+from rapid_mlx.service.helpers import (
     _resolve_enable_thinking,
     maybe_auto_disable_thinking_for_casual_chat,
     maybe_auto_disable_thinking_for_tools,
@@ -87,7 +87,7 @@ def _thinking_parser_cfg():
     parser-name gate fires. Used by helper-level tests that don't go
     through the route layer (the route fixtures set ``cfg`` directly)."""
     with patch(
-        "vllm_mlx.service.helpers.get_config",
+        "rapid_mlx.service.helpers.get_config",
         return_value=SimpleNamespace(
             no_thinking=False,
             reasoning_parser_name="qwen3",
@@ -102,7 +102,7 @@ def _no_parser_cfg():
     (no reasoning parser registered). Used to exercise the parser-name
     gate's negative case."""
     with patch(
-        "vllm_mlx.service.helpers.get_config",
+        "rapid_mlx.service.helpers.get_config",
         return_value=SimpleNamespace(
             no_thinking=False,
             reasoning_parser_name=None,
@@ -379,7 +379,7 @@ class TestHelperCodexR1FollowUps:
             reasoning_effort=None,
         )
         # tools helper skips because tool_choice="none".
-        from vllm_mlx.service.helpers import maybe_auto_disable_thinking_for_tools
+        from rapid_mlx.service.helpers import maybe_auto_disable_thinking_for_tools
 
         assert maybe_auto_disable_thinking_for_tools(req) is False
         # casual helper MUST also skip — the helper now gates on
@@ -418,7 +418,7 @@ class TestHelperCodexR1FollowUps:
         from unittest.mock import patch
 
         with patch(
-            "vllm_mlx.service.helpers.get_config",
+            "rapid_mlx.service.helpers.get_config",
             return_value=SimpleNamespace(
                 no_thinking=True,
                 reasoning_parser_name="qwen3",
@@ -514,7 +514,7 @@ class TestL05WarningSuppressedOnAutoDisable:
     set. Test the contract end-to-end at the warning-header layer."""
 
     def test_warning_suppressed_when_auto_disable_marker_set(self):
-        from vllm_mlx.service.helpers import enable_thinking_warning_header
+        from rapid_mlx.service.helpers import enable_thinking_warning_header
 
         req = SimpleNamespace(
             chat_template_kwargs={"enable_thinking": False},
@@ -531,7 +531,7 @@ class TestL05WarningSuppressedOnAutoDisable:
         warning still fires as before. This protects the pre-fix
         contract: a real client-supplied hint on a non-honoring parser
         still surfaces the silent-drop signal."""
-        from vllm_mlx.service.helpers import enable_thinking_warning_header
+        from rapid_mlx.service.helpers import enable_thinking_warning_header
 
         req = SimpleNamespace(
             chat_template_kwargs={"enable_thinking": False},
@@ -546,7 +546,7 @@ class TestL05WarningSuppressedOnAutoDisable:
         R12-T1F tools helper — the marker is set there too, so a
         tools-on-non-qwen3-parser request doesn't get a spurious
         warning."""
-        from vllm_mlx.service.helpers import (
+        from rapid_mlx.service.helpers import (
             enable_thinking_warning_header,
             maybe_auto_disable_thinking_for_tools,
         )
@@ -607,7 +607,7 @@ def _reset_metrics_between_tests():
 
 @pytest.fixture
 def _rate_limiter_state():
-    from vllm_mlx.middleware.auth import rate_limiter
+    from rapid_mlx.middleware.auth import rate_limiter
 
     saved_enabled = rate_limiter.enabled
     saved_rpm = rate_limiter.requests_per_minute
@@ -625,7 +625,7 @@ def _rate_limiter_state():
 def _make_chat_client(
     engine: _ChatEngine, *, reasoning_parser_name="qwen3"
 ) -> TestClient:
-    from vllm_mlx.routes.chat import router as chat_router
+    from rapid_mlx.routes.chat import router as chat_router
 
     cfg = reset_config()
     cfg.engine = engine
@@ -789,7 +789,7 @@ class TestChatRouteAutoDisableForCasualChat:
         client = _make_chat_client(engine)
 
         captured_ctk: list[dict | None] = []
-        import vllm_mlx.routes.chat as _chat_mod
+        import rapid_mlx.routes.chat as _chat_mod
 
         original = _chat_mod._resolve_enable_thinking
 
@@ -878,7 +878,7 @@ class TestInteractionWithEarlierAutoDisable:
         )
         assert maybe_auto_disable_thinking_for_casual_chat(req) is True
         with patch(
-            "vllm_mlx.service.helpers.get_config",
+            "rapid_mlx.service.helpers.get_config",
             return_value=SimpleNamespace(no_thinking=False),
         ):
             assert _resolve_enable_thinking(req) is False
@@ -921,7 +921,7 @@ class _ResponsesEngine:
 def _make_responses_client(
     engine: _ResponsesEngine, *, reasoning_parser_name="qwen3"
 ) -> TestClient:
-    from vllm_mlx.routes.responses import router as responses_router
+    from rapid_mlx.routes.responses import router as responses_router
 
     cfg = reset_config()
     cfg.engine = engine
@@ -1065,7 +1065,7 @@ class TestResponsesAdapterCasualChatRoundTrip:
     ):
         """ResponsesRequest (casual, no signals) → adapter → ChatRequest
         → casual-chat helper → ``enable_thinking=False``."""
-        from vllm_mlx.api.responses_adapter import responses_to_openai
+        from rapid_mlx.api.responses_adapter import responses_to_openai
 
         resp_req = ResponsesRequest(
             model="qwen3-test",
@@ -1093,7 +1093,7 @@ class TestResponsesAdapterCasualChatRoundTrip:
         ChatCompletionRequest), but the route's ``extra_signals``
         threading ensures the helper still sees it and short-circuits
         the auto-disable."""
-        from vllm_mlx.api.responses_adapter import responses_to_openai
+        from rapid_mlx.api.responses_adapter import responses_to_openai
 
         resp_req = ResponsesRequest(
             model="qwen3-test",

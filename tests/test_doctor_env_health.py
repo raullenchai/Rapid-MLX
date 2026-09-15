@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Unit tests for the env-health probes in ``vllm_mlx.doctor.env_health``.
+"""Unit tests for the env-health probes in ``rapid_mlx.doctor.env_health``.
 
 These tests are the safety net for the user-facing ``rapid-mlx doctor``
 contract:
@@ -42,7 +42,7 @@ import pytest
 from packaging.requirements import Requirement
 from packaging.specifiers import SpecifierSet
 
-from vllm_mlx.doctor import env_health as eh
+from rapid_mlx.doctor import env_health as eh
 
 
 @pytest.fixture(autouse=True)
@@ -221,10 +221,10 @@ def test_runtime_authentication_uses_filesystem_distribution_without_launch(tmp_
         / f"python{sys.version_info.major}.{sys.version_info.minor}"
         / "site-packages"
     )
-    package_root = site_root / "vllm_mlx"
+    package_root = site_root / "rapid_mlx"
     package_root.mkdir(parents=True)
     (package_root / "__init__.py").write_text("")
-    (package_root / "cli.py").write_text("from vllm_mlx.server import app\n")
+    (package_root / "cli.py").write_text("from rapid_mlx.server import app\n")
     (site_root / "rapid_mlx-0.0.0.dist-info").mkdir()
     (site_root / "rapid_mlx-0.0.0.dist-info" / "METADATA").write_text(
         "Metadata-Version: 2.1\nName: rapid-mlx\nVersion: 0.0.0\n"
@@ -259,7 +259,7 @@ def test_system_layout_runtime_is_authenticated_by_isolated_distribution_probe(
                 "cmdline": [
                     str(system_runtime),
                     "-m",
-                    "vllm_mlx.cli",
+                    "rapid_mlx.cli",
                     "serve",
                     "test-model",
                 ],
@@ -371,7 +371,7 @@ def test_module_server_runtime_must_register_rapid_mlx_distribution(tmp_path):
 def test_runtime_validation_rejects_fake_system_python_distribution(tmp_path):
     server_cwd = tmp_path / "server-cwd"
     server_cwd.mkdir()
-    fake_dist_info = server_cwd / "vllm_mlx-999.fake.dist-info" / "METADATA"
+    fake_dist_info = server_cwd / "rapid_mlx-999.fake.dist-info" / "METADATA"
     fake_dist_info.parent.mkdir(parents=True)
     fake_dist_info.write_text(
         "Metadata-Version: 2.1\nName: rapid-mlx\nVersion: 999.fake\n"
@@ -1060,7 +1060,7 @@ def test_running_server_runtime_outranks_runtime_override(
     entrypoint = tmp_path / "bin" / "rapid-mlx"
     entrypoint.parent.mkdir(parents=True)
     entrypoint.write_text(
-        f"#!{server_runtime}\nfrom vllm_mlx.cli import main\nsys.exit(main())\n"
+        f"#!{server_runtime}\nfrom rapid_mlx.cli import main\nsys.exit(main())\n"
     )
     entrypoint.chmod(0o755)
     report = {
@@ -1143,7 +1143,7 @@ def test_discovered_system_python_is_not_restricted_to_runtime_override_layouts(
                 "cmdline": [
                     str(server_runtime),
                     "-m",
-                    "vllm_mlx.cli",
+                    "rapid_mlx.cli",
                     "serve",
                     "test-model",
                 ],
@@ -1193,7 +1193,7 @@ def test_relative_module_server_uses_process_executable(
                 "cmdline": [
                     str(server_runtime),
                     "-m",
-                    "vllm_mlx.cli",
+                    "rapid_mlx.cli",
                     "serve",
                     "test-model",
                 ],
@@ -1240,7 +1240,7 @@ def test_module_command_accepts_python_flags_before_dash_m(
                     str(doctor_exe),
                     "-O",
                     "-m",
-                    "vllm_mlx.cli",
+                    "rapid_mlx.cli",
                     "serve",
                     "test-model",
                 ],
@@ -1288,7 +1288,7 @@ def test_module_command_accepts_python_value_flags_before_dash_m(
                     "-X",
                     "dev",
                     "-m",
-                    "vllm_mlx.cli",
+                    "rapid_mlx.cli",
                     "serve",
                     "test-model",
                 ],
@@ -1344,7 +1344,7 @@ def test_arbitrary_server_interpreter_requires_explicit_override(
                 "cmdline": [
                     str(arbitrary_runtime),
                     "-m",
-                    "vllm_mlx.cli",
+                    "rapid_mlx.cli",
                     "serve",
                     "test-model",
                 ],
@@ -1393,7 +1393,7 @@ def test_running_server_same_interpreter_is_still_server_context(
                 "cmdline": [
                     str(doctor_exe),
                     "-m",
-                    "vllm_mlx.cli",
+                    "rapid_mlx.cli",
                     "serve",
                     "test-model",
                 ],
@@ -1484,7 +1484,7 @@ def test_running_server_runtime_preserves_venv_executable_symlink(
                 "cmdline": [
                     str(server_runtime),
                     "-m",
-                    "vllm_mlx.cli",
+                    "rapid_mlx.cli",
                     "serve",
                 ],
                 "create_time": 123.0,
@@ -1558,7 +1558,7 @@ def test_module_command_wins_over_resolved_process_executable(
                 "cmdline": [
                     str(venv_python),
                     "-m",
-                    "vllm_mlx.cli",
+                    "rapid_mlx.cli",
                     "serve",
                 ],
                 "create_time": 123.0,
@@ -1603,7 +1603,7 @@ def test_entrypoint_command_derives_venv_python_sibling(
     venv_python.parent.mkdir(parents=True)
     venv_python.symlink_to(base_python)
     entrypoint = venv_root / "bin" / "rapid-mlx"
-    entrypoint.write_text(f"#!{venv_python}\nfrom vllm_mlx.cli import main\nmain()\n")
+    entrypoint.write_text(f"#!{venv_python}\nfrom rapid_mlx.cli import main\nmain()\n")
     entrypoint.chmod(0o755)
 
     class FakeProcess:
@@ -1653,7 +1653,7 @@ def test_entrypoint_direct_shebang_wins_over_sibling_python(
     sibling_python.write_text("")
     entrypoint = venv_root / "bin" / "rapid-mlx"
     entrypoint.write_text(
-        f"#!{shebang_python}\nfrom vllm_mlx.cli import main\nmain()\n"
+        f"#!{shebang_python}\nfrom rapid_mlx.cli import main\nmain()\n"
     )
     entrypoint.chmod(0o755)
 
@@ -1702,7 +1702,7 @@ def test_entrypoint_non_python_shebang_uses_process_executable(
     shell_target.chmod(0o755)
     entrypoint = tmp_path / "bin" / "rapid-mlx"
     entrypoint.parent.mkdir(parents=True)
-    entrypoint.write_text(f"#!{shell_target}\nfrom vllm_mlx.cli import main\nmain()\n")
+    entrypoint.write_text(f"#!{shell_target}\nfrom rapid_mlx.cli import main\nmain()\n")
     entrypoint.chmod(0o755)
     dist_info = tmp_path / "dist" / "rapid_mlx-0.0.0.dist-info"
     dist_info.mkdir(parents=True)
@@ -1779,7 +1779,7 @@ def test_trusted_sys_path_roots_keep_wheel_site_packages(
     monkeypatch,
 ):
     site_root = tmp_path / "venv" / "lib" / "python3.12" / "site-packages"
-    module_file = site_root / "vllm_mlx" / "doctor" / "env_health.py"
+    module_file = site_root / "rapid_mlx" / "doctor" / "env_health.py"
     module_file.parent.mkdir(parents=True)
     module_file.write_text("# installed wheel layout\n")
     probe_module = site_root / "wheel_dependency_probe.py"
@@ -1981,7 +1981,7 @@ def test_unverified_required_import_is_warning_without_reinstall_instruction(
     assert "pip install" not in row.label
 
 
-def test_unrelated_vllm_mlx_module_server_is_not_selected(
+def test_unverified_rapid_mlx_distribution_module_server_is_not_selected(
     tmp_path,
     monkeypatch,
 ):
@@ -2000,7 +2000,7 @@ def test_unrelated_vllm_mlx_module_server_is_not_selected(
                 "cmdline": [
                     str(server_runtime),
                     "-m",
-                    "vllm_mlx.cli",
+                    "rapid_mlx.cli",
                     "serve",
                 ],
                 "create_time": 123.0,
@@ -2122,7 +2122,7 @@ def test_module_serve_process_is_selected(
                 "cmdline": [
                     str(server_runtime),
                     "-m",
-                    "vllm_mlx.cli",
+                    "rapid_mlx.cli",
                     "serve",
                     "test-model",
                 ],
@@ -2170,7 +2170,7 @@ def test_path_launched_entrypoint_process_is_selected(
     entrypoint = tmp_path / "bin" / "rapid-mlx"
     entrypoint.parent.mkdir(parents=True)
     entrypoint.write_text(
-        f"#!{server_runtime}\nfrom vllm_mlx.cli import main\nsys.exit(main())\n"
+        f"#!{server_runtime}\nfrom rapid_mlx.cli import main\nsys.exit(main())\n"
     )
     entrypoint.chmod(0o755)
 
@@ -2220,7 +2220,7 @@ def test_indented_generated_entrypoint_process_is_selected(
     entrypoint = tmp_path / "bin" / "rapid-mlx"
     entrypoint.parent.mkdir(parents=True)
     entrypoint.write_text(
-        f"#!{server_runtime}\nfrom vllm_mlx.cli import main\n\n"
+        f"#!{server_runtime}\nfrom rapid_mlx.cli import main\n\n"
         'if __name__ == "__main__":\n    sys.exit(main())\n'
     )
     entrypoint.chmod(0o755)
@@ -2269,7 +2269,7 @@ def test_env_shebang_entrypoint_process_is_selected(
     entrypoint = tmp_path / "bin" / "rapid-mlx"
     entrypoint.parent.mkdir(parents=True)
     entrypoint.write_text(
-        "#!/usr/bin/env python3\nfrom vllm_mlx.cli import main\nmain()\n"
+        "#!/usr/bin/env python3\nfrom rapid_mlx.cli import main\nmain()\n"
     )
     runtime = tmp_path / "bin" / "python3"
     runtime.write_text("")
@@ -2327,7 +2327,7 @@ def test_newest_server_context_is_selected_for_a_shared_runtime(
                 "cmdline": [
                     str(server_runtime),
                     "-m",
-                    "vllm_mlx.cli",
+                    "rapid_mlx.cli",
                     "serve",
                 ],
                 "create_time": create_time,
@@ -2391,7 +2391,7 @@ def test_remote_runtime_probe_uses_an_allowlisted_environment(
                 "cmdline": [
                     str(server_runtime),
                     "-m",
-                    "vllm_mlx.cli",
+                    "rapid_mlx.cli",
                     "serve",
                 ],
                 "create_time": 123.0,
@@ -4103,7 +4103,7 @@ def test_render_outputs_section_headers(capsys):
 
     import io
 
-    from vllm_mlx.doctor.cli import render
+    from rapid_mlx.doctor.cli import render
 
     buf = io.StringIO()
     render(report, stream=buf)
@@ -4114,7 +4114,7 @@ def test_render_outputs_section_headers(capsys):
 
 
 def test_render_verbose_includes_detail():
-    from vllm_mlx.doctor.cli import render
+    from rapid_mlx.doctor.cli import render
 
     report = eh.Report()
     section = eh.Section("X")
@@ -4138,9 +4138,9 @@ def test_render_verbose_includes_detail():
 
 
 def test_env_health_public_exports():
-    pkg = importlib.import_module("vllm_mlx.doctor")
+    pkg = importlib.import_module("rapid_mlx.doctor")
     for name in ("run_all", "Report", "Section", "Check", "CheckStatus"):
-        assert hasattr(pkg, name), f"vllm_mlx.doctor missing {name}"
+        assert hasattr(pkg, name), f"rapid_mlx.doctor missing {name}"
 
 
 # ---------------------------------------------------------------------------
@@ -4377,7 +4377,7 @@ def test_filesystem_runtime_authentication_uses_sidecar_shape(tmp_path, monkeypa
     runtime.parent.mkdir(parents=True)
     site_root = tmp_path / "site-packages"
     site_root.mkdir()
-    (site_root / "vllm_mlx").mkdir()
+    (site_root / "rapid_mlx").mkdir()
     monkeypatch.setattr(eh, "_bundled_sidecar_root", lambda python=None: tmp_path)
 
     assert eh._filesystem_runtime_has_rapid_mlx_distribution(runtime)
@@ -4604,7 +4604,7 @@ def test_runtime_selection_rejects_relative_module_command_with_no_interpreter(
         monkeypatch,
         _server_process(
             tmp_path,
-            ["python", "-m", "vllm_mlx.cli", "serve"],
+            ["python", "-m", "rapid_mlx.cli", "serve"],
             runtime,
             {"PATH": ""},
         ),
@@ -4616,7 +4616,7 @@ def test_runtime_selection_rejects_relative_module_command_with_no_interpreter(
         monkeypatch,
         _server_process(
             tmp_path,
-            ["python", "-m", "vllm_mlx.cli", "serve"],
+            ["python", "-m", "rapid_mlx.cli", "serve"],
             runtime,
             {"PATH": str(runtime.parent)},
         ),
@@ -4627,7 +4627,7 @@ def test_runtime_selection_rejects_relative_module_command_with_no_interpreter(
         monkeypatch,
         _server_process(
             tmp_path,
-            ["python", "-m", "vllm_mlx.cli", "serve"],
+            ["python", "-m", "rapid_mlx.cli", "serve"],
             runtime,
             {"PATH": str(runtime.parent)},
         ),
@@ -4645,7 +4645,7 @@ def test_runtime_selection_rejects_non_python_uid_probe(tmp_path, monkeypatch):
     monkeypatch.setattr(eh.sys, "executable", str(doctor_exe))
     fake_process = _server_process(
         tmp_path,
-        [str(runtime), "-m", "vllm_mlx.cli", "serve"],
+        [str(runtime), "-m", "rapid_mlx.cli", "serve"],
         runtime,
         {},
         uids=SimpleNamespace(real=os.getuid() + 1),
@@ -4660,7 +4660,7 @@ def test_runtime_selection_rejects_non_python_uid_probe(tmp_path, monkeypatch):
         monkeypatch,
         _server_process(
             tmp_path,
-            [str(runtime), "-m", "vllm_mlx.cli", "serve"],
+            [str(runtime), "-m", "rapid_mlx.cli", "serve"],
             runtime,
             {},
             uids=_FailingUidProbe(),
@@ -4698,7 +4698,7 @@ def test_runtime_selection_resolves_relative_entrypoint_from_server_cwd(
     runtime.write_text("")
     entrypoint = tmp_path / "tools" / "rapid-mlx"
     entrypoint.parent.mkdir(parents=True)
-    entrypoint.write_text(f"#!{runtime}\nfrom vllm_mlx.cli import main\nmain()\n")
+    entrypoint.write_text(f"#!{runtime}\nfrom rapid_mlx.cli import main\nmain()\n")
     monkeypatch.setattr(eh.sys, "executable", str(doctor_exe))
     _install_fake_process_runtime(
         monkeypatch,
@@ -4801,7 +4801,7 @@ def test_runtime_selection_supports_sibling_python_and_env_fallback(
     runtime.write_text("")
     sibling.write_text("")
     entrypoint = runtime.parent / "rapid-mlx"
-    entrypoint.write_text("echo no shebang\nfrom vllm_mlx.cli import main\nmain()\n")
+    entrypoint.write_text("echo no shebang\nfrom rapid_mlx.cli import main\nmain()\n")
     monkeypatch.setattr(eh.sys, "executable", str(doctor_exe))
     _install_fake_process_runtime(
         monkeypatch,
@@ -4815,7 +4815,7 @@ def test_runtime_selection_supports_sibling_python_and_env_fallback(
     assert eh._runtime_python_path() == runtime.absolute()
 
     entrypoint.write_text(
-        "#!/usr/bin/env python\nfrom vllm_mlx.cli import main\nmain()\n"
+        "#!/usr/bin/env python\nfrom rapid_mlx.cli import main\nmain()\n"
     )
     process_runtime = tmp_path / "process" / "bin" / "python"
     process_runtime.parent.mkdir(parents=True)
@@ -4855,14 +4855,14 @@ def test_runtime_selection_handles_entrypoint_read_errors(
     runtime.parent.mkdir(parents=True)
     runtime.write_text("")
     entrypoint = runtime.parent / "rapid-mlx"
-    entrypoint.write_text(f"#!{runtime}\nfrom vllm_mlx.cli import main\nmain()\n")
+    entrypoint.write_text(f"#!{runtime}\nfrom rapid_mlx.cli import main\nmain()\n")
     monkeypatch.setattr(eh.sys, "executable", str(doctor_exe))
 
     with (
         mock.patch.object(
             Path,
             "read_bytes",
-            return_value=b"from vllm_mlx.cli import main\nmain()\n",
+            return_value=b"from rapid_mlx.cli import main\nmain()\n",
         ),
         mock.patch.object(
             Path,
@@ -4892,10 +4892,10 @@ def test_runtime_selection_reads_installed_module_marker_files(
     runtime.parent.mkdir(parents=True)
     runtime.write_text("")
     site_root = tmp_path / "site"
-    package_root = site_root / "vllm_mlx"
+    package_root = site_root / "rapid_mlx"
     package_root.mkdir(parents=True)
     (package_root / "__init__.py").write_text("")
-    (package_root / "cli.py").write_text("from vllm_mlx.cli import main\n")
+    (package_root / "cli.py").write_text("from rapid_mlx.cli import main\n")
     (site_root / "rapid_mlx-0.0.0.dist-info").mkdir()
     monkeypatch.setattr(eh.sys, "executable", str(doctor_exe))
     _install_fake_process_runtime(

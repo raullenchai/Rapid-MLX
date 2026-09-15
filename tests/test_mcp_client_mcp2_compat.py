@@ -4,7 +4,7 @@
 mcp 1.x exposed model fields in camelCase (``protocolVersion``, ``inputSchema``,
 ``isError``); mcp 2.0 renamed the Python attributes to snake_case. The dev/CI
 env resolves mcp 1.x, but a fresh sidecar build resolved ``mcp>=1.9.3`` to
-mcp 2.0 — so ``vllm_mlx/mcp/client.py`` reading camelCase raised
+mcp 2.0 — so ``rapid_mlx/mcp/client.py`` reading camelCase raised
 ``AttributeError`` mid-handshake and every configured MCP server reported
 **0 tools**. The pre-existing MCP tests all fake the SDK, so the skew slipped
 through.
@@ -24,8 +24,8 @@ from types import SimpleNamespace
 
 import pytest
 
-from vllm_mlx.mcp.client import MCPClient, _sdk_attr
-from vllm_mlx.mcp.types import MCPServerConfig, MCPTransport
+from rapid_mlx.mcp.client import MCPClient, _sdk_attr
+from rapid_mlx.mcp.types import MCPServerConfig, MCPTransport
 
 # --- helper compat shim -----------------------------------------------------
 

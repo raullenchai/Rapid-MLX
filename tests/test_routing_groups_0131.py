@@ -24,14 +24,14 @@ from unittest import mock
 
 import pytest
 
-from vllm_mlx.api import utils as utils_mod
-from vllm_mlx.api.utils import (
+from rapid_mlx.api import utils as utils_mod
+from rapid_mlx.api.utils import (
     _VENDORED_TEXT_FALLBACK_MODEL_TYPES,
     mllm_arch_unsupported_but_text_vendored,
     resolve_serving_lane_decision,
 )
-from vllm_mlx.model_metadata import ModelMetadata
-from vllm_mlx.model_profile import ModelProfile
+from rapid_mlx.model_metadata import ModelMetadata
+from rapid_mlx.model_profile import ModelProfile
 
 
 def _flash_next_config() -> dict:
@@ -73,14 +73,14 @@ def _metadata(config: dict, snapshot_dir: Path) -> ModelMetadata:
 
 def _install_scheduler_stub(monkeypatch) -> None:
     """Let the public serve entry points run in the Linux no-MLX lane."""
-    scheduler = ModuleType("vllm_mlx.scheduler")
+    scheduler = ModuleType("rapid_mlx.scheduler")
 
     class SchedulerConfig:
         def __init__(self, **kwargs):
             self.__dict__.update(kwargs)
 
     scheduler.SchedulerConfig = SchedulerConfig
-    monkeypatch.setitem(sys.modules, "vllm_mlx.scheduler", scheduler)
+    monkeypatch.setitem(sys.modules, "rapid_mlx.scheduler", scheduler)
 
 
 def test_fix1_unaliased_qwen4_exp_vendored_goes_text_lane(monkeypatch, tmp_path):
@@ -148,8 +148,8 @@ def test_fix2_text_diffusion_resolves_to_assistant_replacement_group():
     resolve to the SAME replacement group as resident_models._replacement_group
     derives for the text engine ("assistant"), so loading it with a chat model
     resident does not trip the resolved_group != replace_group 409 guard."""
-    from vllm_mlx.routes.residency import _resolved_group_for_profile
-    from vllm_mlx.runtime.resident_models import ModelEntry, _replacement_group
+    from rapid_mlx.routes.residency import _resolved_group_for_profile
+    from rapid_mlx.runtime.resident_models import ModelEntry, _replacement_group
 
     # Request-facing profile modality → group, matching the Fix 2 mapping.
     assert _resolved_group_for_profile("text-diffusion") == "assistant"
@@ -256,7 +256,7 @@ def test_fix3_spec_decode_on_text_checkpoint_keeps_text_lane(monkeypatch):
 
 
 def test_fix3_cli_helper_forwards_legacy_mtp_as_requested_spec_decode(monkeypatch):
-    from vllm_mlx import cli
+    from rapid_mlx import cli
 
     seen = {}
 
@@ -299,7 +299,7 @@ def test_fix3_cli_helper_forwards_legacy_mtp_as_requested_spec_decode(monkeypatc
 
 def test_cli_explicit_mllm_precedes_automatic_architecture_fallback(monkeypatch):
     """The public serve helper carries ``--mllm`` into the lane SSOT."""
-    from vllm_mlx import cli
+    from rapid_mlx import cli
 
     monkeypatch.setattr(utils_mod, "is_mllm_model", lambda _name: True)
     monkeypatch.setattr(
@@ -330,7 +330,7 @@ def test_cli_explicit_mllm_precedes_automatic_architecture_fallback(monkeypatch)
 def test_fix3_cli_serve_forwards_parsed_spec_decode_to_lane_contract(
     monkeypatch, flag, expected
 ):
-    from vllm_mlx import cli
+    from rapid_mlx import cli
 
     class _StopAtPFlashError(Exception):
         pass
@@ -349,9 +349,9 @@ def test_fix3_cli_serve_forwards_parsed_spec_decode_to_lane_contract(
     monkeypatch.setattr(cli, "_check_memory_capacity", lambda *_a, **_kw: None)
     monkeypatch.setattr(cli, "_ensure_model_downloaded", lambda *_a, **_kw: None)
     monkeypatch.setattr(utils_mod, "resolve_serving_lane", _resolve)
-    monkeypatch.setattr("vllm_mlx.pflash.resolve_pflash_config", _stop)
+    monkeypatch.setattr("rapid_mlx.pflash.resolve_pflash_config", _stop)
     monkeypatch.setattr(
-        "vllm_mlx._version_check.prompt_upgrade_if_available", lambda: False
+        "rapid_mlx._version_check.prompt_upgrade_if_available", lambda: False
     )
     monkeypatch.setattr(
         sys,
@@ -376,7 +376,7 @@ def test_fix3_cli_serve_forwards_parsed_spec_decode_to_lane_contract(
 
 
 def test_fix3_standalone_server_forwards_parsed_mtp_to_lane_contract(monkeypatch):
-    from vllm_mlx import cli, server
+    from rapid_mlx import cli, server
 
     class _StopAtPFlashError(Exception):
         pass
@@ -393,23 +393,23 @@ def test_fix3_standalone_server_forwards_parsed_mtp_to_lane_contract(monkeypatch
     monkeypatch.setattr(server, "resolve_serving_lane", _resolve)
     monkeypatch.setattr(server, "load_model", lambda *_a, **_kw: None)
     monkeypatch.setattr(
-        "vllm_mlx.pflash.resolve_pflash_config",
+        "rapid_mlx.pflash.resolve_pflash_config",
         lambda *_a, **_kw: (_ for _ in ()).throw(_StopAtPFlashError()),
     )
     monkeypatch.setattr(cli, "_port_preflight_or_die", lambda *_a, **_kw: None)
     monkeypatch.setattr("uvicorn.run", lambda *_a, **_kw: None)
     monkeypatch.setattr(
-        "vllm_mlx._version_check.prompt_upgrade_if_available", lambda: False
+        "rapid_mlx._version_check.prompt_upgrade_if_available", lambda: False
     )
     monkeypatch.setattr(
-        "vllm_mlx._version_check.print_staleness_warning_if_any",
+        "rapid_mlx._version_check.print_staleness_warning_if_any",
         lambda **_kwargs: None,
     )
     monkeypatch.setattr(
         sys,
         "argv",
         [
-            "vllm_mlx.server",
+            "rapid_mlx.server",
             "--model",
             "qwen3.5-4b-4bit",
             "--force-spec-decode",

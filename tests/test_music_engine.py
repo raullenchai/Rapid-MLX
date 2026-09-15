@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Hermetic tests for ``vllm_mlx.audio.music.MusicEngine`` (PR #1307).
+"""Hermetic tests for ``rapid_mlx.audio.music.MusicEngine`` (PR #1307).
 
 No mlx, no weights, no network: the two external boundaries — the
 ``sa3_mlx.py`` subprocess and ``huggingface_hub.hf_hub_download`` — are
@@ -16,11 +16,11 @@ from pathlib import Path
 
 import pytest
 
-# Load music.py directly, bypassing ``vllm_mlx.audio.__init__`` (which pulls in
+# Load music.py directly, bypassing ``rapid_mlx.audio.__init__`` (which pulls in
 # numpy/mlx via the STT/TTS lanes). music.py itself is stdlib-only, so this keeps
 # the suite runnable on the mlx-free Linux CI runner.
-_MUSIC_PY = Path(__file__).resolve().parents[1] / "vllm_mlx" / "audio" / "music.py"
-_spec = importlib.util.spec_from_file_location("_vllm_mlx_music_under_test", _MUSIC_PY)
+_MUSIC_PY = Path(__file__).resolve().parents[1] / "rapid_mlx" / "audio" / "music.py"
+_spec = importlib.util.spec_from_file_location("_rapid_mlx_music_under_test", _MUSIC_PY)
 music = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(music)
 MusicEngine = music.MusicEngine
@@ -385,7 +385,7 @@ def test_no_weights_tracked_by_git():
         pytest.skip("not a git checkout")
 
     proc = subprocess.run(
-        ["git", "ls-files", "--", "vllm_mlx/audio/sa3/models/mlx"],
+        ["git", "ls-files", "--", "rapid_mlx/audio/sa3/models/mlx"],
         cwd=repo_root,
         capture_output=True,
         text=True,

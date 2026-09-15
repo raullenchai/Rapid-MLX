@@ -4,7 +4,7 @@
 ``model_type: nemotron_labs_diffusion`` (NVIDIA 3B/8B/14B) is a Ministral3-style
 decoder + a separate, untied ``diffusion_head`` LM projection. mlx-lm (0.31.3,
 2026-08-21) ships no native support for the arch, so rapid-mlx vendors an AR-mode
-port under ``vllm_mlx.models.nemotron_labs_diffusion`` and registers it as
+port under ``rapid_mlx.models.nemotron_labs_diffusion`` and registers it as
 ``sys.modules["mlx_lm.models.nemotron_labs_diffusion"]`` so mlx-lm's loader
 resolves the checkpoint transparently.
 
@@ -29,7 +29,7 @@ pytestmark = pytest.mark.requires_mlx
 @pytest.fixture(autouse=True)
 def _clear_nld_vendor_registration():
     """Keep process-global mlx-lm registration isolated across tests."""
-    from vllm_mlx.utils.tokenizer import _VENDORED_MODEL_TYPES
+    from rapid_mlx.utils.tokenizer import _VENDORED_MODEL_TYPES
 
     sys.modules.pop("mlx_lm.models.nemotron_labs_diffusion", None)
     _VENDORED_MODEL_TYPES.discard("nemotron_labs_diffusion")
@@ -39,7 +39,7 @@ def _clear_nld_vendor_registration():
 
 
 def test_register_vendored_arch_makes_diffusion_visible_to_mlx_lm():
-    from vllm_mlx.utils.tokenizer import (
+    from rapid_mlx.utils.tokenizer import (
         _VENDORED_MODEL_TYPES,
         _register_vendored_archs,
     )
@@ -47,14 +47,14 @@ def test_register_vendored_arch_makes_diffusion_visible_to_mlx_lm():
     _register_vendored_archs()
 
     module = importlib.import_module("mlx_lm.models.nemotron_labs_diffusion")
-    assert module.__name__ == "vllm_mlx.models.nemotron_labs_diffusion"
+    assert module.__name__ == "rapid_mlx.models.nemotron_labs_diffusion"
     assert "nemotron_labs_diffusion" in _VENDORED_MODEL_TYPES
     assert hasattr(module, "Model")
     assert hasattr(module, "ModelArgs")
 
 
 def test_vendored_arch_classifier_selects_low_level_loader(tmp_path):
-    from vllm_mlx.utils.tokenizer import (
+    from rapid_mlx.utils.tokenizer import (
         _is_vendored_arch_model,
         _register_vendored_archs,
     )
@@ -68,7 +68,7 @@ def test_vendored_arch_classifier_selects_low_level_loader(tmp_path):
 
 
 def test_loader_routes_diffusion_config_to_vendored_path(tmp_path, monkeypatch):
-    from vllm_mlx.utils import tokenizer
+    from rapid_mlx.utils import tokenizer
 
     (tmp_path / "config.json").write_text(
         json.dumps({"model_type": "nemotron_labs_diffusion"})
@@ -89,7 +89,7 @@ def test_loader_routes_diffusion_config_to_vendored_path(tmp_path, monkeypatch):
 
 
 def _tiny_model_args(**overrides):
-    from vllm_mlx.models.nemotron_labs_diffusion import ModelArgs
+    from rapid_mlx.models.nemotron_labs_diffusion import ModelArgs
 
     kwargs = dict(
         model_type="nemotron_labs_diffusion",
@@ -120,7 +120,7 @@ def test_ar_forward_is_causal_lm_with_untied_head():
     import mlx.core as mx
     import mlx.nn as nn
 
-    import vllm_mlx.models.nemotron_labs_diffusion as nld
+    import rapid_mlx.models.nemotron_labs_diffusion as nld
 
     model = nld.Model(_tiny_model_args())
     cache = model.make_cache()
@@ -145,7 +145,7 @@ def test_ar_cache_is_plain_kvcache_not_rotating():
     import mlx.core as mx
     from mlx_lm.models.cache import KVCache, RotatingKVCache
 
-    import vllm_mlx.models.nemotron_labs_diffusion as nld
+    import rapid_mlx.models.nemotron_labs_diffusion as nld
 
     model = nld.Model(_tiny_model_args())
     assert isinstance(model.make_cache()[0], KVCache)
@@ -163,7 +163,7 @@ def test_ar_cache_is_plain_kvcache_not_rotating():
 def test_sanitize_strips_language_model_prefix_and_drops_shims():
     import mlx.core as mx
 
-    import vllm_mlx.models.nemotron_labs_diffusion as nld
+    import rapid_mlx.models.nemotron_labs_diffusion as nld
 
     model = nld.Model(_tiny_model_args())
     kept = mx.array([1.0])
@@ -215,8 +215,8 @@ def test_alias_resolves_to_ar_text_lane():
     NOT be misclassified as hybrid/MoE (which would flip the scheduler to a
     diffusion lane we don't serve) and must carry ``modality == "text"``.
     """
-    from vllm_mlx.model_aliases import resolve_profile
-    from vllm_mlx.model_auto_config import detect_model_config
+    from rapid_mlx.model_aliases import resolve_profile
+    from rapid_mlx.model_auto_config import detect_model_config
 
     prof = resolve_profile("nemotron-labs-diffusion-3b-4bit")
     assert prof.hf_path == "mlx-community/Nemotron-Labs-Diffusion-3B-4bit"

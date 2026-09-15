@@ -4,7 +4,7 @@
 The 0.8.7 dogfood (Olu r5) measured ``/healthz`` p99 at ~70 ms under
 load; the 0.8.8 dogfood (Talia r1/r2) caught a regression to 213 ms
 under 8-way streaming concurrency — well past the 50 ms k8s probe
-budget. The fix (see ``vllm_mlx/routes/health.py::healthz``) is to
+budget. The fix (see ``rapid_mlx/routes/health.py::healthz``) is to
 make ``/healthz`` a *liveness*-only probe that reads three constant-
 time fields off the config object and does NOT call
 ``engine.get_stats()`` (which synchronizes with the Metal command
@@ -35,7 +35,7 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from vllm_mlx.config import get_config
+from rapid_mlx.config import get_config
 
 
 @pytest.fixture
@@ -80,7 +80,7 @@ def _restore_config(originals):
 
 
 def _make_app():
-    from vllm_mlx.routes.health import probe_router
+    from rapid_mlx.routes.health import probe_router
 
     app = FastAPI()
     app.include_router(probe_router)

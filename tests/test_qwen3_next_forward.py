@@ -12,8 +12,8 @@ import mlx.core as mx
 import mlx.nn as nn
 from mlx_lm.models.qwen3_next import Qwen3NextSparseMoeBlock
 
-from vllm_mlx.expert_cache import ExpertCache
-from vllm_mlx.qwen3_next_forward import qwen3_next_streaming_forward
+from rapid_mlx.expert_cache import ExpertCache
+from rapid_mlx.qwen3_next_forward import qwen3_next_streaming_forward
 
 
 def test_qwen3_next_streaming_forward_matches_real_quantized_block():

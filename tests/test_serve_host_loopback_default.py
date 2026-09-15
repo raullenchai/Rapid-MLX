@@ -25,7 +25,7 @@ Two layers of test:
    ``test_serve_listen_fd.py`` already exercises the full
    ``serve_command`` prologue. We don't duplicate that here; codex
    round-1 MAJOR on PR #848 flagged that importing
-   ``vllm_mlx.server`` (which loads MLX) made the new tests
+   ``rapid_mlx.server`` (which loads MLX) made the new tests
    environment-fragile, so the helper tests below avoid it entirely.
 """
 
@@ -37,7 +37,7 @@ from unittest.mock import patch
 
 import pytest
 
-from vllm_mlx import cli
+from rapid_mlx import cli
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -296,16 +296,16 @@ def test_preflight_error_uses_friendly_host_display_for_empty(capsys):
 
 
 # ---------------------------------------------------------------------------
-# Legacy ``python -m vllm_mlx.server`` entrypoint default
+# Legacy ``python -m rapid_mlx.server`` entrypoint default
 # ---------------------------------------------------------------------------
 
 
 def test_legacy_server_argparse_host_default_is_loopback():
-    """Codex round-1 MAJOR on PR #848 flagged that ``vllm_mlx/server.py``
-    is the second supported entrypoint (``python -m vllm_mlx.server``)
+    """Codex round-1 MAJOR on PR #848 flagged that ``rapid_mlx/server.py``
+    is the second supported entrypoint (``python -m rapid_mlx.server``)
     and was also defaulting to ``0.0.0.0``. The fix landed the same
     loopback default there too. This test pins the argparse contract
-    WITHOUT importing the heavy ``vllm_mlx.server`` module (which loads
+    WITHOUT importing the heavy ``rapid_mlx.server`` module (which loads
     MLX) — we read the source for the default literal instead, the same
     style ``test_serve_listen_fd.py`` uses for source-level invariants.
     """
@@ -322,17 +322,17 @@ def test_legacy_server_argparse_host_default_is_loopback():
     # across the whole file to keep the test resilient to unrelated
     # edits.
     idx = server_src.find('"--host"')
-    assert idx >= 0, "expected --host argparse arg in vllm_mlx/server.py"
+    assert idx >= 0, "expected --host argparse arg in rapid_mlx/server.py"
     nearby = server_src[idx : idx + 400]
     assert 'default="127.0.0.1"' in nearby, (
-        "vllm_mlx/server.py --host argparse default must be 127.0.0.1; "
+        "rapid_mlx/server.py --host argparse default must be 127.0.0.1; "
         f"got nearby source: {nearby!r}"
     )
     # And the 0.0.0.0 default must be gone — guards against a future
     # refactor that adds a second --host block without dropping the old
     # one.
     assert 'default="0.0.0.0"' not in server_src, (
-        "vllm_mlx/server.py must not retain the legacy 0.0.0.0 default"
+        "rapid_mlx/server.py must not retain the legacy 0.0.0.0 default"
     )
 
 

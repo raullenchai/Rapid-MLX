@@ -28,8 +28,8 @@ import math
 
 import mlx.core as mx
 
-from vllm_mlx.api import reasoning_budget as rb
-from vllm_mlx.api.reasoning_budget import (
+from rapid_mlx.api import reasoning_budget as rb
+from rapid_mlx.api.reasoning_budget import (
     ReasoningBudgetLogitsProcessor,
     SuppressTokensLogitsProcessor,
     build_reasoning_budget_processor,
@@ -406,7 +406,7 @@ def test_build_ok_wires_ids_and_budget(monkeypatch):
 
 
 def test_reasoning_seed_state_open_for_prefill():
-    from vllm_mlx.api.reasoning_budget import reasoning_seed_state
+    from rapid_mlx.api.reasoning_budget import reasoning_seed_state
 
     # Template prefilled <think> as the generation prefix → open span, seed.
     assert reasoning_seed_state("<|im_start|>assistant\n<think>\n", "qwen3") == "open"
@@ -417,21 +417,21 @@ def test_reasoning_seed_state_open_for_prefill_with_preamble():
     # is STILL an open span — the old endswith("<think>") check wrongly read this
     # as not-seeded (unseeded processor never starts, yet suppresses post-hoc).
     # Parsing the isolated delta detects the unclosed opener regardless of tail.
-    from vllm_mlx.api.reasoning_budget import reasoning_seed_state
+    from rapid_mlx.api.reasoning_budget import reasoning_seed_state
 
     delta = "<|im_start|>assistant\n<think>\nLet me reason:"
     assert reasoning_seed_state(delta, "qwen3") == "open"
 
 
 def test_reasoning_seed_state_emit_when_no_markers():
-    from vllm_mlx.api.reasoning_budget import reasoning_seed_state
+    from rapid_mlx.api.reasoning_budget import reasoning_seed_state
 
     # Plain assistant header, no prefilled opener → the model emits <think>.
     assert reasoning_seed_state("<|im_start|>assistant\n", "qwen3") == "emit"
 
 
 def test_reasoning_seed_state_ambiguous_for_closed_pair():
-    from vllm_mlx.api.reasoning_budget import reasoning_seed_state
+    from rapid_mlx.api.reasoning_budget import reasoning_seed_state
 
     # A CLOSED <think></think> in the prefix (thinking already finished) → the
     # seed state cannot be proven → ambiguous → caller declines (post-hoc cap).
@@ -440,7 +440,7 @@ def test_reasoning_seed_state_ambiguous_for_closed_pair():
 
 
 def test_reasoning_seed_state_ambiguous_without_parser():
-    from vllm_mlx.api.reasoning_budget import reasoning_seed_state
+    from rapid_mlx.api.reasoning_budget import reasoning_seed_state
 
     assert reasoning_seed_state("<think>", None) == "ambiguous"  # no parser
     assert reasoning_seed_state("", "qwen3") == "emit"  # empty → no markers → emit
@@ -448,7 +448,7 @@ def test_reasoning_seed_state_ambiguous_without_parser():
 
 def test_rendered_prompt_opens_think_bool_wrapper():
     # The bool wrapper is True only for the "open" state.
-    from vllm_mlx.api.reasoning_budget import rendered_prompt_opens_think
+    from rapid_mlx.api.reasoning_budget import rendered_prompt_opens_think
 
     assert rendered_prompt_opens_think("<|im_start|>assistant\n<think>\n", "qwen3")
     assert not rendered_prompt_opens_think("<|im_start|>assistant\n", "qwen3")
@@ -459,14 +459,14 @@ def test_build_budget_from_render_none_render_installs_nothing(monkeypatch):
     # codex: when the prompt could NOT be rendered (None), install NO processor
     # so the caller retains the post-hoc cap — never a non-seeded processor that
     # silently disables the cap AND never fires.
-    from vllm_mlx.api import reasoning_budget as rb2
+    from rapid_mlx.api import reasoning_budget as rb2
 
     _patch_ids(monkeypatch, THINK_START, THINK_END)
     assert rb2.build_budget_from_render(_StubTokenizer(), "qwen3", 64, None) is None
 
 
 def test_build_budget_from_render_seeds_from_prefill_suffix(monkeypatch):
-    from vllm_mlx.api import reasoning_budget as rb2
+    from rapid_mlx.api import reasoning_budget as rb2
 
     _patch_ids(monkeypatch, THINK_START, THINK_END)
     proc = rb2.build_budget_from_render(
@@ -481,7 +481,7 @@ def test_build_budget_from_render_seeds_from_prefill_suffix(monkeypatch):
 
 
 def test_build_budget_from_render_not_seeded_for_emit_suffix(monkeypatch):
-    from vllm_mlx.api import reasoning_budget as rb2
+    from rapid_mlx.api import reasoning_budget as rb2
 
     _patch_ids(monkeypatch, THINK_START, THINK_END)
     proc = rb2.build_budget_from_render(
@@ -495,7 +495,7 @@ def test_build_budget_from_render_declines_on_ambiguous_closed_pair(monkeypatch)
     # codex R12: a CLOSED <think></think> prefix → ambiguous seed state → install
     # NO processor (retain the post-hoc cap) rather than one that never fires yet
     # suppresses the cap.
-    from vllm_mlx.api import reasoning_budget as rb2
+    from rapid_mlx.api import reasoning_budget as rb2
 
     _patch_ids(monkeypatch, THINK_START, THINK_END)
     assert (
@@ -514,14 +514,14 @@ def test_build_budget_from_render_declines_on_ambiguous_closed_pair(monkeypatch)
 
 
 def test_reasoning_stop_conflicts_exact_end_marker():
-    from vllm_mlx.api.reasoning_budget import reasoning_stop_conflicts
+    from rapid_mlx.api.reasoning_budget import reasoning_stop_conflicts
 
     # Client listed </think> as a stop → forcing it would halt at the boundary.
     assert reasoning_stop_conflicts(["</think>"], "qwen3") is True
 
 
 def test_reasoning_stop_conflicts_substring_is_conflict():
-    from vllm_mlx.api.reasoning_budget import reasoning_stop_conflicts
+    from rapid_mlx.api.reasoning_budget import reasoning_stop_conflicts
 
     # Stop is a substring of </think> ("think>") — the forced </think> contains
     # it, so it fires at the boundary → conflict.
@@ -531,7 +531,7 @@ def test_reasoning_stop_conflicts_substring_is_conflict():
 
 
 def test_reasoning_stop_conflicts_marker_inside_stop_is_conflict():
-    from vllm_mlx.api.reasoning_budget import reasoning_stop_conflicts
+    from rapid_mlx.api.reasoning_budget import reasoning_stop_conflicts
 
     # codex R13: a stop that CONTAINS the marker mid-string ("x</think>y") or with
     # a trailing suffix ("</think>A") IS a conflict — the forced </think> sits
@@ -544,7 +544,7 @@ def test_reasoning_stop_conflicts_marker_inside_stop_is_conflict():
 
 
 def test_reasoning_stop_conflicts_cross_boundary_both_sides():
-    from vllm_mlx.api.reasoning_budget import reasoning_stop_conflicts
+    from rapid_mlx.api.reasoning_budget import reasoning_stop_conflicts
 
     # (c) stop ENDS in a marker prefix — preceding reasoning + forced token:
     assert reasoning_stop_conflicts(["x</think>"], "qwen3") is True
@@ -556,7 +556,7 @@ def test_reasoning_stop_conflicts_cross_boundary_both_sides():
 
 
 def test_reasoning_stop_conflicts_false_for_unrelated_stop():
-    from vllm_mlx.api.reasoning_budget import reasoning_stop_conflicts
+    from rapid_mlx.api.reasoning_budget import reasoning_stop_conflicts
 
     assert reasoning_stop_conflicts(["<|im_end|>", "\n\n"], "qwen3") is False
     assert reasoning_stop_conflicts([], "qwen3") is False
@@ -569,7 +569,7 @@ def test_reasoning_stop_conflicts_false_for_unrelated_stop():
 
 
 def test_effective_posthoc_cap_selector():
-    from vllm_mlx.routes.chat import _effective_posthoc_reasoning_cap
+    from rapid_mlx.routes.chat import _effective_posthoc_reasoning_cap
 
     class _Req:
         reasoning_max_tokens = 256
@@ -630,7 +630,7 @@ class _FakeEngine:
 
 
 def test_template_generation_prefix_isolates_prefill():
-    from vllm_mlx.routes.chat import _template_generation_prefix
+    from rapid_mlx.routes.chat import _template_generation_prefix
 
     eng = _FakeEngine("<|im_start|>assistant\n<think>\n")  # template opens <think>
     delta = _template_generation_prefix(
@@ -640,7 +640,7 @@ def test_template_generation_prefix_isolates_prefill():
 
 
 def test_template_generation_prefix_isolates_emit():
-    from vllm_mlx.routes.chat import _template_generation_prefix
+    from rapid_mlx.routes.chat import _template_generation_prefix
 
     eng = _FakeEngine("<|im_start|>assistant\n")  # emit template, no prefill
     delta = _template_generation_prefix(
@@ -653,7 +653,7 @@ def test_template_generation_prefix_immune_to_user_typed_think():
     # codex #2: a user whose message ENDS in <think> must NOT falsely seed the
     # budget when the template appends no opener. The user's content lives in
     # BOTH renders (full and base), so it cancels out of the delta.
-    from vllm_mlx.routes.chat import _template_generation_prefix
+    from rapid_mlx.routes.chat import _template_generation_prefix
 
     eng = _FakeEngine("<|im_start|>assistant\n")  # NO prefilled <think>
     delta = _template_generation_prefix(
@@ -666,14 +666,14 @@ def test_template_generation_prefix_immune_to_user_typed_think():
 def test_template_generation_prefix_none_for_empty_messages():
     # codex R10 #3: an empty message list renders nothing — a prefill template
     # must NOT be mistaken for an emit one. Decline (retain the post-hoc cap).
-    from vllm_mlx.routes.chat import _template_generation_prefix
+    from rapid_mlx.routes.chat import _template_generation_prefix
 
     eng = _FakeEngine("<|im_start|>assistant\n<think>\n")
     assert _template_generation_prefix(eng, [], None, True) is None
 
 
 def test_template_generation_prefix_none_for_non_string_content():
-    from vllm_mlx.routes.chat import _template_generation_prefix
+    from rapid_mlx.routes.chat import _template_generation_prefix
 
     eng = _FakeEngine("<|im_start|>assistant\n")
     delta = _template_generation_prefix(
@@ -689,7 +689,7 @@ def test_template_generation_prefix_none_when_full_not_startswith_base():
     # If toggling add_generation_prompt RESTRUCTURES the render (the no-gen-prompt
     # render is not a prefix of the gen-prompt one), the boundary can't be
     # isolated cleanly → decline rather than risk a wrong seed (codex R10 #1).
-    from vllm_mlx.routes.chat import _template_generation_prefix
+    from rapid_mlx.routes.chat import _template_generation_prefix
 
     class _Restructure:
         tokenizer = _StubTokenizer()
@@ -731,7 +731,7 @@ _MSGS = [{"role": "user", "content": "hi"}]
 
 
 def test_build_reasoning_budget_processor_stop_conflict_returns_none(monkeypatch):
-    from vllm_mlx.routes import chat as chatmod
+    from rapid_mlx.routes import chat as chatmod
 
     _patch_ids(monkeypatch, THINK_START, THINK_END)
     proc = chatmod._build_reasoning_budget_processor(
@@ -745,7 +745,7 @@ def test_build_reasoning_budget_processor_stop_conflict_returns_none(monkeypatch
 
 
 def test_build_reasoning_budget_processor_tools_returns_none(monkeypatch):
-    from vllm_mlx.routes import chat as chatmod
+    from rapid_mlx.routes import chat as chatmod
 
     _patch_ids(monkeypatch, THINK_START, THINK_END)
     proc = chatmod._build_reasoning_budget_processor(
@@ -759,7 +759,7 @@ def test_build_reasoning_budget_processor_tools_returns_none(monkeypatch):
 
 
 def test_build_reasoning_budget_processor_thinking_off_returns_none(monkeypatch):
-    from vllm_mlx.routes import chat as chatmod
+    from rapid_mlx.routes import chat as chatmod
 
     _patch_ids(monkeypatch, THINK_START, THINK_END)
     # resolved_thinking=False → _effective_enable_thinking is False → opt out.
@@ -774,7 +774,7 @@ def test_build_reasoning_budget_processor_thinking_off_returns_none(monkeypatch)
 
 
 def test_build_reasoning_budget_processor_seeds_from_template_prefill(monkeypatch):
-    from vllm_mlx.routes import chat as chatmod
+    from rapid_mlx.routes import chat as chatmod
 
     _patch_ids(monkeypatch, THINK_START, THINK_END)
     proc = chatmod._build_reasoning_budget_processor(
@@ -789,7 +789,7 @@ def test_build_reasoning_budget_processor_seeds_from_template_prefill(monkeypatc
 
 
 def test_build_reasoning_budget_processor_emit_template_not_seeded(monkeypatch):
-    from vllm_mlx.routes import chat as chatmod
+    from rapid_mlx.routes import chat as chatmod
 
     _patch_ids(monkeypatch, THINK_START, THINK_END)
     proc = chatmod._build_reasoning_budget_processor(
@@ -905,7 +905,7 @@ class _ContentDepEngine:
 
 
 def test_template_generation_prefix_content_dependent_seeds_correctly():
-    from vllm_mlx.routes.chat import _template_generation_prefix
+    from rapid_mlx.routes.chat import _template_generation_prefix
 
     # Content has "math" → the template DOES prefill <think> for this request.
     # The old sentinel probe (content replaced) lost "math" and mis-declined; the
@@ -918,7 +918,7 @@ def test_template_generation_prefix_content_dependent_seeds_correctly():
 
 
 def test_template_generation_prefix_content_dependent_emit_not_seeded():
-    from vllm_mlx.routes.chat import _template_generation_prefix
+    from rapid_mlx.routes.chat import _template_generation_prefix
 
     # Content lacks "math" → the SAME template emits (no prefill) for this
     # request; the delta must not end in <think>.
@@ -935,7 +935,7 @@ def test_engine_output_vocab_size_declines_on_config_only():
     # that would trip the decode-time guard. With no inspectable head WEIGHT,
     # decline (None) so the post-hoc cap stays. Only the weight-derived width (==
     # the decode logits width) may admit the force id.
-    from vllm_mlx.routes.chat import _engine_output_vocab_size
+    from rapid_mlx.routes.chat import _engine_output_vocab_size
 
     class _M:
         vocab_size = 12345  # declared only — no head weight → must be ignored
@@ -953,7 +953,7 @@ def test_engine_output_vocab_size_declines_when_only_len_tokenizer():
     # within it, making the check vacuous. With no inspectable head/config width,
     # decline (None) so the post-hoc cap stays rather than admit an id the output
     # head may not be able to emit.
-    from vllm_mlx.routes.chat import _engine_output_vocab_size
+    from rapid_mlx.routes.chat import _engine_output_vocab_size
 
     class _Tok:
         def __len__(self):
@@ -971,7 +971,7 @@ def test_engine_output_vocab_size_prefers_actual_weight_shape():
     # must win over a (possibly divergent) declared config vocab_size. Mirrors a
     # tied-embedding model (qwen3): logits come from embed_tokens.as_linear, so
     # embed_tokens.weight.shape[0] is the true logits width.
-    from vllm_mlx.routes.chat import _engine_output_vocab_size
+    from rapid_mlx.routes.chat import _engine_output_vocab_size
 
     class _W:
         shape = (151936, 128)  # (vocab, packed_hidden) — shape[0] is the vocab
@@ -1000,7 +1000,7 @@ def test_engine_output_vocab_size_resolves_language_model_nested_head():
     # three fixed paths, so _actual_output_head_width returned None and the budget
     # silently declined to the post-hoc cap (no decode-time force). The added
     # fixed path must resolve it to the real width.
-    from vllm_mlx.routes.chat import _engine_output_vocab_size
+    from rapid_mlx.routes.chat import _engine_output_vocab_size
 
     class _W:
         shape = (248320, 320)  # qwen3.5-4b: (vocab, packed_hidden)
@@ -1029,7 +1029,7 @@ def test_actual_output_head_width_fixed_path_prefers_lm_head_over_embed():
     # embed_tokens path, so an untied nested output head is never shadowed by an
     # input embedding of a differing width. Both live under `model.*` with
     # DISTINCT widths; the lm_head (output projection) must win.
-    from vllm_mlx.routes.chat import _actual_output_head_width
+    from rapid_mlx.routes.chat import _actual_output_head_width
 
     class _WH:
         shape = (151936, 64)  # lm_head — authoritative output width
@@ -1057,7 +1057,7 @@ def test_actual_output_head_width_resolves_tied_nested_embed():
     # The #1185 regression at the head-width level: a multimodal-capable wrapper
     # nests its TIED text head at language_model.model.embed_tokens.weight. That
     # fixed path must resolve it (else the budget silently declines to post-hoc).
-    from vllm_mlx.routes.chat import _actual_output_head_width
+    from rapid_mlx.routes.chat import _actual_output_head_width
 
     class _W:
         shape = (248320, 64)
@@ -1081,7 +1081,7 @@ def test_actual_output_head_width_resolves_shallow_lm_wrapped_tied_embed():
     # codex: the tied group must mirror the lm_head group and cover BOTH wrapper
     # layouts. A tied head at the SHALLOW language_model.embed_tokens.weight (no
     # inner .model) must resolve, not just the deeper language_model.model.* one.
-    from vllm_mlx.routes.chat import _actual_output_head_width
+    from rapid_mlx.routes.chat import _actual_output_head_width
 
     class _W:
         shape = (262144, 64)
@@ -1102,7 +1102,7 @@ def test_actual_output_head_width_declines_on_unknown_nesting():
     # A head reachable only at an UNRECOGNIZED path (no fixed path matches) yields
     # None — we deliberately do NOT tree-walk, so an unknown nesting declines to
     # the safe post-hoc cap rather than risk validating against the wrong head.
-    from vllm_mlx.routes.chat import _actual_output_head_width
+    from rapid_mlx.routes.chat import _actual_output_head_width
 
     class _W:
         shape = (151936, 64)
@@ -1124,7 +1124,7 @@ def test_actual_output_head_width_ignores_stray_nonfixed_lm_head():
     # head) must NEVER hijack the width of the TIED text head on a fixed path.
     # Fixed-paths-only resolution uses model.embed_tokens (fixed) and never even
     # inspects the off-path stray head.
-    from vllm_mlx.routes.chat import _actual_output_head_width
+    from rapid_mlx.routes.chat import _actual_output_head_width
 
     class _WE:
         shape = (200000, 64)  # real tied text head, on a fixed path
@@ -1161,7 +1161,7 @@ def test_actual_output_head_width_ignores_stray_nonfixed_lm_head():
 
 
 def test_apply_chat_template_forwards_add_generation_prompt():
-    from vllm_mlx.utils.chat_template import apply_chat_template
+    from rapid_mlx.utils.chat_template import apply_chat_template
 
     captured = []
 
@@ -1182,8 +1182,8 @@ def test_apply_chat_template_forwards_add_generation_prompt():
 def test_batched_engine_apply_chat_template_forwards_add_generation_prompt(monkeypatch):
     from types import SimpleNamespace
 
-    from vllm_mlx.engine import batched as batched_mod
-    from vllm_mlx.engine.batched import BatchedEngine
+    from rapid_mlx.engine import batched as batched_mod
+    from rapid_mlx.engine.batched import BatchedEngine
 
     captured = {}
 

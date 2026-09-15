@@ -6,7 +6,7 @@ Branch: `vector/deepseek-v41-product-delivery`
 
 ## Outcome
 
-- Moved the data-only V4.1 runtime into the shipped `vllm_mlx` package.
+- Moved the data-only V4.1 runtime into the shipped `rapid_mlx` package.
 - Added a serial OpenAI-compatible K4 lane because the model-level compressed
   cache cannot satisfy the current scheduler's per-layer merge/extract ABI.
 - Pinned target and MTP commits. The sidecar pull is narrowed to three MTP

@@ -11,13 +11,13 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from vllm_mlx.mllm_batch_generator import MLLMBatchResponse  # noqa: E402
-from vllm_mlx.mllm_scheduler import (  # noqa: E402
+from rapid_mlx.mllm_batch_generator import MLLMBatchResponse  # noqa: E402
+from rapid_mlx.mllm_scheduler import (  # noqa: E402
     MLLMRequest,
     MLLMScheduler,
     MLLMSchedulerConfig,
 )
-from vllm_mlx.request import (  # noqa: E402
+from rapid_mlx.request import (  # noqa: E402
     ClientRequestError,
     InferenceAbortedError,
     RequestOutput,
@@ -156,7 +156,7 @@ async def test_mllm_non_repetition_errors_keep_existing_exception_contract(
 
 def test_batch_generator_uses_worker_default_stream(monkeypatch) -> None:
     """Construction binds each generator lifetime to its worker's stream."""
-    from vllm_mlx import mllm_batch_generator as module
+    from rapid_mlx import mllm_batch_generator as module
 
     stream = object()
     monkeypatch.setattr(module.mx, "default_device", lambda: "gpu")
@@ -176,7 +176,7 @@ def test_batch_generator_close_tolerates_retired_worker_stream(
     monkeypatch, caplog
 ) -> None:
     """A stale thread-local stream cannot prevent wired-limit cleanup."""
-    from vllm_mlx import mllm_batch_generator as module
+    from rapid_mlx import mllm_batch_generator as module
 
     generator = module.MLLMBatchGenerator.__new__(module.MLLMBatchGenerator)
     generator._stream = object()
@@ -203,7 +203,7 @@ def test_batch_generator_prefill_enters_owned_stream(monkeypatch) -> None:
 
     from mlx_lm.models import cache as cache_module
 
-    from vllm_mlx import mllm_batch_generator as module
+    from rapid_mlx import mllm_batch_generator as module
 
     owned_stream = object()
     entered: list[object] = []
@@ -240,7 +240,7 @@ def test_batch_generator_next_uses_owned_stream(monkeypatch) -> None:
     """Each decode step runs in the same worker-owned stream context."""
     from contextlib import contextmanager
 
-    from vllm_mlx import mllm_batch_generator as module
+    from rapid_mlx import mllm_batch_generator as module
 
     owned_stream = object()
     entered: list[object] = []

@@ -14,8 +14,8 @@ import mlx.core as mx
 import mlx.nn as nn
 import numpy as np
 
-from vllm_mlx.kernels import qwen4_fused_gdn_decode as fused_gdn
-from vllm_mlx.models import qwen4_exp
+from rapid_mlx.kernels import qwen4_fused_gdn_decode as fused_gdn
+from rapid_mlx.models import qwen4_exp
 
 
 class FakeArray:

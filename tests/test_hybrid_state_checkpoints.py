@@ -21,7 +21,7 @@ import pytest
 pytestmark = pytest.mark.requires_mlx
 ArraysCache = pytest.importorskip("mlx_lm.models.cache").ArraysCache
 
-from vllm_mlx.hybrid_state_checkpoints import (  # noqa: E402
+from rapid_mlx.hybrid_state_checkpoints import (  # noqa: E402
     CHECKPOINT_ATTR,
     StateCheckpoints,
     achievable_position,
@@ -235,7 +235,7 @@ class TestGuards:
     """Every refusal branch records or restores nothing."""
 
     def test_env_knobs_fall_back_on_garbage(self, monkeypatch):
-        from vllm_mlx import hybrid_state_checkpoints as hsc
+        from rapid_mlx import hybrid_state_checkpoints as hsc
 
         monkeypatch.setenv("RAPID_MLX_HYBRID_CHECKPOINT_MAX", "four")
         monkeypatch.setenv("RAPID_MLX_HYBRID_CHECKPOINT_STRIDE", "  ")
@@ -245,7 +245,7 @@ class TestGuards:
         assert hsc.checkpoint_stride() == 1
 
     def test_array_bytes_fallbacks(self):
-        from vllm_mlx.hybrid_state_checkpoints import _array_bytes
+        from rapid_mlx.hybrid_state_checkpoints import _array_bytes
 
         assert _array_bytes(None) == 0
         assert _array_bytes(SimpleNamespace(nbytes=24)) == 24
@@ -255,7 +255,7 @@ class TestGuards:
     def test_without_mlx_lm_nothing_is_recurrent(self, monkeypatch):
         import sys
 
-        from vllm_mlx import hybrid_state_checkpoints as hsc
+        from rapid_mlx import hybrid_state_checkpoints as hsc
 
         monkeypatch.setattr(hsc, "_RECURRENT_TYPES", None)
         monkeypatch.setitem(sys.modules, "mlx_lm.models.cache", None)
@@ -267,7 +267,7 @@ class TestGuards:
         """The MLLM lane stores mlx-vlm's own ``ArraysCache`` through its
         exact APC; checkpoints must record and restore on that class too."""
         vlm_cache = pytest.importorskip("mlx_vlm.models.cache")
-        from vllm_mlx import hybrid_state_checkpoints as hsc
+        from rapid_mlx import hybrid_state_checkpoints as hsc
 
         monkeypatch.setattr(hsc, "_RECURRENT_TYPES", None)
         mx = pytest.importorskip("mlx.core")
@@ -310,8 +310,8 @@ class TestGuards:
         assert restore_recurrent_layer(_KVLayer(), 2048) is None
 
     def test_snap_refusals(self, monkeypatch):
-        from vllm_mlx import memory_cache
-        from vllm_mlx.memory_cache import _snap_hybrid_trim
+        from rapid_mlx import memory_cache
+        from rapid_mlx.memory_cache import _snap_hybrid_trim
 
         cache = _cache(0)
         assert _snap_hybrid_trim(cache, 100, 0) is None
@@ -360,7 +360,7 @@ class TestMemoryCacheSnap:
 
     @staticmethod
     def _cache():
-        from vllm_mlx.memory_cache import MemoryAwarePrefixCache, MemoryCacheConfig
+        from rapid_mlx.memory_cache import MemoryAwarePrefixCache, MemoryCacheConfig
 
         config = MemoryCacheConfig(
             max_memory_mb=64, max_entries=16, hybrid_reuse_max_entries=4
@@ -420,7 +420,7 @@ class TestMemoryCacheSnap:
         assert remaining == stored[:3000] + [7, 8, 9]
 
     def test_entry_memory_charges_checkpoints(self):
-        from vllm_mlx.memory_cache import estimate_kv_cache_memory
+        from rapid_mlx.memory_cache import estimate_kv_cache_memory
 
         plain = self._entry(64, ())
         with_ckpt = self._entry(64, (16, 32))
@@ -439,7 +439,7 @@ class TestSchedulerRecording:
     @staticmethod
     def _scheduler(hybrid_entries: int = 8):
         pytest.importorskip("mlx")
-        from vllm_mlx.scheduler import Scheduler, SchedulerConfig
+        from rapid_mlx.scheduler import Scheduler, SchedulerConfig
 
         tokenizer = MagicMock()
         tokenizer.encode = lambda x: list(range(len(x.split())))
@@ -454,7 +454,7 @@ class TestSchedulerRecording:
 
     @staticmethod
     def _register(scheduler, uid: int, cached_tokens: int = 0):
-        from vllm_mlx.request import Request, SamplingParams
+        from rapid_mlx.request import Request, SamplingParams
 
         request = Request(
             request_id=f"req-{uid}",

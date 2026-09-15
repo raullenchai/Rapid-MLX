@@ -20,7 +20,7 @@ pytestmark = pytest.mark.requires_mlx
 
 from types import SimpleNamespace
 
-from vllm_mlx.scheduler import Scheduler, _read_kv_dims
+from rapid_mlx.scheduler import Scheduler, _read_kv_dims
 
 # Qwen3-0.6B-ish dense dims — the real shape that first surfaced the
 # ``.args``-not-``.config`` gap this method has to handle.
@@ -69,7 +69,7 @@ def _stub_mx(monkeypatch, *, base_bytes, resident_bytes, metal=True):
         device_info=lambda: {"max_recommended_working_set_size": base_bytes},
         get_active_memory=lambda: resident_bytes,
     )
-    monkeypatch.setattr("vllm_mlx.scheduler.mx", fake)
+    monkeypatch.setattr("rapid_mlx.scheduler.mx", fake)
 
 
 def test_read_kv_dims_from_mlx_args() -> None:

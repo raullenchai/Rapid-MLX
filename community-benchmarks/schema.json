@@ -91,7 +91,7 @@
           "type": "string",
           "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+(?:[a-zA-Z0-9.+-]*)?$",
           "maxLength": 64,
-          "description": "`vllm_mlx.__version__`."
+          "description": "`rapid_mlx.__version__`."
         },
         "mlx": {
           "type": "string",
@@ -118,7 +118,7 @@
           "type": "string",
           "maxLength": 128,
           "pattern": "^[a-z0-9._-]+$",
-          "description": "Rapid-MLX alias (must exist in `vllm_mlx/aliases.json` at submission time). The whitelist gate lives in the CLI; the GHA also re-checks."
+          "description": "Rapid-MLX alias (must exist in `rapid_mlx/aliases.json` at submission time). The whitelist gate lives in the CLI; the GHA also re-checks."
         },
         "hf_path": {
           "type": "string",

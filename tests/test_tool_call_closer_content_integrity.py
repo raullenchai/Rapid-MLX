@@ -28,8 +28,8 @@ helper removes it).
 
 import pytest
 
-from vllm_mlx.api.models import ChatCompletionChunkDelta
-from vllm_mlx.api.utils import (
+from rapid_mlx.api.models import ChatCompletionChunkDelta
+from rapid_mlx.api.utils import (
     sanitize_content_for_stream,
     sanitize_output,
     sanitize_reasoning_content,
@@ -128,19 +128,19 @@ class TestAssistantMessageEnvelope:
     """
 
     def test_content_keeps_the_closer(self):
-        from vllm_mlx.api.models import AssistantMessage
+        from rapid_mlx.api.models import AssistantMessage
 
         msg = AssistantMessage(content=AGENT_LINE)
         assert msg.content == AGENT_LINE
 
     def test_reasoning_content_still_stripped(self):
-        from vllm_mlx.api.models import AssistantMessage
+        from rapid_mlx.api.models import AssistantMessage
 
         msg = AssistantMessage(content="ok", reasoning_content="think </tool_call> end")
         assert msg.reasoning_content == "think  end"
 
     def test_other_special_tokens_still_stripped_from_content(self):
-        from vllm_mlx.api.models import AssistantMessage
+        from rapid_mlx.api.models import AssistantMessage
 
         msg = AssistantMessage(content="answer<|im_end|>")
         assert msg.content == "answer"
@@ -155,12 +155,12 @@ class TestAnthropicThinkingBlockStillStrips:
     """
 
     def test_thinking_block_strips_the_closer(self):
-        from vllm_mlx.api.anthropic_adapter import _thinking_block_content
+        from rapid_mlx.api.anthropic_adapter import _thinking_block_content
 
         assert _thinking_block_content("x</tool_call>y", "answer") == "xy"
 
     def test_thinking_block_keeps_ordinary_prose(self):
-        from vllm_mlx.api.anthropic_adapter import _thinking_block_content
+        from rapid_mlx.api.anthropic_adapter import _thinking_block_content
 
         assert (
             _thinking_block_content("weighing the options", "answer")
@@ -216,8 +216,8 @@ class TestRescuePrefixBranchAlsoStrips:
     """
 
     def test_length_cut_rescue_prefix_strips_the_closer(self):
-        from vllm_mlx.api.anthropic_adapter import _thinking_block_content
-        from vllm_mlx.api.constants import (
+        from rapid_mlx.api.anthropic_adapter import _thinking_block_content
+        from rapid_mlx.api.constants import (
             REASONING_CUTOFF_SENTINEL,
             RESCUE_TAIL_LENGTH,
         )
@@ -241,6 +241,6 @@ class TestRescuePrefixBranchAlsoStrips:
 
     def test_ordinary_path_still_strips_the_closer(self):
         """The non-rescue path, for contrast — both must hold."""
-        from vllm_mlx.api.anthropic_adapter import _thinking_block_content
+        from rapid_mlx.api.anthropic_adapter import _thinking_block_content
 
         assert _thinking_block_content("x</tool_call>y", "answer") == "xy"

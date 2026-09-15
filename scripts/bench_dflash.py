@@ -210,7 +210,7 @@ def start_server(
     cmd = [
         sys.executable,
         "-m",
-        "vllm_mlx.cli",
+        "rapid_mlx.cli",
         "serve",
         model,
         "--port",
@@ -567,7 +567,7 @@ def _resolve_pair_receipt(
 ) -> PairReceipt:
     """Resolve and persist the effective immutable benchmark pair."""
 
-    from vllm_mlx.model_aliases import resolve_profile
+    from rapid_mlx.model_aliases import resolve_profile
 
     profile = resolve_profile(model)
     target_model = profile.hf_path if profile is not None else model

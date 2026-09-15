@@ -20,7 +20,7 @@ import json
 
 import pytest
 
-from vllm_mlx.tool_parsers.gemma4_tool_parser import (
+from rapid_mlx.tool_parsers.gemma4_tool_parser import (
     _GEMMA4_MAX_NESTING_DEPTH,
     Gemma4ToolParser,
     _Gemma4ArgumentParser,

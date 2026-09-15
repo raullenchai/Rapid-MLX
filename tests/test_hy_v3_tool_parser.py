@@ -2,7 +2,7 @@
 """
 Regression tests for the Hy3 tool call parser (vLLM HYV3ToolParser port).
 
-Architecture under test (see ``vllm_mlx/tool_parsers/hy_v3_tool_parser.py``):
+Architecture under test (see ``rapid_mlx/tool_parsers/hy_v3_tool_parser.py``):
   * suffix resolved ONCE at ``__init__`` from vocab, pinned as fixed strings
   * token-ID / fixed-string gate on streaming entry (no full-text re-parse)
   * two-phase FSM: SEEKING_NAME → STREAMING_ARGS (withhold trailing ``}``)
@@ -25,7 +25,7 @@ from __future__ import annotations
 
 import json
 
-from vllm_mlx.tool_parsers import HyV3ToolParser, ToolParserManager
+from rapid_mlx.tool_parsers import HyV3ToolParser, ToolParserManager
 
 
 # ---------------------------------------------------------------------------

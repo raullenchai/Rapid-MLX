@@ -21,7 +21,7 @@ from unittest.mock import patch
 
 import pytest
 
-from vllm_mlx import cli
+from rapid_mlx import cli
 
 
 @pytest.fixture
@@ -89,7 +89,7 @@ def test_serve_help_leads_with_a_command_line(serve_help):
     assert not any(ch in model for ch in "<[]>"), (
         f"model arg must be concrete: {model!r}"
     )
-    from vllm_mlx.model_aliases import list_profiles
+    from rapid_mlx.model_aliases import list_profiles
 
     assert model in list_profiles(), (
         f"help example model {model!r} is not a served alias"

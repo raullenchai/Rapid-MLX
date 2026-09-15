@@ -82,7 +82,7 @@ def _args(**overrides):
 
 
 def _normalize(args):
-    from vllm_mlx.cli import _normalize_speculative_config_or_exit
+    from rapid_mlx.cli import _normalize_speculative_config_or_exit
 
     _normalize_speculative_config_or_exit(args)
     return args
@@ -91,7 +91,7 @@ def _normalize(args):
 # --------------------------------------------------------------------- registry
 def test_registry_precondition_the_alias_still_declares_mtp():
     """If this fails, the rest of the file is testing nothing."""
-    from vllm_mlx.model_aliases import resolve_profile
+    from rapid_mlx.model_aliases import resolve_profile
 
     profile = resolve_profile(ALIAS_WITH_MTP)
     assert profile is not None
@@ -108,7 +108,7 @@ def test_registry_precondition_the_alias_still_declares_mtp():
 
 @pytest.mark.parametrize(("alias", "sidecar"), sorted(EXPERIMENTAL_MTP_ALIASES.items()))
 def test_popular_experimental_mtp_aliases_declare_a_real_preset(alias, sidecar):
-    from vllm_mlx.model_aliases import resolve_profile
+    from rapid_mlx.model_aliases import resolve_profile
 
     profile = resolve_profile(alias)
     assert profile is not None
@@ -118,7 +118,7 @@ def test_popular_experimental_mtp_aliases_declare_a_real_preset(alias, sidecar):
 
 # ------------------------------------------------------------------ the fix
 def test_alias_declaration_supplies_the_sidecar_and_depth():
-    from vllm_mlx.model_aliases import resolve_profile
+    from rapid_mlx.model_aliases import resolve_profile
 
     declared = resolve_profile(ALIAS_WITH_MTP)
     args = _normalize(
@@ -131,7 +131,7 @@ def test_alias_declaration_supplies_the_sidecar_and_depth():
 
 def test_native_alias_declaration_supplies_depth_without_a_sidecar():
     """The advertised native preset must drive the serve normalization too."""
-    from vllm_mlx.model_aliases import resolve_profile
+    from rapid_mlx.model_aliases import resolve_profile
 
     declared = resolve_profile(NATIVE_MTP_ALIAS)
     args = _normalize(
@@ -195,7 +195,7 @@ def test_alias_depth_beats_the_generic_force_spec_decode_default(monkeypatch):
     registry would pass whether or not the alias is consulted at all — the
     mutation run proved exactly that. 5 makes the two sources distinguishable.
     """
-    import vllm_mlx.model_aliases as aliases
+    import rapid_mlx.model_aliases as aliases
 
     real = aliases.resolve_profile(ALIAS_WITH_MTP)
     monkeypatch.setattr(
@@ -230,15 +230,15 @@ def test_force_spec_decode_fallback_survives_for_undeclared_aliases():
 # ------------------------------------------------------------- helper totality
 @pytest.mark.parametrize("model", [None, "", "org/unknown-model"])
 def test_declaration_lookup_is_total(model):
-    from vllm_mlx.cli import _alias_mtp_declaration
+    from rapid_mlx.cli import _alias_mtp_declaration
 
     assert _alias_mtp_declaration(model) == (None, None)
 
 
 def test_declaration_lookup_never_raises_when_the_registry_is_broken(monkeypatch):
     """A registry failure must degrade to "no default", not crash the serve."""
-    import vllm_mlx.model_aliases as aliases
-    from vllm_mlx.cli import _alias_mtp_declaration
+    import rapid_mlx.model_aliases as aliases
+    from rapid_mlx.cli import _alias_mtp_declaration
 
     def _boom(_name):
         raise RuntimeError("registry unreadable")
@@ -250,8 +250,8 @@ def test_declaration_lookup_never_raises_when_the_registry_is_broken(monkeypatch
 @pytest.mark.parametrize("bad", [7, ["org/repo"], {"a": 1}, object()])
 def test_a_non_string_sidecar_does_not_raise(monkeypatch, bad):
     """Totality has to survive the value being the wrong TYPE, not just absent."""
-    import vllm_mlx.model_aliases as aliases
-    from vllm_mlx.cli import _alias_mtp_declaration
+    import rapid_mlx.model_aliases as aliases
+    from rapid_mlx.cli import _alias_mtp_declaration
 
     monkeypatch.setattr(
         aliases,
@@ -263,8 +263,8 @@ def test_a_non_string_sidecar_does_not_raise(monkeypatch, bad):
 
 def test_depth_without_a_sidecar_yields_neither(monkeypatch):
     """A hand-edited registry could carry a depth alone; it is meaningless."""
-    import vllm_mlx.model_aliases as aliases
-    from vllm_mlx.cli import _alias_mtp_declaration
+    import rapid_mlx.model_aliases as aliases
+    from rapid_mlx.cli import _alias_mtp_declaration
 
     monkeypatch.setattr(
         aliases,
@@ -277,8 +277,8 @@ def test_depth_without_a_sidecar_yields_neither(monkeypatch):
 # ------------------------------------------------------------------- labelling
 def test_info_reports_the_sidecar_lane_instead_of_disabled():
     """`MTP path: disabled` was wrong for a model that decodes with MTP."""
-    from vllm_mlx.model_aliases import resolve_profile
-    from vllm_mlx.model_auto_config import _mtp_path_label
+    from rapid_mlx.model_aliases import resolve_profile
+    from rapid_mlx.model_auto_config import _mtp_path_label
 
     declaring = resolve_profile(ALIAS_WITH_MTP)
     label = _mtp_path_label(declaring.hf_path, declaring)

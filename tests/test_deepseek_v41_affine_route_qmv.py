@@ -6,7 +6,7 @@ mx = pytest.importorskip("mlx.core")
 nn = pytest.importorskip("mlx.nn")
 switch_layers = pytest.importorskip("mlx_lm.models.switch_layers")
 
-from vllm_mlx.models.deepseek_v41_native.affine_route_qmv import (
+from rapid_mlx.models.deepseek_v41_native.affine_route_qmv import (
     affine2_route_down_qmv,
 )
 

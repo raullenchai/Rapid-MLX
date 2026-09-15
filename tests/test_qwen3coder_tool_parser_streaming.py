@@ -24,7 +24,7 @@ import json
 
 import pytest
 
-from vllm_mlx.tool_parsers.qwen3coder_tool_parser import Qwen3CoderToolParser
+from rapid_mlx.tool_parsers.qwen3coder_tool_parser import Qwen3CoderToolParser
 
 _LONG_SUMMARY = (
     "Lorem ipsum dolor sit amet, consectetur adipiscing elit. Sed do "

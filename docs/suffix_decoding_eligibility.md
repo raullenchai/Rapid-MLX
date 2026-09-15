@@ -108,13 +108,13 @@ speedup ratios, and the resulting tier:
 
 Pass `--update-profile` to also print the patch for the corresponding
 alias entry — tiers are stored as `suffix_decoding_tier` in
-`vllm_mlx/aliases.json`, not in `model_auto_config.py`. Paste it
+`rapid_mlx/aliases.json`, not in `model_auto_config.py`. Paste it
 manually — the script never auto-edits source.
 
 ## Currently classified models
 
 > **Status** (2026-08-18): classification has been rolled out — 41
-> aliases in `vllm_mlx/aliases.json` carry an explicit
+> aliases in `rapid_mlx/aliases.json` carry an explicit
 > `suffix_decoding_tier`. Aliases without one default to `unknown`
 > until benched.
 
@@ -149,6 +149,6 @@ tier values changing. Track via the result JSON timestamps under
 `evals/results/`.
 
 **Will the boundaries (`1.8x`, `1.5x`, `0.85x`, ...) change?**
-They're tunable in `vllm_mlx/model_auto_config.py::classify_suffix_decoding_tier`.
+They're tunable in `rapid_mlx/model_auto_config.py::classify_suffix_decoding_tier`.
 If you adjust them, also re-classify every model — the boundaries are
 fixed across the registry by design (fairness + stability).

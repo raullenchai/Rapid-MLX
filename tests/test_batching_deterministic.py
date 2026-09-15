@@ -44,7 +44,7 @@ def mlx_executor():
     """
     import concurrent.futures
 
-    from vllm_mlx.engine_core import _init_mlx_step_thread
+    from rapid_mlx.engine_core import _init_mlx_step_thread
 
     executor = concurrent.futures.ThreadPoolExecutor(
         max_workers=1,
@@ -84,7 +84,7 @@ def model_and_tokenizer(mlx_executor):
 @pytest.fixture
 def sampling_params():
     """Deterministic sampling params (temperature=0)."""
-    from vllm_mlx import SamplingParams
+    from rapid_mlx import SamplingParams
 
     return SamplingParams(max_tokens=10, temperature=0.0, top_p=1.0)
 
@@ -97,7 +97,7 @@ class TestDeterministicSingleRequest:
         self, model_and_tokenizer, mlx_executor, sampling_params
     ):
         """Same prompt should produce same output with temp=0."""
-        from vllm_mlx import AsyncEngineCore, EngineConfig, SchedulerConfig
+        from rapid_mlx import AsyncEngineCore, EngineConfig, SchedulerConfig
 
         model, tokenizer = model_and_tokenizer
         config = EngineConfig(
@@ -132,7 +132,7 @@ class TestDeterministicSingleRequest:
         self, model_and_tokenizer, mlx_executor, sampling_params
     ):
         """Tokens should stream in order."""
-        from vllm_mlx import AsyncEngineCore
+        from rapid_mlx import AsyncEngineCore
 
         model, tokenizer = model_and_tokenizer
 
@@ -181,7 +181,7 @@ class TestDeterministicConcurrentRequests:
     @pytest.mark.asyncio
     async def test_concurrent_same_prompt(self, model_and_tokenizer, mlx_executor):
         """Multiple concurrent requests with same prompt should get same output."""
-        from vllm_mlx import (
+        from rapid_mlx import (
             AsyncEngineCore,
             EngineConfig,
             SamplingParams,
@@ -229,7 +229,7 @@ class TestDeterministicConcurrentRequests:
         self, model_and_tokenizer, mlx_executor
     ):
         """Different prompts should get different (but deterministic) outputs."""
-        from vllm_mlx import (
+        from rapid_mlx import (
             AsyncEngineCore,
             EngineConfig,
             SamplingParams,
@@ -297,7 +297,7 @@ class TestBatchingPerformance:
         regression (sequential beating batched by more than 30%) still
         fires.
         """
-        from vllm_mlx import (
+        from rapid_mlx import (
             AsyncEngineCore,
             EngineConfig,
             SamplingParams,
@@ -399,7 +399,7 @@ class TestRequestManagement:
     @pytest.mark.asyncio
     async def test_abort_request(self, model_and_tokenizer, mlx_executor):
         """Test aborting a request mid-generation."""
-        from vllm_mlx import AsyncEngineCore, SamplingParams
+        from rapid_mlx import AsyncEngineCore, SamplingParams
 
         model, tokenizer = model_and_tokenizer
         params = SamplingParams(max_tokens=100, temperature=0.0)
@@ -437,7 +437,7 @@ class TestRequestManagement:
     @pytest.mark.asyncio
     async def test_engine_stats(self, model_and_tokenizer, mlx_executor):
         """Test engine statistics tracking."""
-        from vllm_mlx import (
+        from rapid_mlx import (
             AsyncEngineCore,
             EngineConfig,
             SamplingParams,
@@ -478,7 +478,7 @@ class TestSchedulerPolicy:
     @pytest.mark.asyncio
     async def test_fcfs_ordering(self, model_and_tokenizer, mlx_executor):
         """Test that FCFS policy processes requests in order."""
-        from vllm_mlx import (
+        from rapid_mlx import (
             AsyncEngineCore,
             EngineConfig,
             SamplingParams,
@@ -531,7 +531,7 @@ class TestEdgeCases:
     @pytest.mark.asyncio
     async def test_empty_prompt(self, model_and_tokenizer, mlx_executor):
         """Test handling of empty prompt."""
-        from vllm_mlx import AsyncEngineCore, SamplingParams
+        from rapid_mlx import AsyncEngineCore, SamplingParams
 
         model, tokenizer = model_and_tokenizer
         params = SamplingParams(max_tokens=5, temperature=0.0)
@@ -549,7 +549,7 @@ class TestEdgeCases:
     @pytest.mark.asyncio
     async def test_very_short_max_tokens(self, model_and_tokenizer, mlx_executor):
         """Test with max_tokens=1."""
-        from vllm_mlx import AsyncEngineCore, SamplingParams
+        from rapid_mlx import AsyncEngineCore, SamplingParams
 
         model, tokenizer = model_and_tokenizer
         params = SamplingParams(max_tokens=1, temperature=0.0)
@@ -571,7 +571,7 @@ class TestEdgeCases:
     @pytest.mark.asyncio
     async def test_multiple_start_stop(self, model_and_tokenizer, mlx_executor):
         """Test starting and stopping engine multiple times."""
-        from vllm_mlx import AsyncEngineCore, SamplingParams
+        from rapid_mlx import AsyncEngineCore, SamplingParams
 
         model, tokenizer = model_and_tokenizer
         params = SamplingParams(max_tokens=3, temperature=0.0)

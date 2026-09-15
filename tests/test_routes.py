@@ -13,7 +13,7 @@ pytestmark = pytest.mark.requires_mlx
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from vllm_mlx.config import get_config
+from rapid_mlx.config import get_config
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -71,7 +71,7 @@ def mock_registry():
 
 class TestHealthRoutes:
     def _make_app(self):
-        from vllm_mlx.routes.health import admin_router, probe_router, router
+        from rapid_mlx.routes.health import admin_router, probe_router, router
 
         app = FastAPI()
         app.include_router(probe_router)
@@ -90,7 +90,7 @@ class TestHealthRoutes:
 
     def _patch_config(self, **kwargs):
         """Patch config fields for testing."""
-        from vllm_mlx.config import get_config
+        from rapid_mlx.config import get_config
 
         cfg = get_config()
         originals = {}
@@ -100,7 +100,7 @@ class TestHealthRoutes:
         return originals
 
     def _restore_config(self, originals):
-        from vllm_mlx.config import get_config
+        from rapid_mlx.config import get_config
 
         cfg = get_config()
         for k, v in originals.items():
@@ -202,8 +202,8 @@ class TestHealthRoutes:
         (#500 rule) so /health never has to hasattr-guard the call. Pin it at
         the class level so a future refactor that drops the method fails here,
         localized, rather than only as a 500 in an integration test."""
-        from vllm_mlx.runtime.image_lane import ImageEngine
-        from vllm_mlx.runtime.video_lane import VideoEngine
+        from rapid_mlx.runtime.image_lane import ImageEngine
+        from rapid_mlx.runtime.video_lane import VideoEngine
 
         for eng in (ImageEngine, VideoEngine):
             assert callable(eng.get_stats), f"{eng.__name__} must define get_stats"
@@ -731,14 +731,14 @@ class TestHealthRoutes:
 
 class TestModelsRoutes:
     def _make_app(self):
-        from vllm_mlx.routes.models import router
+        from rapid_mlx.routes.models import router
 
         app = FastAPI()
         app.include_router(router)
         return app
 
     def _set_config(self, **kwargs):
-        from vllm_mlx.config import get_config
+        from rapid_mlx.config import get_config
 
         cfg = get_config()
         # Default ``engine`` to None unless a test supplies one: these are
@@ -754,7 +754,7 @@ class TestModelsRoutes:
         return orig
 
     def _restore(self, orig):
-        from vllm_mlx.config import get_config
+        from rapid_mlx.config import get_config
 
         cfg = get_config()
         for k, v in orig.items():
@@ -1374,7 +1374,7 @@ class TestModelsRoutes:
 
 class TestMCPRoutes:
     def _make_app(self):
-        from vllm_mlx.routes.mcp_routes import router
+        from rapid_mlx.routes.mcp_routes import router
 
         app = FastAPI()
         app.include_router(router)
@@ -1533,7 +1533,7 @@ class TestMCPRoutes:
 
 class TestEmbeddingsRoutes:
     def _make_app(self):
-        from vllm_mlx.routes.embeddings import router
+        from rapid_mlx.routes.embeddings import router
 
         app = FastAPI()
         app.include_router(router)
@@ -1551,9 +1551,9 @@ class TestEmbeddingsRoutes:
             # configured before accepting requests; match the test's
             # request model so we exercise the success path.
             patch.object(get_config(), "embedding_model_locked", "test-embed"),
-            patch("vllm_mlx.server.load_embedding_model"),
+            patch("rapid_mlx.server.load_embedding_model"),
             patch.object(get_config(), "api_key", None),
-            patch("vllm_mlx.middleware.auth.check_rate_limit", return_value=None),
+            patch("rapid_mlx.middleware.auth.check_rate_limit", return_value=None),
         ):
             app = self._make_app()
             client = TestClient(app)
@@ -1582,9 +1582,9 @@ class TestEmbeddingsRoutes:
             # ``model="test-embed"`` POST instead of 400ing under the
             # new guard.
             patch.object(get_config(), "embedding_model_locked", "test-embed"),
-            patch("vllm_mlx.server.load_embedding_model"),
+            patch("rapid_mlx.server.load_embedding_model"),
             patch.object(get_config(), "api_key", None),
-            patch("vllm_mlx.middleware.auth.check_rate_limit", return_value=None),
+            patch("rapid_mlx.middleware.auth.check_rate_limit", return_value=None),
         ):
             app = self._make_app()
             client = TestClient(app)
@@ -1622,7 +1622,7 @@ class TestEmbeddingsRoutes:
             patch.object(get_config(), "embedding_engine", MagicMock()),
             patch.object(get_config(), "embedding_model_locked", "locked-model"),
             patch.object(get_config(), "api_key", None),
-            patch("vllm_mlx.middleware.auth.check_rate_limit", new=_noop),
+            patch("rapid_mlx.middleware.auth.check_rate_limit", new=_noop),
         ):
             app = self._make_app()
             client = TestClient(app)

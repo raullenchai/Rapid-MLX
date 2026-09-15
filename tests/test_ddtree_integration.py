@@ -18,7 +18,7 @@ def test_serve_parser_exposes_ddtree_speculative_config() -> None:
     import sys
 
     out = subprocess.run(
-        [sys.executable, "-m", "vllm_mlx.cli", "serve", "--help"],
+        [sys.executable, "-m", "rapid_mlx.cli", "serve", "--help"],
         capture_output=True,
         text=True,
         timeout=30,
@@ -46,13 +46,13 @@ def _ddtree_cli_args(**overrides):
 def test_speculative_config_ddtree_preflight_uses_config_overrides(
     monkeypatch,
 ) -> None:
-    from vllm_mlx.cli import (
+    from rapid_mlx.cli import (
         _normalize_speculative_config_or_exit,
         _preflight_ddtree_or_exit,
     )
 
     monkeypatch.setattr(
-        "vllm_mlx.speculative.ddtree.eligibility.have_runtime",
+        "rapid_mlx.speculative.ddtree.eligibility.have_runtime",
         lambda: True,
     )
     args = _ddtree_cli_args(
@@ -77,13 +77,13 @@ def test_speculative_config_ddtree_preflight_uses_config_overrides(
 def test_speculative_config_ddtree_preflight_falls_back_to_alias_defaults(
     monkeypatch,
 ) -> None:
-    from vllm_mlx.cli import (
+    from rapid_mlx.cli import (
         _normalize_speculative_config_or_exit,
         _preflight_ddtree_or_exit,
     )
 
     monkeypatch.setattr(
-        "vllm_mlx.speculative.ddtree.eligibility.have_runtime",
+        "rapid_mlx.speculative.ddtree.eligibility.have_runtime",
         lambda: True,
     )
     args = _ddtree_cli_args(speculative_config='{"method":"ddtree"}')
@@ -97,13 +97,13 @@ def test_speculative_config_ddtree_preflight_falls_back_to_alias_defaults(
 
 
 def test_unknown_4bit_target_can_explicitly_opt_in(monkeypatch, capsys) -> None:
-    from vllm_mlx.cli import (
+    from rapid_mlx.cli import (
         _normalize_speculative_config_or_exit,
         _preflight_ddtree_or_exit,
     )
 
     monkeypatch.setattr(
-        "vllm_mlx.speculative.ddtree.eligibility.have_runtime", lambda: True
+        "rapid_mlx.speculative.ddtree.eligibility.have_runtime", lambda: True
     )
     args = _ddtree_cli_args(
         model="user/Qwen3.5-9B-abliterated-4bit",
@@ -122,11 +122,11 @@ def test_unknown_4bit_target_can_explicitly_opt_in(monkeypatch, capsys) -> None:
 def test_unverified_ddtree_requires_all_fields_even_with_residual_profile(
     monkeypatch,
 ) -> None:
-    from vllm_mlx.cli import (
+    from rapid_mlx.cli import (
         _normalize_speculative_config_or_exit,
         _preflight_ddtree_or_exit,
     )
-    from vllm_mlx.model_aliases import AliasProfile
+    from rapid_mlx.model_aliases import AliasProfile
 
     residual = AliasProfile(
         hf_path="user/unverified",
@@ -135,7 +135,7 @@ def test_unverified_ddtree_requires_all_fields_even_with_residual_profile(
         ddtree_speculative_tokens=16,
         ddtree_tree_budget=24,
     )
-    monkeypatch.setattr("vllm_mlx.model_aliases.resolve_profile", lambda _: residual)
+    monkeypatch.setattr("rapid_mlx.model_aliases.resolve_profile", lambda _: residual)
     args = _ddtree_cli_args(
         model="user/unverified",
         speculative_config='{"method":"ddtree"}',
@@ -146,10 +146,10 @@ def test_unverified_ddtree_requires_all_fields_even_with_residual_profile(
 
 
 def test_info_renders_ddtree_block_for_eligible_alias(capsys, monkeypatch) -> None:
-    from vllm_mlx.cli import info_command
+    from rapid_mlx.cli import info_command
 
     monkeypatch.setattr(
-        "vllm_mlx.speculative.ddtree.eligibility.have_runtime",
+        "rapid_mlx.speculative.ddtree.eligibility.have_runtime",
         lambda: True,
     )
     args = type("Args", (), {"model": "qwen3.5-9b-8bit"})()
@@ -167,7 +167,7 @@ def test_info_renders_ddtree_block_for_eligible_alias(capsys, monkeypatch) -> No
 
 
 def test_info_ddtree_marks_4bit_alias_experimental(capsys) -> None:
-    from vllm_mlx.cli import info_command
+    from rapid_mlx.cli import info_command
 
     args = type("Args", (), {"model": "qwen3.5-9b-4bit"})()
     info_command(args)
@@ -180,8 +180,8 @@ def test_info_ddtree_marks_4bit_alias_experimental(capsys) -> None:
 def test_ddtree_report_recognizes_four_bit_subfolder() -> None:
     """A neutral multi-quant repo must not bypass the 4-bit runtime gate."""
 
-    from vllm_mlx.model_aliases import resolve_profile
-    from vllm_mlx.speculative.ddtree.eligibility import report
+    from rapid_mlx.model_aliases import resolve_profile
+    from rapid_mlx.speculative.ddtree.eligibility import report
 
     profile = resolve_profile("qwen3.8-27b-abliterated-4bit")
     assert profile is not None
@@ -192,7 +192,7 @@ def test_ddtree_report_recognizes_four_bit_subfolder() -> None:
 
 
 def test_models_listing_renders_ddtree_column(capsys) -> None:
-    from vllm_mlx.cli import models_command
+    from rapid_mlx.cli import models_command
 
     models_command(None)
     captured = capsys.readouterr()
@@ -246,7 +246,7 @@ class _FakeResult:
 
 
 def _fake_runtime():
-    from vllm_mlx.speculative.ddtree.runtime import DDTreeRuntime
+    from rapid_mlx.speculative.ddtree.runtime import DDTreeRuntime
 
     tokenizer = MagicMock()
     tokenizer.apply_chat_template.return_value = "user: 2+2?\nassistant:"
@@ -268,7 +268,7 @@ def _fake_runtime():
 def test_build_app_healthz_models_and_completion() -> None:
     from fastapi.testclient import TestClient
 
-    from vllm_mlx.speculative.ddtree.server import _build_app
+    from rapid_mlx.speculative.ddtree.server import _build_app
 
     runtime = _fake_runtime()
     app = _build_app(
@@ -312,8 +312,8 @@ def test_build_app_healthz_models_and_completion() -> None:
 
 
 def test_render_prompt_defaults_to_no_thinking_but_honors_explicit_opt_in() -> None:
-    from vllm_mlx.api.models import ChatCompletionRequest
-    from vllm_mlx.speculative.ddtree.server import _render_prompt
+    from rapid_mlx.api.models import ChatCompletionRequest
+    from rapid_mlx.speculative.ddtree.server import _render_prompt
 
     runtime = _fake_runtime()
     default_request = ChatCompletionRequest(
@@ -345,7 +345,7 @@ def test_render_prompt_defaults_to_no_thinking_but_honors_explicit_opt_in() -> N
 def test_build_app_healthz_works_while_runtime_loads() -> None:
     from fastapi.testclient import TestClient
 
-    from vllm_mlx.speculative.ddtree.server import _build_app
+    from rapid_mlx.speculative.ddtree.server import _build_app
 
     future: concurrent.futures.Future = concurrent.futures.Future()
     app = _build_app(
@@ -385,8 +385,8 @@ def test_build_app_healthz_works_while_runtime_loads() -> None:
 def test_build_app_honors_api_key_and_model_name() -> None:
     from fastapi.testclient import TestClient
 
-    from vllm_mlx.config import get_config, reset_config
-    from vllm_mlx.speculative.ddtree.server import _build_app
+    from rapid_mlx.config import get_config, reset_config
+    from rapid_mlx.speculative.ddtree.server import _build_app
 
     reset_config()
     try:
@@ -453,7 +453,7 @@ def test_build_app_honors_api_key_and_model_name() -> None:
 def test_build_app_runtime_load_failure_is_sanitized() -> None:
     from fastapi.testclient import TestClient
 
-    from vllm_mlx.speculative.ddtree.server import _build_app
+    from rapid_mlx.speculative.ddtree.server import _build_app
 
     future: concurrent.futures.Future = concurrent.futures.Future()
     future.set_exception(RuntimeError("secret local path /tmp/model-cache"))
@@ -484,7 +484,7 @@ def test_build_app_runtime_load_failure_is_sanitized() -> None:
 def test_chat_completions_rejects_unsupported_ddtree_params() -> None:
     from fastapi.testclient import TestClient
 
-    from vllm_mlx.speculative.ddtree.server import _build_app
+    from rapid_mlx.speculative.ddtree.server import _build_app
 
     app = _build_app(
         runtime=_fake_runtime(),
@@ -560,7 +560,7 @@ def test_chat_completions_rejects_unsupported_ddtree_params() -> None:
 
 
 def test_run_ddtree_server_loads_runtime_on_separate_executor(monkeypatch) -> None:
-    from vllm_mlx.speculative.ddtree import server
+    from rapid_mlx.speculative.ddtree import server
 
     class RecordingExecutor:
         def __init__(self) -> None:

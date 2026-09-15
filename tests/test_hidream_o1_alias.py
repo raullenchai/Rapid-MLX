@@ -12,16 +12,16 @@ import numpy as np
 import pytest
 from PIL import Image
 
-from vllm_mlx import _download_gate
-from vllm_mlx.catalog import build_catalog_bundle
-from vllm_mlx.image.engine import (
+from rapid_mlx import _download_gate
+from rapid_mlx.catalog import build_catalog_bundle
+from rapid_mlx.image.engine import (
     ImageGenerationEngine,
     ImageRuntimeError,
     _detect_family,
 )
-from vllm_mlx.model_aliases import resolve_profile
-from vllm_mlx.model_sizes import size_bytes
-from vllm_mlx.runtime.resident_models import estimate_model_bytes
+from rapid_mlx.model_aliases import resolve_profile
+from rapid_mlx.model_sizes import size_bytes
+from rapid_mlx.runtime.resident_models import estimate_model_bytes
 
 REPO = "mlx-community/HiDream-O1-Image-Dev-mlx-bf16"
 REVISION = "33c7a00bce8e3410304f83ec408a15a1eb6782df"
@@ -74,7 +74,7 @@ def test_family_detection(name: str, family: str) -> None:
 
 def test_patch_round_trip_and_published_schedule() -> None:
     pytest.importorskip("mlx")
-    from vllm_mlx.image.hidream_runtime.runtime import (
+    from rapid_mlx.image.hidream_runtime.runtime import (
         DEFAULT_TIMESTEPS,
         FlashFlowMatchScheduler,
         _build_sample,
@@ -116,8 +116,8 @@ def test_hidream_runtime_numeric_helpers_and_masks() -> None:
     pytest.importorskip("mlx")
     import mlx.core as mx
 
-    from vllm_mlx.image.hidream_runtime import HiDreamO1
-    from vllm_mlx.image.hidream_runtime.runtime import (
+    from rapid_mlx.image.hidream_runtime import HiDreamO1
+    from rapid_mlx.image.hidream_runtime.runtime import (
         BottleneckPatchEmbed,
         FinalLayer,
         FlashFlowMatchScheduler,
@@ -191,7 +191,7 @@ def test_hidream_runtime_numeric_helpers_and_masks() -> None:
 
 def test_build_sample_supports_processor_and_tokenizer_shapes() -> None:
     pytest.importorskip("mlx")
-    from vllm_mlx.image.hidream_runtime.runtime import _build_sample
+    from rapid_mlx.image.hidream_runtime.runtime import _build_sample
 
     class Tokenizer:
         def encode(self, _caption, *, add_special_tokens):
@@ -235,7 +235,7 @@ def test_hidream_constructor_loads_only_validated_custom_heads(
     import mlx.core as mx
     import mlx.nn as nn
 
-    from vllm_mlx.image.hidream_runtime import runtime
+    from rapid_mlx.image.hidream_runtime import runtime
 
     class TinyHead(nn.Module):
         def __init__(self, *_args, **_kwargs):
@@ -288,7 +288,7 @@ def test_hidream_forward_and_tiny_generation(monkeypatch: pytest.MonkeyPatch) ->
     pytest.importorskip("mlx")
     import mlx.core as mx
 
-    from vllm_mlx.image.hidream_runtime import runtime
+    from rapid_mlx.image.hidream_runtime import runtime
 
     class TinyLanguageCore:
         def embed_tokens(self, input_ids):
@@ -422,7 +422,7 @@ def test_token_dense_prompt_fails_before_the_17gb_loader(
         ),
     )
     monkeypatch.setattr(
-        "vllm_mlx._download_gate.mflux_local_snapshot", lambda _name: None
+        "rapid_mlx._download_gate.mflux_local_snapshot", lambda _name: None
     )
     engine = ImageGenerationEngine(REPO)
     monkeypatch.setattr(
@@ -455,7 +455,7 @@ def test_prompt_tokenizer_failures_are_clean_runtime_errors(
 
     engine = ImageGenerationEngine(REPO)
     monkeypatch.setattr(
-        "vllm_mlx._download_gate.mflux_local_snapshot", lambda _name: None
+        "rapid_mlx._download_gate.mflux_local_snapshot", lambda _name: None
     )
     monkeypatch.setattr(
         AutoTokenizer,
@@ -495,7 +495,7 @@ def test_cancel_during_prompt_tokenizer_init_never_reaches_model_loader(
 
     engine = ImageGenerationEngine(REPO)
     monkeypatch.setattr(
-        "vllm_mlx._download_gate.mflux_local_snapshot", lambda _name: None
+        "rapid_mlx._download_gate.mflux_local_snapshot", lambda _name: None
     )
 
     def load_then_cancel(*_args, **_kwargs):
@@ -509,7 +509,7 @@ def test_cancel_during_prompt_tokenizer_init_never_reaches_model_loader(
         lambda **_kwargs: pytest.fail("cancelled preflight reached the model loader"),
     )
 
-    from vllm_mlx.image.engine import ImageGenerationCancelled
+    from rapid_mlx.image.engine import ImageGenerationCancelled
 
     with pytest.raises(ImageGenerationCancelled, match="cancelled"):
         engine.generate(prompt="fox", width=1024, height=1024, num_inference_steps=28)
@@ -523,7 +523,7 @@ def test_hidream_cold_snapshot_is_pinned_allowlisted_and_verified(
 
     engine = ImageGenerationEngine(REPO)
     monkeypatch.setattr(
-        "vllm_mlx._download_gate.mflux_local_snapshot", lambda _name: None
+        "rapid_mlx._download_gate.mflux_local_snapshot", lambda _name: None
     )
     verified = []
     monkeypatch.setattr(
@@ -553,8 +553,8 @@ def test_hidream_cold_snapshot_is_pinned_allowlisted_and_verified(
 def test_hidream_engine_build_progress_cancel_and_generate_dispatch(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from vllm_mlx.image import hidream_runtime
-    from vllm_mlx.image.engine import ImageGenerationCancelled
+    from rapid_mlx.image import hidream_runtime
+    from rapid_mlx.image.engine import ImageGenerationCancelled
 
     built = []
 
@@ -608,7 +608,7 @@ def test_hidream_engine_build_progress_cancel_and_generate_dispatch(
 def test_hidream_sidecar_requires_mlx_vlm_not_mflux(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from vllm_mlx.runtime import image_lane
+    from rapid_mlx.runtime import image_lane
 
     probes = []
     monkeypatch.setattr(
@@ -653,7 +653,7 @@ def test_complete_hidream_snapshot_requires_every_runtime_data_file(
 
 def test_custom_heads_reject_missing_extra_and_shape_mismatch() -> None:
     pytest.importorskip("mlx")
-    from vllm_mlx.image.hidream_runtime.runtime import (
+    from rapid_mlx.image.hidream_runtime.runtime import (
         _validate_custom_head_weights,
     )
 
@@ -689,7 +689,7 @@ def test_pull_uses_exact_revision_and_data_allowlist(
     monkeypatch: pytest.MonkeyPatch,
     requested: str,
 ) -> None:
-    from vllm_mlx import cli
+    from rapid_mlx import cli
 
     calls = []
     monkeypatch.setattr(
@@ -716,8 +716,8 @@ def test_pull_uses_exact_revision_and_data_allowlist(
 def test_non_hidream_pull_keeps_the_generic_download_path(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from vllm_mlx import cli
-    from vllm_mlx.audio import registry
+    from rapid_mlx import cli
+    from rapid_mlx.audio import registry
 
     calls = []
     monkeypatch.setattr(
@@ -737,7 +737,7 @@ def test_pinned_pull_bypasses_mirror_and_pins_snapshot_download(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     """The lower-level pull path must enforce, not merely receive, the pin."""
-    from vllm_mlx import cli
+    from rapid_mlx import cli
 
     calls = []
     monkeypatch.setattr(

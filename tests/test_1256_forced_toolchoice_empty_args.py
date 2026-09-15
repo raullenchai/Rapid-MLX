@@ -28,11 +28,11 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from vllm_mlx.api.models import ChatCompletionRequest
-from vllm_mlx.config import reset_config
-from vllm_mlx.engine.base import GenerationOutput
-from vllm_mlx.routes.chat import _forced_synth_schema_error
-from vllm_mlx.routes.chat import router as chat_router
+from rapid_mlx.api.models import ChatCompletionRequest
+from rapid_mlx.config import reset_config
+from rapid_mlx.engine.base import GenerationOutput
+from rapid_mlx.routes.chat import _forced_synth_schema_error
+from rapid_mlx.routes.chat import router as chat_router
 
 
 def _tool(name: str, *, required: list[str] | None, props: dict | None = None):
@@ -336,7 +336,7 @@ class _FakeStreamEngine:
 
 
 def _drive_stream(engine, request) -> tuple[list[dict], str | None]:
-    from vllm_mlx.routes.chat import stream_chat_completion
+    from rapid_mlx.routes.chat import stream_chat_completion
 
     chunks: list[dict] = []
 
@@ -380,7 +380,7 @@ def _stream_request(tool_choice, tools):
 
 @pytest.fixture()
 def _qwen_hermes_cfg(monkeypatch):
-    from vllm_mlx.config import server_config
+    from rapid_mlx.config import server_config
 
     cfg = server_config.get_config()
     monkeypatch.setattr(cfg, "tool_call_parser", "hermes", raising=False)
@@ -436,8 +436,8 @@ def test_stream_no_required_still_synthesizes(_qwen_hermes_cfg):
 def test_responses_enforce_raises_on_required_schema_unmet():
     from fastapi import HTTPException
 
-    from vllm_mlx.api.responses_models import ResponsesRequest
-    from vllm_mlx.routes.responses import _enforce_responses_tool_choice
+    from rapid_mlx.api.responses_models import ResponsesRequest
+    from rapid_mlx.routes.responses import _enforce_responses_tool_choice
 
     openai_req = ChatCompletionRequest(
         model="test",
@@ -453,8 +453,8 @@ def test_responses_enforce_raises_on_required_schema_unmet():
 
 
 def test_responses_enforce_synthesizes_when_no_required():
-    from vllm_mlx.api.responses_models import ResponsesRequest
-    from vllm_mlx.routes.responses import _enforce_responses_tool_choice
+    from rapid_mlx.api.responses_models import ResponsesRequest
+    from rapid_mlx.routes.responses import _enforce_responses_tool_choice
 
     openai_req = ChatCompletionRequest(
         model="test",

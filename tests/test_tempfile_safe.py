@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Tests for ``vllm_mlx._tempfile_safe.managed_tempfile_path`` (GH #719).
+"""Tests for ``rapid_mlx._tempfile_safe.managed_tempfile_path`` (GH #719).
 
 Covers:
 
@@ -31,8 +31,8 @@ from pathlib import Path
 
 import pytest
 
-from vllm_mlx import _tempfile_safe
-from vllm_mlx._tempfile_safe import managed_tempfile_path
+from rapid_mlx import _tempfile_safe
+from rapid_mlx._tempfile_safe import managed_tempfile_path
 
 
 def _count_chat_logs() -> int:
@@ -150,7 +150,7 @@ def test_atexit_fallback_reaps_paths_not_cleaned_by_context_exit():
             f"""
             import os, sys, tempfile
             sys.path.insert(0, {str(Path(__file__).resolve().parent.parent)!r})
-            from vllm_mlx import _tempfile_safe
+            from rapid_mlx import _tempfile_safe
 
             fd, path = tempfile.mkstemp(prefix="ut-atexit-", suffix=".tmp", dir={td!r})
             os.close(fd)
@@ -198,7 +198,7 @@ def test_systemexit_inside_context_body_triggers_context_finally():
             f"""
             import os, sys
             sys.path.insert(0, {str(Path(__file__).resolve().parent.parent)!r})
-            from vllm_mlx._tempfile_safe import managed_tempfile_path
+            from rapid_mlx._tempfile_safe import managed_tempfile_path
 
             with managed_tempfile_path(prefix="ut-exit-", suffix=".tmp", dir={td!r}) as h:
                 with open({str(marker)!r}, "w") as f:
@@ -235,7 +235,7 @@ def test_os_exit_is_documented_to_skip_cleanup_negative_control():
             f"""
             import os, sys
             sys.path.insert(0, {str(Path(__file__).resolve().parent.parent)!r})
-            from vllm_mlx._tempfile_safe import managed_tempfile_path
+            from rapid_mlx._tempfile_safe import managed_tempfile_path
 
             with managed_tempfile_path(prefix="ut-osexit-", suffix=".tmp", dir={td!r}) as h:
                 with open({str(marker)!r}, "w") as f:
@@ -277,7 +277,7 @@ def test_setup_window_exception_does_not_leak_path(monkeypatch, tmp_path):
     propagated, and that the registry is in the same state as
     before the call.
     """
-    from vllm_mlx import _tempfile_safe
+    from rapid_mlx import _tempfile_safe
 
     baseline = _tempfile_safe._pending_snapshot()
 
@@ -331,7 +331,7 @@ def test_cleanup_unlinks_before_discarding_from_registry(monkeypatch, tmp_path):
     once, drive the context-exit cleanup path, and assert the path
     is still in ``_pending_paths`` so atexit can reap it.
     """
-    from vllm_mlx import _tempfile_safe
+    from rapid_mlx import _tempfile_safe
 
     real_unlink = os.unlink
     raised = {"n": 0}
@@ -406,7 +406,7 @@ def test_concurrent_release_during_context_exit_does_not_double_unlink(
     """
     import threading
 
-    from vllm_mlx import _tempfile_safe
+    from rapid_mlx import _tempfile_safe
 
     captured_state: list[bool] = []
 
@@ -486,7 +486,7 @@ def test_chat_command_does_not_leak_tempfile_on_keyboard_interrupt(tmp_path):
         import sys
         sys.path.insert(0, {str(Path(__file__).resolve().parent.parent)!r})
         from unittest.mock import patch
-        from vllm_mlx import cli
+        from rapid_mlx import cli
 
         import builtins
         real_print = builtins.print
@@ -553,7 +553,7 @@ def test_chat_command_does_not_leak_tempfile_on_spawn_readiness_failure(tmp_path
         import sys
         sys.path.insert(0, {str(Path(__file__).resolve().parent.parent)!r})
         from unittest.mock import patch, MagicMock
-        from vllm_mlx import cli
+        from rapid_mlx import cli
 
         fake_proc = MagicMock()
         fake_proc.poll.return_value = None

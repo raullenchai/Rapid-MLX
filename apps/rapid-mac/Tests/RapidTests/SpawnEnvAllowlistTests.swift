@@ -40,7 +40,7 @@ struct SpawnEnvAllowlistTests {
         // "Command 'uvx' not found in PATH" when the app is opened from the
         // Dock, but works when the app is started from a terminal. The
         // engine resolves the command with `shutil.which` against the
-        // sidecar's PATH (vllm_mlx/mcp/security.py), so launchd's minimal
+        // sidecar's PATH (rapid_mlx/mcp/security.py), so launchd's minimal
         // PATH means Homebrew's uvx is invisible.
         let env = ServerManager.serveEnvironmentAdditions(
             bearer: "b",

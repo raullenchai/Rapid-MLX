@@ -26,7 +26,7 @@ The broader H-08+H-09+H-13 net lives in
 :mod:`tests.test_embeddings_extra_guard`; this file exists because
 the task spec named ``tests/test_embeddings_route.py::
 test_embeddings_503_when_no_model`` explicitly and the route file
-``vllm_mlx/routes/embeddings.py`` is the natural search location for
+``rapid_mlx/routes/embeddings.py`` is the natural search location for
 a grep-based code reviewer.
 """
 
@@ -48,9 +48,9 @@ def _build_embed_app(monkeypatch, engine, *, embedding_model_locked):
     but lives here too so the file is self-contained for grep-driven
     code review.
     """
-    from vllm_mlx.config import get_config
-    from vllm_mlx.middleware.exception_handlers import install_exception_handlers
-    from vllm_mlx.routes import embeddings as emb_route
+    from rapid_mlx.config import get_config
+    from rapid_mlx.middleware.exception_handlers import install_exception_handlers
+    from rapid_mlx.routes import embeddings as emb_route
 
     app = FastAPI()
     app.include_router(emb_route.router)
@@ -66,7 +66,7 @@ def _build_embed_app(monkeypatch, engine, *, embedding_model_locked):
     cfg.embedding_model_locked = embedding_model_locked
     cfg.api_key = None
 
-    import vllm_mlx.server as srv
+    import rapid_mlx.server as srv
 
     saved_srv = {
         "_embedding_engine": srv._embedding_engine,
@@ -76,7 +76,7 @@ def _build_embed_app(monkeypatch, engine, *, embedding_model_locked):
     srv._embedding_model_locked = embedding_model_locked
 
     monkeypatch.setattr(
-        "vllm_mlx.server.load_embedding_model",
+        "rapid_mlx.server.load_embedding_model",
         lambda *_a, **_kw: None,
         raising=False,
     )

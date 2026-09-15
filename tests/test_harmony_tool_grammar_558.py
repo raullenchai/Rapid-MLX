@@ -75,7 +75,7 @@ TOOLS = [
 def test_abc_tool_grammar_auto_safe_defaults_true():
     # Every single-special-token-trigger family (hermes/qwen) is auto-safe by
     # default — the ABC flag must default True so this change is non-breaking.
-    from vllm_mlx.tool_parsers.abstract_tool_parser import ToolParser
+    from rapid_mlx.tool_parsers.abstract_tool_parser import ToolParser
 
     assert ToolParser.TOOL_GRAMMAR_AUTO_SAFE is True
 
@@ -83,7 +83,7 @@ def test_abc_tool_grammar_auto_safe_defaults_true():
 def test_harmony_opts_out_of_auto_grammar():
     # Harmony's <|channel|> trigger is shared with final/analysis blocks, so it
     # declares itself NOT auto-safe: the auto grammar would force a call.
-    from vllm_mlx.tool_parsers.harmony_tool_parser import HarmonyToolParser
+    from rapid_mlx.tool_parsers.harmony_tool_parser import HarmonyToolParser
 
     assert HarmonyToolParser.TOOL_GRAMMAR_AUTO_SAFE is False
 
@@ -94,13 +94,13 @@ def test_build_tool_grammar_auto_declines_for_harmony():
     # auto path (free-form fallback — the model keeps its zero-call freedom),
     # even though the same family DOES build a grammar for required/named. This
     # is the guard against turning harmony ``auto`` into ``required``.
-    from vllm_mlx.api.tool_grammar import build_tool_grammar
+    from rapid_mlx.api.tool_grammar import build_tool_grammar
 
     class _AutoUnsafe:
         TOOL_GRAMMAR_AUTO_SAFE = False
 
         def structure_info(self):
-            from vllm_mlx.api.tool_grammar import StructureInfo
+            from rapid_mlx.api.tool_grammar import StructureInfo
 
             def _info(name: str):
                 return StructureInfo(
@@ -130,7 +130,7 @@ def test_build_tool_grammar_auto_still_builds_for_auto_safe_family():
     # The opt-out is per-family: a family WITHOUT the flag (defaults auto-safe,
     # like hermes/qwen) still builds an auto grammar. Proves the gate keys on
     # the flag, not on some harmony-only short-circuit.
-    from vllm_mlx.api.tool_grammar import StructureInfo, build_tool_grammar
+    from rapid_mlx.api.tool_grammar import StructureInfo, build_tool_grammar
 
     class _AutoSafe:  # no TOOL_GRAMMAR_AUTO_SAFE -> defaults True via getattr
         def structure_info(self):
@@ -205,7 +205,7 @@ def lltok(tok):
     FAIL rather than skip (codex): skipping would let the enforcement suite go
     green while the feature is broken.
     """
-    from vllm_mlx.api.tool_grammar import build_lltokenizer
+    from rapid_mlx.api.tool_grammar import build_lltokenizer
 
     lltokenizer = build_lltokenizer(tok)
     assert lltokenizer is not None, (
@@ -218,7 +218,7 @@ def lltok(tok):
 
 @pytest.fixture(scope="module")
 def harmony_parser(tok):
-    from vllm_mlx.tool_parsers.harmony_tool_parser import HarmonyToolParser
+    from rapid_mlx.tool_parsers.harmony_tool_parser import HarmonyToolParser
 
     return HarmonyToolParser(tokenizer=tok)
 
@@ -268,7 +268,7 @@ def test_structure_info_available_and_wire_invariants(harmony_parser):
 
 @_requires_llguidance
 def test_valid_harmony_call_is_accepted_and_terminates(harmony_parser, tok, lltok):
-    from vllm_mlx.api.tool_grammar import build_tool_grammar
+    from rapid_mlx.api.tool_grammar import build_tool_grammar
 
     grammar = build_tool_grammar(TOOLS, "required", harmony_parser)
     assert grammar is not None
@@ -285,7 +285,7 @@ def test_valid_harmony_call_is_accepted_and_terminates(harmony_parser, tok, llto
 
 @_requires_llguidance
 def test_valid_enum_value_is_accepted(harmony_parser, tok, lltok):
-    from vllm_mlx.api.tool_grammar import build_tool_grammar
+    from rapid_mlx.api.tool_grammar import build_tool_grammar
 
     grammar = build_tool_grammar(TOOLS, "required", harmony_parser)
     accepted, total, accepting = _consume(
@@ -301,7 +301,7 @@ def test_valid_enum_value_is_accepted(harmony_parser, tok, lltok):
 
 @_requires_llguidance
 def test_off_schema_argument_is_rejected(harmony_parser, tok, lltok):
-    from vllm_mlx.api.tool_grammar import build_tool_grammar
+    from rapid_mlx.api.tool_grammar import build_tool_grammar
 
     grammar = build_tool_grammar(TOOLS, "required", harmony_parser)
     # `city` must be a string; an integer must be forbidden.
@@ -317,7 +317,7 @@ def test_off_schema_argument_is_rejected(harmony_parser, tok, lltok):
 
 @_requires_llguidance
 def test_bad_enum_value_is_rejected(harmony_parser, tok, lltok):
-    from vllm_mlx.api.tool_grammar import build_tool_grammar
+    from rapid_mlx.api.tool_grammar import build_tool_grammar
 
     grammar = build_tool_grammar(TOOLS, "required", harmony_parser)
     # `unit` enum is {celsius, fahrenheit}; "kelvin" must be forbidden — this is
@@ -335,7 +335,7 @@ def test_bad_enum_value_is_rejected(harmony_parser, tok, lltok):
 
 @_requires_llguidance
 def test_hallucinated_tool_name_is_rejected(harmony_parser, tok, lltok):
-    from vllm_mlx.api.tool_grammar import build_tool_grammar
+    from rapid_mlx.api.tool_grammar import build_tool_grammar
 
     grammar = build_tool_grammar(TOOLS, "required", harmony_parser)
     accepted, total, _ = _consume(
@@ -349,7 +349,7 @@ def test_hallucinated_tool_name_is_rejected(harmony_parser, tok, lltok):
 
 @_requires_llguidance
 def test_missing_constrain_space_is_rejected(harmony_parser, tok, lltok):
-    from vllm_mlx.api.tool_grammar import build_tool_grammar
+    from rapid_mlx.api.tool_grammar import build_tool_grammar
 
     grammar = build_tool_grammar(TOOLS, "required", harmony_parser)
     # The space before <|constrain|> is mandatory in the harmony header
@@ -366,7 +366,7 @@ def test_missing_constrain_space_is_rejected(harmony_parser, tok, lltok):
 
 @_requires_llguidance
 def test_named_choice_narrows_to_requested_tool(harmony_parser, tok, lltok):
-    from vllm_mlx.api.tool_grammar import build_tool_grammar
+    from rapid_mlx.api.tool_grammar import build_tool_grammar
 
     grammar = build_tool_grammar(TOOLS, "get_time", harmony_parser)
     assert grammar is not None
@@ -396,7 +396,7 @@ def test_named_choice_narrows_to_requested_tool(harmony_parser, tok, lltok):
 def test_auto_opts_out_but_required_builds_on_real_parser(harmony_parser):
     # End-to-end opt-out parity on the REAL parser: auto declines (free-form),
     # required/named build. Mirrors the routing's builder_choice mapping.
-    from vllm_mlx.api.tool_grammar import build_tool_grammar
+    from rapid_mlx.api.tool_grammar import build_tool_grammar
 
     assert build_tool_grammar(TOOLS, "auto", harmony_parser) is None
     assert build_tool_grammar(TOOLS, "required", harmony_parser) is not None

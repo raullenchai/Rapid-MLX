@@ -2,15 +2,15 @@ from types import SimpleNamespace
 
 import pytest
 
-from vllm_mlx.api.constants import REASONING_CUTOFF_SENTINEL
-from vllm_mlx.config import ServerConfig
-from vllm_mlx.engine.base import GenerationOutput
-from vllm_mlx.reasoning.deepseek_v4_parser import DeepSeekV4ReasoningParser
-from vllm_mlx.service.helpers import (
+from rapid_mlx.api.constants import REASONING_CUTOFF_SENTINEL
+from rapid_mlx.config import ServerConfig
+from rapid_mlx.engine.base import GenerationOutput
+from rapid_mlx.reasoning.deepseek_v4_parser import DeepSeekV4ReasoningParser
+from rapid_mlx.service.helpers import (
     _apply_reasoning_cutoff_notice,
     _uses_deepseek_v4_reasoning,
 )
-from vllm_mlx.service.postprocessor import StreamingPostProcessor
+from rapid_mlx.service.postprocessor import StreamingPostProcessor
 
 
 def test_chat_mode_absorbs_bare_think_close_after_content() -> None:

@@ -36,9 +36,9 @@ import pytest
 pytestmark = pytest.mark.requires_mlx
 
 # All tests run cross-platform. The route-level integration tests below
-# import ``vllm_mlx.routes.embeddings`` + ``vllm_mlx.routes.audio``
+# import ``rapid_mlx.routes.embeddings`` + ``rapid_mlx.routes.audio``
 # directly (which do NOT pull in MLX at module load), and inject a fake
-# ``vllm_mlx.server`` module into ``sys.modules`` so the route's lazy
+# ``rapid_mlx.server`` module into ``sys.modules`` so the route's lazy
 # ``from ..server import load_embedding_model`` lookup never drags in
 # the MLX-importing real server module.
 #
@@ -54,18 +54,18 @@ def _fake_server_module(
     embedding_model_locked=None,
     load_fn=None,
 ):
-    """Inject a stub ``vllm_mlx.server`` into ``sys.modules``.
+    """Inject a stub ``rapid_mlx.server`` into ``sys.modules``.
 
     The route handler does lazy imports
     (``from ..server import load_embedding_model``,
     ``from ..server import _embedding_engine``,
     ``from ..server import _embedding_model_locked``) so the only
-    surface the test must cover is the ``vllm_mlx.server`` name in
+    surface the test must cover is the ``rapid_mlx.server`` name in
     ``sys.modules``. A real import of that module on Linux CI fails
     with ``ModuleNotFoundError: mlx.core`` — the stub keeps the test
     cross-platform.
     """
-    name = "vllm_mlx.server"
+    name = "rapid_mlx.server"
     prev = sys.modules.get(name)
     fake = types.ModuleType(name)
     fake._embedding_engine = embedding_engine
@@ -89,7 +89,7 @@ def _fake_server_module(
 class TestResolveRequestAliasOrDefault:
     """Pin the single-source-of-truth helper behaviour.
 
-    The helper lives in :mod:`vllm_mlx.service.helpers` and is the only
+    The helper lives in :mod:`rapid_mlx.service.helpers` and is the only
     place that owns the ``"default"`` sentinel + alias-aware equality
     rule. Every route handler is expected to call it; verifying the
     helper directly catches contract breaks without spinning up the
@@ -97,7 +97,7 @@ class TestResolveRequestAliasOrDefault:
     """
 
     def test_returns_locked_when_request_is_none(self):
-        from vllm_mlx.service.helpers import _resolve_request_alias_or_default
+        from rapid_mlx.service.helpers import _resolve_request_alias_or_default
 
         assert (
             _resolve_request_alias_or_default(None, "mlx-community/foo")
@@ -105,7 +105,7 @@ class TestResolveRequestAliasOrDefault:
         )
 
     def test_returns_locked_when_request_is_empty_string(self):
-        from vllm_mlx.service.helpers import _resolve_request_alias_or_default
+        from rapid_mlx.service.helpers import _resolve_request_alias_or_default
 
         assert (
             _resolve_request_alias_or_default("", "mlx-community/foo")
@@ -116,7 +116,7 @@ class TestResolveRequestAliasOrDefault:
         """``"default"`` is the OpenAI canonical placeholder. The
         operator note explicitly forbids adversarial validation for
         this sentinel — it MUST map to the configured model id."""
-        from vllm_mlx.service.helpers import _resolve_request_alias_or_default
+        from rapid_mlx.service.helpers import _resolve_request_alias_or_default
 
         assert (
             _resolve_request_alias_or_default("default", "mlx-community/foo")
@@ -127,7 +127,7 @@ class TestResolveRequestAliasOrDefault:
         """R-04 root cause: the helper must normalize BOTH sides through
         ``resolve_model`` so the short alias the user CLI-passed
         compares equal to the resolved HF id stored in ``cfg``."""
-        from vllm_mlx.service.helpers import _resolve_request_alias_or_default
+        from rapid_mlx.service.helpers import _resolve_request_alias_or_default
 
         # Pick an alias that ships in aliases.json — embeddinggemma-300m-6bit
         # was added by PR #805 for the D-EMBED-ALIAS fix.
@@ -138,7 +138,7 @@ class TestResolveRequestAliasOrDefault:
         assert result == "mlx-community/embeddinggemma-300m-6bit"
 
     def test_full_hf_path_matches_self(self):
-        from vllm_mlx.service.helpers import _resolve_request_alias_or_default
+        from rapid_mlx.service.helpers import _resolve_request_alias_or_default
 
         result = _resolve_request_alias_or_default(
             "mlx-community/embeddinggemma-300m-6bit",
@@ -151,7 +151,7 @@ class TestResolveRequestAliasOrDefault:
         the locked side happens to be the short alias (defensive — the
         CLI mutates ``args.embedding_model`` to the HF path before
         locking, but a future caller might pre-lock the alias form)."""
-        from vllm_mlx.service.helpers import _resolve_request_alias_or_default
+        from rapid_mlx.service.helpers import _resolve_request_alias_or_default
 
         result = _resolve_request_alias_or_default(
             "mlx-community/embeddinggemma-300m-6bit",
@@ -164,7 +164,7 @@ class TestResolveRequestAliasOrDefault:
     def test_unknown_alias_returns_none(self):
         """Caller decides the rejection envelope — helper just signals
         the miss with None so embeddings can 400/503 and audio can 404."""
-        from vllm_mlx.service.helpers import _resolve_request_alias_or_default
+        from rapid_mlx.service.helpers import _resolve_request_alias_or_default
 
         assert (
             _resolve_request_alias_or_default(
@@ -176,7 +176,7 @@ class TestResolveRequestAliasOrDefault:
     def test_returns_none_when_locked_is_none(self):
         """Nothing configured → no match. Caller surfaces the
         embeddings-not-configured 503 via the H-09 guard (R11-G)."""
-        from vllm_mlx.service.helpers import _resolve_request_alias_or_default
+        from rapid_mlx.service.helpers import _resolve_request_alias_or_default
 
         assert _resolve_request_alias_or_default("default", None) is None
         assert _resolve_request_alias_or_default("foo", None) is None
@@ -185,12 +185,12 @@ class TestResolveRequestAliasOrDefault:
         """Belt-and-suspenders: an exception inside ``resolve_model``
         (corrupt ``aliases.json``, partial install) must NOT 500 the
         route. The helper should fall back to a literal-equality miss."""
-        from vllm_mlx.service.helpers import _aliases_match
+        from rapid_mlx.service.helpers import _aliases_match
 
         def boom(_name: str) -> str:  # noqa: ARG001
             raise RuntimeError("registry corrupt")
 
-        monkeypatch.setattr("vllm_mlx.model_aliases.resolve_model", boom)
+        monkeypatch.setattr("rapid_mlx.model_aliases.resolve_model", boom)
         assert _aliases_match("a", "b") is False
         # Literal equality still works without touching the registry.
         assert _aliases_match("same", "same") is True
@@ -206,8 +206,8 @@ class TestEmbeddingsRouteAliasResolution:
     mock engine must be reached for every accepted ``model`` form.
 
     Cross-platform: builds a minimal FastAPI app from
-    ``vllm_mlx.routes.embeddings.router`` (which does NOT pull in MLX
-    at import time) and mocks ``vllm_mlx.server.load_embedding_model``
+    ``rapid_mlx.routes.embeddings.router`` (which does NOT pull in MLX
+    at import time) and mocks ``rapid_mlx.server.load_embedding_model``
     so the load path never instantiates a real engine. Codex r0
     BLOCKING on PR #816 — the previous Apple-Silicon-only gate let
     the regression slip past Linux CI.
@@ -225,8 +225,8 @@ class TestEmbeddingsRouteAliasResolution:
         from fastapi import FastAPI
         from fastapi.testclient import TestClient
 
-        from vllm_mlx.config import get_config
-        from vllm_mlx.routes.embeddings import router
+        from rapid_mlx.config import get_config
+        from rapid_mlx.routes.embeddings import router
 
         mock_engine = MagicMock()
         mock_engine.model_name = self.EMBED_HF
@@ -259,7 +259,7 @@ class TestEmbeddingsRouteAliasResolution:
                     embedding_model_locked=self.EMBED_HF,
                 ),
                 patch(
-                    "vllm_mlx.middleware.auth.check_rate_limit",
+                    "rapid_mlx.middleware.auth.check_rate_limit",
                     new=_noop_rate_limit,
                 ),
             ):
@@ -340,7 +340,7 @@ class TestEmbeddingsRouteAliasResolution:
         is a server-configuration gap, not a bad-client-payload, and
         503 lines up with LangChain / LlamaIndex retry semantics.
 
-        Cross-platform path: inject a stub ``vllm_mlx.server`` module
+        Cross-platform path: inject a stub ``rapid_mlx.server`` module
         with ``_embedding_model_locked = None`` so the H-09 bridge
         sees the unconfigured state without dragging in the
         MLX-importing real server module on Linux CI.
@@ -350,8 +350,8 @@ class TestEmbeddingsRouteAliasResolution:
         from fastapi import FastAPI
         from fastapi.testclient import TestClient
 
-        from vllm_mlx.config import get_config
-        from vllm_mlx.routes.embeddings import router
+        from rapid_mlx.config import get_config
+        from rapid_mlx.routes.embeddings import router
 
         cfg = get_config()
         prev_engine = cfg.embedding_engine
@@ -371,7 +371,7 @@ class TestEmbeddingsRouteAliasResolution:
             with (
                 _fake_server_module(embedding_engine=None, embedding_model_locked=None),
                 patch(
-                    "vllm_mlx.middleware.auth.check_rate_limit",
+                    "rapid_mlx.middleware.auth.check_rate_limit",
                     new=_noop_rate_limit,
                 ),
             ):
@@ -420,7 +420,7 @@ class TestAudioRouteAliasResolution:
         resolve to the same HF path as ``"whisper-large-v3"`` so
         drop-in OpenAI-SDK code works without a manual model override.
         """
-        from vllm_mlx.routes.audio import (
+        from rapid_mlx.routes.audio import (
             DEFAULT_STT_ALIAS,
             STT_MODEL_ALIASES,
             _resolve_stt_model,
@@ -437,7 +437,7 @@ class TestAudioRouteAliasResolution:
         """
         from fastapi import HTTPException
 
-        from vllm_mlx.routes.audio import _resolve_stt_model
+        from rapid_mlx.routes.audio import _resolve_stt_model
 
         with pytest.raises(HTTPException) as exc:
             _resolve_stt_model("non-existent-stt-alias")
@@ -449,14 +449,14 @@ class TestAudioRouteAliasResolution:
 
     def test_stt_resolver_passes_through_known_alias(self):
         """No regression on the known-alias path."""
-        from vllm_mlx.routes.audio import STT_MODEL_ALIASES, _resolve_stt_model
+        from rapid_mlx.routes.audio import STT_MODEL_ALIASES, _resolve_stt_model
 
         for alias, hf in STT_MODEL_ALIASES.items():
             assert _resolve_stt_model(alias) == hf
 
     def test_stt_resolver_passes_through_hf_id(self):
         """No regression on the HF-org/name pass-through path."""
-        from vllm_mlx.routes.audio import _resolve_stt_model
+        from rapid_mlx.routes.audio import _resolve_stt_model
 
         assert (
             _resolve_stt_model("mlx-community/whisper-medium-mlx")
@@ -468,7 +468,7 @@ class TestAudioRouteAliasResolution:
         recognized; bare ``""`` is a client bug."""
         from fastapi import HTTPException
 
-        from vllm_mlx.routes.audio import _resolve_stt_model
+        from rapid_mlx.routes.audio import _resolve_stt_model
 
         with pytest.raises(HTTPException) as exc:
             _resolve_stt_model("")
@@ -490,8 +490,8 @@ class TestChatRouteDefaultNotRegressed:
     """
 
     def test_chat_resolve_model_name_maps_default_to_cfg(self):
-        from vllm_mlx.config import get_config
-        from vllm_mlx.service.helpers import _resolve_model_name
+        from rapid_mlx.config import get_config
+        from rapid_mlx.service.helpers import _resolve_model_name
 
         cfg = get_config()
         prev = cfg.model_name

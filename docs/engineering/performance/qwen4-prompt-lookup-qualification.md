@@ -34,7 +34,7 @@ override used to measure the off baseline:
 
 ```bash
 HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 \
-python3.12 -m vllm_mlx.cli serve MODEL_SNAPSHOT \
+python3.12 -m rapid_mlx.cli serve MODEL_SNAPSHOT \
   --served-model-name qwen3.8-flash-next-4bit \
   --host 127.0.0.1 --port 8465 --no-thinking --no-mllm \
   --speculative-config '{"method":"mtp","disable_auto_k":true}'

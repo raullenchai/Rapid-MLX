@@ -60,8 +60,8 @@ pytestmark = pytest.mark.requires_mlx
 
 import asyncio
 
-from vllm_mlx.request import Request, SamplingParams
-from vllm_mlx.scheduler import Scheduler, SchedulerConfig
+from rapid_mlx.request import Request, SamplingParams
+from rapid_mlx.scheduler import Scheduler, SchedulerConfig
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -180,7 +180,7 @@ async def test_disconnect_subcounter_advances_on_prod_engine_shape():
     fingerprint: ``via_disconnect_total`` stays flat-zero through
     every real client disconnect.
     """
-    from vllm_mlx.service.helpers import _force_abort_request
+    from rapid_mlx.service.helpers import _force_abort_request
 
     scheduler = _make_scheduler()
     engine_core = _EngineCoreLike(scheduler)
@@ -236,7 +236,7 @@ async def test_total_counter_no_2x_overcount_on_prod_shape():
     twice with the same holder doesn't exercise the
     "two independent abort entries" race the dogfood data captures.
     """
-    from vllm_mlx.service.helpers import _force_abort_request
+    from rapid_mlx.service.helpers import _force_abort_request
 
     scheduler = _make_scheduler()
     engine_core = _EngineCoreLike(scheduler)
@@ -320,7 +320,7 @@ async def test_ten_disconnects_on_prod_shape_yield_ten_ten():
     drive them sequentially so the lifetime-ledger dedupe contract
     is the only thing keeping the counter from ticking to 20.
     """
-    from vllm_mlx.service.helpers import _force_abort_request
+    from rapid_mlx.service.helpers import _force_abort_request
 
     scheduler = _make_scheduler()
     engine_core = _EngineCoreLike(scheduler)
@@ -378,7 +378,7 @@ def test_mllm_scheduler_admit_below_cap_does_not_attributeerror_on_lock():
     manually installed the lock — that defeated the point of
     testing the constructor invariant.
     """
-    from vllm_mlx.mllm_scheduler import MLLMScheduler, MLLMSchedulerConfig
+    from rapid_mlx.mllm_scheduler import MLLMScheduler, MLLMSchedulerConfig
 
     class _StubProcessor:
         # MLLMScheduler._get_stop_tokens consults
@@ -449,7 +449,7 @@ def test_sync_scheduler_resolver_finds_deep_prod_path():
     every disconnect falls into the async fallback and pays the
     ``_await_and_record`` race tax.
     """
-    from vllm_mlx.service.helpers import _resolve_sync_scheduler_for_abort
+    from rapid_mlx.service.helpers import _resolve_sync_scheduler_for_abort
 
     scheduler = _make_scheduler()
     engine_core = _EngineCoreLike(scheduler)
@@ -471,7 +471,7 @@ def test_disconnect_recorder_resolver_finds_deep_prod_path():
     scheduler at ``engine._engine.engine.scheduler`` and return its
     bound ``record_disconnect_abort`` method.
     """
-    from vllm_mlx.service.helpers import _resolve_disconnect_abort_recorder
+    from rapid_mlx.service.helpers import _resolve_disconnect_abort_recorder
 
     scheduler = _make_scheduler()
     engine_core = _EngineCoreLike(scheduler)
@@ -489,7 +489,7 @@ def test_disconnect_recorder_resolver_finds_deep_prod_path():
 
 def test_dual_lane_disconnect_aborts_and_attributes_text_owner_only():
     """A text request on an MLLM/text dual lane must not run after disconnect."""
-    from vllm_mlx.service.helpers import _force_abort_request
+    from rapid_mlx.service.helpers import _force_abort_request
 
     mllm_scheduler = _make_scheduler()
     text_scheduler = _make_scheduler()
@@ -509,7 +509,7 @@ def test_dual_lane_disconnect_aborts_and_attributes_text_owner_only():
 
 def test_dual_lane_disconnect_aborts_and_attributes_media_owner_only():
     """The dual-lane resolver must retain the MLLM request path as well."""
-    from vllm_mlx.service.helpers import _force_abort_request
+    from rapid_mlx.service.helpers import _force_abort_request
 
     mllm_scheduler = _make_scheduler()
     text_scheduler = _make_scheduler()
@@ -546,8 +546,8 @@ def test_unresolved_engine_shape_logs_explicit_warning(caplog):
     """
     import logging
 
-    from vllm_mlx.service import helpers as _helpers
-    from vllm_mlx.service.helpers import _record_disconnect_abort_on_scheduler
+    from rapid_mlx.service import helpers as _helpers
+    from rapid_mlx.service.helpers import _record_disconnect_abort_on_scheduler
 
     # Use a name unique to this test so the once-per-engine-type
     # dedupe in the helper doesn't suppress us due to a previous
@@ -565,7 +565,7 @@ def test_unresolved_engine_shape_logs_explicit_warning(caplog):
         _helpers._unresolved_engine_logged.discard(dedupe_key)
 
     # Capture WARNING from whatever logger the helpers module ends up
-    # bound to (rapid-mlx aliases ``vllm_mlx`` → ``rapid_mlx`` on the
+    # bound to (rapid-mlx aliases ``rapid_mlx`` → ``rapid_mlx`` on the
     # logging tree, see runtime/__init__.py).
     caplog.set_level(logging.WARNING)
     _record_disconnect_abort_on_scheduler(_NakedEngineForWarningTest(), "req-naked")
@@ -602,8 +602,8 @@ def test_unresolved_engine_warning_keyed_by_module_qualname(caplog):
     """
     import logging
 
-    from vllm_mlx.service import helpers as _helpers
-    from vllm_mlx.service.helpers import _record_disconnect_abort_on_scheduler
+    from rapid_mlx.service import helpers as _helpers
+    from rapid_mlx.service.helpers import _record_disconnect_abort_on_scheduler
 
     class _SameLeafA:
         _is_mllm = False
@@ -649,8 +649,8 @@ def test_unresolved_engine_warning_dedupes_per_engine_type(caplog):
     """
     import logging
 
-    from vllm_mlx.service import helpers as _helpers
-    from vllm_mlx.service.helpers import _record_disconnect_abort_on_scheduler
+    from rapid_mlx.service import helpers as _helpers
+    from rapid_mlx.service.helpers import _record_disconnect_abort_on_scheduler
 
     class _NakedEngineForDedupeTest:
         _is_mllm = False

@@ -26,12 +26,12 @@ import json
 
 import pytest
 
-from vllm_mlx.model_aliases import resolve_profile
-from vllm_mlx.model_auto_config import detect_model_config
-from vllm_mlx.reasoning import get_parser as get_reasoning_parser
-from vllm_mlx.reasoning.ui_tars_parser import UiTarsReasoningParser
-from vllm_mlx.tool_parsers import ToolParserManager, UiTarsToolParser
-from vllm_mlx.tool_parsers.ui_tars_tool_parser import (
+from rapid_mlx.model_aliases import resolve_profile
+from rapid_mlx.model_auto_config import detect_model_config
+from rapid_mlx.reasoning import get_parser as get_reasoning_parser
+from rapid_mlx.reasoning.ui_tars_parser import UiTarsReasoningParser
+from rapid_mlx.tool_parsers import ToolParserManager, UiTarsToolParser
+from rapid_mlx.tool_parsers.ui_tars_tool_parser import (
     _find_balanced_close,
     _normalize_action,
     _parse_kwargs,
@@ -848,7 +848,7 @@ class TestAnthropicAdapter:
         """Build a minimal OpenAI-style ChatCompletion response with parser output."""
         # Import inside the test to avoid pulling the adapter into module
         # import paths used by smaller parser-only tests.
-        from vllm_mlx.api.models import (
+        from rapid_mlx.api.models import (
             AssistantMessage,
             ChatCompletionChoice,
             ChatCompletionResponse,
@@ -884,7 +884,7 @@ class TestAnthropicAdapter:
         )
 
     def test_click_maps_to_tool_use_with_computer_name(self):
-        from vllm_mlx.api.anthropic_adapter import openai_to_anthropic
+        from rapid_mlx.api.anthropic_adapter import openai_to_anthropic
 
         text = "Thought: Click search.\nAction: click(point='<point>200 300</point>')"
         openai_resp = self._to_openai_choice(text)
@@ -898,7 +898,7 @@ class TestAnthropicAdapter:
         assert tu.input == {"action": "click", "coordinate": [200, 300]}
 
     def test_multi_action_emits_multiple_tool_use_blocks(self):
-        from vllm_mlx.api.anthropic_adapter import openai_to_anthropic
+        from rapid_mlx.api.anthropic_adapter import openai_to_anthropic
 
         text = (
             "Thought: Click then type.\n"

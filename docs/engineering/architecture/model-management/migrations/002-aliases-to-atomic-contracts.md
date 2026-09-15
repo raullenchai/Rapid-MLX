@@ -21,7 +21,7 @@ ModelAlias -> ModelIdentity digest
            -> presentation and route capabilities
 ```
 
-Today `vllm_mlx/aliases.json` is useful but mixes mutable names, repository
+Today `rapid_mlx/aliases.json` is useful but mixes mutable names, repository
 coordinates, route capabilities, inferred architecture, runtime defaults,
 benchmark results, and product recommendations. A benchmark cannot treat that
 whole record as identity: changing a display label or recommendation would make
@@ -121,7 +121,7 @@ cold/warm loads reuse the same existing HF cache objects without redownload.
 
 Implemented foundation:
 
-- `vllm_mlx.catalog.legacy` projects the text/VLM/image/video and audio alias
+- `rapid_mlx.catalog.legacy` projects the text/VLM/image/video and audio alias
   registries plus RAM-tier recommendations into one deterministic graph;
 - `rapid-mlx models --json` retains all legacy buckets and adds the graph under
   `atomic`, including a local deterministic equivalence report;

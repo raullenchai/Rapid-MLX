@@ -25,8 +25,8 @@ import sys
 
 import pytest
 
-from vllm_mlx import _mirror
-from vllm_mlx._mirror import _ProgressTracker
+from rapid_mlx import _mirror
+from rapid_mlx._mirror import _ProgressTracker
 
 
 class _FakeTTY(io.StringIO):

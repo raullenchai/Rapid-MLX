@@ -2,7 +2,7 @@
 """Regression coverage for the scheduler's disk-KV hook wiring.
 
 The existing :mod:`tests.test_disk_kv_checkpoint` battery pins the
-`vllm_mlx.runtime.disk_kv_checkpoint` module API in isolation — but PR
+`rapid_mlx.runtime.disk_kv_checkpoint` module API in isolation — but PR
 #919 shipped wrong-attribute typos (``self.scheduler_config`` and
 ``self.batch_gen``) **inside the scheduler hook** that called that
 module, and the silent-swallow wrapper at ``Scheduler._process_batch_``
@@ -53,9 +53,9 @@ import pytest
 
 mx = pytest.importorskip("mlx.core")
 
-from vllm_mlx.request import Request, SamplingParams  # noqa: E402
-from vllm_mlx.runtime import disk_kv_checkpoint as _dkc  # noqa: E402
-from vllm_mlx.scheduler import Scheduler, SchedulerConfig  # noqa: E402
+from rapid_mlx.request import Request, SamplingParams  # noqa: E402
+from rapid_mlx.runtime import disk_kv_checkpoint as _dkc  # noqa: E402
+from rapid_mlx.scheduler import Scheduler, SchedulerConfig  # noqa: E402
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -368,7 +368,7 @@ def test_disk_checkpoint_cli_default_is_opt_in():
     ``rapid-mlx serve`` user while a config-level test stays green.
     """
     pytest.importorskip("websockets")  # share subcommand import, no-MLX lane
-    from vllm_mlx.cli import build_parser
+    from rapid_mlx.cli import build_parser
 
     args = build_parser().parse_args(["serve", "some/model"])
     assert args.kv_disk_checkpoint_interval == 0

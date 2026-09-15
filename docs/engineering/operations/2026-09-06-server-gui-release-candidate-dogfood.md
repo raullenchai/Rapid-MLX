@@ -186,7 +186,7 @@ quantization/revision provenance rather than trusting catalog metadata.
 - Expanded post-fix selection including cache inventory, first-run, the
   Transformers 5.15 offline-wrapper regression, and packaged BF16 image
   construction: 125 passed, 1 sanctioned offline skip
-- `uv run ruff check vllm_mlx/cli.py tests/test_cli_models.py tests/integrations/test_default_on_deep.py`:
+- `uv run ruff check rapid_mlx/cli.py tests/test_cli_models.py tests/integrations/test_default_on_deep.py`:
   passed
 - `git diff --check`: passed
 - `apps/rapid-mac/scripts/desktop-test-timeout.sh`: 3,542 tests in 306

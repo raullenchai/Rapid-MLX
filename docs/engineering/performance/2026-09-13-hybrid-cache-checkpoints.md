@@ -53,7 +53,7 @@ checkpoints they resume from the last chunk boundary before the edit.
 
 ## Design
 
-* `vllm_mlx/hybrid_state_checkpoints.py` — `StateCheckpoints`, an immutable
+* `rapid_mlx/hybrid_state_checkpoints.py` — `StateCheckpoints`, an immutable
   holder of `(position, arrays)` attached to each recurrent layer under
   `_rapid_state_checkpoints`. MLX arrays are immutable, so a checkpoint is a
   reference to the superseded state array; nothing is copied. The holder
@@ -86,7 +86,7 @@ policy are untouched.
 
 * Mac Studio M3 Ultra 256 GB, Qwen3.8-27B-4bit (`rapid-mlx/Qwen3.8-27B-4bit-MTP-MLX`),
   text lane, `--enable-prefix-cache` (hybrid entries auto 8), MTP on.
-* Serve: `python -m vllm_mlx.cli serve qwen3.8-27b-4bit --port 8123 --enable-prefix-cache`
+* Serve: `python -m rapid_mlx.cli serve qwen3.8-27b-4bit --port 8123 --enable-prefix-cache`
   under `lockf -k /var/tmp/rapid-mlx-large-model.lock`; "off" =
   `RAPID_MLX_HYBRID_CHECKPOINT_MAX=0`.
 * Prompt: 65 generated sections, ~5 700 tokens, plus a one-line question.

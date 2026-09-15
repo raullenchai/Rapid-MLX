@@ -23,7 +23,7 @@ import json
 from types import SimpleNamespace
 from typing import Any
 
-from vllm_mlx.routes.chat import (
+from rapid_mlx.routes.chat import (
     _forced_synth_schema_error,
     _repair_forced_call_arguments,
     _salvage_forced_scalar_arguments,

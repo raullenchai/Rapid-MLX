@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Unit tests for ``vllm_mlx/speculative/dflash/eligibility.py``.
+"""Unit tests for ``rapid_mlx/speculative/dflash/eligibility.py``.
 
 These verify each gate fires in isolation. Integration with the CLI
 and engine is covered separately in ``test_dflash_integration.py``
@@ -10,8 +10,8 @@ from __future__ import annotations
 
 import pytest
 
-from vllm_mlx.model_aliases import AliasProfile, resolve_profile
-from vllm_mlx.speculative.dflash.eligibility import (
+from rapid_mlx.model_aliases import AliasProfile, resolve_profile
+from rapid_mlx.speculative.dflash.eligibility import (
     DFlashUnavailable,
     _looks_like_4bit,
     check,
@@ -151,7 +151,7 @@ def test_legacy_dflash_4bit_cannot_become_curated_by_registry_flag_alone() -> No
 
 
 def test_registry_pair_receipt_requires_exact_verified_tuple(monkeypatch) -> None:
-    from vllm_mlx import model_aliases
+    from rapid_mlx import model_aliases
 
     profile = AliasProfile(
         hf_path="user/target-4bit",
@@ -181,7 +181,7 @@ def test_registry_pair_receipt_requires_exact_verified_tuple(monkeypatch) -> Non
 
 
 def test_registry_pair_searches_past_duplicate_experimental_alias(monkeypatch) -> None:
-    from vllm_mlx import model_aliases
+    from rapid_mlx import model_aliases
 
     experimental = AliasProfile(
         hf_path="user/shared-target-4bit",
@@ -215,7 +215,7 @@ def test_registry_pair_searches_past_duplicate_experimental_alias(monkeypatch) -
 
 
 def test_registry_pair_lookup_fails_closed_on_registry_error(monkeypatch) -> None:
-    from vllm_mlx import model_aliases
+    from rapid_mlx import model_aliases
 
     def _raise():
         raise RuntimeError("registry unavailable")
@@ -281,7 +281,7 @@ def test_report_no_alias_name_renders_cleanly() -> None:
 def test_qwen3_5_27b_8bit_alias_passes_check() -> None:
     """The one alias we've validated by PoC must pass eligibility — a
     regression here means we accidentally tightened a gate."""
-    from vllm_mlx.model_aliases import resolve_profile
+    from rapid_mlx.model_aliases import resolve_profile
 
     profile = resolve_profile("qwen3.5-27b-8bit")
     assert profile is not None, "qwen3.5-27b-8bit alias missing"
@@ -290,7 +290,7 @@ def test_qwen3_5_27b_8bit_alias_passes_check() -> None:
 
 def test_qwen3_8_27b_dflash2_pair_remains_explicit_after_negative_bench() -> None:
     """Known pairing metadata must not turn a failed qualification into support."""
-    from vllm_mlx.model_aliases import resolve_profile
+    from rapid_mlx.model_aliases import resolve_profile
 
     profile = resolve_profile("qwen3.8-27b-4bit")
     assert profile is not None
@@ -312,7 +312,7 @@ def test_qwen3_8_27b_dflash2_pair_remains_explicit_after_negative_bench() -> Non
 def test_abliterated_oq4e_subfolder_is_reported_as_four_bit() -> None:
     """Precision lives in the selected build, not this multi-quant repo name."""
 
-    from vllm_mlx.model_aliases import resolve_profile
+    from rapid_mlx.model_aliases import resolve_profile
 
     alias = "qwen3.8-27b-abliterated-4bit"
     profile = resolve_profile(alias)
@@ -331,7 +331,7 @@ def test_default_qwen3_5_27b_alias_fails_check_with_4bit_reason() -> None:
     generic 'not enabled' message (since supports_dflash=False).
     Confirms users get the right pointer when they pick the wrong
     quantization."""
-    from vllm_mlx.model_aliases import resolve_profile
+    from rapid_mlx.model_aliases import resolve_profile
 
     profile = resolve_profile("qwen3.5-27b-4bit")
     assert profile is not None

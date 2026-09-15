@@ -23,7 +23,7 @@ _HAS_GUIDED = False
 try:  # pragma: no cover - import guard
     import mlx.core as mx  # noqa: F401
 
-    from vllm_mlx.api import guided as _guided_probe
+    from rapid_mlx.api import guided as _guided_probe
 
     _HAS_GUIDED = _guided_probe.is_guided_available()
 except Exception:  # pragma: no cover
@@ -36,7 +36,7 @@ requires_guided = pytest.mark.skipif(
 
 
 def test_scheduler_json_schema_processor_returns_none_without_backend(monkeypatch):
-    from vllm_mlx.api import guided
+    from rapid_mlx.api import guided
 
     monkeypatch.setattr(guided, "HAS_LLGUIDANCE", False)
     assert guided.build_json_schema_logits_processor(object(), {}) is None
@@ -44,7 +44,7 @@ def test_scheduler_json_schema_processor_returns_none_without_backend(monkeypatc
 
 @requires_guided
 def test_scheduler_json_schema_processor_fails_closed(monkeypatch):
-    from vllm_mlx.api import guided, tool_grammar
+    from rapid_mlx.api import guided, tool_grammar
 
     monkeypatch.setattr(tool_grammar, "get_lltokenizer", lambda _tokenizer: None)
     assert guided.build_json_schema_logits_processor(object(), {}) is None
@@ -63,7 +63,7 @@ def test_scheduler_json_schema_processor_forces_eos_after_complete_value():
 
     import mlx.core as mx
 
-    from vllm_mlx.api.guided import build_json_schema_logits_processor
+    from rapid_mlx.api.guided import build_json_schema_logits_processor
 
     tokenizer = _build_byte_level_fast_tokenizer()
     processor = build_json_schema_logits_processor(
@@ -230,7 +230,7 @@ class TestJsonSchemaToPydantic:
     but the conversion contract must keep working for external callers."""
 
     def test_basic_string_property(self):
-        from vllm_mlx.api.guided import json_schema_to_pydantic
+        from rapid_mlx.api.guided import json_schema_to_pydantic
 
         schema = {"type": "object", "properties": {"name": {"type": "string"}}}
 
@@ -242,7 +242,7 @@ class TestJsonSchemaToPydantic:
         assert instance.name == "test"
 
     def test_multiple_property_types(self):
-        from vllm_mlx.api.guided import json_schema_to_pydantic
+        from rapid_mlx.api.guided import json_schema_to_pydantic
 
         schema = {
             "type": "object",
@@ -266,7 +266,7 @@ class TestJsonSchemaToPydantic:
         assert instance.active is True
 
     def test_required_fields(self):
-        from vllm_mlx.api.guided import json_schema_to_pydantic
+        from rapid_mlx.api.guided import json_schema_to_pydantic
 
         schema = {
             "type": "object",
@@ -285,7 +285,7 @@ class TestJsonSchemaToPydantic:
         assert instance.email is None
 
     def test_optional_fields(self):
-        from vllm_mlx.api.guided import json_schema_to_pydantic
+        from rapid_mlx.api.guided import json_schema_to_pydantic
 
         schema = {
             "type": "object",
@@ -299,7 +299,7 @@ class TestJsonSchemaToPydantic:
         assert instance.optional_field is None
 
     def test_array_type(self):
-        from vllm_mlx.api.guided import json_schema_to_pydantic
+        from rapid_mlx.api.guided import json_schema_to_pydantic
 
         schema = {
             "type": "object",
@@ -319,7 +319,7 @@ class TestJsonSchemaToPydantic:
         assert instance.scores == [1.0, 2.5, 3.5]
 
     def test_nested_object(self):
-        from vllm_mlx.api.guided import json_schema_to_pydantic
+        from rapid_mlx.api.guided import json_schema_to_pydantic
 
         schema = {
             "type": "object",
@@ -341,7 +341,7 @@ class TestJsonSchemaToPydantic:
         assert instance.user == {"name": "John", "age": 30}
 
     def test_empty_schema(self):
-        from vllm_mlx.api.guided import json_schema_to_pydantic
+        from rapid_mlx.api.guided import json_schema_to_pydantic
 
         schema = {"type": "object", "properties": {}}
 
@@ -352,7 +352,7 @@ class TestJsonSchemaToPydantic:
         assert hasattr(instance, "model_validate")
 
     def test_missing_properties(self):
-        from vllm_mlx.api.guided import json_schema_to_pydantic
+        from rapid_mlx.api.guided import json_schema_to_pydantic
 
         schema = {"type": "object"}
 
@@ -360,7 +360,7 @@ class TestJsonSchemaToPydantic:
         assert model is not None
 
     def test_complex_schema(self):
-        from vllm_mlx.api.guided import json_schema_to_pydantic
+        from rapid_mlx.api.guided import json_schema_to_pydantic
 
         schema = {
             "type": "object",
@@ -404,7 +404,7 @@ class TestIsGuidedAvailable:
     """``is_guided_available`` reflects the llguidance availability flag."""
 
     def test_returns_true_when_llguidance_available(self):
-        import vllm_mlx.api.guided as guided
+        import rapid_mlx.api.guided as guided
 
         # Temporarily force the flag True and confirm the helper agrees.
         original = guided.HAS_LLGUIDANCE
@@ -415,7 +415,7 @@ class TestIsGuidedAvailable:
             guided.HAS_LLGUIDANCE = original
 
     def test_returns_false_when_llguidance_not_available(self):
-        import vllm_mlx.api.guided as guided
+        import rapid_mlx.api.guided as guided
 
         original = guided.HAS_LLGUIDANCE
         try:
@@ -434,7 +434,7 @@ class TestGuidedGenerator:
     """Construction contract + graceful degradation."""
 
     def test_init_raises_import_error_without_llguidance(self):
-        import vllm_mlx.api.guided as guided
+        import rapid_mlx.api.guided as guided
 
         original = guided.HAS_LLGUIDANCE
         try:
@@ -445,7 +445,7 @@ class TestGuidedGenerator:
             guided.HAS_LLGUIDANCE = original
 
     def test_init_succeeds_with_llguidance(self):
-        import vllm_mlx.api.guided as guided
+        import rapid_mlx.api.guided as guided
 
         original = guided.HAS_LLGUIDANCE
         try:
@@ -467,7 +467,7 @@ class TestGuidedGenerator:
 
     def test_default_calls_preserve_legacy_decode_override_signature(self, monkeypatch):
         """The optional cancellation callback does not break subclasses."""
-        import vllm_mlx.api.guided as guided
+        import rapid_mlx.api.guided as guided
 
         class _LegacyGenerator(guided.GuidedGenerator):
             def _decode_constrained(self, *, grammar, prompt, max_tokens, temperature):
@@ -495,8 +495,8 @@ class TestGuidedGenerator:
 
     def test_generate_json_forwards_and_preserves_cancellation(self, monkeypatch):
         """The public callback reaches decode and cancellation is never degraded."""
-        import vllm_mlx.api.guided as guided
-        from vllm_mlx.api.errors import GuidedGenerationCancelledError
+        import rapid_mlx.api.guided as guided
+        from rapid_mlx.api.errors import GuidedGenerationCancelledError
 
         callback = lambda: True
 
@@ -524,8 +524,8 @@ class TestGuidedGenerator:
 
     def test_module_helper_forwards_and_preserves_cancellation(self, monkeypatch):
         """The convenience helper keeps the same cooperative-cancel contract."""
-        import vllm_mlx.api.guided as guided
-        from vllm_mlx.api.errors import GuidedGenerationCancelledError
+        import rapid_mlx.api.guided as guided
+        from rapid_mlx.api.errors import GuidedGenerationCancelledError
 
         callback = lambda: True
 
@@ -556,7 +556,7 @@ class TestGuidedGenerator:
         must NOT crash — ``_get_lltokenizer`` logs and returns None, and
         ``generate_json`` returns None (caller falls back to
         unconstrained)."""
-        import vllm_mlx.api.guided as guided
+        import rapid_mlx.api.guided as guided
 
         original = guided.HAS_LLGUIDANCE
         try:
@@ -584,7 +584,7 @@ class TestGuidedGenerator:
         HF wrapper. Guided decoding must pass the outer fast tokenizer to
         llguidance instead of unwrapping it one level too far.
         """
-        import vllm_mlx.api.guided as guided
+        import rapid_mlx.api.guided as guided
 
         tokenizer = _build_byte_level_fast_tokenizer()
         generator = guided.GuidedGenerator(object(), tokenizer)
@@ -598,7 +598,7 @@ class TestGuidedGenerator:
         Shape detection must still pass the actual HF tokenizer to the grammar
         adapter; selecting the proxy regresses the standard loader path.
         """
-        import vllm_mlx.api.guided as guided
+        import rapid_mlx.api.guided as guided
 
         tokenizer = _build_byte_level_fast_tokenizer()
 
@@ -670,7 +670,7 @@ class TestConstrainedDecodeWithRealLLGuidance:
         return _Wrapper(hf_fast_tokenizer)
 
     def _make_generator(self, wrapped, plan, prompt="prompt"):
-        import vllm_mlx.api.guided as guided
+        import rapid_mlx.api.guided as guided
 
         gen = guided.GuidedGenerator.__new__(guided.GuidedGenerator)
         gen._tokenizer = wrapped
@@ -719,8 +719,8 @@ class TestConstrainedDecodeWithRealLLGuidance:
         self, wrapped_tokenizer, monkeypatch
     ):
         """Long-prompt cancellation stops before the next model chunk."""
-        import vllm_mlx.api.guided as guided
-        from vllm_mlx.api.errors import GuidedGenerationCancelledError
+        import rapid_mlx.api.guided as guided
+        from rapid_mlx.api.errors import GuidedGenerationCancelledError
 
         target = '{"a":1}'
         plan = wrapped_tokenizer._tokenizer.encode(target)
@@ -748,7 +748,7 @@ class TestConstrainedDecodeWithRealLLGuidance:
         self, wrapped_tokenizer
     ):
         """A committed constrained token cannot hide later cancellation."""
-        from vllm_mlx.api.errors import GuidedGenerationCancelledError
+        from rapid_mlx.api.errors import GuidedGenerationCancelledError
 
         target = '{"a":1}'
         plan = wrapped_tokenizer._tokenizer.encode(target)
@@ -782,7 +782,7 @@ class TestConstrainedDecodeWithRealLLGuidance:
             fill_next_token_bitmask,
         )
 
-        import vllm_mlx.api.guided as guided
+        import rapid_mlx.api.guided as guided
 
         gen = guided.GuidedGenerator.__new__(guided.GuidedGenerator)
         gen._tokenizer = wrapped_tokenizer
@@ -828,7 +828,7 @@ class TestConstrainedDecodeWithRealLLGuidance:
             fill_next_token_bitmask,
         )
 
-        import vllm_mlx.api.guided as guided
+        import rapid_mlx.api.guided as guided
 
         gen = guided.GuidedGenerator.__new__(guided.GuidedGenerator)
         gen._tokenizer = wrapped_tokenizer
@@ -888,7 +888,7 @@ class TestConstrainedDecodeWithRealLLGuidance:
             fill_next_token_bitmask,
         )
 
-        import vllm_mlx.api.guided as guided
+        import rapid_mlx.api.guided as guided
 
         gen = guided.GuidedGenerator.__new__(guided.GuidedGenerator)
         gen._tokenizer = wrapped_tokenizer
@@ -1042,7 +1042,7 @@ class TestConstrainedDecodeWithRealLLGuidance:
         inner = wrapped_tokenizer._tokenizer
 
         # ---- Proof 1: prose is masked at the opener. ----
-        import vllm_mlx.api.guided as guided
+        import rapid_mlx.api.guided as guided
 
         gen0 = guided.GuidedGenerator.__new__(guided.GuidedGenerator)
         gen0._tokenizer = wrapped_tokenizer
@@ -1125,7 +1125,7 @@ class TestChunkedPrefillAndEmptyPrompt:
         return _Wrapper(hf_fast_tokenizer, bos_token_id)
 
     def _build_lltok(self, wrapped):
-        import vllm_mlx.api.guided as guided
+        import rapid_mlx.api.guided as guided
 
         gen = guided.GuidedGenerator.__new__(guided.GuidedGenerator)
         gen._tokenizer = wrapped
@@ -1152,7 +1152,7 @@ class TestChunkedPrefillAndEmptyPrompt:
         import mlx.core as mx
         from mlx_lm.models.cache import KVCache
 
-        import vllm_mlx.api.guided as guided
+        import rapid_mlx.api.guided as guided
 
         wrapped = self._wrap(hf_fast_tokenizer)
         _, lltok = self._build_lltok(wrapped)
@@ -1268,7 +1268,7 @@ class TestChunkedPrefillAndEmptyPrompt:
         """
         import mlx.core as mx
 
-        import vllm_mlx.api.guided as guided
+        import rapid_mlx.api.guided as guided
 
         wrapped = self._wrap(hf_fast_tokenizer)
         _, lltok = self._build_lltok(wrapped)
@@ -1315,7 +1315,7 @@ class TestChunkedPrefillAndEmptyPrompt:
         wrapped = self._wrap(hf_fast_tokenizer, bos_token_id=bos_id)
         _, lltok = self._build_lltok(wrapped)
 
-        import vllm_mlx.api.guided as guided
+        import rapid_mlx.api.guided as guided
 
         plan = list(hf_fast_tokenizer.encode('{"a":1}'))
         # prompt_len is the length of the seeded prompt (the single BOS token).
@@ -1341,7 +1341,7 @@ class TestChunkedPrefillAndEmptyPrompt:
         import mlx.core as mx
         from mlx_lm.models.cache import KVCache
 
-        import vllm_mlx.api.guided as guided
+        import rapid_mlx.api.guided as guided
 
         # Wrapper WITHOUT a bos_token_id attribute.
         wrapped = self._wrap(hf_fast_tokenizer, bos_token_id=None)
@@ -1395,7 +1395,7 @@ class TestChunkedPrefillAndEmptyPrompt:
         import mlx.core as mx
         from mlx_lm.models.cache import KVCache
 
-        import vllm_mlx.api.guided as guided
+        import rapid_mlx.api.guided as guided
 
         wrapped = self._wrap(hf_fast_tokenizer)
         _, lltok = self._build_lltok(wrapped)
@@ -1477,7 +1477,7 @@ class TestImportDiagnostics:
                 raise ImportError("simulated broken llguidance install")
             return real_import(name, *args, **kwargs)
 
-        import vllm_mlx.api.guided as guided
+        import rapid_mlx.api.guided as guided
 
         try:
             with caplog.at_level(logging.WARNING, logger=guided.__name__):
@@ -1509,7 +1509,7 @@ class TestImportDiagnostics:
 
 class TestGenerateWithSchema:
     def test_returns_none_when_llguidance_not_available(self):
-        import vllm_mlx.api.guided as guided
+        import rapid_mlx.api.guided as guided
 
         original = guided.HAS_LLGUIDANCE
         try:
@@ -1529,7 +1529,7 @@ class TestGenerateWithSchema:
         """``generate_with_schema`` must construct a GuidedGenerator and
         return whatever ``generate_json`` produced — verified by patching
         ``generate_json`` to a sentinel."""
-        import vllm_mlx.api.guided as guided
+        import rapid_mlx.api.guided as guided
 
         called = {}
 
@@ -1572,7 +1572,7 @@ class TestGenerateWithSchema:
 
 class TestEdgeCases:
     def test_empty_schema_with_required(self):
-        from vllm_mlx.api.guided import json_schema_to_pydantic
+        from rapid_mlx.api.guided import json_schema_to_pydantic
 
         schema = {"type": "object", "properties": {}, "required": []}
         model = json_schema_to_pydantic(schema)
@@ -1581,7 +1581,7 @@ class TestEdgeCases:
         assert instance is not None
 
     def test_schema_with_all_optional_fields(self):
-        from vllm_mlx.api.guided import json_schema_to_pydantic
+        from rapid_mlx.api.guided import json_schema_to_pydantic
 
         schema = {
             "type": "object",
@@ -1594,7 +1594,7 @@ class TestEdgeCases:
         assert instance.field2 is None
 
     def test_array_with_integer_items(self):
-        from vllm_mlx.api.guided import json_schema_to_pydantic
+        from rapid_mlx.api.guided import json_schema_to_pydantic
 
         schema = {
             "type": "object",
@@ -1606,7 +1606,7 @@ class TestEdgeCases:
         assert instance.ids == [1, 2, 3]
 
     def test_array_with_boolean_items(self):
-        from vllm_mlx.api.guided import json_schema_to_pydantic
+        from rapid_mlx.api.guided import json_schema_to_pydantic
 
         schema = {
             "type": "object",
@@ -1641,7 +1641,7 @@ class TestGuidedJsonSchemaPassthrough:
     def test_passes_raw_schema_to_grammar_from_json_schema(self, monkeypatch):
         from llguidance.mlx import LLMatcher
 
-        import vllm_mlx.api.guided as guided
+        import rapid_mlx.api.guided as guided
 
         captured = {}
         real = LLMatcher.grammar_from_json_schema
@@ -1702,7 +1702,7 @@ class TestGuidedJsonSchemaPassthrough:
     def test_converter_not_called_from_generate_json(self, monkeypatch):
         """Negative control: ``json_schema_to_pydantic`` must NOT be invoked
         from ``generate_json`` — using it re-introduces the bug."""
-        import vllm_mlx.api.guided as guided
+        import rapid_mlx.api.guided as guided
 
         calls = []
 

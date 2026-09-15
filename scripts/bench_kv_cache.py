@@ -22,7 +22,7 @@ import time
 import mlx.core as mx
 from mlx_lm.models.cache import KVCache
 
-from vllm_mlx.memory_cache import (
+from rapid_mlx.memory_cache import (
     _dequantize_cache,
     _quantize_cache,
     estimate_kv_cache_memory,

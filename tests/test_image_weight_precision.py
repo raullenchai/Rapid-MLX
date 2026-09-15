@@ -5,18 +5,18 @@ from types import SimpleNamespace
 
 import pytest
 
-from vllm_mlx import model_sizes
-from vllm_mlx._download_gate import IMAGE_MODEL_REVISIONS
-from vllm_mlx.cli import build_parser
-from vllm_mlx.image.engine import ImageGenerationEngine
-from vllm_mlx.image.precision import (
+from rapid_mlx import model_sizes
+from rapid_mlx._download_gate import IMAGE_MODEL_REVISIONS
+from rapid_mlx.cli import build_parser
+from rapid_mlx.image.engine import ImageGenerationEngine
+from rapid_mlx.image.precision import (
     FLUX2_KLEIN_BF16_ALIAS,
     FLUX2_KLEIN_BF16_REPO,
     FLUX2_KLEIN_Q4_ALIAS,
     resolve_image_weight_precision,
 )
-from vllm_mlx.model_aliases import resolve_model, resolve_profile
-from vllm_mlx.runtime.resident_models import estimate_model_bytes
+from rapid_mlx.model_aliases import resolve_model, resolve_profile
+from rapid_mlx.runtime.resident_models import estimate_model_bytes
 
 
 @pytest.mark.parametrize(
@@ -80,7 +80,7 @@ def test_cli_precision_is_explicit_and_defaults_to_no_override():
 def test_real_cli_selects_bf16_before_serve_dispatch(monkeypatch):
     """Drive main through selection and alias resolution without MLX imports."""
 
-    from vllm_mlx import cli
+    from rapid_mlx import cli
 
     captured = {}
 
@@ -113,7 +113,7 @@ def test_real_cli_selects_bf16_before_serve_dispatch(monkeypatch):
 
 
 def test_real_cli_reports_unsupported_precision_family(monkeypatch, capsys):
-    from vllm_mlx import cli
+    from rapid_mlx import cli
 
     monkeypatch.setattr(
         sys,
@@ -148,7 +148,7 @@ def test_bf16_alias_and_repo_are_image_generation_and_32gb_gated(model_name):
 
 
 def test_bf16_repo_directly_triggers_32gb_admission_warning(monkeypatch, capsys):
-    from vllm_mlx import cli
+    from rapid_mlx import cli
 
     monkeypatch.setattr(
         "psutil.virtual_memory",
@@ -173,7 +173,7 @@ def test_packaged_bf16_uses_model_path_without_onload_quantization(monkeypatch):
         return built_model
 
     monkeypatch.setattr(
-        "vllm_mlx._download_gate.mflux_local_snapshot",
+        "rapid_mlx._download_gate.mflux_local_snapshot",
         lambda repo: "/cache/snapshots/bf16",
     )
     monkeypatch.setattr(
@@ -205,7 +205,7 @@ def test_real_bf16_single_file_layout_is_complete(monkeypatch, tmp_path):
 
     import huggingface_hub.constants
 
-    from vllm_mlx import _download_gate as download_gate
+    from rapid_mlx import _download_gate as download_gate
 
     revision = IMAGE_MODEL_REVISIONS[FLUX2_KLEIN_BF16_REPO]
     snapshot = (
@@ -252,7 +252,7 @@ def test_real_bf16_single_file_layout_is_complete(monkeypatch, tmp_path):
 def test_cold_prefetch_keeps_pinned_bf16_revision_through_every_layer(monkeypatch):
     """Do not download moving main and then the pinned 16 GB snapshot again."""
 
-    from vllm_mlx import cli
+    from rapid_mlx import cli
 
     revision = IMAGE_MODEL_REVISIONS[FLUX2_KLEIN_BF16_REPO]
     observed = {}
@@ -275,13 +275,13 @@ def test_cold_prefetch_keeps_pinned_bf16_revision_through_every_layer(monkeypatc
         return "/cache/snapshot"
 
     monkeypatch.setattr(
-        "vllm_mlx._mirror.download_with_mirror_fallback",
+        "rapid_mlx._mirror.download_with_mirror_fallback",
         _mirror,
     )
     monkeypatch.setattr("huggingface_hub.model_info", _model_info)
     monkeypatch.setattr("huggingface_hub.snapshot_download", _snapshot_download)
     monkeypatch.setattr(
-        "vllm_mlx._download_gate.pin_main_ref",
+        "rapid_mlx._download_gate.pin_main_ref",
         lambda model_name, pinned: observed.setdefault("ref", (model_name, pinned)),
     )
 
@@ -303,8 +303,8 @@ def test_pinned_image_cache_does_not_accept_complete_moving_main(monkeypatch, tm
 
     import huggingface_hub.constants
 
-    from vllm_mlx import _download_gate as download_gate
-    from vllm_mlx import cli
+    from rapid_mlx import _download_gate as download_gate
+    from rapid_mlx import cli
 
     main_revision = "b" * 40
     assert main_revision != IMAGE_MODEL_REVISIONS[FLUX2_KLEIN_BF16_REPO]

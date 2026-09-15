@@ -17,11 +17,11 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from vllm_mlx.cli import _DEFAULT_HYBRID_CACHE_ENTRIES, _resolve_hybrid_cache_entries
-from vllm_mlx.memory_cache import MemoryAwarePrefixCache, MemoryCacheConfig
-from vllm_mlx.model_auto_config import detect_model_config
-from vllm_mlx.model_metadata import ModelMetadata
-from vllm_mlx.model_profile import ModelProfile
+from rapid_mlx.cli import _DEFAULT_HYBRID_CACHE_ENTRIES, _resolve_hybrid_cache_entries
+from rapid_mlx.memory_cache import MemoryAwarePrefixCache, MemoryCacheConfig
+from rapid_mlx.model_auto_config import detect_model_config
+from rapid_mlx.model_metadata import ModelMetadata
+from rapid_mlx.model_profile import ModelProfile
 
 # ---------------------------------------------------------------------------
 # Mock cache layers (mirrors test_hybrid_prefix_cache_growth.py)
@@ -141,7 +141,7 @@ class TestResolveHybridCacheEntries:
     def test_auto_detected_hybrid_metadata_defaults_entries(self, monkeypatch):
         """The already-resolved checkpoint architecture must reach admission."""
         monkeypatch.setattr(
-            "vllm_mlx.model_aliases.resolve_profile", lambda _name: None
+            "rapid_mlx.model_aliases.resolve_profile", lambda _name: None
         )
         result = _resolve_hybrid_cache_entries(
             enable_prefix_cache=True,
@@ -158,7 +158,7 @@ class TestResolveHybridCacheEntries:
 
     def test_auto_detected_hybrid_metadata_respects_explicit_zero(self, monkeypatch):
         monkeypatch.setattr(
-            "vllm_mlx.model_aliases.resolve_profile", lambda _name: None
+            "rapid_mlx.model_aliases.resolve_profile", lambda _name: None
         )
         result = _resolve_hybrid_cache_entries(
             enable_prefix_cache=True,
@@ -175,7 +175,7 @@ class TestResolveHybridCacheEntries:
 
     def test_direct_hf_metadata_detection_reaches_admission(self, monkeypatch):
         """An unprofiled HF id is classified from offline checkpoint metadata."""
-        import vllm_mlx.model_auto_config as auto_config
+        import rapid_mlx.model_auto_config as auto_config
 
         monkeypatch.setattr(auto_config, "resolve_profile", lambda _name: None)
         monkeypatch.setattr(
@@ -234,7 +234,7 @@ class TestResolveHybridCacheEntries:
         )
 
     def test_linear_attention_wrapper_reuses_model_config_contract(self):
-        from vllm_mlx.cli import _config_declares_linear_attention
+        from rapid_mlx.cli import _config_declares_linear_attention
 
         assert _config_declares_linear_attention(
             {"text_config": {"layer_types": ["linear_attention"]}}
@@ -244,7 +244,7 @@ class TestResolveHybridCacheEntries:
     def test_turboquant_lazy_default_remains_available(self, scheduler_config_stub):
         from types import SimpleNamespace
 
-        from vllm_mlx.turboquant import resolve_turboquant_mode_default
+        from rapid_mlx.turboquant import resolve_turboquant_mode_default
 
         args = SimpleNamespace(
             kv_cache_turboquant=None,
@@ -261,7 +261,7 @@ class TestResolveHybridCacheEntries:
         import builtins
         from types import SimpleNamespace
 
-        from vllm_mlx.turboquant import resolve_turboquant_mode_default
+        from rapid_mlx.turboquant import resolve_turboquant_mode_default
 
         real_import = builtins.__import__
 
@@ -292,7 +292,7 @@ class TestResolveHybridCacheEntries:
     def test_auto_defaults_for_deepseek_v4_0731_local_path(self, monkeypatch):
         """DeepSeek's pooling/rotating caches need bounded trim-free reuse."""
         monkeypatch.setattr(
-            "vllm_mlx.model_aliases.resolve_profile", lambda _name: None
+            "rapid_mlx.model_aliases.resolve_profile", lambda _name: None
         )
         result = _resolve_hybrid_cache_entries(
             enable_prefix_cache=True,
@@ -338,7 +338,7 @@ class TestResolveHybridCacheEntries:
     def test_unknown_model_stays_zero(self, monkeypatch):
         """Unknown model (resolve_profile returns None) → stays 0."""
         monkeypatch.setattr(
-            "vllm_mlx.model_aliases.resolve_profile", lambda _name: None
+            "rapid_mlx.model_aliases.resolve_profile", lambda _name: None
         )
         result = _resolve_hybrid_cache_entries(
             enable_prefix_cache=True,
@@ -387,19 +387,19 @@ class TestNeedsBoundedTrimFreeReuseRealAliases:
     """
 
     def test_dense_recurrent_qwen35_9b_needs_bounded_reuse(self):
-        from vllm_mlx.cli import _needs_bounded_trim_free_reuse
+        from rapid_mlx.cli import _needs_bounded_trim_free_reuse
 
         assert _needs_bounded_trim_free_reuse("qwen3.5-9b-4bit") is True
 
     def test_dense_recurrent_qwen36_27b_needs_bounded_reuse(self):
-        from vllm_mlx.cli import _needs_bounded_trim_free_reuse
+        from rapid_mlx.cli import _needs_bounded_trim_free_reuse
 
         assert _needs_bounded_trim_free_reuse("qwen3.6-27b-4bit") is True
 
     def test_lfm25_26b_hybrid_alias_needs_bounded_reuse(self):
         """LFM2.5's declared ArraysCache routing must retain cache entries."""
-        from vllm_mlx.cli import _needs_bounded_trim_free_reuse
-        from vllm_mlx.model_aliases import resolve_profile
+        from rapid_mlx.cli import _needs_bounded_trim_free_reuse
+        from rapid_mlx.model_aliases import resolve_profile
 
         profile = resolve_profile("lfm2.5-2.6b-4bit")
         assert profile is not None
@@ -416,13 +416,13 @@ class TestNeedsBoundedTrimFreeReuseRealAliases:
         )
 
     def test_moe_hybrid_still_needs_bounded_reuse(self):
-        from vllm_mlx.cli import _needs_bounded_trim_free_reuse
+        from rapid_mlx.cli import _needs_bounded_trim_free_reuse
 
         # MoE A3B flagship is is_hybrid=True — unchanged path.
         assert _needs_bounded_trim_free_reuse("qwen3.6-35b-4bit") is True
 
     def test_pure_attention_alias_does_not_need_bounded_reuse(self):
-        from vllm_mlx.cli import _needs_bounded_trim_free_reuse
+        from rapid_mlx.cli import _needs_bounded_trim_free_reuse
 
         # A genuine pure-attention alias (no ArraysCache layers, not pinned
         # is_hybrid_explicit) must stay on the ordinary trimmable prefix cache.
@@ -443,7 +443,7 @@ def _patch_resolve_profile(
     mock_profile.is_hybrid = is_hybrid
     mock_profile.is_hybrid_explicit = is_hybrid_explicit
     monkeypatch.setattr(
-        "vllm_mlx.model_aliases.resolve_profile", lambda _name: mock_profile
+        "rapid_mlx.model_aliases.resolve_profile", lambda _name: mock_profile
     )
 
 
@@ -456,19 +456,19 @@ class TestConfigDeclaresSlidingWindow:
     """Unit tests for the architecture-driven sliding-window probe (no I/O)."""
 
     def test_layer_types_sliding_is_detected(self):
-        from vllm_mlx.cli import _config_declares_sliding_window
+        from rapid_mlx.cli import _config_declares_sliding_window
 
         assert _config_declares_sliding_window(
             {"layer_types": ["sliding_attention", "full_attention"]}
         )
 
     def test_positive_sliding_window_int_is_detected(self):
-        from vllm_mlx.cli import _config_declares_sliding_window
+        from rapid_mlx.cli import _config_declares_sliding_window
 
         assert _config_declares_sliding_window({"sliding_window": 512})
 
     def test_nested_text_config_is_inspected(self):
-        from vllm_mlx.cli import _config_declares_sliding_window
+        from rapid_mlx.cli import _config_declares_sliding_window
 
         # Gemma VLM checkpoints nest the language config under ``text_config``.
         assert _config_declares_sliding_window(
@@ -476,7 +476,7 @@ class TestConfigDeclaresSlidingWindow:
         )
 
     def test_full_attention_only_is_not_detected(self):
-        from vllm_mlx.cli import _config_declares_sliding_window
+        from rapid_mlx.cli import _config_declares_sliding_window
 
         assert not _config_declares_sliding_window(
             {"layer_types": ["full_attention", "full_attention"]}
@@ -486,14 +486,14 @@ class TestConfigDeclaresSlidingWindow:
         """An authoritative all-full-attention ``layer_types`` must NOT be
         overridden by a leftover ``sliding_window`` scalar — that field is inert
         without a sliding layer to apply it (codex #2064)."""
-        from vllm_mlx.cli import _config_declares_sliding_window
+        from rapid_mlx.cli import _config_declares_sliding_window
 
         assert not _config_declares_sliding_window(
             {"layer_types": ["full_attention"], "sliding_window": 4096}
         )
 
     def test_layer_types_sliding_still_detected_with_sliding_window(self):
-        from vllm_mlx.cli import _config_declares_sliding_window
+        from rapid_mlx.cli import _config_declares_sliding_window
 
         assert _config_declares_sliding_window(
             {
@@ -506,7 +506,7 @@ class TestConfigDeclaresSlidingWindow:
         """The language backbone (``text_config``) is authoritative: an all-
         full-attention LM must not be forced sliding by a top-level
         ``sliding_window`` scalar (often a vision/default field) — codex #2064."""
-        from vllm_mlx.cli import _config_declares_sliding_window
+        from rapid_mlx.cli import _config_declares_sliding_window
 
         assert not _config_declares_sliding_window(
             {"sliding_window": 4096, "text_config": {"layer_types": ["full_attention"]}}
@@ -515,7 +515,7 @@ class TestConfigDeclaresSlidingWindow:
     def test_top_level_used_when_nested_lm_config_has_no_signal(self):
         """If ``text_config`` carries no attention signal at all, root-level
         fields still count (checkpoints that place them at the root)."""
-        from vllm_mlx.cli import _config_declares_sliding_window
+        from rapid_mlx.cli import _config_declares_sliding_window
 
         assert _config_declares_sliding_window(
             {"sliding_window": 512, "text_config": {"hidden_size": 1}}
@@ -525,21 +525,21 @@ class TestConfigDeclaresSlidingWindow:
         """Qwen2 / Mistral carry a ``sliding_window`` scalar gated behind
         ``use_sliding_window`` — a positive scalar with the flag off is inert and
         must NOT trigger bounded snapshots (memory regression) — codex #2064."""
-        from vllm_mlx.cli import _config_declares_sliding_window
+        from rapid_mlx.cli import _config_declares_sliding_window
 
         assert not _config_declares_sliding_window(
             {"use_sliding_window": False, "sliding_window": 32768}
         )
 
     def test_use_sliding_window_true_keeps_scalar(self):
-        from vllm_mlx.cli import _config_declares_sliding_window
+        from rapid_mlx.cli import _config_declares_sliding_window
 
         assert _config_declares_sliding_window(
             {"use_sliding_window": True, "sliding_window": 4096}
         )
 
     def test_empty_or_zero_or_none_is_not_detected(self):
-        from vllm_mlx.cli import _config_declares_sliding_window
+        from rapid_mlx.cli import _config_declares_sliding_window
 
         assert not _config_declares_sliding_window({})
         assert not _config_declares_sliding_window(None)
@@ -560,9 +560,9 @@ class TestSlidingWindowNeedsBoundedReuse:
     def test_sliding_window_alias_needs_bounded_reuse(self, monkeypatch):
         # Reference cli through the live module object (not a load-time import)
         # and patch the probe on that SAME object, so a sibling test that
-        # reload/pops ``vllm_mlx.cli`` cannot desync the two (per the string-
+        # reload/pops ``rapid_mlx.cli`` cannot desync the two (per the string-
         # patch-target rule in testing-gotchas).
-        import vllm_mlx.cli as cli
+        import rapid_mlx.cli as cli
 
         _patch_resolve_profile(monkeypatch, is_hybrid=False)
         monkeypatch.setattr(
@@ -571,7 +571,7 @@ class TestSlidingWindowNeedsBoundedReuse:
         assert cli._needs_bounded_trim_free_reuse("gemma-4-26b-4bit") is True
 
     def test_sliding_window_alias_auto_defaults_entries(self, monkeypatch):
-        import vllm_mlx.cli as cli
+        import rapid_mlx.cli as cli
 
         _patch_resolve_profile(monkeypatch, is_hybrid=False)
         monkeypatch.setattr(
@@ -588,10 +588,10 @@ class TestSlidingWindowNeedsBoundedReuse:
     def test_sliding_window_bare_path_no_alias(self, monkeypatch):
         """#2061 exactly: served by a bare checkpoint path (resolve_profile
         returns None), so only the config probe can classify it."""
-        import vllm_mlx.cli as cli
+        import rapid_mlx.cli as cli
 
         monkeypatch.setattr(
-            "vllm_mlx.model_aliases.resolve_profile", lambda _name: None
+            "rapid_mlx.model_aliases.resolve_profile", lambda _name: None
         )
         monkeypatch.setattr(
             cli, "_resolve_checkpoint_config", lambda _name, _profile: self._SLIDING
@@ -606,10 +606,10 @@ class TestSlidingWindowNeedsBoundedReuse:
     def test_full_attention_config_stays_trimmable(self, monkeypatch):
         """A pure full-attention checkpoint must NOT be pushed onto the bounded
         snapshot path — its KVCache is ordinarily trimmable."""
-        import vllm_mlx.cli as cli
+        import rapid_mlx.cli as cli
 
         monkeypatch.setattr(
-            "vllm_mlx.model_aliases.resolve_profile", lambda _name: None
+            "rapid_mlx.model_aliases.resolve_profile", lambda _name: None
         )
         monkeypatch.setattr(
             cli, "_resolve_checkpoint_config", lambda _name, _profile: self._FULL
@@ -627,7 +627,7 @@ class TestSlidingWindowNeedsBoundedReuse:
         """End-to-end #2061: a bare on-disk checkpoint dir (no alias, nothing
         mocked) whose config.json declares sliding attention is classified as
         needing bounded reuse via the real offline config probe."""
-        from vllm_mlx.cli import _needs_bounded_trim_free_reuse
+        from rapid_mlx.cli import _needs_bounded_trim_free_reuse
 
         path = self._write_config(
             tmp_path,
@@ -642,7 +642,7 @@ class TestSlidingWindowNeedsBoundedReuse:
     def test_bare_path_real_config_discovery_full_attention(self, tmp_path):
         """The same real path, for a full-attention checkpoint, stays off the
         bounded path — guards against the probe defaulting to True."""
-        from vllm_mlx.cli import _needs_bounded_trim_free_reuse
+        from rapid_mlx.cli import _needs_bounded_trim_free_reuse
 
         path = self._write_config(
             tmp_path, {"model_type": "llama", "layer_types": ["full_attention"]}

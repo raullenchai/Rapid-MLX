@@ -10,7 +10,7 @@ On a multi-tenant box this is effectively free GPU inference.
 Why this is structurally not a window in our app:
 
 * Auth is wired via FastAPI route ``dependencies=[Depends(verify_api_key)]``
-  at app construction time (module load of ``vllm_mlx/server.py``).
+  at app construction time (module load of ``rapid_mlx/server.py``).
 * By the time ``uvicorn.run(app, ...)`` is invoked, every protected
   router has its dependency chain attached.
 * uvicorn binds inside ``Server.serve()`` — strictly AFTER the app is
@@ -42,10 +42,10 @@ from fastapi.testclient import TestClient
 def _make_models_app() -> FastAPI:
     """Construct the same auth-bearing app routers production serves.
 
-    Mirrors ``vllm_mlx/server.py`` router wiring for the surface most
+    Mirrors ``rapid_mlx/server.py`` router wiring for the surface most
     likely to be polled by a supervisor: ``/v1/models``.
     """
-    from vllm_mlx.routes.models import router as models_router
+    from rapid_mlx.routes.models import router as models_router
 
     app = FastAPI()
     app.include_router(models_router)
@@ -54,7 +54,7 @@ def _make_models_app() -> FastAPI:
 
 def _patch_cfg(**kwargs):
     """Patch ``get_config()`` fields and return originals for restore."""
-    from vllm_mlx.config import get_config
+    from rapid_mlx.config import get_config
 
     cfg = get_config()
     originals = {}
@@ -65,7 +65,7 @@ def _patch_cfg(**kwargs):
 
 
 def _restore_cfg(originals: dict) -> None:
-    from vllm_mlx.config import get_config
+    from rapid_mlx.config import get_config
 
     cfg = get_config()
     for k, v in originals.items():
@@ -177,7 +177,7 @@ def test_no_api_key_keeps_dev_path_anonymous():
 # Static checks across every protected router
 # ---------------------------------------------------------------------------
 
-# Every router that ``vllm_mlx/server.py`` mounts with the OpenAI-shape
+# Every router that ``rapid_mlx/server.py`` mounts with the OpenAI-shape
 # contract (chat, embeddings, audio, etc.) AND must reject anonymous
 # requests when ``cfg.api_key`` is set. Health-probe endpoints
 # (``/healthz``, ``/readyz``) are deliberately NOT in this list — they
@@ -191,15 +191,15 @@ def test_no_api_key_keeps_dev_path_anonymous():
 # whenever a new protected router lands, remove one only if it's
 # moved to anonymous-by-design (and document why).
 PROTECTED_ROUTER_MODULES = (
-    "vllm_mlx.routes.anthropic",
-    "vllm_mlx.routes.audio",
-    "vllm_mlx.routes.cache",
-    "vllm_mlx.routes.chat",
-    "vllm_mlx.routes.completions",
-    "vllm_mlx.routes.embeddings",
-    "vllm_mlx.routes.mcp_routes",
-    "vllm_mlx.routes.models",
-    "vllm_mlx.routes.responses",
+    "rapid_mlx.routes.anthropic",
+    "rapid_mlx.routes.audio",
+    "rapid_mlx.routes.cache",
+    "rapid_mlx.routes.chat",
+    "rapid_mlx.routes.completions",
+    "rapid_mlx.routes.embeddings",
+    "rapid_mlx.routes.mcp_routes",
+    "rapid_mlx.routes.models",
+    "rapid_mlx.routes.responses",
 )
 
 
@@ -225,7 +225,7 @@ def _route_paths_with_auth(router):
     Both gates run BEFORE the route handler executes; either is
     structurally equivalent for the bind→auth ordering invariant.
     """
-    from vllm_mlx.middleware import auth as auth_mod
+    from rapid_mlx.middleware import auth as auth_mod
 
     auth_funcs = {
         getattr(auth_mod, name)

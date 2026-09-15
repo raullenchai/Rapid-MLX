@@ -13,7 +13,7 @@ pytestmark = pytest.mark.requires_mlx
 @pytest.fixture(autouse=True)
 def _clear_puzzle_vendor_registration():
     """Keep process-global mlx-lm registration isolated across tests."""
-    from vllm_mlx.utils.tokenizer import _VENDORED_MODEL_TYPES
+    from rapid_mlx.utils.tokenizer import _VENDORED_MODEL_TYPES
 
     sys.modules.pop("mlx_lm.models.gpt_oss_puzzle", None)
     _VENDORED_MODEL_TYPES.discard("gpt_oss_puzzle")
@@ -23,7 +23,7 @@ def _clear_puzzle_vendor_registration():
 
 
 def test_register_vendored_arch_makes_puzzle_visible_to_mlx_lm():
-    from vllm_mlx.utils.tokenizer import (
+    from rapid_mlx.utils.tokenizer import (
         _VENDORED_MODEL_TYPES,
         _register_vendored_archs,
     )
@@ -31,13 +31,13 @@ def test_register_vendored_arch_makes_puzzle_visible_to_mlx_lm():
     _register_vendored_archs()
 
     module = importlib.import_module("mlx_lm.models.gpt_oss_puzzle")
-    assert module.__name__ == "vllm_mlx.models.gpt_oss_puzzle"
+    assert module.__name__ == "rapid_mlx.models.gpt_oss_puzzle"
     assert "gpt_oss_puzzle" in _VENDORED_MODEL_TYPES
     assert hasattr(module, "Model")
 
 
 def test_vendored_arch_classifier_selects_low_level_loader(tmp_path):
-    from vllm_mlx.utils.tokenizer import (
+    from rapid_mlx.utils.tokenizer import (
         _is_vendored_arch_model,
         _register_vendored_archs,
     )
@@ -49,7 +49,7 @@ def test_vendored_arch_classifier_selects_low_level_loader(tmp_path):
 
 
 def test_loader_routes_puzzle_config_to_vendored_path(tmp_path, monkeypatch):
-    from vllm_mlx.utils import tokenizer
+    from rapid_mlx.utils import tokenizer
 
     (tmp_path / "config.json").write_text(json.dumps({"model_type": "gpt_oss_puzzle"}))
     expected = (object(), object())
@@ -71,7 +71,7 @@ def test_puzzle_uses_per_layer_experts_and_cache_windows():
     import mlx.core as mx
     from mlx_lm.models.cache import KVCache, RotatingKVCache
 
-    from vllm_mlx.models import gpt_oss_puzzle
+    from rapid_mlx.models import gpt_oss_puzzle
 
     args = gpt_oss_puzzle.ModelArgs(
         vocab_size=128,
@@ -109,7 +109,7 @@ def test_puzzle_uses_per_layer_experts_and_cache_windows():
 def test_sanitize_discards_puzzle_fp8_kv_calibration_scales():
     import mlx.core as mx
 
-    from vllm_mlx.models import gpt_oss_puzzle
+    from rapid_mlx.models import gpt_oss_puzzle
 
     model = gpt_oss_puzzle.Model(
         gpt_oss_puzzle.ModelArgs(

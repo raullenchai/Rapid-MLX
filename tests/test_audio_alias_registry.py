@@ -2,7 +2,7 @@
 """R10-C1 — audio alias registry + audio-serve-mode dispatch.
 
 Bo r10-R1 found 0/8 audio aliases boot on 0.8.11. Root cause traced
-to ``vllm_mlx.cli.serve_command``:
+to ``rapid_mlx.cli.serve_command``:
 
 * Short aliases (``kokoro``, ``whisper``, ``parakeet``...) had no
   resolution at all in serve, so ``_ensure_model_downloaded`` queried
@@ -14,7 +14,7 @@ to ``vllm_mlx.cli.serve_command``:
 Codex r8-A r3 predicted this exact regression; Bo r9 + r10 confirmed
 it stayed broken across 2 releases.
 
-R10-C1 introduces a single source of truth (``vllm_mlx/audio/aliases.json``)
+R10-C1 introduces a single source of truth (``rapid_mlx/audio/aliases.json``)
 and an audio-serve-mode fork in ``serve_command`` that routes audio
 names to the audio engines and skips the text-LM loader entirely.
 
@@ -114,7 +114,7 @@ class TestAudioAliasRegistry:
     def test_alias_resolves_to_expected_hf_id(
         self, alias, expected_type, expected_hf_id
     ):
-        from vllm_mlx.audio.registry import resolve_audio_alias
+        from rapid_mlx.audio.registry import resolve_audio_alias
 
         entry = resolve_audio_alias(alias)
         assert entry is not None, (
@@ -145,7 +145,7 @@ class TestAudioAliasRegistry:
     def test_alias_lookup_is_case_insensitive(self, alias):
         """SDKs / docs frequently mix the case (the upstream HF repo
         is ``Kokoro-82M-bf16``); both forms must resolve."""
-        from vllm_mlx.audio.registry import resolve_audio_alias
+        from rapid_mlx.audio.registry import resolve_audio_alias
 
         entry = resolve_audio_alias(alias)
         assert entry is not None, alias
@@ -178,7 +178,7 @@ class TestAudioAliasRegistry:
         intentionally NOT pinned (multiple aliases can map to the
         same HF id; first-alias-wins is implementation detail), only
         that resolution happens AT ALL and lands on a matching entry."""
-        from vllm_mlx.audio.registry import resolve_audio_alias
+        from rapid_mlx.audio.registry import resolve_audio_alias
 
         entry = resolve_audio_alias(hf_id)
         assert entry is not None, (
@@ -209,7 +209,7 @@ class TestAudioAliasRegistry:
         """Text + vision aliases MUST NOT resolve through the audio
         registry — over-eager matching would route text models to
         the audio loader."""
-        from vllm_mlx.audio.registry import resolve_audio_alias
+        from rapid_mlx.audio.registry import resolve_audio_alias
 
         assert resolve_audio_alias(name) is None, name
 
@@ -217,7 +217,7 @@ class TestAudioAliasRegistry:
         """The audio surface must cover the major models the brief
         called out. Pinning the count prevents an accidental delete
         from silently shrinking the surface."""
-        from vllm_mlx.audio.registry import list_audio_aliases
+        from rapid_mlx.audio.registry import list_audio_aliases
 
         entries = list_audio_aliases()
         assert len(entries) >= 20, (
@@ -227,7 +227,7 @@ class TestAudioAliasRegistry:
 
     def test_registry_separates_tts_and_stt(self):
         """Every entry has a ``type`` that's either 'tts' or 'stt'."""
-        from vllm_mlx.audio.registry import list_audio_aliases
+        from rapid_mlx.audio.registry import list_audio_aliases
 
         kinds = {e.type for e in list_audio_aliases()}
         assert kinds == {"tts", "stt"}, kinds
@@ -236,8 +236,8 @@ class TestAudioAliasRegistry:
         """The STT/TTS alias maps in routes.audio mirror the registry
         — a single JSON edit must reach every consumer.
         """
-        from vllm_mlx.audio.registry import stt_aliases, tts_aliases
-        from vllm_mlx.routes.audio import STT_MODEL_ALIASES, TTS_MODEL_ALIASES
+        from rapid_mlx.audio.registry import stt_aliases, tts_aliases
+        from rapid_mlx.routes.audio import STT_MODEL_ALIASES, TTS_MODEL_ALIASES
 
         assert stt_aliases() == STT_MODEL_ALIASES
         assert tts_aliases() == TTS_MODEL_ALIASES
@@ -281,7 +281,7 @@ class TestIsAudioModelAlias:
         ],
     )
     def test_audio_names_recognised(self, name):
-        from vllm_mlx.audio.probe import is_audio_model_alias
+        from rapid_mlx.audio.probe import is_audio_model_alias
 
         assert is_audio_model_alias(name), name
 
@@ -296,7 +296,7 @@ class TestIsAudioModelAlias:
         ],
     )
     def test_non_audio_names_ignored(self, name):
-        from vllm_mlx.audio.probe import is_audio_model_alias
+        from rapid_mlx.audio.probe import is_audio_model_alias
 
         assert not is_audio_model_alias(name), name
 
@@ -335,12 +335,12 @@ class TestAudioServeModeDispatch:
     def test_serve_kokoro_short_alias_routes_to_audio_mode(self):
         """``serve kokoro`` -> _serve_audio_mode, NEVER touches
         _ensure_model_downloaded with the unresolved alias."""
-        from vllm_mlx import cli
+        from rapid_mlx import cli
 
         with (
             patch.object(cli, "_serve_audio_mode") as mock_audio,
             patch.object(cli, "_ensure_model_downloaded") as mock_download,
-            patch("vllm_mlx.server.load_model") as mock_load,
+            patch("rapid_mlx.server.load_model") as mock_load,
         ):
             args = _make_serve_args("kokoro")
             cli.serve_command(args)
@@ -382,7 +382,7 @@ class TestAudioServeModeDispatch:
         ],
     )
     def test_every_audio_name_takes_the_audio_fork(self, alias):
-        from vllm_mlx import cli
+        from rapid_mlx import cli
 
         with (
             patch.object(cli, "_serve_audio_mode") as mock_audio,
@@ -397,7 +397,7 @@ class TestAudioServeModeDispatch:
     def test_serve_audio_mode_resolves_alias_to_hf_id(self):
         """The audio fork stamps args.model with the resolved HF id
         so audio routes / telemetry see a real repo path."""
-        from vllm_mlx import cli
+        from rapid_mlx import cli
 
         captured = {}
 
@@ -440,12 +440,12 @@ class TestTextBootDoesNotRegress:
         ],
     )
     def test_text_model_does_not_take_audio_fork(self, model):
-        from vllm_mlx import cli
+        from rapid_mlx import cli
 
         with (
             patch.object(cli, "_serve_audio_mode") as mock_audio,
             patch(
-                "vllm_mlx._version_check.prompt_upgrade_if_available",
+                "rapid_mlx._version_check.prompt_upgrade_if_available",
                 side_effect=SystemExit(0),
             ),
         ):
@@ -479,11 +479,11 @@ class TestBootGuardStillFires:
 
         monkeypatch.setattr(importlib.util, "find_spec", _find_spec)
         # Reset the lane cache so the test sees the fresh probe.
-        from vllm_mlx.audio import probe
+        from rapid_mlx.audio import probe
 
         probe._reset_probe_cache()
 
-        from vllm_mlx import cli
+        from rapid_mlx import cli
 
         args = _make_serve_args("kokoro")
         with pytest.raises(SystemExit) as excinfo:
@@ -515,8 +515,8 @@ class TestAudioServeModeSyncsServerConfig:
 
     def test_api_key_propagates_to_server_config(self):
         """``--api-key`` must reach ``ServerConfig.api_key`` in audio mode."""
-        from vllm_mlx import cli, server
-        from vllm_mlx.config import get_config
+        from rapid_mlx import cli, server
+        from rapid_mlx.config import get_config
 
         # Clear any inherited state.
         cfg = get_config()
@@ -543,8 +543,8 @@ class TestAudioServeModeSyncsServerConfig:
         """``/v1/models`` reads ``cfg.model_name`` / ``cfg.model_alias``
         — audio mode must populate both so the audio model shows up
         in the listing."""
-        from vllm_mlx import cli, server
-        from vllm_mlx.config import get_config
+        from rapid_mlx import cli, server
+        from rapid_mlx.config import get_config
 
         cfg = get_config()
         cfg.model_name = None
@@ -565,8 +565,8 @@ class TestAudioServeModeSyncsServerConfig:
 
     def test_max_request_bytes_propagates_to_server_config(self):
         """``--max-request-bytes`` must reach the config singleton."""
-        from vllm_mlx import cli, server
-        from vllm_mlx.config import get_config
+        from rapid_mlx import cli, server
+        from rapid_mlx.config import get_config
 
         cfg = get_config()
         cfg.max_request_bytes = 8 * 1024 * 1024  # default
@@ -596,7 +596,7 @@ class TestModelsCommandListsAudio:
     def test_models_lists_kokoro_and_whisper_and_parakeet(self, capsys):
         from argparse import Namespace
 
-        from vllm_mlx import cli
+        from rapid_mlx import cli
 
         args = Namespace(cached=False)
         cli.models_command(args)
@@ -627,7 +627,7 @@ class TestModelsCommandListsAudio:
         """Adding the audio section must not displace the text listing."""
         from argparse import Namespace
 
-        from vllm_mlx import cli
+        from rapid_mlx import cli
 
         args = Namespace(cached=False)
         cli.models_command(args)
@@ -662,8 +662,8 @@ class TestAudioServeHonorsServedModelName:
 
     def test_served_model_name_overrides_audio_model_name(self):
         """``--served-model-name custom-tts`` -> ``cfg.model_name`` == ``custom-tts``."""
-        from vllm_mlx import cli, server
-        from vllm_mlx.config import get_config
+        from rapid_mlx import cli, server
+        from rapid_mlx.config import get_config
 
         cfg = get_config()
         cfg.model_name = None
@@ -700,8 +700,8 @@ class TestAudioServeHonorsServedModelName:
         """Default (no flag) behavior must NOT regress — alias mapping
         stays as it was before R11-K. This guards the 12-alias Bo r12
         dogfood: every alias must still boot with the same wire shape."""
-        from vllm_mlx import cli, server
-        from vllm_mlx.config import get_config
+        from rapid_mlx import cli, server
+        from rapid_mlx.config import get_config
 
         cfg = get_config()
         cfg.model_name = None
@@ -745,8 +745,8 @@ class TestAudioServeHonorsServedModelName:
     def test_all_r12_audio_aliases_boot_with_served_model_name(self, alias):
         """No-regression: all 12 Bo r12 audio aliases must still take
         the audio fork AND honor ``--served-model-name``."""
-        from vllm_mlx import cli, server
-        from vllm_mlx.config import get_config
+        from rapid_mlx import cli, server
+        from rapid_mlx.config import get_config
 
         cfg = get_config()
         cfg.model_name = None
@@ -886,7 +886,7 @@ class TestTextServeServedModelNameDoesNotRegress:
         import ast
         import inspect
 
-        from vllm_mlx import cli
+        from rapid_mlx import cli
 
         tree = ast.parse(inspect.getsource(cli.serve_command))
         # Locate the FunctionDef itself (inspect.getsource returns the
@@ -1022,7 +1022,7 @@ class TestTextServeServedModelNameDoesNotRegress:
         import ast
         import inspect
 
-        from vllm_mlx import server
+        from rapid_mlx import server
 
         tree = ast.parse(inspect.getsource(server.load_model))
         func_def = next((n for n in tree.body if isinstance(n, ast.FunctionDef)), None)
@@ -1103,7 +1103,7 @@ class TestAudioServeHonorsEmbeddingModel:
     def test_embedding_model_pre_loads_in_audio_mode(self):
         """``--embedding-model bge`` on audio serve calls the shared
         helper exactly the same way text mode does."""
-        from vllm_mlx import cli, server
+        from rapid_mlx import cli, server
 
         calls = []
 
@@ -1114,7 +1114,7 @@ class TestAudioServeHonorsEmbeddingModel:
             patch.object(cli, "_run_uvicorn"),
             patch.object(cli, "_port_preflight_or_die"),
             patch.object(server, "load_embedding_model", side_effect=_capture),
-            patch("vllm_mlx.embedding.require_mlx_embeddings_or_exit"),
+            patch("rapid_mlx.embedding.require_mlx_embeddings_or_exit"),
         ):
             args = _make_serve_args("kokoro")
             args.embedding_model = "mlx-community/all-MiniLM-L6-v2-4bit"
@@ -1138,7 +1138,7 @@ class TestAudioServeHonorsEmbeddingModel:
         """No-regression: ``serve kokoro`` (no --embedding-model) must
         NOT trigger the embeddings install guard or loader. The
         embedding loader must stay strictly opt-in."""
-        from vllm_mlx import cli, server
+        from rapid_mlx import cli, server
 
         calls = []
 
@@ -1181,7 +1181,7 @@ class TestAudioServeArgparseAcceptsBothFlags:
         """
         import sys as _sys
 
-        from vllm_mlx import cli as _cli
+        from rapid_mlx import cli as _cli
 
         captured = {}
 
@@ -1284,7 +1284,7 @@ class TestVoxcpmDoesNotAdvertiseChinese:
     def test_voxcpm_still_resolves_as_tts(self):
         """Metadata-only change: the alias must not be dropped or
         retyped."""
-        from vllm_mlx.audio.registry import resolve_audio_alias
+        from rapid_mlx.audio.registry import resolve_audio_alias
 
         entry = resolve_audio_alias("voxcpm")
         assert entry is not None, (
@@ -1315,7 +1315,7 @@ class TestVoxcpmDoesNotAdvertiseChinese:
         must be updated in the same commit — an intentional, reviewed
         act, not an accidental drift back toward advertising Chinese.
         """
-        from vllm_mlx.audio.registry import resolve_audio_alias
+        from rapid_mlx.audio.registry import resolve_audio_alias
 
         entry = resolve_audio_alias("voxcpm")
 

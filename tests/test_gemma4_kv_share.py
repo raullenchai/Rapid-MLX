@@ -2,7 +2,7 @@
 """Verify + lock Gemma 4 cross-layer KV-sharing.
 
 Cross-layer KV-sharing (Gemma-3n / Gemma-4) already ships in the vendored
-text stack (``vllm_mlx/models/gemma4_vendored/language.py``, since 0.10.1):
+text stack (``rapid_mlx/models/gemma4_vendored/language.py``, since 0.10.1):
 the last ``num_kv_shared_layers`` decoder layers are "borrowers" that compute
 no K/V and reuse the last same-type producer layer's K/V. ``make_cache()``
 therefore returns a *producer-only* cache list (borrowers get no cache
@@ -51,9 +51,9 @@ import inspect
 import json
 import logging
 
-from vllm_mlx.models.gemma4_text import _check_kv_share_config
-from vllm_mlx.models.gemma4_vendored.config import TextConfig
-from vllm_mlx.models.gemma4_vendored.language import LanguageModel
+from rapid_mlx.models.gemma4_text import _check_kv_share_config
+from rapid_mlx.models.gemma4_vendored.config import TextConfig
+from rapid_mlx.models.gemma4_vendored.language import LanguageModel
 
 # (size label, num_hidden_layers, num_kv_shared_layers)
 GEMMA4_SIZES = [
@@ -66,7 +66,7 @@ GEMMA4_SIZES = [
 
 
 def test_shared_cache_extension_preserves_positional_call_order():
-    from vllm_mlx.models.gemma4_vendored import language
+    from rapid_mlx.models.gemma4_vendored import language
 
     for callable_type in (language.Attention, language.DecoderLayer):
         parameters = list(inspect.signature(callable_type.__call__).parameters)
@@ -132,7 +132,7 @@ def _expected_previous_kvs(tc: TextConfig) -> list[int]:
 def test_guard_active_logs_debug(caplog):
     """0 < num_kv_shared_layers < num_hidden_layers → sharing active, DEBUG."""
     tc = _build_text_config(35, 20)
-    with caplog.at_level(logging.DEBUG, logger="vllm_mlx.models.gemma4_text"):
+    with caplog.at_level(logging.DEBUG, logger="rapid_mlx.models.gemma4_text"):
         _check_kv_share_config(
             {"num_hidden_layers": 35, "num_kv_shared_layers": 20}, tc, "test/e2b"
         )
@@ -149,7 +149,7 @@ def test_guard_explicit_zero_logs_info_not_warning(caplog):
     raise. The dense sizes legitimately ship 0 and are the common case, so a
     WARNING on every such load would be a false-positive alert."""
     tc = _build_text_config(48, 0)
-    with caplog.at_level(logging.INFO, logger="vllm_mlx.models.gemma4_text"):
+    with caplog.at_level(logging.INFO, logger="rapid_mlx.models.gemma4_text"):
         _check_kv_share_config(
             {"num_hidden_layers": 48, "num_kv_shared_layers": 0}, tc, "test/12b"
         )
@@ -170,7 +170,7 @@ def test_guard_absent_key_defaults_to_active(caplog):
     keys severity off the value the model is actually built from.)"""
     tc = _build_text_config_absent(35)
     assert tc.num_kv_shared_layers == 20  # dataclass default masks absence
-    with caplog.at_level(logging.DEBUG, logger="vllm_mlx.models.gemma4_text"):
+    with caplog.at_level(logging.DEBUG, logger="rapid_mlx.models.gemma4_text"):
         _check_kv_share_config({"num_hidden_layers": 35}, tc, "test/absent")
     text = caplog.text
     assert "KV-sharing ACTIVE" in text
@@ -213,7 +213,7 @@ def test_text_config_default_helper():
     inactive)."""
     import dataclasses
 
-    from vllm_mlx.models.gemma4_text import _text_config_default_num_kv_shared
+    from rapid_mlx.models.gemma4_text import _text_config_default_num_kv_shared
 
     @dataclasses.dataclass
     class _IntDefault:
@@ -251,7 +251,7 @@ def test_guard_absent_key_with_none_field_uses_default(caplog):
     test_text_config_default_helper."""
     tc = _build_text_config(35, 20)
     tc.num_kv_shared_layers = None
-    with caplog.at_level(logging.DEBUG, logger="vllm_mlx.models.gemma4_text"):
+    with caplog.at_level(logging.DEBUG, logger="rapid_mlx.models.gemma4_text"):
         # dict OMITS the key → absent, not explicit null.
         _check_kv_share_config({"num_hidden_layers": 35}, tc, "test/absentnone")
     assert tc.num_kv_shared_layers == 20  # written back to the dataclass default
@@ -457,7 +457,7 @@ def test_resolved_load_path_borrow_active():
     fails — the vendored-only tests above would not catch that. Also runs the
     load-time guard on the resolved active config so the guard cannot silently
     reject the upstream TextConfig shape production resolves."""
-    from vllm_mlx.models.gemma4_text import _resolve_gemma4_text_classes
+    from rapid_mlx.models.gemma4_text import _resolve_gemma4_text_classes
 
     cfg_cls, model_cls = _resolve_gemma4_text_classes()
     tc = _assert_e2b_active_sharing(cfg_cls, model_cls)
@@ -521,7 +521,7 @@ def test_quantized_shared_kv_keeps_producer_attention_metadata(bits, monkeypatch
     assert lm.model.layers[9].layer_type == lm.model.layers[14].layer_type
     lm.model.previous_kvs[14] = 9
 
-    from vllm_mlx.models.gemma4_vendored import language as language_module
+    from rapid_mlx.models.gemma4_vendored import language as language_module
 
     original_attention = language_module.scaled_dot_product_attention
     attention_caches = []
@@ -597,13 +597,13 @@ def test_loader_logs_inactive_sharing(tmp_path, caplog):
     """Through the real ``load_gemma4_text`` path, a config with
     ``num_kv_shared_layers=0`` emits the INACTIVE INFO line before the loader
     reaches the (absent) weight files."""
-    from vllm_mlx.models.gemma4_text import load_gemma4_text
+    from rapid_mlx.models.gemma4_text import load_gemma4_text
 
     model_dir = _write_gemma4_config(tmp_path, num_kv_shared_layers=0)
     # No safetensors present → loader raises FileNotFoundError AFTER the guard
     # has already run and logged.
     with (
-        caplog.at_level(logging.INFO, logger="vllm_mlx.models.gemma4_text"),
+        caplog.at_level(logging.INFO, logger="rapid_mlx.models.gemma4_text"),
         pytest.raises(FileNotFoundError),
     ):
         load_gemma4_text(model_dir, None)
@@ -618,7 +618,7 @@ def test_loader_raises_on_malformed_split(tmp_path):
     """Through the real load path, a config with num_kv_shared_layers >=
     num_hidden_layers raises the malformed-config ValueError (before the
     weight-file check)."""
-    from vllm_mlx.models.gemma4_text import load_gemma4_text
+    from rapid_mlx.models.gemma4_text import load_gemma4_text
 
     # 2 layers, 2 shared → invalid (no producers).
     model_dir = _write_gemma4_config(

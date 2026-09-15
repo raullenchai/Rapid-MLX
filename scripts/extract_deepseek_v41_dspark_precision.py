@@ -38,7 +38,7 @@ from repack_deepseek_v41_native import (  # noqa: E402
     write_safetensors,
 )
 
-from vllm_mlx.models.deepseek_v41_native.convert import sanitize_group  # noqa: E402
+from rapid_mlx.models.deepseek_v41_native.convert import sanitize_group  # noqa: E402
 
 _QUANTIZED_SUFFIXES = (
     ".attn.wq_a",

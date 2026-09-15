@@ -17,10 +17,10 @@ from pathlib import Path
 
 import mlx.core as mx
 
-from vllm_mlx.patches.glm5_next_forget_gate_quant import (
+from rapid_mlx.patches.glm5_next_forget_gate_quant import (
     install_glm5_next_forget_gate_quant_fix,
 )
-from vllm_mlx.patches.glm5_next_runtime import install_glm5_next_runtime_fix
+from rapid_mlx.patches.glm5_next_runtime import install_glm5_next_runtime_fix
 
 DEFAULT_PROMPTS = [
     "Explain why the sky is blue in two sentences.",

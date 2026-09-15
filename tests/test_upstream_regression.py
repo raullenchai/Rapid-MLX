@@ -15,7 +15,7 @@ import json
 
 import pytest
 
-from vllm_mlx.tool_parsers import ToolParserManager
+from rapid_mlx.tool_parsers import ToolParserManager
 
 # ─── Fixtures ────────────────────────────────────────────────────────
 

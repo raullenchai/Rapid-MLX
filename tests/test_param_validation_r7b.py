@@ -57,16 +57,16 @@ runs.
 import pytest
 from pydantic import ValidationError
 
-from vllm_mlx.api.anthropic_models import AnthropicRequest
-from vllm_mlx.api.models import (
+from rapid_mlx.api.anthropic_models import AnthropicRequest
+from rapid_mlx.api.models import (
     ChatCompletionRequest,
     CompletionRequest,
     ResponseFormat,
     StreamOptions,
 )
-from vllm_mlx.api.responses_models import ResponsesRequest
-from vllm_mlx.api.tool_calling import is_strict_json_schema
-from vllm_mlx.api.utils import extract_json_from_response
+from rapid_mlx.api.responses_models import ResponsesRequest
+from rapid_mlx.api.tool_calling import is_strict_json_schema
+from rapid_mlx.api.utils import extract_json_from_response
 
 
 def _user_msg():

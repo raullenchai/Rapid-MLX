@@ -25,7 +25,7 @@ import logging
 
 import pytest
 
-from vllm_mlx.reasoning import finalize_streaming_compat, get_parser
+from rapid_mlx.reasoning import finalize_streaming_compat, get_parser
 
 
 @pytest.fixture
@@ -716,7 +716,7 @@ class TestMultiFamilyParity:
 class TestComposition:
     def test_promoted_parsed_by_tool_parser(self, parser):
         """Promoted content is structurally valid for the tool parser."""
-        from vllm_mlx.tool_parsers import ToolParserManager
+        from rapid_mlx.tool_parsers import ToolParserManager
 
         output = (
             "<think>Let me look this up.\n"

@@ -11,7 +11,7 @@ required list:
 - once-per-install dedup (marker, across processes) and unsampled emission,
 - ``surface`` resolution (cli when chat-spawned, else api).
 
-Every ``vllm_mlx`` import is lazy (inside helpers/tests) so this collects and
+Every ``rapid_mlx`` import is lazy (inside helpers/tests) so this collects and
 runs on the no-mlx ``pr_validate`` gate, like the request-wiring mirrors.
 """
 
@@ -30,7 +30,7 @@ def test_spec_version_is_int_and_doc_exists():
     import re
     from pathlib import Path
 
-    from vllm_mlx.telemetry import activation_spec as spec
+    from rapid_mlx.telemetry import activation_spec as spec
 
     assert isinstance(spec.ACTIVATION_SPEC_VERSION, int)
     assert spec.ACTIVATION_SPEC_VERSION >= 1
@@ -50,7 +50,7 @@ def test_spec_version_is_int_and_doc_exists():
 
 
 def test_kinds_and_surfaces_are_the_allowlist():
-    from vllm_mlx.telemetry import activation_spec as spec
+    from rapid_mlx.telemetry import activation_spec as spec
 
     assert {
         "first_inference",
@@ -82,7 +82,7 @@ def test_kinds_and_surfaces_are_the_allowlist():
 
 def test_health_and_models_are_not_inference_endpoints():
     """Liveness/metadata probes must never be classed as inference."""
-    from vllm_mlx.telemetry import activation_spec as spec
+    from rapid_mlx.telemetry import activation_spec as spec
 
     for probe in ("/health", "/healthz", "/v1/models", "/models"):
         assert probe not in spec.INFERENCE_ENDPOINTS
@@ -108,13 +108,13 @@ def test_health_and_models_are_not_inference_endpoints():
     ],
 )
 def test_is_successful_inference(status, tokens, expected):
-    from vllm_mlx.telemetry.activation_spec import is_successful_inference
+    from rapid_mlx.telemetry.activation_spec import is_successful_inference
 
     assert is_successful_inference(status, tokens) is expected
 
 
 def test_is_successful_inference_tolerates_bad_types():
-    from vllm_mlx.telemetry.activation_spec import is_successful_inference
+    from rapid_mlx.telemetry.activation_spec import is_successful_inference
 
     assert is_successful_inference("nope", 5) is False
     assert is_successful_inference(200, None) is False
@@ -129,10 +129,10 @@ def fake_home(tmp_path, monkeypatch):
     monkeypatch.delenv("RAPID_MLX_TELEMETRY", raising=False)
     monkeypatch.delenv("RAPID_MLX_CHAT_SPAWN", raising=False)
 
-    import vllm_mlx.telemetry.state as state
+    import rapid_mlx.telemetry.state as state
 
     importlib.reload(state)
-    import vllm_mlx.telemetry.emit as emit
+    import rapid_mlx.telemetry.emit as emit
 
     importlib.reload(emit)
     emit._reset_for_tests()
@@ -140,7 +140,7 @@ def fake_home(tmp_path, monkeypatch):
 
 
 def test_claim_activation_marker_is_once_per_kind(fake_home):
-    from vllm_mlx.telemetry import state
+    from rapid_mlx.telemetry import state
 
     assert state.claim_activation_marker("first_inference") is True
     # Second claim of the SAME kind loses — this is the once-per-install latch.
@@ -151,7 +151,7 @@ def test_claim_activation_marker_is_once_per_kind(fake_home):
 
 
 def test_marker_path_is_per_kind_under_rapid_mlx(fake_home):
-    from vllm_mlx.telemetry import state
+    from rapid_mlx.telemetry import state
 
     p = state.activation_marker_path("first_inference")
     assert p.name == "activation_seen_first_inference"
@@ -169,13 +169,13 @@ def test_claim_activation_marker_is_atomic_across_processes(fake_home):
     ``test_activation_enqueues_before_claiming_marker``.
 
     ``claim_activation_marker`` is a top-level function in the importable
-    ``vllm_mlx.telemetry.state`` package, so it pickles by reference and the
+    ``rapid_mlx.telemetry.state`` package, so it pickles by reference and the
     spawned children import only that light module (no mlx), keeping the test
     fast and free of the tests-package import pitfalls of a custom worker.
     """
     import multiprocessing as mp
 
-    from vllm_mlx.telemetry.state import claim_activation_marker
+    from rapid_mlx.telemetry.state import claim_activation_marker
 
     n = 8
     ctx = mp.get_context("spawn")
@@ -197,7 +197,7 @@ def test_activation_enqueues_before_claiming_marker(opted_in, monkeypatch):
     orderings and so cannot pin which came first. In design B (claim-first) the
     recorded order would be ``["claim", "enqueue"]``; design A must be the
     reverse."""
-    from vllm_mlx.telemetry import emit, state
+    from rapid_mlx.telemetry import emit, state
 
     order: list[str] = []
 
@@ -225,14 +225,14 @@ def test_activation_enqueues_before_claiming_marker(opted_in, monkeypatch):
 
 
 def test_server_surface_defaults_to_api(fake_home, monkeypatch):
-    from vllm_mlx.telemetry import emit
+    from rapid_mlx.telemetry import emit
 
     monkeypatch.delenv("RAPID_MLX_CHAT_SPAWN", raising=False)
     assert emit.server_surface() == "api"
 
 
 def test_server_surface_is_cli_when_chat_spawned(fake_home, monkeypatch):
-    from vllm_mlx.telemetry import emit
+    from rapid_mlx.telemetry import emit
 
     monkeypatch.setenv("RAPID_MLX_CHAT_SPAWN", "1")
     assert emit.server_surface() == "cli"
@@ -240,7 +240,7 @@ def test_server_surface_is_cli_when_chat_spawned(fake_home, monkeypatch):
 
 @pytest.mark.parametrize("val", ["1", "true", "TRUE", "yes", "on", " 1 "])
 def test_server_surface_truthy_values_are_cli(fake_home, monkeypatch, val):
-    from vllm_mlx.telemetry import emit
+    from rapid_mlx.telemetry import emit
 
     monkeypatch.setenv("RAPID_MLX_CHAT_SPAWN", val)
     assert emit.server_surface() == "cli"
@@ -252,7 +252,7 @@ def test_server_surface_non_allowlisted_values_default_to_api(
 ):
     """Only an explicit truthy allowlist is CLI; a typo like ``treu`` must
     degrade to ``api``, not silently corrupt attribution toward ``cli``."""
-    from vllm_mlx.telemetry import emit
+    from rapid_mlx.telemetry import emit
 
     monkeypatch.setenv("RAPID_MLX_CHAT_SPAWN", val)
     assert emit.server_surface() == "api"
@@ -263,7 +263,7 @@ def test_server_surface_non_allowlisted_values_default_to_api(
 
 @pytest.fixture
 def opted_in(fake_home):
-    from vllm_mlx.telemetry.state import record_consent
+    from rapid_mlx.telemetry.state import record_consent
 
     record_consent(True, rapid_mlx_version="0.0.0+test")
     return fake_home
@@ -271,7 +271,7 @@ def opted_in(fake_home):
 
 @pytest.fixture
 def stub_queue(monkeypatch):
-    from vllm_mlx.telemetry import emit
+    from rapid_mlx.telemetry import emit
 
     captured: list[dict] = []
 
@@ -284,19 +284,19 @@ def stub_queue(monkeypatch):
 
 
 def test_activation_no_op_when_disabled(fake_home, stub_queue):
-    from vllm_mlx.telemetry import emit
+    from rapid_mlx.telemetry import emit
 
     emit.activation(activation_kind="first_inference", surface="api")
     assert stub_queue == []
     # A disabled install must NOT burn its once-ever marker, so enabling
     # later still lets the first real inference emit.
-    from vllm_mlx.telemetry import state
+    from rapid_mlx.telemetry import state
 
     assert not state.activation_marker_path("first_inference").exists()
 
 
 def test_activation_emits_expected_envelope(opted_in, stub_queue):
-    from vllm_mlx.telemetry import emit
+    from rapid_mlx.telemetry import emit
 
     emit.activation(activation_kind="first_inference", surface="cli")
     assert len(stub_queue) == 1
@@ -314,7 +314,7 @@ def test_activation_emits_expected_envelope(opted_in, stub_queue):
 
 
 def test_activation_is_once_per_install_within_process(opted_in, stub_queue):
-    from vllm_mlx.telemetry import emit
+    from rapid_mlx.telemetry import emit
 
     emit.activation(activation_kind="first_inference", surface="api")
     emit.activation(activation_kind="first_inference", surface="api")
@@ -329,7 +329,7 @@ def test_activation_marker_dedup_survives_latch_reset(opted_in, stub_queue):
     marker. (The genuine cross-process *race* is covered by
     ``test_claim_activation_marker_is_atomic_across_processes``; this asserts the
     single-process restart path.)"""
-    from vllm_mlx.telemetry import emit
+    from rapid_mlx.telemetry import emit
 
     emit.activation(activation_kind="first_inference", surface="api")
     assert len(stub_queue) == 1
@@ -345,7 +345,7 @@ def test_activation_retries_after_enqueue_failure(opted_in, monkeypatch):
     leaves the marker unclaimed, so the next successful inference retries and
     sends. (Claiming before enqueue would drop the install from the funnel
     forever on one queue hiccup — the failure mode this ordering avoids.)"""
-    from vllm_mlx.telemetry import emit, state
+    from rapid_mlx.telemetry import emit, state
 
     class _BoomThenOK:
         def __init__(self):
@@ -381,7 +381,7 @@ def test_activation_latches_even_when_marker_persist_fails(
     NOT re-emit on every later request. The cross-process duplicate this allows
     is folded downstream by the stable client_id (guaranteed present whenever
     activation can emit); the in-process latch bounds it to ONE per process."""
-    from vllm_mlx.telemetry import emit, state
+    from rapid_mlx.telemetry import emit, state
 
     # Simulate an unwritable state dir: claim always fails, marker never appears.
     monkeypatch.setattr(state, "claim_activation_marker", lambda kind: False)
@@ -405,7 +405,7 @@ def test_activation_marker_rejects_path_traversal_kinds(fake_home, tmp_path):
     process or a prior run."""
     import pytest as _pytest
 
-    from vllm_mlx.telemetry import state
+    from rapid_mlx.telemetry import state
 
     # A kind that would escape ~/.rapid-mlx and land on a unique, guaranteed-
     # absent target if validation were missing.
@@ -424,7 +424,7 @@ def test_reset_state_clears_in_process_activation_latch(opted_in, stub_queue):
     """`telemetry reset` in the SAME process must let a re-enabled install
     re-earn milestones: reset_state wipes the markers AND the in-memory latch,
     so the next call is not silently suppressed by stale process state."""
-    from vllm_mlx.telemetry import emit, state
+    from rapid_mlx.telemetry import emit, state
 
     emit.activation(activation_kind="first_inference", surface="api")
     assert len(stub_queue) == 1
@@ -442,7 +442,7 @@ def test_reset_state_clears_activation_markers(opted_in, stub_queue):
     """`telemetry reset` rotates the client_id; it must also drop the
     activation markers so the fresh identity can re-earn its milestones —
     otherwise dedup keyed on a stale marker permanently silences the funnel."""
-    from vllm_mlx.telemetry import emit, state
+    from rapid_mlx.telemetry import emit, state
 
     emit.activation(activation_kind="first_inference", surface="api")
     assert state.activation_marker_path("first_inference").exists()
@@ -451,7 +451,7 @@ def test_reset_state_clears_activation_markers(opted_in, stub_queue):
 
 
 def test_activation_kinds_are_independent(opted_in, stub_queue):
-    from vllm_mlx.telemetry import emit
+    from rapid_mlx.telemetry import emit
 
     emit.activation(activation_kind="first_inference", surface="api")
     emit.activation(activation_kind="model_pull", surface="cli")
@@ -460,7 +460,7 @@ def test_activation_kinds_are_independent(opted_in, stub_queue):
 
 
 def test_activation_drops_unknown_kind(opted_in, stub_queue):
-    from vllm_mlx.telemetry import emit
+    from rapid_mlx.telemetry import emit
 
     emit.activation(activation_kind="not_a_kind", surface="api")
     assert stub_queue == []
@@ -469,7 +469,7 @@ def test_activation_drops_unknown_kind(opted_in, stub_queue):
 def test_activation_drops_unknown_surface(opted_in, stub_queue):
     """An off-allowlist surface is an instrumentation bug: drop the event (like
     an unknown kind) rather than silently mislabel it as ``api``."""
-    from vllm_mlx.telemetry import emit, state
+    from rapid_mlx.telemetry import emit, state
 
     emit.activation(activation_kind="first_inference", surface="carrier-pigeon")
     assert stub_queue == []
@@ -495,7 +495,7 @@ def test_activation_drops_unknown_surface(opted_in, stub_queue):
 def test_activation_drops_invalid_kind_surface_pair(
     opted_in, stub_queue, activation_kind, surface
 ):
-    from vllm_mlx.telemetry import emit, state
+    from rapid_mlx.telemetry import emit, state
 
     emit.activation(activation_kind=activation_kind, surface=surface)
 
@@ -507,7 +507,7 @@ def test_activation_is_not_request_sampled(opted_in, stub_queue, monkeypatch):
     """Setting the request sample rate to 0 silences ``request`` events but
     MUST NOT silence activation — a first-touch milestone can't be sampled."""
     monkeypatch.setenv("RAPID_MLX_TELEMETRY_REQUEST_SAMPLE", "0")
-    from vllm_mlx.telemetry import emit
+    from rapid_mlx.telemetry import emit
 
     emit.activation(activation_kind="first_inference", surface="api")
     assert len(stub_queue) == 1
@@ -515,13 +515,13 @@ def test_activation_is_not_request_sampled(opted_in, stub_queue, monkeypatch):
 
 def test_session_start_does_not_emit_activation(opted_in, stub_queue):
     """Server startup / session_start is NOT engagement."""
-    from vllm_mlx.telemetry import emit
+    from rapid_mlx.telemetry import emit
 
     emit.session_start(subcommand="serve", first_session=True)
     assert len(stub_queue) == 1
     assert stub_queue[0]["event"] == "session_start"
     # And no activation marker was created by merely starting.
-    from vllm_mlx.telemetry import state
+    from rapid_mlx.telemetry import state
 
     assert not state.activation_marker_path("first_inference").exists()
 
@@ -550,7 +550,7 @@ class _FakeChatEngine:
     _completion_tokens = 8
 
     async def chat(self, messages, **kwargs):
-        from vllm_mlx.engine.base import GenerationOutput
+        from rapid_mlx.engine.base import GenerationOutput
 
         return GenerationOutput(
             text=self._text,
@@ -570,8 +570,8 @@ async def _await_direct(coro, *_a, **_k):
 
 
 def _patch_route(monkeypatch, engine, activation_calls):
-    from vllm_mlx.routes import chat
-    from vllm_mlx.telemetry import emit
+    from rapid_mlx.routes import chat
+    from rapid_mlx.telemetry import emit
 
     monkeypatch.setattr(emit, "is_enabled", lambda *a, **k: True)
     monkeypatch.setattr(emit, "request", lambda **kw: None)  # silence the sampled event
@@ -591,7 +591,7 @@ def _patch_route(monkeypatch, engine, activation_calls):
 
 
 def _request(model="test-model", stream=False):
-    from vllm_mlx.api.models import ChatCompletionRequest
+    from rapid_mlx.api.models import ChatCompletionRequest
 
     return ChatCompletionRequest(
         model=model,
@@ -603,7 +603,7 @@ def _request(model="test-model", stream=False):
 
 @pytest.mark.asyncio
 async def test_nonstreaming_success_emits_first_inference(monkeypatch):
-    from vllm_mlx.routes import chat
+    from rapid_mlx.routes import chat
 
     calls: list[dict] = []
     _patch_route(monkeypatch, _FakeChatEngine(), calls)
@@ -624,7 +624,7 @@ async def test_nonstreaming_success_emits_first_inference(monkeypatch):
 @pytest.mark.asyncio
 async def test_nonstreaming_success_surface_cli_when_chat_spawned(monkeypatch):
     monkeypatch.setenv("RAPID_MLX_CHAT_SPAWN", "1")
-    from vllm_mlx.routes import chat
+    from rapid_mlx.routes import chat
 
     calls: list[dict] = []
     _patch_route(monkeypatch, _FakeChatEngine(), calls)
@@ -643,7 +643,7 @@ async def test_nonstreaming_success_surface_cli_when_chat_spawned(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_nonstreaming_empty_generation_does_not_engage(monkeypatch):
-    from vllm_mlx.routes import chat
+    from rapid_mlx.routes import chat
 
     calls: list[dict] = []
     _patch_route(monkeypatch, _EmptyChatEngine(), calls)
@@ -701,7 +701,7 @@ class _FakeStreamEngine:
 
 @pytest.fixture
 def _stream_cfg(monkeypatch):
-    from vllm_mlx.config import server_config
+    from rapid_mlx.config import server_config
 
     cfg = server_config.get_config()
     monkeypatch.setattr(cfg, "tool_call_parser", None, raising=False)
@@ -713,8 +713,8 @@ def _stream_cfg(monkeypatch):
 
 
 def _drive_stream(monkeypatch, engine, activation_calls):
-    from vllm_mlx.routes import chat
-    from vllm_mlx.telemetry import emit
+    from rapid_mlx.routes import chat
+    from rapid_mlx.telemetry import emit
 
     # monkeypatch (not direct assignment) so teardown restores emit's module
     # state — otherwise these fakes leak into later tests in the same process.
@@ -773,8 +773,8 @@ def test_streaming_client_cancel_does_not_engage(fake_home, _stream_cfg, monkeyp
     """Client disconnect mid-stream (break out of the async-for, then aclose ->
     GeneratorExit at the paused yield) must not record engagement — emission is
     reached only after a full normal drain."""
-    from vllm_mlx.routes import chat
-    from vllm_mlx.telemetry import emit
+    from rapid_mlx.routes import chat
+    from rapid_mlx.telemetry import emit
 
     calls: list[dict] = []
     monkeypatch.setattr(emit, "is_enabled", lambda *a, **k: True)

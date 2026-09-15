@@ -67,7 +67,7 @@ print(response.choices[0].message.tool_calls)
 For embedding rapid-mlx in your own application:
 
 ```python
-from vllm_mlx.engine import BatchedEngine
+from rapid_mlx.engine import BatchedEngine
 
 engine = BatchedEngine("mlx-community/Llama-3.2-3B-Instruct-4bit")
 await engine.start()

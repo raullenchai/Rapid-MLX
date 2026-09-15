@@ -17,12 +17,12 @@ ROOT = SCRIPT_DIR.parents[0]
 ALIASES = (
     SCRIPT_DIR / "aliases.json"
     if (SCRIPT_DIR / "aliases.json").is_file()
-    else ROOT / "vllm_mlx/aliases.json"
+    else ROOT / "rapid_mlx/aliases.json"
 )
 SIZES = (
     SCRIPT_DIR / "model_sizes.json"
     if (SCRIPT_DIR / "model_sizes.json").is_file()
-    else ROOT / "vllm_mlx/model_sizes.json"
+    else ROOT / "rapid_mlx/model_sizes.json"
 )
 DEFAULT_LOCK = Path("/var/tmp/rapid-mlx-large-model.lock")
 GIB = 1024**3

@@ -22,7 +22,7 @@ from fastapi.testclient import TestClient
 # the Linux CI runners (`pr_validate.targeted_tests`,
 # `.github/workflows/ci.yml`'s test-matrix) deliberately don't satisfy:
 #
-#   * the audio route transitively imports `vllm_mlx.config` ->
+#   * the audio route transitively imports `rapid_mlx.config` ->
 #     `engine` -> `engine_core` -> `scheduler`, which `import mlx.core`
 #     and `from mlx_lm.* import ...` at module load — only the
 #     apple-silicon CI job installs MLX, the Linux ones don't.
@@ -62,7 +62,7 @@ class _FakeResult:
 
 
 class _FakeSTTEngine:
-    """Stand-in for `vllm_mlx.audio.stt.STTEngine` that records the file it
+    """Stand-in for `rapid_mlx.audio.stt.STTEngine` that records the file it
     was handed but performs no real transcription."""
 
     instances: list[_FakeSTTEngine] = []
@@ -91,20 +91,20 @@ def audio_client(monkeypatch):
     """Build a TestClient mounting only the audio router, with the STT
     engine replaced by an in-process fake so no model is loaded.
 
-    Mirrors how ``vllm_mlx.server`` wires the production app: the
+    Mirrors how ``rapid_mlx.server`` wires the production app: the
     :class:`AudioBodyLimitMiddleware` is installed so the
     Content-Length pre-check is exercised end-to-end."""
 
     # Reset the cached module-level engine in routes.audio between tests so
     # the second test does not reuse the first test's fake.
-    from vllm_mlx.routes import audio as audio_route
+    from rapid_mlx.routes import audio as audio_route
 
     monkeypatch.setattr(audio_route, "_stt_engine", None, raising=False)
 
     # Stub the stt submodule import done lazily inside the handler.
-    stt_mod = types.ModuleType("vllm_mlx.audio.stt")
+    stt_mod = types.ModuleType("rapid_mlx.audio.stt")
     stt_mod.STTEngine = _FakeSTTEngine
-    monkeypatch.setitem(sys.modules, "vllm_mlx.audio.stt", stt_mod)
+    monkeypatch.setitem(sys.modules, "rapid_mlx.audio.stt", stt_mod)
     _FakeSTTEngine.instances.clear()
 
     app = FastAPI()
@@ -121,7 +121,7 @@ def test_oversized_audio_upload_returns_413(audio_client, monkeypatch):
     This is the regression test for issue #193 — DoS via memory exhaustion
     on the audio transcription endpoint."""
 
-    from vllm_mlx.routes import audio as audio_route
+    from rapid_mlx.routes import audio as audio_route
 
     # Shrink the cap so the test stays fast and memory-light while still
     # exercising the streaming guard.
@@ -159,16 +159,16 @@ def test_streaming_cap_rejects_chunked_upload_before_engine_load(monkeypatch):
 
     from fastapi import HTTPException
 
-    from vllm_mlx.routes import audio as audio_route
+    from rapid_mlx.routes import audio as audio_route
 
     monkeypatch.setattr(audio_route, "MAX_AUDIO_UPLOAD_SIZE", 1024, raising=True)
     monkeypatch.setattr(audio_route, "_stt_engine", None, raising=False)
 
     # Stub the engine import so a regression that *did* load the engine
     # would be visible via _FakeSTTEngine.instances.
-    stt_mod = types.ModuleType("vllm_mlx.audio.stt")
+    stt_mod = types.ModuleType("rapid_mlx.audio.stt")
     stt_mod.STTEngine = _FakeSTTEngine
-    monkeypatch.setitem(sys.modules, "vllm_mlx.audio.stt", stt_mod)
+    monkeypatch.setitem(sys.modules, "rapid_mlx.audio.stt", stt_mod)
     _FakeSTTEngine.instances.clear()
 
     class _LyingChunkedUpload:
@@ -258,7 +258,7 @@ def test_content_length_guard_rejects_before_multipart_parsing(monkeypatch):
     no other way to land bytes server-side."""
     import asyncio
 
-    from vllm_mlx.routes import audio as audio_route
+    from rapid_mlx.routes import audio as audio_route
 
     monkeypatch.setattr(audio_route, "MAX_AUDIO_UPLOAD_SIZE", 1024, raising=True)
     monkeypatch.setattr(audio_route, "_REQUEST_BODY_SLACK_BYTES", 256, raising=True)
@@ -266,9 +266,9 @@ def test_content_length_guard_rejects_before_multipart_parsing(monkeypatch):
 
     # Stub the engine import so a regression that *did* parse the body and
     # reach the handler would be visible via _FakeSTTEngine.instances.
-    stt_mod = types.ModuleType("vllm_mlx.audio.stt")
+    stt_mod = types.ModuleType("rapid_mlx.audio.stt")
     stt_mod.STTEngine = _FakeSTTEngine
-    monkeypatch.setitem(sys.modules, "vllm_mlx.audio.stt", stt_mod)
+    monkeypatch.setitem(sys.modules, "rapid_mlx.audio.stt", stt_mod)
     _FakeSTTEngine.instances.clear()
 
     # Build an app exactly the way the audio_client fixture does — but
@@ -351,16 +351,16 @@ def test_chunked_no_content_length_aborts_mid_stream(monkeypatch):
     a correctly-formatted multipart payload to prove the cap fires."""
     import asyncio
 
-    from vllm_mlx.routes import audio as audio_route
+    from rapid_mlx.routes import audio as audio_route
 
     # Effective limit = cap + slack = 1024 + 256 = 1280 bytes.
     monkeypatch.setattr(audio_route, "MAX_AUDIO_UPLOAD_SIZE", 1024, raising=True)
     monkeypatch.setattr(audio_route, "_REQUEST_BODY_SLACK_BYTES", 256, raising=True)
     monkeypatch.setattr(audio_route, "_stt_engine", None, raising=False)
 
-    stt_mod = types.ModuleType("vllm_mlx.audio.stt")
+    stt_mod = types.ModuleType("rapid_mlx.audio.stt")
     stt_mod.STTEngine = _FakeSTTEngine
-    monkeypatch.setitem(sys.modules, "vllm_mlx.audio.stt", stt_mod)
+    monkeypatch.setitem(sys.modules, "rapid_mlx.audio.stt", stt_mod)
     _FakeSTTEngine.instances.clear()
 
     app = FastAPI()
@@ -449,15 +449,15 @@ def test_chunked_real_fastapi_app_returns_413(monkeypatch):
     real app exercises when it sees the disconnect we inject."""
     import asyncio
 
-    from vllm_mlx.routes import audio as audio_route
+    from rapid_mlx.routes import audio as audio_route
 
     monkeypatch.setattr(audio_route, "MAX_AUDIO_UPLOAD_SIZE", 1024, raising=True)
     monkeypatch.setattr(audio_route, "_REQUEST_BODY_SLACK_BYTES", 256, raising=True)
     monkeypatch.setattr(audio_route, "_stt_engine", None, raising=False)
 
-    stt_mod = types.ModuleType("vllm_mlx.audio.stt")
+    stt_mod = types.ModuleType("rapid_mlx.audio.stt")
     stt_mod.STTEngine = _FakeSTTEngine
-    monkeypatch.setitem(sys.modules, "vllm_mlx.audio.stt", stt_mod)
+    monkeypatch.setitem(sys.modules, "rapid_mlx.audio.stt", stt_mod)
     _FakeSTTEngine.instances.clear()
 
     app = FastAPI()
@@ -563,7 +563,7 @@ def test_normal_audio_upload_succeeds(audio_client, monkeypatch):
     return a JSON transcription response. Positive control to confirm
     the size guard did not break the happy path."""
 
-    from vllm_mlx.routes import audio as audio_route
+    from rapid_mlx.routes import audio as audio_route
 
     monkeypatch.setattr(audio_route, "MAX_AUDIO_UPLOAD_SIZE", 1024, raising=True)
 

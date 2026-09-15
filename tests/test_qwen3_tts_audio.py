@@ -52,7 +52,7 @@ class TestQwen3TTSRegistry:
         ],
     )
     def test_alias_resolves(self, alias, expected_hf_id):
-        from vllm_mlx.audio.registry import resolve_audio_alias
+        from rapid_mlx.audio.registry import resolve_audio_alias
 
         entry = resolve_audio_alias(alias)
         assert entry is not None, f"{alias!r} did not resolve in the registry"
@@ -64,7 +64,7 @@ class TestQwen3TTSRegistry:
     def test_hf_id_reverse_lookup(self):
         """The full HF id maps back to the qwen3_tts entry so ``serve
         <hf-id>`` forks into audio mode like the short alias does."""
-        from vllm_mlx.audio.registry import resolve_audio_alias
+        from rapid_mlx.audio.registry import resolve_audio_alias
 
         entry = resolve_audio_alias(CUSTOMVOICE_BF16)
         assert entry is not None and entry.family == "qwen3_tts"
@@ -73,8 +73,8 @@ class TestQwen3TTSRegistry:
         """The registry ``default_voice`` MUST be in the served voice list
         or the cold-start / voice-omitted path 400s on a value the server
         itself chose."""
-        from vllm_mlx.audio.registry import resolve_audio_alias
-        from vllm_mlx.audio.tts import QWEN3_TTS_VOICES
+        from rapid_mlx.audio.registry import resolve_audio_alias
+        from rapid_mlx.audio.tts import QWEN3_TTS_VOICES
 
         entry = resolve_audio_alias("qwen3-tts")
         assert entry.default_voice in QWEN3_TTS_VOICES
@@ -116,7 +116,7 @@ class _CapturingModel:
 def _qwen3_engine():
     """A loaded ``TTSEngine`` for the Qwen3 CustomVoice repo whose model is
     the capturing fake (no weights, no network)."""
-    from vllm_mlx.audio.tts import TTSEngine
+    from rapid_mlx.audio.tts import TTSEngine
 
     engine = TTSEngine(CUSTOMVOICE_BF16)
     engine.model = _CapturingModel()
@@ -129,7 +129,7 @@ class TestQwen3TTSEngine:
         assert _qwen3_engine()._model_family == "qwen3_tts"
 
     def test_get_voices_is_speaker_set(self):
-        from vllm_mlx.audio.tts import QWEN3_TTS_VOICES
+        from rapid_mlx.audio.tts import QWEN3_TTS_VOICES
 
         assert _qwen3_engine().get_voices() == list(QWEN3_TTS_VOICES)
 
@@ -154,7 +154,7 @@ class TestQwen3TTSEngine:
         ``instructions`` to a non-emotion model) must NOT forward it — the
         Kokoro path has no such kwarg and would raise, and its lang_code
         stays the single-letter form."""
-        from vllm_mlx.audio.tts import TTSEngine
+        from rapid_mlx.audio.tts import TTSEngine
 
         engine = TTSEngine("mlx-community/Kokoro-82M-bf16")
         engine.model = _CapturingModel()
@@ -206,7 +206,7 @@ class _RecordingEngine:
         self.generate_calls.append(
             {"text": text, "voice": voice, "speed": speed, "instruct": instruct}
         )
-        from vllm_mlx.audio.tts import AudioOutput
+        from rapid_mlx.audio.tts import AudioOutput
 
         return AudioOutput(
             audio=np.zeros(240, dtype=np.float32), sample_rate=24000, duration=0.01
@@ -225,11 +225,11 @@ def _mount(monkeypatch):
     from fastapi import FastAPI
     from fastapi.testclient import TestClient
 
-    from vllm_mlx.audio import probe as probe_mod
-    from vllm_mlx.audio import tts as tts_mod
-    from vllm_mlx.config import get_config
-    from vllm_mlx.middleware.exception_handlers import install_exception_handlers
-    from vllm_mlx.routes import audio as audio_route
+    from rapid_mlx.audio import probe as probe_mod
+    from rapid_mlx.audio import tts as tts_mod
+    from rapid_mlx.config import get_config
+    from rapid_mlx.middleware.exception_handlers import install_exception_handlers
+    from rapid_mlx.routes import audio as audio_route
 
     _RecordingEngine.instances = []
     # Capture the REAL encoder before TTSEngine is rebound to the stub.
@@ -264,9 +264,9 @@ class TestQwen3TTSRoute:
         import asyncio
         import time
 
-        from vllm_mlx.api.models import AudioSpeechRequest
-        from vllm_mlx.audio import tts as tts_mod
-        from vllm_mlx.routes import audio as audio_route
+        from rapid_mlx.api.models import AudioSpeechRequest
+        from rapid_mlx.audio import tts as tts_mod
+        from rapid_mlx.routes import audio as audio_route
 
         _mount(monkeypatch)
 

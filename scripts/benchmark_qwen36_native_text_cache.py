@@ -101,8 +101,8 @@ async def _main() -> None:
     parser.add_argument("--image-expect", default="")
     args = parser.parse_args()
 
-    from vllm_mlx.engine.batched import BatchedEngine
-    from vllm_mlx.scheduler import SchedulerConfig
+    from rapid_mlx.engine.batched import BatchedEngine
+    from rapid_mlx.scheduler import SchedulerConfig
 
     engine = BatchedEngine(
         str(args.model.expanduser().resolve()),

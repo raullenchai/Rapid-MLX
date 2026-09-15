@@ -9,7 +9,7 @@ the SSE-level routing matches the documented non-stream behaviour.
   used to stream the entire prompt (including the answer ``"4"``) on
   ``delta.reasoning``. The non-stream path correctly splits at the
   blank-line boundary per ``a16d8c8`` (shape #4) — the streaming
-  state machine in ``vllm_mlx/reasoning/ui_tars_parser.py`` did not
+  state machine in ``rapid_mlx/reasoning/ui_tars_parser.py`` did not
   mirror that exit predicate. Mirror also added for ``</think>``
   (shape #5) and ``Answer:`` (defensive UI-TARS native form).
 
@@ -33,7 +33,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from vllm_mlx.service.postprocessor import StreamingPostProcessor
+from rapid_mlx.service.postprocessor import StreamingPostProcessor
 
 
 def _make_cfg(**overrides):

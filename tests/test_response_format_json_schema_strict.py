@@ -40,16 +40,16 @@ pytestmark = pytest.mark.requires_mlx
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from vllm_mlx.api import response_format_metrics
-from vllm_mlx.api.tool_calling import (
+from rapid_mlx.api import response_format_metrics
+from rapid_mlx.api.tool_calling import (
     is_strict_json_schema,
     validate_output_against_schema,
 )
-from vllm_mlx.config import reset_config
-from vllm_mlx.engine.base import GenerationOutput
-from vllm_mlx.middleware.exception_handlers import install_exception_handlers
-from vllm_mlx.routes.chat import router as chat_router
-from vllm_mlx.routes.metrics import router as metrics_router
+from rapid_mlx.config import reset_config
+from rapid_mlx.engine.base import GenerationOutput
+from rapid_mlx.middleware.exception_handlers import install_exception_handlers
+from rapid_mlx.routes.chat import router as chat_router
+from rapid_mlx.routes.metrics import router as metrics_router
 
 # ---------------------------------------------------------------------------
 # Test fixtures
@@ -416,8 +416,8 @@ def test_strict_true_guided_unavailable_returns_422_on_violation_non_streaming()
 
 def test_strict_mllm_processor_fail_open_still_validates_response(monkeypatch):
     """A request-local matcher failure cannot weaken ``strict=true``."""
-    from vllm_mlx.api import guided
-    from vllm_mlx.routes import chat as chat_route
+    from rapid_mlx.api import guided
+    from rapid_mlx.routes import chat as chat_route
 
     marker = object()
     budget = object()
@@ -871,7 +871,7 @@ def test_strict_true_streaming_emits_done_even_without_upstream_done():
     """
     import json as _json
 
-    from vllm_mlx.routes import chat as chat_module
+    from rapid_mlx.routes import chat as chat_module
 
     async def _fake_stream(engine, messages, request, **kwargs):
         response_id = kwargs.get("response_id", "chatcmpl-test")
@@ -915,7 +915,7 @@ def test_strict_true_streaming_emits_done_even_without_upstream_done():
     engine = _Engine(supports_guided=False, chat_text=_VALID_PAYLOAD)
     # Run the strict-postgen helper directly so we have full
     # control over the upstream stream shape.
-    from vllm_mlx.api.models import ChatCompletionRequest
+    from rapid_mlx.api.models import ChatCompletionRequest
 
     request = ChatCompletionRequest(
         model="test-model",
@@ -976,7 +976,7 @@ def test_strict_true_streaming_emits_done_on_upstream_raise():
     """
     import json as _json
 
-    from vllm_mlx.routes import chat as chat_module
+    from rapid_mlx.routes import chat as chat_module
 
     async def _raising_stream(engine, messages, request, **kwargs):
         response_id = kwargs.get("response_id", "chatcmpl-test")
@@ -1006,7 +1006,7 @@ def test_strict_true_streaming_emits_done_on_upstream_raise():
         raise RuntimeError("simulated engine crash")
 
     engine = _Engine(supports_guided=False, chat_text=_VALID_PAYLOAD)
-    from vllm_mlx.api.models import ChatCompletionRequest
+    from rapid_mlx.api.models import ChatCompletionRequest
 
     request = ChatCompletionRequest(
         model="test-model",
@@ -1100,7 +1100,7 @@ def test_strict_true_streaming_propagates_cancelled_error():
     """
     import json as _json
 
-    from vllm_mlx.routes import chat as chat_module
+    from rapid_mlx.routes import chat as chat_module
 
     async def _cancelling_stream(engine, messages, request, **kwargs):
         response_id = kwargs.get("response_id", "chatcmpl-test")
@@ -1128,7 +1128,7 @@ def test_strict_true_streaming_propagates_cancelled_error():
 
     import asyncio
 
-    from vllm_mlx.api.models import ChatCompletionRequest
+    from rapid_mlx.api.models import ChatCompletionRequest
 
     engine = _Engine(supports_guided=False, chat_text=_VALID_PAYLOAD)
     request = ChatCompletionRequest(
@@ -1196,7 +1196,7 @@ def test_strict_true_streaming_bounds_buffer_with_overflow_error(monkeypatch):
 
     import json as _json
 
-    from vllm_mlx.routes import chat as chat_module
+    from rapid_mlx.routes import chat as chat_module
 
     async def _runaway_stream(engine, messages, request, **kwargs):
         response_id = kwargs.get("response_id", "chatcmpl-test")
@@ -1240,7 +1240,7 @@ def test_strict_true_streaming_bounds_buffer_with_overflow_error(monkeypatch):
 
     import asyncio
 
-    from vllm_mlx.api.models import ChatCompletionRequest
+    from rapid_mlx.api.models import ChatCompletionRequest
 
     engine = _Engine(supports_guided=False, chat_text=_VALID_PAYLOAD)
     request = ChatCompletionRequest(
@@ -1295,7 +1295,7 @@ def test_strict_true_streaming_overflow_closes_upstream_generator(monkeypatch):
 
     import json as _json
 
-    from vllm_mlx.routes import chat as chat_module
+    from rapid_mlx.routes import chat as chat_module
 
     aclose_called = [False]
 
@@ -1345,7 +1345,7 @@ def test_strict_true_streaming_overflow_closes_upstream_generator(monkeypatch):
 
     import asyncio
 
-    from vllm_mlx.api.models import ChatCompletionRequest
+    from rapid_mlx.api.models import ChatCompletionRequest
 
     engine = _Engine(supports_guided=False, chat_text=_VALID_PAYLOAD)
     request = ChatCompletionRequest(
@@ -1393,7 +1393,7 @@ def test_strict_true_streaming_buffer_cap_counts_bytes_not_chars(monkeypatch):
 
     import json as _json
 
-    from vllm_mlx.routes import chat as chat_module
+    from rapid_mlx.routes import chat as chat_module
 
     # U+1F525 (FIRE emoji) is 4 bytes in UTF-8.
     fire = "\U0001f525"
@@ -1429,7 +1429,7 @@ def test_strict_true_streaming_buffer_cap_counts_bytes_not_chars(monkeypatch):
 
     import asyncio
 
-    from vllm_mlx.api.models import ChatCompletionRequest
+    from rapid_mlx.api.models import ChatCompletionRequest
 
     engine = _Engine(supports_guided=False, chat_text=_VALID_PAYLOAD)
     request = ChatCompletionRequest(
@@ -1586,7 +1586,7 @@ def test_strict_true_with_llguidance_module_faked_absent(monkeypatch):
     # environments rather than failing on the setup pre-condition.
     pytest.importorskip("llguidance")
 
-    from vllm_mlx.api import guided as guided_mod
+    from rapid_mlx.api import guided as guided_mod
 
     # Before the monkeypatch, the guided extra IS installed.
     assert guided_mod.is_guided_available() is True
@@ -1660,7 +1660,7 @@ def _rate_limiter_state():
     limiting being enabled. This fixture snapshots state at entry
     and restores it on teardown.
     """
-    from vllm_mlx.middleware.auth import rate_limiter
+    from rapid_mlx.middleware.auth import rate_limiter
 
     saved_enabled = rate_limiter.enabled
     saved_rpm = rate_limiter.requests_per_minute
@@ -1682,8 +1682,8 @@ def _make_responses_client(engine: _Engine, rate_limiter_state=None) -> TestClie
     global rate-limiter state is restored on test teardown — without
     it, the disabled state leaks into subsequent tests.
     """
-    from vllm_mlx.middleware.auth import rate_limiter
-    from vllm_mlx.routes.responses import router as responses_router
+    from rapid_mlx.middleware.auth import rate_limiter
+    from rapid_mlx.routes.responses import router as responses_router
 
     cfg = reset_config()
     cfg.engine = engine
@@ -1856,7 +1856,7 @@ def test_responses_guided_cancellation_is_lifecycle_not_schema_failure(
     _rate_limiter_state,
 ):
     """Shutdown cancellation never becomes a 502 or unconstrained retry."""
-    from vllm_mlx.api.errors import GuidedGenerationCancelledError
+    from rapid_mlx.api.errors import GuidedGenerationCancelledError
 
     class _CancelledEngine(_Engine):
         def __init__(self):
@@ -2042,7 +2042,7 @@ def test_strict_helper_composition_extract_returns_none_for_empty_schema():
     ``None`` for empty schemas would silently break the gate
     without this assertion).
     """
-    from vllm_mlx.api.tool_calling import (
+    from rapid_mlx.api.tool_calling import (
         extract_json_schema_for_guided,
         is_strict_json_schema,
     )
@@ -2093,7 +2093,7 @@ _INVALID_SCHEMA_TYPO = {
 def test_check_schema_validity_accepts_valid_schema():
     """Helper unit test: a well-formed Draft-7 schema returns
     ``(True, None)``."""
-    from vllm_mlx.api.tool_calling import check_schema_validity
+    from rapid_mlx.api.tool_calling import check_schema_validity
 
     ok, err = check_schema_validity(_VALID_SCHEMA)
     assert ok is True
@@ -2104,7 +2104,7 @@ def test_check_schema_validity_rejects_invalid_type_keyword():
     """Helper unit test: a structurally-invalid schema (a typo in
     the ``type`` keyword) returns ``(False, <reason>)`` so the
     route can echo the reason in the 400 envelope."""
-    from vllm_mlx.api.tool_calling import check_schema_validity
+    from rapid_mlx.api.tool_calling import check_schema_validity
 
     ok, err = check_schema_validity(_INVALID_SCHEMA_TYPO)
     assert ok is False
@@ -2197,8 +2197,8 @@ async def test_strict_true_stream_helper_strips_colliding_raise_on_failure():
     would raise ``TypeError: got multiple values for keyword
     argument 'raise_on_failure'`` and the test would fail.
     """
-    from vllm_mlx.api.models import ChatCompletionRequest
-    from vllm_mlx.routes.chat import stream_chat_completion_guided
+    from rapid_mlx.api.models import ChatCompletionRequest
+    from rapid_mlx.routes.chat import stream_chat_completion_guided
 
     engine = _Engine(supports_guided=True)
     # Minimal valid ChatCompletionRequest pin — only the fields
@@ -2266,7 +2266,7 @@ def test_strict_true_responses_strips_colliding_raise_on_failure(
     # is composed) to inject a colliding key. The simplest hook is
     # to monkeypatch ``_resolved_sampling_kwargs`` to add the field
     # to its return value.
-    from vllm_mlx.routes import responses as responses_mod
+    from rapid_mlx.routes import responses as responses_mod
 
     original_sampler = responses_mod._resolved_sampling_kwargs
 
@@ -2312,7 +2312,7 @@ def test_check_schema_validity_propagates_dependency_failures(monkeypatch):
     dependency bug — NOT malformed input), ``check_schema_validity``
     must let it propagate instead of returning ``(False, ...)``.
     """
-    from vllm_mlx.api import tool_calling
+    from rapid_mlx.api import tool_calling
 
     class _BoomError(RuntimeError):
         pass
@@ -2348,7 +2348,7 @@ def test_check_schema_validity_uses_declared_draft_via_schema_key():
     """
     from jsonschema import Draft202012Validator, validators
 
-    from vllm_mlx.api import tool_calling
+    from rapid_mlx.api import tool_calling
 
     # A 2020-12 schema declaring a feature that DRAFT-7 silently
     # ignores: ``prefixItems`` (added in 2020-12; Draft-7 has only
@@ -2447,7 +2447,7 @@ def test_strict_true_non_streaming_guided_raises_returns_502_no_fallback():
 
 def test_non_streaming_guided_cancellation_never_falls_back_unconstrained():
     """A stopped guided worker propagates lifecycle cancellation only."""
-    from vllm_mlx.api.errors import GuidedGenerationCancelledError
+    from rapid_mlx.api.errors import GuidedGenerationCancelledError
 
     class _CancelledEngine(_Engine):
         def __init__(self):
@@ -2504,7 +2504,7 @@ def test_check_schema_validity_rejects_non_mapping_input():
     input (not a server dependency failure). The helper must
     return ``(False, <reason>)`` so the route 400s with
     ``invalid_strict_schema``."""
-    from vllm_mlx.api.tool_calling import check_schema_validity
+    from rapid_mlx.api.tool_calling import check_schema_validity
 
     ok, err = check_schema_validity(["not", "a", "mapping"])  # type: ignore[arg-type]
     assert ok is False
@@ -2529,7 +2529,7 @@ class _SyncFailureEngine(_Engine):
     Codex r8 BLOCKING claimed the responses.py call site was
     "before the surrounding try", which would cause sync setup
     errors to bypass the strict translator. Inspecting
-    ``vllm_mlx/routes/responses.py`` shows the call IS inside
+    ``rapid_mlx/routes/responses.py`` shows the call IS inside
     the try (line ~453 below the comment block). This test
     fixture proves the call-site guard works under a sync
     setup failure, pinning that behavior so any future refactor

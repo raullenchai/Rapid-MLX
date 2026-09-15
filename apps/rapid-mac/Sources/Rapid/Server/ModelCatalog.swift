@@ -374,7 +374,7 @@ enum ModelCatalog {
     /// legacy ``os.pathsep`` representation from shells and older builds).
     ///
     /// Kept as a named constant because it is a cross-process contract with
-    /// ``vllm_mlx.cli._external_model_roots`` — a typo on either side fails
+    /// ``rapid_mlx.cli._external_model_roots`` — a typo on either side fails
     /// silently as "no models found", which reads as an empty disk rather
     /// than as a broken lookup.
     static let extraModelRootsEnvKey = "RAPID_MLX_EXTRA_MODEL_ROOTS"

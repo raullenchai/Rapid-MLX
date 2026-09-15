@@ -19,7 +19,7 @@ A full engine-level harness (loads a long-context MLX model, drives
 ``BatchedEngine.chat``) is deferred — see the "Engine-level harness"
 section at the bottom for the deliberate non-stub. The bench-side
 sweep that produced the PR #649 TTFT + recall numbers lives at
-``vllm_mlx/bench/pflash_replication.py`` and is exercised from the
+``rapid_mlx/bench/pflash_replication.py`` and is exercised from the
 ``rapid-mlx bench`` CLI, not pytest.
 
 The token-level tests below run on every PR (no marker) because they
@@ -31,7 +31,7 @@ from __future__ import annotations
 
 import pytest
 
-from vllm_mlx.pflash import PFlashConfig, compress_tokens
+from rapid_mlx.pflash import PFlashConfig, compress_tokens
 
 # NOTE: no module-level ``pytestmark = pytest.mark.needle`` here. The
 # token-level tests below run on every PR — they're the regression
@@ -209,7 +209,7 @@ def test_pflash_compressor_honors_keep_budget() -> None:
 # The token-level tests above are the contracted regression guard for
 # the verified-tier default (keep_ratio=0.20 must preserve the needle).
 # The full engine sweep that produced the PR #649 TTFT + recall table
-# lives at ``vllm_mlx/bench/pflash_replication.py`` and is invoked from
+# lives at ``rapid_mlx/bench/pflash_replication.py`` and is invoked from
 # the bench CLI, not pytest.
 #
 # When someone re-introduces an engine-level harness here, the right

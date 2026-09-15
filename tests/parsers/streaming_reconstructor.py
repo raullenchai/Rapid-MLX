@@ -13,11 +13,11 @@ for the upstream rationale. Adopted unchanged in shape; minor adapters
 for Rapid-MLX:
 
   * Reasoning parsers already return ``DeltaMessage`` (see
-    ``vllm_mlx/reasoning/base.py``) — same field layout as vLLM, so
+    ``rapid_mlx/reasoning/base.py``) — same field layout as vLLM, so
     ``StreamingReasoningReconstructor`` is a verbatim port.
 
   * Tool parsers return ``dict[str, Any] | None`` (see
-    ``vllm_mlx/tool_parsers/abstract_tool_parser.py``) with keys
+    ``rapid_mlx/tool_parsers/abstract_tool_parser.py``) with keys
     ``"content"`` and ``"tool_calls"``. ``StreamingToolReconstructor``
     accepts that dict shape rather than vLLM's typed ``DeltaMessage``,
     but enforces the same invariants.
@@ -45,7 +45,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
-from vllm_mlx.reasoning.base import DeltaMessage
+from rapid_mlx.reasoning.base import DeltaMessage
 
 
 class StreamingReasoningReconstructor:

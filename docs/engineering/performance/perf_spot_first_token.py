@@ -75,8 +75,8 @@ def install_observer(
 
 
 def main() -> None:
-    from vllm_mlx.engine_core import AsyncEngineCore
-    from vllm_mlx.output_collector import RequestOutputCollector
+    from rapid_mlx.engine_core import AsyncEngineCore
+    from rapid_mlx.output_collector import RequestOutputCollector
 
     def emit(request_id: str, elapsed: float) -> None:
         print(
@@ -91,7 +91,7 @@ def main() -> None:
         emit=emit,
     )
 
-    from vllm_mlx.cli import cli_entrypoint
+    from rapid_mlx.cli import cli_entrypoint
 
     cli_entrypoint()
 

@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import pytest
 
-from vllm_mlx.reasoning.base import DeltaMessage
+from rapid_mlx.reasoning.base import DeltaMessage
 
 from ._harmony_markers import (
     HARMONY_CONTROL_TOKENS,
@@ -209,7 +209,7 @@ def test_harmony_markers_match_source():
     ``HARMONY_STRIPPED_CONTROL_TOKENS`` constant and assert set
     equality with the test's ``HARMONY_CONTROL_TOKENS``.
     """
-    from vllm_mlx.tool_parsers.harmony_tool_parser import (
+    from rapid_mlx.tool_parsers.harmony_tool_parser import (
         HARMONY_STRIPPED_CONTROL_TOKENS,
     )
 

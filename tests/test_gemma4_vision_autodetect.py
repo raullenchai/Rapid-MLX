@@ -3,8 +3,8 @@
 
 import json
 
-from vllm_mlx import model_metadata
-from vllm_mlx.api import utils as api_utils
+from rapid_mlx import model_metadata
+from rapid_mlx.api import utils as api_utils
 
 
 def _cached_snapshot(tmp_path, config, weights):

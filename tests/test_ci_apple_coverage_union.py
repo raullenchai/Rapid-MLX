@@ -40,7 +40,7 @@ def test_changed_lines_gate_unions_linux_and_apple_coverage() -> None:
         "coverage-linux-${{ matrix.python-version }}-${{ matrix.shard }}.data" in text
     )
     assert "coverage-apple.data" in text
-    assert "--cov=vllm_mlx" in apple["steps"][-2]["run"]
+    assert "--cov=rapid_mlx" in apple["steps"][-2]["run"]
     assert set(gate["needs"]) == {
         "changes",
         "linux-coverage",
@@ -266,4 +266,4 @@ def test_coverage_data_is_commit_bound_and_fail_closed() -> None:
 def test_coverage_paths_are_portable_across_runner_operating_systems() -> None:
     config = (WORKFLOW.parents[2] / ".coveragerc").read_text()
     assert "relative_files = True" in config
-    assert "source = vllm_mlx" in config
+    assert "source = rapid_mlx" in config

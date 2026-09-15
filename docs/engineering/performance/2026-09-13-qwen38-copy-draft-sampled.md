@@ -151,7 +151,7 @@ any family's greedy behaviour, or touch continuous multi-request speculation.
 ## Real desktop app (Qwen3.5-4B, temperature 1.0)
 
 Rapid-MLX Desktop 0.14.1 on an M2 Pro 32 GB, pointed at this branch through
-`RAPID_BIN` (the bundled sidecar runtime with `vllm_mlx/` replaced by the
+`RAPID_BIN` (the bundled sidecar runtime with `rapid_mlx/` replaced by the
 branch tree). The app's own defaults were left alone: temperature 1.0,
 top_p 0.95, max_tokens 4096. `qwen3.5-4b-4bit` ships MTP default-off
 (#3115), so MTP was opted in the way a user does it, through the

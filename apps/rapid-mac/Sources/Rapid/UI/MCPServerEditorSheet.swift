@@ -9,7 +9,7 @@ import SwiftUI
 /// server" is a bad afternoon.
 ///
 /// The engine still gets the final say on the command itself
-/// (`vllm_mlx/mcp/security.py` allowlists what may be spawned). We don't
+/// (`rapid_mlx/mcp/security.py` allowlists what may be spawned). We don't
 /// duplicate that list here: it moves independently of the app, and a
 /// client-side copy that drifts would either block something valid or promise
 /// something that then fails at connect. The rejection reason comes back on

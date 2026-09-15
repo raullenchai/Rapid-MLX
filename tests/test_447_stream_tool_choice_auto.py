@@ -50,7 +50,7 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock
 
-from vllm_mlx.service.postprocessor import StreamingPostProcessor
+from rapid_mlx.service.postprocessor import StreamingPostProcessor
 
 
 def _make_cfg(**overrides):
@@ -413,7 +413,7 @@ import json
 
 import pytest
 
-from vllm_mlx.api.models import ChatCompletionRequest
+from rapid_mlx.api.models import ChatCompletionRequest
 
 
 class _FakeStreamingOutput:
@@ -459,7 +459,7 @@ def _drive_stream(engine, request) -> tuple[list[dict], str | None]:
 
     Returns ``(chunks, final_finish_reason)``.
     """
-    from vllm_mlx.routes.chat import stream_chat_completion
+    from rapid_mlx.routes.chat import stream_chat_completion
 
     chunks: list[dict] = []
 
@@ -528,7 +528,7 @@ class TestStreamSynthForcedToolChoice:
     def _patch_cfg(self, monkeypatch):
         """Wire a minimal ServerConfig + StreamingPostProcessor that
         matches the qwen3 + hermes production shape."""
-        from vllm_mlx.config import server_config
+        from rapid_mlx.config import server_config
 
         cfg = server_config.get_config()
         # The cfg singleton is mutated to reflect the qwen3 + hermes
@@ -576,7 +576,7 @@ class TestStreamSynthForcedToolChoice:
         the non-stream ``_mismatched`` 422 path, not the
         ``not _names`` synth path. Synth here would silently replace
         the model's wrong-tool call with the pinned target."""
-        from vllm_mlx.service import postprocessor as pp_mod
+        from rapid_mlx.service import postprocessor as pp_mod
 
         # Simulate the filter-dropped state by wrapping ``reset()`` (the
         # route calls ``processor.reset()`` before the stream loop, so an

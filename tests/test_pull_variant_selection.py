@@ -32,7 +32,7 @@ from unittest.mock import patch
 import pytest
 from huggingface_hub import RepoFile, RepoFolder
 
-from vllm_mlx import cli
+from rapid_mlx import cli
 
 
 class _FakeResponse:
@@ -290,7 +290,7 @@ def test_mirror_variant_miss_falls_back_with_same_pattern(capsys):
 def test_mirror_prefetch_forwards_explicit_variant_allow():
     """The mirror adapter passes an explicit variant override unchanged."""
     with patch(
-        "vllm_mlx._mirror.download_with_mirror_fallback", return_value=True
+        "rapid_mlx._mirror.download_with_mirror_fallback", return_value=True
     ) as download:
         assert cli._try_mirror_prefetch("org/repo", allow_patterns=["4bit/*"]) is True
 
@@ -301,11 +301,11 @@ def test_mirror_prefetch_keeps_catalog_subfolder_default():
     """The existing subfolder narrowing stays the default mirror filter."""
     with (
         patch(
-            "vllm_mlx.model_aliases.subfolder_allow_patterns",
+            "rapid_mlx.model_aliases.subfolder_allow_patterns",
             return_value=["catalog/*"],
         ),
         patch(
-            "vllm_mlx._mirror.download_with_mirror_fallback", return_value=True
+            "rapid_mlx._mirror.download_with_mirror_fallback", return_value=True
         ) as download,
     ):
         assert cli._try_mirror_prefetch("org/repo") is True
@@ -319,11 +319,11 @@ def test_orphan_reap_announces_cleaned_files(capsys):
     with (
         patch.object(cli, "_try_mirror_prefetch", return_value=False),
         patch(
-            "vllm_mlx._download_gate.reap_orphan_incomplete_blobs",
+            "rapid_mlx._download_gate.reap_orphan_incomplete_blobs",
             return_value=(2, 512),
         ),
         patch(
-            "vllm_mlx._download_gate._format_size",
+            "rapid_mlx._download_gate._format_size",
             return_value="512 B",
         ),
         patch("huggingface_hub.snapshot_download", return_value="/cache/x"),
@@ -338,7 +338,7 @@ def test_catalog_subfolder_narrowing_when_no_selector(capsys):
     args = argparse.Namespace(model="LiquidAI/LFM2.5-2.6B-MLX", bits=None, format=None)
     with (
         patch.object(cli, "_try_mirror_prefetch", return_value=False),
-        patch("vllm_mlx.model_aliases.resolve_subfolder", return_value="4bit"),
+        patch("rapid_mlx.model_aliases.resolve_subfolder", return_value="4bit"),
         patch("huggingface_hub.snapshot_download", return_value="/cache/x") as snap,
     ):
         cli.pull_command(args)
@@ -355,7 +355,7 @@ def test_user_flag_overrides_catalog_subfolder(capsys):
             "huggingface_hub.HfApi.list_repo_tree", return_value=_multi_variant_tree()
         ),
         patch.object(cli, "_try_mirror_prefetch", return_value=False),
-        patch("vllm_mlx.model_aliases.resolve_subfolder", return_value="4bit"),
+        patch("rapid_mlx.model_aliases.resolve_subfolder", return_value="4bit"),
         patch("huggingface_hub.snapshot_download", return_value="/cache/x") as snap,
     ):
         cli.pull_command(args)
@@ -374,7 +374,7 @@ def test_user_flag_equal_to_catalog_subfolder_no_override(capsys):
             "huggingface_hub.HfApi.list_repo_tree", return_value=_multi_variant_tree()
         ),
         patch.object(cli, "_try_mirror_prefetch", return_value=False),
-        patch("vllm_mlx.model_aliases.resolve_subfolder", return_value="4bit"),
+        patch("rapid_mlx.model_aliases.resolve_subfolder", return_value="4bit"),
         patch("huggingface_hub.snapshot_download", return_value="/cache/x") as snap,
     ):
         cli.pull_command(args)

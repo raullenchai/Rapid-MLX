@@ -42,9 +42,9 @@ from typing import Any
 
 import pytest
 
-from vllm_mlx.reasoning.ui_tars_parser import UiTarsReasoningParser
-from vllm_mlx.tool_parsers import UiTarsToolParser
-from vllm_mlx.tool_parsers.ui_tars_tool_parser import (
+from rapid_mlx.reasoning.ui_tars_parser import UiTarsReasoningParser
+from rapid_mlx.tool_parsers import UiTarsToolParser
+from rapid_mlx.tool_parsers.ui_tars_tool_parser import (
     UI_TARS_COMPUTER_USE_SYSTEM_PROMPT,
     _is_tool_choice_none,
     _normalize_action,
@@ -231,7 +231,7 @@ class TestSysPromptAutoWire:
         # helper must NOT prepend a plain dict that would produce a
         # mixed-shape list downstream. Mirror the object shape via
         # ``model_copy(update=...)`` when available.
-        from vllm_mlx.api.models import Message
+        from rapid_mlx.api.models import Message
 
         msgs = [Message(role="user", content="Click.")]
         out = maybe_inject_ui_tars_system_prompt(
@@ -722,7 +722,7 @@ class TestLaneInjectionParity:
         Tolerates:
         - ``from .ui_tars_tool_parser import maybe_inject_ui_tars_system_prompt as X``
           followed by ``X(...)``.
-        - ``import vllm_mlx.tool_parsers.ui_tars_tool_parser as X``
+        - ``import rapid_mlx.tool_parsers.ui_tars_tool_parser as X``
           followed by ``X.maybe_inject_ui_tars_system_prompt(...)``.
         - The direct unaliased ``maybe_inject_ui_tars_system_prompt(...)``.
 
@@ -749,7 +749,7 @@ class TestLaneInjectionParity:
                     if n.name == target_name:
                         local_aliases.add(n.asname or n.name)
             elif isinstance(node, ast.Import):
-                # ``import vllm_mlx.tool_parsers.ui_tars_tool_parser
+                # ``import rapid_mlx.tool_parsers.ui_tars_tool_parser
                 # as X`` — record ``X`` so we can match
                 # ``X.maybe_inject_ui_tars_system_prompt(...)``.
                 for n in node.names:
@@ -785,7 +785,7 @@ class TestLaneInjectionParity:
         # Codex r4 BLOCKING: walk the route's AST and assert a real
         # ``Call`` node to the helper exists. A dead ``import`` no
         # longer satisfies this — only a live call site counts.
-        from vllm_mlx.routes import chat as chat_route
+        from rapid_mlx.routes import chat as chat_route
 
         calls = self._find_helper_calls(chat_route)
         assert len(calls) >= 1, (
@@ -794,7 +794,7 @@ class TestLaneInjectionParity:
         )
 
     def test_anthropic_route_actually_invokes_helper(self):
-        from vllm_mlx.routes import anthropic as anthropic_route
+        from rapid_mlx.routes import anthropic as anthropic_route
 
         calls = self._find_helper_calls(anthropic_route)
         assert len(calls) >= 1, (
@@ -808,7 +808,7 @@ class TestLaneInjectionParity:
         # and the request's ``tool_choice`` — not just that those
         # tokens appear anywhere in the source. AST-level check
         # over the actual ``Call`` node's keyword arguments.
-        from vllm_mlx.routes import chat as chat_route
+        from rapid_mlx.routes import chat as chat_route
 
         calls = self._find_helper_calls(chat_route)
         assert calls, "routes/chat.py must call the helper"
@@ -837,7 +837,7 @@ class TestLaneInjectionParity:
         assert tools_expr == "request.tools"
 
     def test_anthropic_route_invokes_helper_with_parser_and_tool_choice(self):
-        from vllm_mlx.routes import anthropic as anthropic_route
+        from rapid_mlx.routes import anthropic as anthropic_route
 
         calls = self._find_helper_calls(anthropic_route)
         assert calls, "routes/anthropic.py must call the helper"
@@ -862,7 +862,7 @@ class TestLaneInjectionParity:
         # the model described actions in prose instead of emitting
         # ``Action: ...`` text the parser could surface as
         # ``computer_call`` output items (dogfood F-R2-D).
-        from vllm_mlx.routes import responses as responses_route
+        from rapid_mlx.routes import responses as responses_route
 
         calls = self._find_helper_calls(responses_route)
         assert len(calls) >= 1, (
@@ -875,7 +875,7 @@ class TestLaneInjectionParity:
         # MUST pass ``tools=openai_request.tools`` so the tool-coupled
         # gate fires correctly. Otherwise the route bypasses the C-09
         # fix on the responses lane.
-        from vllm_mlx.routes import responses as responses_route
+        from rapid_mlx.routes import responses as responses_route
 
         calls = self._find_helper_calls(responses_route)
         assert calls, "routes/responses.py must call the helper"
@@ -932,8 +932,8 @@ class TestAnthropicAdapterPointShape:
     """
 
     def test_click_tool_use_input_uses_coordinate_not_point_or_start_box(self):
-        from vllm_mlx.api.anthropic_adapter import openai_to_anthropic
-        from vllm_mlx.api.models import (
+        from rapid_mlx.api.anthropic_adapter import openai_to_anthropic
+        from rapid_mlx.api.models import (
             AssistantMessage,
             ChatCompletionChoice,
             ChatCompletionResponse,

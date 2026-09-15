@@ -24,7 +24,7 @@ from unittest.mock import patch
 
 import pytest
 
-from vllm_mlx import cli
+from rapid_mlx import cli
 
 # Mirror the ``test_serve_listen_fd.py`` style: drive ``cli.main()`` with a
 # stubbed ``serve_command`` so we capture the resolved ``argparse.Namespace``

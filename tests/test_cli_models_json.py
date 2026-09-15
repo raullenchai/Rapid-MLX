@@ -13,7 +13,7 @@ from __future__ import annotations
 import json
 from types import SimpleNamespace
 
-from vllm_mlx.cli import (
+from rapid_mlx.cli import (
     _available_models_json_payload,
     _cached_models_json_payload,
     models_command,
@@ -154,8 +154,8 @@ def test_cached_payload_shape() -> None:
 
 
 def test_cached_payload_reports_every_complete_alias_subfolder(monkeypatch) -> None:
-    import vllm_mlx.cli as cli
-    import vllm_mlx.model_aliases as aliases
+    import rapid_mlx.cli as cli
+    import rapid_mlx.model_aliases as aliases
 
     profiles = {
         "nested-4bit": SimpleNamespace(hf_path="org/multi-quant", subfolder="4bit"),
@@ -189,7 +189,7 @@ def test_cached_subfolder_size_accepts_one_complete_unreferenced_snapshot(
 ) -> None:
     import huggingface_hub.constants as hub_constants
 
-    import vllm_mlx.cli as cli
+    import rapid_mlx.cli as cli
 
     monkeypatch.setattr(hub_constants, "HF_HUB_CACHE", str(tmp_path))
     repo_root = tmp_path / "models--org--multi-quant"
@@ -215,7 +215,7 @@ def test_cached_subfolder_size_fails_closed_for_invalid_current_snapshots(
 
     import huggingface_hub.constants as hub_constants
 
-    import vllm_mlx.cli as cli
+    import rapid_mlx.cli as cli
 
     monkeypatch.setattr(hub_constants, "HF_HUB_CACHE", str(tmp_path))
     repo_root = tmp_path / "models--org--multi-quant"
@@ -249,8 +249,8 @@ def test_cached_subfolder_size_fails_closed_for_invalid_current_snapshots(
 def test_cached_payload_reconciles_root_duplicates_external_and_unknown(
     monkeypatch,
 ) -> None:
-    import vllm_mlx.cli as cli
-    import vllm_mlx.model_aliases as aliases
+    import rapid_mlx.cli as cli
+    import rapid_mlx.model_aliases as aliases
 
     profiles = {
         "root-a": SimpleNamespace(hf_path="org/root", subfolder=None),
@@ -300,7 +300,7 @@ def test_command_emits_single_valid_json_cached(capfd) -> None:
 
 
 def test_atomic_shadow_failure_preserves_legacy_discovery(monkeypatch) -> None:
-    import vllm_mlx.audio.registry as audio_registry
+    import rapid_mlx.audio.registry as audio_registry
 
     def broken_audio_registry():
         raise ValueError("simulated optional registry failure")

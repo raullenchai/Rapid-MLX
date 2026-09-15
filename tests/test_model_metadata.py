@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 
-from vllm_mlx import model_metadata as metadata
+from rapid_mlx import model_metadata as metadata
 
 
 def _write_json(path: Path, value) -> None:

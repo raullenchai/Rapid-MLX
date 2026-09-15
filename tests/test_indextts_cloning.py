@@ -21,7 +21,7 @@ _UNSET = object()
 
 
 def test_registry_exposes_indextts_aliases():
-    from vllm_mlx.audio.registry import resolve_audio_alias
+    from rapid_mlx.audio.registry import resolve_audio_alias
 
     for alias in ("indextts", "indextts-1.5", INDEXTTS_REPO):
         entry = resolve_audio_alias(alias)
@@ -32,14 +32,14 @@ def test_registry_exposes_indextts_aliases():
 
 
 def test_engine_detects_both_indextts_spellings():
-    from vllm_mlx.audio.tts import TTSEngine
+    from rapid_mlx.audio.tts import TTSEngine
 
     assert TTSEngine("mlx-community/IndexTTS-1.5")._model_family == "indextts"
     assert TTSEngine("org/index-tts-custom")._model_family == "indextts"
 
 
 def test_engine_forwards_only_text_and_reference(monkeypatch):
-    from vllm_mlx.audio.tts import TTSEngine
+    from rapid_mlx.audio.tts import TTSEngine
 
     calls: list[dict] = []
     decoded_reference = object()
@@ -78,7 +78,7 @@ def test_engine_forwards_only_text_and_reference(monkeypatch):
 
 
 def test_engine_requires_reference_audio():
-    from vllm_mlx.audio.tts import TTSEngine
+    from rapid_mlx.audio.tts import TTSEngine
 
     engine = TTSEngine(INDEXTTS_REPO)
     engine.model = object()
@@ -122,7 +122,7 @@ def test_loader_injects_tokenizer_without_mutating_config(monkeypatch, tmp_path)
     monkeypatch.setattr(mx, "load", lambda path: {"w": "value"})
     monkeypatch.setattr(mx, "eval", lambda params: seen.setdefault("mx_eval", params))
 
-    from vllm_mlx.audio.tts import _load_indextts_model
+    from rapid_mlx.audio.tts import _load_indextts_model
 
     model = _load_indextts_model(str(tmp_path))
 
@@ -171,7 +171,7 @@ class _RecordingEngine:
         ref_text=_UNSET,
         **kwargs,
     ):
-        from vllm_mlx.audio.tts import AudioOutput
+        from rapid_mlx.audio.tts import AudioOutput
 
         call = {"text": text, "speed": speed}
         if voice is not _UNSET:
@@ -196,11 +196,11 @@ def _mount(monkeypatch):
     from fastapi import FastAPI
     from fastapi.testclient import TestClient
 
-    from vllm_mlx.audio import probe as probe_mod
-    from vllm_mlx.audio import tts as tts_mod
-    from vllm_mlx.config import get_config
-    from vllm_mlx.middleware.exception_handlers import install_exception_handlers
-    from vllm_mlx.routes import audio as audio_route
+    from rapid_mlx.audio import probe as probe_mod
+    from rapid_mlx.audio import tts as tts_mod
+    from rapid_mlx.config import get_config
+    from rapid_mlx.middleware.exception_handlers import install_exception_handlers
+    from rapid_mlx.routes import audio as audio_route
 
     _RecordingEngine.instances = []
     _RecordingEngine._real_to_bytes = tts_mod.TTSEngine.to_bytes
@@ -252,7 +252,7 @@ def test_route_rejects_indextts_without_reference(monkeypatch):
 def test_model_rejects_reference_text_without_audio():
     from pydantic import ValidationError
 
-    from vllm_mlx.api.models import AudioSpeechRequest
+    from rapid_mlx.api.models import AudioSpeechRequest
 
     with pytest.raises(ValidationError, match="ref_text requires ref_audio"):
         AudioSpeechRequest(
@@ -305,7 +305,7 @@ def test_warm_cache_resolves_without_a_network_call(monkeypatch, tmp_path):
     file is already on disk, and that lookup carries no timeout, so it is the
     step that hangs a start on a hostile network.
     """
-    from vllm_mlx.audio import tts
+    from rapid_mlx.audio import tts
 
     cached = _seed_indextts_snapshot(tmp_path / "cached")
     calls = _patch_snapshot_download(
@@ -323,7 +323,7 @@ def test_partial_cache_falls_back_to_the_network(monkeypatch, tmp_path):
     listing; a mirror-populated snapshot has none and is returned sight-unseen,
     so the missing shard has to be caught here.
     """
-    from vllm_mlx.audio import tts
+    from rapid_mlx.audio import tts
 
     cached = _seed_indextts_snapshot(
         tmp_path / "cached",
@@ -339,7 +339,7 @@ def test_partial_cache_falls_back_to_the_network(monkeypatch, tmp_path):
 
 def test_unresolvable_cache_falls_back_to_the_network(monkeypatch, tmp_path):
     """An unresolvable cache is today's path, not a hard failure."""
-    from vllm_mlx.audio import tts
+    from rapid_mlx.audio import tts
 
     networked = tmp_path / "networked"
     calls = _patch_snapshot_download(monkeypatch, cached=None, networked=networked)
@@ -350,7 +350,7 @@ def test_unresolvable_cache_falls_back_to_the_network(monkeypatch, tmp_path):
 
 def test_complete_sharded_cache_is_accepted(tmp_path):
     """Every shard the index names is present → the cache is usable."""
-    from vllm_mlx.audio import tts
+    from rapid_mlx.audio import tts
 
     snapshot = _seed_indextts_snapshot(
         tmp_path / "cached",
@@ -364,7 +364,7 @@ def test_complete_sharded_cache_is_accepted(tmp_path):
 @pytest.mark.parametrize("absent", ["config.json", "tokenizer.model"])
 def test_cache_missing_a_required_file_is_rejected(tmp_path, absent):
     """The loader opens both of these directly; neither may be assumed."""
-    from vllm_mlx.audio import tts
+    from rapid_mlx.audio import tts
 
     snapshot = _seed_indextts_snapshot(tmp_path / "cached")
     (snapshot / absent).unlink()

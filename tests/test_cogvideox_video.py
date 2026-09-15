@@ -9,9 +9,9 @@ from types import ModuleType, SimpleNamespace
 import pytest
 from fastapi import HTTPException
 
-from vllm_mlx.model_aliases import resolve_profile
-from vllm_mlx.routes import video
-from vllm_mlx.runtime.video_lane import VideoEngine, require_video_runtime_or_exit
+from rapid_mlx.model_aliases import resolve_profile
+from rapid_mlx.routes import video
+from rapid_mlx.runtime.video_lane import VideoEngine, require_video_runtime_or_exit
 
 
 def test_cogvideox_aliases_route_to_video_lane() -> None:
@@ -27,7 +27,7 @@ def test_cogvideox_aliases_route_to_video_lane() -> None:
 
 
 def test_cogvideox_engine_uses_persistent_worker(monkeypatch, tmp_path) -> None:
-    from vllm_mlx.video.engine import VideoGenerationEngine
+    from rapid_mlx.video.engine import VideoGenerationEngine
 
     engine = VideoGenerationEngine("test/model", output_dir=tmp_path)
     thread_ids: list[int] = []
@@ -55,7 +55,7 @@ def test_cogvideox_engine_uses_persistent_worker(monkeypatch, tmp_path) -> None:
 def test_cogvideox_engine_encodes_generated_pixels(monkeypatch, tmp_path) -> None:
     import numpy as np
 
-    from vllm_mlx.video.engine import VideoGenerationEngine
+    from rapid_mlx.video.engine import VideoGenerationEngine
 
     fake_mlx = ModuleType("mlx")
     fake_core = ModuleType("mlx.core")
@@ -80,7 +80,7 @@ def test_cogvideox_engine_encodes_generated_pixels(monkeypatch, tmp_path) -> Non
         captured["fps"] = fps
         Path(output_path).write_bytes(b"mp4")
 
-    monkeypatch.setattr("vllm_mlx.video.encoding.encode_rgb_video", fake_encode)
+    monkeypatch.setattr("rapid_mlx.video.encoding.encode_rgb_video", fake_encode)
 
     output = engine._generate_sync(
         prompt="sunset",
@@ -100,7 +100,7 @@ def test_cogvideox_engine_encodes_generated_pixels(monkeypatch, tmp_path) -> Non
 
 
 def test_cogvideox_engine_cleans_failed_output_copy(monkeypatch, tmp_path) -> None:
-    from vllm_mlx.video.engine import VideoGenerationEngine
+    from rapid_mlx.video.engine import VideoGenerationEngine
 
     engine = VideoGenerationEngine("test/model", output_dir=tmp_path)
     generated = tmp_path / "generated.mp4"
@@ -114,7 +114,7 @@ def test_cogvideox_engine_cleans_failed_output_copy(monkeypatch, tmp_path) -> No
         raise OSError("disk full")
 
     monkeypatch.setattr(
-        "vllm_mlx.video.engine.shutil.copyfile", fail_after_partial_copy
+        "rapid_mlx.video.engine.shutil.copyfile", fail_after_partial_copy
     )
     with pytest.raises(OSError, match="disk full"):
         engine.generate_sync(output_path=output, prompt="test")
@@ -128,14 +128,14 @@ def test_cogvideox_engine_cleans_failed_output_copy(monkeypatch, tmp_path) -> No
 def test_cogvideox_engine_cleans_output_when_directory_creation_fails(
     monkeypatch, tmp_path
 ) -> None:
-    from vllm_mlx.video.engine import VideoGenerationEngine
+    from rapid_mlx.video.engine import VideoGenerationEngine
 
     engine = VideoGenerationEngine("test/model", output_dir=tmp_path)
     generated = tmp_path / "generated.mp4"
     generated.write_bytes(b"complete")
     monkeypatch.setattr(engine, "_generate_sync", lambda **kwargs: generated)
     monkeypatch.setattr(
-        "vllm_mlx.video.engine.Path.mkdir",
+        "rapid_mlx.video.engine.Path.mkdir",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("read-only")),
     )
 
@@ -152,7 +152,7 @@ def test_cogvideox_engine_cleans_output_when_directory_creation_fails(
 async def test_cogvideox_engine_cleans_result_after_cancellation(
     monkeypatch, tmp_path
 ) -> None:
-    from vllm_mlx.video.engine import VideoGenerationEngine
+    from rapid_mlx.video.engine import VideoGenerationEngine
 
     engine = VideoGenerationEngine("test/model", output_dir=tmp_path)
     started = threading.Event()
@@ -179,7 +179,7 @@ async def test_cogvideox_engine_cleans_result_after_cancellation(
 
 
 def test_cogvideox_tokenizer_falls_back_to_upstream(tmp_path) -> None:
-    from vllm_mlx.video.engine import _resolve_tokenizer_path
+    from rapid_mlx.video.engine import _resolve_tokenizer_path
 
     calls = []
 
@@ -193,7 +193,7 @@ def test_cogvideox_tokenizer_falls_back_to_upstream(tmp_path) -> None:
 
 
 def test_cogvideox_runtime_guard_checks_transitive_modules(monkeypatch, capsys) -> None:
-    import vllm_mlx.runtime.video_lane as lane
+    import rapid_mlx.runtime.video_lane as lane
 
     monkeypatch.setattr(lane.sys, "version_info", (3, 11))
     missing = {"mlx_arsenal", "PIL"}
@@ -335,7 +335,7 @@ async def test_cogvideox_rejects_alias_for_different_served_checkpoint(
 
 
 def test_video_engine_delegates_cogvideox(monkeypatch, tmp_path) -> None:
-    fake_module = ModuleType("vllm_mlx.video.engine")
+    fake_module = ModuleType("rapid_mlx.video.engine")
     captured = {}
 
     class FakeCogEngine:
@@ -350,7 +350,7 @@ def test_video_engine_delegates_cogvideox(monkeypatch, tmp_path) -> None:
             pass
 
     fake_module.VideoGenerationEngine = FakeCogEngine
-    monkeypatch.setitem(sys.modules, "vllm_mlx.video.engine", fake_module)
+    monkeypatch.setitem(sys.modules, "rapid_mlx.video.engine", fake_module)
     engine = VideoEngine("dgrauet/CogVideoX-Fun-V1.5-5b-InP-mlx-q4")
     lock_events = []
 

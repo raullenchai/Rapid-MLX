@@ -15,15 +15,15 @@ from types import ModuleType
 import pytest
 from fastapi import HTTPException
 
-from vllm_mlx.model_aliases import resolve_profile
-from vllm_mlx.routes import video
-from vllm_mlx.runtime.video_lane import (
+from rapid_mlx.model_aliases import resolve_profile
+from rapid_mlx.routes import video
+from rapid_mlx.runtime.video_lane import (
     VideoEngine,
     _submodule_spec_exists_without_import,
     registered_wan_runtime_issue,
     require_video_runtime_or_exit,
 )
-from vllm_mlx.video.wan import WanBackendError, WanRequestError, WanVideoEngine
+from rapid_mlx.video.wan import WanBackendError, WanRequestError, WanVideoEngine
 
 
 def _checkpoint(tmp_path: Path, **overrides) -> Path:
@@ -104,7 +104,7 @@ def test_wan_runtime_guard_checks_wan_module(monkeypatch, capsys) -> None:
     monkeypatch.setattr(sys, "version_info", (3, 11))
     monkeypatch.setattr("importlib.util.find_spec", lambda _module: object())
     monkeypatch.setattr(
-        "vllm_mlx.runtime.video_lane._submodule_spec_exists_without_import",
+        "rapid_mlx.runtime.video_lane._submodule_spec_exists_without_import",
         lambda parent, child: False,
     )
     monkeypatch.setattr("shutil.which", lambda _: "/opt/homebrew/bin/ffmpeg")
@@ -152,10 +152,10 @@ def test_wan_runtime_probe_reports_missing_ffmpeg_without_exiting(
     monkeypatch.setattr(sys, "version_info", (3, 11))
     monkeypatch.setattr("importlib.util.find_spec", lambda _module: object())
     monkeypatch.setattr(
-        "vllm_mlx.runtime.video_lane._submodule_spec_exists_without_import",
+        "rapid_mlx.runtime.video_lane._submodule_spec_exists_without_import",
         lambda parent, child: True,
     )
-    monkeypatch.setattr("vllm_mlx.runtime.video_lane._resolve_ffmpeg", lambda: None)
+    monkeypatch.setattr("rapid_mlx.runtime.video_lane._resolve_ffmpeg", lambda: None)
 
     issue = registered_wan_runtime_issue("wan2.2-ti2v-5b-q8")
 
@@ -173,11 +173,11 @@ def test_wan_runtime_probe_reports_unsupported_python_and_ready_runtime(
 
     monkeypatch.setattr(sys, "version_info", version_info(3, 11))
     monkeypatch.setattr(
-        "vllm_mlx.runtime.video_lane._default_video_runtime_requirements",
+        "rapid_mlx.runtime.video_lane._default_video_runtime_requirements",
         lambda _model: [],
     )
     monkeypatch.setattr(
-        "vllm_mlx.runtime.video_lane._resolve_ffmpeg",
+        "rapid_mlx.runtime.video_lane._resolve_ffmpeg",
         lambda: "/opt/homebrew/bin/ffmpeg",
     )
     assert registered_wan_runtime_issue("wan2.2-ti2v-5b-q8") is None
@@ -230,7 +230,7 @@ def test_wan_lane_crops_aligned_generation_to_requested_size(
         Path(command[-1]).write_bytes(b"cropped")
 
     monkeypatch.setattr(
-        "vllm_mlx.runtime.video_lane._resolve_ffmpeg", lambda: "/usr/bin/ffmpeg"
+        "rapid_mlx.runtime.video_lane._resolve_ffmpeg", lambda: "/usr/bin/ffmpeg"
     )
     monkeypatch.setattr(subprocess, "run", fake_run)
     lane.generate(

@@ -35,7 +35,7 @@ from __future__ import annotations
 
 import pytest
 
-from vllm_mlx.reasoning import get_parser
+from rapid_mlx.reasoning import get_parser
 
 
 def _stream(parser, chunks: list[str]) -> tuple[str, str]:

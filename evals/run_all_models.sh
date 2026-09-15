@@ -9,7 +9,7 @@
 # No set -e: server kill/wait returns non-zero which is expected
 
 PYTHON=python3.12
-CLI_CMD="from vllm_mlx.cli import main; import sys; sys.argv = ['rapid-mlx'] + sys.argv[1:]; main()"
+CLI_CMD="from rapid_mlx.cli import main; import sys; sys.argv = ['rapid-mlx'] + sys.argv[1:]; main()"
 PORT=8000
 EVAL_CMD="$PYTHON evals/run_eval.py"
 

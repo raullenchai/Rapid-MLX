@@ -13,7 +13,7 @@ import pytest
 
 
 def _thinking_cfg(*, default_max_tokens_is_explicit: bool):
-    from vllm_mlx.config import reset_config
+    from rapid_mlx.config import reset_config
 
     cfg = reset_config()
     cfg.default_max_tokens = 128
@@ -24,7 +24,7 @@ def _thinking_cfg(*, default_max_tokens_is_explicit: bool):
 
 
 def test_request_explicit_max_tokens_is_hard_cap_for_thinking_model():
-    from vllm_mlx.service.helpers import _resolve_max_tokens
+    from rapid_mlx.service.helpers import _resolve_max_tokens
 
     _thinking_cfg(default_max_tokens_is_explicit=False)
 
@@ -32,7 +32,7 @@ def test_request_explicit_max_tokens_is_hard_cap_for_thinking_model():
 
 
 def test_operator_explicit_default_max_tokens_is_hard_cap_for_thinking_model():
-    from vllm_mlx.service.helpers import _resolve_max_tokens
+    from rapid_mlx.service.helpers import _resolve_max_tokens
 
     _thinking_cfg(default_max_tokens_is_explicit=True)
 
@@ -40,7 +40,7 @@ def test_operator_explicit_default_max_tokens_is_hard_cap_for_thinking_model():
 
 
 def test_implicit_default_gets_thinking_headroom_when_request_omits_max_tokens():
-    from vllm_mlx.service.helpers import _resolve_max_tokens
+    from rapid_mlx.service.helpers import _resolve_max_tokens
 
     _thinking_cfg(default_max_tokens_is_explicit=False)
 
@@ -48,7 +48,7 @@ def test_implicit_default_gets_thinking_headroom_when_request_omits_max_tokens()
 
 
 def test_non_thinking_request_does_not_get_implicit_headroom():
-    from vllm_mlx.service.helpers import _resolve_max_tokens
+    from rapid_mlx.service.helpers import _resolve_max_tokens
 
     _thinking_cfg(default_max_tokens_is_explicit=False)
 
@@ -82,7 +82,7 @@ class _CaptureChatEngine:
         self.captured_max_tokens = None
 
     async def chat(self, messages, **kwargs):
-        from vllm_mlx.engine.base import GenerationOutput
+        from rapid_mlx.engine.base import GenerationOutput
 
         self.captured_max_tokens = kwargs.get("max_tokens")
         return GenerationOutput(
@@ -101,7 +101,7 @@ class _CaptureCompletionEngine:
         self.captured_max_tokens = None
 
     async def generate(self, **kwargs):
-        from vllm_mlx.engine.base import GenerationOutput
+        from rapid_mlx.engine.base import GenerationOutput
 
         self.captured_max_tokens = kwargs.get("max_tokens")
         return GenerationOutput(
@@ -136,8 +136,8 @@ def _patch_common_route_deps(monkeypatch, module, engine):
 
 @pytest.mark.asyncio
 async def test_chat_route_passes_resolved_max_tokens_to_engine(monkeypatch):
-    from vllm_mlx.api.models import ChatCompletionRequest
-    from vllm_mlx.routes import chat
+    from rapid_mlx.api.models import ChatCompletionRequest
+    from rapid_mlx.routes import chat
 
     engine = _CaptureChatEngine()
     resolver_calls = _patch_common_route_deps(monkeypatch, chat, engine)
@@ -166,8 +166,8 @@ async def test_chat_route_passes_resolved_max_tokens_to_engine(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_completions_route_passes_resolved_max_tokens_to_engine(monkeypatch):
-    from vllm_mlx.api.models import CompletionRequest
-    from vllm_mlx.routes import completions
+    from rapid_mlx.api.models import CompletionRequest
+    from rapid_mlx.routes import completions
 
     engine = _CaptureCompletionEngine()
     resolver_calls = _patch_common_route_deps(monkeypatch, completions, engine)
@@ -186,9 +186,9 @@ async def test_completions_route_passes_resolved_max_tokens_to_engine(monkeypatc
 
 @pytest.mark.asyncio
 async def test_responses_route_passes_resolved_max_tokens_to_engine(monkeypatch):
-    from vllm_mlx.api.models import ChatCompletionRequest
-    from vllm_mlx.api.responses_models import ResponsesRequest
-    from vllm_mlx.routes import responses
+    from rapid_mlx.api.models import ChatCompletionRequest
+    from rapid_mlx.api.responses_models import ResponsesRequest
+    from rapid_mlx.routes import responses
 
     engine = _CaptureChatEngine()
     resolver_calls = []
@@ -223,7 +223,7 @@ async def test_responses_route_passes_resolved_max_tokens_to_engine(monkeypatch)
 
 @pytest.mark.asyncio
 async def test_anthropic_route_passes_resolved_max_tokens_to_engine(monkeypatch):
-    from vllm_mlx.routes import anthropic
+    from rapid_mlx.routes import anthropic
 
     engine = _CaptureChatEngine()
     resolver_calls = _patch_common_route_deps(monkeypatch, anthropic, engine)

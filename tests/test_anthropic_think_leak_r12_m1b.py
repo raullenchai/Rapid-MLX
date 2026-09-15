@@ -45,25 +45,25 @@ from __future__ import annotations
 
 import pytest
 
-from vllm_mlx.api.anthropic_adapter import _thinking_block_content, openai_to_anthropic
-from vllm_mlx.api.constants import (
+from rapid_mlx.api.anthropic_adapter import _thinking_block_content, openai_to_anthropic
+from rapid_mlx.api.constants import (
     REASONING_CUTOFF_SENTINEL,
     RESCUE_TAIL_LENGTH,
     is_rescue_payload,
 )
-from vllm_mlx.api.models import (
+from rapid_mlx.api.models import (
     AssistantMessage,
     ChatCompletionChoice,
     ChatCompletionResponse,
     Usage,
 )
-from vllm_mlx.api.utils import sanitize_output, strip_reasoning_channel_markup
+from rapid_mlx.api.utils import sanitize_output, strip_reasoning_channel_markup
 
 # ---------------------------------------------------------------------------
 # Pure-API rescue-payload reconstruction.
 #
 # Codex r2 P1 (R12-M1b): the test file previously imported
-# ``_apply_reasoning_cutoff_notice`` from ``vllm_mlx.service.helpers``,
+# ``_apply_reasoning_cutoff_notice`` from ``rapid_mlx.service.helpers``,
 # which transitively pulls the engine layer into pytest collection.
 # Existing route-helper tests already follow that pattern (see
 # ``tests/test_reasoning_content_null_rescue.py``) and the CI test

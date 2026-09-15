@@ -36,7 +36,7 @@ from mlx_lm.models.cache import (
     can_trim_prompt_cache,
 )
 
-from vllm_mlx.memory_cache import (
+from rapid_mlx.memory_cache import (
     MemoryAwarePrefixCache,
     MemoryCacheConfig,
     _cache_has_non_trimmable,
@@ -160,7 +160,7 @@ def test_scheduler_exact_hit_nontrimmable_drops_cache_and_full_prefills():
     branch in the scheduler turns this test red (mutation-kill for the fix)."""
     from unittest.mock import MagicMock
 
-    from vllm_mlx.scheduler import Scheduler
+    from rapid_mlx.scheduler import Scheduler
 
     sched = Scheduler.__new__(Scheduler)  # bypass __init__
 
@@ -191,7 +191,7 @@ def test_scheduler_exact_hit_trimmable_trims_and_keeps_cache():
     only the last token re-forwarded (offset decremented by 1)."""
     from unittest.mock import MagicMock
 
-    from vllm_mlx.scheduler import Scheduler
+    from rapid_mlx.scheduler import Scheduler
 
     sched = Scheduler.__new__(Scheduler)
 
@@ -229,7 +229,7 @@ def test_scheduler_exact_hit_trim_exception_falls_back_to_cold_prefill(monkeypat
 
     import mlx_lm.models.cache as _mlx_cache
 
-    from vllm_mlx.scheduler import Scheduler
+    from rapid_mlx.scheduler import Scheduler
 
     sched = Scheduler.__new__(Scheduler)
 
@@ -405,7 +405,7 @@ def _make_hybrid_cache(n_tokens: int, window: int = W):
 
 def test_trim_preserves_hybrid_per_layer_cache_types():
     """An UNROTATED hybrid cache keeps its per-layer classes across a trim."""
-    from vllm_mlx.memory_cache import _trim_cache_offset
+    from rapid_mlx.memory_cache import _trim_cache_offset
 
     cache = _make_hybrid_cache(n_tokens=8)
     before = [type(c).__name__ for c in cache]
@@ -427,7 +427,7 @@ def test_trim_preserves_hybrid_per_layer_cache_types():
 
 def test_trim_does_not_mutate_the_retained_hybrid_entry():
     """Trimming returns copies — the cached entry stays reusable at full length."""
-    from vllm_mlx.memory_cache import _trim_cache_offset
+    from rapid_mlx.memory_cache import _trim_cache_offset
 
     cache = _make_hybrid_cache(n_tokens=8)
     assert _trim_cache_offset(cache, 2) is not None
@@ -445,7 +445,7 @@ def test_trimmed_hybrid_cache_merges_to_same_batch_types_as_fresh():
     fresh sequence merged to ``BatchRotatingKVCache``, and ``extend`` then read
     ``other.rotated`` off a cache that has no such attribute.
     """
-    from vllm_mlx.memory_cache import _trim_cache_offset
+    from rapid_mlx.memory_cache import _trim_cache_offset
 
     restored = _trim_cache_offset(_make_hybrid_cache(n_tokens=8), 2)
     assert restored is not None
@@ -471,7 +471,7 @@ def test_rotated_hybrid_cache_is_refused_rather_than_mistyped():
     Returning a plain ``KVCache`` here would stop the crash but corrupt the
     sliding layers' KV, which is the failure mode this fix must NOT trade into.
     """
-    from vllm_mlx.memory_cache import _trim_cache_offset
+    from rapid_mlx.memory_cache import _trim_cache_offset
 
     rotated = _make_hybrid_cache(n_tokens=W + 8)
     assert any(
@@ -482,7 +482,7 @@ def test_rotated_hybrid_cache_is_refused_rather_than_mistyped():
 
 def test_trim_offset_plain_kvcache_path_unchanged():
     """Full-attention-only models keep their previous behaviour exactly."""
-    from vllm_mlx.memory_cache import _trim_cache_offset
+    from rapid_mlx.memory_cache import _trim_cache_offset
 
     plain = []
     for _ in range(4):
@@ -512,8 +512,8 @@ def test_trim_scope_is_limited_to_rotating_layers():
     """
     from mlx_lm.models.cache import ChunkedKVCache
 
-    from vllm_mlx.memory_cache import _trim_cache_offset
-    from vllm_mlx.quantized_batch_cache import _QuantizableKVCache
+    from rapid_mlx.memory_cache import _trim_cache_offset
+    from rapid_mlx.quantized_batch_cache import _QuantizableKVCache
 
     def _filled(layer, n=8):
         x = mx.random.normal((B, H, n, D))

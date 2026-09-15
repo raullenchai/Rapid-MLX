@@ -8,7 +8,7 @@
 
 ## Setup
 
-- **Drafter**: `vllm_mlx/speculative/suffix_decoding.py` — adaptive suffix-tree, `max_draft=8`, `max_suffix=4`, `min_conf=0.3`.
+- **Drafter**: `rapid_mlx/speculative/suffix_decoding.py` — adaptive suffix-tree, `max_draft=8`, `max_suffix=4`, `min_conf=0.3`.
 - **Verify**: single batched forward over `[next, draft₀..draft_{k-1}]`; argmax at each position; accept up to first mismatch; `mlx_cache.trim_prompt_cache(rejected)` for the rejected tail.
 - **Workloads** (6): `chat`, `code_edit`, `tool_loop`, `agent_react`, `json_array`, `summarize` — covers chat regression-floor, high-redundancy edit, repeated tool structure, ReAct agent loop, structured emit, and a low-redundancy summarize control.
 - **Models** (3): one pure-attention 8-bit, one pure-attention 4-bit, one hybrid (DeltaNet) 4-bit.
@@ -84,7 +84,7 @@ The speedup is large enough on pure-attention models (1-5x decode TPS, with `cha
 
 Next steps for a full PR:
 1. **Architecture allowlist.** Refuse to enable suffix decoding on hybrid models (qwen3_5/qwen3_6/qwen3_next/mamba/jamba/etc.) with a clear error explaining the limitation. Initial allowlist: `llama`, `qwen2`, `qwen3` (no .5/.6), `mistral`, `phi`, `gemma`, `gpt_oss`, `minimax_text` (text), and any other pure-attention archs we serve. Easy to expand.
-2. **Wire into BatchedEngine.** ~400 LOC monkey-patch on `BatchGenerator.step` similar to `_install_mtp()` at `vllm_mlx/scheduler.py:600`. Same drafter; per-request `SuffixDecodingDrafter` instance held in scheduler request state.
+2. **Wire into BatchedEngine.** ~400 LOC monkey-patch on `BatchGenerator.step` similar to `_install_mtp()` at `rapid_mlx/scheduler.py:600`. Same drafter; per-request `SuffixDecodingDrafter` instance held in scheduler request state.
 3. **Server flag.** `--suffix-decoding` (off by default) with `--suffix-max-draft`, `--suffix-min-conf` tuning knobs.
 4. **Telemetry.** Surface `mean_accepted_per_step` and acceptance rate through `/metrics` so operators can see when drafts are paying off.
 5. **Evaluation.** Run on Qwopus 27B / Llama-3.3-70B / Mistral-Large to confirm pure-attention behavior at agent-grade scale; the drafter generalizes by construction (no model-specific assumptions) but a final cross-model bench at production sizes belongs in the PR.

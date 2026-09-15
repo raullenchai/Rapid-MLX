@@ -30,8 +30,8 @@ import json
 
 import pytest
 
-from vllm_mlx.tool_call_scan import split_marked_parameters, trim_wrapping_newlines
-from vllm_mlx.tool_parsers.qwen3coder_tool_parser import Qwen3CoderToolParser
+from rapid_mlx.tool_call_scan import split_marked_parameters, trim_wrapping_newlines
+from rapid_mlx.tool_parsers.qwen3coder_tool_parser import Qwen3CoderToolParser
 
 PARAM_OPENER = r"<parameter=([^>]+)>"
 PARAM_CLOSER = "</parameter>"
@@ -166,7 +166,7 @@ def test_streaming_finalize_matches_non_streaming() -> None:
     Pin that the two paths agree on the indentation."""
     from unittest.mock import MagicMock
 
-    from vllm_mlx.service.postprocessor import StreamingPostProcessor
+    from rapid_mlx.service.postprocessor import StreamingPostProcessor
 
     text = _wire(file_path="/tmp/x.py", new_string=INDENTED_BODY)
     cfg = MagicMock()
@@ -237,7 +237,7 @@ def test_nemotron_xml_body_keeps_indentation() -> None:
     """``split_marked_parameters`` is shared: the Nemotron XML body carries the
     identical ``<parameter=…>`` markup, so the same rule has to hold there or
     the two wires disagree about the same bytes."""
-    from vllm_mlx.api.tool_calling import parse_tool_calls
+    from rapid_mlx.api.tool_calling import parse_tool_calls
 
     text = (
         "<tool_call>\n<function=Edit>\n"

@@ -23,7 +23,7 @@ import pytest
 def test_is_audio_model_alias_recognises_common_aliases() -> None:
     """The substring classifier should catch every audio alias the
     server actually serves — both bare aliases and HF ids."""
-    from vllm_mlx.audio.probe import is_audio_model_alias
+    from rapid_mlx.audio.probe import is_audio_model_alias
 
     audio_positive = [
         # Bare aliases the route exposes today.
@@ -54,7 +54,7 @@ def test_is_audio_model_alias_recognises_common_aliases() -> None:
 
 def test_is_audio_model_alias_ignores_non_audio() -> None:
     """Text + vision aliases must NOT trip the audio classifier."""
-    from vllm_mlx.audio.probe import is_audio_model_alias
+    from rapid_mlx.audio.probe import is_audio_model_alias
 
     non_audio = [
         "qwen3.6-27b-4bit",
@@ -80,7 +80,7 @@ def test_require_audio_or_exit_exits_2_when_mlx_audio_missing(
     We monkeypatch ``importlib.util.find_spec`` so the test runs even
     on CI runners that have ``mlx-audio`` installed.
     """
-    from vllm_mlx.audio import probe
+    from rapid_mlx.audio import probe
 
     real_find_spec = importlib.util.find_spec
 
@@ -109,7 +109,7 @@ def test_require_audio_or_exit_exits_2_when_mlx_audio_missing(
 def test_require_audio_or_exit_no_op_when_mlx_audio_present(monkeypatch) -> None:
     """When ``mlx_audio`` is importable, the guard must return cleanly
     (no exit, no stderr noise)."""
-    from vllm_mlx.audio import probe
+    from rapid_mlx.audio import probe
 
     real_find_spec = importlib.util.find_spec
 
@@ -139,7 +139,7 @@ def test_serve_command_triggers_audio_boot_guard(monkeypatch, capsys) -> None:
     """
     from argparse import Namespace
 
-    from vllm_mlx import cli
+    from rapid_mlx import cli
 
     # Make mlx_audio look uninstalled to the audio boot guard.
     real_find_spec = importlib.util.find_spec
@@ -185,8 +185,8 @@ def test_serve_command_does_not_audio_guard_text_model(monkeypatch) -> None:
     """
     from argparse import Namespace
 
-    from vllm_mlx import cli
-    from vllm_mlx.audio import probe
+    from rapid_mlx import cli
+    from rapid_mlx.audio import probe
 
     # Spy on the audio guard so we can assert it was NEVER called.
     called: list[str] = []
@@ -201,7 +201,7 @@ def test_serve_command_does_not_audio_guard_text_model(monkeypatch) -> None:
     # gate is skipped for text models. Force the embedding / vision
     # guards to no-op and then force an early controlled exit by
     # patching ``prompt_upgrade_if_available`` to raise SystemExit.
-    from vllm_mlx import _version_check
+    from rapid_mlx import _version_check
 
     def _early_exit():
         raise SystemExit(0)
@@ -210,7 +210,7 @@ def test_serve_command_does_not_audio_guard_text_model(monkeypatch) -> None:
 
     # Force the vision guard to no-op too, so we know any SystemExit
     # only comes from our injected hook.
-    from vllm_mlx.api import utils as api_utils
+    from rapid_mlx.api import utils as api_utils
 
     monkeypatch.setattr(api_utils, "is_mllm_model", lambda *_a, **_kw: False)
 

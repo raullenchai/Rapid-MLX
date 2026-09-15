@@ -32,7 +32,7 @@ import pytest
 
 def test_doctor_module_does_not_import_engine_or_server():
     """Importing the doctor module must not drag in BatchedEngine,
-    mlx.core, vllm_mlx.engine, or the FastAPI server. The old doctor
+    mlx.core, rapid_mlx.engine, or the FastAPI server. The old doctor
     smoke tier did pull these in for the model_load check; the new
     env-health doctor must not.
 
@@ -40,7 +40,7 @@ def test_doctor_module_does_not_import_engine_or_server():
     ``test_doctor_env_health.py`` already imported the doctor modules
     in this process, and (b) clearing only the blocked modules would
     leave the doctor's cached imports in place — so a future regression
-    that adds ``from vllm_mlx import engine`` at the top of
+    that adds ``from rapid_mlx import engine`` at the top of
     ``doctor/env_health.py`` would be invisible to an in-process check
     (the cached import never re-runs). Codex review round 1 caught
     this; the subprocess form gives a clean module table.
@@ -52,12 +52,12 @@ def test_doctor_module_does_not_import_engine_or_server():
     # so importing mlx at module load would have slipped past silently.
     probe = (
         "import importlib, sys; "
-        "blocked_exact = {'vllm_mlx.engine', 'vllm_mlx.server', "
-        "'vllm_mlx.api.server'}; "
+        "blocked_exact = {'rapid_mlx.engine', 'rapid_mlx.server', "
+        "'rapid_mlx.api.server'}; "
         "blocked_prefixes = ('mlx.', 'mlx_lm', 'mlx_vlm'); "
-        "importlib.import_module('vllm_mlx.doctor'); "
-        "importlib.import_module('vllm_mlx.doctor.cli'); "
-        "importlib.import_module('vllm_mlx.doctor.env_health'); "
+        "importlib.import_module('rapid_mlx.doctor'); "
+        "importlib.import_module('rapid_mlx.doctor.cli'); "
+        "importlib.import_module('rapid_mlx.doctor.env_health'); "
         "loaded = set(sys.modules); "
         "leaked_exact = blocked_exact & loaded; "
         "leaked_prefix = {m for m in loaded "
@@ -84,10 +84,10 @@ def test_doctor_module_does_not_import_engine_or_server():
 
 
 def test_run_all_does_not_call_load_model():
-    """``run_all()`` must not invoke ``vllm_mlx.server.load_model``."""
-    from vllm_mlx.doctor import env_health
+    """``run_all()`` must not invoke ``rapid_mlx.server.load_model``."""
+    from rapid_mlx.doctor import env_health
 
-    with mock.patch("vllm_mlx.server.load_model", autospec=True) as load_mock:
+    with mock.patch("rapid_mlx.server.load_model", autospec=True) as load_mock:
         env_health.run_all()
     assert load_mock.call_count == 0, (
         f"doctor called load_model {load_mock.call_count} times; "
@@ -103,7 +103,7 @@ def test_run_all_does_not_open_any_socket():
     Patches ``socket.socket.bind`` / ``socket.socket.listen`` to fail
     loudly if any code path tries to bring up a server-like endpoint.
     """
-    from vllm_mlx.doctor import env_health
+    from rapid_mlx.doctor import env_health
 
     real_bind = socket.socket.bind
     real_listen = socket.socket.listen
@@ -141,8 +141,8 @@ def test_doctor_runtime_under_five_seconds():
     Network probe is mocked so the test doesn't depend on real connectivity;
     the budget is the structural runtime (filesystem walks, version lookups,
     socket-free fast paths)."""
-    from vllm_mlx.doctor import env_health
-    from vllm_mlx.doctor.cli import render
+    from rapid_mlx.doctor import env_health
+    from rapid_mlx.doctor.cli import render
 
     with mock.patch.object(
         env_health,
@@ -176,7 +176,7 @@ def test_doctor_legacy_tier_subcommand_redirects(legacy_tier: str, capsys):
     that's no longer valid")."""
     from argparse import Namespace
 
-    from vllm_mlx.doctor.cli import doctor_command
+    from rapid_mlx.doctor.cli import doctor_command
 
     args = Namespace(tier=legacy_tier, verbose=False)
     with pytest.raises(SystemExit) as exc:

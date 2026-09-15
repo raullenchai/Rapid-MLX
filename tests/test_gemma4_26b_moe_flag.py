@@ -18,9 +18,9 @@ The ground truth is the checkpoint's own ``config.json``:
   gemma4_assistant``, ``text_config.num_experts = None``, four dense
   layers. It is the 0.4B speculative drafter, not a copy of the target.
 
-``is_moe`` is not cosmetic: :mod:`vllm_mlx.speculative.dflash.eligibility`
+``is_moe`` is not cosmetic: :mod:`rapid_mlx.speculative.dflash.eligibility`
 rejects MoE aliases outright (drafter hidden-state fusion misfires on
-expert-routing churn) and :mod:`vllm_mlx._mxfp4_moe_guardrail` keys off it,
+expert-routing churn) and :mod:`rapid_mlx._mxfp4_moe_guardrail` keys off it,
 so a dense-tagged MoE alias can pass a gate that exists to stop it. Today
 the 4-bit entries are also blocked by the ``precision >= 8-bit`` criterion,
 which is exactly why the mis-tag survived review — the wrong answer was
@@ -31,7 +31,7 @@ from __future__ import annotations
 
 import pytest
 
-from vllm_mlx.model_aliases import list_profiles
+from rapid_mlx.model_aliases import list_profiles
 
 # Every alias below resolves to a conversion of the same 26B-A4B checkpoint.
 _MOE_TARGETS = (

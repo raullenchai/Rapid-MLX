@@ -9,15 +9,15 @@ pytestmark = pytest.mark.requires_mlx
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from vllm_mlx.engine_core import EngineCore
-from vllm_mlx.memory_cache import (
+from rapid_mlx.engine_core import EngineCore
+from rapid_mlx.memory_cache import (
     CacheStats,
     MemoryAwarePrefixCache,
     MemoryCacheConfig,
 )
-from vllm_mlx.paged_cache import PagedCacheManager
-from vllm_mlx.prefix_cache import BlockAwarePrefixCache
-from vllm_mlx.scheduler import Scheduler, SchedulerConfig
+from rapid_mlx.paged_cache import PagedCacheManager
+from rapid_mlx.prefix_cache import BlockAwarePrefixCache
+from rapid_mlx.scheduler import Scheduler, SchedulerConfig
 
 
 def test_idle_cache_clear_seconds_is_opt_in_and_validated():
@@ -66,7 +66,7 @@ def test_engine_idle_clear_runs_scheduler_clear_on_worker():
         clear_prefix_cache=lambda *, reset_stats: calls.append(reset_stats) or True
     )
 
-    with patch("vllm_mlx.engine_core.mx.clear_cache") as clear_cache:
+    with patch("rapid_mlx.engine_core.mx.clear_cache") as clear_cache:
         assert engine._clear_prefix_cache_on_worker() is True
 
     assert calls == [False]

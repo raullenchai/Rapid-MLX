@@ -24,15 +24,15 @@ import pytest
 pytest.importorskip("mlx")
 pytestmark = pytest.mark.requires_mlx
 
-from vllm_mlx.memory_budget import (  # noqa: E402
+from rapid_mlx.memory_budget import (  # noqa: E402
     AUTO_UTILIZATION_CEILING,
     AUTO_UTILIZATION_FLOOR,
     MetalPreflightError,
     format_preflight_error,
     plan_metal_limit,
 )
-from vllm_mlx.request import Request, SamplingParams  # noqa: E402
-from vllm_mlx.scheduler import (  # noqa: E402
+from rapid_mlx.request import Request, SamplingParams  # noqa: E402
+from rapid_mlx.scheduler import (  # noqa: E402
     BackpressureError,
     Scheduler,
     SchedulerConfig,
@@ -262,7 +262,7 @@ class TestSchedulerPreflight:
     def test_counts_sliding_window_kv_and_survives_clear_cache_failure(self):
         """Sliding-window KV is part of the smallest-request estimate, and
         a failing ``mx.clear_cache`` must not mask the real verdict."""
-        import vllm_mlx.scheduler as sched_mod
+        import rapid_mlx.scheduler as sched_mod
 
         sched = _make_scheduler()
         per_tok = 100_000
@@ -293,7 +293,7 @@ class TestProcessUtilizationRatchet:
 
     @pytest.fixture(autouse=True)
     def _isolated_floor(self):
-        import vllm_mlx.memory_budget as mb
+        import rapid_mlx.memory_budget as mb
 
         with mb._process_floor_lock:
             saved = (mb._process_utilization_floor, mb._process_floor_generation)
@@ -305,7 +305,7 @@ class TestProcessUtilizationRatchet:
             mb._process_floor_generation += 1
 
     def _fake_device(self):
-        import vllm_mlx.scheduler as sched_mod
+        import rapid_mlx.scheduler as sched_mod
 
         metal = MagicMock()
         metal.is_available.return_value = True
@@ -315,7 +315,7 @@ class TestProcessUtilizationRatchet:
         )
 
     def test_cap_follows_ratchet_upward(self):
-        from vllm_mlx.memory_budget import note_resolved_utilization
+        from rapid_mlx.memory_budget import note_resolved_utilization
 
         sched = _make_scheduler(gpu_memory_utilization=0.5)
         with self._fake_device():
@@ -327,7 +327,7 @@ class TestProcessUtilizationRatchet:
             assert sched._resolve_metal_cap_bytes() == 90 * GB
 
     def test_disabled_cap_stays_disabled(self):
-        from vllm_mlx.memory_budget import note_resolved_utilization
+        from rapid_mlx.memory_budget import note_resolved_utilization
 
         sched = _make_scheduler(gpu_memory_utilization=0.0)
         with self._fake_device():
@@ -335,7 +335,7 @@ class TestProcessUtilizationRatchet:
             assert sched._resolve_metal_cap_bytes() == 0
 
     def test_cap_disables_when_device_info_unreadable(self):
-        import vllm_mlx.scheduler as sched_mod
+        import rapid_mlx.scheduler as sched_mod
 
         sched = _make_scheduler(gpu_memory_utilization=0.5)
         metal = MagicMock()
@@ -350,8 +350,8 @@ class TestProcessUtilizationRatchet:
         """Codex round 4 BLOCKING #1: the setter callback must run under
         the floor lock with the post-ratchet effective value, so a stale
         lower limit can never be installed after a newer higher one."""
-        import vllm_mlx.memory_budget as mb
-        from vllm_mlx.memory_budget import ratchet_utilization_and_apply
+        import rapid_mlx.memory_budget as mb
+        from rapid_mlx.memory_budget import ratchet_utilization_and_apply
 
         applied: list[float] = []
 
@@ -424,7 +424,7 @@ class TestBatchedEngineBudgetInstall:
 
     @pytest.fixture(autouse=True)
     def _isolated_floor(self):
-        import vllm_mlx.memory_budget as mb
+        import rapid_mlx.memory_budget as mb
 
         with mb._process_floor_lock:
             saved = (mb._process_utilization_floor, mb._process_floor_generation)
@@ -436,7 +436,7 @@ class TestBatchedEngineBudgetInstall:
             mb._process_floor_generation += 1
 
     def _bare_engine(self, requested=None):
-        from vllm_mlx.engine.batched import BatchedEngine
+        from rapid_mlx.engine.batched import BatchedEngine
 
         engine = BatchedEngine.__new__(BatchedEngine)
         engine._gpu_memory_utilization = requested

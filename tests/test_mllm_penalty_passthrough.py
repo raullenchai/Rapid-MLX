@@ -35,7 +35,7 @@ from unittest.mock import MagicMock
 
 import mlx.core as mx
 
-from vllm_mlx.mllm_batch_generator import (
+from rapid_mlx.mllm_batch_generator import (
     MLLMBatchRequest,
     _maybe_apply_penalty_processors,
 )
@@ -140,7 +140,7 @@ def test_first_token_no_history_is_unchanged():
 def _stub_scheduler():
     """Construct a scheduler with all I/O dependencies stubbed out so we can
     drive ``add_request`` synchronously without booting Metal/VLM."""
-    from vllm_mlx.mllm_scheduler import MLLMScheduler, MLLMSchedulerConfig
+    from rapid_mlx.mllm_scheduler import MLLMScheduler, MLLMSchedulerConfig
 
     scheduler = MLLMScheduler.__new__(MLLMScheduler)
     scheduler.config = MLLMSchedulerConfig()
@@ -231,7 +231,7 @@ async def test_engine_stream_generate_mllm_forwards_penalty_kwargs():
     (``build_extended_sampling_kwargs`` → ``chat_kwargs`` →
     ``engine.stream_chat`` → ``engine.stream_generate``) bottomed out
     here for vision models."""
-    from vllm_mlx.engine.batched import BatchedEngine
+    from rapid_mlx.engine.batched import BatchedEngine
 
     engine = BatchedEngine.__new__(BatchedEngine)
     engine._loaded = True

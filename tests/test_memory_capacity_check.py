@@ -13,7 +13,7 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock, patch
 
-from vllm_mlx.cli import _check_memory_capacity
+from rapid_mlx.cli import _check_memory_capacity
 
 
 def _fake_psutil(total_gb: float, used_gb: float = 0.0):
@@ -302,7 +302,7 @@ def test_check_is_wired_into_serve_and_bench():
     on stale comments containing the literal symbol. Bytecode loads
     don't include comments — only real references survive compilation.
     """
-    from vllm_mlx import cli
+    from rapid_mlx import cli
 
     assert _function_loads_global(cli.serve_command, "_check_memory_capacity"), (
         "serve_command must call _check_memory_capacity"

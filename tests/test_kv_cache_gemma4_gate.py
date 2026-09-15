@@ -25,7 +25,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from vllm_mlx.kv_cache_dtype import (
+from rapid_mlx.kv_cache_dtype import (
     KVCacheQuantizationUnsupportedError,
     quantized_kv_unsupported_reason,
     resolve_kv_cache_dtype,
@@ -223,7 +223,7 @@ def test_serve_exits_before_load_for_explicit_gemma4_dtype(tmp_path, dtype):
         [
             sys.executable,
             "-m",
-            "vllm_mlx.cli",
+            "rapid_mlx.cli",
             "serve",
             str(model_dir),
             "--kv-cache-dtype",
@@ -252,7 +252,7 @@ def test_serve_command_maps_both_explicit_flag_shapes_to_exit_two(
     tmp_path, flags, capsys, monkeypatch
 ):
     """Exercise the in-process CLI exception mapping as well as subprocess E2E."""
-    from vllm_mlx import cli
+    from rapid_mlx import cli
 
     model_dir = tmp_path / "gemma4-config-only"
     model_dir.mkdir()
@@ -262,8 +262,8 @@ def test_serve_command_maps_both_explicit_flag_shapes_to_exit_two(
     # ``serve_command`` installs middleware before loading the model. Keep this
     # in-process exception-mapping test independent of the process-global
     # Starlette app, which may already have served requests in the full suite.
-    from vllm_mlx import server
-    from vllm_mlx.middleware import request_logging
+    from rapid_mlx import server
+    from rapid_mlx.middleware import request_logging
 
     monkeypatch.setattr(server, "configure_cors_from_env", lambda *_: [])
     monkeypatch.setattr(server, "configure_trusted_hosts", lambda *_: None)
@@ -297,7 +297,7 @@ def _scheduler_config(**overrides):
 def test_mllm_lane_rejects_explicit_quantized_kv_before_ready():
     """The MLLM lane has no quantized-KV wiring; explicit requests must
     fail during engine start (pre-ready) with the shared typed error."""
-    from vllm_mlx.engine.batched import _check_mllm_kv_quantization
+    from rapid_mlx.engine.batched import _check_mllm_kv_quantization
 
     with pytest.raises(KVCacheQuantizationUnsupportedError) as exc_info:
         _check_mllm_kv_quantization(
@@ -310,7 +310,7 @@ def test_mllm_lane_rejects_explicit_quantized_kv_before_ready():
 
 
 def test_mllm_lane_explicit_int4_rejected_with_dtype_in_message():
-    from vllm_mlx.engine.batched import _check_mllm_kv_quantization
+    from rapid_mlx.engine.batched import _check_mllm_kv_quantization
 
     with pytest.raises(KVCacheQuantizationUnsupportedError, match="int4"):
         _check_mllm_kv_quantization(
@@ -322,7 +322,7 @@ def test_mllm_lane_explicit_int4_rejected_with_dtype_in_message():
 def test_mllm_lane_auto_quantization_warns_and_serves(caplog):
     """Auto/profile-selected quantization (e.g. --reasoning pin) keeps the
     lane serving bf16 but says so instead of staying silent."""
-    from vllm_mlx.engine.batched import _check_mllm_kv_quantization
+    from rapid_mlx.engine.batched import _check_mllm_kv_quantization
 
     with caplog.at_level(logging.WARNING):
         _check_mllm_kv_quantization(
@@ -332,7 +332,7 @@ def test_mllm_lane_auto_quantization_warns_and_serves(caplog):
 
 
 def test_mllm_lane_without_quantization_is_untouched(caplog):
-    from vllm_mlx.engine.batched import _check_mllm_kv_quantization
+    from rapid_mlx.engine.batched import _check_mllm_kv_quantization
 
     with caplog.at_level(logging.WARNING):
         _check_mllm_kv_quantization(
@@ -347,7 +347,7 @@ def test_mllm_lane_without_quantization_is_untouched(caplog):
 
 
 def _scheduler_stub(explicit: bool):
-    from vllm_mlx.scheduler import Scheduler
+    from rapid_mlx.scheduler import Scheduler
 
     sched = Scheduler.__new__(Scheduler)
     sched.config = _scheduler_config(
@@ -359,11 +359,11 @@ def _scheduler_stub(explicit: bool):
     return sched
 
 
-@pytest.mark.requires_mlx  # imports mlx_lm.models.cache + vllm_mlx.scheduler (mlx)
+@pytest.mark.requires_mlx  # imports mlx_lm.models.cache + rapid_mlx.scheduler (mlx)
 def test_live_cache_probe_accepts_plain_plus_rotating_hybrid():
     from mlx_lm.models.cache import KVCache, RotatingKVCache
 
-    from vllm_mlx.scheduler import Scheduler
+    from rapid_mlx.scheduler import Scheduler
 
     class _FakeModel:
         def make_cache(self):
@@ -376,7 +376,7 @@ def test_live_cache_probe_accepts_plain_plus_rotating_hybrid():
 def test_live_cache_probe_rejects_cross_layer_shared_hybrid():
     from mlx_lm.models.cache import KVCache, RotatingKVCache
 
-    from vllm_mlx.scheduler import Scheduler
+    from rapid_mlx.scheduler import Scheduler
 
     class _FakeModel:
         args = SimpleNamespace(num_kv_shared_layers=2)
@@ -394,7 +394,7 @@ def test_live_cache_probe_rejects_cross_layer_shared_hybrid():
 def test_live_cache_probe_accepts_capability_marked_shared_hybrid():
     from mlx_lm.models.cache import KVCache
 
-    from vllm_mlx.scheduler import Scheduler
+    from rapid_mlx.scheduler import Scheduler
 
     class _LanguageModel:
         supports_quantized_shared_kv = True
@@ -413,7 +413,7 @@ def test_live_cache_probe_accepts_capability_marked_shared_hybrid():
 def test_live_cache_probe_rejects_attention_sinks_before_ready():
     from mlx_lm.models.cache import KVCache, RotatingKVCache
 
-    from vllm_mlx.scheduler import Scheduler
+    from rapid_mlx.scheduler import Scheduler
 
     class _Layer:
         self_attn = SimpleNamespace(sinks=object())
@@ -437,7 +437,7 @@ def test_live_cache_probe_rejects_attention_sinks_before_ready():
 
 @pytest.mark.requires_mlx
 def test_attention_probe_supports_alternate_attention_attribute_and_empty_layers():
-    from vllm_mlx.scheduler import Scheduler
+    from rapid_mlx.scheduler import Scheduler
 
     class _AttentionLayer:
         attention = SimpleNamespace(attn_sink=object())
@@ -457,7 +457,7 @@ def test_attention_probe_supports_alternate_attention_attribute_and_empty_layers
 
 @pytest.mark.requires_mlx
 def test_attention_probe_looks_through_non_decoder_wrapper_layers():
-    from vllm_mlx.scheduler import Scheduler
+    from rapid_mlx.scheduler import Scheduler
 
     sink_layer = SimpleNamespace(self_attn=SimpleNamespace(sinks=object()))
     model = SimpleNamespace(
@@ -498,7 +498,7 @@ def test_init_quantization_constructs_prompt_cache_once(monkeypatch):
 
 @pytest.mark.requires_mlx
 def test_live_cache_probe_rejects_unknown_cache_type():
-    from vllm_mlx.scheduler import Scheduler
+    from rapid_mlx.scheduler import Scheduler
 
     class _UnknownCache:
         pass
@@ -516,7 +516,7 @@ def test_live_cache_probe_rejects_unknown_cache_type():
 def test_live_cache_layout_negative_paths():
     from mlx_lm.models.cache import KVCache, RotatingKVCache
 
-    from vllm_mlx.scheduler import Scheduler
+    from rapid_mlx.scheduler import Scheduler
 
     class _Broken:
         def make_cache(self):
@@ -548,8 +548,8 @@ def test_live_cache_layout_negative_paths():
 @pytest.mark.requires_mlx
 def test_batch_generator_legacy_constructor_fallback(monkeypatch):
     """A runtime without the stream keyword still builds the same generator."""
-    import vllm_mlx.scheduler as scheduler_module
-    from vllm_mlx.request import SamplingParams
+    import rapid_mlx.scheduler as scheduler_module
+    from rapid_mlx.request import SamplingParams
 
     calls = []
     legacy_generator = SimpleNamespace(_make_new_cache=lambda: [])
@@ -643,11 +643,11 @@ def test_init_quantization_reports_shared_borrowers(caplog):
     )
 
 
-@pytest.mark.requires_mlx  # imports mlx_lm.models.cache + vllm_mlx.scheduler (mlx)
+@pytest.mark.requires_mlx  # imports mlx_lm.models.cache + rapid_mlx.scheduler (mlx)
 def test_live_cache_probe_accepts_plain_kvcache():
     from mlx_lm.models.cache import KVCache
 
-    from vllm_mlx.scheduler import Scheduler
+    from rapid_mlx.scheduler import Scheduler
 
     class _FakeModel:
         def make_cache(self):
@@ -658,7 +658,7 @@ def test_live_cache_probe_accepts_plain_kvcache():
 
 @pytest.mark.requires_mlx
 def test_live_cache_probe_treats_empty_cache_list_as_unprobeable():
-    from vllm_mlx.scheduler import Scheduler
+    from rapid_mlx.scheduler import Scheduler
 
     class _EmptyModel:
         def make_cache(self):
@@ -670,7 +670,7 @@ def test_live_cache_probe_treats_empty_cache_list_as_unprobeable():
     )
 
 
-@pytest.mark.requires_mlx  # imports mlx_lm.models.cache + vllm_mlx.scheduler (mlx)
+@pytest.mark.requires_mlx  # imports mlx_lm.models.cache + rapid_mlx.scheduler (mlx)
 def test_explicit_request_fails_closed_on_incompatible_cache():
     """Rotating cache + explicit request: engine start raises pre-ready."""
     from mlx_lm.models.cache import RotatingKVCache
@@ -683,7 +683,7 @@ def test_explicit_request_fails_closed_on_incompatible_cache():
         _scheduler_stub(explicit=True)._init_kv_quantization(_FakeModel())
 
 
-@pytest.mark.requires_mlx  # _scheduler_stub imports vllm_mlx.scheduler (mlx)
+@pytest.mark.requires_mlx  # _scheduler_stub imports rapid_mlx.scheduler (mlx)
 def test_explicit_request_fails_closed_on_unprobeable_cache():
     """A cache layout that cannot be verified must not report ready and
     gamble on the first request (fail closed for explicit requests)."""
@@ -696,7 +696,7 @@ def test_explicit_request_fails_closed_on_unprobeable_cache():
         _scheduler_stub(explicit=True)._init_kv_quantization(_Broken())
 
 
-@pytest.mark.requires_mlx  # imports mlx_lm.models.cache + vllm_mlx.scheduler (mlx)
+@pytest.mark.requires_mlx  # imports mlx_lm.models.cache + rapid_mlx.scheduler (mlx)
 def test_auto_request_disables_quantization_on_incompatible_cache(caplog):
     from mlx_lm.models.cache import RotatingKVCache
 
@@ -713,7 +713,7 @@ def test_auto_request_disables_quantization_on_incompatible_cache(caplog):
 @pytest.mark.requires_mlx
 def test_serve_command_maps_runtime_backstop_to_exit_two(tmp_path, monkeypatch, capsys):
     """A late structural rejection keeps the same actionable CLI contract."""
-    from vllm_mlx import cli, server
+    from rapid_mlx import cli, server
 
     model_dir = tmp_path / "supported-config"
     model_dir.mkdir()
@@ -740,7 +740,7 @@ def test_serve_command_maps_runtime_backstop_to_exit_two(tmp_path, monkeypatch, 
     )
     monkeypatch.setattr(server, "configure_cors_from_env", lambda *_: [])
     monkeypatch.setattr(server, "configure_trusted_hosts", lambda *_: None)
-    from vllm_mlx.middleware import request_logging
+    from rapid_mlx.middleware import request_logging
 
     monkeypatch.setattr(
         request_logging, "install_request_logging_middleware", lambda *_: None
@@ -764,8 +764,8 @@ def test_serve_command_maps_runtime_backstop_to_exit_two(tmp_path, monkeypatch, 
 
 
 def test_resident_performance_explicit_int8_gemma4_rejected(monkeypatch):
-    import vllm_mlx.cli as cli
-    from vllm_mlx.runtime.resident_models import (
+    import rapid_mlx.cli as cli
+    from rapid_mlx.runtime.resident_models import (
         ResidentPerformanceConfig,
         resolve_resident_performance,
     )
@@ -784,8 +784,8 @@ def test_resident_performance_explicit_int8_gemma4_rejected(monkeypatch):
 
 
 def test_resident_performance_supported_family_passes(monkeypatch):
-    import vllm_mlx.cli as cli
-    from vllm_mlx.runtime.resident_models import (
+    import rapid_mlx.cli as cli
+    from rapid_mlx.runtime.resident_models import (
         ResidentPerformanceConfig,
         resolve_resident_performance,
     )
@@ -826,7 +826,7 @@ def test_serve_exits_before_load_for_explicit_gemma4_legacy_flag(tmp_path, bits)
         [
             sys.executable,
             "-m",
-            "vllm_mlx.cli",
+            "rapid_mlx.cli",
             "serve",
             str(model_dir),
             "--kv-cache-quantization",

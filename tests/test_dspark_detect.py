@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 
-from vllm_mlx.spec_decode.dspark.detect import detect_dspark_metadata
+from rapid_mlx.spec_decode.dspark.detect import detect_dspark_metadata
 
 
 def _write_checkpoint(tmp_path, *, complete: bool = True):

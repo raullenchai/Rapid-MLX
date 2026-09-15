@@ -55,7 +55,7 @@ class ClosedCaptions:
         self.lines = []
 
     def load_model(self):
-        from vllm_mlx.audio.stt import STTEngine
+        from rapid_mlx.audio.stt import STTEngine
 
         self.engine = STTEngine(self.model_name)
         self.engine.load()

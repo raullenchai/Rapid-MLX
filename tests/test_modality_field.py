@@ -13,14 +13,14 @@ the ``feat/diffusion-gemma`` skeleton PR. These tests guarantee:
      load instead of misroute at request time.
   4. The diffusion-lane skeleton imports cleanly. The module is
      intentionally not wired into any active code path yet — but it
-     must not break ``vllm_mlx`` import.
+     must not break ``rapid_mlx`` import.
 """
 
 from __future__ import annotations
 
 import pytest
 
-from vllm_mlx.model_aliases import (
+from rapid_mlx.model_aliases import (
     _RESERVED_MODALITIES,
     _VALID_MODALITIES,
     AliasProfile,
@@ -165,7 +165,7 @@ class TestDiffusionLaneWired:
         # BaseEngine. The skeleton aliases (DiffusionRunner /
         # load_runner) remain as backward-compat shims so any external
         # caller carried over from PR #551's draft surface still works.
-        from vllm_mlx.runtime import diffusion_lane
+        from rapid_mlx.runtime import diffusion_lane
 
         assert diffusion_lane.DIFFUSION_LANE_VERSION == "0.1-wired"
         assert hasattr(diffusion_lane, "DiffusionEngine")
@@ -173,8 +173,8 @@ class TestDiffusionLaneWired:
         assert hasattr(diffusion_lane, "load_runner")
 
     def test_engine_inherits_base_engine(self) -> None:
-        from vllm_mlx.engine.base import BaseEngine
-        from vllm_mlx.runtime.diffusion_lane import DiffusionEngine
+        from rapid_mlx.engine.base import BaseEngine
+        from rapid_mlx.runtime.diffusion_lane import DiffusionEngine
 
         assert issubclass(DiffusionEngine, BaseEngine)
 
@@ -183,7 +183,7 @@ class TestDiffusionLaneWired:
         # must call _ensure_loaded() so a misconfigured server (the
         # engine was instantiated but start() was never awaited)
         # surfaces a clear error.
-        from vllm_mlx.runtime.diffusion_lane import DiffusionEngine
+        from rapid_mlx.runtime.diffusion_lane import DiffusionEngine
 
         engine = DiffusionEngine(model_name="mlx-community/whatever")
         with pytest.raises(RuntimeError, match="not loaded"):
@@ -195,7 +195,7 @@ class TestDiffusionLaneWired:
         # PR #551 shipped a ``DiffusionRunner`` symbol; we kept it as
         # an alias so the draft branch's tests still pass once it
         # rebases on this work.
-        from vllm_mlx.runtime.diffusion_lane import DiffusionEngine, DiffusionRunner
+        from rapid_mlx.runtime.diffusion_lane import DiffusionEngine, DiffusionRunner
 
         assert DiffusionRunner is DiffusionEngine
 
@@ -211,7 +211,7 @@ class TestAliasProfileDataclassShape:
 
 class TestHfPathReverseLookupRoutesDiffusionLane:
     """pr_validate r5 codex BLOCKING #1 claimed that ``python -m
-    vllm_mlx.server --model <hf-path>`` would route the diffusion
+    rapid_mlx.server --model <hf-path>`` would route the diffusion
     checkpoint into the AR ``BatchedEngine`` because ``_profile is
     None`` for the raw HF path. That claim is FALSE — ``resolve_profile``
     consults the ``_hf_to_alias`` reverse index (model_aliases.py:400)
@@ -222,7 +222,7 @@ class TestHfPathReverseLookupRoutesDiffusionLane:
     """
 
     def test_diffusion_4bit_hf_path_resolves_to_text_diffusion_modality(self) -> None:
-        from vllm_mlx.model_aliases import resolve_profile
+        from rapid_mlx.model_aliases import resolve_profile
 
         diffusion_alias_profile = resolve_profile("diffusion-gemma-26b-4bit")
         assert diffusion_alias_profile is not None
@@ -239,7 +239,7 @@ class TestHfPathReverseLookupRoutesDiffusionLane:
         assert profile.tool_call_parser == "gemma4"
 
     def test_diffusion_8bit_hf_path_resolves_to_text_diffusion_modality(self) -> None:
-        from vllm_mlx.model_aliases import resolve_profile
+        from rapid_mlx.model_aliases import resolve_profile
 
         diffusion_alias_profile = resolve_profile("diffusion-gemma-26b-8bit")
         assert diffusion_alias_profile is not None
@@ -260,7 +260,7 @@ class TestHfPathReverseLookupRoutesDiffusionLane:
         either bring a written-down reason or delete this test
         deliberately.
         """
-        from vllm_mlx.model_aliases import resolve_profile
+        from rapid_mlx.model_aliases import resolve_profile
 
         assert resolve_profile("diffusion-gemma-26b") is None
 
@@ -268,7 +268,7 @@ class TestHfPathReverseLookupRoutesDiffusionLane:
         # Sanity: HF paths that AREN'T in aliases.json still return
         # None, which makes server.py default to the text lane —
         # that's the documented behavior for unknown models.
-        from vllm_mlx.model_aliases import resolve_profile
+        from rapid_mlx.model_aliases import resolve_profile
 
         profile = resolve_profile("nobody/this-model-does-not-exist-123")
         assert profile is None

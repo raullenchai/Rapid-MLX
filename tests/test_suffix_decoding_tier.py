@@ -3,7 +3,7 @@
 
 from __future__ import annotations
 
-from vllm_mlx.model_auto_config import (
+from rapid_mlx.model_auto_config import (
     ModelConfig,
     _suffix_tier_cell,
     classify_suffix_decoding_tier,

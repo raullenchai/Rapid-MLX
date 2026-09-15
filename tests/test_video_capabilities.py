@@ -4,8 +4,8 @@ from types import SimpleNamespace
 
 import pytest
 
-from vllm_mlx.model_aliases import resolve_profile
-from vllm_mlx.routes import video
+from rapid_mlx.model_aliases import resolve_profile
+from rapid_mlx.routes import video
 
 
 @pytest.mark.parametrize(

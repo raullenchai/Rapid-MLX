@@ -127,7 +127,7 @@ def _start_server(args, isolated_home: str, log_path: Path) -> subprocess.Popen:
     command = [
         sys.executable,
         "-m",
-        "vllm_mlx.cli",
+        "rapid_mlx.cli",
         "serve",
         args.model,
         "--served-model-name",

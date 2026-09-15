@@ -32,7 +32,7 @@ pytestmark = pytest.mark.requires_mlx
 
 import types
 
-from vllm_mlx.scheduler import _install_dense_sampler_fastpath
+from rapid_mlx.scheduler import _install_dense_sampler_fastpath
 
 
 class _FakeGenBatch:
@@ -206,7 +206,7 @@ def test_sampler_cache_interns_by_param_tuple():
     short-circuit via ``is`` comparison."""
     from collections import OrderedDict
 
-    from vllm_mlx.scheduler import Scheduler
+    from rapid_mlx.scheduler import Scheduler
 
     # We need a Scheduler instance to exercise _get_request_sampler, but
     # we don't want the heavy __init__ (loads model). Construct via
@@ -249,7 +249,7 @@ def test_sampler_cache_is_bounded_lru(monkeypatch):
     the process lifetime."""
     from collections import OrderedDict
 
-    from vllm_mlx.scheduler import Scheduler
+    from rapid_mlx.scheduler import Scheduler
 
     # Codex round-3 NIT #3: pin the escape-hatch env var so the cache
     # key's 5th element is deterministic regardless of test invocation

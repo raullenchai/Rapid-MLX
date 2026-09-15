@@ -129,10 +129,10 @@ class TestSplitFindingsByTier:
         default to BLOCKING (defeating tiering). This test pins the
         contract between the two helpers."""
         review = (
-            "1. [BLOCKING] vllm_mlx/routes/chat.py:918 — `assert isinstance(_msg, dict)`\n"
+            "1. [BLOCKING] rapid_mlx/routes/chat.py:918 — `assert isinstance(_msg, dict)`\n"
             "   is stripped under `python -O`, leaving the guard inert in production.\n"
             "2. [NIT] tests/test_x.py:42 — assertion is loose; use `result.status_code`.\n"
-            "3. [BLOCKING] vllm_mlx/engine.py:55 — race condition on shared dict.\n"
+            "3. [BLOCKING] rapid_mlx/engine.py:55 — race condition on shared dict.\n"
             "4. [NIT] tests/test_y.py:9 — comment could be clearer.\n"
         )
         findings = _extract_findings(review)

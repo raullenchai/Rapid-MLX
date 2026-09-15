@@ -1,7 +1,7 @@
 import json
 from pathlib import Path
 
-from vllm_mlx.spec_decode.mtp.qwen3_5_inject import (
+from rapid_mlx.spec_decode.mtp.qwen3_5_inject import (
     BASE_HIDDEN_VARIANT_DEFAULT,
     _find_mtp_weights_file,
     _load_mtplx_runtime_contract,

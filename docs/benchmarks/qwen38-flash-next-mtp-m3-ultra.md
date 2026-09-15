@@ -42,11 +42,11 @@ the environment table.
 export SNAPSHOT=/path/to/dcf657e4acda2aae72da99cde65b6c491cd96998
 
 # Baseline
-HF_HUB_OFFLINE=1 PYTHONPATH="$PWD" python3.12 -m vllm_mlx.cli serve \
+HF_HUB_OFFLINE=1 PYTHONPATH="$PWD" python3.12 -m rapid_mlx.cli serve \
   "$SNAPSHOT" --host 127.0.0.1 --port 8465 --no-thinking
 
 # MTP, in a fresh process after the baseline server exits
-HF_HUB_OFFLINE=1 PYTHONPATH="$PWD" python3.12 -m vllm_mlx.cli serve \
+HF_HUB_OFFLINE=1 PYTHONPATH="$PWD" python3.12 -m rapid_mlx.cli serve \
   "$SNAPSHOT" --host 127.0.0.1 --port 8465 --no-thinking \
   --speculative-config '{"method":"mtp","disable_auto_k":true}'
 ```

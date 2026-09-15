@@ -88,8 +88,8 @@ def test_benefit_1_shared_system_prompts():
     """
     print_header("Benefit 1: Shared System Prompts")
 
-    from vllm_mlx.paged_cache import PagedCacheManager
-    from vllm_mlx.prefix_cache import BlockAwarePrefixCache
+    from rapid_mlx.paged_cache import PagedCacheManager
+    from rapid_mlx.prefix_cache import BlockAwarePrefixCache
 
     # Common system prompt (simulating multiple users with same instructions)
     system_prompt_tokens = list(range(256))  # 256 tokens = 4 blocks of 64
@@ -191,8 +191,8 @@ def test_benefit_2_memory_efficiency():
     """
     print_header("Benefit 2: Memory Efficiency with Concurrent Requests")
 
-    from vllm_mlx.paged_cache import PagedCacheManager
-    from vllm_mlx.prefix_cache import BlockAwarePrefixCache
+    from rapid_mlx.paged_cache import PagedCacheManager
+    from rapid_mlx.prefix_cache import BlockAwarePrefixCache
 
     num_requests = 50
     tokens_per_request = 256  # 4 blocks per request
@@ -295,8 +295,8 @@ def test_benefit_3_prefix_sharing():
     """
     print_header("Benefit 3: Prefix Sharing for Similar Conversations")
 
-    from vllm_mlx.paged_cache import PagedCacheManager
-    from vllm_mlx.prefix_cache import BlockAwarePrefixCache
+    from rapid_mlx.paged_cache import PagedCacheManager
+    from rapid_mlx.prefix_cache import BlockAwarePrefixCache
 
     print("\nScenario: Chat conversations with branching responses")
     print("         Similar to tree of possible continuations\n")
@@ -406,8 +406,8 @@ def test_copy_on_write_demo():
     """
     print_header("Bonus: Copy-on-Write (COW) Demonstration")
 
-    from vllm_mlx.paged_cache import PagedCacheManager
-    from vllm_mlx.prefix_cache import BlockAwarePrefixCache
+    from rapid_mlx.paged_cache import PagedCacheManager
+    from rapid_mlx.prefix_cache import BlockAwarePrefixCache
 
     print("\nScenario: Fork a conversation and modify independently")
     print("COW ensures we only copy when actually modifying\n")

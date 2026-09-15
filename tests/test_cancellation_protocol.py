@@ -7,12 +7,12 @@ from types import SimpleNamespace
 
 import pytest
 
-from vllm_mlx.api.anthropic_models import AnthropicRequest
-from vllm_mlx.api.models import ChatCompletionRequest, CompletionRequest
-from vllm_mlx.api.responses_adapter import _convert_status
-from vllm_mlx.config import reset_config
-from vllm_mlx.engine.base import GenerationOutput
-from vllm_mlx.request import Request, RequestStatus, SamplingParams
+from rapid_mlx.api.anthropic_models import AnthropicRequest
+from rapid_mlx.api.models import ChatCompletionRequest, CompletionRequest
+from rapid_mlx.api.responses_adapter import _convert_status
+from rapid_mlx.config import reset_config
+from rapid_mlx.engine.base import GenerationOutput
+from rapid_mlx.request import Request, RequestStatus, SamplingParams
 
 
 class _CancelledChatEngine:
@@ -119,7 +119,7 @@ def _test_config():
 async def test_chat_stream_cancellation_has_no_successful_finish_frame(
     before_first_token,
 ):
-    from vllm_mlx.routes.chat import stream_chat_completion
+    from rapid_mlx.routes.chat import stream_chat_completion
 
     cfg = reset_config()
     cfg.model_name = "test-model"
@@ -152,7 +152,7 @@ async def test_chat_stream_cancellation_has_no_successful_finish_frame(
 
 @pytest.mark.asyncio
 async def test_completion_stream_cancellation_has_no_successful_finish_frame():
-    from vllm_mlx.routes.completions import stream_completion
+    from rapid_mlx.routes.completions import stream_completion
 
     pytest.importorskip("mlx")
     cfg = reset_config()
@@ -184,7 +184,7 @@ def test_responses_status_does_not_treat_cancellation_as_truncation():
 
 @pytest.mark.asyncio
 async def test_chat_non_stream_cancellation_returns_client_closed(monkeypatch):
-    from vllm_mlx.routes import chat
+    from rapid_mlx.routes import chat
 
     monkeypatch.setattr(chat, "_check_admission_or_503", lambda *_: None)
     monkeypatch.setattr(chat, "_wait_with_disconnect", _await_direct)
@@ -207,7 +207,7 @@ async def test_chat_non_stream_cancellation_returns_client_closed(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_completion_non_stream_cancellation_returns_client_closed(monkeypatch):
-    from vllm_mlx.routes import completions
+    from rapid_mlx.routes import completions
 
     engine = _CancelledCompletionEngine()
     monkeypatch.setattr(completions, "_resolve_max_tokens", lambda *_: 32)
@@ -231,7 +231,7 @@ async def test_completion_non_stream_cancellation_returns_client_closed(monkeypa
 
 @pytest.mark.asyncio
 async def test_anthropic_non_stream_cancellation_returns_client_closed(monkeypatch):
-    from vllm_mlx.routes import anthropic
+    from rapid_mlx.routes import anthropic
 
     engine = _CancelledChatEngine(before_first_token=False)
     monkeypatch.setattr(anthropic, "get_engine", lambda *_: engine)
@@ -255,8 +255,8 @@ async def test_anthropic_non_stream_cancellation_returns_client_closed(monkeypat
 
 @pytest.mark.asyncio
 async def test_responses_non_stream_cancellation_returns_client_closed(monkeypatch):
-    from vllm_mlx.api.responses_models import ResponsesRequest
-    from vllm_mlx.routes import responses
+    from rapid_mlx.api.responses_models import ResponsesRequest
+    from rapid_mlx.routes import responses
 
     monkeypatch.setattr(responses, "_wait_with_disconnect", _await_direct)
 
@@ -281,7 +281,7 @@ async def test_responses_non_stream_cancellation_returns_client_closed(monkeypat
 
 @pytest.mark.asyncio
 async def test_anthropic_stream_cancellation_uses_protocol_error():
-    from vllm_mlx.routes.anthropic import _stream_anthropic_messages
+    from rapid_mlx.routes.anthropic import _stream_anthropic_messages
 
     cfg = reset_config()
     cfg.model_name = "test-model"
@@ -316,8 +316,8 @@ async def test_anthropic_stream_cancellation_uses_protocol_error():
 
 @pytest.mark.asyncio
 async def test_responses_stream_cancellation_emits_response_failed():
-    from vllm_mlx.api.responses_models import ResponsesRequest
-    from vllm_mlx.routes.responses import _stream_responses
+    from rapid_mlx.api.responses_models import ResponsesRequest
+    from rapid_mlx.routes.responses import _stream_responses
 
     _test_config()
     openai_request = ChatCompletionRequest(
@@ -346,7 +346,7 @@ async def test_responses_stream_cancellation_emits_response_failed():
 
 @pytest.mark.asyncio
 async def test_completion_json_stream_cancellation_has_no_terminal_chunk():
-    from vllm_mlx.routes.completions import stream_completion
+    from rapid_mlx.routes.completions import stream_completion
 
     _test_config()
     request = CompletionRequest(
@@ -368,7 +368,7 @@ async def test_completion_json_stream_cancellation_has_no_terminal_chunk():
 
 def test_text_scheduler_abort_marks_terminal_cancelled():
     pytest.importorskip("mlx")
-    from vllm_mlx.scheduler import Scheduler
+    from rapid_mlx.scheduler import Scheduler
 
     tokenizer = SimpleNamespace(
         eos_token_id=2, encode=lambda _text: [1, 2], decode=lambda _ids: ""
@@ -384,7 +384,7 @@ def test_text_scheduler_abort_marks_terminal_cancelled():
 
 def test_mllm_scheduler_abort_marks_terminal_cancelled():
     pytest.importorskip("mlx")
-    from vllm_mlx.mllm_scheduler import MLLMRequest, MLLMScheduler
+    from rapid_mlx.mllm_scheduler import MLLMRequest, MLLMScheduler
 
     scheduler = MLLMScheduler.__new__(MLLMScheduler)
     scheduler.requests = {}

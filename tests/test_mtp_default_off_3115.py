@@ -14,7 +14,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from vllm_mlx import cli, model_aliases
+from rapid_mlx import cli, model_aliases
 
 
 def _args(model: str, payload: str | None = None, **overrides) -> SimpleNamespace:
@@ -67,7 +67,7 @@ def test_other_verified_artifacts_keep_default_on(alias: str) -> None:
 
 
 def test_field_defaults_true_and_rejects_non_bool() -> None:
-    from vllm_mlx.model_aliases import _coerce as _alias_profile_from_entry
+    from rapid_mlx.model_aliases import _coerce as _alias_profile_from_entry
 
     base = {
         "hf_path": "org/model",
@@ -129,7 +129,7 @@ def test_glm53_without_qualified_runtime_falls_back_to_ar(monkeypatch) -> None:
 
 
 def test_native_mtp_runtime_probe_requires_base_runtime(monkeypatch) -> None:
-    from vllm_mlx.speculative.native_mtp import runtime
+    from rapid_mlx.speculative.native_mtp import runtime
 
     monkeypatch.setattr(runtime, "have_runtime", lambda: False)
 
@@ -143,7 +143,7 @@ def test_native_mtp_runtime_probe_requires_base_runtime(monkeypatch) -> None:
 def test_native_mtp_runtime_probe_requires_glm_cache_seams(
     monkeypatch, model_name: str
 ) -> None:
-    from vllm_mlx.speculative.native_mtp import runtime
+    from rapid_mlx.speculative.native_mtp import runtime
 
     monkeypatch.setattr(runtime, "have_runtime", lambda: True)
     monkeypatch.setattr(runtime, "have_glm_cache_runtime", lambda: False)
@@ -152,7 +152,7 @@ def test_native_mtp_runtime_probe_requires_glm_cache_seams(
 
 
 def test_native_mtp_runtime_probe_accepts_non_glm_runtime(monkeypatch) -> None:
-    from vllm_mlx.speculative.native_mtp import runtime
+    from rapid_mlx.speculative.native_mtp import runtime
 
     monkeypatch.setattr(runtime, "have_runtime", lambda: True)
 
@@ -160,7 +160,7 @@ def test_native_mtp_runtime_probe_accepts_non_glm_runtime(monkeypatch) -> None:
 
 
 def test_native_mtp_runtime_probe_fails_closed_on_probe_error(monkeypatch) -> None:
-    from vllm_mlx.speculative.native_mtp import runtime
+    from rapid_mlx.speculative.native_mtp import runtime
 
     def _raise() -> bool:
         raise RuntimeError("broken optional runtime")

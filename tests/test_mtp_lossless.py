@@ -96,11 +96,11 @@ def _reset_mtp_module_state():
 
     import mlx.core as mx
 
-    from vllm_mlx.spec_decode.mtp.accept_counter import (
+    from rapid_mlx.spec_decode.mtp.accept_counter import (
         reset_global_counter_for_tests,
     )
-    from vllm_mlx.spec_decode.mtp.cache_patch import _unpatch_for_tests
-    from vllm_mlx.spec_decode.mtp.draft_k_controller_v2 import reset_controllers
+    from rapid_mlx.spec_decode.mtp.cache_patch import _unpatch_for_tests
+    from rapid_mlx.spec_decode.mtp.draft_k_controller_v2 import reset_controllers
 
     _unpatch_for_tests()
     reset_global_counter_for_tests()
@@ -176,8 +176,8 @@ def _spec_decode_mtp_path(
     K∈{0,1} park/chain picks. The lossless emit-ordering contract this
     file tests is orthogonal to the controller's K choice.
     """
-    from vllm_mlx.spec_decode.mtp.accept_counter import MTPAcceptCounter
-    from vllm_mlx.spec_decode.mtp.generator import mtp_generate_step
+    from rapid_mlx.spec_decode.mtp.accept_counter import MTPAcceptCounter
+    from rapid_mlx.spec_decode.mtp.generator import mtp_generate_step
 
     model = _MockedQwen35Model(backbone_script, mtp_script)
     counter = MTPAcceptCounter()
@@ -350,8 +350,8 @@ def _spec_decode_mtp_path_auto_k(
     since no branch of the default path is allowed to invent or reorder
     tokens.
     """
-    from vllm_mlx.spec_decode.mtp.accept_counter import MTPAcceptCounter
-    from vllm_mlx.spec_decode.mtp.generator import mtp_generate_step
+    from rapid_mlx.spec_decode.mtp.accept_counter import MTPAcceptCounter
+    from rapid_mlx.spec_decode.mtp.generator import mtp_generate_step
 
     model = _MockedQwen35Model(backbone_script, mtp_script)
     counter = MTPAcceptCounter()
@@ -430,7 +430,7 @@ def test_lossless_default_path_is_deterministic():
     emit sequence twice in a row. If controller state leakage or non-
     deterministic K picks slipped in, this smoke test would catch it.
     """
-    from vllm_mlx.spec_decode.mtp.draft_k_controller_v2 import reset_controllers
+    from rapid_mlx.spec_decode.mtp.draft_k_controller_v2 import reset_controllers
 
     backbone_mtp = [7, 11, 13, 15, 17, 19, 21]
     mtp_drafts = [11, 0, 15, 0, 19]

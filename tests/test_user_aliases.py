@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from vllm_mlx.user_aliases import (
+from rapid_mlx.user_aliases import (
     UserAliasError,
     config_path,
     load_user_aliases,
@@ -79,8 +79,8 @@ def test_audio_alias_names_are_reserved_across_cli_and_loading(
     alias_file: Path,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    from vllm_mlx.cli import alias_command, build_parser
-    from vllm_mlx.model_aliases import (
+    from rapid_mlx.cli import alias_command, build_parser
+    from rapid_mlx.model_aliases import (
         list_builtin_aliases,
         list_profiles,
         user_alias_reserved_names,
@@ -142,7 +142,7 @@ def test_config_path_override_is_expanded(monkeypatch: pytest.MonkeyPatch) -> No
 def test_model_registry_resolves_user_alias_through_shared_choke_point(
     alias_file: Path,
 ) -> None:
-    from vllm_mlx.model_aliases import (
+    from rapid_mlx.model_aliases import (
         list_builtin_aliases,
         list_profiles,
         resolve_model,
@@ -163,7 +163,7 @@ def test_model_registry_resolves_user_alias_through_shared_choke_point(
 def test_cli_alias_commands_share_the_same_store(
     alias_file: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    from vllm_mlx.cli import alias_command, build_parser
+    from rapid_mlx.cli import alias_command, build_parser
 
     parser = build_parser()
     alias_command(parser.parse_args(["alias", "set", "daily", "qwen3.5-9b-4bit"]))

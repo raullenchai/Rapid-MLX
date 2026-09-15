@@ -38,10 +38,10 @@ from unittest.mock import MagicMock
 
 import pytest
 
-import vllm_mlx.service.helpers as helpers
-from vllm_mlx.config import get_config
-from vllm_mlx.service.helpers import tool_choice_is_none
-from vllm_mlx.service.postprocessor import StreamingPostProcessor
+import rapid_mlx.service.helpers as helpers
+from rapid_mlx.config import get_config
+from rapid_mlx.service.helpers import tool_choice_is_none
+from rapid_mlx.service.postprocessor import StreamingPostProcessor
 
 # The exact wire markup the weak model emitted despite the prompt-level
 # ``tools`` drop — an undeclared name/param, the reported reproduction.

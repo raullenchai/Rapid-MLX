@@ -27,8 +27,8 @@ def metrics_client():
     counter accumulator so each test sees a fresh ``(last_raw=0, baseline=0)``
     starting state.
     """
-    from vllm_mlx.config import reset_config
-    from vllm_mlx.routes.metrics import _reset_accumulator_for_tests, router
+    from rapid_mlx.config import reset_config
+    from rapid_mlx.routes.metrics import _reset_accumulator_for_tests, router
 
     cfg = reset_config()
     cfg.model_name = "qwen3.5-4b"
@@ -640,7 +640,7 @@ def test_sticky_accumulator_unit_behavior():
     accumulator handles a multi-key state (each key independent) and a
     no-op same-value advance correctly.
     """
-    from vllm_mlx.routes.metrics import _StickyCounterAccumulator
+    from rapid_mlx.routes.metrics import _StickyCounterAccumulator
 
     acc = _StickyCounterAccumulator()
 

@@ -9,8 +9,8 @@ pytestmark = pytest.mark.requires_mlx
 import time
 from unittest.mock import MagicMock
 
-from vllm_mlx.request import Request, RequestStatus, SamplingParams
-from vllm_mlx.scheduler import Scheduler, SchedulerConfig
+from rapid_mlx.request import Request, RequestStatus, SamplingParams
+from rapid_mlx.scheduler import Scheduler, SchedulerConfig
 
 
 def _scheduler() -> Scheduler:

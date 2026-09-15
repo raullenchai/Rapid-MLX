@@ -41,7 +41,7 @@
 #   TRAIN_GATES_APPLE_VENV       path to an existing Apple-Silicon venv that
 #                                already has the package installed (with mlx),
 #                                to reuse for Gate 4 instead of reinstalling.
-#                                Gate 4 verifies that its `vllm_mlx` imports
+#                                Gate 4 verifies that its `rapid_mlx` imports
 #                                from THIS checkout; if not (stale editable
 #                                install pinned to another worktree, or a
 #                                wheel) it re-points the venv with
@@ -448,7 +448,7 @@ PY
           ${deselect_args[@]+"${deselect_args[@]}"} \
           ${aux_args[@]+"${aux_args[@]}"} \
           -v --tb=short \
-          --cov=vllm_mlx \
+          --cov=rapid_mlx \
           --cov-report=term-missing ); then
       fail 1 "Linux no-MLX pytest process $((i+1)) failed (see output above)"
       return 1
@@ -578,19 +578,19 @@ gate4_apple() {
     # neutral cwd ($RUN_TMP) so the repo root is not silently on sys.path.
     local root_real pkg_file
     root_real="$(cd "$ROOT" && pwd -P)"
-    pkg_file="$(cd "$RUN_TMP" && "$apple_py" -c 'import os, vllm_mlx; print(os.path.realpath(vllm_mlx.__file__))' 2>/dev/null || true)"
-    if [[ "$pkg_file" != "$root_real/vllm_mlx/"* ]]; then
-      echo "  reused Apple venv imports vllm_mlx from '${pkg_file:-<not importable>}', not $root_real;"
+    pkg_file="$(cd "$RUN_TMP" && "$apple_py" -c 'import os, rapid_mlx; print(os.path.realpath(rapid_mlx.__file__))' 2>/dev/null || true)"
+    if [[ "$pkg_file" != "$root_real/rapid_mlx/"* ]]; then
+      echo "  reused Apple venv imports rapid_mlx from '${pkg_file:-<not importable>}', not $root_real;"
       echo "  re-pointing it: pip install -e \"\$ROOT\" --no-deps"
       "$apple_py" -m pip install --quiet -e "$ROOT" --no-deps \
         || { fail 4 "pip install -e . --no-deps into TRAIN_GATES_APPLE_VENV=$TRAIN_GATES_APPLE_VENV failed"; return 1; }
-      pkg_file="$(cd "$RUN_TMP" && "$apple_py" -c 'import os, vllm_mlx; print(os.path.realpath(vllm_mlx.__file__))' 2>/dev/null || true)"
-      if [[ "$pkg_file" != "$root_real/vllm_mlx/"* ]]; then
-        fail 4 "TRAIN_GATES_APPLE_VENV still imports vllm_mlx from '${pkg_file:-<not importable>}' after pip install -e . --no-deps; expected $root_real/vllm_mlx/"
+      pkg_file="$(cd "$RUN_TMP" && "$apple_py" -c 'import os, rapid_mlx; print(os.path.realpath(rapid_mlx.__file__))' 2>/dev/null || true)"
+      if [[ "$pkg_file" != "$root_real/rapid_mlx/"* ]]; then
+        fail 4 "TRAIN_GATES_APPLE_VENV still imports rapid_mlx from '${pkg_file:-<not importable>}' after pip install -e . --no-deps; expected $root_real/rapid_mlx/"
         return 1
       fi
     fi
-    note "reused Apple venv imports vllm_mlx from $pkg_file"
+    note "reused Apple venv imports rapid_mlx from $pkg_file"
   elif [[ "${TRAIN_GATES_ALLOW_APPLE_INSTALL:-0}" == "1" ]]; then
     local venv="$RUN_TMP/venv-apple"
     apple_py="$venv/bin/python"
@@ -646,7 +646,7 @@ PY
         -v --tb=short \
         ${m_args[@]+"${m_args[@]}"} \
         ${k_args[@]+"${k_args[@]}"} \
-        --cov=vllm_mlx \
+        --cov=rapid_mlx \
         --cov-report=term-missing ); then
     fail 4 "Apple-MLX pytest failed (see output above)"
     return 1

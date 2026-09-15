@@ -22,8 +22,8 @@ SCHEMA_PATH = REPO_ROOT / "community-benchmarks" / "schema.json"
 
 
 def _stub_inputs():
-    from vllm_mlx.community_bench.hardware import Hardware, Software
-    from vllm_mlx.community_bench.runner import (
+    from rapid_mlx.community_bench.hardware import Hardware, Software
+    from rapid_mlx.community_bench.runner import (
         BenchResult,
         BucketResult,
         RoundResult,
@@ -64,7 +64,7 @@ _HARNESS = {
 
 
 def _build_full() -> dict:
-    from vllm_mlx.community_bench.submission import build_submission_payload
+    from rapid_mlx.community_bench.submission import build_submission_payload
 
     hw, sw, bench = _stub_inputs()
     return build_submission_payload(
@@ -102,7 +102,7 @@ def test_full_payload_validates_against_schema() -> None:
 def test_tier_smoke_alone_validates() -> None:
     """``tier='smoke'`` populates only smoke_result; harness_result is
     omitted entirely. Must validate."""
-    from vllm_mlx.community_bench.submission import build_submission_payload
+    from rapid_mlx.community_bench.submission import build_submission_payload
 
     jsonschema = pytest.importorskip("jsonschema")
     schema = json.loads(SCHEMA_PATH.read_text())
@@ -125,7 +125,7 @@ def test_tier_smoke_alone_validates() -> None:
 
 
 def test_tier_harness_alone_validates() -> None:
-    from vllm_mlx.community_bench.submission import build_submission_payload
+    from rapid_mlx.community_bench.submission import build_submission_payload
 
     jsonschema = pytest.importorskip("jsonschema")
     schema = json.loads(SCHEMA_PATH.read_text())

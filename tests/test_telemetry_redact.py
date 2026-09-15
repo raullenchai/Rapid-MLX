@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import pytest
 
-from vllm_mlx.telemetry.redact import (
+from rapid_mlx.telemetry.redact import (
     bucket_memory_gb,
     bucket_tokens,
     bucket_tps,

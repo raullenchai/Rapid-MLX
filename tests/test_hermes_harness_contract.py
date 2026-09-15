@@ -3,7 +3,7 @@
 
 The doctor harness loads agent-specific integration tests via
 ``importlib.util.spec_from_file_location`` + ``spec.loader.exec_module``
-(see ``vllm_mlx/agents/testing.py:_run_specific_tests``), invokes an optional
+(see ``rapid_mlx/agents/testing.py:_run_specific_tests``), invokes an optional
 ``run_suite`` entry point, then reads ``mod.results`` for PASS/FAIL entries.
 
 For five weeks (PR #99 → PR #354) ``tests/integrations/test_hermes.py``
@@ -72,7 +72,7 @@ def test_test_hermes_populates_results_when_harness_invokes_suite(monkeypatch):
     monkeypatch.setenv("RAPID_MLX_BASE_URL", "http://localhost:0/v1")
     monkeypatch.setenv("RAPID_MLX_API_KEY", "harness-secret")
 
-    # Mirror vllm_mlx/agents/testing.py:_run_specific_tests exactly.
+    # Mirror rapid_mlx/agents/testing.py:_run_specific_tests exactly.
     spec = importlib.util.spec_from_file_location(
         "specific_test_test_hermes", str(TEST_HERMES)
     )

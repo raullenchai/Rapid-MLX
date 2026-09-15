@@ -8,7 +8,7 @@ now preserve those prompts rather than return a normal success after deleting
 their entire middle.
 """
 
-from vllm_mlx.pflash import (
+from rapid_mlx.pflash import (
     PFlashConfig,
     compress_request_tokens,
     compress_tokens,

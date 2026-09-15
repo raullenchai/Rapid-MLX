@@ -5,8 +5,8 @@ import importlib.util
 from pathlib import Path
 from unittest.mock import Mock, patch
 
-from vllm_mlx.agents.testing import AgentTestRunner
-from vllm_mlx.http_auth import rapid_mlx_auth_headers
+from rapid_mlx.agents.testing import AgentTestRunner
+from rapid_mlx.http_auth import rapid_mlx_auth_headers
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
@@ -42,7 +42,7 @@ def test_harness_model_discovery_uses_same_bearer(monkeypatch):
 def test_langchain_integration_propagates_bearer_to_discovery_and_client():
     """Keep both LangChain HTTP paths on the shared env-only auth contract."""
     source = (
-        REPO_ROOT / "vllm_mlx" / "_integration_tests" / "test_langchain.py"
+        REPO_ROOT / "rapid_mlx" / "_integration_tests" / "test_langchain.py"
     ).read_text()
 
     assert "headers=auth_headers" in source
@@ -52,7 +52,7 @@ def test_langchain_integration_propagates_bearer_to_discovery_and_client():
 def test_hermes_cli_receives_process_scoped_auth_without_persisting_it():
     """Keep the external Hermes CLI on the env-only auth contract."""
     source = (
-        REPO_ROOT / "vllm_mlx" / "_integration_tests" / "test_hermes.py"
+        REPO_ROOT / "rapid_mlx" / "_integration_tests" / "test_hermes.py"
     ).read_text()
 
     assert 'env["OPENAI_API_KEY"] = api_key' in source
@@ -68,7 +68,7 @@ def test_hermes_cli_receives_process_scoped_auth_without_persisting_it():
 
 def test_hermes_harness_writes_config_to_overridden_home(monkeypatch, tmp_path):
     """The release gate fixture must never fall back to operator state."""
-    source = REPO_ROOT / "vllm_mlx" / "_integration_tests" / "test_hermes.py"
+    source = REPO_ROOT / "rapid_mlx" / "_integration_tests" / "test_hermes.py"
     spec = importlib.util.spec_from_file_location("hermes_home_contract", source)
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)

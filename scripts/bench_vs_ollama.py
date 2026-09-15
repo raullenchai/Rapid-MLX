@@ -349,7 +349,7 @@ def normalize_ollama_version(output: str | None) -> str | None:
 
 def collect_hardware_summary() -> dict:
     try:
-        from vllm_mlx.optimizations import detect_hardware
+        from rapid_mlx.optimizations import detect_hardware
 
         hw = detect_hardware()
         return {

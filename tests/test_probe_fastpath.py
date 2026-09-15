@@ -33,8 +33,8 @@ from fastapi import FastAPI
 from fastapi.responses import StreamingResponse
 from fastapi.testclient import TestClient
 
-from vllm_mlx.config import get_config
-from vllm_mlx.middleware.probe_fastpath import (
+from rapid_mlx.config import get_config
+from rapid_mlx.middleware.probe_fastpath import (
     ProbeFastPathMiddleware,
     install_probe_fastpath_middleware,
 )
@@ -52,7 +52,7 @@ def _make_minimal_app(*, with_fastpath: bool = True) -> FastAPI:
     probe surface is exercised. We rely on the existing route module
     so the fall-through JSON shape stays in lockstep.
     """
-    from vllm_mlx.routes.health import probe_router
+    from rapid_mlx.routes.health import probe_router
 
     app = FastAPI()
     app.include_router(probe_router)

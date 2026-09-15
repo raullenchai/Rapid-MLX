@@ -7,14 +7,14 @@ from types import SimpleNamespace
 
 import pytest
 
-from vllm_mlx.api.anthropic_adapter import anthropic_to_openai
-from vllm_mlx.api.anthropic_models import (
+from rapid_mlx.api.anthropic_adapter import anthropic_to_openai
+from rapid_mlx.api.anthropic_models import (
     AnthropicMessage,
     AnthropicRequest,
     AnthropicToolDef,
 )
-from vllm_mlx.routes.anthropic import _apply_anthropic_thinking_defaults
-from vllm_mlx.service.helpers import _extract_thinking_from_request
+from rapid_mlx.routes.anthropic import _apply_anthropic_thinking_defaults
+from rapid_mlx.service.helpers import _extract_thinking_from_request
 
 
 def _request(**kwargs) -> AnthropicRequest:
@@ -29,7 +29,7 @@ def _request(**kwargs) -> AnthropicRequest:
 
 def test_omitted_thinking_uses_casual_chat_default_off(monkeypatch) -> None:
     monkeypatch.setattr(
-        "vllm_mlx.service.helpers.get_config",
+        "rapid_mlx.service.helpers.get_config",
         lambda: SimpleNamespace(reasoning_parser_name="qwen3", no_thinking=False),
     )
     converted = anthropic_to_openai(_request())
@@ -44,7 +44,7 @@ def test_tools_use_shared_default_off(monkeypatch) -> None:
     # Isolate the tools policy: this must keep passing even if the independent
     # casual-chat default is disabled or removed.
     monkeypatch.setattr(
-        "vllm_mlx.routes.anthropic.maybe_auto_disable_thinking_for_casual_chat",
+        "rapid_mlx.routes.anthropic.maybe_auto_disable_thinking_for_casual_chat",
         lambda request: False,
     )
     converted = anthropic_to_openai(

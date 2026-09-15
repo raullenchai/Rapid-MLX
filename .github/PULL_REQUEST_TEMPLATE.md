@@ -48,7 +48,7 @@ Tell us: which files were AI-touched, the AI's role (wrote / reviewed / suggeste
 We don't ask for prompt transcripts.
 Examples:
 - "Fully human."
-- "Claude wrote tests in tests/test_foo.py; I wrote the implementation in vllm_mlx/foo.py and reviewed each test against the spec."
+- "Claude wrote tests in tests/test_foo.py; I wrote the implementation in rapid_mlx/foo.py and reviewed each test against the spec."
 - "Codex generated the parser skeleton; I rewrote ~30% by hand, ran the targeted tests, verified output against 5 sample inputs."
 -->
 

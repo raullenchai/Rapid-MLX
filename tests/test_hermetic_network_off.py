@@ -113,7 +113,7 @@ def test_leaked_prefetch_cannot_download_under_default_fixture(capsys):
     uncached repo id. It must fail fast (the product's own offline refusal or
     the hub's offline error, whichever fires first) and leave no cache entry —
     no ``config.json``, no shards."""
-    server = pytest.importorskip("vllm_mlx.server")
+    server = pytest.importorskip("rapid_mlx.server")
 
     started = time.monotonic()
     with pytest.raises((SystemExit, RuntimeError)):

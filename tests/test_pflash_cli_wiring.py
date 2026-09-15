@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 """Command-level wiring: ``serve`` and ``bench`` must route PFlash resolution
-through :func:`vllm_mlx.pflash.resolve_pflash_config`.
+through :func:`rapid_mlx.pflash.resolve_pflash_config`.
 
 `tests/test_pflash.py` proves the helper resolves mode + keep_ratio correctly.
 These tests prove the two COMMANDS actually call it (with the right model name
@@ -22,12 +22,12 @@ from unittest import mock
 
 import pytest
 
-import vllm_mlx.cli as cli
+import rapid_mlx.cli as cli
 
 # Bind the real engine_core on MLX hosts before any test patches scheduler
 # internals. Linux contract lanes deliberately have no MLX runtime.
 if importlib.util.find_spec("mlx") is not None:
-    import vllm_mlx.engine_core as _engine_core  # noqa: E402,F401
+    import rapid_mlx.engine_core as _engine_core  # noqa: E402,F401
 
 
 class _StopError(Exception):
@@ -54,11 +54,11 @@ def _run_serve_capturing_pflash(argv: list[str], *, lane=(False, False)) -> dict
         mock.patch.object(cli, "_check_memory_capacity", lambda *a, **k: None),
         mock.patch.object(cli, "_ensure_model_downloaded", lambda *a, **k: None),
         mock.patch(
-            "vllm_mlx._version_check.prompt_upgrade_if_available",
+            "rapid_mlx._version_check.prompt_upgrade_if_available",
             return_value=False,
         ),
-        mock.patch("vllm_mlx.api.utils.resolve_serving_lane", lambda name, **kw: lane),
-        mock.patch("vllm_mlx.pflash.resolve_pflash_config", _stub),
+        mock.patch("rapid_mlx.api.utils.resolve_serving_lane", lambda name, **kw: lane),
+        mock.patch("rapid_mlx.pflash.resolve_pflash_config", _stub),
         mock.patch.object(sys, "argv", ["rapid-mlx", *argv]),
         mock.patch.object(sys.stdin, "isatty", return_value=False),
         pytest.raises((_StopError, SystemExit)),
@@ -70,7 +70,7 @@ def _run_serve_capturing_pflash(argv: list[str], *, lane=(False, False)) -> dict
 def test_serve_command_routes_pflash_through_resolve_pflash_config(
     scheduler_config_stub,
 ):
-    from vllm_mlx.model_aliases import resolve_model
+    from rapid_mlx.model_aliases import resolve_model
 
     seen = _run_serve_capturing_pflash(["serve", "bonsai-27b-2bit"])
     # By the PFlash step the command has already resolved the alias to its
@@ -106,10 +106,10 @@ def _run_bench_capturing_pflash(argv: list[str]) -> dict:
         mock.patch.object(cli, "_check_memory_capacity", lambda *a, **k: None),
         mock.patch.object(cli, "_ensure_model_downloaded", lambda *a, **k: None),
         mock.patch(
-            "vllm_mlx.api.utils.resolve_serving_lane",
+            "rapid_mlx.api.utils.resolve_serving_lane",
             lambda name, **kw: (False, False),
         ),
-        mock.patch("vllm_mlx.pflash.resolve_pflash_config", _stub),
+        mock.patch("rapid_mlx.pflash.resolve_pflash_config", _stub),
         mock.patch.object(sys, "argv", ["rapid-mlx", *argv]),
         pytest.raises((_StopError, SystemExit)),
     ):
@@ -119,7 +119,7 @@ def _run_bench_capturing_pflash(argv: list[str]) -> dict:
 
 @pytest.mark.requires_mlx
 def test_bench_command_routes_pflash_through_resolve_pflash_config():
-    from vllm_mlx.model_aliases import resolve_model
+    from rapid_mlx.model_aliases import resolve_model
 
     seen = _run_bench_capturing_pflash(["bench", "bonsai-27b-2bit"])
     assert seen.get("model_name") == resolve_model("bonsai-27b-2bit")

@@ -92,7 +92,7 @@ Examples:
     print(f"Output: {args.output}")
     print()
 
-    from vllm_mlx.audio import AudioProcessor
+    from rapid_mlx.audio import AudioProcessor
 
     # Load model
     print("Loading SAM-Audio model...")

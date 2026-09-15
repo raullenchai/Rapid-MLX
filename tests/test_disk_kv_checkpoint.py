@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """Unit tests for disk-backed KV checkpointing (R15-P1 task #296).
 
-These tests pin the contract for :mod:`vllm_mlx.runtime.disk_kv_checkpoint`,
+These tests pin the contract for :mod:`rapid_mlx.runtime.disk_kv_checkpoint`,
 the disk-backed long-context partner of the in-process radix prefix cache.
 
 The on-disk format is ``mlx_lm.save_prompt_cache`` /
@@ -32,7 +32,7 @@ mx = pytest.importorskip("mlx.core")
 pytestmark = pytest.mark.requires_mlx
 from mlx_lm.models.cache import KVCache, QuantizedKVCache  # noqa: E402
 
-from vllm_mlx.runtime import disk_kv_checkpoint as _dkc  # noqa: E402
+from rapid_mlx.runtime import disk_kv_checkpoint as _dkc  # noqa: E402
 
 # ---------------------------------------------------------------------------
 # Fixtures

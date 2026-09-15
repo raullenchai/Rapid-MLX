@@ -3,10 +3,10 @@ import Testing
 @testable import Rapid
 
 /// rapid-desktop #361 — bundled sidecar's ``scripts/sidecar-shim.sh``
-/// invoked ``python3.12 -u -s -m vllm_mlx.cli`` without ``-P`` or
+/// invoked ``python3.12 -u -s -m rapid_mlx.cli`` without ``-P`` or
 /// ``PYTHONSAFEPATH=1``. Python's ``-m`` mode unconditionally prepends
 /// cwd to ``sys.path[0]``, so a caller that ``cd``s into a directory
-/// containing a sibling ``vllm_mlx/cli.py`` hijacks the bundled
+/// containing a sibling ``rapid_mlx/cli.py`` hijacks the bundled
 /// import path — the dogfood reproducer printed
 /// ``rapid-mlx 9.9.9-cwd-poison`` instead of the real version.
 ///
@@ -51,7 +51,7 @@ struct SidecarShimHardeningTests {
     /// If this trips, someone reordered or dropped the flag — restore
     /// the canonical line shape:
     ///
-    ///     exec "$ROOT/python/bin/python3.12" -P -u -s -m vllm_mlx.cli "$@"
+    ///     exec "$ROOT/python/bin/python3.12" -P -u -s -m rapid_mlx.cli "$@"
     /// Strip leading whitespace then split into (executable, comment)
     /// halves at the first non-quoted ``#`` (POSIX shell comment).
     /// Returns the executable half so source-grep tests can ignore
@@ -86,21 +86,21 @@ struct SidecarShimHardeningTests {
     }
 
     /// Predicate for "this is an executable ``exec`` line that
-    /// launches the bundled python at vllm_mlx.cli". Shared between
+    /// launches the bundled python at rapid_mlx.cli". Shared between
     /// the -P guard and the PYTHONSAFEPATH ordering guard so they
     /// reason about the SAME set of candidate exec lines (one set, no
     /// ``first(where:)`` lies if a dead alternate exec exists).
     private static func isPythonExecLine(_ line: String) -> Bool {
         line.hasPrefix("exec ")
             && line.contains("python3.12")
-            && line.contains("vllm_mlx.cli")
+            && line.contains("rapid_mlx.cli")
     }
 
     @Test("sidecar-shim.sh python exec line contains -P flag")
     func shimExecLineHasDashCapitalP() throws {
         let source = try String(contentsOf: Self.shimSourcePath, encoding: .utf8)
         let lines = Self.executableLines(of: source)
-        // Collect ALL executable ``exec ... python3.12 ... vllm_mlx.cli``
+        // Collect ALL executable ``exec ... python3.12 ... rapid_mlx.cli``
         // lines (not just the first). Per codex r2 MINOR: a dead
         // alternate exec carrying ``-P`` before the real broken exec
         // would satisfy a ``first(where:)`` guard and let the bug
@@ -109,9 +109,9 @@ struct SidecarShimHardeningTests {
         let execLines = lines.filter(Self.isPythonExecLine)
         #expect(
             !execLines.isEmpty,
-            "sidecar-shim.sh has no ``exec ... python3.12 ... vllm_mlx.cli`` line in an executable position. Either the shim was restructured (e.g. exec collapsed onto a single ``if X; then exec Y; fi``) or the canonical entrypoint changed. If intentional, update this test; otherwise restore the canonical line:\n    exec \"$ROOT/python/bin/python3.12\" -P -u -s -m vllm_mlx.cli \"$@\""
+            "sidecar-shim.sh has no ``exec ... python3.12 ... rapid_mlx.cli`` line in an executable position. Either the shim was restructured (e.g. exec collapsed onto a single ``if X; then exec Y; fi``) or the canonical entrypoint changed. If intentional, update this test; otherwise restore the canonical line:\n    exec \"$ROOT/python/bin/python3.12\" -P -u -s -m rapid_mlx.cli \"$@\""
         )
-        // Canonical shape: ``..python3.12"-P-u-s-mvllm_mlx.cli..``.
+        // Canonical shape: ``..python3.12"-P-u-s-mrapid_mlx.cli..``.
         // Pin ``"-P`` so a refactor that swaps for `--isolated` or
         // moves the flag past the module name (where -m would eat it)
         // trips here. Every candidate exec line must satisfy it.
@@ -119,7 +119,7 @@ struct SidecarShimHardeningTests {
             let stripped = Self.stripWhitespace(execLine)
             #expect(
                 stripped.contains("\"-P-u"),
-                "sidecar-shim.sh has a python exec line missing the ``-P`` flag (must appear immediately after the python binary path, before ``-u``). Offending line:\n    \(execLine)\n\nWithout ``-P``, Python's ``-m`` mode prepends cwd to sys.path[0] and a sibling ``vllm_mlx/`` directory in the caller's cwd hijacks the bundled import path. See rapid-desktop #361. Restore the canonical line shape:\n    exec \"$ROOT/python/bin/python3.12\" -P -u -s -m vllm_mlx.cli \"$@\""
+                "sidecar-shim.sh has a python exec line missing the ``-P`` flag (must appear immediately after the python binary path, before ``-u``). Offending line:\n    \(execLine)\n\nWithout ``-P``, Python's ``-m`` mode prepends cwd to sys.path[0] and a sibling ``rapid_mlx/`` directory in the caller's cwd hijacks the bundled import path. See rapid-desktop #361. Restore the canonical line shape:\n    exec \"$ROOT/python/bin/python3.12\" -P -u -s -m rapid_mlx.cli \"$@\""
             )
         }
     }
@@ -216,7 +216,7 @@ struct SidecarShimHardeningTests {
         return (String(decoding: data, as: UTF8.self), result.terminationStatus)
     }
 
-    /// Construct the #361 reproducer (poison ``vllm_mlx/cli.py`` in a
+    /// Construct the #361 reproducer (poison ``rapid_mlx/cli.py`` in a
     /// tmp dir) and confirm the bundled shim, run from that cwd,
     /// reads the REAL bundled version rather than the poison string.
     ///
@@ -234,7 +234,7 @@ struct SidecarShimHardeningTests {
         let tmp = try makeTempDir(prefix: "rapid-cwd-poison-361-")
         defer { try? FileManager.default.removeItem(at: tmp) }
 
-        let poisonPkg = tmp.appendingPathComponent("vllm_mlx")
+        let poisonPkg = tmp.appendingPathComponent("rapid_mlx")
         try FileManager.default.createDirectory(at: poisonPkg, withIntermediateDirectories: true)
         try Data().write(to: poisonPkg.appendingPathComponent("__init__.py"))
         let poisonCLI = """
@@ -253,7 +253,7 @@ struct SidecarShimHardeningTests {
         let result = try await Self.runShim(shim, cwd: tmp, args: ["--version"])
         #expect(
             !result.output.contains("9.9.9-cwd-poison"),
-            "Bundled sidecar shim at \(shim.path) loaded the poison ``vllm_mlx/cli.py`` from the caller's cwd (\(tmp.path)). The #361 cwd-hijack fix (``-P`` + PYTHONSAFEPATH=1 in sidecar-shim.sh) is not effective in the installed bundle. Output:\n\(result.output)"
+            "Bundled sidecar shim at \(shim.path) loaded the poison ``rapid_mlx/cli.py`` from the caller's cwd (\(tmp.path)). The #361 cwd-hijack fix (``-P`` + PYTHONSAFEPATH=1 in sidecar-shim.sh) is not effective in the installed bundle. Output:\n\(result.output)"
         )
         // Real version line starts with ``rapid-mlx 0.`` (every shipped
         // version begins with 0. through current). Sanity-check that

@@ -7,12 +7,12 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from vllm_mlx.reasoning import get_parser
-from vllm_mlx.reasoning.k2_horizon_parser import K2HorizonReasoningParser
-from vllm_mlx.reasoning.qwen3_parser import Qwen3ReasoningParser
-from vllm_mlx.service.postprocessor import StreamingPostProcessor
-from vllm_mlx.tool_parsers import ToolParserManager
-from vllm_mlx.tool_parsers.k2_horizon_tool_parser import K2HorizonToolParser
+from rapid_mlx.reasoning import get_parser
+from rapid_mlx.reasoning.k2_horizon_parser import K2HorizonReasoningParser
+from rapid_mlx.reasoning.qwen3_parser import Qwen3ReasoningParser
+from rapid_mlx.service.postprocessor import StreamingPostProcessor
+from rapid_mlx.tool_parsers import ToolParserManager
+from rapid_mlx.tool_parsers.k2_horizon_tool_parser import K2HorizonToolParser
 
 TOOLS = [
     {

@@ -2,7 +2,7 @@
 """
 Tests for Responses-API-to-Chat-Completions adapter.
 
-Pure-logic tests for vllm_mlx/api/responses_adapter.py — no MLX
+Pure-logic tests for rapid_mlx/api/responses_adapter.py — no MLX
 dependency. Mirrors the test shape of test_anthropic_adapter.py.
 """
 
@@ -10,7 +10,7 @@ import json
 
 import pytest
 
-from vllm_mlx.api.models import (
+from rapid_mlx.api.models import (
     AssistantMessage,
     ChatCompletionChoice,
     ChatCompletionResponse,
@@ -20,7 +20,7 @@ from vllm_mlx.api.models import (
     ToolCall,
     Usage,
 )
-from vllm_mlx.api.responses_adapter import (
+from rapid_mlx.api.responses_adapter import (
     _build_tool_call_output_item,
     _convert_status,
     _convert_text_format,
@@ -32,7 +32,7 @@ from vllm_mlx.api.responses_adapter import (
     responses_to_openai,
     validate_responses_tool_types,
 )
-from vllm_mlx.api.responses_models import (
+from rapid_mlx.api.responses_models import (
     ResponsesContentItem,
     ResponsesInputItem,
     ResponsesRequest,
@@ -1701,7 +1701,7 @@ class TestReasoningCutoffSentinelDoesNotMaskIncomplete:
         )
 
     def test_sentinel_in_content_keeps_reasoning_incomplete_on_length(self):
-        from vllm_mlx.api.constants import REASONING_CUTOFF_SENTINEL
+        from rapid_mlx.api.constants import REASONING_CUTOFF_SENTINEL
 
         chat_resp = self._chat_response_with_reasoning(
             text=REASONING_CUTOFF_SENTINEL,
@@ -1760,7 +1760,7 @@ class TestReasoningCutoffSentinelDoesNotMaskIncomplete:
         )
 
     def test_sentinel_with_no_finish_length_keeps_reasoning_completed(self):
-        from vllm_mlx.api.constants import REASONING_CUTOFF_SENTINEL
+        from rapid_mlx.api.constants import REASONING_CUTOFF_SENTINEL
 
         chat_resp = self._chat_response_with_reasoning(
             text=REASONING_CUTOFF_SENTINEL,

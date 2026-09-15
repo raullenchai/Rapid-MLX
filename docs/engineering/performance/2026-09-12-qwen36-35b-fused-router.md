@@ -96,7 +96,7 @@ decode and PFlash off, temperature zero, thinking disabled, and a 512-token
 output. The stock-router comparison adds:
 
 ```bash
-RAPID_MLX_QWEN35_MOE_ROUTER=0 python3.12 -m vllm_mlx.server \
+RAPID_MLX_QWEN35_MOE_ROUTER=0 python3.12 -m rapid_mlx.server \
   --model /path/to/immutable/snapshot \
   --no-mllm --no-spec-decode --pflash off
 ```
@@ -107,6 +107,6 @@ disabled:
 ```bash
 RAPID_MLX_MOE_GATE_UP_FUSION=0 \
 RAPID_MLX_QWEN35_MOE_ROUTER=0 \
-python3.12 -m vllm_mlx.server \
+python3.12 -m rapid_mlx.server \
   --model /path/to/immutable/snapshot --mllm --pflash off
 ```

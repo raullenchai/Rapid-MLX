@@ -43,8 +43,8 @@ def _isolate_config():
     assignment path. ``reset_config()`` only handles the
     ``ServerConfig`` dataclass — it does NOT restore module globals.
     """
-    import vllm_mlx.server as _server_mod
-    from vllm_mlx.config.server_config import reset_config
+    import rapid_mlx.server as _server_mod
+    from rapid_mlx.config.server_config import reset_config
 
     saved_globals = {
         "_body_receive_timeout_seconds": getattr(
@@ -64,7 +64,7 @@ def _build_app() -> FastAPI:
     """Mirror the production app's middleware wiring: a minimal
     FastAPI app + the body-size middleware + a tiny POST handler at
     a guarded path. Keeps the slow-body gate the only moving piece."""
-    from vllm_mlx.middleware.body_size import install_request_body_limit_middleware
+    from rapid_mlx.middleware.body_size import install_request_body_limit_middleware
 
     app = FastAPI()
 
@@ -80,7 +80,7 @@ def test_default_serverconfig_carries_body_receive_timeout():
     """Catch a regression that removes the dataclass field. The
     middleware reads ``ServerConfig.body_receive_timeout_seconds``
     per request — without the field the gate silently no-ops."""
-    from vllm_mlx.config.server_config import ServerConfig, get_config
+    from rapid_mlx.config.server_config import ServerConfig, get_config
 
     # Default value is the documented 15 s.
     assert ServerConfig().body_receive_timeout_seconds == 15.0
@@ -101,8 +101,8 @@ def test_resolve_body_receive_timeout_clamps_and_falls_back():
       would mask the real cause — the resolver mirrors the
       :func:`_resolve_limit` "sane default beats unlimited" choice.
     """
-    from vllm_mlx.config.server_config import get_config
-    from vllm_mlx.middleware.body_size import _resolve_body_receive_timeout
+    from rapid_mlx.config.server_config import get_config
+    from rapid_mlx.middleware.body_size import _resolve_body_receive_timeout
 
     # Negative numeric: clamp to 0 (gate disabled).
     get_config().body_receive_timeout_seconds = -7.0
@@ -128,7 +128,7 @@ def test_normal_post_under_timeout_passes_through():
     receive frame (TestClient's behaviour) MUST reach the handler
     and return its response. A regression that fired the timeout
     against well-behaved clients would 408 every request."""
-    from vllm_mlx.config.server_config import get_config
+    from rapid_mlx.config.server_config import get_config
 
     get_config().body_receive_timeout_seconds = 10.0
 
@@ -156,8 +156,8 @@ def test_slow_body_receive_emits_408():
     a real network."""
     import asyncio
 
-    from vllm_mlx.config.server_config import get_config
-    from vllm_mlx.middleware.body_size import RequestBodyLimitMiddleware
+    from rapid_mlx.config.server_config import get_config
+    from rapid_mlx.middleware.body_size import RequestBodyLimitMiddleware
 
     get_config().body_receive_timeout_seconds = 0.1
 
@@ -223,8 +223,8 @@ def test_timeout_disabled_when_zero():
     log analysis."""
     import asyncio
 
-    from vllm_mlx.config.server_config import get_config
-    from vllm_mlx.middleware.body_size import RequestBodyLimitMiddleware
+    from rapid_mlx.config.server_config import get_config
+    from rapid_mlx.middleware.body_size import RequestBodyLimitMiddleware
 
     get_config().body_receive_timeout_seconds = 0.0
     # Cap also off so we don't even hit the bounded-receive wrapper
@@ -278,8 +278,8 @@ def test_timeout_does_not_truncate_long_running_response():
     timer the moment the engine pauses for a beat between chunks."""
     import asyncio
 
-    from vllm_mlx.config.server_config import get_config
-    from vllm_mlx.middleware.body_size import RequestBodyLimitMiddleware
+    from rapid_mlx.config.server_config import get_config
+    from rapid_mlx.middleware.body_size import RequestBodyLimitMiddleware
 
     get_config().body_receive_timeout_seconds = 0.05
 
@@ -349,8 +349,8 @@ def test_size_cap_only_guards_listed_path_prefixes():
     """
     import asyncio
 
-    from vllm_mlx.config.server_config import get_config
-    from vllm_mlx.middleware.body_size import RequestBodyLimitMiddleware
+    from rapid_mlx.config.server_config import get_config
+    from rapid_mlx.middleware.body_size import RequestBodyLimitMiddleware
 
     # Disable receive-idle gate so this test isolates the cap path.
     get_config().body_receive_timeout_seconds = 0.0
@@ -417,8 +417,8 @@ def test_h14_receive_idle_gate_fires_on_unguarded_path():
     """
     import asyncio
 
-    from vllm_mlx.config.server_config import get_config
-    from vllm_mlx.middleware.body_size import RequestBodyLimitMiddleware
+    from rapid_mlx.config.server_config import get_config
+    from rapid_mlx.middleware.body_size import RequestBodyLimitMiddleware
 
     get_config().body_receive_timeout_seconds = 0.1
 
@@ -482,8 +482,8 @@ def test_h14_receive_idle_gate_fires_on_audio_excluded_path():
     """
     import asyncio
 
-    from vllm_mlx.config.server_config import get_config
-    from vllm_mlx.middleware.body_size import RequestBodyLimitMiddleware
+    from rapid_mlx.config.server_config import get_config
+    from rapid_mlx.middleware.body_size import RequestBodyLimitMiddleware
 
     get_config().body_receive_timeout_seconds = 0.1
 
@@ -541,8 +541,8 @@ def test_h14_progressive_upload_not_killed_by_per_chunk_timer():
     """
     import asyncio
 
-    from vllm_mlx.config.server_config import get_config
-    from vllm_mlx.middleware.body_size import RequestBodyLimitMiddleware
+    from rapid_mlx.config.server_config import get_config
+    from rapid_mlx.middleware.body_size import RequestBodyLimitMiddleware
 
     get_config().body_receive_timeout_seconds = 1.0
     get_config().max_request_bytes = 0  # cap off — isolate idle gate
@@ -630,8 +630,8 @@ def test_h14_no_double_send_after_408_rewrite():
     """
     import asyncio
 
-    from vllm_mlx.config.server_config import get_config
-    from vllm_mlx.middleware.body_size import RequestBodyLimitMiddleware
+    from rapid_mlx.config.server_config import get_config
+    from rapid_mlx.middleware.body_size import RequestBodyLimitMiddleware
 
     get_config().body_receive_timeout_seconds = 0.05
 
@@ -705,7 +705,7 @@ def test_h14_env_var_override_reduces_timeout(monkeypatch):
     stand-in for the CLI resolver would still pass even if the
     production wire-up were silently deleted. The fix is to call the
     SAME function ``serve_command`` calls —
-    ``vllm_mlx.cli._apply_body_receive_timeout_env`` — so any
+    ``rapid_mlx.cli._apply_body_receive_timeout_env`` — so any
     refactor that renames the env var, breaks the clamp, or drops
     the assignment fails this test on the real code path, not a copy.
 
@@ -714,10 +714,10 @@ def test_h14_env_var_override_reduces_timeout(monkeypatch):
     """
     import logging
 
-    from vllm_mlx import server as server_mod
-    from vllm_mlx.cli import _apply_body_receive_timeout_env
-    from vllm_mlx.config.server_config import get_config
-    from vllm_mlx.middleware.body_size import _resolve_body_receive_timeout
+    from rapid_mlx import server as server_mod
+    from rapid_mlx.cli import _apply_body_receive_timeout_env
+    from rapid_mlx.config.server_config import get_config
+    from rapid_mlx.middleware.body_size import _resolve_body_receive_timeout
 
     # Drive the REAL resolver function — the exact callable
     # ``serve_command`` invokes. No duplicated logic in the test
@@ -751,7 +751,7 @@ def test_h14_default_timeout_value_is_15_seconds():
     is unset — a regression that bumped the default to 60 s would
     widen the slowloris surface from 15 s × N workers to 60 s × N.
     """
-    from vllm_mlx.config.server_config import ServerConfig
+    from rapid_mlx.config.server_config import ServerConfig
 
     assert ServerConfig().body_receive_timeout_seconds == 15.0
 
@@ -771,8 +771,8 @@ def test_timeout_path_does_not_double_send_when_body_size_also_trips():
     fire."""
     import asyncio
 
-    from vllm_mlx.config.server_config import get_config
-    from vllm_mlx.middleware.body_size import RequestBodyLimitMiddleware
+    from rapid_mlx.config.server_config import get_config
+    from rapid_mlx.middleware.body_size import RequestBodyLimitMiddleware
 
     get_config().body_receive_timeout_seconds = 0.05
     get_config().max_request_bytes = 1024

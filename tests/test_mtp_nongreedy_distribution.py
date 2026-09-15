@@ -80,11 +80,11 @@ def _reset_mtp_module_state():
     import mlx.core as mx
     import mlx_lm.generate  # noqa: F401 — ensure module exists in sys.modules
 
-    from vllm_mlx.spec_decode.mtp.accept_counter import (
+    from rapid_mlx.spec_decode.mtp.accept_counter import (
         reset_global_counter_for_tests,
     )
-    from vllm_mlx.spec_decode.mtp.cache_patch import _unpatch_for_tests
-    from vllm_mlx.spec_decode.mtp.draft_k_controller_v2 import reset_controllers
+    from rapid_mlx.spec_decode.mtp.cache_patch import _unpatch_for_tests
+    from rapid_mlx.spec_decode.mtp.draft_k_controller_v2 import reset_controllers
 
     def _reset():
         _unpatch_for_tests()
@@ -183,7 +183,7 @@ def _run_stream(
     chain and the same mocked distributions, so a difference in the
     emitted stream's statistics is a difference in the SAMPLER.
     """
-    from vllm_mlx.spec_decode.mtp.generator import mtp_generate_step
+    from rapid_mlx.spec_decode.mtp.generator import mtp_generate_step
 
     mx.random.seed(seed)
     model = _FixedDistributionModel(target_probs, draft_probs)

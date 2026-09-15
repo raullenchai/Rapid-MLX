@@ -13,8 +13,8 @@ from types import SimpleNamespace
 
 import pytest
 
-from vllm_mlx.cli import models_command
-from vllm_mlx.model_aliases import list_profiles
+from rapid_mlx.cli import models_command
+from rapid_mlx.model_aliases import list_profiles
 
 
 def _capture(capsys, **arg_overrides):
@@ -114,8 +114,8 @@ def test_spec_decode_column_aligns_despite_long_reasoning(capsys):
 def test_alias_column_width_floor_is_24(capsys, monkeypatch):
     """If the registry only has short names, the alias column must
     still be 24 wide so short tables don't feel cramped."""
-    from vllm_mlx import model_aliases
-    from vllm_mlx.model_aliases import AliasProfile
+    from rapid_mlx import model_aliases
+    from rapid_mlx.model_aliases import AliasProfile
 
     short_profile = AliasProfile(hf_path="x/y")
     monkeypatch.setattr(model_aliases, "list_profiles", lambda: {"qwen": short_profile})
@@ -257,8 +257,8 @@ def test_broken_audio_registry_propagates_a_genuine_bug(capsys, monkeypatch):
 
     import pytest
 
-    from vllm_mlx import model_aliases as ma
-    from vllm_mlx.audio import registry as audio_registry
+    from rapid_mlx import model_aliases as ma
+    from rapid_mlx.audio import registry as audio_registry
 
     # Patch list_profiles so the text table is minimal and deterministic.
     monkeypatch.setattr(
@@ -293,8 +293,8 @@ def test_modality_audio_count_tolerates_a_broken_audio_registry(capsys, monkeypa
     import sys
     import types
 
-    broken = types.ModuleType("vllm_mlx.audio.registry")
-    monkeypatch.setitem(sys.modules, "vllm_mlx.audio.registry", broken)
+    broken = types.ModuleType("rapid_mlx.audio.registry")
+    monkeypatch.setitem(sys.modules, "rapid_mlx.audio.registry", broken)
     out = _capture(capsys, modality="audio")
     assert "Models [audio] (0 aliases)" in out
 
@@ -307,8 +307,8 @@ def test_whole_catalog_search_counts_tagged_matches(capsys, monkeypatch):
     import sys
     import types
 
-    from vllm_mlx import model_aliases
-    from vllm_mlx.model_aliases import AliasProfile
+    from rapid_mlx import model_aliases
+    from rapid_mlx.model_aliases import AliasProfile
 
     # A tiny controlled registry with one chat + one video-gen + one
     # image-gen alias. ``voodoo`` is deliberately unique to the video lane.
@@ -325,8 +325,8 @@ def test_whole_catalog_search_counts_tagged_matches(capsys, monkeypatch):
     # aliases above (guarded import degrades to 0 aliases, not a crash).
     monkeypatch.setitem(
         sys.modules,
-        "vllm_mlx.audio.registry",
-        types.ModuleType("vllm_mlx.audio.registry"),
+        "rapid_mlx.audio.registry",
+        types.ModuleType("rapid_mlx.audio.registry"),
     )
 
     out = _capture(capsys, search="voodoo")

@@ -8,7 +8,7 @@ from pathlib import Path
 import pytest
 
 ALIASES_PATH = (
-    Path(__file__).resolve().parents[1] / "vllm_mlx" / "audio" / "aliases.json"
+    Path(__file__).resolve().parents[1] / "rapid_mlx" / "audio" / "aliases.json"
 )
 PARAKEET_V3_LANGUAGES = {
     "bg",

@@ -58,7 +58,7 @@ def _reset_cfg_around_each_test():
     explicitly reset on both sides — otherwise a mid-test failure leaks
     cfg state into the next test.
     """
-    from vllm_mlx.config import reset_config
+    from rapid_mlx.config import reset_config
 
     reset_config()
     yield
@@ -70,7 +70,7 @@ def test_load_model_enables_native_tool_format_when_parser_supports_it(monkeypat
     native-format support. Pre-fix this asserted False because cfg was
     unsynced when detection ran.
     """
-    from vllm_mlx import server
+    from rapid_mlx import server
 
     monkeypatch.setattr(server, "BatchedEngine", _StubEngine)
     monkeypatch.setattr(server, "_engine", None, raising=False)
@@ -103,7 +103,7 @@ def test_load_model_tracks_explicit_served_model_name(monkeypatch, served, expec
     flag the readiness banner consumes, and leave it clear when no override
     is supplied — otherwise the banner would silently fall back to the
     catalog alias."""
-    from vllm_mlx import server
+    from rapid_mlx import server
 
     monkeypatch.setattr(server, "BatchedEngine", _StubEngine)
     monkeypatch.setattr(server, "_engine", None, raising=False)
@@ -157,8 +157,8 @@ def test_load_model_materializes_config_before_hybrid_routing_probe(
     """
     import logging
 
-    from vllm_mlx import server
-    from vllm_mlx.api import utils as api_utils
+    from rapid_mlx import server
+    from rapid_mlx.api import utils as api_utils
 
     _stub_routing_globals(monkeypatch, server)
 
@@ -178,7 +178,7 @@ def test_load_model_materializes_config_before_hybrid_routing_probe(
     )
     monkeypatch.setattr(api_utils, "mllm_hybrid_runtime_supported", lambda: False)
 
-    with caplog.at_level(logging.INFO, logger="vllm_mlx.server"):
+    with caplog.at_level(logging.INFO, logger="rapid_mlx.server"):
         server.load_model("some/uncached-hybrid-vlm-4bit")
 
     assert server._engine is not None
@@ -198,9 +198,9 @@ def test_load_model_genuine_vlm_stays_on_mllm_lane(monkeypatch):
     """A multimodal checkpoint with a NON-hybrid backbone (gemma-4 shape) must
     keep its MLLM routing — the auto-fallback fires only for hybrid backbones,
     so a working VLM is never downgraded."""
-    from vllm_mlx import server
-    from vllm_mlx.api import utils as api_utils
-    from vllm_mlx.models import mllm
+    from rapid_mlx import server
+    from rapid_mlx.api import utils as api_utils
+    from rapid_mlx.models import mllm
 
     _stub_routing_globals(monkeypatch, server)
     monkeypatch.setattr(server, "_ensure_routing_config", lambda name: None)
@@ -221,8 +221,8 @@ def test_load_model_genuine_vlm_stays_on_mllm_lane(monkeypatch):
 
 def test_load_model_preflights_mllm_runtime_before_engine_construction(monkeypatch):
     """Desktop/direct callers must fail before any model weights are touched."""
-    from vllm_mlx import server
-    from vllm_mlx.models import mllm
+    from rapid_mlx import server
+    from rapid_mlx.models import mllm
 
     _stub_routing_globals(monkeypatch, server)
     monkeypatch.setattr(
@@ -259,8 +259,8 @@ def test_load_model_preflights_mllm_runtime_before_engine_construction(monkeypat
 
 def test_load_model_explicit_text_lane_does_not_require_vision_runtime(monkeypatch):
     """A supported explicit text-only route remains usable without mlx-vlm."""
-    from vllm_mlx import server
-    from vllm_mlx.models import mllm
+    from rapid_mlx import server
+    from rapid_mlx.models import mllm
 
     _stub_routing_globals(monkeypatch, server)
     monkeypatch.setattr(
@@ -292,8 +292,8 @@ def test_metadata_preflight_rejects_before_subfolder_weight_download(monkeypatch
     """A subfolder VLM must fail before its complete checkpoint is fetched."""
     from types import SimpleNamespace
 
-    from vllm_mlx import model_metadata, server
-    from vllm_mlx.models import mllm
+    from rapid_mlx import model_metadata, server
+    from rapid_mlx.models import mllm
 
     monkeypatch.setattr(
         server,
@@ -314,7 +314,7 @@ def test_metadata_preflight_rejects_before_subfolder_weight_download(monkeypatch
         lambda *_args, **_kwargs: SimpleNamespace(is_mllm=True),
     )
     monkeypatch.setattr(
-        "vllm_mlx.utils.tokenizer._resolve_subfolder_checkpoint",
+        "rapid_mlx.utils.tokenizer._resolve_subfolder_checkpoint",
         lambda _name: (_ for _ in ()).throw(
             AssertionError("weight-bearing subfolder resolution ran too early")
         ),
@@ -335,8 +335,8 @@ def test_inconclusive_metadata_preflight_defers_runtime_rejection(monkeypatch):
     """Config-only evidence may be a text-only single-file fork."""
     from types import SimpleNamespace
 
-    from vllm_mlx import model_metadata, server
-    from vllm_mlx.models import mllm
+    from rapid_mlx import model_metadata, server
+    from rapid_mlx.models import mllm
 
     monkeypatch.setattr(
         server,
@@ -359,7 +359,7 @@ def test_inconclusive_metadata_preflight_defers_runtime_rejection(monkeypatch):
         ),
     )
     monkeypatch.setattr(
-        "vllm_mlx.utils.tokenizer._resolve_subfolder_checkpoint",
+        "rapid_mlx.utils.tokenizer._resolve_subfolder_checkpoint",
         lambda _name: (_ for _ in ()).throw(RuntimeError("full resolution reached")),
     )
 
@@ -370,15 +370,15 @@ def test_inconclusive_metadata_preflight_defers_runtime_rejection(monkeypatch):
 def test_routing_metadata_prefetch_excludes_weight_shards(monkeypatch):
     from types import SimpleNamespace
 
-    from vllm_mlx import server
+    from rapid_mlx import server
 
     calls = []
     monkeypatch.setattr(
-        "vllm_mlx.model_aliases.resolve_model",
+        "rapid_mlx.model_aliases.resolve_model",
         lambda _name: "publisher/multi-variant",
     )
     monkeypatch.setattr(
-        "vllm_mlx.model_aliases.resolve_subfolder", lambda _name: "4bit"
+        "rapid_mlx.model_aliases.resolve_subfolder", lambda _name: "4bit"
     )
     monkeypatch.setattr(
         "huggingface_hub.model_info",
@@ -409,12 +409,12 @@ def test_routing_metadata_prefetch_excludes_weight_shards(monkeypatch):
 def test_routing_metadata_prefetch_preserves_external_local_model(
     tmp_path, monkeypatch
 ):
-    from vllm_mlx import server
+    from rapid_mlx import server
 
     external = tmp_path / "publisher" / "model"
     external.mkdir(parents=True)
     monkeypatch.setattr(
-        "vllm_mlx.model_aliases.resolve_model", lambda _name: str(external)
+        "rapid_mlx.model_aliases.resolve_model", lambda _name: str(external)
     )
     monkeypatch.setattr(
         "huggingface_hub.snapshot_download",
@@ -427,7 +427,7 @@ def test_routing_metadata_prefetch_preserves_external_local_model(
 
 
 def test_routing_metadata_prefetch_defers_to_configured_mirror(monkeypatch):
-    from vllm_mlx import server
+    from rapid_mlx import server
 
     monkeypatch.setenv("RAPID_MLX_MODEL_MIRROR", "https://models.example.test")
     monkeypatch.setattr(
@@ -441,7 +441,7 @@ def test_routing_metadata_prefetch_defers_to_configured_mirror(monkeypatch):
 def test_routing_metadata_download_defers_to_configured_mirror(monkeypatch):
     from types import SimpleNamespace
 
-    from vllm_mlx import server
+    from rapid_mlx import server
 
     monkeypatch.setenv("RAPID_MLX_MODEL_MIRROR", "https://models.example.test")
     monkeypatch.setattr(
@@ -456,7 +456,7 @@ def test_routing_metadata_download_defers_to_configured_mirror(monkeypatch):
 
 
 def test_routing_metadata_hub_failure_raises_without_mirror(monkeypatch):
-    from vllm_mlx import server
+    from rapid_mlx import server
 
     monkeypatch.setenv("RAPID_MLX_MODEL_MIRROR", "")
     monkeypatch.setattr(
@@ -471,7 +471,7 @@ def test_routing_metadata_hub_failure_raises_without_mirror(monkeypatch):
 def test_routing_metadata_requires_hub_revision(monkeypatch):
     from types import SimpleNamespace
 
-    from vllm_mlx import server
+    from rapid_mlx import server
 
     monkeypatch.setattr(
         "huggingface_hub.model_info", lambda _repo: SimpleNamespace(sha=None)
@@ -484,7 +484,7 @@ def test_routing_metadata_requires_hub_revision(monkeypatch):
 def test_routing_metadata_download_failure_raises_without_mirror(monkeypatch):
     from types import SimpleNamespace
 
-    from vllm_mlx import server
+    from rapid_mlx import server
 
     monkeypatch.setenv("RAPID_MLX_MODEL_MIRROR", "")
     monkeypatch.setattr(
@@ -502,7 +502,7 @@ def test_routing_metadata_download_failure_raises_without_mirror(monkeypatch):
 def test_routing_metadata_prefetch_reuses_complete_warm_cache(monkeypatch):
     from types import SimpleNamespace
 
-    from vllm_mlx import model_metadata, server
+    from rapid_mlx import model_metadata, server
 
     cached = "/cache/snapshots/abc123"
     monkeypatch.setattr(
@@ -511,7 +511,7 @@ def test_routing_metadata_prefetch_reuses_complete_warm_cache(monkeypatch):
         lambda _name: SimpleNamespace(snapshot_dir=cached),
     )
     monkeypatch.setattr(
-        "vllm_mlx._download_gate._snapshot_is_complete", lambda path: path == cached
+        "rapid_mlx._download_gate._snapshot_is_complete", lambda path: path == cached
     )
     monkeypatch.setattr(
         "huggingface_hub.model_info",
@@ -526,8 +526,8 @@ def test_routing_metadata_prefetch_reuses_complete_warm_cache(monkeypatch):
 def test_vision_preflight_honors_automatic_text_fallback(monkeypatch):
     from types import SimpleNamespace
 
-    from vllm_mlx import model_metadata, server
-    from vllm_mlx.models import mllm
+    from rapid_mlx import model_metadata, server
+    from rapid_mlx.models import mllm
 
     monkeypatch.setattr(
         server, "_prefetch_routing_metadata", lambda _name: "/cache/vision-model"
@@ -557,7 +557,7 @@ def test_vision_preflight_honors_automatic_text_fallback(monkeypatch):
         ),
     )
     monkeypatch.setattr(
-        "vllm_mlx.utils.tokenizer._resolve_subfolder_checkpoint", lambda name: name
+        "rapid_mlx.utils.tokenizer._resolve_subfolder_checkpoint", lambda name: name
     )
     monkeypatch.setattr(server, "_ensure_routing_config", lambda _name: None)
 
@@ -568,8 +568,8 @@ def test_vision_preflight_honors_automatic_text_fallback(monkeypatch):
 
 
 def test_speculative_decode_skips_vision_runtime_preflight(monkeypatch):
-    from vllm_mlx import server
-    from vllm_mlx.api.utils import ServingLaneDecision
+    from rapid_mlx import server
+    from rapid_mlx.api.utils import ServingLaneDecision
 
     monkeypatch.setattr(
         server,
@@ -579,11 +579,11 @@ def test_speculative_decode_skips_vision_runtime_preflight(monkeypatch):
         ),
     )
     monkeypatch.setattr(
-        "vllm_mlx.utils.tokenizer._resolve_subfolder_checkpoint",
+        "rapid_mlx.utils.tokenizer._resolve_subfolder_checkpoint",
         lambda name: name,
     )
     monkeypatch.setattr(
-        "vllm_mlx.model_metadata.read_model_metadata", lambda _name: None
+        "rapid_mlx.model_metadata.read_model_metadata", lambda _name: None
     )
     monkeypatch.setattr(
         server,
@@ -603,15 +603,15 @@ def test_speculative_decode_skips_vision_runtime_preflight(monkeypatch):
 
 
 def test_forced_mllm_preflight_checks_resolved_model_without_metadata(monkeypatch):
-    from vllm_mlx import server
+    from rapid_mlx import server
 
     checks = []
     monkeypatch.setattr(
-        "vllm_mlx.model_aliases.resolve_model",
+        "rapid_mlx.model_aliases.resolve_model",
         lambda _name: "publisher/resolved-vision-model",
     )
-    monkeypatch.setattr("vllm_mlx.model_aliases.resolve_profile", lambda _name: None)
-    monkeypatch.setattr("vllm_mlx.models.mllm._require_mlx_vlm", checks.append)
+    monkeypatch.setattr("rapid_mlx.model_aliases.resolve_profile", lambda _name: None)
+    monkeypatch.setattr("rapid_mlx.models.mllm._require_mlx_vlm", checks.append)
 
     server._preflight_vision_runtime("vision-alias", force_mllm=True)
 
@@ -622,7 +622,7 @@ def test_load_model_threads_saved_cli_alias_into_checkpoint_resolution(monkeypat
     """CLI alias identity must survive its early alias-to-repo normalization."""
     from types import SimpleNamespace
 
-    from vllm_mlx import server
+    from rapid_mlx import server
 
     _stub_routing_globals(monkeypatch, server)
     monkeypatch.setattr(
@@ -661,8 +661,8 @@ def test_load_model_detects_config_from_resolved_pulled_variant(monkeypatch):
     """
     from types import SimpleNamespace
 
-    from vllm_mlx import server
-    from vllm_mlx.model_profile import ModelProfile
+    from rapid_mlx import server
+    from rapid_mlx.model_profile import ModelProfile
 
     _stub_routing_globals(monkeypatch, server)
     checkpoint = "/cache/snapshots/revision/8bit"
@@ -685,13 +685,13 @@ def test_load_model_detects_config_from_resolved_pulled_variant(monkeypatch):
     # A bare repo can reverse-resolve to the catalog's default alias. The
     # persisted 8-bit choice must still make checkpoint metadata authoritative.
     monkeypatch.setattr(
-        "vllm_mlx.model_aliases.resolve_profile", lambda _name: ModelProfile()
+        "rapid_mlx.model_aliases.resolve_profile", lambda _name: ModelProfile()
     )
-    monkeypatch.setattr("vllm_mlx._download_gate.pulled_variant", lambda _name: "8bit")
-    monkeypatch.setattr("vllm_mlx.model_auto_config.detect_model_config", detect)
+    monkeypatch.setattr("rapid_mlx._download_gate.pulled_variant", lambda _name: "8bit")
+    monkeypatch.setattr("rapid_mlx.model_auto_config.detect_model_config", detect)
     generation_paths: list[str] = []
     monkeypatch.setattr(
-        "vllm_mlx.utils.generation_config.load_generation_config_sampling",
+        "rapid_mlx.utils.generation_config.load_generation_config_sampling",
         lambda path: generation_paths.append(path) or {},
     )
 
@@ -706,9 +706,9 @@ def test_load_model_detects_config_from_resolved_pulled_variant(monkeypatch):
 def test_materialized_checkpoint_keeps_catalog_vision_memory_floor(monkeypatch):
     from types import SimpleNamespace
 
-    from vllm_mlx import model_aliases, model_metadata, server
-    from vllm_mlx.api import utils as api_utils
-    from vllm_mlx.model_profile import ModelProfile
+    from rapid_mlx import model_aliases, model_metadata, server
+    from rapid_mlx.api import utils as api_utils
+    from rapid_mlx.model_profile import ModelProfile
 
     monkeypatch.setattr(model_aliases, "resolve_model", lambda _name: "publisher/model")
     monkeypatch.setattr(
@@ -755,8 +755,8 @@ async def test_startup_and_runtime_use_identical_checkpoint_lane_contract(
 ):
     """Startup and residency must hand the same resolved path/lane to engine."""
     pytest.importorskip("mlx")  # checkpoint-lane contract drives real mlx engine
-    from vllm_mlx import server
-    from vllm_mlx.model_profile import ModelProfile
+    from rapid_mlx import server
+    from rapid_mlx.model_profile import ModelProfile
 
     _stub_routing_globals(monkeypatch, server)
     calls = []
@@ -769,16 +769,16 @@ async def test_startup_and_runtime_use_identical_checkpoint_lane_contract(
     )
 
     vision_checks = []
-    monkeypatch.setattr("vllm_mlx.models.mllm._require_mlx_vlm", vision_checks.append)
+    monkeypatch.setattr("rapid_mlx.models.mllm._require_mlx_vlm", vision_checks.append)
 
     def resolve_once(model_name, **kwargs):
         calls.append((model_name, kwargs))
         return resolved
 
     monkeypatch.setattr(server, "_resolve_serving_checkpoint", resolve_once)
-    monkeypatch.setattr("vllm_mlx.model_aliases.resolve_profile", lambda _name: None)
+    monkeypatch.setattr("rapid_mlx.model_aliases.resolve_profile", lambda _name: None)
     monkeypatch.setattr(
-        "vllm_mlx.model_auto_config.detect_model_config",
+        "rapid_mlx.model_auto_config.detect_model_config",
         lambda _name: ModelProfile(is_hybrid=False, experimental=True),
     )
 
@@ -826,9 +826,9 @@ def test_ensure_routing_config_raises_when_prefetch_does_not_materialize(monkeyp
     crashing MLLM engine (#352). Assert it fails fast with an actionable error
     instead.
     """
-    from vllm_mlx import cli as cli_mod
-    from vllm_mlx import model_metadata as mm
-    from vllm_mlx import server
+    from rapid_mlx import cli as cli_mod
+    from rapid_mlx import model_metadata as mm
+    from rapid_mlx import server
 
     # Uncached remote repo id (not a local path → os.path.exists False).
     model = "some/uncached-and-unmaterializable-4bit"
@@ -868,9 +868,9 @@ def test_ensure_routing_config_warns_when_prefetch_errors_but_config_lands(
     attributable."""
     import logging
 
-    from vllm_mlx import cli as cli_mod
-    from vllm_mlx import model_metadata as mm
-    from vllm_mlx import server
+    from rapid_mlx import cli as cli_mod
+    from rapid_mlx import model_metadata as mm
+    from rapid_mlx import server
 
     state = {"materialized": False}
     monkeypatch.setattr(
@@ -886,7 +886,7 @@ def test_ensure_routing_config_warns_when_prefetch_errors_but_config_lands(
 
     monkeypatch.setattr(cli_mod, "_ensure_model_downloaded", _partial_prefetch)
 
-    with caplog.at_level(logging.WARNING, logger="vllm_mlx.server"):
+    with caplog.at_level(logging.WARNING, logger="rapid_mlx.server"):
         # Config is readable afterward → no raise.
         server._ensure_routing_config("some/partially-downloaded-4bit")
 
@@ -898,9 +898,9 @@ def test_ensure_routing_config_warns_when_prefetch_errors_but_config_lands(
 def test_ensure_routing_config_succeeds_when_prefetch_materializes(monkeypatch):
     """Happy path for the first-time uncached startup: config is absent, the
     prefetch materializes it, and ``_ensure_routing_config`` returns cleanly."""
-    from vllm_mlx import cli as cli_mod
-    from vllm_mlx import model_metadata as mm
-    from vllm_mlx import server
+    from rapid_mlx import cli as cli_mod
+    from rapid_mlx import model_metadata as mm
+    from rapid_mlx import server
 
     state = {"materialized": False}
     monkeypatch.setattr(
@@ -923,9 +923,9 @@ def test_ensure_routing_config_completes_remote_snapshot_with_readable_config(
     monkeypatch,
 ):
     """A metadata-only remote snapshot must still materialize its weights."""
-    from vllm_mlx import cli as cli_mod
-    from vllm_mlx import model_metadata as mm
-    from vllm_mlx import server
+    from rapid_mlx import cli as cli_mod
+    from rapid_mlx import model_metadata as mm
+    from rapid_mlx import server
 
     monkeypatch.setattr(mm, "read_model_metadata", lambda name: object())
 
@@ -943,9 +943,9 @@ def test_ensure_routing_config_completes_remote_snapshot_with_readable_config(
 def test_ensure_routing_config_propagates_disk_gate_systemexit(monkeypatch):
     """The intentional hard disk-space gate (``SystemExit``) from the prefetch
     must propagate unchanged — it is a fail-fast, not a swallowable hiccup."""
-    from vllm_mlx import cli as cli_mod
-    from vllm_mlx import model_metadata as mm
-    from vllm_mlx import server
+    from rapid_mlx import cli as cli_mod
+    from rapid_mlx import model_metadata as mm
+    from rapid_mlx import server
 
     monkeypatch.setattr(mm, "read_model_metadata", lambda name: None)
 
@@ -959,8 +959,8 @@ def test_ensure_routing_config_propagates_disk_gate_systemexit(monkeypatch):
 
 
 def test_load_model_infers_programmatic_max_tokens_explicit(monkeypatch):
-    from vllm_mlx import server
-    from vllm_mlx.config import get_config, reset_config
+    from rapid_mlx import server
+    from rapid_mlx.config import get_config, reset_config
 
     monkeypatch.setattr(server, "BatchedEngine", _StubEngine)
     monkeypatch.setattr(server, "_engine", None, raising=False)
@@ -1006,7 +1006,7 @@ def test_load_model_mtp_kwarg_translates_to_scheduler_config(
     monkeypatch, scheduler_config_stub
 ):
     pytest.importorskip("mlx")  # mtp spec-decode path imports mlx.core (no-MLX job)
-    from vllm_mlx import server
+    from rapid_mlx import server
 
     monkeypatch.setattr(server, "BatchedEngine", _StubEngine)
     monkeypatch.setattr(server, "_engine", None, raising=False)
@@ -1037,7 +1037,7 @@ def test_load_model_mtp_kwarg_rejects_conflicting_spec_decode(scheduler_config_s
     pytest.importorskip(
         "mlx"
     )  # scheduler/spec-decode path requires mlx (no-MLX coverage job)
-    from vllm_mlx import server
+    from rapid_mlx import server
 
     cfg = scheduler_config_stub()
     cfg.spec_decode = "suffix"
@@ -1056,7 +1056,7 @@ def test_load_model_mtp_kwarg_rejects_conflicting_suffix_config(
     pytest.importorskip(
         "mlx"
     )  # scheduler/spec-decode path requires mlx (no-MLX coverage job)
-    from vllm_mlx import server
+    from rapid_mlx import server
 
     with pytest.raises(ValueError, match="enable_suffix_decoding=True"):
         server.load_model(
@@ -1072,7 +1072,7 @@ def test_load_model_mtp_kwarg_rejects_conflicting_dflash_config(
     pytest.importorskip(
         "mlx"
     )  # scheduler/spec-decode path requires mlx (no-MLX coverage job)
-    from vllm_mlx import server
+    from rapid_mlx import server
 
     with pytest.raises(ValueError, match="dflash_drafter_path"):
         server.load_model(
@@ -1093,8 +1093,8 @@ def test_load_model_response_cache_reconfigure_failure_forces_disabled(monkeypat
     the except path → the pre-seeded, enabled cache object survives with its
     entries, so this fails.
     """
-    from vllm_mlx import response_cache as rc
-    from vllm_mlx import server
+    from rapid_mlx import response_cache as rc
+    from rapid_mlx import server
 
     # Pre-seed a live, populated cache — simulating the PREVIOUS model's
     # cache still holding entries when the reload begins.
@@ -1161,7 +1161,7 @@ def test_load_model_mtp_kwarg_rejects_legacy_optimistic_config(
     pytest.importorskip(
         "mlx"
     )  # scheduler/spec-decode path requires mlx (no-MLX coverage job)
-    from vllm_mlx import server
+    from rapid_mlx import server
 
     # SchedulerConfig(mtp_optimistic=True) alone (spec_decode="none") is
     # legal — the reject is triggered only once mtp=True elevates the
@@ -1183,8 +1183,8 @@ def test_detect_native_tool_support_requires_synced_config(monkeypatch):
     to False when cfg has not been synced yet, so callers MUST run
     `_sync_config()` first.
     """
-    from vllm_mlx import server
-    from vllm_mlx.config import get_config
+    from rapid_mlx import server
+    from rapid_mlx.config import get_config
 
     monkeypatch.setattr(server, "_enable_auto_tool_choice", True, raising=False)
     monkeypatch.setattr(server, "_tool_call_parser", "hermes", raising=False)
@@ -1215,8 +1215,8 @@ def test_sync_config_is_idempotent(monkeypatch):
     side effects (counter increments, callback fires, cache invalidations),
     the late re-sync becomes a latent bug.
     """
-    from vllm_mlx import server
-    from vllm_mlx.config import get_config
+    from rapid_mlx import server
+    from rapid_mlx.config import get_config
 
     monkeypatch.setattr(server, "_enable_auto_tool_choice", True, raising=False)
     monkeypatch.setattr(server, "_tool_call_parser", "hermes", raising=False)
@@ -1260,8 +1260,8 @@ def test_sync_config_propagates_mcp_manager(monkeypatch):
     """
     from unittest.mock import MagicMock
 
-    from vllm_mlx import server
-    from vllm_mlx.config import get_config
+    from rapid_mlx import server
+    from rapid_mlx.config import get_config
 
     cfg = get_config()
     monkeypatch.setattr(cfg, "mcp_manager", None, raising=False)
@@ -1293,8 +1293,8 @@ def test_sync_config_preserves_unrelated_config_on_mcp_update(monkeypatch):
     """
     from unittest.mock import MagicMock
 
-    from vllm_mlx import server
-    from vllm_mlx.config import get_config
+    from rapid_mlx import server
+    from rapid_mlx.config import get_config
 
     cfg = get_config()
     monkeypatch.setattr(cfg, "mcp_manager", None, raising=False)
@@ -1329,9 +1329,9 @@ async def test_init_mcp_syncs_config_into_cfg(monkeypatch):
     """
     from unittest.mock import AsyncMock, MagicMock
 
-    import vllm_mlx.mcp as mcp_module
-    from vllm_mlx import server
-    from vllm_mlx.config import get_config
+    import rapid_mlx.mcp as mcp_module
+    from rapid_mlx import server
+    from rapid_mlx.config import get_config
 
     cfg = get_config()
     monkeypatch.setattr(cfg, "mcp_manager", None, raising=False)

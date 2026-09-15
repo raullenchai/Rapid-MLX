@@ -12,8 +12,8 @@ from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 
-from vllm_mlx import cli
-from vllm_mlx.audio import registry, runtime_requirements
+from rapid_mlx import cli
+from rapid_mlx.audio import registry, runtime_requirements
 
 
 def test_kokoro_alias_and_hf_id_declare_voice_assets() -> None:

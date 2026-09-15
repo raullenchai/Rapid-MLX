@@ -10,12 +10,12 @@ behind the ``[embeddings]`` extra. A user on a clean PyPI install ran
 time and exits cleanly with an actionable install hint on stderr.
 
 This file pins the helper that owns the CLI side of the guard
-(``_load_embedding_model_or_exit`` in :mod:`vllm_mlx.cli`) — it MUST
+(``_load_embedding_model_or_exit`` in :mod:`rapid_mlx.cli`) — it MUST
 short-circuit via ``require_mlx_embeddings_or_exit`` BEFORE touching
 the alias registry or the loader. The broader H-08+H-09+H-13 net
 lives in :mod:`tests.test_embeddings_extra_guard`; this file exists
 because the task spec named ``tests/test_cli_embeddings_extra.py``
-explicitly and ``vllm_mlx/cli.py`` is the natural grep destination
+explicitly and ``rapid_mlx/cli.py`` is the natural grep destination
 for the CLI surface.
 
 Coordinate with r11-K (deferred #258): if/when audio-mode serve
@@ -24,7 +24,7 @@ becomes the parity pin for the audio-mode boot path too. The
 ``_load_embedding_model_or_exit`` helper is the single source of
 truth — audio-mode integration should route through it rather than
 duplicate the guard logic. See the helper's docstring in
-``vllm_mlx/cli.py``.
+``rapid_mlx/cli.py``.
 """
 
 from __future__ import annotations
@@ -46,12 +46,12 @@ def test_load_embedding_helper_exits_2_when_extra_missing(monkeypatch, capsys):
     of ``mlx_embeddings.load`` deep in the trace. The probe is the
     structural fix.
     """
-    from vllm_mlx.cli import _load_embedding_model_or_exit
+    from rapid_mlx.cli import _load_embedding_model_or_exit
 
     # Force the probe to report mlx_embeddings missing — this is the
     # bug condition. ``mlx_embeddings_available`` is the lazy probe
     # that the helper consults.
-    monkeypatch.setattr("vllm_mlx.embedding.mlx_embeddings_available", lambda: False)
+    monkeypatch.setattr("rapid_mlx.embedding.mlx_embeddings_available", lambda: False)
 
     def _fake_loader(*_args, **_kwargs):  # pragma: no cover — must not run
         raise AssertionError(
@@ -86,9 +86,9 @@ def test_load_embedding_helper_proceeds_when_extra_installed(monkeypatch):
     flags are omitted. The boot path always locks the engine so the H-09
     route guard has a non-None ``embedding_model_locked`` to consult.
     """
-    from vllm_mlx.cli import _load_embedding_model_or_exit
+    from rapid_mlx.cli import _load_embedding_model_or_exit
 
-    monkeypatch.setattr("vllm_mlx.embedding.mlx_embeddings_available", lambda: True)
+    monkeypatch.setattr("rapid_mlx.embedding.mlx_embeddings_available", lambda: True)
 
     captured: dict = {}
 
@@ -116,7 +116,7 @@ def test_install_hint_string_is_canonical():
     accidentally drops the single-quotes (``rapid-mlx[embeddings]``
     bare would be parsed as a shell glob in zsh) is caught.
     """
-    from vllm_mlx.embedding import EMBEDDINGS_EXTRA_INSTALL_HINT
+    from rapid_mlx.embedding import EMBEDDINGS_EXTRA_INSTALL_HINT
 
     assert EMBEDDINGS_EXTRA_INSTALL_HINT == (
         "Install with: pip install 'rapid-mlx[embeddings]'"

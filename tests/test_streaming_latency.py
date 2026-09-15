@@ -214,8 +214,8 @@ async def test_output_collector():
 
     sys.path.insert(0, str(__file__).rsplit("/", 2)[0])
 
-    from vllm_mlx.output_collector import RequestOutputCollector, RequestStreamState
-    from vllm_mlx.request import RequestOutput
+    from rapid_mlx.output_collector import RequestOutputCollector, RequestStreamState
+    from rapid_mlx.request import RequestOutput
 
     print("Testing RequestOutputCollector...")
 

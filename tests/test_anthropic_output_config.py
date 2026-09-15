@@ -33,18 +33,18 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from pydantic import ValidationError
 
-from vllm_mlx.api.anthropic_adapter import (
+from rapid_mlx.api.anthropic_adapter import (
     AnthropicOutputConfigError,
     _convert_output_config,
     anthropic_to_openai,
 )
-from vllm_mlx.api.anthropic_models import (
+from rapid_mlx.api.anthropic_models import (
     AnthropicMessage,
     AnthropicOutputConfig,
     AnthropicOutputFormat,
     AnthropicRequest,
 )
-from vllm_mlx.api.models import ResponseFormat
+from rapid_mlx.api.models import ResponseFormat
 
 # =============================================================================
 # Pydantic model parsing
@@ -344,42 +344,42 @@ class _RecordingEngine:
 
 
 def _install_lightweight_engine_modules(monkeypatch):
-    engine_pkg = types.ModuleType("vllm_mlx.engine")
+    engine_pkg = types.ModuleType("rapid_mlx.engine")
     engine_pkg.BaseEngine = _BaseEngine
     engine_pkg.GenerationOutput = _GenerationOutput
 
-    base_mod = types.ModuleType("vllm_mlx.engine.base")
+    base_mod = types.ModuleType("rapid_mlx.engine.base")
     base_mod.BaseEngine = _BaseEngine
     base_mod.GenerationOutput = _GenerationOutput
 
-    batched_mod = types.ModuleType("vllm_mlx.engine.batched")
+    batched_mod = types.ModuleType("rapid_mlx.engine.batched")
     batched_mod._admission_engine_context = contextvars.ContextVar(
         "test_admission_engine", default=None
     )
 
-    monkeypatch.setitem(sys.modules, "vllm_mlx.engine", engine_pkg)
-    monkeypatch.setitem(sys.modules, "vllm_mlx.engine.base", base_mod)
-    monkeypatch.setitem(sys.modules, "vllm_mlx.engine.batched", batched_mod)
+    monkeypatch.setitem(sys.modules, "rapid_mlx.engine", engine_pkg)
+    monkeypatch.setitem(sys.modules, "rapid_mlx.engine.base", base_mod)
+    monkeypatch.setitem(sys.modules, "rapid_mlx.engine.batched", batched_mod)
 
 
 _IMPORTED_UNDER_LIGHTWEIGHT_ENGINE = (
-    "vllm_mlx.config",
-    "vllm_mlx.config.server_config",
-    "vllm_mlx.engine",
-    "vllm_mlx.engine.base",
-    "vllm_mlx.engine.batched",
-    "vllm_mlx.middleware.auth",
-    "vllm_mlx.service.helpers",
-    "vllm_mlx.routes.anthropic",
+    "rapid_mlx.config",
+    "rapid_mlx.config.server_config",
+    "rapid_mlx.engine",
+    "rapid_mlx.engine.base",
+    "rapid_mlx.engine.batched",
+    "rapid_mlx.middleware.auth",
+    "rapid_mlx.service.helpers",
+    "rapid_mlx.routes.anthropic",
 )
 _PARENT_ATTRS_UNDER_LIGHTWEIGHT_ENGINE = (
-    ("vllm_mlx", "config"),
-    ("vllm_mlx", "engine"),
-    ("vllm_mlx.config", "server_config"),
-    ("vllm_mlx.engine", "base"),
-    ("vllm_mlx.middleware", "auth"),
-    ("vllm_mlx.service", "helpers"),
-    ("vllm_mlx.routes", "anthropic"),
+    ("rapid_mlx", "config"),
+    ("rapid_mlx", "engine"),
+    ("rapid_mlx.config", "server_config"),
+    ("rapid_mlx.engine", "base"),
+    ("rapid_mlx.middleware", "auth"),
+    ("rapid_mlx.service", "helpers"),
+    ("rapid_mlx.routes", "anthropic"),
 )
 _MISSING = object()
 
@@ -399,10 +399,10 @@ def anthropic_client(monkeypatch):
 
     _install_lightweight_engine_modules(monkeypatch)
 
-    from vllm_mlx.config import reset_config
-    from vllm_mlx.middleware.auth import rate_limiter
-    from vllm_mlx.middleware.exception_handlers import install_exception_handlers
-    from vllm_mlx.routes.anthropic import router
+    from rapid_mlx.config import reset_config
+    from rapid_mlx.middleware.auth import rate_limiter
+    from rapid_mlx.middleware.exception_handlers import install_exception_handlers
+    from rapid_mlx.routes.anthropic import router
 
     cfg = reset_config()
     # Keep auth out of the way for these tests — output_config validation
@@ -574,8 +574,8 @@ class TestRouteOutputConfigSurface:
 @pytest.mark.asyncio
 async def test_mllm_output_schema_attaches_request_local_processor(monkeypatch):
     """Claude-shaped structured output is constrained on the MLLM lane."""
-    from vllm_mlx.api import guided
-    from vllm_mlx.routes import anthropic as anthropic_route
+    from rapid_mlx.api import guided
+    from rapid_mlx.routes import anthropic as anthropic_route
 
     marker = object()
     schema = {"type": "object", "properties": {"title": {"type": "string"}}}
@@ -604,8 +604,8 @@ async def test_mllm_output_schema_attaches_request_local_processor(monkeypatch):
 @pytest.mark.asyncio
 async def test_mllm_output_schema_does_not_replace_tool_grammar(monkeypatch):
     """Combined tools/schema requests retain the existing tool-call contract."""
-    from vllm_mlx.api import guided
-    from vllm_mlx.routes import anthropic as anthropic_route
+    from rapid_mlx.api import guided
+    from rapid_mlx.routes import anthropic as anthropic_route
 
     monkeypatch.setattr(
         guided,
@@ -623,7 +623,7 @@ async def test_mllm_output_schema_does_not_replace_tool_grammar(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_mllm_output_schema_fails_closed_when_schema_is_unusable(monkeypatch):
-    from vllm_mlx.routes import anthropic as anthropic_route
+    from rapid_mlx.routes import anthropic as anthropic_route
 
     monkeypatch.setattr(
         anthropic_route,
@@ -641,7 +641,7 @@ async def test_mllm_output_schema_fails_closed_when_schema_is_unusable(monkeypat
 
 @pytest.mark.asyncio
 async def test_output_schema_ignores_engines_without_mllm_capability():
-    from vllm_mlx.routes import anthropic as anthropic_route
+    from rapid_mlx.routes import anthropic as anthropic_route
 
     request = SimpleNamespace(response_format=object(), tools=[])
     chat_kwargs = {}
@@ -657,7 +657,7 @@ def test_mllm_streaming_schema_disables_reasoning_classification(
     monkeypatch, anthropic_client
 ):
     """The Anthropic streaming path treats schema bytes as answer content."""
-    from vllm_mlx.api import guided
+    from rapid_mlx.api import guided
 
     marker = object()
     monkeypatch.setattr(

@@ -1,11 +1,11 @@
 # SPDX-License-Identifier: Apache-2.0
 """Public catalog contract for the FLUX.1 schnell image alias."""
 
-from vllm_mlx._download_gate import IMAGE_MODEL_REVISIONS
-from vllm_mlx.image.engine import ImageGenerationEngine
-from vllm_mlx.model_aliases import list_profiles, resolve_profile
-from vllm_mlx.model_sizes import size_bytes
-from vllm_mlx.runtime.resident_models import estimate_model_bytes
+from rapid_mlx._download_gate import IMAGE_MODEL_REVISIONS
+from rapid_mlx.image.engine import ImageGenerationEngine
+from rapid_mlx.model_aliases import list_profiles, resolve_profile
+from rapid_mlx.model_sizes import size_bytes
+from rapid_mlx.runtime.resident_models import estimate_model_bytes
 
 REPO = "mflux-community/flux-1-schnell-mflux-q4"
 REVISION = "bcdbe817ad51175959b2e691e64eca626db30558"

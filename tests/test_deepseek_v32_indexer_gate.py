@@ -2,7 +2,7 @@
 """Regression tests for the Defect 1 indexer gate.
 
 Pins the surgical fix shipped in
-``vllm_mlx.patches.deepseek_v32_indexer_gate`` for REAP-pruned DeepseekV32
+``rapid_mlx.patches.deepseek_v32_indexer_gate`` for REAP-pruned DeepseekV32
 configs (e.g. ``mlx-community/pipenetwork-GLM-5.2-REAP50-MLX-4bit``):
 
 1. Without the gate installed, ``mlx_lm.utils.load_model`` on a config
@@ -175,7 +175,7 @@ def test_upstream_without_gate_fails_with_missing_indexer_keys(monkeypatch, repr
     glm_moe_dsa config with ``indexer_types=["full","shared","full","shared"]``.
     Upstream should abort with ``Missing 10 parameters: ...indexer...``.
     """
-    from vllm_mlx.patches.deepseek_v32_indexer_gate import (
+    from rapid_mlx.patches.deepseek_v32_indexer_gate import (
         install_deepseek_v32_indexer_gate,
         uninstall_deepseek_v32_indexer_gate,
     )
@@ -184,7 +184,7 @@ def test_upstream_without_gate_fails_with_missing_indexer_keys(monkeypatch, repr
     install_deepseek_v32_indexer_gate()  # capture originals
     uninstall_deepseek_v32_indexer_gate()
     monkeypatch.setattr(
-        "vllm_mlx.patches.deepseek_v32_indexer_gate._INSTALLED",
+        "rapid_mlx.patches.deepseek_v32_indexer_gate._INSTALLED",
         False,
         raising=False,
     )
@@ -240,7 +240,7 @@ def test_gate_loads_mixed_full_shared_config(repro_dir):
     4. Forward output is finite (no NaN/Inf) on both the reuse and
        dense paths.
     """
-    from vllm_mlx.patches import deepseek_v32_indexer_gate as gate
+    from rapid_mlx.patches import deepseek_v32_indexer_gate as gate
 
     gate.install_deepseek_v32_indexer_gate()
     repro = _forge_repro(repro_dir, ["full", "shared", "full", "shared"])
@@ -308,7 +308,7 @@ def test_gate_is_noop_when_indexer_types_absent(repro_dir):
     GLM-4.6 models). All 4 layers get full Indexer construction and
     every safetensors key matches.
     """
-    from vllm_mlx.patches.deepseek_v32_indexer_gate import (
+    from rapid_mlx.patches.deepseek_v32_indexer_gate import (
         install_deepseek_v32_indexer_gate,
     )
 
@@ -345,7 +345,7 @@ def test_gate_rejects_all_shared_indexer_types(repro_dir):
     out the first-layer violation; the all-shared check is the (b)
     defensive backstop covered by ``test_gate_rejects_shared_at_index_zero``.
     """
-    from vllm_mlx.patches.deepseek_v32_indexer_gate import (
+    from rapid_mlx.patches.deepseek_v32_indexer_gate import (
         install_deepseek_v32_indexer_gate,
     )
 
@@ -390,7 +390,7 @@ def test_decode_step_after_prefill_keeps_in_call_reuse(repro_dir):
     prefill and the subsequent decode step keep every shared layer
     on the REAP reuse path — no dense fallback.
     """
-    from vllm_mlx.patches import deepseek_v32_indexer_gate as gate
+    from rapid_mlx.patches import deepseek_v32_indexer_gate as gate
 
     gate.install_deepseek_v32_indexer_gate()
     repro = _forge_repro(repro_dir, ["full", "shared", "full", "shared"])
@@ -444,7 +444,7 @@ def test_empty_local_layer_slice_delegates_to_upstream(repro_dir):
     reached. If the bounds-check guard were removed, the patched call
     would raise ``IndexError`` BEFORE the sentinel is recorded.
     """
-    from vllm_mlx.patches import deepseek_v32_indexer_gate as gate
+    from rapid_mlx.patches import deepseek_v32_indexer_gate as gate
 
     gate.install_deepseek_v32_indexer_gate()
     # Non-REAP config — the orig path is the upstream Indexer-bearing one.
@@ -510,7 +510,7 @@ def test_reuse_path_runs_for_run_of_consecutive_shared_layers(repro_dir):
     ``last_topk_indices`` carries forward across the layer loop
     until the next full layer would refresh it.
     """
-    from vllm_mlx.patches import deepseek_v32_indexer_gate as gate
+    from rapid_mlx.patches import deepseek_v32_indexer_gate as gate
 
     gate.install_deepseek_v32_indexer_gate()
     repro = _forge_repro(repro_dir, ["full", "shared", "shared", "shared"])
@@ -553,7 +553,7 @@ def test_pp_shard_with_oversized_num_layers_raises_clear_error(repro_dir):
     deep inside the loop with no actionable error message. Add a
     pre-loop bounds check.
     """
-    from vllm_mlx.patches import deepseek_v32_indexer_gate as gate
+    from rapid_mlx.patches import deepseek_v32_indexer_gate as gate
 
     gate.install_deepseek_v32_indexer_gate()
     repro = _forge_repro(repro_dir, ["full", "shared", "full", "shared"])
@@ -586,7 +586,7 @@ def test_pp_shard_starting_on_shared_layer_raises_clear_error(repro_dir):
     the architecturally-correct remedy if ever needed, but that's
     out of scope for the surgical D1 fix.
     """
-    from vllm_mlx.patches import deepseek_v32_indexer_gate as gate
+    from rapid_mlx.patches import deepseek_v32_indexer_gate as gate
 
     gate.install_deepseek_v32_indexer_gate()
     repro = _forge_repro(repro_dir, ["full", "shared", "shared", "shared"])
@@ -622,7 +622,7 @@ def test_uninstall_restores_originals_across_module_reload(repro_dir):
     5. Without the gate, loading a REAP config fails (proves the
        un-patched callables really are back in place).
     """
-    from vllm_mlx.patches import deepseek_v32_indexer_gate as gate
+    from rapid_mlx.patches import deepseek_v32_indexer_gate as gate
 
     # (1) install + uninstall round-trip — fresh state.
     gate.uninstall_deepseek_v32_indexer_gate()  # be defensive
@@ -694,7 +694,7 @@ def test_gate_rejects_shared_at_index_zero(repro_dir):
     "full", ...]`` as valid. The first-layer guard added in response
     rejects any ``indexer_types[0] != "full"``; pin it here.
     """
-    from vllm_mlx.patches.deepseek_v32_indexer_gate import (
+    from rapid_mlx.patches.deepseek_v32_indexer_gate import (
         install_deepseek_v32_indexer_gate,
     )
 
@@ -730,13 +730,13 @@ def test_install_fires_on_real_serve_import_path():
     production and ``mlx_lm.load`` aborted with ``Missing 285 parameters
     ...indexer...`` on real GLM-5.2 REAP-pruned weights. The 11 synthetic
     regression tests passed only because pytest imports the patch module
-    directly via ``from vllm_mlx.patches.deepseek_v32_indexer_gate import
+    directly via ``from rapid_mlx.patches.deepseek_v32_indexer_gate import
     ...`` — which triggered the install as an import side-effect of the
     test module itself, masking the production gap.
 
     Implementation: we run the import + assertion in a SUBPROCESS rather
     than the pytest worker process. In-process module purging
-    (``del sys.modules["vllm_mlx..."]``) pollutes the test session because
+    (``del sys.modules["rapid_mlx..."]``) pollutes the test session because
     later test modules hold bound references to the OLD class objects,
     while a re-import installs NEW class objects — every subsequent
     ``isinstance(obj, OldClass)`` check fails. The subprocess gets a
@@ -762,11 +762,11 @@ def test_install_fires_on_real_serve_import_path():
         # Import a SERVE-path module. Importing the patch module directly
         # would mask the bug PR #967 was meant to prevent — the production
         # boot path goes through utils.tokenizer, not the patch module.
-        import vllm_mlx.utils.tokenizer  # noqa: F401
+        import rapid_mlx.utils.tokenizer  # noqa: F401
 
         # Read the post-install state via the patch module's public API
         # plus the upstream-class marker (belt + suspenders).
-        from vllm_mlx.patches.deepseek_v32_indexer_gate import is_installed
+        from rapid_mlx.patches.deepseek_v32_indexer_gate import is_installed
 
         if not is_installed():
             print("FAIL: is_installed() returned False after serve-path import")

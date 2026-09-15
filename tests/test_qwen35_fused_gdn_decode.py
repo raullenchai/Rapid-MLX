@@ -14,9 +14,9 @@ pytestmark = pytest.mark.requires_mlx
 
 import mlx.nn as nn
 
-from vllm_mlx import gdn_in_proj_fusion
-from vllm_mlx import qwen35_fused_gdn_decode as fused
-from vllm_mlx.kernels import qwen4_fused_gdn_decode as shared_kernel
+from rapid_mlx import gdn_in_proj_fusion
+from rapid_mlx import qwen35_fused_gdn_decode as fused
+from rapid_mlx.kernels import qwen4_fused_gdn_decode as shared_kernel
 
 
 class _Cache:
@@ -447,7 +447,7 @@ def test_patched_call_falls_back_when_projected_values_fail_admission(monkeypatc
 
 
 def test_engine_installs_gdn_decode_only_after_projection_fusion():
-    from vllm_mlx.engine.batched import BatchedEngine
+    from rapid_mlx.engine.batched import BatchedEngine
 
     source = inspect.getsource(BatchedEngine._start_llm)
     projection = source.index("fuse_gdn_in_proj")
@@ -456,7 +456,7 @@ def test_engine_installs_gdn_decode_only_after_projection_fusion():
 
 
 def test_mllm_loader_installs_qwen35_fused_gdn_decode():
-    from vllm_mlx.models.mllm import MLXMultimodalLM
+    from rapid_mlx.models.mllm import MLXMultimodalLM
 
     source = inspect.getsource(MLXMultimodalLM.load)
     assert source.count("install_qwen35_moe_router") == 2

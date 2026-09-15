@@ -8,7 +8,7 @@ The CLI now prints a "Starting server …" line up-front, stashes bind
 host/port on ServerConfig, and defers the real "Ready:" banner to the
 lifespan hook — fires only after `get_config().ready = True`.
 
-Since the banner is now rendered by the connect SSOT (:mod:`vllm_mlx.connect`),
+Since the banner is now rendered by the connect SSOT (:mod:`rapid_mlx.connect`),
 these tests drive the real lifespan path and assert against the SSOT's output
 shape (Ready / OpenAI / Anthropic / Connect), keeping the "banner only after
 ready" timing invariant at the source level.
@@ -22,8 +22,8 @@ from contextlib import redirect_stdout
 
 import pytest
 
-import vllm_mlx.server as server
-from vllm_mlx.config import get_config
+import rapid_mlx.server as server
+from rapid_mlx.config import get_config
 
 
 @pytest.fixture(autouse=True)

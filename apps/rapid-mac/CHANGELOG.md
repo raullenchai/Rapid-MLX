@@ -2313,7 +2313,7 @@ Patch release. Bundled-sidecar bump from rapid-mlx v0.8.11 → **v0.8.14** carry
 * **Bundled sidecar bumped to rapid-mlx v0.8.14** ([#384](https://github.com/machinefi/rapid-desktop/pull/384), submodule `e60f497 → 4b253a4`). 19 commits / 16 user-facing PRs spanning three rapid-mlx release waves now ship in the bundled sidecar (chronologically, by wave):
   * **v0.8.12** (raullenchai/Rapid-MLX#857, 2026-06-23) — Wave R10 cross-route hardening: reasoning/ui-tars `enable_thinking=false` honoured + accumulator-anchor ([rapid-mlx #850](https://github.com/raullenchai/Rapid-MLX/pull/850)); `/v1/responses` streaming `output_text.delta` events + `response.completed.output` restored ([rapid-mlx #851](https://github.com/raullenchai/Rapid-MLX/pull/851)); duplicate `delta.reasoning` key dropped ([rapid-mlx #852](https://github.com/raullenchai/Rapid-MLX/pull/852)); cache persist format pinned with schema-version + per-entry magic ([rapid-mlx #853](https://github.com/raullenchai/Rapid-MLX/pull/853)); audio serve-mode + comprehensive alias registry ([rapid-mlx #854](https://github.com/raullenchai/Rapid-MLX/pull/854)); api/tools wire-scrub completion + validation bundle ([rapid-mlx #855](https://github.com/raullenchai/Rapid-MLX/pull/855)); audio aliases.json shipped in wheel — was the 0.8.12 blocker ([rapid-mlx #856](https://github.com/raullenchai/Rapid-MLX/pull/856)).
   * **v0.8.13** (raullenchai/Rapid-MLX#867, 2026-06-24) — Wave R11 audio + tool-call + embeddings: `tool_choice="required"` streaming finalize race fix ([rapid-mlx #859](https://github.com/raullenchai/Rapid-MLX/pull/859), CRIT: 10/20 streams pre-fix shipped `finish_reason:"tool_calls"` with zero `delta.tool_calls` chunks; 0/20 post-fix); audio DX `format` → `response_format` alias + `voice:"default"` fallback + `/v1/models` audio capability ([rapid-mlx #863](https://github.com/raullenchai/Rapid-MLX/pull/863)); MLLM frequency/presence/repetition penalty pass-through to the VLM sampler ([rapid-mlx #864](https://github.com/raullenchai/Rapid-MLX/pull/864), closes upstream #512); vibevoice dynamic voice enumeration + correct default voice ([rapid-mlx #862](https://github.com/raullenchai/Rapid-MLX/pull/862)); embeddings UX hardening — 503 envelope on missing model + `[embeddings]` extra in pyproject + `/v1/models` visibility ([rapid-mlx #861](https://github.com/raullenchai/Rapid-MLX/pull/861)); `/v1/responses` streaming reasoning emit on `max_output_tokens` cutoff ([rapid-mlx #866](https://github.com/raullenchai/Rapid-MLX/pull/866)).
-  * **v0.8.14** (raullenchai/Rapid-MLX#871, 2026-06-24) — `/v1/chat/completions` length-stop rescue stub restored for reasoning models ([rapid-mlx #860](https://github.com/raullenchai/Rapid-MLX/pull/860), closes upstream #858 — PR #815 had flipped `_cutoff_notice_enabled()` from default-ON to default-OPT-IN, so GUI clients started rendering empty bubbles on length-stopped reasoning generations). Cross-path parity follow-up: `/v1/responses` non-stream surface mistreated the rescue-stub sentinel as "real downstream output" and flipped `reasoning.status` from `incomplete` to `completed`; fixed by moving the sentinel literal to `vllm_mlx/api/constants.py` (preserves api/service layering) + 4 adapter-boundary regression pins ([rapid-mlx #869](https://github.com/raullenchai/Rapid-MLX/pull/869), 3 codex rounds → 0/0/0 converged). README catches up to the audio surfaces shipped in v0.8.12/v0.8.13 ([rapid-mlx #868](https://github.com/raullenchai/Rapid-MLX/pull/868)).
+  * **v0.8.14** (raullenchai/Rapid-MLX#871, 2026-06-24) — `/v1/chat/completions` length-stop rescue stub restored for reasoning models ([rapid-mlx #860](https://github.com/raullenchai/Rapid-MLX/pull/860), closes upstream #858 — PR #815 had flipped `_cutoff_notice_enabled()` from default-ON to default-OPT-IN, so GUI clients started rendering empty bubbles on length-stopped reasoning generations). Cross-path parity follow-up: `/v1/responses` non-stream surface mistreated the rescue-stub sentinel as "real downstream output" and flipped `reasoning.status` from `incomplete` to `completed`; fixed by moving the sentinel literal to `rapid_mlx/api/constants.py` (preserves api/service layering) + 4 adapter-boundary regression pins ([rapid-mlx #869](https://github.com/raullenchai/Rapid-MLX/pull/869), 3 codex rounds → 0/0/0 converged). README catches up to the audio surfaces shipped in v0.8.12/v0.8.13 ([rapid-mlx #868](https://github.com/raullenchai/Rapid-MLX/pull/868)).
 
 ### Documentation
 
@@ -2381,7 +2381,7 @@ Minor version bump reflecting two systematic security/correctness fixes (#361 + 
 
 ### Security
 
-* **Closed bundled-sidecar cwd module-hijack** ([#361](https://github.com/machinefi/rapid-desktop/issues/361), [#366](https://github.com/machinefi/rapid-desktop/pull/366)). The bundled rapid-mlx shim invoked `python3.12 -u -s -m vllm_mlx.cli`, and `-m` mode prepends cwd to `sys.path[0]`. A sibling `vllm_mlx/` directory in the caller's cwd could hijack the bundled import path even though existing `-s` / `PYTHONNOUSERSITE` / `PYTHONHOME` / `PYTHONPATH` hardening blocked user-site and host-Python contamination. Pre-existing on every desktop release prior to v0.8.0; the v0.7.20→v0.7.21 sidecar bump did not introduce it. Fix: add `-P` flag (Python 3.11+'s `PYTHONSAFEPATH=1` arg) to the python invocation AND export `PYTHONSAFEPATH=1` in the env block alongside the rest of the hardening (belt+suspenders). 5 new tests: 3 source-grep tripwires guarding both the `-P` flag and the env var, 1 live poison-cwd reproducer against a fresh-built bundle, 1 happy-path regression guard for the `/tmp` clean cwd case.
+* **Closed bundled-sidecar cwd module-hijack** ([#361](https://github.com/machinefi/rapid-desktop/issues/361), [#366](https://github.com/machinefi/rapid-desktop/pull/366)). The bundled rapid-mlx shim invoked `python3.12 -u -s -m rapid_mlx.cli`, and `-m` mode prepends cwd to `sys.path[0]`. A sibling `rapid_mlx/` directory in the caller's cwd could hijack the bundled import path even though existing `-s` / `PYTHONNOUSERSITE` / `PYTHONHOME` / `PYTHONPATH` hardening blocked user-site and host-Python contamination. Pre-existing on every desktop release prior to v0.8.0; the v0.7.20→v0.7.21 sidecar bump did not introduce it. Fix: add `-P` flag (Python 3.11+'s `PYTHONSAFEPATH=1` arg) to the python invocation AND export `PYTHONSAFEPATH=1` in the env block alongside the rest of the hardening (belt+suspenders). 5 new tests: 3 source-grep tripwires guarding both the `-P` flag and the env var, 1 live poison-cwd reproducer against a fresh-built bundle, 1 happy-path regression guard for the `/tmp` clean cwd case.
 
 ### Correctness
 
@@ -2455,8 +2455,8 @@ and a UI race fix. Sidecar moves up to rapid-mlx v0.8.2.
 ### Known issues / deferred
 
 * **#361 — sidecar-shim.sh cwd module-hijack hardening.** A sibling
-  `vllm_mlx/` directory in the caller's cwd can hijack the bundled
-  rapid-mlx import path under `python -m vllm_mlx.cli`. Pre-existing
+  `rapid_mlx/` directory in the caller's cwd can hijack the bundled
+  rapid-mlx import path under `python -m rapid_mlx.cli`. Pre-existing
   (not v0.8.2 introduced); recommended fix is the `-P` /
   `PYTHONSAFEPATH=1` flag in the shim. Filed for a separate PR.
 
@@ -2702,7 +2702,7 @@ HuggingFace — now it shows up immediately for the R2-mirror phase too.
 
 - **Download overlay now shows progress during the rapid-mlx R2
   mirror phase.** rapid-mlx ≥ 0.7.6 ships its own per-file puller
-  (`vllm_mlx/_mirror.py`) that fetches from the project's R2 mirror
+  (`rapid_mlx/_mirror.py`) that fetches from the project's R2 mirror
   before falling back to HuggingFace. Its progress output looks
   nothing like HuggingFace's `tqdm` bar (which is what the desktop's
   parser knew about), so the overlay sat at "Spinning up rapid-mlx…"
@@ -2986,7 +2986,7 @@ staple .app + .dmg → upload to GitHub Releases + R2. The R2 alias
 
 This release also bumps the bundled `rapid-mlx` sidecar from v0.7.11
 to v0.7.15 (codex-CLI fixes, logger namespace rebrand from
-`vllm_mlx.*` to `rapid_mlx.*`, openai-harmony 0.0.6→0.0.8 +
+`rapid_mlx.*` to `rapid_mlx.*`, openai-harmony 0.0.6→0.0.8 +
 mlx-embeddings 0.0.5→0.1.0 deps refresh, community-bench novice
 friction fixes).
 

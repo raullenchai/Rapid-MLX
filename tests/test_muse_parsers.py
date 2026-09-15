@@ -20,8 +20,8 @@ import json
 
 import pytest
 
-from vllm_mlx.reasoning import get_parser
-from vllm_mlx.tool_parsers import ToolParserManager
+from rapid_mlx.reasoning import get_parser
+from rapid_mlx.tool_parsers import ToolParserManager
 
 from .parsers.dispatch import run_reasoning_extraction, run_tool_extraction
 
@@ -671,7 +671,7 @@ def test_postprocessor_demuxes_with_thinking_disabled():
     ``enable_thinking=False`` as injected by the casual-chat auto-disable."""
     from unittest.mock import MagicMock
 
-    from vllm_mlx.service.postprocessor import StreamingPostProcessor
+    from rapid_mlx.service.postprocessor import StreamingPostProcessor
 
     cfg = MagicMock()
     cfg.engine = None
@@ -729,7 +729,7 @@ def test_postprocessor_demuxes_with_thinking_disabled():
 
 
 def test_muse_wire_detection_does_not_cache_missing_model_identity(monkeypatch):
-    from vllm_mlx.engine import batched
+    from rapid_mlx.engine import batched
 
     engine = batched.BatchedEngine.__new__(batched.BatchedEngine)
     assert engine._muse_wire_model() is False
@@ -750,8 +750,8 @@ def test_finalize_uses_raw_wire_content_for_muse():
     reasoning) shipped as ``content`` (real-weights mini smoke,
     2026-08-10, non-streaming surface).
     """
-    from vllm_mlx.api.utils import clean_output_text
-    from vllm_mlx.service.helpers import _finalize_content_and_reasoning
+    from rapid_mlx.api.utils import clean_output_text
+    from rapid_mlx.service.helpers import _finalize_content_and_reasoning
 
     raw = (
         " to=self<|message|>We need to respond.<|eom|>"
@@ -773,8 +773,8 @@ def test_finalize_uses_raw_wire_content_for_muse():
 def test_finalize_truncated_all_reasoning_muse():
     """finish_reason=length mid-reasoning: everything is to=self, no
     content channel ever opened — content must be empty, not the mush."""
-    from vllm_mlx.api.utils import clean_output_text
-    from vllm_mlx.service.helpers import _finalize_content_and_reasoning
+    from rapid_mlx.api.utils import clean_output_text
+    from rapid_mlx.service.helpers import _finalize_content_and_reasoning
 
     raw = " to=self<|message|>Thinking hard about the answer"
     cleaned = clean_output_text(raw)
@@ -794,7 +794,7 @@ def test_clean_output_text_extracts_muse_channels():
     """``clean_output_text`` must demux muse wire (harmony-precedent
     branch), not regex-strip it into header mush — its output feeds the
     non-streaming tool parser and the finalize first-parse."""
-    from vllm_mlx.api.utils import clean_output_text
+    from rapid_mlx.api.utils import clean_output_text
 
     raw = (
         " to=self<|message|>plan the call<|eom|>"

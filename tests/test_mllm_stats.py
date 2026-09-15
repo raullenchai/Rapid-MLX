@@ -14,10 +14,10 @@ import time
 from collections import deque
 from types import SimpleNamespace
 
-from vllm_mlx.engine.batched import BatchedEngine
-from vllm_mlx.mllm_scheduler import MLLMRequest, MLLMScheduler
-from vllm_mlx.request import RequestStatus
-from vllm_mlx.runtime.model_performance import ModelPerformanceLedger
+from rapid_mlx.engine.batched import BatchedEngine
+from rapid_mlx.mllm_scheduler import MLLMRequest, MLLMScheduler
+from rapid_mlx.request import RequestStatus
+from rapid_mlx.runtime.model_performance import ModelPerformanceLedger
 
 
 class _FakeDetokenizer:

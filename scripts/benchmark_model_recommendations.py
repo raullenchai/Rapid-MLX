@@ -116,7 +116,7 @@ def huggingface_cache_dir(override: str | None = None) -> Path:
 
 def cached_repo_for(alias: str, cache_dir: Path | None = None) -> bool:
     # Resolve through Rapid-MLX so aliases and HF cache directory names cannot drift.
-    from vllm_mlx.model_aliases import resolve_model
+    from rapid_mlx.model_aliases import resolve_model
 
     repo = resolve_model(alias)
     root = cache_dir or huggingface_cache_dir()
@@ -193,7 +193,7 @@ def measure(alias: str, args: argparse.Namespace, environment: dict) -> dict:
                 "-u",
                 "-s",
                 "-m",
-                "vllm_mlx.cli",
+                "rapid_mlx.cli",
                 "serve",
                 alias,
                 "--host",
@@ -327,7 +327,7 @@ def main() -> int:
         "schema_version": 1,
         "environment": environment,
         "method": {
-            "serve_path": "python -m vllm_mlx.cli serve --disable-prefix-cache",
+            "serve_path": "python -m rapid_mlx.cli serve --disable-prefix-cache",
             "prefix_cache": "disabled to prevent cross-run contamination",
             "output_tokens": args.output_tokens,
             "long_prompt": "~8K tokens (900 repeated neutral sentences)",

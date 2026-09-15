@@ -32,7 +32,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from vllm_mlx.kv_estimation import (
+from rapid_mlx.kv_estimation import (
     _ROTATING_CACHE_KEEP,
     _ROTATING_CACHE_STEP,
     KVFootprintEstimate,
@@ -901,9 +901,9 @@ class TestRotatingCacheConstantsMatchInstalledMlxLm:
         import ast
         import pathlib
 
-        import vllm_mlx
+        import rapid_mlx
 
-        pkg_root = pathlib.Path(vllm_mlx.__file__).parent
+        pkg_root = pathlib.Path(rapid_mlx.__file__).parent
         total_constructions = 0
         keeps_checked = 0
         for py in pkg_root.rglob("*.py"):
@@ -948,7 +948,7 @@ class TestRotatingCacheConstantsMatchInstalledMlxLm:
         # find real constructions AND validate at least one keep — a zero count
         # means the scan silently missed them (e.g. a rename) → false assurance.
         assert total_constructions > 0, (
-            "no RotatingKVCache(...) constructions found in vllm_mlx — the keep "
+            "no RotatingKVCache(...) constructions found in rapid_mlx — the keep "
             "drift scan matched nothing and cannot guard the bound"
         )
         assert keeps_checked > 0, (

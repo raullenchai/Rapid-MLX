@@ -24,7 +24,7 @@ pytestmark = pytest.mark.requires_mlx
 import sys
 from unittest import mock
 
-import vllm_mlx.cli as cli
+import rapid_mlx.cli as cli
 
 # Import the engine module EAGERLY, before ``SchedulerConfig`` is patched.
 # Modules that annotate ``SchedulerConfig | None`` evaluate that union at
@@ -34,7 +34,7 @@ import vllm_mlx.cli as cli
 # the real class first — the patch is then a pure name rebind and no class
 # body re-runs under it. Same guard as
 # ``tests/test_cli_bench_hybrid_cache_flag.py``.
-import vllm_mlx.engine_core as _engine_core  # noqa: E402,F401
+import rapid_mlx.engine_core as _engine_core  # noqa: E402,F401
 
 
 class _StopError(Exception):
@@ -63,14 +63,14 @@ def _capture_serve_scheduler_config(argv: list[str]) -> dict:
             cli, "_gather_kv_cache_dtype_inputs", lambda *a, **k: ({}, None)
         ),
         mock.patch(
-            "vllm_mlx._version_check.prompt_upgrade_if_available",
+            "rapid_mlx._version_check.prompt_upgrade_if_available",
             return_value=False,
         ),
         mock.patch(
-            "vllm_mlx.utils.tokenizer.load_model_with_fallback",
+            "rapid_mlx.utils.tokenizer.load_model_with_fallback",
             return_value=(object(), object()),
         ),
-        mock.patch("vllm_mlx.scheduler.SchedulerConfig", _fake_scheduler_config),
+        mock.patch("rapid_mlx.scheduler.SchedulerConfig", _fake_scheduler_config),
         mock.patch.object(sys, "argv", ["rapid-mlx", *argv]),
         mock.patch.object(sys.stdin, "isatty", return_value=False),
         pytest.raises((_StopError, SystemExit)),

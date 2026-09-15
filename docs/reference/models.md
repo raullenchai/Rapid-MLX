@@ -81,7 +81,7 @@ until its separately published draft architecture is supported and qualified.
 
 ### Recommended Models
 
-Recommendations live in one catalog (`vllm_mlx/model_recommendations.json`) shared by the installer, the desktop app, and `rapid-mlx recipe` — run `rapid-mlx recipe` to see the Smart and Fast picks for *this* Mac. The RAM-tier smart picks:
+Recommendations live in one catalog (`rapid_mlx/model_recommendations.json`) shared by the installer, the desktop app, and `rapid-mlx recipe` — run `rapid-mlx recipe` to see the Smart and Fast picks for *this* Mac. The RAM-tier smart picks:
 
 | RAM | Alias | ~8K-prompt peak |
 |-----|-------|-----------------|
@@ -246,7 +246,7 @@ uses the reasoning-token budget; to send the template's own
 parameters active per token (32 of 320 routed experts plus one shared
 expert), gated GQA attention and a 128K context. The architecture ships
 only as `trust_remote_code` transformers code, so rapid-mlx vendors the MLX
-backbone (`vllm_mlx/models/g9v3.py`) and publishes its own conversion.
+backbone (`rapid_mlx/models/g9v3.py`) and publishes its own conversion.
 The 4-bit export keeps the routed experts at 4-bit and everything else
 (attention, dense/shared MLP, embeddings) at 8-bit: uniform 4-bit was
 measured to hurt this architecture's attention projections badly.

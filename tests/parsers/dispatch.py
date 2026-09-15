@@ -14,8 +14,8 @@ from __future__ import annotations
 
 from typing import Any
 
-from vllm_mlx.reasoning.base import ReasoningParser
-from vllm_mlx.tool_parsers.abstract_tool_parser import ToolParser
+from rapid_mlx.reasoning.base import ReasoningParser
+from rapid_mlx.tool_parsers.abstract_tool_parser import ToolParser
 
 from .streaming_reconstructor import (
     ReconstructedToolCall,

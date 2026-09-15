@@ -10,10 +10,10 @@ import pytest
 pytestmark = pytest.mark.requires_mlx
 from pydantic import ValidationError
 
-from vllm_mlx.api.models import AudioMusicRequest, AudioSpeechRequest
-from vllm_mlx.audio.output_format import convert_audio_output
-from vllm_mlx.audio.tts import AudioOutput, TTSEngine
-from vllm_mlx.routes.audio import _convert_music_wav
+from rapid_mlx.api.models import AudioMusicRequest, AudioSpeechRequest
+from rapid_mlx.audio.output_format import convert_audio_output
+from rapid_mlx.audio.tts import AudioOutput, TTSEngine
+from rapid_mlx.routes.audio import _convert_music_wav
 
 
 def _wav_bytes(audio: np.ndarray, sample_rate: int) -> bytes:

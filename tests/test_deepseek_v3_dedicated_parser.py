@@ -25,9 +25,9 @@ import json
 
 import pytest
 
-from vllm_mlx.tool_parsers import ToolParserManager
-from vllm_mlx.tool_parsers.deepseek_v3_tool_parser import DeepSeekV3ToolParser
-from vllm_mlx.tool_parsers.deepseekv31_tool_parser import DeepSeekV31ToolParser
+from rapid_mlx.tool_parsers import ToolParserManager
+from rapid_mlx.tool_parsers.deepseek_v3_tool_parser import DeepSeekV3ToolParser
+from rapid_mlx.tool_parsers.deepseekv31_tool_parser import DeepSeekV31ToolParser
 
 # Wire primitives.
 TC_OPEN = "<｜tool▁calls▁begin｜>"
@@ -317,7 +317,7 @@ class TestStreaming:
 
 # Forced-tool-choice prefix coverage lives in
 # ``tests/test_tool_choice_enforcement.py`` (which already imports
-# ``vllm_mlx.routes.chat`` for the prefix helper). Keeping the
+# ``rapid_mlx.routes.chat`` for the prefix helper). Keeping the
 # round-trip test there avoids forcing this parser-regression file
 # to pull in the full route module — and lets parser-only CI shards
 # run without a Metal device (codex round-4 P2).

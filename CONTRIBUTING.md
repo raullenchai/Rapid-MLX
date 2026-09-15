@@ -187,7 +187,7 @@ satisfies the "all five must pass" contract.
 
 ### 🟢 Easy — No model download needed
 
-- **Add a model alias** — Add a short name to `vllm_mlx/aliases.json` so users can `rapid-mlx serve <alias>` instead of typing a full HuggingFace path. See [open model-support issues](https://github.com/raullenchai/Rapid-MLX/issues?q=is%3Aissue+is%3Aopen+label%3Amodel-support).
+- **Add a model alias** — Add a short name to `rapid_mlx/aliases.json` so users can `rapid-mlx serve <alias>` instead of typing a full HuggingFace path. See [open model-support issues](https://github.com/raullenchai/Rapid-MLX/issues?q=is%3Aissue+is%3Aopen+label%3Amodel-support).
 
 - **Fix a `good first issue`** — Check the [good first issue](https://github.com/raullenchai/Rapid-MLX/labels/good%20first%20issue) label.
 
@@ -195,7 +195,7 @@ satisfies the "all five must pass" contract.
 
 - **Test a model and report results** — Download a model, run benchmarks, report what works. Use the "Model Support Request" issue template.
 
-- **Add parser auto-detection** — Add a regex pattern to `vllm_mlx/model_auto_config.py` so a new model family gets the right tool/reasoning parser automatically.
+- **Add parser auto-detection** — Add a regex pattern to `rapid_mlx/model_auto_config.py` so a new model family gets the right tool/reasoning parser automatically.
 
 - **Classify a model into a SuffixDecoding tier** — After adding a `ModelConfig` entry, run `python3.12 scripts/bench_suffix_decoding_integrated.py --model <id>` (10-20 min). Paste the resulting `suffix_decoding_tier=` and `suffix_bench_speedup=` into the entry. Reference the bench output in your PR. See [docs/suffix_decoding_eligibility.md](docs/suffix_decoding_eligibility.md).
 
@@ -203,7 +203,7 @@ satisfies the "all five must pass" contract.
 
 ### 🔴 Advanced
 
-- **Write a new tool call parser** — Add support for a new tool call format in `vllm_mlx/tool_parsers/`.
+- **Write a new tool call parser** — Add support for a new tool call format in `rapid_mlx/tool_parsers/`.
 - **Performance optimization** — Profiling, kernel improvements, caching strategies.
 - **BatchedEngine / continuous batching** — Multi-user serving improvements.
 
@@ -211,7 +211,7 @@ satisfies the "all five must pass" contract.
 
 The easiest contribution — no model download needed!
 
-**File:** `vllm_mlx/aliases.json`
+**File:** `rapid_mlx/aliases.json`
 
 ```json
 {
@@ -225,7 +225,7 @@ That's it. Find the MLX model on [HuggingFace mlx-community](https://huggingface
 
 When users serve a model without `--tool-call-parser`, Rapid-MLX auto-detects the right parser from the model name.
 
-**File:** `vllm_mlx/model_auto_config.py`
+**File:** `rapid_mlx/model_auto_config.py`
 
 ```python
 # Add your pattern (order matters — more specific first):

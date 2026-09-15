@@ -25,7 +25,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from vllm_mlx.routes import anthropic as anthropic_route
+from rapid_mlx.routes import anthropic as anthropic_route
 
 
 class _FakeOutput:
@@ -145,7 +145,7 @@ async def test_reasoning_parser_stream_emits_text_chunks(patched_cfg):
     # actually instantiated it. If a future change makes the test fall
     # through to the no-parser path, this counter stays at 0 and the
     # assertion below fires — preventing silent test rot.
-    from vllm_mlx.reasoning import qwen3_parser as qwen3_module
+    from rapid_mlx.reasoning import qwen3_parser as qwen3_module
 
     call_count = {"streaming": 0}
     real_streaming = qwen3_module.Qwen3ReasoningParser.extract_reasoning_streaming

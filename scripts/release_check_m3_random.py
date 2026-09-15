@@ -72,7 +72,7 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
-# Mirror of ``vllm_mlx.bench.tier_runner.HARNESS_PROFILES`` — hardcoded
+# Mirror of ``rapid_mlx.bench.tier_runner.HARNESS_PROFILES`` — hardcoded
 # here so this script doesn't need to import the package (which would
 # pull mlx_lm at module-load and fail in a clean-venv sanity run).
 HARNESS_PROFILES = (
@@ -84,7 +84,7 @@ HARNESS_PROFILES = (
     "deepseek-harness",
 )
 
-# Mirror of ``vllm_mlx.api.utils.MLLM_PATTERNS``, for the same reason as
+# Mirror of ``rapid_mlx.api.utils.MLLM_PATTERNS``, for the same reason as
 # HARNESS_PROFILES: importing the package pulls mlx_lm at module load.
 #
 # Hand-rolling this was a bug. The filter used to exclude vision models by
@@ -96,7 +96,7 @@ HARNESS_PROFILES = (
 # extra — and something worse than a crash on one with it.
 #
 # ``tests/test_release_check_random.py`` parses the real list out of
-# ``vllm_mlx/api/utils.py`` and fails if this mirror stops covering it, so a
+# ``rapid_mlx/api/utils.py`` and fails if this mirror stops covering it, so a
 # family added upstream cannot silently reappear here.
 MLLM_NAME_PATTERNS = (
     "-vl-",
@@ -123,7 +123,7 @@ MLLM_NAME_PATTERNS = (
 def _is_multimodal(*names: str) -> bool:
     """True when any of ``names`` looks like a multimodal model.
 
-    Same case-folded substring rule as ``vllm_mlx.api.utils.is_mllm_model``.
+    Same case-folded substring rule as ``rapid_mlx.api.utils.is_mllm_model``.
     Both the alias and the HF path are checked: the alias is what a human
     recognises, the repo name is where the family marker usually survives.
     """
@@ -673,7 +673,7 @@ def _run_harness_round(
     cmd = [
         sys.executable,
         "-m",
-        "vllm_mlx.cli",
+        "rapid_mlx.cli",
         "bench",
         alias,
         "--tier",
@@ -773,7 +773,7 @@ def main() -> int:
     )
     parser.add_argument(
         "--aliases-json",
-        default=str(REPO_ROOT / "vllm_mlx" / "aliases.json"),
+        default=str(REPO_ROOT / "rapid_mlx" / "aliases.json"),
         help="Path to aliases.json (default: in-tree copy).",
     )
     parser.add_argument(
@@ -903,7 +903,7 @@ def main() -> int:
                 [
                     sys.executable,
                     "-m",
-                    "vllm_mlx.cli",
+                    "rapid_mlx.cli",
                     "serve",
                     alias,
                     "--port",

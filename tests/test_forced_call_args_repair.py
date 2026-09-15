@@ -15,7 +15,7 @@ from __future__ import annotations
 from types import SimpleNamespace
 from typing import Any
 
-from vllm_mlx.routes.chat import _repair_forced_call_arguments
+from rapid_mlx.routes.chat import _repair_forced_call_arguments
 
 
 def _call(arguments):
@@ -112,7 +112,7 @@ def test_wire_envelope_names_decodes_escapes_and_ignores_prose():
     """codex r2 on #1880: envelope decoding (not a literal regex) so
     escaped names cannot evade the mismatch gate and prose outside
     envelopes contributes nothing."""
-    from vllm_mlx.routes.chat import _wire_envelope_names
+    from rapid_mlx.routes.chat import _wire_envelope_names
 
     # Escaped different-tool name decodes and mismatches.
     raw = '<tool_call>{"name": "other\\u005ftool", "arguments": 1}</tool_call>'

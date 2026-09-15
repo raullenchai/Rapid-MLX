@@ -15,8 +15,8 @@ def _make_guided_engine(monkeypatch, run_guided, *, executor=None):
     """Build the no-weights engine shape used by cancellation lifecycle tests."""
     import threading
 
-    from vllm_mlx.engine import batched as batched_mod
-    from vllm_mlx.engine.batched import BatchedEngine
+    from rapid_mlx.engine import batched as batched_mod
+    from rapid_mlx.engine.batched import BatchedEngine
 
     monkeypatch.setattr(batched_mod, "HAS_GUIDED", True)
     monkeypatch.setattr(
@@ -66,7 +66,7 @@ class _StubSyncMllmScheduler:
 
 class TestBatchedEngineAbortRouting:
     def test_constructor_initializes_guided_lifecycle_state(self, monkeypatch):
-        from vllm_mlx.engine import batched as batched_mod
+        from rapid_mlx.engine import batched as batched_mod
 
         monkeypatch.setattr(batched_mod, "is_mllm_model", lambda _name: False)
         engine = batched_mod.BatchedEngine("test-model", force_text=True)
@@ -80,7 +80,7 @@ class TestBatchedEngineAbortRouting:
         import asyncio
         import threading
 
-        from vllm_mlx.engine.batched import BatchedEngine
+        from rapid_mlx.engine.batched import BatchedEngine
 
         engine = BatchedEngine.__new__(BatchedEngine)
         engine._guided_requests_lock = threading.Lock()
@@ -112,7 +112,7 @@ class TestBatchedEngineAbortRouting:
         """Abort and handoff are harmless on legacy ``__new__`` engines."""
         import threading
 
-        from vllm_mlx.engine.batched import BatchedEngine
+        from rapid_mlx.engine.batched import BatchedEngine
 
         engine = BatchedEngine.__new__(BatchedEngine)
 
@@ -134,7 +134,7 @@ class TestBatchedEngineAbortRouting:
         import asyncio
         import threading
 
-        from vllm_mlx.engine.batched import BatchedEngine
+        from rapid_mlx.engine.batched import BatchedEngine
 
         loop = asyncio.new_event_loop()
         owner = loop.create_task(asyncio.sleep(0))
@@ -161,7 +161,7 @@ class TestBatchedEngineAbortRouting:
     async def test_guided_abort_precedes_scheduler_routing(self):
         import threading
 
-        from vllm_mlx.engine.batched import BatchedEngine
+        from rapid_mlx.engine.batched import BatchedEngine
 
         engine = BatchedEngine.__new__(BatchedEngine)
         engine._guided_requests_lock = threading.Lock()
@@ -181,7 +181,7 @@ class TestBatchedEngineAbortRouting:
         """Restart and shutdown own guided admission with the engine lifecycle."""
         import threading
 
-        from vllm_mlx.engine.batched import BatchedEngine
+        from rapid_mlx.engine.batched import BatchedEngine
 
         engine = BatchedEngine.__new__(BatchedEngine)
         engine._loaded = False
@@ -260,7 +260,7 @@ class TestBatchedEngineAbortRouting:
 
     @pytest.mark.asyncio
     async def test_guided_worker_cancellation_preserves_lifecycle(self, monkeypatch):
-        from vllm_mlx.api.errors import GuidedGenerationCancelledError
+        from rapid_mlx.api.errors import GuidedGenerationCancelledError
 
         def cancelled(**_kwargs):
             raise GuidedGenerationCancelledError()
@@ -390,7 +390,7 @@ class TestBatchedEngineAbortRouting:
 
     @pytest.mark.asyncio
     async def test_abort_after_worker_result_suppresses_commit(self, monkeypatch):
-        from vllm_mlx.api.errors import GuidedGenerationCancelledError
+        from rapid_mlx.api.errors import GuidedGenerationCancelledError
 
         engine = None
 
@@ -410,7 +410,7 @@ class TestBatchedEngineAbortRouting:
 
     @pytest.mark.asyncio
     async def test_retained_guided_failure_honors_accepted_abort(self, monkeypatch):
-        from vllm_mlx.api.errors import GuidedGenerationCancelledError
+        from rapid_mlx.api.errors import GuidedGenerationCancelledError
 
         engine = None
 
@@ -432,9 +432,9 @@ class TestBatchedEngineAbortRouting:
         assert engine._guided_abort_events == {}
 
     def test_run_guided_generation_never_degrades_cancellation(self, monkeypatch):
-        from vllm_mlx.api.errors import GuidedGenerationCancelledError
-        from vllm_mlx.engine import batched as batched_mod
-        from vllm_mlx.engine.batched import BatchedEngine
+        from rapid_mlx.api.errors import GuidedGenerationCancelledError
+        from rapid_mlx.engine import batched as batched_mod
+        from rapid_mlx.engine.batched import BatchedEngine
 
         class _CancelledGenerator:
             def __init__(self, _model, _tokenizer):
@@ -456,7 +456,7 @@ class TestBatchedEngineAbortRouting:
         """Late cleanup cannot remove a newer job reusing the same id."""
         import threading
 
-        from vllm_mlx.engine.batched import BatchedEngine
+        from rapid_mlx.engine.batched import BatchedEngine
 
         engine = BatchedEngine.__new__(BatchedEngine)
         engine._guided_requests_lock = threading.Lock()
@@ -476,7 +476,7 @@ class TestBatchedEngineAbortRouting:
         assert replacement.is_set()
 
         late = threading.Event()
-        from vllm_mlx.api.errors import GuidedGenerationCancelledError
+        from rapid_mlx.api.errors import GuidedGenerationCancelledError
 
         with pytest.raises(GuidedGenerationCancelledError):
             engine._register_guided_request("req-late", late)
@@ -487,8 +487,8 @@ class TestBatchedEngineAbortRouting:
         """A registration waiting behind shutdown cannot miss its signal."""
         import threading
 
-        from vllm_mlx.api.errors import GuidedGenerationCancelledError
-        from vllm_mlx.engine.batched import BatchedEngine
+        from rapid_mlx.api.errors import GuidedGenerationCancelledError
+        from rapid_mlx.engine.batched import BatchedEngine
 
         engine = BatchedEngine.__new__(BatchedEngine)
         engine._admission_lock = threading.Lock()
@@ -525,7 +525,7 @@ class TestBatchedEngineAbortRouting:
         import asyncio
         import threading
 
-        from vllm_mlx.engine.batched import BatchedEngine
+        from rapid_mlx.engine.batched import BatchedEngine
 
         engine = BatchedEngine.__new__(BatchedEngine)
         engine._admission_lock = threading.Lock()
@@ -547,7 +547,7 @@ class TestBatchedEngineAbortRouting:
 
     @pytest.mark.asyncio
     async def test_routes_to_mllm_scheduler_when_present(self):
-        from vllm_mlx.engine.batched import BatchedEngine
+        from rapid_mlx.engine.batched import BatchedEngine
 
         engine = BatchedEngine.__new__(BatchedEngine)
         engine._mllm_scheduler = _StubSyncMllmScheduler(returns=True)
@@ -561,7 +561,7 @@ class TestBatchedEngineAbortRouting:
 
     @pytest.mark.asyncio
     async def test_routes_to_text_engine_when_no_mllm_scheduler(self):
-        from vllm_mlx.engine.batched import BatchedEngine
+        from rapid_mlx.engine.batched import BatchedEngine
 
         engine = BatchedEngine.__new__(BatchedEngine)
         engine._mllm_scheduler = None
@@ -574,7 +574,7 @@ class TestBatchedEngineAbortRouting:
 
     @pytest.mark.asyncio
     async def test_returns_false_when_no_engine_loaded(self):
-        from vllm_mlx.engine.batched import BatchedEngine
+        from rapid_mlx.engine.batched import BatchedEngine
 
         engine = BatchedEngine.__new__(BatchedEngine)
         engine._mllm_scheduler = None
@@ -587,7 +587,7 @@ class TestBatchedEngineAbortRouting:
     @pytest.mark.asyncio
     async def test_handles_sync_text_engine_abort(self):
         """Synthetic engine returning bool directly (not a coroutine)."""
-        from vllm_mlx.engine.batched import BatchedEngine
+        from rapid_mlx.engine.batched import BatchedEngine
 
         sync_engine = MagicMock()
         sync_engine.abort_request = MagicMock(return_value=True)
@@ -608,7 +608,7 @@ class TestBaseEngineDefaultAbort:
         """Invoke ``BaseEngine.abort_request`` via the unbound method to dodge
         the abstract-method instantiation guard. We only care that the default
         returns False — no engine state is needed."""
-        from vllm_mlx.engine.base import BaseEngine
+        from rapid_mlx.engine.base import BaseEngine
 
         sentinel = object()
         result = await BaseEngine.abort_request(sentinel, "any")  # type: ignore[arg-type]
@@ -620,8 +620,8 @@ class TestGuidedRouteCancellationClassification:
 
     @staticmethod
     def _cancelled_engine():
-        from vllm_mlx.api.errors import GuidedGenerationCancelledError
-        from vllm_mlx.engine.base import GenerationOutput
+        from rapid_mlx.api.errors import GuidedGenerationCancelledError
+        from rapid_mlx.engine.base import GenerationOutput
 
         class _CancelledEngine:
             preserve_native_tool_format = False
@@ -646,9 +646,9 @@ class TestGuidedRouteCancellationClassification:
         from fastapi import FastAPI
         from fastapi.testclient import TestClient
 
-        from vllm_mlx.config import reset_config
-        from vllm_mlx.middleware.auth import rate_limiter
-        from vllm_mlx.routes.responses import router as responses_router
+        from rapid_mlx.config import reset_config
+        from rapid_mlx.middleware.auth import rate_limiter
+        from rapid_mlx.routes.responses import router as responses_router
 
         saved_enabled = rate_limiter.enabled
         saved_rpm = rate_limiter.requests_per_minute
@@ -700,8 +700,8 @@ class TestCancelRequestEndpoint:
         from fastapi import FastAPI
         from fastapi.testclient import TestClient
 
-        from vllm_mlx.config import get_config
-        from vllm_mlx.routes.health import admin_router, router
+        from rapid_mlx.config import get_config
+        from rapid_mlx.routes.health import admin_router, router
 
         cfg = get_config()
         prev_engine, prev_model_name = cfg.engine, cfg.model_name
@@ -777,8 +777,8 @@ class TestCancelRequestEndpoint:
         from fastapi import FastAPI
         from fastapi.testclient import TestClient
 
-        from vllm_mlx.config import get_config
-        from vllm_mlx.routes.health import admin_router, router
+        from rapid_mlx.config import get_config
+        from rapid_mlx.routes.health import admin_router, router
 
         cfg = get_config()
         prev_engine = cfg.engine

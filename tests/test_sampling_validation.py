@@ -27,7 +27,7 @@ comparison is False), so NaN slipped past. ``presence_penalty`` /
 ``frequency_penalty`` had no range check at all in any route — the
 mlx-lm sampler accepted them unchecked.
 
-Fix shape (vllm_mlx/api/models.py):
+Fix shape (rapid_mlx/api/models.py):
 * Declare OpenAI-spec range bounds on the field itself via
   ``Field(ge=..., le=...)`` so finite out-of-range values 422 from
   the schema layer instead of the route layer.
@@ -57,7 +57,7 @@ from fastapi.testclient import TestClient
 @pytest.fixture
 def patched_config():
     """Patch the global config singleton and restore on teardown."""
-    from vllm_mlx.config import get_config
+    from rapid_mlx.config import get_config
 
     cfg = get_config()
     saved: dict = {}
@@ -91,8 +91,8 @@ def _stub_engine_cfg(patch_cfg):
 
 
 def _build_chat_client(patch_cfg, monkeypatch):
-    from vllm_mlx.middleware.exception_handlers import install_exception_handlers
-    from vllm_mlx.routes import chat as chat_route
+    from rapid_mlx.middleware.exception_handlers import install_exception_handlers
+    from rapid_mlx.routes import chat as chat_route
 
     engine = _stub_engine_cfg(patch_cfg)
     monkeypatch.setattr(chat_route, "get_engine", lambda *_a, **_kw: engine)
@@ -108,8 +108,8 @@ def _build_chat_client(patch_cfg, monkeypatch):
 
 
 def _build_completions_client(patch_cfg, monkeypatch):
-    from vllm_mlx.middleware.exception_handlers import install_exception_handlers
-    from vllm_mlx.routes import completions as comp_route
+    from rapid_mlx.middleware.exception_handlers import install_exception_handlers
+    from rapid_mlx.routes import completions as comp_route
 
     engine = _stub_engine_cfg(patch_cfg)
     monkeypatch.setattr(comp_route, "get_engine", lambda *_a, **_kw: engine)
@@ -174,7 +174,7 @@ def _post_json_raw(client: TestClient, url: str, body: dict):
 # Non-finite values — these are the F-011 silent-burn cases. All must
 # go through the project's unified ``invalid_request_error`` 400
 # envelope (production handler in
-# ``vllm_mlx.middleware.exception_handlers``). Asserting the precise
+# ``rapid_mlx.middleware.exception_handlers``). Asserting the precise
 # envelope shape here pins F-011 to its documented contract instead
 # of letting a future regression slip back into FastAPI's default
 # 422 path (codex round-1 BLOCKING #2).
@@ -227,7 +227,7 @@ INVALID_SHAPES: list[tuple[str, object]] = NONFINITE_SHAPES + OUT_OF_RANGE_SHAPE
 def _assert_invalid_request_envelope(r, field: str, expected_status: int = 400) -> None:
     """Assert the response matches the project's unified
     ``invalid_request_error`` envelope (see
-    ``vllm_mlx.middleware.exception_handlers._validation_error_response``)
+    ``rapid_mlx.middleware.exception_handlers._validation_error_response``)
     AND that the offending field name appears in the error message.
 
     This is the production contract — pinning it precisely catches a
@@ -385,7 +385,7 @@ def _stub_chat_impl(monkeypatch) -> dict:
             },
         }
 
-    from vllm_mlx.routes import chat as chat_route
+    from rapid_mlx.routes import chat as chat_route
 
     monkeypatch.setattr(chat_route, "_create_chat_completion_impl", _impl, raising=True)
     return captured
@@ -455,7 +455,7 @@ def test_completions_valid_sampling_param_parses_to_request(
     shared gate. The schema-level assert proves the value typed
     cleanly through the Field bounds + finite check and survived
     onto the model with the exact value we sent."""
-    from vllm_mlx.api.models import CompletionRequest
+    from rapid_mlx.api.models import CompletionRequest
 
     body = _base_completion_body()
     body[field] = value
@@ -482,7 +482,7 @@ def test_completions_valid_sampling_param_parses_to_request(
     ],
 )
 def test_chat_schema_rejects_nan_directly(field):
-    from vllm_mlx.api.models import ChatCompletionRequest
+    from rapid_mlx.api.models import ChatCompletionRequest
 
     body = {
         "model": "x",
@@ -505,7 +505,7 @@ def test_chat_schema_rejects_nan_directly(field):
     ],
 )
 def test_completions_schema_rejects_nan_directly(field):
-    from vllm_mlx.api.models import CompletionRequest
+    from rapid_mlx.api.models import CompletionRequest
 
     body = {"model": "x", "prompt": "hi", field: float("nan")}
     with pytest.raises(Exception):
@@ -515,7 +515,7 @@ def test_completions_schema_rejects_nan_directly(field):
 def test_chat_schema_accepts_default_none():
     """All sampling fields default to ``None``; an empty request must
     parse cleanly (no false positives from the new gates)."""
-    from vllm_mlx.api.models import ChatCompletionRequest
+    from rapid_mlx.api.models import ChatCompletionRequest
 
     req = ChatCompletionRequest.model_validate(
         {"model": "x", "messages": [{"role": "user", "content": "hi"}]}
@@ -529,7 +529,7 @@ def test_chat_schema_accepts_default_none():
 
 
 def test_completions_schema_accepts_default_none():
-    from vllm_mlx.api.models import CompletionRequest
+    from rapid_mlx.api.models import CompletionRequest
 
     req = CompletionRequest.model_validate({"model": "x", "prompt": "hi"})
     assert req.temperature is None
@@ -543,7 +543,7 @@ def test_completions_schema_accepts_default_none():
 def test_reject_nonfinite_helper_directly():
     """Module-level helper is shared by both schemas — pin its
     behaviour explicitly so a refactor can't silently change it."""
-    from vllm_mlx.api.models import _reject_nonfinite_float
+    from rapid_mlx.api.models import _reject_nonfinite_float
 
     # Valid: None and finite numbers pass through unchanged.
     assert _reject_nonfinite_float(None) is None

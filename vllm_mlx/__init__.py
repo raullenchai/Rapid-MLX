@@ -1,133 +1,137 @@
 # SPDX-License-Identifier: Apache-2.0
+"""Deprecated import shim: the package moved to ``rapid_mlx``.
+
+Rapid-MLX 0.14.2 and earlier shipped the importable package as
+``vllm_mlx`` while the distribution, CLI, and product were already named
+``rapid-mlx``. The Python package has now been renamed to ``rapid_mlx``
+to match; this shim keeps ``import vllm_mlx`` working for scripts written
+against pre-rename releases.
+
+What still works through this shim:
+
+- ``import vllm_mlx`` / ``from vllm_mlx import SamplingParams``
+- ``import vllm_mlx.<anything>`` — submodules resolve to the
+  corresponding ``rapid_mlx`` module (same objects, no duplicate import)
+- ``python -m vllm_mlx.server`` (see ``vllm_mlx/server.py``)
+
+Every entry emits a ``DeprecationWarning`` pointing at the ``rapid_mlx``
+name. The shim will be retired after a deprecation window (at least one
+minor series); move your imports now::
+
+    from rapid_mlx import SamplingParams   # instead of vllm_mlx
+    python -m rapid_mlx.server             # instead of vllm_mlx.server
 """
-Rapid-MLX: fast local LLM inference for Apple Silicon.
 
-A standalone OpenAI-compatible inference server built on Apple's MLX
-framework, mlx-lm for LLMs, and mlx-vlm for vision-language models.
+# NOTE: deliberately NOT ``from rapid_mlx import *`` — rapid_mlx's
+# ``__init__`` is lazily loaded so that a bare ``import rapid_mlx`` never
+# pulls in mlx.core (which can SIGABRT on non-Apple-Silicon hosts). A
+# star-import here would eagerly trigger every lazy attribute. Attribute
+# forwarding through ``__getattr__`` below preserves the laziness.
 
-Features:
-- Continuous batching scheduler
-- OpenAI-compatible API server
-- Support for LLM and multimodal models
-"""
+import importlib
+import importlib.util
+import sys
+import warnings
 
-try:
-    from importlib.metadata import version as _get_version
+import rapid_mlx as _rapid_mlx
 
-    __version__ = _get_version("rapid-mlx")
-except Exception:
-    __version__ = "0.0.0"  # fallback for editable installs without metadata
+__version__ = _rapid_mlx.__version__
 
-# Rebrand runtime logger names from the legacy ``vllm_mlx.*`` namespace to
-# the product-facing ``rapid_mlx.*`` namespace before any submodule has had
-# a chance to create a record. The Python package directory keeps the
-# ``vllm_mlx/`` name (renaming would touch hundreds of imports and break
-# external integrations); only what users see in log output changes. The
-# rebrand is a single ``logging.setLogRecordFactory`` call, idempotent and
-# scoped to the ``vllm_mlx`` prefix -- uvicorn/fastapi/asyncio/httpx
-# namespaces flow through untouched. See ``_log_namespace`` for the
-# rationale (handler-attached filters and logger-attached filters were both
-# rejected; factory is the only path that catches records from descendant
-# loggers without imposing churn on every ``getLogger(__name__)`` site).
-from vllm_mlx._log_namespace import install_log_namespace_rebrand
+_DEPRECATION_MESSAGE = (
+    "The 'vllm_mlx' package has been renamed to 'rapid_mlx'; this import "
+    "shim is deprecated and will be removed in a future release. "
+    "Update your imports (e.g. 'from rapid_mlx import SamplingParams', "
+    "'python -m rapid_mlx.server')."
+)
 
-install_log_namespace_rebrand()
+_PREFIX = "vllm_mlx."
+_TARGET_PREFIX = "rapid_mlx."
 
-# All imports are lazy to allow usage on non-Apple Silicon platforms
-# (e.g., CI running on Linux) where mlx_lm is not available. The MLX
-# hardware-compat shim (#404 M5 single-stream) lives in `_mlx_compat`
-# and is installed at the top of every submodule that imports
-# `mlx_lm.generate` — NOT here, so that `import vllm_mlx` stays free of
-# mlx.core import (which can SIGABRT on systems with mlx installed but
-# Metal unavailable).
+
+class _RapidMlxModuleAliasLoader:
+    """Loader that reuses an already-imported ``rapid_mlx`` module object.
+
+    ``create_module`` returns the target module itself, so the import
+    system registers the *same* module instance under the legacy
+    ``vllm_mlx.*`` name — no duplicate module objects, no double
+    execution, and ``isinstance`` checks keep working across both names.
+    """
+
+    def __init__(self, target_module):
+        self._target = target_module
+
+    def create_module(self, spec):
+        return self._target
+
+    def exec_module(self, module):
+        pass  # already executed as rapid_mlx.<sub>
+
+    def is_package(self, fullname):
+        return hasattr(self._target, "__path__")
+
+    def get_filename(self, fullname):
+        return getattr(self._target, "__file__", None)
+
+    def get_code(self, fullname):
+        # Lets ``python -m vllm_mlx.cli`` (and any other legacy -m
+        # invocation) work: runpy pulls the code object through the
+        # aliased module's real loader.
+        target_loader = getattr(self._target, "__spec__", None)
+        target_loader = target_loader.loader if target_loader else None
+        if target_loader is None:
+            return None
+        return target_loader.get_code(self._target.__name__)
+
+    def get_source(self, fullname):
+        target_loader = getattr(self._target, "__spec__", None)
+        target_loader = target_loader.loader if target_loader else None
+        if target_loader is None:
+            return None
+        return target_loader.get_source(self._target.__name__)
+
+
+class _RapidMlxModuleAliasFinder:
+    """Resolve ``import vllm_mlx.<sub>`` to ``rapid_mlx.<sub>``.
+
+    Registered at the END of ``sys.meta_path`` so a physical file inside
+    this shim package (e.g. ``vllm_mlx/server.py``) always wins, and the
+    finder only fills in the names this shim does not ship itself.
+    """
+
+    def find_spec(self, fullname, path=None, target=None):
+        if not fullname.startswith(_PREFIX):
+            return None
+        target_name = _TARGET_PREFIX + fullname[len(_PREFIX) :]
+        try:
+            target_module = importlib.import_module(target_name)
+        except ImportError:
+            return None  # propagate the real ImportError for unknown names
+        loader = _RapidMlxModuleAliasLoader(target_module)
+        return importlib.util.spec_from_loader(
+            fullname,
+            loader,
+            origin=getattr(target_module, "__file__", None),
+            is_package=hasattr(target_module, "__path__"),
+        )
+
+
+def _install_alias_finder() -> None:
+    for finder in sys.meta_path:
+        if isinstance(finder, _RapidMlxModuleAliasFinder):
+            return  # idempotent (e.g. interpreter reload scenarios)
+    sys.meta_path.append(_RapidMlxModuleAliasFinder())
+
+
+_install_alias_finder()
 
 
 def __getattr__(name):
-    """Lazy load all components to avoid mlx_lm import on non-Apple platforms."""
-    # Request management
-    if name in ("Request", "RequestOutput", "RequestStatus", "SamplingParams"):
-        from vllm_mlx import request
-
-        return getattr(request, name)
-
-    # Scheduler
-    if name in ("Scheduler", "SchedulerConfig", "SchedulerOutput"):
-        from vllm_mlx import scheduler
-
-        return getattr(scheduler, name)
-
-    # Engine
-    if name in ("EngineCore", "AsyncEngineCore", "EngineConfig"):
-        from vllm_mlx import engine_core
-
-        return getattr(engine_core, name)
-
-    # Prefix cache
-    if name in ("PrefixCacheManager", "PrefixCacheStats", "BlockAwarePrefixCache"):
-        from vllm_mlx import prefix_cache
-
-        return getattr(prefix_cache, name)
-
-    # Paged cache
-    if name in ("PagedCacheManager", "CacheBlock", "BlockTable", "CacheStats"):
-        from vllm_mlx import paged_cache
-
-        return getattr(paged_cache, name)
-
-    # MLLM cache (with legacy VLM aliases)
-    if name in (
-        "MLLMCacheManager",
-        "MLLMCacheStats",
-        "VLMCacheManager",
-        "VLMCacheStats",
-    ):
-        from vllm_mlx import mllm_cache
-
-        # Map legacy VLM names to MLLM
-        mllm_name = name.replace("VLM", "MLLM") if name.startswith("VLM") else name
-        return getattr(mllm_cache, mllm_name)
-
-    # Model registry
-    if name in ("get_registry", "ModelOwnershipError"):
-        from vllm_mlx import model_registry
-
-        return getattr(model_registry, name)
-
-    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    """Forward attribute access to ``rapid_mlx`` (preserves its laziness)."""
+    return getattr(_rapid_mlx, name)
 
 
-__all__ = [
-    # Request management
-    "Request",
-    "RequestOutput",
-    "RequestStatus",
-    "SamplingParams",
-    # Scheduler
-    "Scheduler",
-    "SchedulerConfig",
-    "SchedulerOutput",
-    # Engine
-    "EngineCore",
-    "AsyncEngineCore",
-    "EngineConfig",
-    # Model registry
-    "get_registry",
-    "ModelOwnershipError",
-    # Prefix cache (LLM)
-    "PrefixCacheManager",
-    "PrefixCacheStats",
-    "BlockAwarePrefixCache",
-    # Paged cache (memory efficiency)
-    "PagedCacheManager",
-    "CacheBlock",
-    "BlockTable",
-    "CacheStats",
-    # MLLM cache (images/videos)
-    "MLLMCacheManager",
-    "MLLMCacheStats",
-    # Legacy aliases
-    "VLMCacheManager",
-    "VLMCacheStats",
-    # Version
-    "__version__",
-]
+def __dir__():
+    return sorted(set(globals()) | set(dir(_rapid_mlx)))
+
+
+warnings.warn(_DEPRECATION_MESSAGE, DeprecationWarning, stacklevel=2)

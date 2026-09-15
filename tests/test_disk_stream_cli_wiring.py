@@ -13,8 +13,8 @@ Four things are pinned here, none of which need a model download:
 3. **Wiring-regression test** (AC #4): mirrors
    ``test_deepseek_v32_indexer_gate.py::test_install_fires_on_real_serve_import_path``'s
    subprocess pattern. Drives the REAL ``cli.main()`` -> ``bench_command``
-   -> ``vllm_mlx.engine.batched._load_lazy_and_install_disk_stream`` ->
-   ``vllm_mlx.utils.tokenizer.load_model_with_fallback(lazy=True)`` chain,
+   -> ``rapid_mlx.engine.batched._load_lazy_and_install_disk_stream`` ->
+   ``rapid_mlx.utils.tokenizer.load_model_with_fallback(lazy=True)`` chain,
    with only ``mlx_lm.load`` and ``disk_stream_patch.install`` stubbed (no
    real weights), and asserts ``install`` was actually reached with the
    right arguments. Guards against the PR #967 bug class: an installer
@@ -69,7 +69,7 @@ def _drive_serve_capturing_load_model_kwargs(argv_extra, monkeypatch):
     ran. Mirrors ``test_audio_route_registration_gate.py``'s proven
     ``cli.main()``-driving pattern (no bespoke argparse re-implementation).
     """
-    from vllm_mlx import cli, server
+    from rapid_mlx import cli, server
 
     captured: dict = {}
     min_memory_calls: list = []
@@ -91,13 +91,13 @@ def _drive_serve_capturing_load_model_kwargs(argv_extra, monkeypatch):
     monkeypatch.setattr(cli, "_check_disk_space", lambda *_a, **_kw: None)
     monkeypatch.setattr(cli, "_check_memory_capacity", lambda *_a, **_kw: None)
     monkeypatch.setattr(cli, "_resolve_audio_model_for_serve", lambda _n: None)
-    monkeypatch.setattr("vllm_mlx.api.utils.is_mllm_model", lambda _n: False)
-    monkeypatch.setattr("vllm_mlx.audio.probe.is_audio_model_alias", lambda _n: False)
+    monkeypatch.setattr("rapid_mlx.api.utils.is_mllm_model", lambda _n: False)
+    monkeypatch.setattr("rapid_mlx.audio.probe.is_audio_model_alias", lambda _n: False)
     monkeypatch.setattr(
-        "vllm_mlx._version_check.prompt_upgrade_if_available", lambda: False
+        "rapid_mlx._version_check.prompt_upgrade_if_available", lambda: False
     )
     monkeypatch.setattr(
-        "vllm_mlx._version_check.print_staleness_warning_if_any",
+        "rapid_mlx._version_check.print_staleness_warning_if_any",
         lambda **_kwargs: None,
     )
     monkeypatch.setattr(
@@ -147,7 +147,7 @@ def test_disk_stream_flags_parsed_and_reach_load_model(monkeypatch):
 
 @pytest.mark.parametrize("value", ["0", "-1", "nan", "inf", "-inf"])
 def test_disk_stream_cache_budget_rejects_non_positive_or_non_finite(value):
-    from vllm_mlx.cli import positive_finite_float
+    from rapid_mlx.cli import positive_finite_float
 
     with pytest.raises(Exception, match="positive finite"):
         positive_finite_float(value)
@@ -166,11 +166,11 @@ def test_check_alias_min_memory_warns_regardless_of_disk_stream(monkeypatch, cap
     alias whose declared floor exceeds the unified hardware probe."""
     import types
 
-    from vllm_mlx import cli
+    from rapid_mlx import cli
 
     fake_profile = types.SimpleNamespace(min_memory_gb=192.0)
     monkeypatch.setattr(
-        "vllm_mlx.model_aliases.resolve_profile", lambda _name: fake_profile
+        "rapid_mlx.model_aliases.resolve_profile", lambda _name: fake_profile
     )
 
     # Stage the host RAM the check actually reads. ``_check_alias_min_memory``
@@ -210,9 +210,9 @@ from unittest import mock
 # about what this test script calls directly.
 from pathlib import Path
 
-import vllm_mlx.utils.tokenizer  # noqa: F401
-import vllm_mlx.cli as cli
-import vllm_mlx.disk_stream_patch as disk_stream_patch
+import rapid_mlx.utils.tokenizer  # noqa: F401
+import rapid_mlx.cli as cli
+import rapid_mlx.disk_stream_patch as disk_stream_patch
 import mlx_lm
 
 
@@ -247,7 +247,7 @@ with (
     mock.patch.object(cli, "_check_memory_capacity", lambda *a, **k: None),
     mock.patch.object(cli, "_ensure_model_downloaded", lambda *a, **k: None),
     mock.patch(
-        "vllm_mlx.utils.tokenizer._resolve_model_path",
+        "rapid_mlx.utils.tokenizer._resolve_model_path",
         # A real Path, not a bare str: _apply_chat_template_sidecar (now
         # reached from the lazy branch too) does `model_path / "..."`,
         # which raises TypeError for a str left-operand.
@@ -266,11 +266,11 @@ with (
     # test_lazy_load_runs_generic_post_load_tokenizer_fixups below and the
     # real-checkpoint slow tests in test_disk_stream_patch.py).
     mock.patch(
-        "vllm_mlx.utils.tokenizer._try_inject_mtp_post_load",
+        "rapid_mlx.utils.tokenizer._try_inject_mtp_post_load",
         lambda model, model_name: None,
     ),
     mock.patch(
-        "vllm_mlx.utils.tokenizer._neutralize_unbundled_template_types",
+        "rapid_mlx.utils.tokenizer._neutralize_unbundled_template_types",
         lambda model_name, tokenizer_config: tokenizer_config,
     ),
     mock.patch.object(
@@ -394,10 +394,10 @@ from unittest import mock
 #   -> engine.batched._load_lazy_and_install_disk_stream
 #   -> utils.tokenizer.load_model_with_fallback(lazy=True) -> mlx_lm.load
 # does, not about what this test script calls directly.
-import vllm_mlx.utils.tokenizer  # noqa: F401
-import vllm_mlx.cli as cli
-import vllm_mlx.server as server
-import vllm_mlx.disk_stream_patch as disk_stream_patch
+import rapid_mlx.utils.tokenizer  # noqa: F401
+import rapid_mlx.cli as cli
+import rapid_mlx.server as server
+import rapid_mlx.disk_stream_patch as disk_stream_patch
 import mlx_lm
 
 
@@ -475,17 +475,17 @@ with (
     # out so this fake ``does-not-exist/...`` repo doesn't trip the
     # "could not materialize checkpoint config" fail-fast.
     mock.patch.object(server, "_ensure_routing_config", lambda *a, **k: None),
-    mock.patch("vllm_mlx.api.utils.is_mllm_model", lambda _n: False),
-    mock.patch("vllm_mlx.audio.probe.is_audio_model_alias", lambda _n: False),
+    mock.patch("rapid_mlx.api.utils.is_mllm_model", lambda _n: False),
+    mock.patch("rapid_mlx.audio.probe.is_audio_model_alias", lambda _n: False),
     mock.patch(
-        "vllm_mlx._version_check.prompt_upgrade_if_available", lambda: False
+        "rapid_mlx._version_check.prompt_upgrade_if_available", lambda: False
     ),
     mock.patch(
-        "vllm_mlx._version_check.print_staleness_warning_if_any",
+        "rapid_mlx._version_check.print_staleness_warning_if_any",
         lambda **_kwargs: None,
     ),
     mock.patch(
-        "vllm_mlx.utils.tokenizer._resolve_model_path",
+        "rapid_mlx.utils.tokenizer._resolve_model_path",
         # A real Path, not a bare str — see the bench test's identical
         # comment: _apply_chat_template_sidecar does `model_path / "..."`.
         lambda name: Path("/fake/disk-stream-checkpoint"),
@@ -494,11 +494,11 @@ with (
     # that hit the network by design, so this fake ``does-not-exist/...``
     # model name doesn't have to round-trip the real Hub.
     mock.patch(
-        "vllm_mlx.utils.tokenizer._try_inject_mtp_post_load",
+        "rapid_mlx.utils.tokenizer._try_inject_mtp_post_load",
         lambda model, model_name: None,
     ),
     mock.patch(
-        "vllm_mlx.utils.tokenizer._neutralize_unbundled_template_types",
+        "rapid_mlx.utils.tokenizer._neutralize_unbundled_template_types",
         lambda model_name, tokenizer_config: tokenizer_config,
     ),
     mock.patch.object(
@@ -675,7 +675,7 @@ def test_lazy_load_runs_generic_post_load_tokenizer_fixups(monkeypatch):
     """
     import mlx_lm
 
-    from vllm_mlx.utils import tokenizer as tok
+    from rapid_mlx.utils import tokenizer as tok
 
     order: list[str] = []
     fake_model = SimpleNamespace()

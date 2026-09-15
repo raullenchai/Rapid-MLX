@@ -5,7 +5,7 @@ through the request-schema layer and HTTP 200 with no structure
 enforcement.
 
 The route-layer ``_validate_response_format`` helper in
-``vllm_mlx/service/helpers.py`` already covers the ``type`` enum and
+``rapid_mlx/service/helpers.py`` already covers the ``type`` enum and
 the "missing inner ``json_schema``" arm; this test file pins the
 remaining silent-200 surface the helper did NOT cover:
 
@@ -25,7 +25,7 @@ remaining silent-200 surface the helper did NOT cover:
 
 Validation is wired as a ``@field_validator(mode="before")`` on
 ``ChatCompletionRequest.response_format`` (and shared with
-``_validate_response_format_raw`` in ``vllm_mlx/api/models.py``)
+``_validate_response_format_raw`` in ``rapid_mlx/api/models.py``)
 so the gate runs at FastAPI body-parse — never reaches any
 downstream code that could leak raw Python type errors.
 """
@@ -33,7 +33,7 @@ downstream code that could leak raw Python type errors.
 import pytest
 from pydantic import ValidationError
 
-from vllm_mlx.api.models import (
+from rapid_mlx.api.models import (
     ChatCompletionRequest,
     ResponseFormat,
     _validate_response_format_raw,

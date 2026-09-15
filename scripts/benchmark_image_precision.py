@@ -205,7 +205,7 @@ def running_rapid_servers() -> list[int]:
         pid_text, _, process_command = row.strip().partition(" ")
         if not pid_text.isdigit() or int(pid_text) == os.getpid():
             continue
-        if re.search(r"(?:rapid-mlx|vllm_mlx\.cli).*\bserve\b", process_command):
+        if re.search(r"(?:rapid-mlx|rapid_mlx\.cli).*\bserve\b", process_command):
             matches.append(int(pid_text))
     return matches
 
@@ -293,8 +293,8 @@ def request_image(
 
 
 def cache_identity(hf_cache: Path, alias: str) -> dict[str, object]:
-    from vllm_mlx._download_gate import IMAGE_MODEL_REVISIONS, mflux_missing_weights
-    from vllm_mlx.model_aliases import resolve_model
+    from rapid_mlx._download_gate import IMAGE_MODEL_REVISIONS, mflux_missing_weights
+    from rapid_mlx.model_aliases import resolve_model
 
     repo = resolve_model(alias)
     revision = IMAGE_MODEL_REVISIONS[repo]
@@ -342,7 +342,7 @@ def run_session(
                 "-u",
                 "-s",
                 "-m",
-                "vllm_mlx.cli",
+                "rapid_mlx.cli",
                 "--no-telemetry",
                 "--no-banner",
                 "serve",

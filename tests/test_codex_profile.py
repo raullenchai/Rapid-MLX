@@ -13,7 +13,7 @@ try:
 except ModuleNotFoundError:  # pragma: no cover - Python 3.10 compatibility
     import tomli as tomllib
 
-from vllm_mlx.agents import get_profile, list_profiles
+from rapid_mlx.agents import get_profile, list_profiles
 
 
 def test_codex_profile_is_loadable():
@@ -40,7 +40,7 @@ def test_codex_capabilities_match_supported_surface():
 def test_codex_recommended_models_are_known_aliases():
     """The recommended models must exist in aliases.json. If an alias is
     renamed/removed, this test catches the dead reference before users do."""
-    from vllm_mlx.model_aliases import list_aliases
+    from rapid_mlx.model_aliases import list_aliases
 
     aliases = set(list_aliases())
     profile = get_profile("codex")
@@ -86,7 +86,7 @@ def test_codex_template_renders_to_valid_toml():
 def test_codex_setup_writes_startup_static_model_catalog(monkeypatch, tmp_path):
     import json
 
-    from vllm_mlx.agents.adapter import setup_agent_config
+    from rapid_mlx.agents.adapter import setup_agent_config
 
     monkeypatch.setenv("HOME", str(tmp_path))
     profile = get_profile("codex")

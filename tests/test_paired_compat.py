@@ -24,10 +24,10 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from vllm_mlx.config import reset_config
-from vllm_mlx.engine.base import GenerationOutput
-from vllm_mlx.routes.anthropic import router as anthropic_router
-from vllm_mlx.routes.chat import router as chat_router
+from rapid_mlx.config import reset_config
+from rapid_mlx.engine.base import GenerationOutput
+from rapid_mlx.routes.anthropic import router as anthropic_router
+from rapid_mlx.routes.chat import router as chat_router
 
 
 class _ThinkingTemplateTokenizer:
@@ -39,7 +39,7 @@ class _StreamingEngine:
     both routes so any output divergence is route-layer drift, not
     engine non-determinism."""
 
-    # Route surface contract (kept in sync with vllm_mlx/routes/*.py):
+    # Route surface contract (kept in sync with rapid_mlx/routes/*.py):
     preserve_native_tool_format = False
     is_mllm = False
     supports_guided_generation = False
@@ -104,7 +104,7 @@ def _make_paired_client(
     cfg.no_thinking = no_thinking
     cfg.reasoning_parser_name = reasoning_parser
     if reasoning_parser:
-        from vllm_mlx.reasoning import get_parser
+        from rapid_mlx.reasoning import get_parser
 
         cfg.reasoning_parser = get_parser(reasoning_parser)()
     cfg.model_registry = None

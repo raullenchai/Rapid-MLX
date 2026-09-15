@@ -36,7 +36,7 @@ pytestmark = pytest.mark.requires_mlx
 
 import mlx.core as mx  # noqa: E402
 
-from vllm_mlx.models import muse_glimmer as mg  # noqa: E402
+from rapid_mlx.models import muse_glimmer as mg  # noqa: E402
 
 TINY_TEXT = dict(
     hidden_size=64,
@@ -73,7 +73,7 @@ def test_module_contract():
 
 
 def test_register_vendored_archs_makes_mlx_lm_loader_find_it():
-    from vllm_mlx.utils.tokenizer import (
+    from rapid_mlx.utils.tokenizer import (
         _VENDORED_MODEL_TYPES,
         _register_vendored_archs,
     )
@@ -277,7 +277,7 @@ def test_sanitize_passthrough_keeps_untied_head():
 def test_resolve_serving_lane_muse_text_fallback(monkeypatch, tmp_path):
     """A muse_glimmer checkpoint auto-downgrades to the text lane while
     the installed mlx-vlm has no muse_glimmer model package."""
-    import vllm_mlx.api.utils as api_utils
+    import rapid_mlx.api.utils as api_utils
 
     muse_config = {
         "model_type": "muse_glimmer",
@@ -330,7 +330,7 @@ def test_resolve_serving_lane_muse_text_fallback(monkeypatch, tmp_path):
 
 def test_aliases_pin_text_only_and_muse_parsers():
     aliases = json.loads(
-        (Path(__file__).parent.parent / "vllm_mlx" / "aliases.json").read_text()
+        (Path(__file__).parent.parent / "rapid_mlx" / "aliases.json").read_text()
     )
     for name in (
         "muse-glimmer-30b-4bit",
@@ -350,7 +350,7 @@ def test_aliases_pin_text_only_and_muse_parsers():
 
 def test_muse_glimmer_8bit_pins_qualified_dflash_pair():
     aliases = json.loads(
-        (Path(__file__).parent.parent / "vllm_mlx" / "aliases.json").read_text()
+        (Path(__file__).parent.parent / "rapid_mlx" / "aliases.json").read_text()
     )
     entry = aliases["muse-glimmer-30b-8bit"]
     assert entry["hf_path"] == "mlx-community/Muse-Glimmer-30B-8bit"

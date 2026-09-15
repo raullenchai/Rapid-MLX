@@ -114,7 +114,7 @@ def test_selection_is_the_expected_size():
 def test_keys_keep_the_subfolder_path():
     """R2 layout must stay a faithful copy of the source tree.
 
-    ``vllm_mlx/_mirror.py`` resolves ``<owner>/<repo>/<filename>``; flattening
+    ``rapid_mlx/_mirror.py`` resolves ``<owner>/<repo>/<filename>``; flattening
     ``4bit/config.json`` to ``config.json`` would silently collide with any
     other quantisation mirrored later into the same repo prefix.
     """

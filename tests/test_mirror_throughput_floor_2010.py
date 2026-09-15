@@ -13,8 +13,8 @@ from unittest.mock import patch
 
 import pytest
 
-import vllm_mlx._mirror as _mirror
-from vllm_mlx._mirror import _mirror_floor_bytes_per_sec, _ThroughputFloor
+import rapid_mlx._mirror as _mirror
+from rapid_mlx._mirror import _mirror_floor_bytes_per_sec, _ThroughputFloor
 
 
 class _Clock:

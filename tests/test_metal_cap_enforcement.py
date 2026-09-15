@@ -35,8 +35,8 @@ import logging
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
-from vllm_mlx.request import Request, SamplingParams
-from vllm_mlx.scheduler import BackpressureError, Scheduler, SchedulerConfig
+from rapid_mlx.request import Request, SamplingParams
+from rapid_mlx.scheduler import BackpressureError, Scheduler, SchedulerConfig
 
 # Rotating-cache capacity granularity — mirrors kv_estimation's
 # ``_ROTATING_CACHE_STEP`` / ``_ROTATING_CACHE_KEEP`` (mlx_lm's
@@ -811,7 +811,7 @@ class TestMetricsRoute:
         /metrics with the value from get_stats."""
         import types
 
-        from vllm_mlx.routes.metrics import _render_prometheus
+        from rapid_mlx.routes.metrics import _render_prometheus
 
         cfg = types.SimpleNamespace(
             model_name="test",
@@ -988,7 +988,7 @@ class TestArchitectureAwareKVEstimate:
         )
         sched = self._sched(cfg)
         with patch(
-            "vllm_mlx.scheduler.estimate_kv_footprint",
+            "rapid_mlx.scheduler.estimate_kv_footprint",
             side_effect=RuntimeError("boom"),
         ):
             per_tok = sched._resolve_kv_bytes_per_token()

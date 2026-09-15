@@ -56,13 +56,13 @@ _UNSET = object()
 
 class TestAudioSpeechRequestExaggeration:
     def test_defaults_to_none(self):
-        from vllm_mlx.api.models import AudioSpeechRequest
+        from rapid_mlx.api.models import AudioSpeechRequest
 
         req = AudioSpeechRequest(input="Hello world")
         assert req.exaggeration is None
 
     def test_accepts_in_range_value(self):
-        from vllm_mlx.api.models import AudioSpeechRequest
+        from rapid_mlx.api.models import AudioSpeechRequest
 
         req = AudioSpeechRequest(
             model="chatterbox", input="Big news today!", exaggeration=0.8
@@ -71,7 +71,7 @@ class TestAudioSpeechRequestExaggeration:
 
     @pytest.mark.parametrize("value", [0.0, 2.0])
     def test_accepts_boundaries(self, value):
-        from vllm_mlx.api.models import AudioSpeechRequest
+        from rapid_mlx.api.models import AudioSpeechRequest
 
         req = AudioSpeechRequest(input="hi", exaggeration=value)
         assert req.exaggeration == value
@@ -80,7 +80,7 @@ class TestAudioSpeechRequestExaggeration:
     def test_rejects_out_of_range(self, value):
         from pydantic import ValidationError
 
-        from vllm_mlx.api.models import AudioSpeechRequest
+        from rapid_mlx.api.models import AudioSpeechRequest
 
         with pytest.raises(ValidationError):
             AudioSpeechRequest(input="hi", exaggeration=value)
@@ -139,7 +139,7 @@ class _CapturingKokoro:
 
 
 def _chatterbox_engine(model_name: str = CHATTERBOX_FP16):
-    from vllm_mlx.audio.tts import TTSEngine
+    from rapid_mlx.audio.tts import TTSEngine
 
     engine = TTSEngine(model_name)
     engine.model = _CapturingChatterbox()
@@ -150,7 +150,7 @@ def _chatterbox_engine(model_name: str = CHATTERBOX_FP16):
 class TestChatterboxEngine:
     @pytest.mark.parametrize("model_name", [CHATTERBOX_FP16, CHATTERBOX_TURBO])
     def test_family_detected(self, model_name):
-        from vllm_mlx.audio.tts import TTSEngine
+        from rapid_mlx.audio.tts import TTSEngine
 
         # Both the non-turbo and turbo repos detect as the same family
         # (they load the same ``chatterbox.Model``), so the exaggeration
@@ -198,7 +198,7 @@ class TestChatterboxEngine:
         """A Kokoro engine handed ``exaggeration`` (e.g. a client sending
         the knob to a non-expressive model) must NOT forward it — the
         Kokoro path has no such kwarg and the strict fake would raise."""
-        from vllm_mlx.audio.tts import TTSEngine
+        from rapid_mlx.audio.tts import TTSEngine
 
         engine = TTSEngine("mlx-community/Kokoro-82M-bf16")
         engine.model = _CapturingKokoro()
@@ -267,7 +267,7 @@ class _RecordingEngine:
         if ref_text is not None:
             rec["ref_text"] = ref_text
         self.generate_calls.append(rec)
-        from vllm_mlx.audio.tts import AudioOutput
+        from rapid_mlx.audio.tts import AudioOutput
 
         return AudioOutput(
             audio=np.zeros(240, dtype=np.float32), sample_rate=24000, duration=0.01
@@ -286,11 +286,11 @@ def _mount(monkeypatch):
     from fastapi import FastAPI
     from fastapi.testclient import TestClient
 
-    from vllm_mlx.audio import probe as probe_mod
-    from vllm_mlx.audio import tts as tts_mod
-    from vllm_mlx.config import get_config
-    from vllm_mlx.middleware.exception_handlers import install_exception_handlers
-    from vllm_mlx.routes import audio as audio_route
+    from rapid_mlx.audio import probe as probe_mod
+    from rapid_mlx.audio import tts as tts_mod
+    from rapid_mlx.config import get_config
+    from rapid_mlx.middleware.exception_handlers import install_exception_handlers
+    from rapid_mlx.routes import audio as audio_route
 
     _RecordingEngine.instances = []
     _RecordingEngine._real_to_bytes = tts_mod.TTSEngine.to_bytes

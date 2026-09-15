@@ -525,7 +525,7 @@ def _server_in_repo(
     cmd = [
         "python3.12",
         "-m",
-        "vllm_mlx.cli",
+        "rapid_mlx.cli",
         "serve",
         choice.model_id,
         "--port",

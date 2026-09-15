@@ -112,7 +112,7 @@ TOOLS = [
 
 
 def _make_parser(tokenizer=None):
-    from vllm_mlx.tool_parsers.deepseek_v3_tool_parser import DeepSeekV3ToolParser
+    from rapid_mlx.tool_parsers.deepseek_v3_tool_parser import DeepSeekV3ToolParser
 
     return DeepSeekV3ToolParser(tokenizer=tokenizer)
 
@@ -173,7 +173,7 @@ def test_structure_info_opts_out_on_multitoken_tokenizer():
 
 
 def test_structure_info_returns_deepseek_wire_triple():
-    from vllm_mlx.api.tool_grammar import StructureInfo
+    from rapid_mlx.api.tool_grammar import StructureInfo
 
     get_info = _make_parser(tokenizer=_single_token_tokenizer()).structure_info()
     assert callable(get_info), "opt-in must return a name->StructureInfo factory"
@@ -199,7 +199,7 @@ def test_deepseek_family_is_auto_safe_by_default():
     # DeepSeek does NOT override TOOL_GRAMMAR_AUTO_SAFE — its trigger
     # (<｜tool▁calls▁begin｜>) is a dedicated tool-call boundary, so it defaults
     # auto-safe like hermes/qwen (unlike harmony's shared <|channel|>).
-    from vllm_mlx.tool_parsers.deepseek_v3_tool_parser import DeepSeekV3ToolParser
+    from rapid_mlx.tool_parsers.deepseek_v3_tool_parser import DeepSeekV3ToolParser
 
     assert DeepSeekV3ToolParser.TOOL_GRAMMAR_AUTO_SAFE is True
 
@@ -209,7 +209,7 @@ def test_build_tool_lark_builds_from_deepseek_triple():
     # The whole point of E1: the EXISTING builder consumes the DeepSeek triple
     # unchanged. build_tool_lark must produce a grammar with the section markers
     # as BARE special-token refs (never quoted byte literals) and a %json body.
-    from vllm_mlx.api.tool_grammar import build_tool_lark
+    from rapid_mlx.api.tool_grammar import build_tool_lark
 
     si = _make_parser(tokenizer=_single_token_tokenizer()).structure_info()(
         "get_weather"
@@ -228,7 +228,7 @@ def test_build_tool_lark_builds_from_deepseek_triple():
 def test_parser_declares_section_wrapper_flag():
     # The section-wrapper soundness flag drives build_tool_grammar's >1-call
     # opt-out (finding 1). It must be set on the class.
-    from vllm_mlx.tool_parsers.deepseek_v3_tool_parser import DeepSeekV3ToolParser
+    from rapid_mlx.tool_parsers.deepseek_v3_tool_parser import DeepSeekV3ToolParser
 
     assert DeepSeekV3ToolParser.TOOL_GRAMMAR_SECTION_WRAPPER is True
     # And the grammar-capability marker (#1144) must MATCH the structure_info
@@ -247,7 +247,7 @@ def test_section_wrapper_gate_opts_out_when_multicall_possible():
     # ``+``/``*``) and build the grammar ONLY on the at-most-one-call path
     # (``single_call=True``). Hermetic single-token tokenizer -> runs with no
     # network. Covers required / named / auto.
-    from vllm_mlx.api.tool_grammar import build_tool_grammar
+    from rapid_mlx.api.tool_grammar import build_tool_grammar
 
     parser = _make_parser(tokenizer=_single_token_tokenizer())
     for choice in ("required", "get_weather", "auto"):
@@ -280,7 +280,7 @@ def distill_tok():
 def test_distill_qwen_tokenizer_markers_are_multitoken(distill_tok):
     # The V3 markers on a Qwen tokenizer are ordinary multi-token TEXT — the exact
     # condition that must drive the parser to opt out.
-    from vllm_mlx.api.tool_grammar import are_single_special_tokens
+    from rapid_mlx.api.tool_grammar import are_single_special_tokens
 
     assert are_single_special_tokens(distill_tok, SENTINELS) is False
 
@@ -356,7 +356,7 @@ def lltok(tok):
     suite go green while the feature is broken). The narrow "bridge not
     installed" case is the only sanctioned skip.
     """
-    from vllm_mlx.api.tool_grammar import HAS_LL_TOKENIZER, build_lltokenizer
+    from rapid_mlx.api.tool_grammar import HAS_LL_TOKENIZER, build_lltokenizer
 
     if not HAS_LL_TOKENIZER:
         pytest.skip(
@@ -401,7 +401,7 @@ def _consume(grammar, lltok, tok, text):
 def test_real_tokenizer_markers_are_single_special_tokens(tok):
     # The enforcement anchor: on the original DeepSeek-V3 tokenizer every section
     # marker IS a single special token, so the parser opts in.
-    from vllm_mlx.api.tool_grammar import are_single_special_tokens
+    from rapid_mlx.api.tool_grammar import are_single_special_tokens
 
     assert are_single_special_tokens(tok, SENTINELS) is True
 
@@ -418,7 +418,7 @@ def test_structure_info_opts_in_on_real_tokenizer(parser):
 
 @_requires_llguidance
 def test_valid_deepseek_call_is_accepted_and_terminates(parser, tok, lltok):
-    from vllm_mlx.api.tool_grammar import build_tool_grammar
+    from rapid_mlx.api.tool_grammar import build_tool_grammar
 
     grammar = build_tool_grammar(TOOLS[:1], "required", parser, single_call=True)
     assert grammar is not None
@@ -431,7 +431,7 @@ def test_valid_deepseek_call_is_accepted_and_terminates(parser, tok, lltok):
 def test_section_wrapper_gate_on_real_tokenizer(parser):
     # FINDING 1 on the REAL parser/tokenizer: multi-call opts out, single_call
     # builds — for required AND auto. Mirrors the hermetic gate test end-to-end.
-    from vllm_mlx.api.tool_grammar import build_tool_grammar
+    from rapid_mlx.api.tool_grammar import build_tool_grammar
 
     for choice in ("required", "auto"):
         assert (
@@ -444,7 +444,7 @@ def test_section_wrapper_gate_on_real_tokenizer(parser):
 
 @_requires_llguidance
 def test_valid_enum_value_is_accepted(parser, tok, lltok):
-    from vllm_mlx.api.tool_grammar import build_tool_grammar
+    from rapid_mlx.api.tool_grammar import build_tool_grammar
 
     grammar = build_tool_grammar(TOOLS[:1], "required", parser, single_call=True)
     accepted, total, accepting = _consume(
@@ -456,7 +456,7 @@ def test_valid_enum_value_is_accepted(parser, tok, lltok):
 
 @_requires_llguidance
 def test_off_schema_argument_is_rejected(parser, tok, lltok):
-    from vllm_mlx.api.tool_grammar import build_tool_grammar
+    from rapid_mlx.api.tool_grammar import build_tool_grammar
 
     grammar = build_tool_grammar(TOOLS[:1], "required", parser, single_call=True)
     # `city` must be a string; an integer must be forbidden. Feed a prefix up to
@@ -471,7 +471,7 @@ def test_off_schema_argument_is_rejected(parser, tok, lltok):
 
 @_requires_llguidance
 def test_bad_enum_value_is_rejected(parser, tok, lltok):
-    from vllm_mlx.api.tool_grammar import build_tool_grammar
+    from rapid_mlx.api.tool_grammar import build_tool_grammar
 
     grammar = build_tool_grammar(TOOLS[:1], "required", parser, single_call=True)
     # `unit` enum is {celsius, fahrenheit}; "kelvin" must be forbidden.
@@ -485,7 +485,7 @@ def test_bad_enum_value_is_rejected(parser, tok, lltok):
 
 @_requires_llguidance
 def test_hallucinated_tool_name_is_rejected(parser, tok, lltok):
-    from vllm_mlx.api.tool_grammar import build_tool_grammar
+    from rapid_mlx.api.tool_grammar import build_tool_grammar
 
     grammar = build_tool_grammar(TOOLS[:1], "required", parser, single_call=True)
     # Only get_weather is offered; the header name get_stock must be masked.
@@ -496,7 +496,7 @@ def test_hallucinated_tool_name_is_rejected(parser, tok, lltok):
 
 @_requires_llguidance
 def test_named_choice_narrows_to_requested_tool(parser, tok, lltok):
-    from vllm_mlx.api.tool_grammar import build_tool_grammar
+    from rapid_mlx.api.tool_grammar import build_tool_grammar
 
     # Pass the COMPLETE tools list (both get_weather AND get_time) so the named
     # choice actually EXERCISES build_tool_grammar's internal narrowing — passing

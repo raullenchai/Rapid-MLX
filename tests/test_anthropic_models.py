@@ -2,14 +2,14 @@
 """
 Tests for Anthropic Messages API Pydantic models.
 
-Tests all request/response models in vllm_mlx/api/anthropic_models.py.
+Tests all request/response models in rapid_mlx/api/anthropic_models.py.
 These are pure Pydantic models with no MLX dependency.
 """
 
 import pytest
 from pydantic import ValidationError
 
-from vllm_mlx.api.anthropic_models import (
+from rapid_mlx.api.anthropic_models import (
     AnthropicContentBlock,
     AnthropicMessage,
     AnthropicRequest,

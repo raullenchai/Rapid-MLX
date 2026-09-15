@@ -10,7 +10,7 @@ from pathlib import Path
 
 import pytest
 
-from vllm_mlx.patches.mla_absorbed_verify import (
+from rapid_mlx.patches.mla_absorbed_verify import (
     _use_absorbed,
     latent_length,
     max_absorbed_queries,
@@ -82,7 +82,7 @@ def test_latent_length_rejects_missing_sequence_axis() -> None:
 def test_disabled_stats_do_not_acquire_hot_path_lock(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from vllm_mlx.patches import mla_absorbed_verify as patch
+    from rapid_mlx.patches import mla_absorbed_verify as patch
 
     class ExplodingLock:
         def __enter__(self):
@@ -117,8 +117,8 @@ def test_real_serve_import_installs_exact_supported_targets(enabled: bool) -> No
     root = Path(__file__).resolve().parents[1]
     code = """
 import json
-import vllm_mlx.utils.tokenizer
-from vllm_mlx.patches.mla_absorbed_verify import mla_absorbed_verify_stats
+import rapid_mlx.utils.tokenizer
+from rapid_mlx.patches.mla_absorbed_verify import mla_absorbed_verify_stats
 print(json.dumps(mla_absorbed_verify_stats()))
 """
     env = os.environ.copy()
@@ -182,7 +182,7 @@ def test_default_off_does_not_wrap_attention() -> None:
 import json
 from mlx_lm.models import glm4_moe_lite
 original = glm4_moe_lite.Glm4MoeLiteAttention.__call__
-from vllm_mlx.patches.mla_absorbed_verify import install_mla_absorbed_verify, mla_absorbed_verify_stats
+from rapid_mlx.patches.mla_absorbed_verify import install_mla_absorbed_verify, mla_absorbed_verify_stats
 install_mla_absorbed_verify()
 stats = mla_absorbed_verify_stats()
 stats["unchanged"] = glm4_moe_lite.Glm4MoeLiteAttention.__call__ is original
@@ -204,7 +204,7 @@ from mlx_lm.models import deepseek_v3
 def changed(self, x, mask=None, cache=None):
     return x
 deepseek_v3.DeepseekV3Attention.__call__ = changed
-from vllm_mlx.patches.mla_absorbed_verify import install_mla_absorbed_verify, mla_absorbed_verify_stats
+from rapid_mlx.patches.mla_absorbed_verify import install_mla_absorbed_verify, mla_absorbed_verify_stats
 install_mla_absorbed_verify()
 print(json.dumps(mla_absorbed_verify_stats()))
 """
@@ -223,7 +223,7 @@ import json
 from mlx_lm.models import deepseek_v3, mla
 original = deepseek_v3.DeepseekV3Attention.__call__
 mla.max_absorbed_queries = lambda *args, **kwargs: 1
-from vllm_mlx.patches.mla_absorbed_verify import install_mla_absorbed_verify, mla_absorbed_verify_stats
+from rapid_mlx.patches.mla_absorbed_verify import install_mla_absorbed_verify, mla_absorbed_verify_stats
 install_mla_absorbed_verify()
 stats = mla_absorbed_verify_stats()
 stats["unchanged"] = deepseek_v3.DeepseekV3Attention.__call__ is original
@@ -245,7 +245,7 @@ from mlx_lm.models import deepseek_v3
 original = deepseek_v3.DeepseekV3Attention.__call__
 real_version = importlib.metadata.version
 importlib.metadata.version = lambda name: "0.31.4" if name == "mlx-lm" else real_version(name)
-from vllm_mlx.patches.mla_absorbed_verify import install_mla_absorbed_verify, mla_absorbed_verify_stats
+from rapid_mlx.patches.mla_absorbed_verify import install_mla_absorbed_verify, mla_absorbed_verify_stats
 install_mla_absorbed_verify()
 stats = mla_absorbed_verify_stats()
 stats["unchanged"] = deepseek_v3.DeepseekV3Attention.__call__ is original
@@ -264,10 +264,10 @@ def test_deepseek_v32_indexer_patch_is_not_replaced() -> None:
         """
 import json
 from mlx_lm.models import deepseek_v32
-from vllm_mlx.patches.deepseek_v32_indexer_gate import install_deepseek_v32_indexer_gate
+from rapid_mlx.patches.deepseek_v32_indexer_gate import install_deepseek_v32_indexer_gate
 install_deepseek_v32_indexer_gate()
 indexed = deepseek_v32.DeepseekV32Attention.__call__
-from vllm_mlx.patches.mla_absorbed_verify import install_mla_absorbed_verify, mla_absorbed_verify_stats
+from rapid_mlx.patches.mla_absorbed_verify import install_mla_absorbed_verify, mla_absorbed_verify_stats
 install_mla_absorbed_verify()
 stats = mla_absorbed_verify_stats()
 stats["unchanged"] = deepseek_v32.DeepseekV32Attention.__call__ is indexed
@@ -282,7 +282,7 @@ def _isolate_installer_state(monkeypatch: pytest.MonkeyPatch) -> None:
     """Undo collection-time installs from other test modules."""
     from mlx_lm.models import mla
 
-    from vllm_mlx.patches import mla_absorbed_verify as patch
+    from rapid_mlx.patches import mla_absorbed_verify as patch
 
     originals = getattr(mla, "_RAPID_MLX_MLA_ABSORBED_ORIGINALS", {})
     for module_name, class_name in patch._SUPPORTED_SOURCE_HASHES:
@@ -393,7 +393,7 @@ def test_patched_attention_matches_stock_contract(
     from mlx_lm.models.base import create_attention_mask
     from mlx_lm.models.cache import KVCache
 
-    from vllm_mlx.patches import mla_absorbed_verify as patch
+    from rapid_mlx.patches import mla_absorbed_verify as patch
 
     _isolate_installer_state(monkeypatch)
     mx.random.seed(7)
@@ -461,7 +461,7 @@ def test_standard_attention_without_q_lora_matches_stock(
 ) -> None:
     from mlx_lm.models import mla
 
-    from vllm_mlx.patches import mla_absorbed_verify as patch
+    from rapid_mlx.patches import mla_absorbed_verify as patch
 
     _isolate_installer_state(monkeypatch)
     monkeypatch.setenv("RAPID_MLX_MLA_ABSORBED_VERIFY", "1")
@@ -482,7 +482,7 @@ def test_standard_attention_without_q_lora_matches_stock(
 def test_installer_idempotence_and_default_off_contract(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from vllm_mlx.patches import mla_absorbed_verify as patch
+    from rapid_mlx.patches import mla_absorbed_verify as patch
 
     _isolate_installer_state(monkeypatch)
     monkeypatch.delenv("RAPID_MLX_MLA_ABSORBED_VERIFY", raising=False)
@@ -500,7 +500,7 @@ def test_installer_idempotence_and_default_off_contract(
 def test_in_process_upstream_provider_wins(monkeypatch: pytest.MonkeyPatch) -> None:
     from mlx_lm.models import mla
 
-    from vllm_mlx.patches import mla_absorbed_verify as patch
+    from rapid_mlx.patches import mla_absorbed_verify as patch
 
     _isolate_installer_state(monkeypatch)
     monkeypatch.setattr(mla, "max_absorbed_queries", lambda *args: 1, raising=False)
@@ -515,7 +515,7 @@ def test_in_process_upstream_provider_wins(monkeypatch: pytest.MonkeyPatch) -> N
 def test_in_process_unqualified_version_fails_closed(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from vllm_mlx.patches import mla_absorbed_verify as patch
+    from rapid_mlx.patches import mla_absorbed_verify as patch
 
     _isolate_installer_state(monkeypatch)
     monkeypatch.setenv("RAPID_MLX_MLA_ABSORBED_VERIFY", "1")
@@ -533,7 +533,7 @@ def test_in_process_target_compatibility_gates(
 ) -> None:
     from mlx_lm.models import deepseek_v3
 
-    from vllm_mlx.patches import mla_absorbed_verify as patch
+    from rapid_mlx.patches import mla_absorbed_verify as patch
 
     _isolate_installer_state(monkeypatch)
     monkeypatch.setenv("RAPID_MLX_MLA_ABSORBED_VERIFY", "1")
@@ -559,7 +559,7 @@ def test_in_process_target_compatibility_gates(
 
 
 def test_source_hash_fails_closed_for_uninspectable_callable() -> None:
-    from vllm_mlx.patches import mla_absorbed_verify as patch
+    from rapid_mlx.patches import mla_absorbed_verify as patch
 
     assert patch._source_hash(len) is None
 
@@ -569,7 +569,7 @@ def test_source_hash_fails_closed_for_uninspectable_callable() -> None:
 def test_disabled_and_single_token_paths_delegate_to_stock(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from vllm_mlx.patches import mla_absorbed_verify as patch
+    from rapid_mlx.patches import mla_absorbed_verify as patch
 
     _isolate_installer_state(monkeypatch)
     monkeypatch.setenv("RAPID_MLX_MLA_ABSORBED_VERIFY", "1")
@@ -594,7 +594,7 @@ def test_disabled_and_single_token_paths_delegate_to_stock(
 def test_quantized_cache_shape_delegates_to_stock(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from vllm_mlx.patches import mla_absorbed_verify as patch
+    from rapid_mlx.patches import mla_absorbed_verify as patch
 
     class QuantizedLikeCache:
         bits = 4

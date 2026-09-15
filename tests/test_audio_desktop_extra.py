@@ -47,7 +47,7 @@ def test_doctor_desktop_audio_contract_matches_the_extra() -> None:
     ``_AUDIO_DESKTOP_IMPORTS``. If this extra grows a dependency without the
     doctor list growing too, doctor silently stops noticing it is missing.
     """
-    from vllm_mlx.doctor import env_health
+    from rapid_mlx.doctor import env_health
 
     assert env_health._AUDIO_DESKTOP_IMPORTS == (
         ("mlx-audio", "mlx_audio"),

@@ -539,7 +539,7 @@ class TestSupplyChainIntegrity:
         from scripts.pr_validate._test_env import pr_touches_dep_files
 
         assert pr_touches_dep_files(["docs/foo.md"]) == []
-        assert pr_touches_dep_files(["vllm_mlx/server.py"]) == []
+        assert pr_touches_dep_files(["rapid_mlx/server.py"]) == []
         assert pr_touches_dep_files([]) == []
 
     def test_pr_touches_dep_files_catches_all_dep_files(self):
@@ -621,7 +621,7 @@ class TestSupplyChainIntegrity:
         # Negative: source files and docs MUST NOT be flagged or
         # every PR would trip supply-chain.
         for safe in (
-            "vllm_mlx/scheduler.py",
+            "rapid_mlx/scheduler.py",
             "docs/foo.md",
             "tests/test_foo.py",
         ):
@@ -700,7 +700,7 @@ class TestSupplyChainIntegrity:
             interpreter=sys.executable,
         )
         # Pure source-only change — must NOT be flagged.
-        fake_ctx.files_changed = ["vllm_mlx/scheduler.py", "tests/test_scheduler.py"]
+        fake_ctx.files_changed = ["rapid_mlx/scheduler.py", "tests/test_scheduler.py"]
 
         with patch.dict(os.environ, {}, clear=False):
             os.environ.pop("PR_VALIDATE_NO_AUTO_INSTALL", None)
@@ -750,7 +750,7 @@ class TestSupplyChainIntegrity:
             message="all 2 required test packages importable",
             interpreter=sys.executable,
         )
-        fake_ctx.files_changed = ["vllm_mlx/scheduler.py"]
+        fake_ctx.files_changed = ["rapid_mlx/scheduler.py"]
 
         call_order: list[str] = []
 

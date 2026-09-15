@@ -13,7 +13,7 @@ def test_rmlx_uses_the_canonical_cli_entrypoint():
     with (repo_root / "pyproject.toml").open("rb") as handle:
         scripts = tomllib.load(handle)["project"]["scripts"]
 
-    assert scripts["rmlx"] == scripts["rapid-mlx"] == "vllm_mlx.cli:cli_entrypoint"
+    assert scripts["rmlx"] == scripts["rapid-mlx"] == "rapid_mlx.cli:cli_entrypoint"
 
 
 def test_curl_installer_exposes_rmlx_on_path():

@@ -24,8 +24,8 @@ from __future__ import annotations
 
 import pytest
 
-from vllm_mlx.reasoning.gemma4_parser import Gemma4ReasoningParser
-from vllm_mlx.service.helpers import (
+from rapid_mlx.reasoning.gemma4_parser import Gemma4ReasoningParser
+from rapid_mlx.service.helpers import (
     _finalize_content_and_reasoning,
     _rescue_silent_drop_from_reasoning,
 )
@@ -211,7 +211,7 @@ def test_gemma4_parser_returns_reasoning_on_unterminated_thought():
     """Pins the post-r5-D contract: the Gemma 4 reasoning parser's
     ``extract_reasoning`` returns ``(reasoning_buffer, None)`` when
     the thought channel never closed. The shared finalize-on-
-    truncation helper (``vllm_mlx.reasoning.finalize_truncation``)
+    truncation helper (``rapid_mlx.reasoning.finalize_truncation``)
     routes the unclosed buffer to ``reasoning_content`` instead of
     leaking it into ``content`` (the F-DGF-V080-B-7 dup-into-both-
     fields repro).
@@ -356,7 +356,7 @@ def fake_chat_finalize():
         reasoning_text: str | None,
         tool_calls: list | None,
     ):
-        from vllm_mlx.api.utils import (
+        from rapid_mlx.api.utils import (
             clean_output_text,
             sanitize_output,
             strip_thinking_tags,
@@ -436,7 +436,7 @@ class _ReasoningOnlyStreamEngine:
         return "PROMPT"
 
     async def stream_chat(self, messages, **kwargs):
-        from vllm_mlx.engine.base import GenerationOutput
+        from rapid_mlx.engine.base import GenerationOutput
 
         self.stream_calls.append({"messages": messages, "kwargs": kwargs})
         accumulated_reasoning = ""
@@ -487,8 +487,8 @@ def test_streaming_rescue_surfaces_reasoning_as_terminal_content():
     from fastapi import FastAPI
     from fastapi.testclient import TestClient
 
-    from vllm_mlx.config import reset_config
-    from vllm_mlx.routes.chat import router as chat_router
+    from rapid_mlx.config import reset_config
+    from rapid_mlx.routes.chat import router as chat_router
 
     cfg = reset_config()
     cfg.engine = _ReasoningOnlyStreamEngine(
@@ -557,9 +557,9 @@ def test_streaming_rescue_noop_when_content_was_streamed():
     from fastapi import FastAPI
     from fastapi.testclient import TestClient
 
-    from vllm_mlx.config import reset_config
-    from vllm_mlx.engine.base import GenerationOutput
-    from vllm_mlx.routes.chat import router as chat_router
+    from rapid_mlx.config import reset_config
+    from rapid_mlx.engine.base import GenerationOutput
+    from rapid_mlx.routes.chat import router as chat_router
 
     class _NormalEngine:
         preserve_native_tool_format = False
@@ -642,8 +642,8 @@ def test_streaming_rescue_noop_when_reasoning_is_whitespace_only():
     from fastapi import FastAPI
     from fastapi.testclient import TestClient
 
-    from vllm_mlx.config import reset_config
-    from vllm_mlx.routes.chat import router as chat_router
+    from rapid_mlx.config import reset_config
+    from rapid_mlx.routes.chat import router as chat_router
 
     cfg = reset_config()
     # Reasoning deltas that concatenate to whitespace-only — the
@@ -748,7 +748,7 @@ class _ReasoningOnlyChatEngine:
         return "PROMPT"
 
     async def chat(self, messages, **kwargs):
-        from vllm_mlx.engine.base import GenerationOutput
+        from rapid_mlx.engine.base import GenerationOutput
 
         self.chat_calls.append({"messages": messages, "kwargs": kwargs})
         return GenerationOutput(
@@ -774,8 +774,8 @@ def _run_chat_route_with_response_format(response_format: dict) -> dict:
     from fastapi import FastAPI
     from fastapi.testclient import TestClient
 
-    from vllm_mlx.config import reset_config
-    from vllm_mlx.routes.chat import router as chat_router
+    from rapid_mlx.config import reset_config
+    from rapid_mlx.routes.chat import router as chat_router
 
     cfg = reset_config()
     cfg.engine = _ReasoningOnlyChatEngine(
@@ -883,8 +883,8 @@ def _run_streaming_chat_route_with_response_format(response_format: dict) -> lis
     from fastapi import FastAPI
     from fastapi.testclient import TestClient
 
-    from vllm_mlx.config import reset_config
-    from vllm_mlx.routes.chat import router as chat_router
+    from rapid_mlx.config import reset_config
+    from rapid_mlx.routes.chat import router as chat_router
 
     cfg = reset_config()
     cfg.engine = _ReasoningOnlyStreamEngine(

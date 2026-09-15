@@ -11,7 +11,7 @@ import gc
 import os
 import socket
 
-from vllm_mlx import (
+from rapid_mlx import (
     EngineConfig,
     EngineCore,
     ModelOwnershipError,

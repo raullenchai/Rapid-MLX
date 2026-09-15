@@ -9,7 +9,7 @@ from types import ModuleType
 
 import pytest
 
-from vllm_mlx.models import mllm
+from rapid_mlx.models import mllm
 
 
 def test_vision_runtime_reports_incompatible_mlx_vlm_version(monkeypatch):

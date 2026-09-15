@@ -20,9 +20,9 @@ from types import SimpleNamespace
 
 from transformers import AutoTokenizer
 
-from vllm_mlx.engine.batched import BatchedEngine
-from vllm_mlx.prompt_host_cache import PromptHostCache
-from vllm_mlx.scheduler import Scheduler
+from rapid_mlx.engine.batched import BatchedEngine
+from rapid_mlx.prompt_host_cache import PromptHostCache
+from rapid_mlx.scheduler import Scheduler
 
 
 def _participants(tokenizer, *, enabled: bool):

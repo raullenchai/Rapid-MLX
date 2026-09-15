@@ -89,14 +89,14 @@ STILL_REPRESENTABLE = {
 
 
 def test_toplevel_freeform_string_is_not_representable_on_the_xml_wire():
-    from vllm_mlx.api.tool_grammar import _xml_schema_representable
+    from rapid_mlx.api.tool_grammar import _xml_schema_representable
 
     assert _xml_schema_representable(WRITE_FILE_PARAMS) is False
 
 
 @pytest.mark.parametrize("label", sorted(STILL_REPRESENTABLE))
 def test_shapes_without_a_bare_freeform_string_stay_constrained(label):
-    from vllm_mlx.api.tool_grammar import _xml_schema_representable
+    from rapid_mlx.api.tool_grammar import _xml_schema_representable
 
     assert _xml_schema_representable(STILL_REPRESENTABLE[label]) is True, (
         f"{label} lost its grammar constraint — the #1996 opt-out must be "
@@ -106,14 +106,14 @@ def test_shapes_without_a_bare_freeform_string_stay_constrained(label):
 
 def test_gemma4_keeps_the_very_schema_the_xml_wire_now_refuses():
     """gemma4 closes its value with a special token, so it is unaffected."""
-    from vllm_mlx.api.tool_grammar import _gemma4_schema_representable
+    from rapid_mlx.api.tool_grammar import _gemma4_schema_representable
 
     assert _gemma4_schema_representable(WRITE_FILE_PARAMS) is True
 
 
 def test_the_opt_out_is_carried_by_the_wire_policy_not_hardcoded():
     """The XML policy declares it; gemma4 keeps the permissive default."""
-    from vllm_mlx.api.tool_grammar import _GEMMA4_WIRE_POLICY, _XML_WIRE_POLICY
+    from rapid_mlx.api.tool_grammar import _GEMMA4_WIRE_POLICY, _XML_WIRE_POLICY
 
     assert _XML_WIRE_POLICY.freeform_string_representable is False
     assert _GEMMA4_WIRE_POLICY.freeform_string_representable is True
@@ -124,7 +124,7 @@ def test_the_opt_out_is_carried_by_the_wire_policy_not_hardcoded():
 # free-form rather than compile a grammar.
 # --------------------------------------------------------------------------
 def _structure_info(arg_style):
-    from vllm_mlx.api.tool_grammar import StructureInfo
+    from rapid_mlx.api.tool_grammar import StructureInfo
 
     def _info(name):
         if arg_style == "xml":
@@ -158,7 +158,7 @@ class _Parser:
 
 @_requires_llguidance
 def test_xml_string_tool_falls_back_to_free_form():
-    from vllm_mlx.api.tool_grammar import build_tool_grammar
+    from rapid_mlx.api.tool_grammar import build_tool_grammar
 
     tools = [{"name": "write_file", "parameters": WRITE_FILE_PARAMS}]
     assert build_tool_grammar(tools, "required", _Parser("xml")) is None
@@ -167,7 +167,7 @@ def test_xml_string_tool_falls_back_to_free_form():
 @_requires_llguidance
 def test_json_family_with_the_same_string_tool_still_compiles_a_grammar():
     """hermes/qwen/harmony quote natively — they must not lose the constraint."""
-    from vllm_mlx.api.tool_grammar import build_tool_grammar
+    from rapid_mlx.api.tool_grammar import build_tool_grammar
 
     tools = [{"name": "write_file", "parameters": WRITE_FILE_PARAMS}]
     grammar = build_tool_grammar(tools, "required", _Parser("json"))
@@ -177,7 +177,7 @@ def test_json_family_with_the_same_string_tool_still_compiles_a_grammar():
 @_requires_llguidance
 def test_one_string_tool_opts_out_the_whole_request():
     """Mixed tool-sets follow the existing faithful-or-opt-out gate."""
-    from vllm_mlx.api.tool_grammar import build_tool_grammar
+    from rapid_mlx.api.tool_grammar import build_tool_grammar
 
     tools = [
         {"name": "set_unit", "parameters": STILL_REPRESENTABLE["string enum only"]},
@@ -188,7 +188,7 @@ def test_one_string_tool_opts_out_the_whole_request():
 
 @_requires_llguidance
 def test_enum_only_xml_tool_still_compiles_a_grammar():
-    from vllm_mlx.api.tool_grammar import build_tool_grammar
+    from rapid_mlx.api.tool_grammar import build_tool_grammar
 
     tools = [
         {"name": "set_unit", "parameters": STILL_REPRESENTABLE["string enum only"]}

@@ -50,11 +50,11 @@ KVCache = mlx_cache.KVCache
 
 import numpy as np  # noqa: E402
 
-from vllm_mlx.memory_cache import (  # noqa: E402
+from rapid_mlx.memory_cache import (  # noqa: E402
     MemoryAwarePrefixCache,
     MemoryCacheConfig,
 )
-from vllm_mlx.turboquant import (  # noqa: E402
+from rapid_mlx.turboquant import (  # noqa: E402
     TurboQuantConfig,
     TurboQuantKVCache,
 )
@@ -459,7 +459,7 @@ class TestUpstreamGlobalsRegistration:
         """``setdefault`` semantics — if a future upstream adds its own
         ``TurboQuantKVCache``, our import-time hook must NOT overwrite it.
         Verified by injecting a sentinel and re-running the registration."""
-        from vllm_mlx.turboquant import _register_in_mlx_lm_cache_globals
+        from rapid_mlx.turboquant import _register_in_mlx_lm_cache_globals
 
         original = mlx_cache.__dict__.get("TurboQuantKVCache")
         sentinel = object()

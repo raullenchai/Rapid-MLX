@@ -14,7 +14,7 @@
     }
     # Response: message.reasoning_content == "<|im_start|>"  (literal special token)
 
-**Root cause**: ``vllm_mlx/routes/chat.py`` called ``sanitize_output()`` on
+**Root cause**: ``rapid_mlx/routes/chat.py`` called ``sanitize_output()`` on
 ``final_content`` (line ~3277) but passed ``reasoning_text`` to
 ``AssistantMessage(reasoning_content=...)`` (line ~3380) WITHOUT
 sanitization. The ``tool_choice="required"`` post-parse branch on
@@ -56,20 +56,20 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from vllm_mlx.api.models import (
+from rapid_mlx.api.models import (
     AssistantMessage,
     ChatCompletionChunkDelta,
 )
-from vllm_mlx.api.utils import (
+from rapid_mlx.api.utils import (
     StreamingReasoningSanitizer,
     sanitize_output,
     sanitize_reasoning_content,
     sanitize_reasoning_for_stream,
 )
-from vllm_mlx.config import reset_config
-from vllm_mlx.engine.base import GenerationOutput
-from vllm_mlx.reasoning.qwen3_parser import Qwen3ReasoningParser
-from vllm_mlx.routes.chat import router as chat_router
+from rapid_mlx.config import reset_config
+from rapid_mlx.engine.base import GenerationOutput
+from rapid_mlx.reasoning.qwen3_parser import Qwen3ReasoningParser
+from rapid_mlx.routes.chat import router as chat_router
 
 # Markers Vlad's report singled out, plus the canonical set every other
 # parser-leak hardening test asserts.
@@ -90,7 +90,7 @@ _LEAK_MARKERS = (
 
 
 class TestSanitizeReasoningHelpers:
-    """The two helpers exposed in ``vllm_mlx/api/utils.py`` are the
+    """The two helpers exposed in ``rapid_mlx/api/utils.py`` are the
     single source of truth — pin their contract here so the field
     validators can rely on it without re-asserting per-call-site.
     """

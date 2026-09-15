@@ -199,7 +199,7 @@ rapid-mlx serve <model> [options]
 ### Options
 
 Every flag visible in `rapid-mlx serve --help`, grouped by category. Defaults
-are the argparse defaults from `vllm_mlx/cli.py`.
+are the argparse defaults from `rapid_mlx/cli.py`.
 
 #### Network and process
 
@@ -278,7 +278,7 @@ are the argparse defaults from `vllm_mlx/cli.py`.
 |--------|-------------|---------|
 | `--force-disk-check` | Proceed even when the pre-flight disk-space check fails — the check still runs and prints its numbers, but a shortfall becomes a warning instead of an abort (the download will likely fail mid-way) | off |
 | `--image-weight-precision` | Explicit FLUX.2 Klein weight source: `q4` selects the compact default checkpoint; `bf16` selects the full-precision checkpoint measured faster on an M2 Pro large-matrix image workload. Other diffusion families are rejected until qualified. | None (alias default) |
-| `--disk-stream` | Stream MoE routed-expert weights from disk instead of holding them resident (opt-in; only architectures registered in `vllm_mlx.registry`) | off |
+| `--disk-stream` | Stream MoE routed-expert weights from disk instead of holding them resident (opt-in; only architectures registered in `rapid_mlx.registry`) | off |
 | `--disk-stream-cache-gb` | Byte budget (GB) for the disk-stream expert LRU cache; only used with `--disk-stream` | 1.0 |
 | `--resident-memory-limit-gb` | Process-wide resident model ceiling in GiB; loading another model evicts the least-recently-used idle unpinned model first. 0 disables. | 0 (disabled) |
 | `--resident-model-idle-ttl` | Evict idle unpinned secondary models after this many seconds. 0 disables. | 0 (disabled) |
@@ -748,5 +748,5 @@ flag always wins over its env-var fallback when both are set.
 | `RAPID_MLX_DEFAULT_MODEL` | `qwen3.5-4b-4bit` | Default model alias used by `rapid-mlx launch` when `--model` is not given |
 | `RAPID_MLX_DISABLE_VERSION_CHECK` | unset | Set to any non-empty value to skip new-version checks, including the passive `serve` startup-log notice |
 | `RAPID_MLX_TRUST_REMOTE_CODE` | unset | Set `0`/`false`/`no`/`off` to force `trust_remote_code=False` process-wide for tokenizer loading |
-| `VLLM_MLX_TEST_MODEL` | unset | Model for tests |
+| `RAPID_MLX_TEST_MODEL` | unset | Model for tests (legacy `VLLM_MLX_TEST_MODEL` still honored) |
 | `HF_TOKEN` | unset | HuggingFace token for gated/private repos |

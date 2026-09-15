@@ -19,10 +19,10 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse
 from starlette.routing import Route
 
-from vllm_mlx.model_aliases import resolve_profile
-from vllm_mlx.routes import video
-from vllm_mlx.runtime import video_lane
-from vllm_mlx.runtime.video_lane import (
+from rapid_mlx.model_aliases import resolve_profile
+from rapid_mlx.routes import video
+from rapid_mlx.runtime import video_lane
+from rapid_mlx.runtime.video_lane import (
     VideoEngine,
     VideoRuntimeError,
     _resolve_ffmpeg,
@@ -45,7 +45,7 @@ def test_ltx23_alias_routes_to_video_lane() -> None:
 
 
 def test_ltx23_model_discovery_is_video_shaped() -> None:
-    from vllm_mlx.routes.models import _build_model_info
+    from rapid_mlx.routes.models import _build_model_info
 
     info = _build_model_info("ltx-2.3-mlx-q4")
     assert info.modality == "video-gen"
@@ -230,7 +230,7 @@ def test_video_extra_marks_every_dependency_python_311_or_newer() -> None:
 
 @pytest.mark.asyncio
 async def test_video_multipart_gate_authenticates_before_reading_body() -> None:
-    from vllm_mlx.config import get_config
+    from rapid_mlx.config import get_config
 
     cfg = get_config()
     saved_key = cfg.api_key
@@ -270,7 +270,7 @@ async def test_video_multipart_gate_authenticates_before_reading_body() -> None:
 
 @pytest.mark.asyncio
 async def test_video_multipart_gate_rejects_content_length_before_read() -> None:
-    from vllm_mlx.config import get_config
+    from rapid_mlx.config import get_config
 
     cfg = get_config()
     saved_key = cfg.api_key
@@ -317,7 +317,7 @@ async def test_video_multipart_gate_rejects_content_length_before_read() -> None
 async def test_video_multipart_gate_caps_chunked_body(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from vllm_mlx.config import get_config
+    from rapid_mlx.config import get_config
 
     cfg = get_config()
     saved_key = cfg.api_key
@@ -366,7 +366,7 @@ async def test_video_multipart_gate_emits_one_413_through_starlette(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """The streaming cap must reject outside Starlette's 500 handler."""
-    from vllm_mlx.config import get_config
+    from rapid_mlx.config import get_config
 
     cfg = get_config()
     saved_key = cfg.api_key
@@ -421,8 +421,8 @@ async def test_video_multipart_gate_emits_one_413_through_starlette(
 
 
 def test_serve_dispatches_video_preflight(monkeypatch: pytest.MonkeyPatch) -> None:
-    from vllm_mlx import cli
-    from vllm_mlx.runtime import video_lane
+    from rapid_mlx import cli
+    from rapid_mlx.runtime import video_lane
 
     class PreflightReachedError(RuntimeError):
         pass
