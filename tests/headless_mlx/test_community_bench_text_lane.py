@@ -12,6 +12,7 @@ The measurement-conversion contract itself is identical to the Apple-lane
 from __future__ import annotations
 
 import asyncio
+import sys
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -268,6 +269,136 @@ def test_v41_adapter_preserves_registered_tokens_and_exact_length(
     assert outputs[-1].finish_reason == "length"
 
 
+def test_v41_lazy_runtime_boundary_delegates_without_eager_mlx_import(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[tuple[str, tuple, dict]] = []
+    fake_serving = SimpleNamespace(
+        MAX_INPUT_TOKENS=8192,
+        stream_generate=lambda *args, **kwargs: (
+            calls.append(("stream", args, kwargs)) or "stream-result"
+        ),
+        load_product_runtime=lambda *args, **kwargs: (
+            calls.append(("load", args, kwargs)) or "load-result"
+        ),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "vllm_mlx.models.deepseek_v41_native.serving",
+        fake_serving,
+    )
+
+    assert local_runner._deepseek_v41_stream_generate("model", limit=2) == (
+        "stream-result"
+    )
+    assert local_runner._deepseek_v41_load_product_runtime("target") == ("load-result")
+    assert local_runner._deepseek_v41_input_limit() == 8192
+    assert calls == [
+        ("stream", ("model",), {"limit": 2}),
+        ("load", ("target",), {}),
+    ]
+
+
+@pytest.mark.parametrize("prompt", ["rendered text", [1, True], [1, "2"]])
+def test_v41_adapter_rejects_nonregistered_prompt_tokens(prompt: object) -> None:
+    from vllm_mlx.request import SamplingParams
+
+    executor = local_runner.concurrent.futures.ThreadPoolExecutor(max_workers=1)
+
+    async def exercise() -> None:
+        adapter = local_runner._DeepSeekV41BenchmarkAdapter(
+            object(), object(), object(), executor
+        )
+        await adapter.add_request(
+            prompt,  # type: ignore[arg-type]
+            SamplingParams(max_tokens=1, temperature=0.0, ignore_eos=True),
+        )
+
+    try:
+        with pytest.raises(ValueError, match="registered token IDs"):
+            asyncio.run(exercise())
+    finally:
+        executor.shutdown(wait=True)
+
+
+def test_v41_adapter_unbounded_empty_stream_completes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from vllm_mlx.request import SamplingParams
+
+    monkeypatch.setattr(
+        local_runner,
+        "_deepseek_v41_stream_generate",
+        lambda *_args, **_kwargs: iter(()),
+    )
+    executor = local_runner.concurrent.futures.ThreadPoolExecutor(max_workers=1)
+
+    async def exercise() -> list[object]:
+        adapter = local_runner._DeepSeekV41BenchmarkAdapter(
+            object(), object(), object(), executor
+        )
+        request_id = await adapter.add_request(
+            [1, 2],
+            SamplingParams(
+                max_tokens=1,
+                temperature=0.0,
+                top_p=1.0,
+                top_k=0,
+                min_p=0.0,
+                repetition_penalty=1.0,
+                presence_penalty=0.0,
+                frequency_penalty=0.0,
+                ignore_eos=True,
+            ),
+        )
+        return [item async for item in adapter.stream_outputs(request_id)]
+
+    try:
+        assert asyncio.run(exercise()) == []
+    finally:
+        executor.shutdown(wait=True)
+
+
+def test_v41_adapter_zero_timeout_fails_before_model_step(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from vllm_mlx.request import SamplingParams
+
+    monkeypatch.setattr(
+        local_runner,
+        "_deepseek_v41_stream_generate",
+        lambda *_args, **_kwargs: iter(()),
+    )
+    executor = local_runner.concurrent.futures.ThreadPoolExecutor(max_workers=1)
+
+    async def exercise() -> None:
+        adapter = local_runner._DeepSeekV41BenchmarkAdapter(
+            object(), object(), object(), executor
+        )
+        request_id = await adapter.add_request(
+            [1, 2],
+            SamplingParams(
+                max_tokens=1,
+                temperature=0.0,
+                top_p=1.0,
+                top_k=0,
+                min_p=0.0,
+                repetition_penalty=1.0,
+                presence_penalty=0.0,
+                frequency_penalty=0.0,
+                ignore_eos=True,
+            ),
+        )
+        async for _item in adapter.stream_outputs(request_id, timeout=0):
+            pass
+
+    try:
+        with pytest.raises(asyncio.TimeoutError):
+            asyncio.run(exercise())
+    finally:
+        executor.shutdown(wait=True)
+
+
 @pytest.mark.parametrize(
     "params",
     [
@@ -321,6 +452,17 @@ def test_v41_model_identity_includes_the_measured_sidecar(tmp_path: Path) -> Non
         "rapid-mlx/DeepSeek-V4.1-Flash-DSpark-4d2e-MLX"
     )
     ContractValidator().validate_model_identity(combined)
+
+
+def test_v41_speculative_provenance_is_target_specific() -> None:
+    from vllm_mlx.models.deepseek_v41_native import artifacts
+
+    assert local_runner._text_speculative_execution("other/model") is None
+    assert local_runner._text_speculative_execution(artifacts.TARGET_REPO) == {
+        "method": "dspark",
+        "max_draft_tokens": 5,
+        "draft_model_identity_digest": artifacts.mtp_model_identity_digest(),
+    }
 
 
 def test_benchmark_loader_lane_uses_shared_architecture_probe(
