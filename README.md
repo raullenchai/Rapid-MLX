@@ -267,9 +267,12 @@ compute per second of footage, not real time.
 
 LTX-2.5 can additionally expose a default-off, manifest-validated experimental
 `generation_mode=fast` when the operator configures a compatible portable model
-package. The current diagnostic path is approximately 2x for 10-second 768x512
-output with synchronized audio, but has not passed the decoded quality gate;
-`standard` remains the default and rollback.
+package. The quality-first two-middle-LoRA profile measured 1.737x on an M3
+Ultra and 1.791x on an M4 Pro for 10-second 768x512 output with synchronized
+audio. It preserves one additional Stage-1 evaluation versus the rejected
+approximately 2x diagnostic profile because that more aggressive profile failed
+the decoded quality gate. Old single-middle manifests fail closed. No artifact
+is bundled; `standard` remains the default and rollback.
 
 → [Every checkpoint, RAM requirement and tuning knob](https://rapidmlx.com/docs/models/families/video.html)
 

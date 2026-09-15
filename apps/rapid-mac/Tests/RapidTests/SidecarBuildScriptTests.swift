@@ -195,8 +195,8 @@ struct SidecarBuildScriptTests {
         #expect(script.contains("'mlx-arsenal'"))
         #expect(script.contains("LTX25_RUNTIME_VERSION=\"0.14.15\""))
         #expect(script.contains("https://github.com/raullenchai/ltx-2-mlx/archive/"))
-        #expect(script.contains("08256835b7e86d9296affb41e1e3b40936504f26"))
-        #expect(script.contains("1e46f84461be55752c8900551129bd9a55456ce9698512c7104b3c74f807765c"))
+        #expect(script.contains("fcbd6f31e5a80d513c45550d960c2f598a5c3ffb"))
+        #expect(script.contains("006e4748b64b0fc9a20939f62b2a8e30d3b6880107eed93f44006c09163169b1"))
         #expect(script.contains(#"LTX25_SOURCE_DIR="$(mktemp -d -t rapid-ltx25-source.XXXXXX)""#),
                 "The audited archive must be downloaded and extracted in a private directory.")
         #expect(script.contains(#"trap 'rm -rf "$LTX25_SOURCE_DIR"' EXIT INT TERM"#),

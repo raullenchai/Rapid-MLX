@@ -9,15 +9,14 @@
   `generation_mode=fast` product path for operator-configured model packages.
   Capability discovery
   reports availability, qualification revision, experimental status, and the
-  five-plus-one evaluation schedule. Standard mode remains the default and an
+  package's evaluation schedule. Standard mode remains the default and an
   unavailable explicit fast request returns 409 instead of silently falling
-  back. Four 10-second 768x512 qualification runs on an M4 Pro 48 GB measured
-  268.97-269.76 seconds versus a 539.94-second standard reference—approximately
-  2x—with zero swap. A Mac Studio M3 Ultra product-path pair measured
-  175.65 seconds standard versus 90.71 seconds fast (1.936x), confirming the
-  speed path is not tied to one Mac generation. That new prompt also exposed
-  visible candidate artifacts, so no fast artifact is release-qualified or
-  bundled, standard remains the default, and capability appears only when an
-  operator explicitly configures a valid package. The initial fast surface is
-  text-to-video only; image conditioning keeps the standard path until
-  separately qualified.
+  back. The quality-first six-plus-one profile measured 301.40 seconds versus
+  539.94 seconds standard on an M4 Pro 48 GB (1.791x), and 101.14 seconds versus
+  175.65 seconds on an M3 Ultra (1.737x). The candidate MP4 digest matched
+  across machines. The prior five-plus-one profile is rejected because decoded
+  stress cases exposed texture and motion-smear artifacts. No fast artifact is
+  release-qualified or bundled, standard remains
+  the default, and capability appears only when an operator explicitly
+  configures a valid package. The initial fast surface is text-to-video only;
+  image conditioning keeps the standard path until separately qualified.

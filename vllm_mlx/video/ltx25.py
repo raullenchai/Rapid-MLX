@@ -19,7 +19,7 @@ import threading
 from dataclasses import dataclass
 from pathlib import Path
 
-LTX25_RUNTIME_COMMIT = "08256835b7e86d9296affb41e1e3b40936504f26"
+LTX25_RUNTIME_COMMIT = "fcbd6f31e5a80d513c45550d960c2f598a5c3ffb"
 LTX25_RUNTIME_REPOSITORY = "https://github.com/raullenchai/ltx-2-mlx.git"
 LTX25_RUNTIME_VERSION = "0.14.15"
 # Stamped into each embedded distribution's .dist-info by build-sidecar.sh;
@@ -32,13 +32,18 @@ _RUNTIME_CACHE: tempfile.TemporaryDirectory[str] | None = None
 _FAST_MODEL_ENV = "RAPID_MLX_LTX25_FAST_MODEL"
 _FAST_STAGE1_MANIFEST = "fast-stage1-exact-prefix.json"
 _FAST_STAGE2_MANIFEST = "fast-stage2.json"
-_FAST_STAGE1_CAPABILITY = "ltx_stage1_exact_prefix_middle_span_v1"
 _FAST_DEQUANT_MATMUL_MIN_TOKENS = "1024"
 _MAX_FAST_MANIFEST_BYTES = 64 * 1024
 _IMMUTABLE_REVISION_RE = re.compile(r"[0-9a-f]{40,64}\Z")
 _SHA256_RE = re.compile(r"[0-9a-f]{64}\Z")
-_FAST_STAGE1_EXECUTION_SPANS = [[0, 1], [1, 2], [2, 3], [3, 7]]
-_FAST_STAGE1_SCHEDULE = [1.0, 0.99375, 0.9875, 0.98125, 0.421875, 0.0]
+_FAST_STAGE1_PROFILES = {
+    "ltx_stage1_exact_high_noise_two_middle_spans_v1": {
+        "execution_spans": [[0, 1], [1, 2], [2, 3], [3, 5], [5, 7]],
+        "learned_spans": [[3, 5], [5, 7]],
+        "schedule": [1.0, 0.99375, 0.9875, 0.98125, 0.909375, 0.421875, 0.0],
+        "evaluations": 6,
+    },
+}
 _INNER_PROMPT_RUNNER = """\
 import signal
 import sys
@@ -384,6 +389,7 @@ class LTX25FastConfig:
     base_model_id: str
     qualification_revision: str
     base_revision: str
+    stage1_evaluations: int
 
 
 def _local_fast_file(model_dir: Path, value: object, *, suffix: str) -> Path:
@@ -442,15 +448,19 @@ def resolve_ltx25_fast_config() -> LTX25FastConfig | None:
 
     stage1 = _read_fast_manifest(model_dir / _FAST_STAGE1_MANIFEST)
     stage2 = _read_fast_manifest(model_dir / _FAST_STAGE2_MANIFEST)
-    if stage1.get("capability") != _FAST_STAGE1_CAPABILITY:
+    capability = stage1.get("capability")
+    profile = (
+        _FAST_STAGE1_PROFILES.get(capability) if isinstance(capability, str) else None
+    )
+    if profile is None:
         raise LTX25BackendError(
-            "The configured LTX-2.5 fast model does not advertise the qualified exact-prefix capability."
+            "The configured LTX-2.5 fast model does not advertise the qualified two-middle exact-prefix capability."
         )
     if (
-        stage1.get("execution_spans") != _FAST_STAGE1_EXECUTION_SPANS
-        or stage1.get("learned_spans") != [[3, 7]]
+        stage1.get("execution_spans") != profile["execution_spans"]
+        or stage1.get("learned_spans") != profile["learned_spans"]
         or stage1.get("clean_final_span") != [7, 8]
-        or stage1.get("schedule") != _FAST_STAGE1_SCHEDULE
+        or stage1.get("schedule") != profile["schedule"]
     ):
         raise LTX25BackendError(
             "The configured LTX-2.5 fast model does not use the qualified exact-prefix schedule."
@@ -494,30 +504,33 @@ def resolve_ltx25_fast_config() -> LTX25FastConfig | None:
             "The configured LTX-2.5 fast manifests do not select the same transformer."
         )
     segments = stage1.get("segments")
-    if (
-        not isinstance(segments, list)
-        or len(segments) != 1
-        or not isinstance(segments[0], dict)
-    ):
+    learned_spans = profile["learned_spans"]
+    if not isinstance(segments, list) or len(segments) != len(learned_spans):
         raise LTX25BackendError(
-            "The configured LTX-2.5 fast model requires one learned middle segment."
+            "The configured LTX-2.5 fast model has the wrong learned middle segment count."
         )
-    segment_digest = segments[0].get("adapter_sha256")
-    if (
-        segments[0].get("span") != [3, 7]
-        or not isinstance(segment_digest, str)
-        or not _SHA256_RE.fullmatch(segment_digest)
-    ):
-        raise LTX25BackendError(
-            "The configured LTX-2.5 fast model has an invalid learned middle segment."
-        )
-    _local_fast_file(model_dir, segments[0].get("adapter_file"), suffix=".safetensors")
+    for segment, expected_span in zip(segments, learned_spans, strict=True):
+        if not isinstance(segment, dict):
+            raise LTX25BackendError(
+                "The configured LTX-2.5 fast model has an invalid learned middle segment."
+            )
+        segment_digest = segment.get("adapter_sha256")
+        if (
+            segment.get("span") != expected_span
+            or not isinstance(segment_digest, str)
+            or not _SHA256_RE.fullmatch(segment_digest)
+        ):
+            raise LTX25BackendError(
+                "The configured LTX-2.5 fast model has an invalid learned middle segment."
+            )
+        _local_fast_file(model_dir, segment.get("adapter_file"), suffix=".safetensors")
     _local_fast_file(model_dir, stage2.get("adapter_file"), suffix=".safetensors")
     return LTX25FastConfig(
         model_dir=model_dir,
         base_model_id=stage1["base_model_id"],
         qualification_revision=qualification,
         base_revision=stage1["base_revision"],
+        stage1_evaluations=profile["evaluations"],
     )
 
 
@@ -547,7 +560,7 @@ class LTX25VideoEngine:
             "base_revision": config.base_revision,
             "experimental": config.qualification_revision.startswith("diagnostic-"),
             "operation_modes": ["text-to-video"],
-            "stage1_evaluations": 5,
+            "stage1_evaluations": config.stage1_evaluations,
             "stage2_evaluations": 1,
         }
 

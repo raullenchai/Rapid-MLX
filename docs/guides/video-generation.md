@@ -160,7 +160,7 @@ especially its commercial-use and generated-content disclosure terms.
 
 ```bash
 git clone --branch vector/ltx25-distillation-feasibility https://github.com/raullenchai/ltx-2-mlx.git
-git -C ltx-2-mlx checkout 08256835b7e86d9296affb41e1e3b40936504f26
+git -C ltx-2-mlx checkout fcbd6f31e5a80d513c45550d960c2f598a5c3ffb
 uv sync --project ltx-2-mlx
 brew install ffmpeg
 
@@ -242,17 +242,20 @@ The initial supported surface is text-to-video only. Image-to-video requests
 must use `generation_mode=standard` until that conditioning path has its own
 decoded non-inferiority suite.
 
-The fast profile uses exact Stage-1 steps `0 -> 1 -> 2 -> 3`, one independently
-trained `3 -> 7` middle transition, exact `7 -> 8`, one terminal Stage-2
-transition, and the validated large-token dequantized-matmul dispatch. On the
-M4 Pro 48 GB qualification host, four 10-second 768x512 samples measured
-268.97-269.76 seconds versus a 539.94-second standard reference—approximately
-2x—with zero swap. A same-artifact M3 Ultra run measured 1.936x, but its new
-stress prompt exposed visible texture artifacts. These numbers validate the
-portable speed path, not release-quality inference. No package is bundled or
-selected by default. The same artifact and schedule apply across supported
-Apple Silicon; no chip name selects weights or numerical behavior. Keep
-`standard` as the rollback.
+The quality-first profile uses exact Stage-1 steps `0 -> 1 -> 2 -> 3`, two
+independently trained `3 -> 5` and `5 -> 7` middle transitions, exact `7 -> 8`,
+one terminal Stage-2 transition, and the validated large-token
+dequantized-matmul dispatch. The same prompt, seed, and artifact produced the
+same candidate MP4 digest on an M3 Ultra and M4 Pro. The 10-second 768x512
+workload measured 101.14 seconds versus 175.65 seconds standard on the M3 Ultra
+(1.737x), and 301.40 seconds versus 539.94 seconds on the M4 Pro (1.791x).
+
+The older single-middle `3 -> 7` diagnostic profile approached 2x but failed a
+decoded stress case with visible texture and motion-smear artifacts. Rapid
+rejects that capability rather than exposing a known-bad quality tier. No
+package is bundled or selected by default. The same quality-first artifact and
+schedule apply across supported Apple Silicon; no chip name selects weights or
+numerical behavior. Keep `standard` as the rollback.
 
 ## CogVideoX-Fun
 

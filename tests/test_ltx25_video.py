@@ -51,11 +51,18 @@ def test_ltx25_capabilities_match_distilled_controls() -> None:
 
 
 def _fast_model_dir(
-    root: Path, *, qualification_revision: str = "diagnostic-product-screen"
+    root: Path,
+    *,
+    qualification_revision: str = "diagnostic-product-screen",
+    two_middle: bool = True,
 ) -> Path:
+    middle_spans = [[3, 5], [5, 7]] if two_middle else [[3, 7]]
+    middle_files = [
+        f"fast-stage1-middle-{start}-{end}.safetensors" for start, end in middle_spans
+    ]
     for name in (
         "transformer-distilled.safetensors",
-        "fast-stage1-middle-3-7.safetensors",
+        *middle_files,
         "fast-stage2.safetensors",
     ):
         (root / name).write_bytes(b"placeholder")
@@ -69,19 +76,28 @@ def _fast_model_dir(
         json.dumps(
             {
                 **shared,
-                "capability": "ltx_stage1_exact_prefix_middle_span_v1",
+                "capability": (
+                    "ltx_stage1_exact_high_noise_two_middle_spans_v1"
+                    if two_middle
+                    else "ltx_stage1_exact_prefix_middle_span_v1"
+                ),
                 "qualification_revision": qualification_revision,
                 "transformer_file": "transformer-distilled.safetensors",
-                "execution_spans": [[0, 1], [1, 2], [2, 3], [3, 7]],
-                "learned_spans": [[3, 7]],
+                "execution_spans": [[0, 1], [1, 2], [2, 3], *middle_spans],
+                "learned_spans": middle_spans,
                 "clean_final_span": [7, 8],
-                "schedule": [1.0, 0.99375, 0.9875, 0.98125, 0.421875, 0.0],
+                "schedule": (
+                    [1.0, 0.99375, 0.9875, 0.98125, 0.909375, 0.421875, 0.0]
+                    if two_middle
+                    else [1.0, 0.99375, 0.9875, 0.98125, 0.421875, 0.0]
+                ),
                 "segments": [
                     {
-                        "adapter_file": "fast-stage1-middle-3-7.safetensors",
+                        "adapter_file": f"fast-stage1-middle-{start}-{end}.safetensors",
                         "adapter_sha256": "b" * 64,
-                        "span": [3, 7],
+                        "span": [start, end],
                     }
+                    for start, end in middle_spans
                 ],
             }
         )
@@ -122,9 +138,21 @@ def test_ltx25_capabilities_advertise_configured_portable_fast_mode(
         "base_revision": "f" * 40,
         "experimental": True,
         "operation_modes": ["text-to-video"],
-        "stage1_evaluations": 5,
+        "stage1_evaluations": 6,
         "stage2_evaluations": 1,
     }
+
+
+def test_ltx25_fast_config_rejects_legacy_single_middle_profile(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv(
+        "RAPID_MLX_LTX25_FAST_MODEL",
+        str(_fast_model_dir(tmp_path, two_middle=False)),
+    )
+
+    with pytest.raises(ltx25.LTX25BackendError, match="two-middle exact-prefix"):
+        ltx25.resolve_ltx25_fast_config()
 
 
 def test_ltx25_fast_config_rejects_cross_base_manifests(
@@ -154,6 +182,20 @@ def test_ltx25_fast_config_rejects_unqualified_schedule(
     with pytest.raises(
         ltx25.LTX25BackendError, match="qualified exact-prefix schedule"
     ):
+        ltx25.resolve_ltx25_fast_config()
+
+
+def test_ltx25_fast_config_rejects_reordered_two_middle_segments(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _fast_model_dir(tmp_path, two_middle=True)
+    stage1_path = tmp_path / "fast-stage1-exact-prefix.json"
+    stage1 = json.loads(stage1_path.read_text())
+    stage1["segments"].reverse()
+    stage1_path.write_text(json.dumps(stage1))
+    monkeypatch.setenv("RAPID_MLX_LTX25_FAST_MODEL", str(tmp_path))
+
+    with pytest.raises(ltx25.LTX25BackendError, match="invalid learned middle segment"):
         ltx25.resolve_ltx25_fast_config()
 
 

@@ -616,3 +616,44 @@ mesh/metallic artifacts and composition drift (1.840x versus standard).
 Target-module expansion is rejected. Vector's next concrete action is a
 decoded-feature/reward or distribution-matching training prototype; do not
 continue rank, step, cosine-weight, or target-module sweeps.
+
+## Quality-first two-middle product baseline (2026-09-15)
+
+The decoded-loss prototypes did not rescue the single `3 -> 7` transition.
+Terminal/detail latent losses at 5/10 steps and an 8-step sparse decoded-RGB
+objective remained visibly smeared at 1.76-1.83x, so that model route is
+rejected rather than tuned further.
+
+Upstream commit `fcbd6f31e5a80d513c45550d960c2f598a5c3ffb` adds the portable
+`ltx_stage1_exact_high_noise_two_middle_spans_v1` capability. It preserves exact
+steps `0 -> 1 -> 2 -> 3`, loads independently trained rank-8 `3 -> 5` and
+`5 -> 7` adapters in declared order, and finishes with exact `7 -> 8`. The full
+upstream suite passes 843 tests with 22 skips.
+
+The same 768x512x241 chef prompt, seed, package, and runtime produced candidate
+SHA-256 `81ad9411115c243c18d25c2bc62a4549e2995a265b45c4e5e74b6e34d994929d`
+on both M3 Ultra and M4 Pro. Studio measured 101.14 seconds versus 175.65
+standard (1.737x); M4 Pro 48 GB measured 301.40 seconds versus 539.94 standard
+(1.791x). The contact screen retains face, hands, bread, brick texture, and
+action without the single-middle route's broad smear.
+
+Rapid PR #3503 now accepts only the new six-evaluation profile, reports the
+actual evaluation count, rejects the known-bad legacy five-evaluation
+capability plus missing or reordered segments, and pins the complete upstream
+runtime revision in both Python and the Mac sidecar source build. This remains
+operator-configured and default-off. No artifact has been uploaded or bundled. Atlas owns API merge,
+artifact qualification, release, and any default change. Vector's next action
+after the real Rapid-entry smoke and broader blind suite is runtime/kernel work
+for the approximately 15% additional Studio latency reduction needed to reach
+strict 2x without deleting another quality-critical denoising transition.
+
+The real Rapid entry smoke is complete. A cold process took 106.79 seconds,
+including approximately 5.6 seconds of one-time isolated runtime preparation,
+and produced 10.041667-second H.264 plus 48 kHz stereo AAC with SHA-256
+`4cb200408b71b3dc7f79fe97145f229e78ce17f9efc3c8cec80d6a87c986948d`.
+Rapid's automatic Q8 large-token dispatch makes this numerically different from
+the bare-CLI candidate; decoded comparison measured video SSIM 0.966465 and
+audio APSNR 166.226 dB, with no new categorical or broad-smear failure in the
+contact screen. The expanded video regression suite passes 298 tests with one
+skip, Swift sidecar pin tests pass 9/9, and scoped Ruff is clean. Review media
+is under `123/strategy/ltx25-quality-first-two-middle-2026-09-15/`.

@@ -119,6 +119,49 @@ subject identity, fine detail, temporal motion, motion amplitude, diversity
 across seeds, audio content, and synchronization. Latent MSE, cosine similarity,
 and runtime are diagnostics, not substitutes for blind non-inferiority.
 
+## Quality-first two-middle baseline (2026-09-15)
+
+Decoded experiments reject replacing the complete `3 -> 7` Stage-1 interval
+with one learned transition. Rank/step scaling, terminal/detail latent losses,
+and a sparse decoded-RGB objective all retained broad translucent motion smear
+or texture failure while measuring only 1.76-1.83x. The issue is therefore not
+treated as a small hyperparameter miss.
+
+The current quality-first baseline keeps the exact high-noise prefix and uses
+the independently trained rank-8 `3 -> 5` and `5 -> 7` adapters, followed by
+the clean exact `7 -> 8` correction. Its capability is
+`ltx_stage1_exact_high_noise_two_middle_spans_v1`, with Stage-1 schedule
+`[0,1,2,3,5,7,8]`. Rapid accepts only this six-evaluation profile, reports the
+selected count through capabilities, and validates segment count and order
+before queueing. The rejected five-evaluation capability fails closed.
+
+On the frozen chef workload (768x512, 241 frames, 24 fps, seed 271007), the
+quality-first profile measured 101.14 seconds versus 175.65 seconds standard on
+the Studio M3 Ultra (1.737x, 42.4% lower latency) and 301.40 seconds versus
+539.94 seconds standard on the M4 Pro 48 GB host (1.791x, 44.18% lower
+latency). The candidate MP4 SHA-256 was identical on both machines:
+`81ad9411115c243c18d25c2bc62a4549e2995a265b45c4e5e74b6e34d994929d`.
+The contact screen retains the face, hands, bread, brick texture, and action
+without the broad smear seen in every single-middle variant.
+
+The same package then completed through Rapid's real `LTX25VideoEngine` in
+106.79 seconds from a cold process. That includes approximately 5.6 seconds of
+one-time isolated runtime preparation; the server process reuses the prepared
+runtime. Rapid also enables the qualified Q8 large-token dispatch, so this MP4
+is not byte-identical to the bare-CLI cross-machine result. Its SHA-256 is
+`4cb200408b71b3dc7f79fe97145f229e78ce17f9efc3c8cec80d6a87c986948d`;
+against the bare-CLI candidate, decoded video SSIM is 0.966465 and audio APSNR
+is 166.226 dB. The paired contact screen shows no new categorical or broad-smear
+failure, but human full-motion review remains authoritative.
+
+This is a quality-first product baseline, not a release-qualified artifact.
+It still needs a blinded multi-prompt suite and broader Apple Silicon coverage.
+Strict 2x on Studio requires approximately another 15% latency reduction, so
+the next performance work should optimize the unchanged runtime kernels around
+this schedule rather than delete another denoising transition. Standard remains
+the default and rollback; artifact upload and default-on require Atlas and human
+authorization.
+
 ## Clean-final Stage-1 correction
 
 The completed shared-adapter curriculum showed that the final `7 -> 8`
