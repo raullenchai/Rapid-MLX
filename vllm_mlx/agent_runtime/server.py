@@ -286,6 +286,27 @@ def _format_retry_instruction(goal: str, turn: AgentModelTurn) -> str | None:
     )
 
 
+def _remove_trailing_count_artifact(
+    goal: str, turn: AgentModelTurn
+) -> AgentModelTurn:
+    """Drop a standalone echoed sentence count after an otherwise valid answer."""
+
+    expected = _requested_sentence_count(goal)
+    lines = turn.content.rstrip().splitlines()
+    if expected is None or turn.tool_calls or len(lines) < 2:
+        return turn
+    if lines[-1].strip() != str(expected):
+        return turn
+    candidate = "\n".join(lines[:-1]).rstrip()
+    if (
+        _observed_sentence_count(candidate) != expected
+        or not candidate
+        or candidate[-1] not in ".!?。！？"
+    ):
+        return turn
+    return AgentModelTurn(content=candidate)
+
+
 def _planned_weather_arguments(goal: str) -> dict[str, Any] | None:
     match = _WEATHER_LOCATION.search(goal)
     if match is None:
@@ -1800,6 +1821,7 @@ class AgentServerService:
                                 visible,
                                 settings,
                             )
+                    turn = _remove_trailing_count_artifact(entry.run.goal, turn)
 
                 async with entry.lock:
                     if entry.cancel_requested or entry.run.status in _TERMINAL_STATUSES:

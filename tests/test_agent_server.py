@@ -32,6 +32,7 @@ from vllm_mlx.agent_runtime.server import (
     _evaluate_arithmetic,
     _format_retry_instruction,
     _planned_weather_arguments,
+    _remove_trailing_count_artifact,
     _route_desktop_client_tools,
     _trim_exterior_url_punctuation,
     classify_mcp_tool,
@@ -147,6 +148,12 @@ def test_format_retry_rejects_trailing_non_sentence_garbage():
     )
     assert retry is not None
     assert "Your draft had 2" in retry
+
+    cleaned = _remove_trailing_count_artifact(
+        "Write a two-sentence welcome.",
+        AgentModelTurn(content="Welcome! Glad you're here.\n2"),
+    )
+    assert cleaned.content == "Welcome! Glad you're here."
 
 
 @pytest.mark.asyncio
