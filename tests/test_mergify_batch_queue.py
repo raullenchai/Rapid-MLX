@@ -7,8 +7,6 @@ from pathlib import Path
 
 import yaml
 
-from scripts.classify_ci_changes import _DOC_FILES, _DOC_ROOTS
-
 ROOT = Path(__file__).resolve().parent.parent
 CONFIG = ROOT / ".mergify.yml"
 REQUIRED_CHECKS = {
@@ -47,28 +45,11 @@ def test_queue_runs_single_ready_prs_without_batch_features_or_fill_waits():
     assert {rule["checks_timeout"] for rule in rules.values()} == {"90 min"}
 
 
-def test_no_mac_and_mac_candidates_have_independent_bounded_scopes():
-    scopes = _config()["scopes"]
-    files = scopes["source"]["files"]["mac-required"]
+def test_queue_avoids_subscription_gated_batch_and_scope_features():
+    config = _config()
 
-    assert files["include"] == ["*", "**/*"]
-    assert set(files["exclude"]) == {
-        *(f"{root}/**/*" for root in _DOC_ROOTS),
-        *_DOC_FILES,
-    }
-    assert scopes["capacities"] == {"mac-required": 1}
-    assert "default_capacity" not in scopes
-
-
-def test_queue_policy_changes_are_global_barriers():
-    barrier = _config()["scopes"]["barrier_files"]
-
-    assert set(barrier["include"]) == {
-        ".mergify.yml",
-        ".github/**/*",
-        "scripts/classify_ci_changes.py",
-        "tests/test_classify_ci_changes.py",
-    }
+    assert "scopes" not in config
+    assert config["merge_queue"]["max_parallel_checks"] == 2
 
 
 def test_queue_revalidates_every_required_check_on_the_candidate():
