@@ -121,7 +121,8 @@ def _switch_projection_quantization(
         for key in ("group_size", "bits", "mode")
         if key in quantization
     }
-    return quantization.get(f"{prefix}.{projection}", default)
+    override = quantization.get(f"{prefix}.{projection}", {})
+    return {**default, **override}
 
 
 def _can_fuse_switch_gate_up(config: ModelArgs, layer_idx: int) -> bool:
@@ -554,9 +555,7 @@ class DeepseekV4MoE(nn.Module):
         self.config = config
         self.gate = MoEGate(config, layer_idx)
         switch_mlp_type = (
-            FusedSwitchGLU
-            if _can_fuse_switch_gate_up(config, layer_idx)
-            else SwitchGLU
+            FusedSwitchGLU if _can_fuse_switch_gate_up(config, layer_idx) else SwitchGLU
         )
         self.switch_mlp = switch_mlp_type(
             config.hidden_size,

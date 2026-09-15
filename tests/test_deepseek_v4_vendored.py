@@ -131,18 +131,46 @@ def test_heterogeneous_routed_projection_quantization_stays_unfused():
     moe = deepseek_v4.DeepseekV4MoE(args, 0)
     assert isinstance(moe.switch_mlp, SwitchGLU)
 
-    gate_key = "model.layers.0.ffn.switch_mlp.gate_proj.weight"
-    up_key = "model.layers.0.ffn.switch_mlp.up_proj.weight"
+    prefix = "model.layers.0.ffn.switch_mlp"
     weights = {
-        gate_key: mx.zeros((4, 16, 8), dtype=mx.uint32),
-        up_key: mx.zeros((4, 16, 4), dtype=mx.uint32),
+        f"{prefix}.gate_proj.weight": mx.zeros((4, 16, 4), dtype=mx.uint32),
+        f"{prefix}.gate_proj.scales": mx.ones((4, 16, 2)),
+        f"{prefix}.gate_proj.biases": mx.zeros((4, 16, 2)),
+        f"{prefix}.up_proj.weight": mx.ones((4, 16, 4), dtype=mx.uint32),
+        f"{prefix}.up_proj.scales": mx.ones((4, 16, 1)),
+        f"{prefix}.up_proj.biases": mx.zeros((4, 16, 1)),
     }
-    sanitized = deepseek_v4.Model.sanitize(
-        SimpleNamespace(args=args, mtp=[]), weights
-    )
+    sanitized = deepseek_v4.Model.sanitize(SimpleNamespace(args=args, mtp=[]), weights)
 
-    assert sanitized[gate_key].shape == (4, 16, 8)
-    assert sanitized[up_key].shape == (4, 16, 4)
+    def quantization_for_path(path, _module):
+        projection = path.rsplit(".", 1)[-1]
+        if projection in {"gate_proj", "up_proj"}:
+            return deepseek_v4._switch_projection_quantization(args, 0, projection)
+        return False
+
+    deepseek_v4.nn.quantize(
+        moe,
+        group_size=64,
+        bits=4,
+        mode="affine",
+        class_predicate=quantization_for_path,
+    )
+    relative_weights = [
+        (key.removeprefix("model.layers.0.ffn."), value)
+        for key, value in sanitized.items()
+    ]
+    moe.load_weights(relative_weights, strict=False)
+
+    assert moe.switch_mlp.gate_proj.group_size == 32
+    assert moe.switch_mlp.up_proj.group_size == 64
+    assert moe.switch_mlp.gate_proj.scales.shape == (4, 16, 2)
+    assert moe.switch_mlp.up_proj.scales.shape == (4, 16, 1)
+    assert mx.array_equal(
+        moe.switch_mlp.gate_proj.weight, sanitized[f"{prefix}.gate_proj.weight"]
+    ).item()
+    assert mx.array_equal(
+        moe.switch_mlp.up_proj.weight, sanitized[f"{prefix}.up_proj.weight"]
+    ).item()
 
 
 def test_homogeneous_routed_projection_quantization_keeps_fused_fast_path():
@@ -173,12 +201,13 @@ def test_homogeneous_routed_projection_quantization_keeps_fused_fast_path():
         weights[f"{prefix}.gate_proj.{suffix}"] = mx.zeros(shape)
         weights[f"{prefix}.up_proj.{suffix}"] = mx.ones(shape)
 
-    sanitized = deepseek_v4.Model.sanitize(
-        SimpleNamespace(args=args, mtp=[]), weights
-    )
+    sanitized = deepseek_v4.Model.sanitize(SimpleNamespace(args=args, mtp=[]), weights)
 
     for suffix in ("weight", "scales", "biases"):
-        assert sanitized[f"{prefix}.gate_proj.{suffix}"].shape[1] == 32
+        fused = sanitized[f"{prefix}.gate_proj.{suffix}"]
+        assert fused.shape[1] == 32
+        assert mx.all(fused[:, :16] == 0).item()
+        assert mx.all(fused[:, 16:] == 1).item()
         assert f"{prefix}.up_proj.{suffix}" not in sanitized
 
 
