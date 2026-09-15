@@ -325,3 +325,19 @@ mapping-safe bundle is at
 `123/strategy/ltx-stage2-terminal-qualification-2026-09-14/`. Stage-1 v1 is
 now training, followed by its paired evaluation and the equal-budget span-v2
 pilot.
+
+## Stage-1 span-v2 gate result (2026-09-14)
+
+Both matched `0 -> 3` pilots completed in 29.4 minutes at 19.79 GiB peak. The
+v1 single-lane control improved held-out video/audio MSE only 2.84%/1.69%.
+Span-v2, changing only the noise coupling, improved the same metrics
+33.42%/31.78%; both held-out samples improved in both modalities. Its final
+training loss was 202 versus v1's 5366. This supports complete fine-noise
+conditioning as the correct Stage-1 direction, but remains a compute gate, not
+a decoded quality pass.
+
+The full four-transition span-v2 shared-adapter curriculum is now running. A
+fresh-phase validation bug was fixed upstream at `c30cb68`: newly trained
+span-v2 checkpoints now use the selected coupling validator just like resumed
+phases, rather than accidentally applying the default v1 rule. The upstream
+suite passes `736 passed, 22 skipped`.
