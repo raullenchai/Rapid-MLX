@@ -29,6 +29,9 @@ import pytest
 pytest.importorskip("mlx")
 pytestmark = pytest.mark.requires_mlx
 
+from collections import OrderedDict  # noqa: E402
+from typing import Any  # noqa: E402
+
 import mlx.core as mx  # noqa: E402
 import mlx.nn as nn  # noqa: E402
 
@@ -62,8 +65,12 @@ def _make_request(uid: int = 0, **overrides) -> MLLMBatchRequest:
     return MLLMBatchRequest(**fields)
 
 
-def _full_ids(n: int = 30, placeholder_at: int = 10) -> list[int]:
-    """An expanded sequence with one placeholder well inside the boundary."""
+def _full_ids(n: int = 196, placeholder_at: int = 10) -> list[int]:
+    """An expanded sequence with one placeholder well inside the boundary.
+
+    Long enough that the derived boundary stays above the 64-token
+    alignment grid after flooring (``_MEDIA_BOUNDARY_ALIGN_TOKENS``).
+    """
     ids = list(range(n))
     ids[placeholder_at] = _PLACEHOLDER_ID
     return ids
@@ -118,6 +125,72 @@ class _NoRopeModel:
         return _Output(mx.zeros((1, int(ids.shape[1]), self.vocab)))
 
 
+class _CommentRopeModel(_NoRopeModel):
+    """False-positive shape: the call body *mentions* ``"rope_deltas"`` in
+    a comment but consumes nothing — no ``**kwargs`` to carry it through."""
+
+    def __call__(self, ids, cache=None, pixel_values=None, rope_deltas=None):
+        # legacy callers used to pass "rope_deltas" positionally
+        start = int(ids[0, 0]) if ids.size else -1
+        self.calls.append((start, start + int(ids.shape[1]), pixel_values is not None))
+        return _Output(mx.zeros((1, int(ids.shape[1]), self.vocab)))
+
+
+class _EmbedFeatures:
+    def __init__(self, inputs_embeds, rope_deltas=None):
+        self.inputs_embeds = inputs_embeds
+        self.rope_deltas = rope_deltas
+
+    def to_dict(self):
+        return {"inputs_embeds": self.inputs_embeds}
+
+
+class _DirectLanguageModel:
+    """An mlx-vlm-shaped language model: accepts ``inputs_embeds`` and
+    consumes ``rope_deltas`` through ``**kwargs``."""
+
+    def __init__(self, vocab: int = VOCAB):
+        self.vocab = vocab
+        self.calls: list[tuple[int, int, Any]] = []
+        self._position_ids = None
+        self._rope_deltas = None
+
+    def __call__(self, tokens, inputs_embeds=None, mask=None, cache=None, **kwargs):
+        rope_deltas = kwargs.pop("rope_deltas", None)
+        start = int(tokens[0, 0]) if tokens.size else -1
+        self.calls.append((start, start + int(tokens.shape[1]), rope_deltas))
+        return _Output(mx.zeros((1, int(tokens.shape[1]), self.vocab)))
+
+
+class _PositionOverrideModel(_RecordingModel):
+    """qwen3-vl-shaped wrapper: merges ``InputEmbeddingsFeatures.to_dict()``
+    — including a freshly recomputed (0-based) position payload — into the
+    LM call. On a ``pixel_values=None`` suffix forward that merge overrides
+    the installed boundary delta, so the split must bypass this wrapper."""
+
+    def __init__(self, vocab: int = VOCAB):
+        super().__init__(vocab)
+        self.embed_calls: list[int] = []
+
+    def __call__(self, ids, cache=None, pixel_values=None, **kwargs):
+        rope_deltas = kwargs.pop("rope_deltas", None)
+        start = int(ids[0, 0]) if ids.size else -1
+        self.calls.append((start, start + int(ids.shape[1]), pixel_values is not None))
+        feats = self.get_input_embeddings(ids, pixel_values)
+        kwargs.update({"pixel_values": pixel_values, **feats.to_dict()})
+        return _Output(mx.zeros((1, int(ids.shape[1]), self.vocab)))
+
+    def get_input_embeddings(self, input_ids, pixel_values=None, **kwargs):
+        self.embed_calls.append(int(input_ids.shape[1]))
+        return _EmbedFeatures(mx.zeros((1, int(input_ids.shape[1]), 4)))
+
+
+class _OverrideNoEmbedsModel(_PositionOverrideModel):
+    """The corrupting wrapper shape WITHOUT the LM-direct escape hatch."""
+
+    get_input_embeddings = None  # type: ignore[assignment]
+
+
 class _Output:
     def __init__(self, logits):
         self.logits = logits
@@ -158,6 +231,7 @@ def _stub_generator(model=None, *, media_prefix_cache: str = "auto"):
     gen.allow_arrays_cache = True
     gen.singleton_fastpath = "auto"
     gen.media_prefix_cache = media_prefix_cache
+    gen._media_singleton_turn = True
     gen._media_boundary_entries = {}
     gen._media_boundary_hits = 0
     gen._media_boundary_misses = 0
@@ -216,6 +290,92 @@ class TestRopeKwargGate:
         # Gate fires before planning: no miss is counted.
         assert gen._media_boundary_misses == 0
 
+    def test_unsupported_wrapper_with_supporting_lm_opens_the_gate(self):
+        # The production qwen3-vl shape: the VLM wrapper itself never touches
+        # rope_deltas, but the language model pops it from **kwargs. The
+        # probe must scan both targets.
+        gen = _stub_generator(model=_NoRopeModel())
+        gen.language_model = _DirectLanguageModel()
+        assert gen._media_model_supports_rope_kwarg() is True
+
+    def test_comment_mention_without_kwargs_fails_closed(self):
+        # A quoted "rope_deltas" in a comment must not open the gate when
+        # the call has no **kwargs to carry it.
+        gen = _stub_generator(model=_CommentRopeModel())
+        assert gen._media_model_supports_rope_kwarg() is False
+
+
+class TestWrapperPositionOverride:
+    def test_probe_detects_to_dict_merging_wrapper(self):
+        override = _stub_generator(model=_PositionOverrideModel())
+        assert override._media_wrapper_overrides_positions() is True
+        plain = _stub_generator(model=_RecordingModel())
+        assert plain._media_wrapper_overrides_positions() is False
+
+    def test_plan_fails_closed_without_lm_direct_escape(self):
+        # The corrupting wrapper shape without get_input_embeddings: the
+        # suffix cannot bypass the wrapper, so planning fails closed before
+        # any forward (structural gate — no miss counted).
+        gen = _stub_generator(model=_OverrideNoEmbedsModel())
+        req = _make_request(
+            prompt="a" * 24,
+            pixel_values=mx.zeros((1, 2)),
+            prefix_boundary=20,
+            max_tokens=8,
+        )
+        assert gen._media_boundary_plan(req, _ids(_full_ids()), _kv_leaves()) is None
+        assert gen._media_boundary_misses == 0
+
+    def test_store_suffix_routes_through_language_model(self):
+        gen = _stub_generator(model=_PositionOverrideModel())
+        gen.language_model = _DirectLanguageModel()
+        req = _make_request(
+            prompt="a" * 24,
+            pixel_values=mx.zeros((1, 2)),
+            prefix_boundary=20,
+            max_tokens=8,
+        )
+        full_ids = _full_ids()
+        ids = _ids(full_ids)
+        cache = _kv_leaves()
+        rope_delta = mx.array([3])
+        gen.language_model._rope_deltas = rope_delta
+        gen._media_forward(req, ids, cache, {"pixel_values": req.pixel_values})
+
+        # Wrapper saw only the prefix forward (with vision inputs); the
+        # suffix went to the language model with the boundary delta.
+        assert [call[:2] for call in gen.model.calls] == [
+            (full_ids[0], len(full_ids) - 4)
+        ]
+        suffix_call = gen.language_model.calls[-1]
+        assert suffix_call[0] == full_ids[len(full_ids) - 4]
+        assert suffix_call[1] == len(full_ids)
+        assert suffix_call[2] is rope_delta
+
+    def test_resume_suffix_routes_through_language_model(self):
+        full_ids = _full_ids()
+        gen = _stub_generator(model=_PositionOverrideModel())
+        gen.language_model = _DirectLanguageModel()
+        req = _make_request(
+            prompt="a" * 24,
+            pixel_values=mx.zeros((1, 2)),
+            prefix_boundary=20,
+            max_tokens=8,
+        )
+        rope_delta = mx.array([7])
+        boundary = len(full_ids) - 4
+        gen._media_store(req, _kv_leaves(), _ids(full_ids), boundary, rope_delta)
+
+        fresh_cache = _kv_leaves()
+        gen._media_forward(req, _ids(full_ids), fresh_cache, {"pixel_values": None})
+        # Resume forwards the strict suffix via the LM-direct path only —
+        # the wrapper is never invoked on the resumed suffix.
+        assert gen.model.calls == []
+        suffix_call = gen.language_model.calls[-1]
+        assert suffix_call[0] == full_ids[boundary]
+        assert suffix_call[2] is rope_delta
+        assert req.cached_tokens == boundary
+
 
 class TestPlanGates:
     def test_off_flag_is_cold(self):
@@ -262,13 +422,42 @@ class TestPlanGates:
     def test_placeholder_after_boundary_fails_closed(self):
         gen = _stub_generator()
         full_ids = _full_ids()
-        full_ids[27] = _PLACEHOLDER_ID  # derived boundary is 26
+        full_ids[193] = _PLACEHOLDER_ID  # derived boundary 196, aligned 192
         req = _make_request(
-            prompt="a" * 24,
+            prompt="a" * 192,
             pixel_values=mx.zeros((1, 2)),
-            prefix_boundary=20,  # marker width 4 → boundary 26
+            prefix_boundary=188,  # marker width 4
         )
         assert gen._media_boundary_plan(req, _ids(full_ids), _kv_leaves()) is None
+        assert gen._media_boundary_misses == 1
+
+    def test_boundary_aligns_down_to_tile_grid(self):
+        # marker width 4 → derived boundary 196 → floored to the 64-token
+        # recurrent-scan grid: the split's tiles then coincide with the
+        # single forward's (bit-exact store/resume on hybrid models).
+        gen = _stub_generator()
+        req = _make_request(
+            prompt="a" * 196,
+            pixel_values=mx.zeros((1, 2)),
+            prefix_boundary=192,
+            max_tokens=8,
+        )
+        plan = gen._media_boundary_plan(req, _ids(_full_ids(200)), _kv_leaves())
+        assert plan is not None and plan[0] == "store"
+        assert plan[2] == 192
+
+    def test_alignment_below_placeholder_fails_closed(self):
+        # Flooring must never push the boundary onto a placeholder.
+        gen = _stub_generator()
+        ids = _full_ids(200)
+        ids[193] = _PLACEHOLDER_ID  # aligned boundary 192 < 193
+        req = _make_request(
+            prompt="a" * 196,
+            pixel_values=mx.zeros((1, 2)),
+            prefix_boundary=192,
+            max_tokens=8,
+        )
+        assert gen._media_boundary_plan(req, _ids(ids), _kv_leaves()) is None
         assert gen._media_boundary_misses == 1
 
     def test_missing_placeholder_config_fails_closed(self):
@@ -280,6 +469,69 @@ class TestPlanGates:
             prefix_boundary=20,
         )
         assert gen._media_boundary_plan(req, _ids(_full_ids()), _kv_leaves()) is None
+        assert gen._media_boundary_misses == 1
+
+    def test_wide_batch_never_plans(self):
+        # The plan is keyed to the actual B=1 turn: inside a wider batch the
+        # cache list is shared, so planning must fail closed (silently —
+        # structural gate, not a modeling miss).
+        gen = _stub_generator()
+        gen._media_singleton_turn = False
+        req = _make_request(pixel_values=mx.zeros((1, 2)))
+        assert gen._media_boundary_plan(req, _ids(_full_ids()), _kv_leaves()) is None
+        assert gen._media_boundary_misses == 0
+
+
+class TestResumePlaceholderGate:
+    def _seed_entry(self, stored_ids=None):
+        gen = _stub_generator()
+        req = _make_request(
+            prompt="a" * 24,
+            pixel_values=mx.zeros((1, 2)),
+            prefix_boundary=20,
+            max_tokens=8,
+        )
+        gen._media_mrope_save()
+        gen.language_model._rope_deltas = mx.array([7])
+        if stored_ids is None:
+            stored_ids = _full_ids(80)
+        gen._media_store(
+            req, _kv_leaves(), _ids(stored_ids), len(stored_ids) - 4, mx.array([7])
+        )
+        return gen
+
+    def test_suffix_placeholder_never_resumes(self):
+        # The image re-sent on a later turn re-expands placeholders below
+        # the boundary: the strict token prefix matches, but the resumed
+        # suffix forwards with pixel_values=None — it must be rejected.
+        gen = self._seed_entry()  # stored prefix = first 76 tokens
+        extended = _full_ids(200)  # prefix matches the stored 76 tokens
+        extended[150] = _PLACEHOLDER_ID  # inside the aligned boundary 192
+        req = _make_request(
+            prompt="a" * 196,  # marker width 4 → derived 196, aligned 192
+            pixel_values=mx.zeros((1, 2)),
+            prefix_boundary=192,
+            max_tokens=8,
+        )
+        hits_before = gen._media_boundary_hits
+        plan = gen._media_boundary_plan(req, _ids(extended), _kv_leaves())
+        assert plan is not None and plan[0] == "store"
+        assert gen._media_boundary_hits == hits_before
+        assert gen._media_boundary_misses == 1
+
+    def test_unresolvable_placeholder_ids_fail_resume_closed(self):
+        gen = self._seed_entry()
+        gen.model.config = None
+        req = _make_request(
+            prompt="a" * 196,
+            pixel_values=mx.zeros((1, 2)),
+            prefix_boundary=192,
+            max_tokens=8,
+        )
+        plan = gen._media_boundary_plan(req, _ids(_full_ids(200)), _kv_leaves())
+        # Cannot verify the suffix invariant → clean miss; without the ids
+        # the store gate stays closed too.
+        assert plan is None
         assert gen._media_boundary_misses == 1
 
 
@@ -297,9 +549,9 @@ class TestMediaIdentity:
     def test_stamped_feature_key_wins(self):
         gen = _stub_generator()
         keyed = _make_request(vision_feature_key="stamped-key")
-        assert gen._media_identity_digest(keyed) == hash(("stamped-key",)) & (
-            0xFFFFFFFFFFFF
-        )
+        # The full key string keys the OrderedDict — no truncated hash that
+        # could alias distinct media sets.
+        assert gen._media_identity_digest(keyed) == "stamped-key"
 
 
 class TestStorePath:
@@ -578,6 +830,67 @@ class TestBudget:
             _make_request(images=["img3.png"], vision_feature_key="hash-img3.png")
         )
         assert digest in gen._media_boundary_entries
+
+    def test_text_budget_credits_media_bytes(self, monkeypatch):
+        # Symmetric accounting: the text eviction must charge the media
+        # store's bytes against the shared ceiling, exactly as the media
+        # store credits the text footprint.
+        import threading
+
+        gen = _stub_generator()
+        gen._prefix_cache_max_bytes = 12
+        gen._prefix_cache_budget_evictions = 0
+        gen._media_boundary_max_bytes = 12
+        gen._media_boundary_entries["media"] = type(
+            "Entry", (), {"cache_bytes": 10}
+        )()
+        lock = threading.Lock()
+        entries: OrderedDict[str, Any] = OrderedDict()
+        for key in ("a", "b"):
+            entries[key] = type(
+                "ExactEntry", (), {"prompt_cache": [type("L", (), {"nbytes": 5})()]}
+            )()
+        monkeypatch.setattr(gen, "_exact_entries", lambda cache: (lock, entries))
+        monkeypatch.setattr(
+            "vllm_mlx.mllm_batch_generator.checkpoint_bytes", lambda stored: 0
+        )
+        # Effective budget 12 - 10 = 2 against 10 text bytes: oldest evicted,
+        # newest kept — same contract as the media-side enforcement.
+        gen._enforce_exact_cache_budget(object())
+        assert list(entries) == ["b"]
+        assert gen._prefix_cache_budget_evictions == 1
+
+    def test_footprint_zero_without_text_cache(self):
+        gen = _stub_generator()
+        assert gen._exact_cache_footprint_bytes() == 0
+
+
+class TestClearPrefixCache:
+    def test_clear_drops_media_entries_without_text_cache(self, monkeypatch):
+        gen = _stub_generator()
+        req = _make_request()
+        gen._media_mrope_save()
+        gen._media_store(
+            req, _kv_leaves(), _ids(_full_ids()), 26, mx.array([7])
+        )
+        assert gen._media_boundary_entries
+        monkeypatch.setattr(gen, "_media_enforce_budget", lambda: None)
+        # No text-APC manager attached: text clearing reports False, but the
+        # media snapshots must still be dropped (they pin real KV bytes).
+        assert gen.clear_prefix_cache() is False
+        assert not gen._media_boundary_entries
+
+    def test_clear_with_text_cache_drops_both(self, monkeypatch):
+        gen = _stub_generator()
+        req = _make_request()
+        gen._media_mrope_save()
+        gen._media_store(req, _kv_leaves(), _ids(_full_ids()), 26, mx.array([7]))
+        monkeypatch.setattr(gen, "_media_enforce_budget", lambda: None)
+        cache = type("Cache", (), {"clear": lambda self: None})()
+        cache.stats_snapshot = lambda: {"evictions": 0}
+        gen._prefix_cache = cache
+        assert gen.clear_prefix_cache() is True
+        assert not gen._media_boundary_entries
 
 
 class TestDetachContract:
