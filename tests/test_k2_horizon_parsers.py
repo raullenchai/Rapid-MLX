@@ -323,9 +323,7 @@ def test_declared_json_schema_contract_fails_closed(arguments):
 )
 def test_schema_type_violation_after_coercion_fails_closed(wire_format, call):
     output = _group(call)
-    result = K2HorizonToolParser().extract_tool_calls(
-        output, _request(wire_format)
-    )
+    result = K2HorizonToolParser().extract_tool_calls(output, _request(wire_format))
     assert not result.tools_called
     assert result.content == output
 
@@ -358,7 +356,11 @@ def test_incomplete_stream_searches_only_the_new_closer_window():
 
         def find(self, sub, start=0, end=None):
             self.starts.append((sub, start))
-            return super().find(sub, start) if end is None else super().find(sub, start, end)
+            return (
+                super().find(sub, start)
+                if end is None
+                else super().find(sub, start, end)
+            )
 
     parser = K2HorizonToolParser()
     request = _request()
@@ -366,17 +368,21 @@ def test_incomplete_stream_searches_only_the_new_closer_window():
         "<ifm|tool_calls><ifm|tool_call>lookup<ifm|arg_key>query</ifm|arg_key>"
         "<ifm|arg_value>"
     )
-    assert parser.extract_tool_calls_streaming(
-        "", opening, str(opening), request=request
-    ) is None
+    assert (
+        parser.extract_tool_calls_streaming("", opening, str(opening), request=request)
+        is None
+    )
 
     previous = str(opening)
     for chunk in ("x" * 10_000, "y" * 10_000):
         current = ObservedText(previous + chunk)
         ObservedText.starts.clear()
-        assert parser.extract_tool_calls_streaming(
-            previous, current, chunk, request=request
-        ) is None
+        assert (
+            parser.extract_tool_calls_streaming(
+                previous, current, chunk, request=request
+            )
+            is None
+        )
         closer_searches = [
             start for marker, start in ObservedText.starts if marker == parser.GROUP_END
         ]
@@ -453,14 +459,20 @@ def test_streaming_resumes_immediately_after_post_tool_reasoning_closer():
     assert first is not None and len(first["tool_calls"]) == 1
 
     private = group + "private retry"
-    assert parser.extract_tool_calls_streaming(
-        group, private, "private retry", request=_request()
-    ) is None
+    assert (
+        parser.extract_tool_calls_streaming(
+            group, private, "private retry", request=_request()
+        )
+        is None
+    )
 
     boundary = private + "</ifm|think_fast>"
-    assert parser.extract_tool_calls_streaming(
-        private, boundary, "</ifm|think_fast>", request=_request()
-    ) is None
+    assert (
+        parser.extract_tool_calls_streaming(
+            private, boundary, "</ifm|think_fast>", request=_request()
+        )
+        is None
+    )
 
     visible = boundary + "Visible"
     assert parser.extract_tool_calls_streaming(

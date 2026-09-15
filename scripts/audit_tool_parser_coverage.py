@@ -118,6 +118,11 @@ MATRIX_EXEMPT: dict[str, str] = {
         "tests/test_tool_call_value_fidelity.py, and "
         "tests/test_tool_call_streaming_parity.py"
     ),
+    "k2_horizon": (
+        "TODO: add K2 Horizon to golden_models when a correctness-grade "
+        "8-bit checkpoint is available; the current public 4-bit checkpoint "
+        "is covered by schema-aware parser contracts and a real M4 server run"
+    ),
     # UI-TARS (ByteDance) — GUI-agent VLM. Adding a real golden_models
     # entry requires running a Qwen2-VL / Qwen2.5-VL backbone in the
     # pr_validate matrix (mlx-vlm path, not the plain mlx-lm path the

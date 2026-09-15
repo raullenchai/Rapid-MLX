@@ -3,6 +3,7 @@
   "sizes": {
     "Anes1032/Wan2.2-I2V-A14B-mlx-q8": 42681013381,
     "Anes1032/Wan2.2-TI2V-5B-mlx-q8": 19580244943,
+    "abenzerps/K2-Horizon-7B-MLX-4bit": 5084583460,
     "Jackrong/MLX-Qwopus3.5-27B-v3-4bit": 15153228040,
     "Jackrong/MLX-Qwopus3.5-27B-v3-8bit": null,
     "Jackrong/MLX-Qwopus3.5-9B-v3-4bit": 5058235850,

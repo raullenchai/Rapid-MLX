@@ -316,6 +316,11 @@ _PARITY_COVERAGE_EXEMPT: dict[str, str] = {
     "ui-tars": "alias of ui_tars (kebab-case spelling)",
     "uitars": "alias of ui_tars (no-separator spelling)",
     "liquid": "alias of lfm",
+    "k2_horizon": (
+        "IFM extraction requires the request's declared tool schema; dedicated "
+        "character-boundary stream/non-stream contracts live in "
+        "test_k2_horizon_parsers.py"
+    ),
     "auto": "router, not a wire-format parser",
     "generic": "router, not a wire-format parser",
 }
