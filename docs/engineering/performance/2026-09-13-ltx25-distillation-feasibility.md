@@ -223,3 +223,28 @@ workspace packages on `PYTHONPATH`.
 - [Progressive Distillation for Fast Sampling of Diffusion Models](https://arxiv.org/abs/2202.00512)
 - [DOLLAR: Few-Step Video Generation via Distillation and Latent Reward Optimization](https://arxiv.org/abs/2412.15689)
 - [SCott: Accelerating Diffusion Models with Stochastic Consistency Distillation](https://arxiv.org/abs/2403.01505)
+
+## Stage-1 schedule attribution (2026-09-15)
+
+The broad 24-prompt `0 -> 3` control improved a new 12-trajectory held-out
+split by 31.13% video MSE and 24.76% audio MSE, modestly better than the narrow
+adapter's 28.19%/20.65%. Its chef decode recovered only a partial late side
+face and still failed front-facing speaker preservation.
+
+Holding the original `[0,3,5,7,8]` schedule fixed while disabling only the
+early adapter took 257.90 seconds (2.094x); disabling every adapter took 254.39
+seconds (2.123x). Both retained the identity/framing failure, which rejects
+the adapters as the primary cause. Four clean-base boundary controls then
+measured `[0,1,5,7,8]` at 257.32 seconds (2.098x), `[0,1,3,7,8]` at 258.57
+seconds (2.088x), `[0,1,3,5,7,8]` at 276.10 seconds (1.956x), and
+`[0,1,2,7,8]` at 255.40 seconds (2.114x). All had zero swap and all failed
+the same decoded chef identity gate.
+
+Pure clean-base schedule search is therefore stopped. The next candidate is
+`[0,1,3,5,7,8]` with exact base at `0 -> 1` and `7 -> 8`, a newly trained
+broad-data student at `1 -> 3`, and the independent students at `3 -> 5` and
+`5 -> 7`. It remains diagnostic-only. The 1.956x clean-base timing is 2.27%
+above the 2x latency threshold; the separately measured equivalent
+dequantized-linear dispatch saved 4.49% on the 241-frame workload, so the
+combined budget can exceed 2x if and only if the learned schedule first passes
+decoded quality.

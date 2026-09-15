@@ -441,3 +441,14 @@ Two held-out chef renders are queued after the broad control: clean base for
 only `0 -> 3`, then clean base for every compressed span. They preserve the
 same 4+1 schedule and isolate adapter harm from schedule harm. Full upstream
 tests pass (`781 passed, 22 skipped`).
+
+Those controls and four alternative clean-base schedules are now complete.
+All met 1.956-2.123x timing with zero swap, but every one lost the chef's
+identity/front-facing framing. Adapter attribution and pure boundary guessing
+are closed. Upstream `23ebfd7` adds private custom schedule/checkpoint binding,
+an explicit `1 -> 3` independent training control, and a single-transition
+paired evaluator; full tests pass (`783 passed, 22 skipped`). MZR-3 is training
+that one 100-step broad-data checkpoint. A fail-closed supervisor will require
+at least 10% mean video/audio MSE improvement and no held-out sample regression
+above 5% before decoding `[0,1,3,5,7,8]`. Atlas must keep public API/default
+integration blocked until decoded qualification and cross-generation testing.
