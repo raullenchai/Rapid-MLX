@@ -371,7 +371,7 @@ struct ModelPickerBar: View {
             }
             .accessibilityIdentifier("ModelPickerBar.Delete.Cancel")
         } message: { entry in
-            Text("Removes this model from your Mac. You can download it again later by selecting it.\(entry.sizeOnDisk.map { " Frees \($0)." } ?? "")")
+            Text("Removes this model from your Mac. You can download it again later by selecting it.\(entry.sizeOnDisk.map { String(localized: " Frees \($0).") } ?? "")")
         }
         // v0.5.2: brief toast at the top of the picker after a
         // successful (or failed) deletion. Auto-dismisses after a
@@ -566,7 +566,7 @@ struct ModelPickerBar: View {
         // single AXMenuButton announced as "Model, <alias>, pop up button"
         // rather than spelling out SF Symbol names.
         .accessibilityLabel("Model")
-        .accessibilityValue(pickerIsUnresolved ? "No model chosen" : alias)
+        .accessibilityValue(pickerIsUnresolved ? String(localized: "No model chosen") : alias)
         .accessibilityHint("Choose which model to run")
         .accessibilityIdentifier("ModelPickerBar.ModelMenu")
     }
@@ -592,7 +592,7 @@ struct ModelPickerBar: View {
 
     /// What the composer chip shows. A real alias, or an instruction.
     private var pickerLabel: String {
-        ModelDisplayName.configValue(alias: alias) ?? "Choose a model"
+        ModelDisplayName.configValue(alias: alias) ?? String(localized: "Choose a model")
     }
 
     /// True when the chip is showing the instruction rather than a model.
@@ -751,7 +751,7 @@ struct ModelPickerBar: View {
     /// later edited around it. The two candidates considered in
     /// The row makes the product recommendation without promising a download
     /// duration or claiming this quality-floor starter is the smallest model.
-    static let quickstartSubtitle: String = "Recommended first model"
+    static let quickstartSubtitle: String = String(localized: "Recommended first model")
 
     /// Resolve the safe picker default while the current user is still
     /// eligible for Quickstart. Kept pure so the retired-starter regression
@@ -790,13 +790,15 @@ struct ModelPickerBar: View {
     /// ``"<alias> · <subtitle>"`` — so the Quickstart row stays
     /// visually consistent with the other sections.
     static func quickstartRowTitle(alias: String) -> String {
-        return "\(alias) · \(quickstartSubtitle)"
+        return String(localized: "\(alias) · \(quickstartSubtitle)")
     }
 
     /// VoiceOver label for the Quickstart row.
     static func quickstartRowAccessibilityLabel(alias: String, cached: Bool) -> String {
-        let downloaded = cached ? "downloaded" : "not downloaded"
-        return "Quickstart: \(alias), \(downloaded). \(quickstartSubtitle)."
+        let downloaded = cached
+            ? String(localized: "downloaded")
+            : String(localized: "not downloaded")
+        return String(localized: "Quickstart: \(alias), \(downloaded). \(quickstartSubtitle).")
     }
 
     /// Pure helper for the "All models" dedup. When the Quickstart
@@ -841,7 +843,7 @@ struct ModelPickerBar: View {
     /// the file's "lift the truth table out" pattern.
     static func recommendedHeaderTitle(physicalRAMGB: Double) -> String {
         let gb = max(1, Int(physicalRAMGB.rounded()))
-        return "Recommended for your \(gb) GB Mac"
+        return String(localized: "Recommended for your \(gb) GB Mac")
     }
 
     /// v0.6.9: a single alphabetical "All models" list, no separate
@@ -954,7 +956,7 @@ struct ModelPickerBar: View {
             rowAlias: entry.alias
         )
         let baseTitle = ModelPickerBar.recommendedRowMenuTitle(
-            label: isPrimary ? "Recommended" : "Faster",
+            label: isPrimary ? String(localized: "Recommended") : String(localized: "Faster"),
             alias: entry.alias
         )
         let title = isSelected
@@ -995,7 +997,7 @@ struct ModelPickerBar: View {
     /// dash separator anchors the "Recommended" / "Faster" label on the
     /// left while the alias trails on the right.
     static func recommendedRowMenuTitle(label: String, alias: String) -> String {
-        return "\(label) — \(alias)"
+        return String(localized: "\(label) — \(alias)")
     }
 
     /// Tooltip / caption tagline for a recommended row: whether it's the
@@ -1004,7 +1006,9 @@ struct ModelPickerBar: View {
     /// ``caveat`` (e.g. a chat specialist) shows that word in place of the
     /// capability %. Pure so tests can pin the copy without a SwiftUI host.
     static func recommendedTagline(pick: RAMBucketedDefault.Pick, isPrimary: Bool) -> String {
-        let lead = isPrimary ? "Best pick for your Mac" : "Faster, lighter alternative"
+        let lead = isPrimary
+            ? String(localized: "Best pick for your Mac")
+            : String(localized: "Faster, lighter alternative")
         var parts = [lead]
         if let caveat = pick.caveat {
             if let tps = pick.tokensPerSec {
@@ -1012,7 +1016,7 @@ struct ModelPickerBar: View {
             }
             parts.append(caveat)
         } else {
-            parts.append("\(pick.capabilityPct)% capability")
+            parts.append(String(localized: "\(pick.capabilityPct)% capability"))
             if let tps = pick.tokensPerSec {
                 parts.append("~\(Int(tps.rounded())) tok/s")
             }
@@ -1029,7 +1033,7 @@ struct ModelPickerBar: View {
     /// title survives the NSMenu collapse and, unlike a bare tick, says
     /// what it means: this is the current model.
     static func currentSelectionTitle(_ title: String) -> String {
-        "\(title) (current)"
+        String(localized: "\(title) (current)")
     }
 
     /// Pure helper so tests can pin the "should this recommended row paint
@@ -1133,7 +1137,7 @@ struct ModelPickerBar: View {
         } label: {
             Label(
                 ModelPickerBar.aliasButtonTitle(alias: entry.alias, bucket: bucket)
-                    + (notFit ? " · needs ~\(Int(footprint.totalGB.rounded())) GB" : ""),
+                    + (notFit ? String(localized: " · needs ~\(Int(footprint.totalGB.rounded())) GB") : ""),
                 systemImage: ModelPickerBar.cacheGlyph(cached: entry.cached)
             )
         }
@@ -1146,7 +1150,7 @@ struct ModelPickerBar: View {
         // ``qualityRowHelpText`` so the help() modifier stays a single
         // value and tests can pin the multi-line copy.
         .help(notFit
-            ? "Estimated to need about \(Int(footprint.totalGB.rounded())) GB; this Mac has \(Int(hardware.usableRAMGB.rounded())) GB available for models. You can download it, but starting it may fail or destabilize the Mac."
+            ? String(localized: "Estimated to need about \(Int(footprint.totalGB.rounded())) GB; this Mac has \(Int(hardware.usableRAMGB.rounded())) GB available for models. You can download it, but starting it may fail or destabilize the Mac.")
             : ModelPickerBar.aliasRowHelpText(
                 alias: entry.alias,
                 bucket: bucket,
@@ -1165,7 +1169,7 @@ struct ModelPickerBar: View {
                 alias: entry.alias,
                 cached: entry.cached,
                 bucket: bucket
-            ) + (notFit ? ". Not fit for this Mac. Needs about \(Int(footprint.totalGB.rounded())) gigabytes" : "")
+            ) + (notFit ? String(localized: ". Not fit for this Mac. Needs about \(Int(footprint.totalGB.rounded())) gigabytes") : "")
         )
         // v0.5.2: right-click → "Delete from disk". Cached rows
         // only — uncached models would just trigger "alias not
@@ -1297,7 +1301,9 @@ struct ModelPickerBar: View {
         bucket: ModelPickerVisibility.QualityBucket,
         cached: Bool
     ) -> String {
-        let cacheHint = cached ? "Already downloaded" : "Will download on Start"
+        let cacheHint = cached
+            ? String(localized: "Already downloaded")
+            : String(localized: "Will download on Start")
         let base = ModelPickerVisibility.qualityRowHelpText(for: bucket, cacheHint: cacheHint)
         let confidence = ToolUseCapability.confidence(for: alias)
         let toolsLine: String
@@ -1305,9 +1311,9 @@ struct ModelPickerBar: View {
         case .known:
             return base
         case .broken:
-            toolsLine = "Tools are off on this model — empirical bench shows it ignores tool calls and hallucinates the answer. Chips that promise tools are hidden on the empty-state hero."
+            toolsLine = String(localized: "Tools are off on this model — empirical bench shows it ignores tool calls and hallucinates the answer. Chips that promise tools are hidden on the empty-state hero.")
         case .unknown:
-            toolsLine = "Tool calls are unverified on this model — we have no bench signal yet. Chips that promise tools are hidden on the empty-state hero until verified."
+            toolsLine = String(localized: "Tool calls are unverified on this model — we have no bench signal yet. Chips that promise tools are hidden on the empty-state hero until verified.")
         }
         // Empty alias resolves to .unknown above, but
         // ``shouldBadgeAliasForToolUse`` defensively suppresses for
@@ -1341,7 +1347,9 @@ struct ModelPickerBar: View {
         cached: Bool,
         bucket: ModelPickerVisibility.QualityBucket
     ) -> String {
-        let downloaded = cached ? "downloaded" : "not downloaded"
+        let downloaded = cached
+            ? String(localized: "downloaded")
+            : String(localized: "not downloaded")
         let qualityPart: String
         // #348: mirror the visible-suffix split (``.tiny`` → "tiny",
         // ``.small`` → "small") so VoiceOver users get the same
@@ -1351,9 +1359,9 @@ struct ModelPickerBar: View {
         // the unified tooltip in ``qualityStickerTooltip``.
         switch bucket {
         case .tiny:
-            qualityPart = "\(alias), \(downloaded), tiny model — may contradict itself in multi-turn chat"
+            qualityPart = String(localized: "\(alias), \(downloaded), tiny model — may contradict itself in multi-turn chat")
         case .small:
-            qualityPart = "\(alias), \(downloaded), small model — may contradict itself in multi-turn chat"
+            qualityPart = String(localized: "\(alias), \(downloaded), small model — may contradict itself in multi-turn chat")
         case .midOrLarger:
             qualityPart = "\(alias), \(downloaded)"
         }
@@ -1368,12 +1376,12 @@ struct ModelPickerBar: View {
     /// without standing up the picker.
     static func deletionTitle(for entry: ModelEntry?) -> String {
         guard let entry = entry else {
-            return "Delete this model?"
+            return String(localized: "Delete this model?")
         }
         if let size = entry.sizeOnDisk {
-            return "Delete \"\(entry.alias)\"? This frees \(size)."
+            return String(localized: "Delete \"\(entry.alias)\"? This frees \(size).")
         }
-        return "Delete \"\(entry.alias)\"?"
+        return String(localized: "Delete \"\(entry.alias)\"?")
     }
 
     private var pickerIcon: String {
@@ -1407,13 +1415,13 @@ struct ModelPickerBar: View {
             // shows so the elapsed clock has a slot to render
             // alongside, and the user gets immediate feedback that
             // the start command was received.
-            return "Starting the model…"
+            return String(localized: "Starting the model…")
         case .loading:
-            return "Loading into memory…"
+            return String(localized: "Loading into memory…")
         case .warmingUp:
-            return "Warming up…"
+            return String(localized: "Warming up…")
         case .downloading:
-            guard let fraction else { return "Downloading…" }
+            guard let fraction else { return String(localized: "Downloading…") }
             let pct = max(0, min(100, Int((fraction * 100).rounded())))
             // if-let rather than Optional.map: a closure literal inside
             // this @MainActor type inherits main-actor isolation, and
@@ -1535,7 +1543,9 @@ struct ModelPickerBar: View {
         // Two-step: name one action at a time. Uncached ⇒ "Download" (fetch
         // only); once on disk the same button becomes "Start" (load). Matches
         // the readiness banner so both controls speak the same verb.
-        selectedAliasIsCached ? "Start" : "Download"
+        selectedAliasIsCached
+            ? String(localized: "Start")
+            : String(localized: "Download")
     }
 
     private var startButtonIcon: String {
@@ -1563,11 +1573,11 @@ struct ModelPickerBar: View {
         // button with the normal "Download from HF, then start"
         // tooltip and reads the gate as a bug.
         if ModelPickerBar.isQuickstartInFlight(phase: quickstart?.phase) {
-            return "Quickstart download in progress"
+            return String(localized: "Quickstart download in progress")
         }
         return selectedAliasIsCached
-            ? "Start the model (cached locally)"
-            : "Download the weights from Hugging Face. Start it once the download finishes. Can take several minutes on first run."
+            ? String(localized: "Start the model (cached locally)")
+            : String(localized: "Download the weights from Hugging Face. Start it once the download finishes. Can take several minutes on first run.")
     }
 
     // MARK: - v0.6.9 tooBig Start guard
@@ -1660,9 +1670,9 @@ struct ModelPickerBar: View {
     static func tooBigAlertTitle(alias: String, physicalRAMGB: Double) -> String {
         let gb = max(1, Int(physicalRAMGB.rounded()))
         if alias.isEmpty {
-            return "This model likely won't fit your \(gb) GB Mac"
+            return String(localized: "This model likely won't fit your \(gb) GB Mac")
         }
-        return "\(alias) likely won't fit your \(gb) GB Mac"
+        return String(localized: "\(alias) likely won't fit your \(gb) GB Mac")
     }
 
     /// Pure helper — produces the body string from the footprint and
@@ -1678,13 +1688,13 @@ struct ModelPickerBar: View {
         let total = Int(footprint.totalGB.rounded())
         let firstSentence: String
         if footprint.paramsBillions != nil && total > 0 {
-            firstSentence = "Estimated need ≈ \(total) GB; your Mac has about \(usable) GB available for the model."
+            firstSentence = String(localized: "Estimated need ≈ \(total) GB; your Mac has about \(usable) GB available for the model.")
         } else {
             // Unknown parameter count — skip the numeric comparison
             // rather than report "0 GB needed" which reads as a bug.
-            firstSentence = "Estimated footprint exceeds your Mac's usable RAM (\(usable) GB)."
+            firstSentence = String(localized: "Estimated footprint exceeds your Mac's usable RAM (\(usable) GB).")
         }
-        return "\(firstSentence) Continuing may cause swap thrashing, performance crashes, or system lock-up."
+        return String(localized: "\(firstSentence) Continuing may cause swap thrashing, performance crashes, or system lock-up.")
     }
 
     /// v1.0.1: the last native-blue surface in the app.
@@ -1925,7 +1935,7 @@ struct ModelPickerBar: View {
         titlebarStyle: Bool
     ) -> String {
         if titlebarStyle, case .starting = state {
-            return "Starting"
+            return String(localized: "Starting")
         }
         return stateLabel(state: state, activity: activity)
     }
@@ -1952,7 +1962,7 @@ struct ModelPickerBar: View {
         activity: DownloadProgress.StartupActivity
     ) -> String {
         switch state {
-        case .missing: return "Not installed"
+        case .missing: return String(localized: "Not installed")
         case .idle, .stopped:
             // #129: visually identical pills meaning two different
             // server-lifecycle states confused users. After a Stop
@@ -1964,20 +1974,20 @@ struct ModelPickerBar: View {
             // matching Ollama / LM Studio. The internal ``ServerState``
             // enum keeps both cases so other surfaces can still react
             // (e.g. session-restore behavior on .stopped).
-            return "Idle"
+            return String(localized: "Idle")
         case .starting:
             // The alias is intentionally omitted — the picker to the
             // left already names the model, so repeating it here was
             // duplicate clutter. ``progressSubtitle`` carries the
             // percent + ETA summary below the label.
             switch activity {
-            case .downloading: return "Downloading"
-            case .warmingUp: return "Warming up"
-            case .loading: return "Loading"
-            case .starting: return "Starting"
+            case .downloading: return String(localized: "Downloading")
+            case .warmingUp: return String(localized: "Warming up")
+            case .loading: return String(localized: "Loading")
+            case .starting: return String(localized: "Starting")
             }
-        case .ready: return "Ready"
-        case .crashed: return "Crashed"
+        case .ready: return String(localized: "Ready")
+        case .crashed: return String(localized: "Crashed")
         }
     }
 
@@ -2120,7 +2130,7 @@ struct ModelInfoPopover: View {
         }
     }
 
-    private func infoRow(_ label: String, _ value: String) -> some View {
+    private func infoRow(_ label: LocalizedStringKey, _ value: String) -> some View {
         HStack {
             Text(label)
                 .foregroundStyle(.secondary)

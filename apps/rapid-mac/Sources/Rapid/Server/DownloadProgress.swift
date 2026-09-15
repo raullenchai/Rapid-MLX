@@ -893,7 +893,7 @@ final class DownloadProgress {
                     }
                 }
             } else {
-                parts.append("\(Self.formatBytes(bytes)) downloaded")
+                parts.append(String(localized: "\(Self.formatBytes(bytes)) downloaded"))
                 if let speed = bytesPerSecond {
                     parts.append(Self.formatSpeed(bytesPerSecond: speed))
                 }
@@ -904,11 +904,11 @@ final class DownloadProgress {
         case .idle, .preparing, .warmingUp:
             return nil
         case .fetching(let done, let total, let percent):
-            return "\(done) of \(total) file\(total == 1 ? "" : "s") (\(percent)%)"
+            return String(localized: "\(done) of \(total) file\(total == 1 ? "" : "s") (\(percent)%)")
         case .downloading(let file, let done, let total, let percent, let speed, let eta):
             var parts: [String] = ["\(percent)%", "\(file) (\(done)/\(total))"]
             if let speed { parts.append(speed) }
-            if let eta { parts.append("ETA \(eta)") }
+            if let eta { parts.append(String(localized: "ETA \(eta)")) }
             return parts.joined(separator: " · ")
         }
     }
@@ -979,8 +979,8 @@ final class DownloadProgress {
         guard rate > 0, bytesRemaining > 0 else { return nil }
         let seconds = Double(bytesRemaining) / rate
         guard seconds.isFinite else { return nil }
-        if seconds < 60 { return "< 1 min left" }
-        if seconds >= 24 * 3600 { return "> 24 h left" }
+        if seconds < 60 { return String(localized: "< 1 min left") }
+        if seconds >= 24 * 3600 { return String(localized: "> 24 h left") }
         // Compute minutes first, then carry into hours so values that
         // round up to 60 don't render as "60 min left" or "1 h 60 min
         // left". E.g. ``seconds = 7170`` (1h 59.5m) used to render as
@@ -991,9 +991,9 @@ final class DownloadProgress {
             hours += 1
             minutes = 0
         }
-        if hours == 0 { return "\(minutes) min left" }
-        if minutes == 0 { return "\(hours) h left" }
-        return "\(hours) h \(minutes) min left"
+        if hours == 0 { return String(localized: "\(minutes) min left") }
+        if minutes == 0 { return String(localized: "\(hours) h left") }
+        return String(localized: "\(hours) h \(minutes) min left")
     }
 
     private nonisolated static func speedToken(in tail: String) -> String? {

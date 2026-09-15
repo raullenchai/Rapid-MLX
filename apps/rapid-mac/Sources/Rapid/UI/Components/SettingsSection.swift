@@ -53,8 +53,10 @@ extension EnvironmentValues {
 
 /// A titled group of settings rows on one card.
 struct SettingsSection<Content: View, Accessory: View>: View {
-    let title: String?
-    var subtitle: String?
+    /// `LocalizedStringKey`, not `String` — a `String` here reaches
+    /// `SectionHeader` and renders verbatim. See that type for the full note.
+    let title: LocalizedStringKey?
+    var subtitle: LocalizedStringKey?
     @ViewBuilder var accessory: Accessory
     @ViewBuilder var content: Content
 
@@ -80,8 +82,8 @@ struct SettingsSection<Content: View, Accessory: View>: View {
 extension SettingsSection where Accessory == EmptyView {
     /// A section with no trailing header control.
     init(
-        _ title: String? = nil,
-        subtitle: String? = nil,
+        _ title: LocalizedStringKey? = nil,
+        subtitle: LocalizedStringKey? = nil,
         @ViewBuilder content: () -> Content
     ) {
         self.title = title
@@ -94,8 +96,8 @@ extension SettingsSection where Accessory == EmptyView {
 extension SettingsSection {
     /// A section whose heading carries a trailing control (an "Add…").
     init(
-        _ title: String,
-        subtitle: String? = nil,
+        _ title: LocalizedStringKey,
+        subtitle: LocalizedStringKey? = nil,
         @ViewBuilder accessory: () -> Accessory,
         @ViewBuilder content: () -> Content
     ) {
@@ -175,8 +177,8 @@ extension View {
 /// of these run to three lines, and truncating a sentence that explains
 /// what a switch does is the wrong trade.
 struct SettingsRowLabel: View {
-    let title: String
-    var description: String? = nil
+    let title: LocalizedStringKey
+    var description: LocalizedStringKey? = nil
 
     var body: some View {
         VStack(alignment: .leading, spacing: RapidTheme.Space.xxs) {
@@ -207,8 +209,8 @@ struct SettingsRowLabel: View {
 /// ``TrailingSettingsToggleStyle`` with a ``SettingsRowLabel`` inside —
 /// the native switch stays native.
 struct SettingsRow<Control: View>: View {
-    let title: String
-    var description: String? = nil
+    let title: LocalizedStringKey
+    var description: LocalizedStringKey? = nil
     @ViewBuilder var control: Control
 
     var body: some View {

@@ -95,11 +95,11 @@ struct ResidentReplacementProjection: Codable, Sendable, Equatable {
         let projectedGB = Double(projectedBytes) / gib
         let limitGB = Double(limitBytes) / gib
         let release = releasedGB > 0
-            ? "Rapid can release about \(max(1, Int(releasedGB.rounded()))) GB from the current model, but "
+            ? String(localized: "Rapid can release about \(max(1, Int(releasedGB.rounded()))) GB from the current model, but ")
             : ""
         return release
-            + "\(alias) would still need about \(Int(projectedGB.rounded())) GB "
-            + "of the \(Int(limitGB.rounded())) GB model-memory budget."
+            + String(localized: "\(alias) would still need about \(Int(projectedGB.rounded())) GB ")
+            + String(localized: "of the \(Int(limitGB.rounded())) GB model-memory budget.")
     }
 }
 
@@ -304,8 +304,10 @@ struct ModelSwitchRisk: Equatable, Sendable {
     }
 
     var title: String {
-        let noun = activeRequests == 1 ? "request" : "requests"
-        return "Model \(currentAlias) is serving \(activeRequests) active \(noun). Switch anyway?"
+        let noun = activeRequests == 1
+            ? String(localized: "request")
+            : String(localized: "requests")
+        return String(localized: "Model \(currentAlias) is serving \(activeRequests) active \(noun). Switch anyway?")
     }
 }
 
@@ -490,11 +492,11 @@ struct ServerResidencyClient {
         do {
             let (data, response) = try await session.data(for: request)
             guard let http = response as? HTTPURLResponse else {
-                return .rejected("The model server returned an invalid response.")
+                return .rejected(String(localized: "The model server returned an invalid response."))
             }
             if (200...299).contains(http.statusCode) {
                 guard let status = try? JSONDecoder().decode(ResidentModelStatus.self, from: data) else {
-                    return .rejected("The model server returned invalid residency data.")
+                    return .rejected(String(localized: "The model server returned invalid residency data."))
                 }
                 return .loaded(status)
             }
@@ -512,9 +514,11 @@ struct ServerResidencyClient {
             let detail = envelope?.replacementProjection?.rejectionMessage(alias: alias)
                 ?? envelope?.error?.message
                 ?? nestedDetail
-            return .rejected(detail ?? "The model could not be kept resident (HTTP \(http.statusCode)).")
+            return .rejected(
+                detail ?? String(localized: "The model could not be kept resident (HTTP \(http.statusCode)).")
+            )
         } catch {
-            return .rejected("The model server could not load another resident model.")
+            return .rejected(String(localized: "The model server could not load another resident model."))
         }
     }
 }

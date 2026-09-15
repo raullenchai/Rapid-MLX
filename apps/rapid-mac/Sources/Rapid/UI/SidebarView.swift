@@ -185,106 +185,15 @@ struct SidebarView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 1) {
             brandLockup
-            row(
-                title: "New Chat",
-                systemImage: "square.and.pencil",
-                isSelected: false,
-                action: onNewChat
-            )
-            .accessibilityIdentifier("Sidebar.NewChat")
-            row(
-                title: "Images",
-                systemImage: "photo",
-                isSelected: selection == .images,
-                action: { selection = .images }
-            )
-            .accessibilityIdentifier("Sidebar.Images")
-            row(
-                title: "Audio",
-                systemImage: "waveform",
-                isSelected: selection == .audio,
-                action: { selection = .audio }
-            )
-            .accessibilityIdentifier("Sidebar.Audio")
-            row(
-                title: "Launch",
-                systemImage: "paperplane",
-                isSelected: selection == .launch,
-                action: { selection = .launch }
-            )
-            .accessibilityIdentifier("Sidebar.Launch")
+            primaryTabsGroup
 
             // Experimental workspaces live in their own labelled group below
             // the everyday tabs (rather than interleaved with them), so the
             // opt-in previews read as a distinct, still-being-validated set.
             // The header appears only when at least one is enabled.
-            if videoGenerationEnabled || computerUseEnabled || benchmarkEnabled || shareComputeEnabled {
-                SectionHeader("Experimental")
-                    .padding(.horizontal, RapidTheme.Space.sm)
-                    .padding(.top, RapidTheme.Space.lg)
-                    .padding(.bottom, RapidTheme.Space.xs)
-                    .accessibilityIdentifier("Sidebar.ExperimentalHeader")
-                if videoGenerationEnabled {
-                    row(
-                        title: "Video",
-                        systemImage: "film",
-                        isSelected: selection == .video,
-                        action: { selection = .video }
-                    )
-                    .accessibilityIdentifier("Sidebar.Video")
-                }
-                if computerUseEnabled {
-                    row(
-                        title: "Computer Use",
-                        systemImage: "macwindow.on.rectangle",
-                        isSelected: selection == .computerUse,
-                        action: { selection = .computerUse }
-                    )
-                    .accessibilityIdentifier("Sidebar.ComputerUse")
-                }
-                if benchmarkEnabled {
-                    row(
-                        title: "Benchmark",
-                        systemImage: "gauge.with.dots.needle.50percent",
-                        isSelected: selection == .benchmark,
-                        action: { selection = .benchmark }
-                    )
-                    .accessibilityIdentifier("Sidebar.CommunityBenchmark")
-                }
-                if shareComputeEnabled {
-                    row(
-                        title: shareComputeActive ? "Share Compute · On" : "Share Compute",
-                        systemImage: "bolt.horizontal.circle",
-                        isSelected: selection == .shareCompute,
-                        action: { selection = .shareCompute }
-                    )
-                    .accessibilityIdentifier("Sidebar.ShareCompute")
-                }
-            }
+            experimentalRailGroup
 
-            // Folders can exist before any conversation does (create one, then
-            // file into it), so an empty history no longer means an empty rail.
-            if !chat.conversations.isEmpty || !chat.folders.isEmpty {
-                // Date-grouped history (#1470), titled with the shared
-                // SectionHeader so the groups match the refreshed visual
-                // system (#1460) instead of the PR's original inline caption.
-                ScrollView {
-                    VStack(alignment: .leading, spacing: 1) {
-                        folderSectionsList
-                        ForEach(historySections, id: \.title) { section in
-                            SectionHeader(section.title)
-                                .padding(.horizontal, RapidTheme.Space.sm)
-                                .padding(.top, RapidTheme.Space.lg)
-                                .padding(.bottom, RapidTheme.Space.xs)
-                            ForEach(section.conversations) { conv in
-                                conversationRow(conv)
-                            }
-                        }
-                        archivedSection
-                    }
-                }
-                .scrollIndicators(.never)
-            }
+            historyListGroup
 
             Spacer(minLength: 0)
 
@@ -414,8 +323,8 @@ struct SidebarView: View {
 
     private var folderPromptTitle: String {
         switch folderPrompt {
-        case .rename: return "Rename Folder"
-        case .create, .none: return "New Folder"
+        case .rename: return String(localized: "Rename Folder")
+        case .create, .none: return String(localized: "New Folder")
         }
     }
 
@@ -699,9 +608,9 @@ struct SidebarView: View {
         case .stopped:
             nil
         case .busy:
-            "A request is still using the models. Stop it, then try again."
+            String(localized: "A request is still using the models. Stop it, then try again.")
         case .unavailable:
-            "Rapid couldn't confirm that the models were idle. Wait a moment, then try again."
+            String(localized: "Rapid couldn't confirm that the models were idle. Wait a moment, then try again.")
         }
     }
 
@@ -718,9 +627,9 @@ struct SidebarView: View {
         hasActiveResponse: Bool,
         enabledLabel: String
     ) -> String {
-        if isOperating { return "Unloading models…" }
+        if isOperating { return String(localized: "Unloading models…") }
         if hasActiveResponse {
-            return "Stop the active response before unloading models"
+            return String(localized: "Stop the active response before unloading models")
         }
         return enabledLabel
     }
@@ -729,8 +638,10 @@ struct SidebarView: View {
         modelCount: Int,
         memoryUsedBytes: UInt64
     ) -> String {
-        let subject = modelCount == 1 ? "model" : "all models"
-        return "Unload \(subject) and free \(formatBytes(memoryUsedBytes))"
+        let subject = modelCount == 1
+            ? String(localized: "model")
+            : String(localized: "all models")
+        return String(localized: "Unload \(subject) and free \(formatBytes(memoryUsedBytes))")
     }
 
     nonisolated static func memorySummary(usedBytes: UInt64, limitBytes: UInt64) -> String {
@@ -784,9 +695,11 @@ struct SidebarView: View {
     /// MODEL (re-downloadable, and already gated) a conversation delete is
     /// irreversible, so this always fronts a confirmation.
     nonisolated static func deleteConfirmationTitle(for conversation: ChatConversation?) -> String {
-        guard let conversation else { return "Delete this conversation?" }
+        guard let conversation else { return String(localized: "Delete this conversation?") }
         let title = conversation.title.trimmingCharacters(in: .whitespacesAndNewlines)
-        return title.isEmpty ? "Delete this conversation?" : "Delete “\(title)”?"
+        return title.isEmpty
+            ? String(localized: "Delete this conversation?")
+            : String(localized: "Delete “\(title)”?")
     }
 
     /// The history list split into dated sections, newest first.
@@ -822,8 +735,18 @@ struct SidebarView: View {
         }
     }
 
-    struct HistorySection {
-        let title: String
+    struct HistorySection: Identifiable {
+        /// Stable bucket key ("pinned", "today", …).
+        ///
+        /// Carried explicitly rather than deriving `id` from the heading: the
+        /// heading is a `LocalizedStringKey` now, which is not `Hashable`, and
+        /// it also *changes with the UI language* — an identity that moves when
+        /// the user switches language would rebuild every row for no reason.
+        let id: String
+        /// A key, not a `String`: the heading goes straight into
+        /// `SectionHeader`, which only localizes `LocalizedStringKey`. The
+        /// bucket names are static copy, so they resolve through the catalog.
+        let title: LocalizedStringKey
         let conversations: [ChatConversation]
     }
 
@@ -891,15 +814,21 @@ struct SidebarView: View {
             }
         }
 
-        return [
-            ("Pinned", pinned),
-            ("Today", today),
-            ("Yesterday", yesterday),
-            ("Previous 7 Days", week),
-            ("Older", older),
+        // Annotated as `LocalizedStringKey` — without it the literal tuples
+        // infer `String` and the headings stop localizing.
+        let buckets: [(id: String, title: LocalizedStringKey, conversations: [ChatConversation])] = [
+            ("pinned", "Pinned", pinned),
+            ("today", "Today", today),
+            ("yesterday", "Yesterday", yesterday),
+            ("week", "Previous 7 Days", week),
+            ("older", "Older", older),
         ]
-        .filter { !$0.1.isEmpty }
-        .map { HistorySection(title: $0.0, conversations: $0.1) }
+
+        return buckets
+            .filter { !$0.conversations.isEmpty }
+            .map {
+                HistorySection(id: $0.id, title: $0.title, conversations: $0.conversations)
+            }
     }
 
     /// One user-created folder plus the conversations filed into it.
@@ -1215,7 +1144,7 @@ struct SidebarView: View {
             if showsPin || conv.isPinned {
                 QuietIconButton(
                     symbol: conv.isPinned ? "pin.slash" : "pin",
-                    label: conv.isPinned ? "Unpin conversation" : "Pin conversation",
+                    label: conv.isPinned ? String(localized: "Unpin conversation") : String(localized: "Pin conversation"),
                     size: RapidTheme.ControlHeight.mini
                 ) {
                     // Same reasoning as the menu's Pin: a pin moves the row
@@ -1507,8 +1436,140 @@ struct SidebarView: View {
 
     /// One nav row — icon in a fixed-width slot so every label starts on
     /// the same x, whatever the glyph's natural width.
+    /// The date-grouped conversation list, split out of ``body`` for the same
+    /// type-checker-budget reason as the two tab groups above.
+    ///
+    /// Folders can exist before any conversation does (create one, then file
+    /// into it), so an empty history no longer means an empty rail. Headings
+    /// come from the shared `SectionHeader` so the groups match the refreshed
+    /// visual system (#1460).
+    @ViewBuilder
+    private var historyListGroup: some View {
+        if !chat.conversations.isEmpty || !chat.folders.isEmpty {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 1) {
+                    folderSectionsList
+                    ForEach(historySections) { section in
+                        SectionHeader(section.title)
+                            .padding(.horizontal, RapidTheme.Space.sm)
+                            .padding(.top, RapidTheme.Space.lg)
+                            .padding(.bottom, RapidTheme.Space.xs)
+                        ForEach(section.conversations) { conv in
+                            conversationRow(conv)
+                        }
+                    }
+                    archivedSection
+                }
+            }
+            .scrollIndicators(.never)
+        }
+    }
+
+    /// The everyday tabs, split out of ``body`` for the same reason as
+    /// ``experimentalRailGroup``: the rail's labels became `LocalizedStringKey`
+    /// so they translate, and the single-expression `body` that resulted blew
+    /// the type-checker's budget.
+    @ViewBuilder
+    private var primaryTabsGroup: some View {
+        row(
+            title: "New Chat",
+            systemImage: "square.and.pencil",
+            isSelected: false,
+            action: onNewChat
+        )
+        .accessibilityIdentifier("Sidebar.NewChat")
+        row(
+            title: "Images",
+            systemImage: "photo",
+            isSelected: selection == .images,
+            action: { selection = .images }
+        )
+        .accessibilityIdentifier("Sidebar.Images")
+        row(
+            title: "Audio",
+            systemImage: "waveform",
+            isSelected: selection == .audio,
+            action: { selection = .audio }
+        )
+        .accessibilityIdentifier("Sidebar.Audio")
+        row(
+            title: "Launch",
+            systemImage: "paperplane",
+            isSelected: selection == .launch,
+            action: { selection = .launch }
+        )
+        .accessibilityIdentifier("Sidebar.Launch")
+    }
+
+    /// The opt-in workspaces, in their own labelled group below the everyday
+    /// tabs.
+    ///
+    /// Split out of ``body`` on the compiler's own advice: with the rail's row
+    /// labels typed as `LocalizedStringKey`, the single-expression `VStack`
+    /// blew the type-checker's budget ("unable to type-check this expression in
+    /// reasonable time") at the `Benchmark` row. The group is a self-contained
+    /// visibility-conditional block, so hoisting it costs nothing and keeps the
+    /// rail body readable.
+    @ViewBuilder
+    private var experimentalRailGroup: some View {
+        if videoGenerationEnabled || computerUseEnabled || benchmarkEnabled || shareComputeEnabled {
+            SectionHeader("Experimental")
+                .padding(.horizontal, RapidTheme.Space.sm)
+                .padding(.top, RapidTheme.Space.lg)
+                .padding(.bottom, RapidTheme.Space.xs)
+                .accessibilityIdentifier("Sidebar.ExperimentalHeader")
+            if videoGenerationEnabled {
+                row(
+                    title: "Video",
+                    systemImage: "film",
+                    isSelected: selection == .video,
+                    action: { selection = .video }
+                )
+                .accessibilityIdentifier("Sidebar.Video")
+            }
+            if computerUseEnabled {
+                row(
+                    title: "Computer Use",
+                    systemImage: "macwindow.on.rectangle",
+                    isSelected: selection == .computerUse,
+                    action: { selection = .computerUse }
+                )
+                .accessibilityIdentifier("Sidebar.ComputerUse")
+            }
+            if benchmarkEnabled {
+                row(
+                    title: "Benchmark",
+                    systemImage: "gauge.with.dots.needle.50percent",
+                    isSelected: selection == .benchmark,
+                    action: { selection = .benchmark }
+                )
+                .accessibilityIdentifier("Sidebar.CommunityBenchmark")
+            }
+            if shareComputeEnabled {
+                // Annotated: a bare ternary of two string literals leaves the
+                // type-checker choosing between `String` and
+                // `LocalizedStringKey` for every branch inside a ViewBuilder,
+                // which times out. Naming the type once settles it.
+                let shareComputeTitle: LocalizedStringKey = shareComputeActive
+                    ? "Share Compute · On"
+                    : "Share Compute"
+                row(
+                    title: shareComputeTitle,
+                    systemImage: "bolt.horizontal.circle",
+                    isSelected: selection == .shareCompute,
+                    action: { selection = .shareCompute }
+                )
+                .accessibilityIdentifier("Sidebar.ShareCompute")
+            }
+        }
+    }
+
+    /// `title` is a `LocalizedStringKey`, not a `String`: it lands in
+    /// `Text(title)`, which renders a `String` verbatim. The rail is the app's
+    /// primary navigation, so its labels are among the copy a user notices
+    /// first when the language is not English.
     private func row(
-        title: String,
+        title: LocalizedStringKey,
         systemImage: String,
         isSelected: Bool,
         action: @escaping () -> Void

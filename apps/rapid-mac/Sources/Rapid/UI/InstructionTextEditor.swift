@@ -4,7 +4,9 @@ import SwiftUI
 /// instructions. The parent owns save semantics; this view owns only the field.
 struct InstructionTextEditor: View {
     @Binding var text: String
-    let placeholder: String
+    /// `LocalizedStringKey` — the hint is static copy, and `Text(String)`
+    /// would render it verbatim.
+    let placeholder: LocalizedStringKey
     let height: CGFloat
     let accessibilityIdentifier: String
     var autoFocus: Bool = false
@@ -64,15 +66,15 @@ struct InstructionTextEditor: View {
 /// grouped card: the editor already defines its own surface and nesting it in
 /// another bordered box adds visual weight without adding structure.
 struct InstructionEditorSection<Content: View>: View {
-    let title: String
-    let subtitle: String
+    let title: LocalizedStringKey
+    let subtitle: LocalizedStringKey
     let clearEnabled: Bool
     let onClear: () -> Void
     @ViewBuilder let content: Content
 
     init(
-        _ title: String,
-        subtitle: String,
+        _ title: LocalizedStringKey,
+        subtitle: LocalizedStringKey,
         clearEnabled: Bool,
         onClear: @escaping () -> Void,
         @ViewBuilder content: () -> Content
@@ -89,7 +91,7 @@ struct InstructionEditorSection<Content: View>: View {
             SectionHeader(title, subtitle: subtitle, emphasis: .section) {
                 QuietIconButton(
                     symbol: "trash",
-                    label: "Clear global system prompt",
+                    label: String(localized: "Clear global system prompt"),
                     action: onClear
                 )
                 .disabled(!clearEnabled)

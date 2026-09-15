@@ -90,7 +90,7 @@ struct ConnectToolsView: View {
     private var resolvedModel: String? { ModelDisplayName.configValue(alias: alias) }
 
     /// What the user sees in the `Model` row while nothing is resolved.
-    private var modelDisplay: String { resolvedModel ?? "Not started yet" }
+    private var modelDisplay: String { resolvedModel ?? String(localized: "Not started yet") }
 
     /// The model slot inside a displayed snippet. When nothing is
     /// resolved the snippet shows an obvious angle-bracket placeholder
@@ -391,7 +391,7 @@ struct ConnectToolsView: View {
 
     private func toolsSection(
         _ displayedTools: [ConnectTool],
-        title: String = "Editors and agents"
+        title: LocalizedStringKey = "Editors and agents"
     ) -> some View {
         VStack(alignment: .leading, spacing: RapidTheme.Space.sm) {
             SectionHeader(title)
@@ -775,7 +775,7 @@ private struct ConnectToolRow: View {
                 // one width in both states, so none of that arises.
                 QuietIconButton(
                     symbol: copied ? "checkmark" : "doc.on.doc",
-                    label: copied ? "Copied \(tool.name) command" : "Copy \(tool.name) command",
+                    label: copied ? String(localized: "Copied \(tool.name) command") : String(localized: "Copy \(tool.name) command"),
                     help: copyHelp,
                     tint: copied ? RapidTheme.utilityActionSuccess : nil,
                     action: copy
@@ -891,7 +891,7 @@ private struct CopyableRow: View {
             if masked, hasValue {
                 QuietIconButton(
                     symbol: reveal ? "eye.slash" : "eye",
-                    label: reveal ? "Hide key" : "Show key",
+                    label: reveal ? String(localized: "Hide key") : String(localized: "Show key"),
                     size: RapidTheme.ControlHeight.mini
                 ) {
                     reveal.toggle()
@@ -900,10 +900,10 @@ private struct CopyableRow: View {
             }
             QuietIconButton(
                 symbol: copied ? "checkmark" : "doc.on.doc",
-                label: "Copy \(label)",
+                label: String(localized: "Copy \(label)"),
                 help: hasValue
-                    ? "Copy \(label)"
-                    : "Start a model to generate a valid key and configuration.",
+                    ? String(localized: "Copy \(label)")
+                    : String(localized: "Start a model to generate a valid key and configuration."),
                 tint: copied ? RapidTheme.utilityActionSuccess : nil,
                 size: RapidTheme.ControlHeight.mini
             ) {

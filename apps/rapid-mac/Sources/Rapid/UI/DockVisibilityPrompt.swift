@@ -52,16 +52,16 @@ enum DockVisibilityPrompt {
     /// dialog without ``runModal``-blocking the suite.
     static func makeAlert() -> NSAlert {
         let alert = NSAlert()
-        alert.messageText = "Hide application icon from Dock?"
-        alert.informativeText = "The application will keep running in the background. You can re-open the window from the menu-bar icon at any time."
+        alert.messageText = String(localized: "Hide application icon from Dock?")
+        alert.informativeText = String(localized: "The application will keep running in the background. You can re-open the window from the menu-bar icon at any time.")
         alert.alertStyle = .informational
 
         // Yes is the leading (Return-defaulted) button so the
         // suggestion is the keyboard-default — matches the reference
         // UX's intent ("we expect most users to want this hidden").
-        let yes = alert.addButton(withTitle: "Yes")
+        let yes = alert.addButton(withTitle: String(localized: "Yes"))
         yes.setAccessibilityIdentifier("DockHidePrompt.YesButton")
-        let no = alert.addButton(withTitle: "No")
+        let no = alert.addButton(withTitle: String(localized: "No"))
         no.keyEquivalent = "\u{1b}"  // Escape — preserves Cmd-period dismiss.
         no.setAccessibilityIdentifier("DockHidePrompt.NoButton")
 

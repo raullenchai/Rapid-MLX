@@ -219,9 +219,9 @@ struct DownloadStrip: View {
                     : nil
             )
         case .completed:
-            return "Downloaded — start from the model picker"
+            return String(localized: "Downloaded — start from the model picker")
         case .cancelled:
-            return "Cancelled"
+            return String(localized: "Cancelled")
         case .failed(let message):
             return message
         }
@@ -260,15 +260,15 @@ struct DownloadStrip: View {
     private static func phaseDetail(_ phase: DownloadProgress.Phase) -> String {
         switch phase {
         case .idle:
-            return "Starting…"
+            return String(localized: "Starting…")
         case .preparing:
-            return "Preparing…"
+            return String(localized: "Preparing…")
         case .fetching(let done, let total, let percent):
-            return "\(percent)% · \(done)/\(total) files"
+            return String(localized: "\(percent)% · \(done)/\(total) files")
         case .downloading(let file, let done, let total, let percent, let speed, let eta):
             let head = "\(percent)% · \(done)/\(total)"
             let speedTail = speed.map { " · \($0)" } ?? ""
-            let etaTail = eta.map { " · ETA \($0)" } ?? ""
+            let etaTail = eta.map { String(localized: " · ETA \($0)") } ?? ""
             // File basename is the most useful disambiguator when
             // multiple files in one snapshot are mid-transfer; truncate
             // in the View, not here.
@@ -277,7 +277,7 @@ struct DownloadStrip: View {
             // pull never hits warmingUp (it doesn't load the model),
             // but the parser shares the enum with serve. Treat as a
             // success-ish state.
-            return "Finalising…"
+            return String(localized: "Finalising…")
         }
     }
 

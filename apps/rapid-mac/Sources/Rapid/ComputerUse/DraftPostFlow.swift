@@ -14,7 +14,7 @@ struct ComputerUseWindowOption: Identifiable, Equatable, Sendable {
         let readableName = windowTitle.isEmpty
             ? applicationName
             : "\(applicationName) — \(windowTitle)"
-        return "\(readableName) · Window \(selection.windowID)"
+        return String(localized: "\(readableName) · Window \(selection.windowID)")
     }
 }
 
@@ -137,23 +137,23 @@ enum DraftPostFlowFailure: Error, Equatable, Sendable {
 
     var userMessage: String {
         switch self {
-        case .sourceIsNotTextEdit: "Choose a TextEdit window as the draft source."
-        case .destinationIsNotBrowser: "Choose a supported browser window as the destination."
-        case .destinationMismatch: "The selected browser is no longer on the destination you reviewed."
-        case .targetUnavailable: "A selected window is no longer available."
-        case .focusChanged: "Rapid could not safely focus the selected window."
-        case .draftMissing: "The selected TextEdit document has no readable draft."
-        case .draftAmbiguous: "More than one TextEdit document editor was found. Close auxiliary editors and try again."
-        case .draftTooLarge: "The draft is too large for this preview (64 KB maximum)."
-        case .composerMissing: "No editable post composer was found in the browser window."
-        case .composerAmbiguous: "More than one possible composer was found. Close other editors and try again."
-        case .composerNotEmpty: "The browser composer already contains text. Clear it before running this flow."
-        case .writeRejected: "The browser rejected the local text update."
-        case .verificationFailed: "The browser content did not match the reviewed draft."
-        case .permissionMissing: "Screen Recording and Accessibility access are required."
-        case .cancelled: "The flow was stopped."
-        case .dependencyFailure: "The flow stopped because a local system operation failed."
-        case .accessibilityTreeTooLarge: "The selected window is too complex for this preview flow."
+        case .sourceIsNotTextEdit: String(localized: "Choose a TextEdit window as the draft source.")
+        case .destinationIsNotBrowser: String(localized: "Choose a supported browser window as the destination.")
+        case .destinationMismatch: String(localized: "The selected browser is no longer on the destination you reviewed.")
+        case .targetUnavailable: String(localized: "A selected window is no longer available.")
+        case .focusChanged: String(localized: "Rapid could not safely focus the selected window.")
+        case .draftMissing: String(localized: "The selected TextEdit document has no readable draft.")
+        case .draftAmbiguous: String(localized: "More than one TextEdit document editor was found. Close auxiliary editors and try again.")
+        case .draftTooLarge: String(localized: "The draft is too large for this preview (64 KB maximum).")
+        case .composerMissing: String(localized: "No editable post composer was found in the browser window.")
+        case .composerAmbiguous: String(localized: "More than one possible composer was found. Close other editors and try again.")
+        case .composerNotEmpty: String(localized: "The browser composer already contains text. Clear it before running this flow.")
+        case .writeRejected: String(localized: "The browser rejected the local text update.")
+        case .verificationFailed: String(localized: "The browser content did not match the reviewed draft.")
+        case .permissionMissing: String(localized: "Screen Recording and Accessibility access are required.")
+        case .cancelled: String(localized: "The flow was stopped.")
+        case .dependencyFailure: String(localized: "The flow stopped because a local system operation failed.")
+        case .accessibilityTreeTooLarge: String(localized: "The selected window is too complex for this preview flow.")
         }
     }
 }

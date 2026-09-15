@@ -15,7 +15,7 @@ enum ConversationExportPanel {
         now: Date = Date()
     ) {
         let panel = NSSavePanel()
-        panel.title = "Export Conversation"
+        panel.title = String(localized: "Export Conversation")
         panel.nameFieldStringValue = ConversationExport.defaultFilename(
             for: conversation,
             format: format,
@@ -55,7 +55,7 @@ enum ConversationExportPanel {
         now: Date = Date()
     ) {
         let panel = NSSavePanel()
-        panel.title = "Export All Chats"
+        panel.title = String(localized: "Export All Chats")
         panel.nameFieldStringValue = ConversationExport.defaultArchiveFilename(at: now)
         panel.allowedContentTypes = [.json]
         panel.isExtensionHidden = false

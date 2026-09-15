@@ -34,10 +34,14 @@ struct EmptyState<Mark: View, Actions: View>: View {
         case display
     }
 
-    let title: String
-    var message: String? = nil
+    /// `LocalizedStringKey`, not `String`: this is the first thing a new user
+    /// reads, and `Text(String)` renders verbatim. Callers passing model-derived
+    /// copy wrap it in `LocalizedStringKey(_:)`; an unmatched value falls back to
+    /// the value itself.
+    let title: LocalizedStringKey
+    var message: LocalizedStringKey? = nil
     /// A quieter third line — e.g. "First message will download X".
-    var hint: String? = nil
+    var hint: LocalizedStringKey? = nil
     /// Diameter of the mark's frame — and, when ``marksOnBackplate`` is
     /// true, of the tinted disc behind it. 44 suits a small SF Symbol.
     var markDiameter: CGFloat = 44
@@ -143,9 +147,9 @@ extension EmptyState where Mark == EmptyStateSymbolMark {
     /// SF Symbol mark — for surfaces that aren't the brand moment.
     init(
         symbol: String,
-        title: String,
-        message: String? = nil,
-        hint: String? = nil,
+        title: LocalizedStringKey,
+        message: LocalizedStringKey? = nil,
+        hint: LocalizedStringKey? = nil,
         @ViewBuilder actions: () -> Actions
     ) {
         self.init(
@@ -162,9 +166,9 @@ extension EmptyState where Mark == EmptyStateSymbolMark {
 extension EmptyState where Actions == EmptyView {
     /// No side-door actions.
     init(
-        title: String,
-        message: String? = nil,
-        hint: String? = nil,
+        title: LocalizedStringKey,
+        message: LocalizedStringKey? = nil,
+        hint: LocalizedStringKey? = nil,
         markDiameter: CGFloat = 44,
         marksOnBackplate: Bool = true,
         titleEmphasis: TitleEmphasis = .page,
@@ -185,7 +189,12 @@ extension EmptyState where Actions == EmptyView {
 
 extension EmptyState where Mark == EmptyStateSymbolMark, Actions == EmptyView {
     /// SF Symbol mark, no actions.
-    init(symbol: String, title: String, message: String? = nil, hint: String? = nil) {
+    init(
+        symbol: String,
+        title: LocalizedStringKey,
+        message: LocalizedStringKey? = nil,
+        hint: LocalizedStringKey? = nil
+    ) {
         self.init(
             title: title,
             message: message,

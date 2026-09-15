@@ -86,11 +86,16 @@ enum AppearanceMode: String, CaseIterable, Identifiable, Sendable {
 
     /// Picker label — human-friendly, matches the macOS System
     /// Settings → Appearance row text.
+    ///
+    /// Resolved through `String(localized:)` rather than returned as a bare
+    /// literal: the picker renders these with `Text(_: String)`, which is the
+    /// verbatim initialiser, so the catalog entries for these three rows were
+    /// dead copy until the lookup moved here.
     var displayName: String {
         switch self {
-        case .system: return "Auto (follow system)"
-        case .light:  return "Light"
-        case .dark:   return "Dark"
+        case .system: return String(localized: "Auto (follow system)")
+        case .light:  return String(localized: "Light")
+        case .dark:   return String(localized: "Dark")
         }
     }
 
