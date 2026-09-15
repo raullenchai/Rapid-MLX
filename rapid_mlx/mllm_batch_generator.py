@@ -1454,17 +1454,47 @@ class MLLMBatchGenerator:
         wrapper and the language model; families without either fail closed
         to the single cold forward.
         """
+        cached = getattr(self, "_media_rope_probe", None)
+        key = (type(self.model), type(self.language_model))
+        if cached is not None and cached[0] == key:
+            result: bool = cached[1]
+            return result
+        result = False
         for target in (self.model, self.language_model):
             call = getattr(type(target), "__call__", None)
             if call is None or not _accepts_var_kwargs(call):
                 continue
             try:
                 src = inspect.getsource(call)
-            except (OSError, TypeError):
+            except (OSError, TypeError, SyntaxError):
                 continue
             if '"rope_deltas"' in src or "'rope_deltas'" in src:
-                return True
-        return False
+                result = True
+                break
+        self._media_rope_probe = (key, result)
+        return result
+
+    def _media_wrapper_call_source(self) -> str | None:
+        """Source of the VLM wrapper's ``__call__``, probed once per model.
+
+        Best-effort input for the structural probes: any failure to read
+        the source (``OSError``/``TypeError``, or a stale-linecache
+        ``SyntaxError`` raised by ``inspect.getblock``) yields ``None`` and
+        every source-derived gate fails closed.
+        """
+        cached = getattr(self, "_media_wrapper_source", None)
+        if cached is not None and cached[0] is type(self.model):
+            source: str | None = cached[1]
+            return source
+        call = getattr(type(self.model), "__call__", None)
+        src = None
+        if call is not None and _accepts_var_kwargs(call):
+            try:
+                src = inspect.getsource(call)
+            except (OSError, TypeError, SyntaxError):
+                src = None
+        self._media_wrapper_source = (type(self.model), src)
+        return src
 
     def _media_wrapper_overrides_positions(self) -> bool:
         """Whether the VLM wrapper recomputes positions on a suffix forward.
@@ -1481,14 +1511,8 @@ class MLLMBatchGenerator:
         structurally: the wrapper's ``__call__`` both calls
         ``get_input_embeddings`` and merges ``to_dict()`` into the LM kwargs.
         """
-        call = getattr(type(self.model), "__call__", None)
-        if call is None or not _accepts_var_kwargs(call):
-            return False
-        try:
-            src = inspect.getsource(call)
-        except (OSError, TypeError):
-            return False
-        return "get_input_embeddings" in src and ".to_dict()" in src
+        src = self._media_wrapper_call_source()
+        return src is not None and "get_input_embeddings" in src and ".to_dict()" in src
 
     def _media_lm_direct_available(self) -> bool:
         """Whether the LM-direct suffix path can bypass the wrapper.
@@ -1498,9 +1522,15 @@ class MLLMBatchGenerator:
         language model. mlx-vlm's LM ``__call__`` accepts ``inputs_embeds``/
         ``rope_deltas`` and computes positions from the cache offset plus the
         passed delta when none are provided — exactly the suffix semantics.
+        Thinker/talker wrappers (``qwen3_omni_moe``) do wrapper-side
+        bookkeeping a direct LM call would skip, so they never bypass.
         """
+        src = self._media_wrapper_call_source()
         return (
-            self._media_wrapper_overrides_positions()
+            src is not None
+            and "get_input_embeddings" in src
+            and ".to_dict()" in src
+            and "talker" not in src.casefold()
             and callable(getattr(type(self.model), "get_input_embeddings", None))
             and callable(getattr(self.language_model, "__call__", None))
         )
@@ -2107,13 +2137,19 @@ class MLLMBatchGenerator:
         The media boundary store shares this ceiling and already credits the
         text footprint in its own enforcement, so symmetrically the text
         eviction credits the media bytes — the two stores together can never
-        exceed the one engine-wide budget."""
-        budget = int(getattr(self, "_prefix_cache_max_bytes", 0) or 0)
-        budget -= sum(entry.cache_bytes for entry in getattr(
-            self, "_media_boundary_entries", {}
-        ).values())
+        hold more than the one engine-wide budget plus the newest entries
+        each side retains. When media bytes alone meet the ceiling the text
+        side evicts down to its newest entry, mirroring the media store's
+        own newest-entry guarantee, instead of freezing eviction forever."""
+        max_bytes = int(getattr(self, "_prefix_cache_max_bytes", 0) or 0)
+        if max_bytes <= 0:
+            return
+        budget = max_bytes - sum(
+            entry.cache_bytes
+            for entry in getattr(self, "_media_boundary_entries", {}).values()
+        )
         found = self._exact_entries(cache)
-        if budget <= 0 or found is None:
+        if found is None:
             return
         lock, entries = found
         evicted = 0
@@ -2173,6 +2209,9 @@ class MLLMBatchGenerator:
         # (counters stay); this runs even without a text-APC manager.
         # ``getattr`` — legacy/bare generators predate the media store.
         media_entries = getattr(self, "_media_boundary_entries", None)
+        # True when any reusable state was actually held — a media-only
+        # generator drops real MiB even without a text-APC manager.
+        had_media = bool(media_entries)
         if media_entries is not None:
             media_entries.clear()
             self._media_enforce_budget()
@@ -2180,7 +2219,7 @@ class MLLMBatchGenerator:
             self._prefix_cache_hits = 0
             self._prefix_cache_misses = 0
             self._prefix_cache_tokens_saved = 0
-        return cache is not None
+        return cache is not None or had_media
 
     def close(self) -> None:
         """Release resources and reset wired limit."""

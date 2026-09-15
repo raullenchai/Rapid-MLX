@@ -303,7 +303,6 @@ async def _main() -> None:
         # Per-turn hashes across phases and passes. A turn is "exact" only
         # when every pass in both phases produced the identical hash
         # (reported; see module docstring for why this is not gated).
-        turns_count = len(conversations[0]["turns"])
         exact_by_turn: dict[str, list[bool]] = {}
         within_phase_deterministic: dict[str, bool] = {}
         checker_pass_both: dict[str, list[bool]] = {}
@@ -311,11 +310,21 @@ async def _main() -> None:
             "per_conversation"
         ].items():
             auto_streams = result["phases"]["auto"]["per_conversation"][conversation_id]
+            # Conversation's own turn count — manifests need not be uniform,
+            # and an all()-over-empty would vacuously pass the gates.
+            turn_count = (
+                min(len(passes) for passes in turn_streams + auto_streams if passes)
+                if (turn_streams or auto_streams)
+                else 0
+            )
             flags = []
             checker_flags = []
-            for turn_index in range(turns_count):
+            for turn_index in range(turn_count):
                 phase_hashes: dict[str, set[str]] = {}
-                for phase_name, streams in (("off", turn_streams), ("auto", auto_streams)):
+                for phase_name, streams in (
+                    ("off", turn_streams),
+                    ("auto", auto_streams),
+                ):
                     hashes = {
                         sample["sha256"]
                         for passes in streams
@@ -332,17 +341,23 @@ async def _main() -> None:
                     and bool(phase_hashes["auto"])
                     and phase_hashes["off"] == phase_hashes["auto"]
                 )
+                # Eager lists: a generator closed over turn_index would
+                # evaluate every aggregate with the loop's final value.
                 checker_flags.append(
-                    all(
-                        sample["checker_pass"]
-                        for passes in streams
-                        for sample in passes
-                        if sample["turn"] == turn_index
-                    )
-                    for streams in (turn_streams, auto_streams)
+                    [
+                        all(
+                            sample["checker_pass"]
+                            for passes in streams
+                            for sample in passes
+                            if sample["turn"] == turn_index
+                        )
+                        for streams in (turn_streams, auto_streams)
+                    ]
                 )
             exact_by_turn[conversation_id] = flags
-            checker_pass_both[conversation_id] = [all(pair) for pair in zip(*checker_flags)]
+            checker_pass_both[conversation_id] = [
+                all(pair) for pair in zip(*checker_flags)
+            ]
             within_phase_deterministic.setdefault(conversation_id, True)
         result["exact_by_conversation"] = {
             conversation_id: all(flags)
