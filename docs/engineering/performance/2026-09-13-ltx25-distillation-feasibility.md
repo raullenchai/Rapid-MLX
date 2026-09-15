@@ -291,3 +291,16 @@ the stored target to video/audio MSE `3.26e-10`/`7.38e-11`; only five of
 materialized 48 train and 12 validation reachable targets in 193.35/47.58
 seconds. This changes only offline supervision; the inference schedule and
 portable artifact contract stay unchanged.
+
+That teacher-corrected rank-4 control also failed its compute gate. Against
+the reachable target it improved video/audio MSE by 50.71%/47.66%; the old
+teacher-forced rank-8 adapter improved 57.71%/55.89% on exactly the same
+inputs and targets. Neither on-policy variant was decoded, and ordinary
+endpoint-MSE downstream training is stopped.
+
+The next quality control protects the semantic branch with exact clean-base
+steps `0 -> 1 -> 2 -> 3`, uses the existing independent students only for
+`3 -> 5` and `5 -> 7`, and finishes with exact `7 -> 8`. Boundaries
+`[0,1,2,3,5,7,8]` require six Stage-1 evaluations and are expected to be
+roughly 1.8x end to end. If decoded quality passes, the remaining gap to 2x
+belongs to portable kernel/runtime optimization, not another high-noise skip.

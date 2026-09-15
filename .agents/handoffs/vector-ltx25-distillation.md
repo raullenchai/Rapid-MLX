@@ -490,3 +490,12 @@ MSE and `7.38e-11` audio MSE; only five of 27,904 bfloat16 values changed, with
 maximum absolute error 0.001953125. It generated 48 train/12 validation
 reachable targets in 193.35/47.58 seconds. The matched rank-4 control is now
 running; decoded work remains gated on beating both prior latent references.
+
+The teacher-corrected control failed that gate: it improved reachable-target
+video/audio MSE by 50.71%/47.66%, versus 57.71%/55.89% for the existing
+teacher-forced rank-8 adapter on the same data. Neither on-policy control was
+decoded and no downstream span training started. Vector has stopped ordinary
+endpoint-MSE retraining and is decoding `[0,1,2,3,5,7,8]`: exact high-noise
+steps, existing independent middle/late adapters, and exact final step. A
+quality pass would establish a roughly 1.8x base for a portable kernel/runtime
+push; it is not yet a release claim.
