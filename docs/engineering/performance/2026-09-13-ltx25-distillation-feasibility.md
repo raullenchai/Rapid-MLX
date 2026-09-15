@@ -320,3 +320,18 @@ timing model is about 280 seconds before dispatch and 267 seconds after it,
 enough to test the strict 2x boundary without compressing the semantic-sensitive
 prefix. It must pass held-out latent, decoded subject/motion/audio, and
 cross-generation gates before packaging.
+
+The first rank-4 merged-middle run trained for 100 steps on the Studio M3
+Ultra in 230.25 seconds, with a trainer-reported 19.49 GB peak and zero swap.
+Against 12 prompt-disjoint trajectories it improved video/audio MSE by
+15.22%/16.45%; every paired sample improved in both modalities and the weakest
+audio change was still a 2.51% improvement.
+
+The corresponding `[0,1,2,3,7,8]` MZR-3 chef render measured 278.38 seconds,
+or 1.940x versus the 539.94-second standard, with zero swap and a
+40,381,926,520-byte peak process footprint. Ten one-second samples retain the
+same male chef, face, upper body, bread, oven, composition, and action order.
+This passes the categorical subject-preservation screen that rejected the
+compressed-high-noise schedules, but owner human review and the broader suite
+remain release gates. Applying the independently measured 4.49% dispatch gain
+projects 265.88 seconds (2.031x); the composed path has not yet been measured.

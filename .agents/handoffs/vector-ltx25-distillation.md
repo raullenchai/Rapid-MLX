@@ -517,3 +517,15 @@ projected near 280 seconds before dispatch and 267 seconds after it. Artifact
 capability, shapes, memory admission, and a standard fallback—not Apple chip
 names—remain the intended product boundary. Atlas owns any public surface,
 default, or release decision after decoded and cross-generation qualification.
+
+The rank-4 merged-middle control completed 100 Studio training steps in 230.25
+seconds at a trainer-reported 19.49 GB peak and zero swap. On 12
+prompt-disjoint trajectories it improved video/audio MSE 15.22%/16.45% over
+the same clean-base `3 -> 7` jump; all 12 samples improved in both modalities.
+The MZR-3 768x512x241 chef render then measured 278.38 seconds (1.940x versus
+539.94 seconds, 48.44% lower latency), zero swap, and a 40,381,926,520-byte
+peak footprint. Ten sampled frames retain the same male chef, face, upper
+body, bread, oven, composition, and action sequence. It passes the categorical
+subject-preservation screen but still needs owner detail/motion/audio review
+and the broader suite. Dispatch composition projects 265.88 seconds/2.031x;
+the combined result is not yet measured.
