@@ -126,11 +126,15 @@ The model has native high/medium/low reasoning effort rather than a true
 no-reasoning mode. Requests that disable thinking use its lowest native effort,
 and Rapid-MLX still keeps that trace out of visible answer content. A pinned
 4-bit checkpoint was qualified through the real OpenAI-compatible server on a
-48 GB M4 Mac: load completed in 1.62 seconds, peak MLX memory was 5.20 GB, a
-short arithmetic generation ran at 7.06 tokens/second, and native structured
-tool calls worked in both streaming and non-streaming responses. The alias is
-not a Smart/Fast default, and speculative decoding remains disabled pending
-separate evidence.
+48 GB M4 Pro Mac. The standardized five-prompt speed tier generated 640 tokens
+at 49.1 tokens/second. A separate fixed-length decode probe measured 51.1
+tokens/second with 5.52 GB peak MLX memory, essentially matching Qwen3.5 9B on
+the same machine. Native structured tool calls worked in both streaming and
+non-streaming responses. See the
+[reproducible qualification note](../engineering/performance/2026-09-14-k2-horizon-7b-qualification.md)
+for the exact method and why a short-response measurement previously
+understated throughput. The alias is not a Smart/Fast default, and speculative
+decoding remains disabled pending separate evidence.
 
 ### Experimental research model: Qwen3.8 27B Abliterated
 
