@@ -13,12 +13,20 @@ fallback case). The primary deterministic gate is per-case output equality
 (SHA-256) between the two phases on the same exact build; the manifest's
 machine-readable checkers guard against two equally wrong outputs passing.
 ``--lifecycle`` additionally exercises cancellation, recovery, queued
-concurrency, and randomized abort/recovery iterations.
+concurrency, and randomized abort/recovery iterations. ``--apc on`` runs
+both phases with ``enable_prefix_cache=True`` and sends every case twice
+per measured pass so warm exact-prefix resumes feed the singleton batch
+(the cold default run cannot qualify that interaction); it also asserts
+the candidate phase actually engaged the fast path via the generator's
+``singleton_batches`` counter.
 
 Usage (Studio qualification, 256 GB, offline model resolution):
 
     python -m scripts.bench_qwen36_mllm_singleton \
         --model <snapshot-path> --pairs 3 --output /tmp/singleton.json
+
+    python -m scripts.bench_qwen36_mllm_singleton \
+        --model <snapshot-path> --pairs 2 --apc on --output /tmp/singleton-apc.json
 
     python -m scripts.bench_qwen36_mllm_singleton \
         --model <snapshot-path> --lifecycle --abort-iterations 50
@@ -38,6 +46,11 @@ from typing import Any
 
 ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_MANIFEST = ROOT / "evals/prompts/qwen36_mllm_runtime.json"
+
+try:
+    from scripts.bench_metadata import write_bench_json
+except ImportError:  # direct-script execution fallback
+    from bench_metadata import write_bench_json
 
 
 def _messages(case: dict[str, Any], repo_root: Path) -> list[dict[str, Any]]:
@@ -153,8 +166,15 @@ async def _run_phase(
     repo_root: Path,
     pairs: int,
     max_tokens_override: int | None,
+    sends: int = 1,
 ) -> dict[str, Any]:
-    """Warmup pass, then ``pairs`` measured passes over every case."""
+    """Warmup pass, then ``pairs`` measured passes over every case.
+
+    With ``sends > 1`` (warm-hit qualification under ``--apc on``) every
+    measured pass sends each case back-to-back ``sends`` times; send 2+ is
+    expected to resume from warm APC state. Samples carry their ``send``
+    index so exactness and medians can group cold versus warm.
+    """
     for case in cases:
         await _run_case(
             engine, case, repo_root, max_tokens_override=max_tokens_override
@@ -163,16 +183,30 @@ async def _run_phase(
     by_case: dict[str, list[dict[str, Any]]] = {case["id"]: [] for case in cases}
     for _ in range(pairs):
         for case in cases:
-            by_case[case["id"]].append(
-                await _run_case(
+            for send in range(1, sends + 1):
+                sample = await _run_case(
                     engine, case, repo_root, max_tokens_override=max_tokens_override
                 )
-            )
+                sample["send"] = send
+                by_case[case["id"]].append(sample)
     memory = await _memory_snapshot(engine)
+    stats = engine.get_stats().get("batch_generator", {})
+    cold = {
+        case_id: [s for s in samples if s["send"] == 1]
+        for case_id, samples in by_case.items()
+    }
+    warm = {
+        case_id: [s for s in samples if s["send"] > 1]
+        for case_id, samples in by_case.items()
+    }
     return {
         "per_case": by_case,
         "memory": memory,
+        "singleton_batches": int(stats.get("singleton_batches", 0)),
+        "prefix_cache": engine.get_stats().get("prefix_cache"),
         # pairs == 0 runs warmup only (lifecycle-only mode): no medians.
+        # Medians stay on the cold (send-1) stream; warm TTFT measures the
+        # APC resume and is reported separately for evidence.
         "summary": {
             case_id: {
                 "median_ttft_s": _median(samples, "ttft_s") if samples else None,
@@ -183,9 +217,12 @@ async def _run_phase(
                 "median_completion_tokens": _median(samples, "completion_tokens")
                 if samples
                 else None,
+                "median_ttft_s_warm": _median(warm[case_id], "ttft_s")
+                if warm[case_id]
+                else None,
                 "checker_passes": sum(bool(s["checker_pass"]) for s in samples),
             }
-            for case_id, samples in by_case.items()
+            for case_id, samples in cold.items()
         },
     }
 
@@ -360,6 +397,17 @@ async def _main() -> None:
         help="Case id filter (repeatable); default runs the whole manifest",
     )
     parser.add_argument("--pairs", type=int, default=3)
+    parser.add_argument(
+        "--apc",
+        choices=["off", "on"],
+        default="off",
+        help=(
+            "Run both phases with enable_prefix_cache=True so the A/B "
+            "exercises warm exact-prefix resumes feeding the singleton "
+            "batch; each measured pass sends every case twice (send 2 is "
+            "the warm hit). Default off keeps the cold-path primary gate."
+        ),
+    )
     parser.add_argument("--max-tokens", type=int, default=None)
     parser.add_argument("--lifecycle", action="store_true")
     parser.add_argument("--abort-iterations", type=int, default=50)
@@ -388,8 +436,10 @@ async def _main() -> None:
         "model": str(Path(args.model).expanduser().resolve()),
         "manifest": str(args.manifest),
         "pairs": args.pairs,
+        "apc": args.apc,
         "phases": {},
     }
+    sends = 2 if args.apc == "on" else 1
 
     async def engine_for(fastpath: str) -> BatchedEngine:
         engine = BatchedEngine(
@@ -402,7 +452,11 @@ async def _main() -> None:
             # from this lane and are out of the singleton PR's scope.
             no_hybrid=True,
             scheduler_config=SchedulerConfig(
-                enable_prefix_cache=False,
+                # ``--apc on`` matches the production default so the A/B
+                # covers the riskiest interaction: warm exact-prefix
+                # snapshots (lookup/snap/rewind clones) admitted as live
+                # singleton decode leaves.
+                enable_prefix_cache=args.apc == "on",
                 vision_max_pixels=args.vision_max_pixels,
                 mllm_singleton_fastpath=fastpath,
             ),
@@ -415,7 +469,7 @@ async def _main() -> None:
         baseline = await engine_for("off")
         try:
             result["phases"]["off"] = await _run_phase(
-                baseline, cases, repo_root, args.pairs, args.max_tokens
+                baseline, cases, repo_root, args.pairs, args.max_tokens, sends=sends
             )
         finally:
             await baseline.stop()
@@ -424,7 +478,7 @@ async def _main() -> None:
         candidate = await engine_for("auto")
         try:
             result["phases"]["auto"] = await _run_phase(
-                candidate, cases, repo_root, args.pairs, args.max_tokens
+                candidate, cases, repo_root, args.pairs, args.max_tokens, sends=sends
             )
             if args.lifecycle:
                 result["lifecycle"] = await _run_lifecycle(
@@ -438,12 +492,40 @@ async def _main() -> None:
             auto_samples = result["phases"]["auto"]["per_case"][case_id]
             if not off_samples and not auto_samples:
                 continue
-            off_hashes = {sample["sha256"] for sample in off_samples}
-            auto_hashes = {sample["sha256"] for sample in auto_samples}
-            per_case_exact[case_id] = off_hashes == auto_hashes
+            # Compare cold and warm send streams separately so a warm-hit
+            # divergence cannot hide behind the cold stream's hashes.
+            send_indexes = sorted(
+                {int(sample["send"]) for sample in off_samples + auto_samples}
+            )
+            exact = True
+            for send in send_indexes:
+                off_hashes = {
+                    sample["sha256"] for sample in off_samples if sample["send"] == send
+                }
+                auto_hashes = {
+                    sample["sha256"]
+                    for sample in auto_samples
+                    if sample["send"] == send
+                }
+                if not off_hashes or not auto_hashes or off_hashes != auto_hashes:
+                    exact = False
+            per_case_exact[case_id] = exact
         result["exact_by_case"] = per_case_exact
         result["exact_cases"] = sum(per_case_exact.values())
         result["total_cases"] = len(per_case_exact)
+
+        # The candidate phase must actually have taken the fast path, and the
+        # baseline must never have: an eligibility regression would otherwise
+        # compare off vs off and record a vacuous pass as qualification.
+        result["fastpath_engaged"] = (
+            result["phases"]["auto"]["singleton_batches"] > 0
+            and result["phases"]["off"]["singleton_batches"] == 0
+        )
+        # Warm-hit qualification requires the APC to actually serve hits.
+        result["apc_hits"] = {
+            phase: (result["phases"][phase].get("prefix_cache") or {}).get("hits", 0)
+            for phase in ("off", "auto")
+        }
 
         result["summary_change_pct"] = {
             case_id: {
@@ -477,13 +559,15 @@ async def _main() -> None:
         pass
 
     if args.output:
-        args.output.write_text(json.dumps(result, indent=2, sort_keys=True))
+        write_bench_json(args.output, result, Path(__file__))
     payload = {
         key: result[key]
         for key in (
             "exact_by_case",
             "exact_cases",
             "total_cases",
+            "fastpath_engaged",
+            "apc_hits",
             "summary_change_pct",
             "lifecycle",
             "phases",
@@ -492,9 +576,16 @@ async def _main() -> None:
     }
     if args.summary_only:
         payload.pop("phases", None)
-    print(json.dumps(payload, indent=2, sort_keys=True))
+    try:
+        from scripts.bench_metadata import format_bench_json
+    except ImportError:
+        from bench_metadata import format_bench_json
+
+    print(format_bench_json(payload, Path(__file__)))
     if result.get("exact_cases", 0) != result.get("total_cases", 0):
         raise SystemExit(1)
+    if args.pairs > 0 and not result.get("fastpath_engaged", False):
+        raise SystemExit(2)
 
 
 if __name__ == "__main__":
