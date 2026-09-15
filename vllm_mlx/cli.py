@@ -5797,12 +5797,18 @@ def _run_submit_flow(
       in the submissions corpus.
     """
     import asyncio
+    import logging
     from pathlib import Path
 
     from huggingface_hub.utils import RepositoryNotFoundError
 
     from .community_bench.hardware import collect as collect_hw
     from .community_bench.hardware import is_apple_silicon
+    from .community_bench.local_runner import (
+        _ServingBenchmarkAdapter,
+        _text_loader_needs_serving_fallback,
+        _uses_serving_benchmark_engine,
+    )
     from .community_bench.runner import run_standardized_bench
     from .community_bench.submission import (
         build_submission_payload,
@@ -5816,6 +5822,8 @@ def _run_submit_flow(
     # construct ``gemma4_unified``, so every ``gemma-4-12b-*`` alias failed
     # to load here and could never be submitted to the community corpus.
     from .utils.tokenizer import load_model_with_fallback as load
+
+    logger = logging.getLogger(__name__)
 
     if not is_apple_silicon():
         print(
@@ -5855,6 +5863,13 @@ def _run_submit_flow(
         return 2
     alias = user_typed
     hf_path = profile.hf_path
+
+    from .community_bench.workspace import benchmark_runtime_readiness
+
+    runtime = benchmark_runtime_readiness(alias, "text_generation")
+    if runtime.get("status") == "unavailable":
+        print(f"  Error: {runtime.get('message') or 'benchmark runtime unavailable'}")
+        return 2
 
     notes = args.notes or None
     if notes is not None:
@@ -5906,6 +5921,7 @@ def _run_submit_flow(
     async def _run() -> int:
         import concurrent.futures
 
+        from .engine.batched import BatchedEngine
         from .engine_core import _init_mlx_step_thread
 
         # Load model on the future mlx-step worker thread (#170). mlx-lm
@@ -5920,13 +5936,65 @@ def _run_submit_flow(
         # why ``rapid-mlx serve`` works but the unfixed ``bench`` path
         # doesn't).
         print(f"  Loading model {alias} ({hf_path})…")
-        model_load_executor = concurrent.futures.ThreadPoolExecutor(
-            max_workers=1,
-            thread_name_prefix="mlx-step",
-            initializer=_init_mlx_step_thread,
-        )
+        use_serving_engine = _uses_serving_benchmark_engine(hf_path)
+        model_load_executor = None
+        serving_engine = None
+
+        async def stop_serving_engine_safely(engine, context: str) -> None:
+            if engine is None:
+                return
+            try:
+                await engine.stop()
+            except Exception:
+                logger.warning("%s", context, exc_info=True)
+
+        async def start_serving_engine():
+            # Architecture-owned text backbones must use the same loader and
+            # scheduler as serve/Desktop.
+            serving_scheduler = SchedulerConfig(
+                max_num_seqs=1,
+                max_concurrent_requests=1,
+                prefill_batch_size=1,
+                completion_batch_size=1,
+                enable_prefix_cache=False,
+                spec_decode="none",
+            )
+            candidate = BatchedEngine(
+                hf_path,
+                scheduler_config=serving_scheduler,
+                force_mllm=True,
+                profile_name=alias,
+            )
+            try:
+                await candidate.start()
+                tokenizer = candidate.tokenizer
+            except BaseException:
+                await stop_serving_engine_safely(
+                    candidate,
+                    "failed legacy benchmark cleanup after startup error",
+                )
+                raise
+            return candidate, tokenizer
+
         try:
-            model, tokenizer = model_load_executor.submit(load, hf_path).result()
+            if use_serving_engine:
+                serving_engine, tokenizer = await start_serving_engine()
+            else:
+                model_load_executor = concurrent.futures.ThreadPoolExecutor(
+                    max_workers=1,
+                    thread_name_prefix="mlx-step",
+                    initializer=_init_mlx_step_thread,
+                )
+                try:
+                    model, tokenizer = model_load_executor.submit(
+                        load, hf_path
+                    ).result()
+                except (ValueError, ModuleNotFoundError) as exc:
+                    if not _text_loader_needs_serving_fallback(exc):
+                        raise
+                    model_load_executor.shutdown(wait=False, cancel_futures=True)
+                    model_load_executor = None
+                    serving_engine, tokenizer = await start_serving_engine()
         except (ValueError, ModuleNotFoundError) as e:
             # mlx-lm raises ``ValueError: Model type X not supported`` plus an
             # internal ``ModuleNotFoundError: No module named 'mlx_lm.models.X'``
@@ -5970,11 +6038,21 @@ def _run_submit_flow(
                 print()
             else:
                 print(f"  Error loading model: {e}")
-            model_load_executor.shutdown(wait=False)
+            if model_load_executor is not None:
+                model_load_executor.shutdown(wait=False)
+            await stop_serving_engine_safely(
+                serving_engine,
+                "failed legacy benchmark cleanup after model load error",
+            )
             return 2
-        except (RepositoryNotFoundError, OSError) as e:
+        except (RepositoryNotFoundError, OSError, RuntimeError) as e:
             print(f"  Error loading model: {e}")
-            model_load_executor.shutdown(wait=False)
+            if model_load_executor is not None:
+                model_load_executor.shutdown(wait=False)
+            await stop_serving_engine_safely(
+                serving_engine,
+                "failed legacy benchmark cleanup after model load error",
+            )
             return 2
 
         # Standardized config: B=1, no batching, prefix-cache off so the
@@ -6030,75 +6108,86 @@ def _run_submit_flow(
         # Pass the EXISTING executor to AsyncEngineCore so the engine
         # loop, BatchGenerator construction, and every forward pass run
         # on the same thread that owns the model weights.
-        async with AsyncEngineCore(
-            model, tokenizer, engine_config, executor=model_load_executor
-        ) as engine:
-            for mode in sampling_modes:
-                print(
-                    f"  Running standardized bench "
-                    f"(sampling={mode}, 2 buckets × 5 rounds + 1 warmup)…"
-                )
-                try:
-                    bench = await run_standardized_bench(
-                        engine, tokenizer, sampling=mode
+        engine_context = (
+            _ServingBenchmarkAdapter(serving_engine)
+            if serving_engine is not None
+            else AsyncEngineCore(
+                model, tokenizer, engine_config, executor=model_load_executor
+            )
+        )
+        try:
+            async with engine_context as engine:
+                for mode in sampling_modes:
+                    print(
+                        f"  Running standardized bench "
+                        f"(sampling={mode}, 2 buckets × 5 rounds + 1 warmup)…"
                     )
-                except RuntimeError as exc:
-                    # Friendly surface for the bench's "exactly N tokens"
-                    # guard. As of #567's fix this branch is engine-bug
-                    # territory (sampling sets ``ignore_eos=True`` so the
-                    # model's EOS shouldn't fire); previously it blamed
-                    # the user's model alias. Print a clear summary so
-                    # contributors aren't dumped into a raw traceback.
-                    msg = str(exc)
-                    if "standardized bench requires exactly" in msg:
-                        print()
-                        print(
-                            "  Bench round aborted (engine bug — NOT your model's fault):"
+                    try:
+                        bench = await run_standardized_bench(
+                            engine, tokenizer, sampling=mode
                         )
-                        for line in msg.split(". "):
-                            line = line.strip()
-                            if line:
-                                print(f"    {line}")
-                        print()
-                        return 1
-                    raise
+                    except RuntimeError as exc:
+                        # Friendly surface for the bench's "exactly N tokens"
+                        # guard. As of #567's fix this branch is engine-bug
+                        # territory (sampling sets ``ignore_eos=True`` so the
+                        # model's EOS shouldn't fire); previously it blamed
+                        # the user's model alias. Print a clear summary so
+                        # contributors aren't dumped into a raw traceback.
+                        msg = str(exc)
+                        if "standardized bench requires exactly" in msg:
+                            print()
+                            print(
+                                "  Bench round aborted (engine bug — NOT your model's fault):"
+                            )
+                            for line in msg.split(". "):
+                                line = line.strip()
+                                if line:
+                                    print(f"    {line}")
+                            print()
+                            return 1
+                        raise
 
-                print(
-                    f"    short: decode={bench.short.decode_stat['median']:.2f} tok/s, "
-                    f"prefill={bench.short.prefill_stat['median']:.2f} tok/s, "
-                    f"ttft={bench.short.ttft_stat['median']:.1f} ms"
-                )
-                print(
-                    f"    long:  decode={bench.long.decode_stat['median']:.2f} tok/s, "
-                    f"prefill={bench.long.prefill_stat['median']:.2f} tok/s, "
-                    f"ttft={bench.long.ttft_stat['median']:.1f} ms"
-                )
+                    print(
+                        f"    short: decode={bench.short.decode_stat['median']:.2f} tok/s, "
+                        f"prefill={bench.short.prefill_stat['median']:.2f} tok/s, "
+                        f"ttft={bench.short.ttft_stat['median']:.1f} ms"
+                    )
+                    print(
+                        f"    long:  decode={bench.long.decode_stat['median']:.2f} tok/s, "
+                        f"prefill={bench.long.prefill_stat['median']:.2f} tok/s, "
+                        f"ttft={bench.long.ttft_stat['median']:.1f} ms"
+                    )
 
-                payload = build_submission_payload(
-                    hardware=hardware,
-                    software=software,
-                    alias=alias,
-                    hf_path=hf_path,
-                    bench=bench,
-                    notes=notes,
-                    # v2 tier-tagging: pass through only when the caller
-                    # supplied them. The builder validates the tier ↔
-                    # smoke_result/harness_result coupling — passing
-                    # ``smoke_result`` for ``tier=speed`` would
-                    # ``ValueError`` here rather than land a half-shaped
-                    # row in the corpus.
-                    tier=tier,
-                    smoke_result=smoke_result,
-                    harness_result=harness_result,
-                    spec_decode=_spec_payload,
-                    run_group=_run_group,
-                )
-                rc = submit_interactive(payload, repo_root)
-                if rc != 0:
-                    # Setup error (not a "user said no") — bail out
-                    # before kicking off the second submission so the
-                    # contributor sees the failure clearly.
-                    return rc
+                    payload = build_submission_payload(
+                        hardware=hardware,
+                        software=software,
+                        alias=alias,
+                        hf_path=hf_path,
+                        bench=bench,
+                        notes=notes,
+                        # v2 tier-tagging: pass through only when the caller
+                        # supplied them. The builder validates the tier ↔
+                        # smoke_result/harness_result coupling — passing
+                        # ``smoke_result`` for ``tier=speed`` would
+                        # ``ValueError`` here rather than land a half-shaped
+                        # row in the corpus.
+                        tier=tier,
+                        smoke_result=smoke_result,
+                        harness_result=harness_result,
+                        spec_decode=_spec_payload,
+                        run_group=_run_group,
+                    )
+                    rc = submit_interactive(payload, repo_root)
+                    if rc != 0:
+                        # Setup error (not a "user said no") — bail out
+                        # before kicking off the second submission so the
+                        # contributor sees the failure clearly.
+                        return rc
+        finally:
+            await stop_serving_engine_safely(
+                serving_engine,
+                "legacy benchmark serving-engine shutdown failed",
+            )
         return 0
 
     return asyncio.run(_run())
