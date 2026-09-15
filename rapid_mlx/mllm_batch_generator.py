@@ -523,6 +523,12 @@ def _singleton_regular_cache_leaves(
     any future shape fall through to the existing ``merge`` path. Matching is
     exact-type on purpose — ``isinstance`` would admit subclasses whose
     ``merge``/``extract`` lifecycle we have never validated.
+
+    Scope note: the mlx-lm leaf types only qualify when
+    ``allow_arrays_cache`` is on, i.e. the lever targets the serialized
+    hybrid (ArraysCache) lane. A structural B=1 batch on the dense lane
+    still pays the merge — that exclusion is deliberate until the dense
+    merge/extract lifecycle around plain mlx-lm leaves is qualified.
     """
     if not caches:
         return False
@@ -577,8 +583,13 @@ def _extract_detached_singleton_leaf(leaf: Any, idx: int) -> Any:
 
     detached = KVCache()
     if getattr(leaf, "keys", None) is not None:
-        detached.keys = mx.contiguous(leaf.keys[idx : idx + 1])
-        detached.values = mx.contiguous(leaf.values[idx : idx + 1])
+        # Trim to ``offset`` exactly like ``KVCache.extract`` and the LLM-lane
+        # singleton copy do: upstream KVCache slab-allocates in fixed steps, so
+        # an untrimmed row copy would carry up to one slab of zero padding and
+        # inflate byte accounting for anything that consumes the extract.
+        offset = int(getattr(leaf, "offset", 0) or 0)
+        detached.keys = mx.contiguous(leaf.keys[idx : idx + 1, :, :offset, :])
+        detached.values = mx.contiguous(leaf.values[idx : idx + 1, :, :offset, :])
         detached.offset = leaf.offset
         mx.eval(detached.keys, detached.values)
     return detached
@@ -619,6 +630,15 @@ class MLLMBatch:
         Args:
             keep_idx: Indices of requests to keep
         """
+        # Regular ``KVCache`` leaves expose no ``filter`` at all, so a
+        # singleton-regular batch would silently keep its KV state untouched;
+        # that is only correct for the B=1 identity filter, and anything else
+        # is a caller bug — fail loudly before any state is rewritten.
+        if self.cache_layout == "singleton_regular" and keep_idx != [0]:
+            raise ValueError(
+                "cannot filter a singleton-regular MLLM batch to anything "
+                f"other than its single row (got keep_idx={keep_idx})"
+            )
         self.uids = [self.uids[k] for k in keep_idx]
         self.request_ids = [self.request_ids[k] for k in keep_idx]
         self.logprobs = [self.logprobs[k] for k in keep_idx]
@@ -703,6 +723,10 @@ class MLLMBatchStats:
         self.vision_encoding_time: float = 0
         self.num_images_processed: int = 0
         self.peak_memory: float = 0
+        # Batches that took the singleton no-rebatch fast path. Qualification
+        # harnesses assert this is >0 under ``auto`` and ==0 under ``off`` so
+        # an eligibility regression cannot produce a vacuous A/B pass.
+        self.singleton_batches: int = 0
 
     @property
     def prompt_tps(self) -> float:
@@ -727,6 +751,7 @@ class MLLMBatchStats:
             "vision_encoding_time": self.vision_encoding_time,
             "num_images_processed": self.num_images_processed,
             "peak_memory": self.peak_memory,
+            "singleton_batches": self.singleton_batches,
         }
 
 
@@ -2297,6 +2322,16 @@ class MLLMBatchGenerator:
         )
         if singleton_regular:
             batch_cache = list(per_request_caches[0])
+            # Legacy merge() rebuilds every ArraysCache leaf from scratch and
+            # therefore drops the prefill-era left_padding/lengths bookkeeping
+            # (make_mask returns None during decode). Reset ours the same way
+            # so ``off`` stays a faithful rollback even when a warm APC
+            # snapshot hands the fast path leaves that still carry that state.
+            for leaf in batch_cache:
+                finalize = getattr(leaf, "finalize", None)
+                if finalize is not None:
+                    finalize()
+            self._stats.singleton_batches += 1
         else:
             try:
                 batch_cache = [

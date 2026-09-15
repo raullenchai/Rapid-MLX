@@ -490,3 +490,78 @@ class TestSingletonExtractionDetachment:
             # mx.contiguous materialization: evaluating the copy cannot be
             # affected by later writes into the live arrays.
             assert detached_state.shape == live_state.shape
+
+
+class TestLegacySemanticsAlignment:
+    """Round-1 review: the fast path must remain numerically faithful to the
+    legacy merge path, and its engagement must be observable."""
+
+    def test_adopted_leaves_drop_prefill_state_bookkeeping(self, monkeypatch):
+        """Legacy ``ArraysCache.merge`` rebuilds each leaf, so its
+        left_padding/lengths bookkeeping is gone (decode masks come out
+        None). The fast path must reset the adopted leaves the same way —
+        including on warm APC clones that still carry that state."""
+
+        leaves = _arrays_leaves()
+        for leaf in leaves:
+            leaf.left_padding = mx.array([0])
+            leaf.lengths = mx.array([5])
+
+        gen = _stub_generator(leaves)
+        batch = gen._process_prompts([_make_request(0)])
+
+        assert batch.cache_layout == "singleton_regular"
+        for leaf in batch.cache:
+            assert getattr(leaf, "left_padding", None) is None
+            assert getattr(leaf, "lengths", None) is None
+        assert gen._stats.singleton_batches == 1
+
+    def test_off_phase_never_counts_singleton_batches(self, monkeypatch):
+        gen = _stub_generator(_arrays_leaves(), singleton_fastpath="off")
+        gen._process_prompts([_make_request(0)])
+        assert gen._stats.singleton_batches == 0
+
+    def test_filter_rejects_non_identity_keep_idx(self):
+        batch = MLLMBatch(
+            uids=[0],
+            request_ids=["r0"],
+            y=mx.zeros((1,), dtype=mx.uint32),
+            logprobs=[mx.zeros(1)],
+            max_tokens=[8],
+            num_tokens=[0],
+            cache=_kv_leaves(),
+            requests=[_make_request(0)],
+            cache_layout="singleton_regular",
+        )
+        batch.filter([0])  # the B=1 identity filter stays legal
+        with pytest.raises(ValueError, match="singleton-regular"):
+            batch.filter([])
+
+    def test_extract_trims_kv_slab_padding(self):
+        """Upstream KVCache slab-allocates; the detached copy must be
+        trimmed to ``offset`` exactly like ``KVCache.extract``, not carry a
+        whole slab of zero padding."""
+        from mlx_vlm.models.cache import KVCache
+
+        leaf = KVCache()
+        leaf.keys = mx.ones((1, 2, 8, 4))
+        leaf.values = mx.ones((1, 2, 8, 4)) * 3
+        leaf.offset = 3
+        batch = MLLMBatch(
+            uids=[0],
+            request_ids=["r0"],
+            y=mx.zeros((1,), dtype=mx.uint32),
+            logprobs=[],
+            max_tokens=[8],
+            num_tokens=[0],
+            cache=[leaf],
+            requests=[_make_request(0)],
+            cache_layout="singleton_regular",
+        )
+
+        extracted = batch.extract_cache(0)[0]
+
+        assert type(extracted) is KVCache
+        assert extracted.keys.shape == (1, 2, 3, 4)
+        assert extracted.values.shape == (1, 2, 3, 4)
+        assert extracted.offset == 3

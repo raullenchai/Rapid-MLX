@@ -12019,8 +12019,9 @@ Examples:
             "Serialized MLLM lane cache handling (default: auto). 'auto' "
             "skips repacking a single eligible request's cache leaves into "
             "batched form (structural B=1 batches on the serialized hybrid "
-            "lane only); 'off' always takes the legacy merge/rebatch path. "
-            "Operator rollback for the singleton fast path."
+            "lane only; dense lanes keep the merge); 'off' always takes the "
+            "legacy merge/rebatch path. Operator rollback for the singleton "
+            "fast path."
         ),
     )
     # KV cache quantization options
