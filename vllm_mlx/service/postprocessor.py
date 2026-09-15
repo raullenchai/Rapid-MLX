@@ -4034,7 +4034,7 @@ class StreamingPostProcessor:
         if (
             self.tool_parser
             and self.tool_accumulated_text
-            and not self.tool_calls_detected
+            and (not self.tool_calls_detected or self._preserve_post_tool_content)
         ):
             held = self.tool_parser.flush_held_content(self.tool_accumulated_text)
             # Strict-string check: ``flush_held_content`` is part of the

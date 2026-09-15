@@ -449,7 +449,11 @@ def test_streaming_discards_unclosed_post_tool_reasoning_at_eof():
 
 def test_streaming_parses_two_complete_groups_in_one_chunk():
     parser = K2HorizonToolParser()
-    output = _group(_xml_call("ping")) + " between " + _group(_xml_call("lookup"))
+    output = (
+        _group(_xml_call("ping"))
+        + "private retry</ifm|think> between "
+        + _group(_xml_call("lookup"))
+    )
     delta = parser.extract_tool_calls_streaming("", output, output, request=_request())
     assert delta is not None
     assert delta["content"] == " between "
@@ -485,7 +489,7 @@ def test_streaming_redacts_reasoning_between_tool_groups():
     assert all(len(call["id"]) == len("call_") + 32 for call in calls)
 
 
-def test_streaming_resumes_immediately_after_post_tool_reasoning_closer():
+def test_streaming_buffers_post_tool_content_until_eof():
     parser = K2HorizonToolParser()
     group = _group(_xml_call("ping"))
     first = parser.extract_tool_calls_streaming("", group, group, request=_request())
@@ -508,14 +512,75 @@ def test_streaming_resumes_immediately_after_post_tool_reasoning_closer():
     )
 
     visible = boundary + "Visible"
-    assert parser.extract_tool_calls_streaming(
-        boundary, visible, "Visible", request=_request()
-    ) == {"content": "Visible"}
+    assert (
+        parser.extract_tool_calls_streaming(
+            boundary, visible, "Visible", request=_request()
+        )
+        is None
+    )
     more = visible + " now"
-    assert parser.extract_tool_calls_streaming(
-        visible, more, " now", request=_request()
-    ) == {"content": " now"}
-    assert parser.flush_held_content(more) == ""
+    assert (
+        parser.extract_tool_calls_streaming(visible, more, " now", request=_request())
+        is None
+    )
+    assert parser.flush_held_content(more) == "Visible now"
+
+
+def test_streaming_repeated_post_tool_reasoning_reveals_only_final_suffix():
+    parser = K2HorizonToolParser()
+    group = _group(_xml_call("ping"))
+    first = parser.extract_tool_calls_streaming("", group, group, request=_request())
+    assert first is not None and len(first["tool_calls"]) == 1
+
+    tail = "private one</ifm|think>Visible oneprivate two</ifm|think_fast>Visible final"
+    full = group + tail
+    assert (
+        parser.extract_tool_calls_streaming(
+            group,
+            full,
+            tail,
+            request=_request(),
+        )
+        is None
+    )
+    assert parser.flush_held_content(full) == "Visible final"
+
+
+def test_post_tool_marker_search_advances_with_each_delta():
+    class ObservedText(str):
+        starts: list[tuple[str, int]] = []
+
+        def find(self, sub, start=0, end=None):
+            self.starts.append((sub, start))
+            return (
+                super().find(sub, start)
+                if end is None
+                else super().find(sub, start, end)
+            )
+
+    parser = K2HorizonToolParser()
+    group = _group(_xml_call("ping"))
+    first = parser.extract_tool_calls_streaming("", group, group, request=_request())
+    assert first is not None and first.get("tool_calls")
+
+    previous = group
+    for chunk in ("x" * 10_000, "y" * 10_000):
+        current = ObservedText(previous + chunk)
+        ObservedText.starts.clear()
+        assert (
+            parser.extract_tool_calls_streaming(
+                previous, current, chunk, request=_request()
+            )
+            is None
+        )
+        opener_searches = [
+            start
+            for marker, start in ObservedText.starts
+            if marker == parser.GROUP_START
+        ]
+        assert opener_searches
+        assert opener_searches[0] >= len(current) - len(chunk) - len(parser.GROUP_START)
+        previous = str(current)
 
 
 def test_streaming_tool_choice_none_strips_envelope_incrementally():
@@ -662,6 +727,10 @@ def test_postprocessor_never_leaks_reasoning_after_a_tool_group():
                 content.append(event.content)
             elif event.type == "tool_call":
                 calls.extend(event.tool_calls)
+
+    for event in processor.finalize():
+        if event.type == "content":
+            content.append(event.content)
 
     assert "".join(content) == "Visible recovery"
     assert "private retry" not in "".join(content)

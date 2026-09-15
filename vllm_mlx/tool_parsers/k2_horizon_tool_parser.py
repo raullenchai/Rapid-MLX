@@ -55,6 +55,7 @@ class K2HorizonToolParser(ToolParser):
         self._tool_group_seen = False
         self._post_tool_content_visible = False
         self._pending_tool_start: int | None = None
+        self._post_tool_scan_upto = 0
         self._suppress_calls = False
 
     @staticmethod
@@ -244,6 +245,13 @@ class K2HorizonToolParser(ToolParser):
         return prefix[boundary + len(marker) :]
 
     @classmethod
+    def _visible_post_tool_prefix(cls, text: str) -> str:
+        """Return only text proven public by a post-tool reasoning closer."""
+        if not any(marker in text for marker in cls.REASONING_ENDS):
+            return ""
+        return cls._visible_prefix(text)
+
+    @classmethod
     def _without_tool_groups(cls, text: str) -> str:
         """Remove native tool envelopes when this request forbids execution."""
         start = text.find(cls.GROUP_START)
@@ -330,32 +338,27 @@ class K2HorizonToolParser(ToolParser):
         suppress_calls = self._request_value(request, "tool_choice") == "none"
         self._suppress_calls = suppress_calls
 
-        start = (
-            self._pending_tool_start
-            if self._pending_tool_start is not None
-            else current_text.find(self.GROUP_START, self._content_upto)
-        )
+        if self._pending_tool_start is not None:
+            start = self._pending_tool_start
+        else:
+            start_search = self._content_upto
+            if self._tool_group_seen and not self._post_tool_content_visible:
+                start_search = max(
+                    start_search,
+                    self._post_tool_scan_upto - len(self.GROUP_START) + 1,
+                )
+            start = current_text.find(self.GROUP_START, start_search)
         if start < 0:
             if self._tool_group_seen:
-                # K2 may open another private reasoning lane between tool
-                # groups. Hold it until a reasoning closer establishes the
-                # visible boundary, then resume ordinary incremental output.
-                pending = current_text[self._content_upto :]
                 if not self._post_tool_content_visible:
-                    boundary = max(
-                        (pending.rfind(marker) for marker in self.REASONING_ENDS),
-                        default=-1,
-                    )
-                    if boundary < 0:
-                        return None
-                    marker = next(
-                        marker
-                        for marker in self.REASONING_ENDS
-                        if pending.rfind(marker) == boundary
-                    )
-                    self._content_upto += boundary + len(marker)
-                    self._post_tool_content_visible = True
-                    pending = current_text[self._content_upto :]
+                    # K2 has no unambiguous opener for a repeated private
+                    # reasoning lane. Keep all post-call bytes until EOF can
+                    # select the suffix after the *last* closer. Advance only
+                    # the marker-search cursor, retaining content_upto for the
+                    # single linear final scan.
+                    self._post_tool_scan_upto = len(current_text)
+                    return None
+                pending = current_text[self._content_upto :]
                 held = self._partial_overlap(pending, self.GROUP_START)
                 end = len(current_text) - held
                 addition = current_text[self._content_upto : end]
@@ -374,7 +377,12 @@ class K2HorizonToolParser(ToolParser):
             return {"content": addition} if addition else None
 
         initial_upto = self._content_upto
-        content_parts = [self._visible_prefix(current_text[self._content_upto : start])]
+        initial = current_text[self._content_upto : start]
+        content_parts = [
+            self._visible_post_tool_prefix(initial)
+            if self._tool_group_seen and not self._post_tool_content_visible
+            else self._visible_prefix(initial)
+        ]
         calls: list[dict[str, Any]] = []
         cursor = start
         while cursor >= 0:
@@ -414,37 +422,19 @@ class K2HorizonToolParser(ToolParser):
 
             next_start = current_text.find(self.GROUP_START, end)
             if next_start >= 0:
-                content_parts.append(self._visible_prefix(current_text[end:next_start]))
+                content_parts.append(
+                    self._visible_post_tool_prefix(current_text[end:next_start])
+                )
                 self._post_tool_content_visible = False
                 cursor = next_start
                 continue
 
-            trailing = current_text[end:]
-            # The upstream reasoning parser stops at the first tool group, so
-            # even an upstream-sanitized stream can contain a later private
-            # retry. Independently require its closer before exposing bytes.
-            boundary = max(
-                (trailing.rfind(marker) for marker in self.REASONING_ENDS),
-                default=-1,
-            )
-            if boundary >= 0:
-                marker = next(
-                    marker
-                    for marker in self.REASONING_ENDS
-                    if trailing.rfind(marker) == boundary
-                )
-                visible_start = end + boundary + len(marker)
-                visible = current_text[visible_start:]
-                held = self._partial_overlap(visible, self.GROUP_START)
-                visible_end = len(current_text) - held
-                content_parts.append(current_text[visible_start:visible_end])
-                self._content_upto = visible_end
-                self._post_tool_content_visible = True
-            else:
-                # The completed call is safe to emit, but trailing bytes are
-                # not public until a reasoning closer or EOF proves it.
-                self._content_upto = end
-                self._post_tool_content_visible = False
+            # A valid call makes all following bytes ambiguous until EOF: K2
+            # can begin another implicit reasoning lane without an opener.
+            # Buffer once, then reveal only the suffix after the final closer.
+            self._content_upto = end
+            self._post_tool_scan_upto = len(current_text)
+            self._post_tool_content_visible = False
             break
 
         if not calls:
@@ -491,9 +481,7 @@ class K2HorizonToolParser(ToolParser):
             remaining = full_text[self._content_upto :]
             if self._post_tool_content_visible:
                 return remaining
-            if not any(marker in remaining for marker in self.REASONING_ENDS):
-                return ""
-            return self._visible_prefix(remaining)
+            return self._visible_post_tool_prefix(remaining)
         if not self._input_reasoning_sanitized and not self._tool_group_seen:
             remaining = full_text[self._content_upto :]
             if not any(marker in remaining for marker in self.REASONING_ENDS):
