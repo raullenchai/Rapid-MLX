@@ -666,6 +666,13 @@ def _request_cached_sampler(req: MLLMBatchRequest) -> Callable[[mx.array], mx.ar
     prefill token zero and every decode step keeps the RNG stream
     continuous. Rebuilding a seeded sampler per step would restart from
     the initial key and reuse the same subkey for different draws.
+
+    Corollary: a fingerprint CHANGE mid-generation rebuilds the closure
+    and restarts that request's RNG stream from its initial key. That is
+    acceptable only because the lane keeps sampling params immutable
+    after admission — there is no code path that mutates
+    ``temperature``/``top_p``/``min_p``/``top_k``/``seed`` between
+    prefill and the last decode step. Keep it that way.
     """
     fingerprint = (_sampler_fingerprint(req), req.seed)
     cached = getattr(req, "_cached_sampler", None)
@@ -2307,6 +2314,13 @@ class MLLMBatchGenerator:
                     sampled_tokens.append(req_sampler(logprobs[i : i + 1]))
                 sampled = mx.concatenate(sampled_tokens, axis=0)
         else:
+            # Degenerate rows-without-metadata branch: ``requests`` is
+            # empty or its length no longer matches the logits rows, so
+            # there is no row→request mapping to honour extended params
+            # with. Retain the pre-parity generator-global sampler — the
+            # batch-level defaults — rather than guessing per-row knobs.
+            # Live call paths always pass the active batch's own requests
+            # alongside its logits, so this only guards internal misuse.
             sampled = self.sampler(logprobs)
 
         return sampled, list(logprobs)
