@@ -52,6 +52,7 @@ final class BuiltinToolsTests {
         #expect(result.content.contains("web_search"))
         #expect(result.content.contains("browse"))
         #expect(result.content.contains("weather"))
+        #expect(!result.executed)
     }
 
     @Test("Registry stamps the call id onto a result the tool produced without one")
@@ -389,7 +390,8 @@ private final class DeclinedBrowseRegistry: ToolRegistry {
             toolCallID: call.id,
             content: "User declined to open this page.",
             isError: true,
-            failureKind: .userDeclined
+            failureKind: .userDeclined,
+            executed: false
         )
     }
 }

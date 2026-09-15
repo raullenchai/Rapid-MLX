@@ -526,7 +526,7 @@ final class ChatViewModel {
         return AgentClientToolResult(
             content: result.content,
             isError: result.isError,
-            executed: result.failureKind != .userDeclined
+            executed: result.executed
         )
     }
 
