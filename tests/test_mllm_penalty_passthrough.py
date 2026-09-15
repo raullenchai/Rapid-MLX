@@ -60,7 +60,7 @@ def test_neutral_defaults_skip_processor_allocation():
     row = mx.ones((1, 8))
     out = _maybe_apply_penalty_processors(req, row)
     assert out is row, "neutral knobs must return the input row unchanged"
-    assert not hasattr(req, "_cached_penalty_processors"), (
+    assert req._cached_penalty_processors is None, (
         "neutral defaults must not allocate processor cache"
     )
 

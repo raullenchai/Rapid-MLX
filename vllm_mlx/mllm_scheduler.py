@@ -587,6 +587,9 @@ class MLLMScheduler:
         video_fps: float | None = None,
         video_max_frames: int | None = None,
         request_id: str | None = None,
+        top_k: int | None = None,
+        min_p: float | None = None,
+        seed: int | None = None,
         **kwargs,
     ) -> str:
         """
@@ -603,6 +606,13 @@ class MLLMScheduler:
             video_fps: FPS for video frame extraction
             video_max_frames: Max frames to extract from video
             request_id: Optional custom request ID
+            top_k: Top-k sampling (``None``/0 disables — sampling parity
+                with the text lane)
+            min_p: Min-p sampling (``None``/0.0 disables — sampling parity
+                with the text lane)
+            seed: Per-request PRNG seed (``None`` keeps the shared global
+                RNG stream; a seeded request owns an independent
+                ``make_seeded_sampler`` stream)
             **kwargs: Additional generation parameters
 
         Returns:
@@ -651,10 +661,22 @@ class MLLMScheduler:
         presence_penalty = _pop_penalty("presence_penalty", 0.0)
         frequency_penalty = _pop_penalty("frequency_penalty", 0.0)
         logits_processors = list(kwargs.pop("logits_processors", ()) or ())
+        # Extended sampling params (sampling parity with the text lane).
+        # ``None`` means "caller did not set it" and folds to the
+        # ``SamplingParams`` disabled default; an explicit ``0`` value is
+        # preserved (equivalent to disabled, but never rewritten to
+        # ``None`` so the engine sees exactly what the caller sent).
+        # ``seed`` keeps its ``None``-means-disabled contract exactly —
+        # ``seed=0`` is a legitimate PRNG seed and must survive.
+        top_k = 0 if top_k is None else int(top_k)
+        min_p = 0.0 if min_p is None else float(min_p)
         sampling_params = SamplingParams(
             max_tokens=max_tokens,
             temperature=temperature,
             top_p=top_p,
+            top_k=top_k,
+            min_p=min_p,
+            seed=seed,
             repetition_penalty=repetition_penalty,
             presence_penalty=presence_penalty,
             frequency_penalty=frequency_penalty,
@@ -949,6 +971,13 @@ class MLLMScheduler:
                 max_tokens=request.sampling_params.max_tokens,
                 temperature=request.sampling_params.temperature,
                 top_p=request.sampling_params.top_p,
+                # Extended sampling params (sampling parity). A seeded
+                # request keeps its own sampler closure inside the batch
+                # generator; unseeded requests share the fingerprint-keyed
+                # batch sampler fast path.
+                top_k=request.sampling_params.top_k,
+                min_p=request.sampling_params.min_p,
+                seed=request.sampling_params.seed,
                 # OpenAI-spec penalty passthrough (#512). Default neutral
                 # values are no-ops inside ``_maybe_apply_penalty_processors``.
                 repetition_penalty=request.sampling_params.repetition_penalty,
@@ -2064,6 +2093,9 @@ class MLLMScheduler:
         video_fps: float | None = None,
         video_max_frames: int | None = None,
         on_request_committed: Callable[[], None] | None = None,
+        top_k: int | None = None,
+        min_p: float | None = None,
+        seed: int | None = None,
         **kwargs,
     ) -> str:
         """
@@ -2079,6 +2111,9 @@ class MLLMScheduler:
             stop: Text-based stop sequences
             video_fps: FPS for video frame extraction
             video_max_frames: Max frames to extract from video
+            top_k: Top-k sampling (``None``/0 disables)
+            min_p: Min-p sampling (``None``/0.0 disables)
+            seed: Per-request PRNG seed (``None`` uses the shared RNG)
             **kwargs: Additional parameters
 
         Returns:
@@ -2094,6 +2129,9 @@ class MLLMScheduler:
             stop=stop,
             video_fps=video_fps,
             video_max_frames=video_max_frames,
+            top_k=top_k,
+            min_p=min_p,
+            seed=seed,
             **kwargs,
         )
 
