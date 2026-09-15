@@ -75,6 +75,19 @@ def _write_completed_job(job: video._VideoJob) -> None:
     video._persist_completed_job(job)
 
 
+def test_completed_job_persists_generation_mode(tmp_path: Path) -> None:
+    video.configure_video_jobs(tmp_path / "videos")
+    job = _completed_job("video_" + "e" * 32)
+    job.generation_mode = "fast"
+    _write_completed_job(job)
+
+    restored = video._load_completed_job(video._jobs_root / job.id)
+
+    assert restored is not None
+    assert restored.generation_mode == "fast"
+    assert restored.public()["generation_mode"] == "fast"
+
+
 @pytest.mark.asyncio
 async def test_completed_job_survives_store_reconfiguration(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch

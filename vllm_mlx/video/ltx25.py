@@ -6,6 +6,7 @@ from __future__ import annotations
 import importlib.metadata
 import importlib.util
 import io
+import json
 import os
 import re
 import shutil
@@ -15,9 +16,10 @@ import sys
 import tarfile
 import tempfile
 import threading
+from dataclasses import dataclass
 from pathlib import Path
 
-LTX25_RUNTIME_COMMIT = "905efb2308a05385f4051e1af6ac322147be23ed"
+LTX25_RUNTIME_COMMIT = "08256835b7e86d9296affb41e1e3b40936504f26"
 LTX25_RUNTIME_REPOSITORY = "https://github.com/raullenchai/ltx-2-mlx.git"
 LTX25_RUNTIME_VERSION = "0.14.15"
 # Stamped into each embedded distribution's .dist-info by build-sidecar.sh;
@@ -27,6 +29,16 @@ _DEFAULT_TIMEOUT_SECONDS = 7200
 _TERMINATE_GRACE_SECONDS = 10
 _RUNTIME_CACHE_LOCK = threading.Lock()
 _RUNTIME_CACHE: tempfile.TemporaryDirectory[str] | None = None
+_FAST_MODEL_ENV = "RAPID_MLX_LTX25_FAST_MODEL"
+_FAST_STAGE1_MANIFEST = "fast-stage1-exact-prefix.json"
+_FAST_STAGE2_MANIFEST = "fast-stage2.json"
+_FAST_STAGE1_CAPABILITY = "ltx_stage1_exact_prefix_middle_span_v1"
+_FAST_DEQUANT_MATMUL_MIN_TOKENS = "1024"
+_MAX_FAST_MANIFEST_BYTES = 64 * 1024
+_IMMUTABLE_REVISION_RE = re.compile(r"[0-9a-f]{40,64}\Z")
+_SHA256_RE = re.compile(r"[0-9a-f]{64}\Z")
+_FAST_STAGE1_EXECUTION_SPANS = [[0, 1], [1, 2], [2, 3], [3, 7]]
+_FAST_STAGE1_SCHEDULE = [1.0, 0.99375, 0.9875, 0.98125, 0.421875, 0.0]
 _INNER_PROMPT_RUNNER = """\
 import signal
 import sys
@@ -364,6 +376,151 @@ class LTX25BackendError(RuntimeError):
     """Safe, public-facing error from the LTX-2.5 backend."""
 
 
+@dataclass(frozen=True)
+class LTX25FastConfig:
+    """Validated operator-selected portable fast model package."""
+
+    model_dir: Path
+    base_model_id: str
+    qualification_revision: str
+    base_revision: str
+
+
+def _local_fast_file(model_dir: Path, value: object, *, suffix: str) -> Path:
+    if not isinstance(value, str):
+        raise LTX25BackendError(
+            "The configured LTX-2.5 fast manifest is missing a package file."
+        )
+    relative = Path(value)
+    if relative.is_absolute() or len(relative.parts) != 1 or relative.suffix != suffix:
+        raise LTX25BackendError(
+            "The configured LTX-2.5 fast manifest contains an unsafe package path."
+        )
+    path = model_dir / relative
+    if not path.is_file():
+        raise LTX25BackendError(
+            "The configured LTX-2.5 fast model is missing a package file."
+        )
+    return path
+
+
+def _read_fast_manifest(path: Path) -> dict:
+    try:
+        if not path.is_file():
+            raise ValueError
+        with path.open("rb") as source:
+            raw = source.read(_MAX_FAST_MANIFEST_BYTES + 1)
+        if len(raw) > _MAX_FAST_MANIFEST_BYTES:
+            raise ValueError
+        value = json.loads(raw.decode("utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError, ValueError) as exc:
+        raise LTX25BackendError(
+            "The configured LTX-2.5 fast model has a missing or invalid manifest."
+        ) from exc
+    if not isinstance(value, dict) or value.get("schema_version") != 1:
+        raise LTX25BackendError(
+            "The configured LTX-2.5 fast model requires schema_version=1 manifests."
+        )
+    return value
+
+
+def resolve_ltx25_fast_config() -> LTX25FastConfig | None:
+    """Resolve a model-contained fast package without inspecting host identity."""
+    raw = os.environ.get(_FAST_MODEL_ENV, "").strip()
+    if not raw:
+        return None
+    try:
+        model_dir = Path(raw).expanduser().resolve(strict=True)
+    except OSError as exc:
+        raise LTX25BackendError(
+            f"{_FAST_MODEL_ENV} does not name an available fast model directory."
+        ) from exc
+    if not model_dir.is_dir():
+        raise LTX25BackendError(
+            f"{_FAST_MODEL_ENV} does not name an available fast model directory."
+        )
+
+    stage1 = _read_fast_manifest(model_dir / _FAST_STAGE1_MANIFEST)
+    stage2 = _read_fast_manifest(model_dir / _FAST_STAGE2_MANIFEST)
+    if stage1.get("capability") != _FAST_STAGE1_CAPABILITY:
+        raise LTX25BackendError(
+            "The configured LTX-2.5 fast model does not advertise the qualified exact-prefix capability."
+        )
+    if (
+        stage1.get("execution_spans") != _FAST_STAGE1_EXECUTION_SPANS
+        or stage1.get("learned_spans") != [[3, 7]]
+        or stage1.get("clean_final_span") != [7, 8]
+        or stage1.get("schedule") != _FAST_STAGE1_SCHEDULE
+    ):
+        raise LTX25BackendError(
+            "The configured LTX-2.5 fast model does not use the qualified exact-prefix schedule."
+        )
+    qualification = stage1.get("qualification_revision")
+    if not isinstance(qualification, str) or not qualification:
+        raise LTX25BackendError(
+            "The configured LTX-2.5 fast model has no qualification revision."
+        )
+    shared_fields = ("base_model_id", "base_revision", "transformer_sha256")
+    if any(
+        not isinstance(stage1.get(field), str)
+        or not stage1[field]
+        or stage1[field] != stage2.get(field)
+        for field in shared_fields
+    ):
+        raise LTX25BackendError(
+            "The configured LTX-2.5 fast manifests do not bind the same base model."
+        )
+    if not _IMMUTABLE_REVISION_RE.fullmatch(stage1["base_revision"]):
+        raise LTX25BackendError(
+            "The configured LTX-2.5 fast model does not bind an immutable base revision."
+        )
+    digest_fields = (
+        stage1.get("transformer_sha256"),
+        stage2.get("transformer_sha256"),
+        stage2.get("adapter_sha256"),
+    )
+    if any(
+        not isinstance(value, str) or not _SHA256_RE.fullmatch(value)
+        for value in digest_fields
+    ):
+        raise LTX25BackendError(
+            "The configured LTX-2.5 fast manifests require lowercase SHA-256 digests."
+        )
+    transformer = _local_fast_file(
+        model_dir, stage1.get("transformer_file"), suffix=".safetensors"
+    )
+    if stage2.get("transformer_file") != transformer.name:
+        raise LTX25BackendError(
+            "The configured LTX-2.5 fast manifests do not select the same transformer."
+        )
+    segments = stage1.get("segments")
+    if (
+        not isinstance(segments, list)
+        or len(segments) != 1
+        or not isinstance(segments[0], dict)
+    ):
+        raise LTX25BackendError(
+            "The configured LTX-2.5 fast model requires one learned middle segment."
+        )
+    segment_digest = segments[0].get("adapter_sha256")
+    if (
+        segments[0].get("span") != [3, 7]
+        or not isinstance(segment_digest, str)
+        or not _SHA256_RE.fullmatch(segment_digest)
+    ):
+        raise LTX25BackendError(
+            "The configured LTX-2.5 fast model has an invalid learned middle segment."
+        )
+    _local_fast_file(model_dir, segments[0].get("adapter_file"), suffix=".safetensors")
+    _local_fast_file(model_dir, stage2.get("adapter_file"), suffix=".safetensors")
+    return LTX25FastConfig(
+        model_dir=model_dir,
+        base_model_id=stage1["base_model_id"],
+        qualification_revision=qualification,
+        base_revision=stage1["base_revision"],
+    )
+
+
 class LTX25VideoEngine:
     """Run LTX-2.5 through its native MLX command-line runtime."""
 
@@ -374,6 +531,25 @@ class LTX25VideoEngine:
         self._process_lock = threading.Lock()
         self._process: subprocess.Popen[str] | None = None
         self._stopping = False
+
+    def fast_mode_details(self) -> dict | None:
+        """Return advertised fast-mode metadata, or None when not configured."""
+        try:
+            config = resolve_ltx25_fast_config()
+        except LTX25BackendError:
+            return None
+        if config is None:
+            return None
+        if config.base_model_id != self.model_name:
+            return None
+        return {
+            "qualification_revision": config.qualification_revision,
+            "base_revision": config.base_revision,
+            "experimental": config.qualification_revision.startswith("diagnostic-"),
+            "operation_modes": ["text-to-video"],
+            "stage1_evaluations": 5,
+            "stage2_evaluations": 1,
+        }
 
     @staticmethod
     def _terminate_process(process: subprocess.Popen[str]) -> None:
@@ -424,7 +600,19 @@ class LTX25VideoEngine:
         seed: int,
         image: Path | None,
         conditioning_strength: float | None = None,
+        generation_mode: str = "standard",
     ) -> None:
+        if generation_mode not in {"standard", "fast"}:
+            raise LTX25BackendError("generation_mode must be standard or fast.")
+        fast_config = resolve_ltx25_fast_config() if generation_mode == "fast" else None
+        if generation_mode == "fast" and fast_config is None:
+            raise LTX25BackendError(
+                "LTX-2.5 fast mode is not configured; set RAPID_MLX_LTX25_FAST_MODEL to a qualified model package."
+            )
+        if fast_config is not None and fast_config.base_model_id != self.model_name:
+            raise LTX25BackendError(
+                "The configured LTX-2.5 fast model does not match the served model."
+            )
         timeout = _generation_timeout_seconds()
         interpreter = embedded_ltx25_interpreter()
         environment = os.environ.copy()
@@ -460,7 +648,7 @@ class LTX25VideoEngine:
             _STDIN_PROMPT_RUNNER,
             "generate",
             "--model",
-            self.model_name,
+            str(fast_config.model_dir) if fast_config is not None else self.model_name,
             "--distilled",
             "--low-ram",
             "--quiet",
@@ -477,6 +665,18 @@ class LTX25VideoEngine:
             "--output",
             str(staged_output),
         ]
+        if fast_config is not None:
+            command.extend(
+                [
+                    "--fast-stage1-segmented-manifest",
+                    _FAST_STAGE1_MANIFEST,
+                    "--fast-stage2-manifest",
+                    _FAST_STAGE2_MANIFEST,
+                ]
+            )
+            environment["LTX2_DEQUANT_MATMUL_MIN_TOKENS"] = (
+                _FAST_DEQUANT_MATMUL_MIN_TOKENS
+            )
         if image is not None:
             command.extend(
                 [

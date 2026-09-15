@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import shutil
 import signal
@@ -42,6 +43,118 @@ def test_ltx25_capabilities_match_distilled_controls() -> None:
         "minimum": 0.0,
         "maximum": 1.0,
     }
+    assert capabilities["controls"]["generation_mode"] == {
+        "values": ["standard"],
+        "default": "standard",
+        "fast": None,
+    }
+
+
+def _fast_model_dir(
+    root: Path, *, qualification_revision: str = "diagnostic-product-screen"
+) -> Path:
+    for name in (
+        "transformer-distilled.safetensors",
+        "fast-stage1-middle-3-7.safetensors",
+        "fast-stage2.safetensors",
+    ):
+        (root / name).write_bytes(b"placeholder")
+    shared = {
+        "schema_version": 1,
+        "base_model_id": "MrMofer/ltx-2.5-mlx-q8",
+        "base_revision": "f" * 40,
+        "transformer_sha256": "a" * 64,
+    }
+    (root / "fast-stage1-exact-prefix.json").write_text(
+        json.dumps(
+            {
+                **shared,
+                "capability": "ltx_stage1_exact_prefix_middle_span_v1",
+                "qualification_revision": qualification_revision,
+                "transformer_file": "transformer-distilled.safetensors",
+                "execution_spans": [[0, 1], [1, 2], [2, 3], [3, 7]],
+                "learned_spans": [[3, 7]],
+                "clean_final_span": [7, 8],
+                "schedule": [1.0, 0.99375, 0.9875, 0.98125, 0.421875, 0.0],
+                "segments": [
+                    {
+                        "adapter_file": "fast-stage1-middle-3-7.safetensors",
+                        "adapter_sha256": "b" * 64,
+                        "span": [3, 7],
+                    }
+                ],
+            }
+        )
+    )
+    (root / "fast-stage2.json").write_text(
+        json.dumps(
+            {
+                **shared,
+                "transformer_file": "transformer-distilled.safetensors",
+                "adapter_file": "fast-stage2.safetensors",
+                "adapter_sha256": "c" * 64,
+            }
+        )
+    )
+    return root
+
+
+def test_ltx25_capabilities_advertise_configured_portable_fast_mode(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from vllm_mlx.routes.video import _video_capabilities
+
+    monkeypatch.setenv("RAPID_MLX_LTX25_FAST_MODEL", str(_fast_model_dir(tmp_path)))
+    ltx_engine = ltx25.LTX25VideoEngine("MrMofer/ltx-2.5-mlx-q8")
+    capabilities = _video_capabilities(
+        SimpleNamespace(
+            model_name="MrMofer/ltx-2.5-mlx-q8",
+            video_family="ltx-2.5",
+            _ltx25_engine=ltx_engine,
+        )
+    )
+
+    control = capabilities["controls"]["generation_mode"]
+    assert control["values"] == ["standard", "fast"]
+    assert control["default"] == "standard"
+    assert control["fast"] == {
+        "qualification_revision": "diagnostic-product-screen",
+        "base_revision": "f" * 40,
+        "experimental": True,
+        "operation_modes": ["text-to-video"],
+        "stage1_evaluations": 5,
+        "stage2_evaluations": 1,
+    }
+
+
+def test_ltx25_fast_config_rejects_cross_base_manifests(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _fast_model_dir(tmp_path)
+    stage2_path = tmp_path / "fast-stage2.json"
+    stage2 = json.loads(stage2_path.read_text())
+    stage2["base_revision"] = "e" * 40
+    stage2_path.write_text(json.dumps(stage2))
+    monkeypatch.setenv("RAPID_MLX_LTX25_FAST_MODEL", str(tmp_path))
+
+    with pytest.raises(ltx25.LTX25BackendError, match="same base model"):
+        ltx25.resolve_ltx25_fast_config()
+
+
+def test_ltx25_fast_config_rejects_unqualified_schedule(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _fast_model_dir(tmp_path)
+    stage1_path = tmp_path / "fast-stage1-exact-prefix.json"
+    stage1 = json.loads(stage1_path.read_text())
+    stage1["schedule"][4] = 0.5
+    stage1_path.write_text(json.dumps(stage1))
+    monkeypatch.setenv("RAPID_MLX_LTX25_FAST_MODEL", str(tmp_path))
+
+    with pytest.raises(
+        ltx25.LTX25BackendError, match="qualified exact-prefix schedule"
+    ):
+        ltx25.resolve_ltx25_fast_config()
 
 
 def _fake_embedded_distributions(
@@ -764,6 +877,67 @@ def test_ltx25_engine_invokes_pinned_runtime_contract(
     assert output.read_bytes() == b"mp4-with-audio"
 
 
+def test_ltx25_fast_generation_selects_complete_product_package(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    package = tmp_path / "fast-model"
+    package.mkdir()
+    _fast_model_dir(package)
+    output = tmp_path / "result.mp4"
+    calls: list[tuple[list[str], dict]] = []
+    monkeypatch.setenv("RAPID_MLX_LTX25_FAST_MODEL", str(package))
+    monkeypatch.setattr(ltx25, "embedded_ltx25_interpreter", lambda: "/embedded/python")
+
+    class Process:
+        returncode = 0
+
+        def __init__(self, command: list[str], **kwargs) -> None:
+            self.command = command
+            calls.append((command, kwargs))
+
+        def communicate(self, *, input: str, timeout: int) -> tuple[str, str]:
+            generated = Path(self.command[self.command.index("--output") + 1])
+            generated.write_bytes(b"fast-mp4-with-audio")
+            return "", ""
+
+    monkeypatch.setattr(ltx25.subprocess, "Popen", Process)
+    ltx25.LTX25VideoEngine("MrMofer/ltx-2.5-mlx-q8").generate(
+        prompt="a fox",
+        output_path=output,
+        width=768,
+        height=512,
+        num_frames=241,
+        fps=24,
+        seed=7,
+        image=None,
+        generation_mode="fast",
+    )
+
+    command, kwargs = calls[0]
+    assert command[command.index("--model") + 1] == str(package.resolve())
+    assert command[command.index("--fast-stage1-segmented-manifest") + 1] == (
+        "fast-stage1-exact-prefix.json"
+    )
+    assert command[command.index("--fast-stage2-manifest") + 1] == "fast-stage2.json"
+    assert kwargs["env"]["LTX2_DEQUANT_MATMUL_MIN_TOKENS"] == "1024"
+    assert output.read_bytes() == b"fast-mp4-with-audio"
+
+
+def test_ltx25_fast_generation_fails_closed_without_package(tmp_path: Path) -> None:
+    with pytest.raises(ltx25.LTX25BackendError, match="not configured"):
+        ltx25.LTX25VideoEngine("MrMofer/ltx-2.5-mlx-q8").generate(
+            prompt="a fox",
+            output_path=tmp_path / "result.mp4",
+            width=768,
+            height=512,
+            num_frames=241,
+            fps=24,
+            seed=7,
+            image=None,
+            generation_mode="fast",
+        )
+
+
 def test_ltx25_engine_reports_subprocess_failure_without_leaking_details(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -1177,3 +1351,68 @@ async def test_ltx25_route_rejects_unsupported_cfg_before_queueing(
 
     assert exc.value.status_code == 400
     assert set(video._jobs) == before
+
+
+@pytest.mark.asyncio
+async def test_ltx25_route_rejects_unconfigured_fast_mode_before_queueing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from vllm_mlx.routes import video
+
+    engine = VideoEngine("MrMofer/ltx-2.5-mlx-q8")
+    monkeypatch.setattr(video, "_video_engine", lambda: engine)
+    monkeypatch.setattr(video, "_accepting_jobs", True)
+    monkeypatch.delenv("RAPID_MLX_LTX25_FAST_MODEL", raising=False)
+    before = set(video._jobs)
+
+    with pytest.raises(HTTPException, match="not configured") as exc:
+        await video.create_video(
+            prompt="a fox",
+            model="ltx-2.5-mlx-q8",
+            seconds="1",
+            size="704x512",
+            seed=7,
+            fps=None,
+            frames=None,
+            guidance_scale=None,
+            conditioning_strength=None,
+            negative_prompt=None,
+            input_reference=None,
+            generation_mode="fast",
+        )
+
+    assert exc.value.status_code == 409
+    assert set(video._jobs) == before
+
+
+@pytest.mark.asyncio
+async def test_ltx25_route_keeps_image_conditioning_on_standard_mode(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from vllm_mlx.routes import video
+
+    package = tmp_path / "fast-model"
+    package.mkdir()
+    _fast_model_dir(package, qualification_revision="qual-product-v1")
+    monkeypatch.setenv("RAPID_MLX_LTX25_FAST_MODEL", str(package))
+    engine = VideoEngine("MrMofer/ltx-2.5-mlx-q8")
+    monkeypatch.setattr(video, "_video_engine", lambda: engine)
+    monkeypatch.setattr(video, "_accepting_jobs", True)
+
+    with pytest.raises(HTTPException, match="text-to-video only") as exc:
+        await video.create_video(
+            prompt="a fox",
+            model="ltx-2.5-mlx-q8",
+            seconds="1",
+            size="704x512",
+            seed=7,
+            fps=None,
+            frames=None,
+            guidance_scale=None,
+            conditioning_strength=0.5,
+            negative_prompt=None,
+            input_reference=object(),  # type: ignore[arg-type]
+            generation_mode="fast",
+        )
+
+    assert exc.value.status_code == 400

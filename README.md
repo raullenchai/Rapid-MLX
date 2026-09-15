@@ -229,8 +229,9 @@ deployment.
 ## Video generation
 
 Run text-to-video or image-to-video locally through the OpenAI-compatible
-Videos API. Three backends ship — **Wan 2.1 / 2.2**, **CogVideoX-Fun** and
-**LTX-2.3** — across 8 registered checkpoints. `wan2.2-ti2v-5b-q8` is the
+Videos API. Four backend families ship — **Wan 2.1 / 2.2**,
+**CogVideoX-Fun**, **LTX-2.3**, and **LTX-2.5** — across registered
+checkpoints. `wan2.2-ti2v-5b-q8` is the
 recommended starting point: smallest of the Wan set, and TI2V means one
 checkpoint does both text-to-video and image-to-video.
 
@@ -263,6 +264,12 @@ image-to-video.
 Generation is serialized — one clip at a time — because two diffusion
 pipelines resident at once will exhaust unified memory. Expect minutes of
 compute per second of footage, not real time.
+
+LTX-2.5 can additionally expose a default-off, manifest-validated experimental
+`generation_mode=fast` when the operator configures a compatible portable model
+package. The current diagnostic path is approximately 2x for 10-second 768x512
+output with synchronized audio, but has not passed the decoded quality gate;
+`standard` remains the default and rollback.
 
 → [Every checkpoint, RAM requirement and tuning knob](https://rapidmlx.com/docs/models/families/video.html)
 

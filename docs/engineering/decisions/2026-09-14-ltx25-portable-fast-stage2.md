@@ -2,7 +2,8 @@
 
 Date: 2026-09-14
 
-Status: proposed; Atlas owns the public API and default-on disposition
+Status: backend implemented default-off; Atlas owns artifact qualification and
+default-on disposition
 
 Owner: Vector (runtime and qualification), Atlas (product integration)
 
@@ -281,16 +282,21 @@ mode, not the Mac chip.
 
 ## Rapid API and discovery
 
-Proposed request control: `generation_mode=standard|fast`, initially defaulting
-to `standard`. `fast` is valid only for LTX-2.5 and only when the served model
-revision advertises a validated fast-stage capability. An unsupported explicit
-request returns a clear 400/409-style capability error rather than silently
-running standard mode.
+The implemented request control is `generation_mode=standard|fast`, defaulting
+to `standard`. `fast` is valid only for LTX-2.5 text-to-video and only when
+`RAPID_MLX_LTX25_FAST_MODEL` names a complete local model revision containing
+both fast manifests. Rapid checks their capability, shared immutable base
+revision and transformer digest, qualification revision, direct-child package
+paths, and required files before advertising fast mode. The upstream loader
+then verifies the full adapter digests, schedules, LoRA shapes, noise metadata,
+and independent-training provenance. An unsupported explicit request returns
+400/409 rather than silently running standard mode.
 
-`GET /v1/videos/capabilities` should advertise the available values, current
-default, schedule evaluation counts, experimental status, and checkpoint
-qualification revision. It must not advertise fast mode merely because the
-host is an M3/M4 or has a particular memory size.
+`GET /v1/videos/capabilities` advertises the available values, current default,
+schedule evaluation counts, experimental status, checkpoint qualification
+revision, and the initially qualified text-to-video operation. It does not
+advertise fast mode merely because the host is an M3/M4 or has a particular
+memory size.
 
 After the broader quality and portability gates pass, Atlas may change the
 default to `fast` while retaining `standard` as a deterministic rollback. The
@@ -302,6 +308,32 @@ The upstream research CLI now exposes separate experimental
 these internal artifacts to one product-level `generation_mode=fast` only
 after both packages pass qualification; users should not have to assemble a
 machine-specific schedule themselves.
+
+## M3 Ultra product-path result and quality disposition
+
+The exact audited runtime revision
+`08256835b7e86d9296affb41e1e3b40936504f26` was exercised through Rapid's
+real `LTX25VideoEngine` on a Mac Studio M3 Ultra. A same-process, same-prompt,
+same-seed 768x512x241 pair measured 175.65 seconds for standard `8 + 3` and
+90.71 seconds for combined `5 + 1`, a 1.936x end-to-end speedup. Both outputs
+are 10.041667-second H.264 plus 48 kHz stereo AAC files. Together with the M4
+Pro's 2.001-2.008x product-path range, this establishes that schedule execution
+and speed are not tied to one Mac generation.
+
+The new bakery stress prompt does not pass perceptual qualification. A
+five-time contact screen shows visible dark/high-frequency texture artifacts
+and composition drift in the combined candidate. A direct ablation measured
+Stage 1 exact-prefix only at 150.23 seconds (1.17x) and terminal Stage 2 only
+at 108.40 seconds (1.62x). Stage 2-only is visually closer to standard in the
+contact screen, while the learned Stage 1 span contributes the larger semantic
+and texture divergence. Human full-motion/audio review is still required for
+all candidates.
+
+This result strengthens the default-off decision: cross-generation speed has
+passed, but the current diagnostic adapter has failed a new decoded quality
+case. It must not be published, shipped as qualified, or selected by default.
+The next model iteration should retain the terminal Stage 2 speed gain and
+retrain or reduce Stage 1 compression on a broader semantic/motion dataset.
 
 ## Resource admission versus algorithm selection
 

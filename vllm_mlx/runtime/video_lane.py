@@ -305,6 +305,7 @@ class VideoEngine:
         negative_prompt: str | None = None,
         guidance_scale: float | None = None,
         conditioning_strength: float | None = None,
+        generation_mode: str = "standard",
         output_width: int | None = None,
         output_height: int | None = None,
     ) -> None:
@@ -332,6 +333,7 @@ class VideoEngine:
                         seed=seed,
                         image=image,
                         conditioning_strength=conditioning_strength,
+                        generation_mode=generation_mode,
                     )
             except LTX25BackendError as exc:
                 raise VideoRuntimeError(str(exc)) from exc

@@ -59,6 +59,7 @@ class _VideoJob:
     size: str
     frames: int | None = None
     fps: int | None = None
+    generation_mode: str = "standard"
     status: str = "queued"
     progress: int = 0
     created_at: int = 0
@@ -425,6 +426,7 @@ def _load_completed_job(job_dir: Path) -> _VideoJob | None:
     completed_at = value.get("completed_at")
     frames = value.get("frames")
     fps = value.get("fps")
+    generation_mode = value.get("generation_mode", "standard")
     if (
         not isinstance(model, str)
         or not model
@@ -444,6 +446,7 @@ def _load_completed_job(job_dir: Path) -> _VideoJob | None:
         or completed_at < created_at
         or (frames is not None and (type(frames) is not int or frames < 1))
         or (fps is not None and (type(fps) is not int or fps < 1))
+        or generation_mode not in {"standard", "fast"}
     ):
         return None
 
@@ -455,6 +458,7 @@ def _load_completed_job(job_dir: Path) -> _VideoJob | None:
         size=size,
         frames=frames,
         fps=fps,
+        generation_mode=generation_mode,
         status="completed",
         progress=100,
         created_at=created_at,
@@ -739,6 +743,11 @@ def _video_capabilities(engine) -> dict:
         wan_engine = getattr(engine, "_wan_engine", None)
         model_type = getattr(wan_engine, "model_type", None)
         max_area = getattr(wan_engine, "max_area", None)
+    fast_details = None
+    if family == "ltx-2.5":
+        ltx25_engine = getattr(engine, "_ltx25_engine", None)
+        if ltx25_engine is not None:
+            fast_details = ltx25_engine.fast_mode_details()
 
     if family == "cogvideox-fun":
         modes = ["text-to-video"]
@@ -829,6 +838,15 @@ def _video_capabilities(engine) -> dict:
                 else None
             ),
             "negative_prompt": family != "ltx-2.5",
+            "generation_mode": (
+                {
+                    "values": ["standard", "fast"] if fast_details else ["standard"],
+                    "default": "standard",
+                    "fast": fast_details,
+                }
+                if family == "ltx-2.5"
+                else None
+            ),
         },
     }
 
@@ -872,6 +890,7 @@ async def _run_job(
     negative_prompt: str | None,
     guidance_scale: float | None,
     conditioning_strength: float | None,
+    generation_mode: str = "standard",
 ) -> None:
     started = False
     generation_completed = False
@@ -911,6 +930,7 @@ async def _run_job(
                 negative_prompt=negative_prompt,
                 guidance_scale=guidance_scale,
                 conditioning_strength=conditioning_strength,
+                generation_mode=generation_mode,
                 output_width=width,
                 output_height=height,
             )
@@ -1010,9 +1030,14 @@ async def create_video(
     frames: Annotated[int | None, Form()] = None,
     guidance_scale: Annotated[float | None, Form()] = None,
     conditioning_strength: Annotated[float | None, Form()] = None,
+    generation_mode: str = Form("standard"),
     negative_prompt: Annotated[str | None, Form(max_length=4096)] = None,
     input_reference: UploadFile | None = File(None),
 ):
+    # Direct internal callers see FastAPI's Form descriptor rather than the
+    # HTTP-parsed default. Preserve the pre-existing route contract for them.
+    if not isinstance(generation_mode, str):
+        generation_mode = "standard"
     engine = _video_engine()
     is_cogvideox = getattr(engine, "video_family", "") == "cogvideox-fun"
     is_wan = getattr(engine, "video_family", "") == "wan"
@@ -1111,6 +1136,27 @@ async def create_video(
                 "or guidance_scale"
             ),
         )
+    if generation_mode not in {"standard", "fast"}:
+        raise HTTPException(
+            status_code=400, detail="generation_mode must be standard or fast"
+        )
+    if generation_mode == "fast" and not is_ltx25:
+        raise HTTPException(
+            status_code=400,
+            detail="generation_mode=fast is currently supported by LTX-2.5 only",
+        )
+    if generation_mode == "fast" and input_reference is not None:
+        raise HTTPException(
+            status_code=400,
+            detail="LTX-2.5 generation_mode=fast currently supports text-to-video only",
+        )
+    if generation_mode == "fast":
+        fast_engine = getattr(engine, "_ltx25_engine", None)
+        if fast_engine is None or fast_engine.fast_mode_details() is None:
+            raise HTTPException(
+                status_code=409,
+                detail="LTX-2.5 fast mode is not configured with a valid model package",
+            )
     alignment = 32 if is_ltx25 else 64
     generation_width = ((width + alignment - 1) // alignment) * alignment
     generation_height = ((height + alignment - 1) // alignment) * alignment
@@ -1217,6 +1263,7 @@ async def create_video(
             size=f"{width}x{height}",
             frames=request_frames,
             fps=request_fps,
+            generation_mode=generation_mode,
             created_at=int(time.time()),
         )
         with _jobs_lock:
@@ -1252,6 +1299,7 @@ async def create_video(
                     negative_prompt=negative_prompt,
                     guidance_scale=guidance_scale,
                     conditioning_strength=conditioning_strength,
+                    generation_mode=generation_mode,
                 )
             )
             _tasks[job.id] = task

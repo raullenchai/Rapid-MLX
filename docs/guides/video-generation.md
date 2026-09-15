@@ -54,6 +54,9 @@ duration, frame-rate, workload, reference-image, and optional-control limits.
 - `conditioning_strength` (0–1) controls how closely LTX image-to-video follows
   `input_reference`; it is rejected without a reference image and is not
   currently supported by Wan or CogVideoX-Fun.
+- `generation_mode=standard|fast` selects the LTX-2.5 schedule. The default is
+  `standard`; `fast` is advertised and accepted only when the server operator
+  has configured a complete fast model package as described below.
 
 For example, request a shorter, lower-frame-rate LTX image-to-video result with
 weaker reference conditioning:
@@ -156,8 +159,8 @@ an open-source license; review the checkpoint's `LICENSE.md` before use,
 especially its commercial-use and generated-content disclosure terms.
 
 ```bash
-git clone --branch vector/ltx25-dequant-matmul https://github.com/raullenchai/ltx-2-mlx.git
-git -C ltx-2-mlx checkout 905efb2308a05385f4051e1af6ac322147be23ed
+git clone --branch vector/ltx25-distillation-feasibility https://github.com/raullenchai/ltx-2-mlx.git
+git -C ltx-2-mlx checkout 08256835b7e86d9296affb41e1e3b40936504f26
 uv sync --project ltx-2-mlx
 brew install ffmpeg
 
@@ -206,6 +209,50 @@ Text-to-video and image-to-video are supported. Frame counts must be `8n+1`;
 dimensions are rounded up to the runtime's required 32-pixel boundary and
 cropped back to the requested OpenAI size when necessary. The distilled path
 does not expose `guidance_scale` or `negative_prompt`.
+
+### Experimental LTX-2.5 fast mode
+
+Rapid can expose the portable exact-prefix fast schedule from a complete local
+model package. The directory must contain the base LTX-2.5 files, a
+`fast-stage1-exact-prefix.json` package, and a `fast-stage2.json` package. Both
+manifests must bind the same immutable base revision and transformer digest;
+the upstream runtime then verifies all adapter digests, schedules, LoRA shapes,
+noise metadata, and training provenance before inference.
+
+```bash
+RAPID_MLX_LTX25_FAST_MODEL=/path/to/compatible-ltx-2.5-fast-model \
+  rapid-mlx serve ltx-2.5-mlx-q8
+
+curl http://localhost:8000/v1/videos \
+  -F model=ltx-2.5-mlx-q8 \
+  -F generation_mode=fast \
+  -F 'prompt=A mountain biker jumps a fallen log on a forest trail' \
+  -F frames=241 \
+  -F fps=24 \
+  -F size=768x512
+```
+
+Check `GET /v1/videos/capabilities` before submitting: it lists only
+`standard` when no valid package is configured, and includes the package's
+qualification revision, experimental status, and Stage-1/Stage-2 evaluation
+counts when `fast` is available. An explicit unavailable fast request returns
+409; it never silently falls back to standard.
+
+The initial supported surface is text-to-video only. Image-to-video requests
+must use `generation_mode=standard` until that conditioning path has its own
+decoded non-inferiority suite.
+
+The fast profile uses exact Stage-1 steps `0 -> 1 -> 2 -> 3`, one independently
+trained `3 -> 7` middle transition, exact `7 -> 8`, one terminal Stage-2
+transition, and the validated large-token dequantized-matmul dispatch. On the
+M4 Pro 48 GB qualification host, four 10-second 768x512 samples measured
+268.97-269.76 seconds versus a 539.94-second standard reference—approximately
+2x—with zero swap. A same-artifact M3 Ultra run measured 1.936x, but its new
+stress prompt exposed visible texture artifacts. These numbers validate the
+portable speed path, not release-quality inference. No package is bundled or
+selected by default. The same artifact and schedule apply across supported
+Apple Silicon; no chip name selects weights or numerical behavior. Keep
+`standard` as the rollback.
 
 ## CogVideoX-Fun
 

@@ -578,3 +578,32 @@ The upstream branch now includes the formerly separate opt-in dequantized-
 matmul dispatch, so a single pinned revision contains the complete measured
 path. Focused combined-path tests pass 40/40 and the full upstream suite passes
 808 with 22 skips.
+
+Rapid branch `design/ltx25-portable-fast-stage2` now implements the default-off
+`generation_mode=standard|fast` request contract against that audited upstream
+revision. Fast mode is LTX-2.5 T2V only, requires an operator-selected complete
+model package, fails closed before queueing, advertises package provenance
+through capabilities, and never selects numerical behavior from chip or
+hostname. Standard remains the default and I2V fast requests are rejected. The
+focused cross-backend, route, capability, and persistence suite passes 187
+tests; scoped Ruff and diff checks pass.
+
+The real Rapid engine path was paired on a Mac Studio M3 Ultra at
+768x512x241, 24 fps, seed 271007. Standard `8+3` took 175.65 seconds and
+combined `5+1` took 90.71 seconds, or 1.936x. Both outputs contain
+10.041667-second H.264 plus 48 kHz stereo AAC. This and the M4 Pro's
+2.001-2.008x product runs satisfy the cross-generation speed/portability gate.
+
+The M3 bakery case fails decoded quality: combined fast has visible dark/high-
+frequency texture artifacts and composition drift. Ablation measured Stage
+1-only at 150.23 seconds (1.17x) and Stage 2-only at 108.40 seconds (1.62x);
+the latter is visually closer to standard in the contact screen. No artifact
+is release-qualified or bundled. Atlas must keep standard as the default and
+must not authorize upload/default-on from speed evidence alone. Review media
+and hashes are in `123/strategy/ltx-studio-ablation-2026-09-15/`.
+
+Next action: Vector should retain the terminal Stage-2 gain and retrain or
+reduce the Stage-1 learned span on broader semantic/motion coverage, then rerun
+the prompt-disjoint blind gate. Atlas should review only the experimental API
+and rollback plumbing for release integration. The spark2 reviewer remains
+unavailable because its Codex refresh token is revoked; no LGTM exists.
