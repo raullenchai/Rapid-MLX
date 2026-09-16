@@ -119,8 +119,9 @@ struct OpenURLCompletionMainActorTests {
                 )
                 let acceptedGuard = "guardacceptedelse{return}"
                 let strippedMutation = Self.strip(mutation)
-                let guardRange = site.raw.range(of: acceptedGuard)
-                let mutationRange = site.raw.range(of: strippedMutation)
+                let actorBody = site.mainActorBody ?? ""
+                let guardRange = actorBody.range(of: acceptedGuard)
+                let mutationRange = actorBody.range(of: strippedMutation)
                 let acceptanceGuardsMutation = guardRange.flatMap { guardRange in
                     mutationRange.map { guardRange.lowerBound < $0.lowerBound }
                 } ?? false
@@ -167,6 +168,19 @@ struct OpenURLCompletionMainActorTests {
         #expect(ambiguousSites.count == 1)
         #expect(ambiguousSites.first?.hopsFirst == false)
         #expect(ambiguousSites.first?.raw.hasPrefix("<unscannable:") == true)
+
+        let falsePrefix = Self.openURLCompletionSites(
+            inCanonical: "openURL(url){spinTask{@MainActorin}}",
+            file: "fixture.swift"
+        )
+        #expect(falsePrefix.first?.hopsFirst == false)
+
+        let escapedMutation = Self.openURLCompletionSites(
+            inCanonical:
+                "openURL(url){acceptedinTask{@MainActoringuardacceptedelse{return}}prompt.repositoryOpened()}",
+            file: "fixture.swift"
+        )
+        #expect(escapedMutation.first?.hopsFirst == false)
     }
 
     // MARK: - Scanner
@@ -183,6 +197,9 @@ struct OpenURLCompletionMainActorTests {
         var raw: String
         /// Whether the first statement of the body is a main-actor hop.
         var hopsFirst: Bool
+        /// The complete opening hop block. A non-nil value also proves
+        /// that the outer completion contains no statements after it.
+        var mainActorBody: String?
     }
 
     /// Every `openURL(…) { … }` site under `Sources/Rapid`.
@@ -237,7 +254,8 @@ struct OpenURLCompletionMainActorTests {
                 let unscannable =
                     "<unscannable: openURL argument list contains syntax the source guard refuses to parse>"
                 sites.append(CallSite(
-                    file: file, occurrence: occurrence, raw: unscannable, hopsFirst: false
+                    file: file, occurrence: occurrence, raw: unscannable,
+                    hopsFirst: false, mainActorBody: nil
                 ))
                 continue
             }
@@ -255,17 +273,20 @@ struct OpenURLCompletionMainActorTests {
                 let unscannable =
                     "<unscannable: closure contains slash syntax the source guard refuses to parse>"
                 sites.append(CallSite(
-                    file: file, occurrence: occurrence, raw: unscannable, hopsFirst: false
+                    file: file, occurrence: occurrence, raw: unscannable,
+                    hopsFirst: false, mainActorBody: nil
                 ))
                 continue
             }
 
             let inner = String(block.dropFirst().dropLast())
+            let actorBody = openingMainActorHopBody(inner)
             sites.append(CallSite(
                 file: file,
                 occurrence: occurrence,
                 raw: inner,
-                hopsFirst: opensWithMainActorHop(inner)
+                hopsFirst: actorBody != nil,
+                mainActorBody: actorBody
             ))
         }
         return sites
@@ -274,30 +295,40 @@ struct OpenURLCompletionMainActorTests {
     /// Whether the closure body's first statement is one of
     /// ``mainActorHops``.
     ///
-    /// The hop must be the first thing after the (optional) parameter
-    /// clause. The clause is recognised structurally: a run of
-    /// identifier / punctuation characters ending in `in`
-    /// (`acceptedin`, `[weakself]in`, `(accepted:Bool)->Voidin`).
+    /// The hop must be the first thing after the optional `accepted in`
+    /// parameter clause. This gate deliberately requires that spelling:
+    /// after whitespace canonicalisation, accepting any identifier ending
+    /// in `in` would mistake `spinTask` for `accepted in Task`.
     /// Anything else in front of the hop — a `guard`, a call, an
     /// assignment, a `;` — is a statement executing off the main
     /// actor, so the site fails. Only the FIRST occurrence of a hop
     /// counts: a hop that follows a state touch is exactly the bug.
     ///
-    /// Matching on the hop text rather than on "whatever follows `in`"
-    /// matters because canonical source has no whitespace, and
-    /// `DispatchQueue.main` itself ends in `in`.
-    private static func opensWithMainActorHop(_ inner: String) -> Bool {
-        let clauseCharacters = CharacterSet(charactersIn: "_,()[]:?.->@&")
-            .union(.alphanumerics)
+    /// The hop block must also consume the rest of the outer completion;
+    /// otherwise a later state mutation could escape back off actor.
+    private static func openingMainActorHopBody(_ inner: String) -> String? {
+        // OpenURLAction's completion has one Bool parameter. Requiring the
+        // explicit spelling `accepted in` keeps this source guard token-safe:
+        // whitespace-free canonical source cannot otherwise distinguish a
+        // parameter clause from an identifier ending in "in" (`spinTask`).
+        let acceptedClause = "acceptedin"
+        let executable = inner.hasPrefix(acceptedClause)
+            ? String(inner.dropFirst(acceptedClause.count))
+            : inner
+
         for hop in mainActorHops {
-            guard let range = inner.range(of: hop) else { continue }
-            let prefix = inner[inner.startIndex..<range.lowerBound]
-            if prefix.isEmpty { return true }
-            let isParameterClause = prefix.hasSuffix("in")
-                && prefix.unicodeScalars.allSatisfy(clauseCharacters.contains)
-            if isParameterClause { return true }
+            guard executable.hasPrefix(hop),
+                  let openingBrace = executable.firstIndex(of: "{"),
+                  let block = SourceGuardSupport.balancedBlock(
+                      in: executable, openingBraceAt: openingBrace
+                  )
+            else { continue }
+
+            let afterBlock = executable.index(openingBrace, offsetBy: block.count)
+            guard afterBlock == executable.endIndex else { continue }
+            return block
         }
-        return false
+        return nil
     }
 
     /// Index of the `)` closing the group opened at `start`.
