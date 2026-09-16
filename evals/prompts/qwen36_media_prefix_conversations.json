@@ -260,9 +260,6 @@
                 "orange"
               ],
               [
-                "spinning"
-              ],
-              [
                 "icon"
               ],
               [
@@ -895,9 +892,6 @@
               ],
               [
                 "button"
-              ],
-              [
-                "status"
               ]
             ],
             "max_lines": 1,
@@ -1008,9 +1002,6 @@
               ],
               [
                 "command+n"
-              ],
-              [
-                "chat"
               ],
               [
                 "icon"
@@ -1421,9 +1412,6 @@
                   "indicator"
                 ],
                 [
-                  "indicators"
-                ],
-                [
                   "filled"
                 ],
                 [
@@ -1632,15 +1620,6 @@
               ],
               [
                 "tiger"
-              ],
-              [
-                "icon"
-              ],
-              [
-                "search"
-              ],
-              [
-                "title"
               ]
             ],
             "max_lines": 1,
@@ -1726,19 +1705,10 @@
                 "border"
               ],
               [
-                "icon"
-              ],
-              [
-                "gray"
-              ],
-              [
                 "grey"
               ],
               [
                 "edge"
-              ],
-              [
-                "green"
               ]
             ],
             "max_lines": 1,
@@ -1840,16 +1810,10 @@
                 "white"
               ],
               [
-                "light"
-              ],
-              [
                 "color"
               ],
               [
                 "colour"
-              ],
-              [
-                "mode"
               ],
               [
                 "dot"
