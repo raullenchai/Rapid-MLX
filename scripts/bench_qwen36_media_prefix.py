@@ -169,9 +169,18 @@ def _checker_pass(checker: dict[str, Any], text: str) -> bool:
     if kind == "any":
         # ``min_words`` rejects degenerate outputs (empty, single looping
         # token) on open-ended follow-up turns where no term checker can be
-        # semantic.
+        # semantic. Word count alone is gameable — "foo foo foo foo foo" —
+        # so the vocabulary must spread too: at least half the floor
+        # (minimum 2) distinct words. That keeps normal prose qualifying
+        # while a looping token stream fails both bars.
         min_words = int(checker.get("min_words", 0) or 0)
-        return len(text.split()) >= min_words
+        if min_words <= 0:
+            return True
+        if len(text.split()) < min_words:
+            return False
+        distinct = {word.casefold().strip('.,;:!?’”"()') for word in text.split()}
+        distinct.discard("")
+        return len(distinct) >= max(2, min_words // 2)
     raise ValueError(f"unknown checker type: {kind}")
 
 

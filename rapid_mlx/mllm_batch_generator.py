@@ -1058,6 +1058,9 @@ class MLLMBatchGenerator:
         self._prefix_cache_tokens_saved = 0
         self._prefix_cache_max_bytes = 0
         self._prefix_cache_budget_evictions = 0
+        # The user's explicit prefix-cache opt-out covers every form of
+        # prefix reuse on this lane, media boundary resume included.
+        self._prefix_cache_enabled = bool(enable_prefix_cache)
         if enable_prefix_cache:
             try:
                 from mlx_vlm import apc as _apc
@@ -1498,11 +1501,14 @@ class MLLMBatchGenerator:
         mlx-vlm models consume ``rope_deltas`` via ``kwargs.pop("rope_deltas",
         ...)`` inside a ``**kwargs``-accepting ``__call__`` body — the kwarg
         is almost never an explicit signature parameter, so a signature-only
-        probe never opens the gate. Detect structurally instead, mirroring
+        probe never opens the gate. Detected structurally, mirroring
         ``_model_supports_vision_feature_cache``: the callee must accept
         ``**kwargs`` (so the extra kwarg can never raise ``TypeError``) and
-        its body must reference the *quoted* key ``"rope_deltas"`` (the form
-        ``kwargs.pop("rope_deltas", ...)`` uses). Probed on both the VLM
+        its body must *consume* the key — one of the consumption shapes
+        ``kwargs.pop("rope_deltas"`` / ``kwargs.get("rope_deltas"`` /
+        ``rope_deltas = kwargs...`` — not merely mention it (a comment, log
+        line, or dead reference proves nothing and would route resumes
+        through a model that recomputes positions). Probed on both the VLM
         wrapper and the language model; families without either fail closed
         to the single cold forward.
         """
@@ -1520,7 +1526,14 @@ class MLLMBatchGenerator:
                 src = inspect.getsource(call)
             except (OSError, TypeError, SyntaxError):
                 continue
-            if '"rope_deltas"' in src or "'rope_deltas'" in src:
+            if (
+                'kwargs.pop("rope_deltas"' in src
+                or "kwargs.pop('rope_deltas'" in src
+                or 'kwargs.get("rope_deltas"' in src
+                or "kwargs.get('rope_deltas'" in src
+                or "rope_deltas = kwargs" in src
+                or "rope_deltas = kwargs" in src
+            ):
                 result = True
                 break
         self._media_rope_probe = (key, result)
@@ -1644,6 +1657,7 @@ class MLLMBatchGenerator:
         """
         if (
             getattr(self, "media_prefix_cache", "auto") != "auto"
+            or not getattr(self, "_prefix_cache_enabled", True)
             or request.pixel_values is None
             or request.prefix_boundary <= 0
             or not self._media_model_supports_rope_kwarg()
@@ -1871,11 +1885,11 @@ class MLLMBatchGenerator:
         Own entries are evicted oldest-first; when they are exhausted and
         the combined footprint still exceeds the ceiling, the media
         insertion evicts TEXT exact entries oldest-first (coordinated
-        eviction) rather than letting the two stores grow apart. Each side
-        retains at most its newest entry past the ceiling and no side
-        admits a single entry larger than the whole ceiling (admission cap
-        in ``_media_store``), so the combined worst case is bounded — at
-        most one oversize entry per store — not unbounded.
+        eviction), emptying the text store if needed, rather than letting
+        the two stores grow apart. No side admits a single entry larger
+        than the whole ceiling (admission cap in ``_media_store``), so the
+        surviving state — the media newest plus whatever text fits beside
+        it — always fits the ceiling strictly.
         """
         budget = self._media_resolved_budget()
         if budget <= 0:
@@ -1892,10 +1906,11 @@ class MLLMBatchGenerator:
                 total -= evicted.cache_bytes
                 self._media_boundary_budget_evictions += 1
             if total > budget:
-                # Own entries exhausted: reclaim room from the text side. The
-                # text newest always survives, so the residual overage is at
-                # most one text entry past its allowance.
-                self._evict_text_exact_to_fit(budget - media_bytes)
+                # Own entries exhausted: reclaim room from the text side,
+                # emptying it if needed — the media newest (admission-capped
+                # at the ceiling) is the entry that survives the overage, so
+                # the combined footprint fits the ceiling strictly.
+                self._evict_text_exact_to_fit(budget - media_bytes, allow_empty=True)
 
     def _media_mrope_save(self) -> None:
         """Capture the model's current MRoPE bookkeeping (sentinel-aware)."""
@@ -2234,10 +2249,14 @@ class MLLMBatchGenerator:
         return total
 
     def _evict_text_exact_to_fit(
-        self, allowance: int, cache: Any = None
+        self, allowance: int, cache: Any = None, allow_empty: bool = False
     ) -> tuple[int, int, int]:
         """Evict oldest text exact entries until their footprint fits
-        ``allowance`` bytes; the newest entry always survives. Returns
+        ``allowance`` bytes. With ``allow_empty`` (the shared-ceiling
+        enforcement paths) the store may empty completely — the combined
+        text+media footprint must fit the ceiling strictly, and two
+        individually admissible newest entries can still jointly exceed it.
+        Without it the newest entry always survives. Returns
         ``(freed_bytes, evicted_count, retained_bytes)``.
 
         Shared eviction primitive for both stores on the one engine-wide
@@ -2254,13 +2273,14 @@ class MLLMBatchGenerator:
         lock, entries = found
         freed = 0
         evicted = 0
+        floor = 0 if allow_empty else 1
         with lock:
             sizes = {
                 key: self._exact_entry_bytes(entry.prompt_cache)
                 for key, entry in entries.items()
             }
             total = sum(sizes.values())
-            while total > allowance and len(entries) > 1:
+            while total > allowance and len(entries) > floor:
                 key, _ = entries.popitem(last=False)
                 size = sizes.pop(key, 0)
                 total -= size
@@ -2282,25 +2302,28 @@ class MLLMBatchGenerator:
 
     def _enforce_exact_cache_budget(self, cache: Any) -> None:
         """Evict the oldest exact entries until the retained snapshots fit
-        the prefix-cache byte budget; the newest entry always survives.
+        the prefix-cache byte budget.
 
         The media boundary store shares this ceiling and already credits the
         text footprint in its own enforcement, so symmetrically the text
-        eviction credits the media bytes. When media bytes alone meet the
-        ceiling the text side evicts down to its newest entry, mirroring the
-        media store's own newest-entry guarantee, instead of freezing
-        eviction forever. Each side retains at most its newest entry past
-        the ceiling, and no side admits a single entry larger than the
-        whole ceiling — the combined worst case is bounded, not unbounded."""
+        eviction credits the media bytes. When media entries hold room the
+        text side may empty completely (``allow_empty``): two individually
+        admissible newest entries can jointly exceed the ceiling, and the
+        shared footprint must fit strictly — the surviving state is then the
+        media newest, which the admission cap in ``_media_store`` bounds at
+        the ceiling. With no media entries this is PR#2's text-only contract
+        unchanged: the newest text entry always survives, even one that
+        alone exceeds the budget (a lone oversize entry is preferred over
+        store/evict churn every turn)."""
         max_bytes = int(getattr(self, "_prefix_cache_max_bytes", 0) or 0)
         if max_bytes <= 0:
             return
         with self._media_entries_guard():
-            media_bytes = sum(
-                entry.cache_bytes
-                for entry in getattr(self, "_media_boundary_entries", {}).values()
-            )
-        self._evict_text_exact_to_fit(max_bytes - media_bytes, cache)
+            media_entries = list(getattr(self, "_media_boundary_entries", {}).values())
+        media_bytes = sum(entry.cache_bytes for entry in media_entries)
+        self._evict_text_exact_to_fit(
+            max_bytes - media_bytes, cache, allow_empty=bool(media_entries)
+        )
 
     def get_prefix_cache_stats(self) -> dict[str, Any] | None:
         """Return the common prefix-cache counter shape for APIs/metrics."""

@@ -137,6 +137,23 @@ class _CommentRopeModel(_NoRopeModel):
         return _Output(mx.zeros((1, int(ids.shape[1]), self.vocab)))
 
 
+class _KwargsCommentRopeModel:
+    """Worst false-positive shape: the call *accepts* ``**kwargs`` and the
+    body only *mentions* ``"rope_deltas"`` (comment/log line) without ever
+    consuming it — an installed delta would be silently ignored, so the
+    gate must stay closed for consumption-shaped matching."""
+
+    def __init__(self, vocab: int = VOCAB):
+        self.vocab = vocab
+        self.calls: list[tuple[int, int, bool]] = []
+
+    def __call__(self, ids, cache=None, pixel_values=None, **kwargs):
+        # historical note: "rope_deltas" used to arrive positionally here
+        start = int(ids[0, 0]) if ids.size else -1
+        self.calls.append((start, start + int(ids.shape[1]), pixel_values is not None))
+        return _Output(mx.zeros((1, int(ids.shape[1]), self.vocab)))
+
+
 class _EmbedFeatures:
     def __init__(self, inputs_embeds, rope_deltas=None):
         self.inputs_embeds = inputs_embeds
@@ -307,6 +324,15 @@ class TestRopeKwargGate:
         # Gate fires before planning: no miss is counted.
         assert gen._media_boundary_misses == 0
 
+    def test_plan_gated_by_prefix_cache_opt_out(self):
+        # ``enable_prefix_cache=False`` covers every form of prefix reuse on
+        # this lane — the media boundary resume included.
+        gen = _stub_generator()
+        gen._prefix_cache_enabled = False
+        req = _make_request(pixel_values=mx.zeros((1, 2)))
+        assert gen._media_boundary_plan(req, _ids([1, 2, 3]), _kv_leaves()) is None
+        assert gen._media_boundary_misses == 0
+
     def test_unsupported_wrapper_with_supporting_lm_opens_the_gate(self):
         # The production qwen3-vl shape: the VLM wrapper itself never touches
         # rope_deltas, but the language model pops it from **kwargs. The
@@ -319,6 +345,13 @@ class TestRopeKwargGate:
         # A quoted "rope_deltas" in a comment must not open the gate when
         # the call has no **kwargs to carry it.
         gen = _stub_generator(model=_CommentRopeModel())
+        assert gen._media_model_supports_rope_kwarg() is False
+
+    def test_comment_mention_with_kwargs_fails_closed(self):
+        # **kwargs alone is not enough: a call that never *consumes*
+        # rope_deltas would silently drop an installed delta on resume.
+        # The probe matches consumption shapes, not a bare mention.
+        gen = _stub_generator(model=_KwargsCommentRopeModel())
         assert gen._media_model_supports_rope_kwarg() is False
 
     def test_source_read_failure_fails_closed(self, monkeypatch):
@@ -979,16 +1012,17 @@ class TestBudget:
         monkeypatch.setattr(
             "vllm_mlx.mllm_batch_generator.checkpoint_bytes", lambda stored: 0
         )
-        # Effective budget 12 - 10 = 2 against 10 text bytes: oldest evicted,
-        # newest kept — same contract as the media-side enforcement.
+        # Effective budget 12 - 10 = 2 against 10 text bytes: the text side
+        # empties completely — the combined footprint must fit the shared
+        # ceiling strictly, and the surviving state is the media entry.
         gen._enforce_exact_cache_budget(object())
-        assert list(entries) == ["b"]
-        assert gen._prefix_cache_budget_evictions == 1
+        assert list(entries) == []
+        assert gen._prefix_cache_budget_evictions == 2
 
-    def test_text_budget_media_over_ceiling_evicts_to_newest(self, monkeypatch):
+    def test_text_budget_media_over_ceiling_empties_text(self, monkeypatch):
         # One media entry alone meeting the shared ceiling must not freeze
-        # text eviction: the text side evicts down to its newest entry,
-        # mirroring the media store's own newest-entry guarantee.
+        # text eviction: the text side empties completely, leaving the
+        # media entry as the sole survivor under the strict ceiling.
         import threading
 
         gen = _stub_generator()
@@ -1007,8 +1041,8 @@ class TestBudget:
             "vllm_mlx.mllm_batch_generator.checkpoint_bytes", lambda stored: 0
         )
         gen._enforce_exact_cache_budget(object())
-        assert list(entries) == ["c"]
-        assert gen._prefix_cache_budget_evictions == 2
+        assert list(entries) == []
+        assert gen._prefix_cache_budget_evictions == 3
 
     def test_text_budget_zero_config_disables_eviction(self, monkeypatch):
         # A zero ceiling means the feature is off: no eviction either way.
@@ -1050,9 +1084,10 @@ class TestBudget:
         )
         gen._prefix_cache = object()
         gen._media_enforce_budget()
-        # 10 media + 10 text > 12: text evicts down to its newest entry.
-        assert list(entries) == ["b"]
-        assert gen._prefix_cache_budget_evictions == 1
+        # 10 media + 10 text > 12: the text side empties so the combined
+        # footprint fits the shared ceiling strictly (media entry survives).
+        assert list(entries) == []
+        assert gen._prefix_cache_budget_evictions == 2
 
     def test_media_store_refuses_entry_over_ceiling(self, monkeypatch):
         # Admission cap: a single snapshot larger than the whole shared
