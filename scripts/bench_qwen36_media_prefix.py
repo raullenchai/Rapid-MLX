@@ -167,20 +167,29 @@ def _checker_pass(checker: dict[str, Any], text: str) -> bool:
             term.casefold() in lowered for term in checker.get("forbidden", [])
         ) and all(term.casefold() in lowered for term in checker.get("required", []))
     if kind == "any":
+        # Open-ended follow-up turns are still grounded two ways:
         # ``min_words`` rejects degenerate outputs (empty, single looping
-        # token) on open-ended follow-up turns where no term checker can be
-        # semantic. Word count alone is gameable — "foo foo foo foo foo" —
-        # so the vocabulary must spread too: at least half the floor
-        # (minimum 2) distinct words. That keeps normal prose qualifying
-        # while a looping token stream fails both bars.
+        # token) — word count alone is gameable ("foo foo foo foo foo"), so
+        # the vocabulary must spread too: at least half the floor (minimum
+        # 2) distinct words. ``required_any`` carries the semantics: at
+        # least one alternative term list must be fully present, anchored
+        # to content a correct answer must reference (the conversation's
+        # own screen elements or its prior answers).
         min_words = int(checker.get("min_words", 0) or 0)
-        if min_words <= 0:
-            return True
-        if len(text.split()) < min_words:
+        if min_words > 0:
+            if len(text.split()) < min_words:
+                return False
+            distinct = {word.casefold().strip('.,;:!?’”"()') for word in text.split()}
+            distinct.discard("")
+            if len(distinct) < max(2, min_words // 2):
+                return False
+        required_any = checker.get("required_any", [])
+        if required_any and not any(
+            all(term.casefold() in lowered for term in alternative)
+            for alternative in required_any
+        ):
             return False
-        distinct = {word.casefold().strip('.,;:!?’”"()') for word in text.split()}
-        distinct.discard("")
-        return len(distinct) >= max(2, min_words // 2)
+        return True
     raise ValueError(f"unknown checker type: {kind}")
 
 
@@ -252,6 +261,10 @@ async def _run_phase(
     for conversation in conversations:
         await _replay_conversation(engine, conversation, repo_root)
 
+    # Engagement counters must come from the MEASURED passes only: warmup
+    # would otherwise contribute stores/hits and let the engagement (and
+    # warm-regression) gates pass green while every measured pass missed.
+    warmup_stats = engine.get_stats().get("media_prefix_cache") or {}
     by_conversation: dict[str, list[list[dict[str, Any]]]] = {
         conversation["id"]: [] for conversation in conversations
     }
@@ -260,8 +273,21 @@ async def _run_phase(
             by_conversation[conversation["id"]].append(
                 await _replay_conversation(engine, conversation, repo_root)
             )
-    stats = engine.get_stats()
-    media = stats.get("media_prefix_cache") or {}
+    measured_stats = engine.get_stats().get("media_prefix_cache") or {}
+    media = {
+        # Counters delta over the measured passes; gauges (entries/bytes/
+        # budget) report the end-of-phase state as-is.
+        **{
+            key: int(measured_stats.get(key, 0) or 0)
+            - int(warmup_stats.get(key, 0) or 0)
+            for key in ("hits", "misses", "stores", "budget_evictions")
+        },
+        **{
+            key: measured_stats[key]
+            for key in ("entries", "bytes", "budget_bytes")
+            if key in measured_stats
+        },
+    }
     return {
         "per_conversation": by_conversation,
         "media_prefix_cache": media,

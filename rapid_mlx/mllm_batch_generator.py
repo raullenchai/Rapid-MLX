@@ -651,6 +651,15 @@ _MEDIA_SNAPSHOT_HEADROOM_TOKENS = 64
 # single forward's and the store/resume paths are bit-exact end to end.
 _MEDIA_BOUNDARY_ALIGN_TOKENS = 64
 
+# Model families qualified for the split media boundary, by ``config.model_type``.
+# Structural gates (rope-deltas consumption, cloneable leaves, singleton turn)
+# prove a model *can* be split; only qualification proves the split is
+# *correct* for it — the 64-token alignment is tuned to this family's hybrid
+# recurrent scan, and position/MRoPE handling differs per family. Everything
+# else stays on the cold single forward until it is qualified on real
+# hardware (the design note's non-goal: no unqualified families ship).
+_MEDIA_QUALIFIED_MODEL_TYPES = frozenset({"qwen3_5_moe", "qwen3_5_moe_text"})
+
 _MEDIA_ROPE_MISSING = object()
 
 
@@ -1495,6 +1504,32 @@ class MLLMBatchGenerator:
             return None
         return f"{key}#{self._media_semantics_salt()}"
 
+    def _media_family_qualified(self) -> bool:
+        """Whether the loaded model belongs to a qualified family.
+
+        Structural gates prove a model can be split; this gate proves the
+        split is known-correct for it — the boundary alignment and MRoPE
+        transaction were qualified on exactly one family (Qwen3.6 hybrid,
+        ``config.model_type`` ``qwen3_5_moe``/``qwen3_5_moe_text``), and
+        the design note ships no unqualified families. Any other model —
+        or one without a resolvable ``model_type`` — stays on the cold
+        single forward. Memoized per model-class pair like the other
+        structural probes.
+        """
+        cached = getattr(self, "_media_family_probe", None)
+        key = (type(self.model), type(self.language_model))
+        if cached is not None and cached[0] == key:
+            result: bool = cached[1]
+            return result
+        result = False
+        for target in (self.model, self.language_model):
+            model_type = getattr(getattr(target, "config", None), "model_type", None)
+            if model_type in _MEDIA_QUALIFIED_MODEL_TYPES:
+                result = True
+                break
+        self._media_family_probe = (key, result)
+        return result
+
     def _media_model_supports_rope_kwarg(self) -> bool:
         """The split boundary forward needs ``rope_deltas`` through the call.
 
@@ -1660,6 +1695,7 @@ class MLLMBatchGenerator:
             or not getattr(self, "_prefix_cache_enabled", True)
             or request.pixel_values is None
             or request.prefix_boundary <= 0
+            or not self._media_family_qualified()
             or not self._media_model_supports_rope_kwarg()
             or not _singleton_regular_cache_leaves(cache, self.allow_arrays_cache)
         ):
@@ -1882,14 +1918,18 @@ class MLLMBatchGenerator:
     def _media_enforce_budget(self) -> None:
         """Keep the media store inside the shared engine-wide byte budget.
 
-        Own entries are evicted oldest-first; when they are exhausted and
-        the combined footprint still exceeds the ceiling, the media
-        insertion evicts TEXT exact entries oldest-first (coordinated
-        eviction), emptying the text store if needed, rather than letting
-        the two stores grow apart. No side admits a single entry larger
-        than the whole ceiling (admission cap in ``_media_store``), so the
-        surviving state — the media newest plus whatever text fits beside
-        it — always fits the ceiling strictly.
+        This is a **media-preferred** eviction order, not a global LRU
+        across the two stores: media's own entries go first (oldest-first),
+        then — only once one media entry remains — TEXT exact entries
+        oldest-first (coordinated eviction), emptying the text store if
+        needed. Media snapshots are the far larger objects (tens to
+        hundreds of MiB vs KB-scale text entries), so shedding media first
+        frees the ceiling fastest; a true global LRU would need comparable
+        recency tracking across two independent stores for no measured
+        benefit. No side admits a single entry larger than the whole
+        ceiling (admission cap in ``_media_store``), so the surviving state
+        — the media newest plus whatever text fits beside it — always fits
+        the ceiling strictly.
         """
         budget = self._media_resolved_budget()
         if budget <= 0:
@@ -2354,9 +2394,11 @@ class MLLMBatchGenerator:
         # Media boundary snapshots hold detached clones of KV state from this
         # same model instance: once the APC state is dropped they have no
         # reuse contract left, and pinning tens-to-hundreds of MiB against a
-        # cleared budget is pure leak. Drop the entries unconditionally
-        # (counters stay); this runs even without a text-APC manager.
-        # ``getattr`` — legacy/bare generators predate the media store.
+        # cleared budget is pure leak. Drop the entries unconditionally;
+        # this runs even without a text-APC manager. ``getattr`` —
+        # legacy/bare generators predate the media store. Counters follow
+        # ``reset_stats`` like the text counters: zeroed on a stats reset,
+        # preserved as lifetime totals otherwise.
         media_entries = getattr(self, "_media_boundary_entries", None)
         # True when any reusable state was actually held — a media-only
         # generator drops real MiB even without a text-APC manager.
@@ -2369,6 +2411,10 @@ class MLLMBatchGenerator:
             self._prefix_cache_hits = 0
             self._prefix_cache_misses = 0
             self._prefix_cache_tokens_saved = 0
+            self._media_boundary_hits = 0
+            self._media_boundary_misses = 0
+            self._media_boundary_stores = 0
+            self._media_boundary_budget_evictions = 0
         return cache is not None or had_media
 
     def close(self) -> None:

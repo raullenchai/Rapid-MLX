@@ -19,7 +19,9 @@ Pins the first media-prefix milestone on the serialized MLLM lane:
 * a prefix mismatch is a clean counted miss — never a trim or a guess;
 * the MRoPE transaction restores prior model state (sentinel-aware,
   verified against a real ``mlx.nn.Module``);
-* the byte-bounded LRU evicts oldest-first and always keeps the newest.
+* only the qualified model family may split; the byte-bounded store
+  evicts oldest-first under the shared ceiling (media-preferred order,
+  text may empty once media holds room).
 
 Design note: docs/engineering/design/2026-09-15-mllm-media-prefix-cache.md.
 """
@@ -103,7 +105,13 @@ class _RecordingModel:
     def __init__(self, vocab: int = VOCAB):
         self.vocab = vocab
         self.calls: list[tuple[int, int, bool]] = []  # (start, end, has_pixels)
-        self.config = type("Config", (), {"image_token_id": _PLACEHOLDER_ID})()
+        # ``model_type`` matches the qualified family so the family gate
+        # opens; the gate itself is tested separately below.
+        self.config = type(
+            "Config",
+            (),
+            {"image_token_id": _PLACEHOLDER_ID, "model_type": "qwen3_5_moe"},
+        )()
 
     def __call__(self, ids, cache=None, pixel_values=None, **kwargs):
         rope_deltas = kwargs.pop("rope_deltas", None)
@@ -119,6 +127,7 @@ class _NoRopeModel:
     def __init__(self, vocab: int = VOCAB):
         self.vocab = vocab
         self.calls: list[tuple[int, int, bool]] = []
+        self.config = type("Config", (), {"model_type": "qwen3_5_moe"})()
 
     def __call__(self, ids, cache=None, pixel_values=None, rope_deltas=None):
         start = int(ids[0, 0]) if ids.size else -1
@@ -170,6 +179,7 @@ class _DirectLanguageModel:
     def __init__(self, vocab: int = VOCAB):
         self.vocab = vocab
         self.calls: list[tuple[int, int, Any]] = []
+        self.config = type("Config", (), {"model_type": "qwen3_5_moe_text"})()
         self._position_ids = None
         self._rope_deltas = None
 
@@ -232,6 +242,9 @@ class _Output:
 
 class _FakeLanguageModel:
     def __init__(self):
+        # Qualified text family so the family gate stays open for tests
+        # that exercise later gates (placeholder, boundary, verification).
+        self.config = type("Config", (), {"model_type": "qwen3_5_moe_text"})()
         self._position_ids = None
         self._rope_deltas = None
 
@@ -332,6 +345,28 @@ class TestRopeKwargGate:
         req = _make_request(pixel_values=mx.zeros((1, 2)))
         assert gen._media_boundary_plan(req, _ids([1, 2, 3]), _kv_leaves()) is None
         assert gen._media_boundary_misses == 0
+
+    def test_plan_gated_by_unqualified_family(self):
+        # Only the qualified family (Qwen3.6 hybrid) may split: the 64-token
+        # alignment and MRoPE transaction are qualified per family, so any
+        # other model — even one that consumes rope_deltas — stays cold.
+        gen = _stub_generator()
+        gen.model.config = type("Config", (), {"model_type": "qwen3_vl"})()
+        gen.language_model.config = type("Config", (), {"model_type": "qwen2_vl"})()
+        req = _make_request(pixel_values=mx.zeros((1, 2)))
+        assert gen._media_boundary_plan(req, _ids(_full_ids()), _kv_leaves()) is None
+        # Structural gate: fires before planning, no miss counted.
+        assert gen._media_boundary_misses == 0
+
+    def test_family_probe_memoizes_per_model(self):
+        gen = _stub_generator()
+        first = gen._media_family_qualified()
+        second = gen._media_family_qualified()
+        assert first is second is True
+        assert gen._media_family_probe[0] == (
+            type(gen.model),
+            type(gen.language_model),
+        )
 
     def test_unsupported_wrapper_with_supporting_lm_opens_the_gate(self):
         # The production qwen3-vl shape: the VLM wrapper itself never touches
@@ -1133,6 +1168,29 @@ class TestClearPrefixCache:
         assert not gen._media_boundary_entries
         # Nothing held at all: nothing was cleared.
         assert gen.clear_prefix_cache() is False
+
+    def test_clear_reset_stats_zeroes_media_counters(self, monkeypatch):
+        # ``reset_stats=True`` is the method's documented contract: media
+        # counters zero with the text counters, keeping the stats shape
+        # consistent. ``reset_stats=False`` preserves lifetime totals.
+        gen = _stub_generator()
+        req = _make_request()
+        gen._media_boundary_hits = 5
+        gen._media_boundary_misses = 3
+        gen._media_boundary_stores = 2
+        gen._media_boundary_budget_evictions = 1
+        monkeypatch.setattr(gen, "_media_enforce_budget", lambda: None)
+        gen.clear_prefix_cache(reset_stats=False)
+        assert (gen._media_boundary_hits, gen._media_boundary_misses) == (5, 3)
+        assert (gen._media_boundary_stores, gen._media_boundary_budget_evictions) == (
+            2,
+            1,
+        )
+        gen.clear_prefix_cache(reset_stats=True)
+        assert gen._media_boundary_hits == 0
+        assert gen._media_boundary_misses == 0
+        assert gen._media_boundary_stores == 0
+        assert gen._media_boundary_budget_evictions == 0
 
     def test_clear_with_text_cache_drops_both(self, monkeypatch):
         gen = _stub_generator()

@@ -47,7 +47,24 @@
           },
           "checker": {
             "type": "any",
-            "min_words": 3
+            "min_words": 3,
+            "required_any": [
+              [
+                "stop"
+              ],
+              [
+                "info"
+              ],
+              [
+                "icon"
+              ],
+              [
+                "button"
+              ],
+              [
+                "chip"
+              ]
+            ]
           }
         },
         {
@@ -59,7 +76,18 @@
           },
           "checker": {
             "type": "any",
-            "min_words": 5
+            "min_words": 5,
+            "required_any": [
+              [
+                "qwen3.6"
+              ],
+              [
+                "ready"
+              ],
+              [
+                "icon"
+              ]
+            ]
           }
         }
       ]
@@ -99,7 +127,24 @@
           },
           "checker": {
             "type": "any",
-            "min_words": 3
+            "min_words": 3,
+            "required_any": [
+              [
+                "download"
+              ],
+              [
+                "cloud"
+              ],
+              [
+                "icon"
+              ],
+              [
+                "start"
+              ],
+              [
+                "button"
+              ]
+            ]
           }
         },
         {
@@ -111,7 +156,21 @@
           },
           "checker": {
             "type": "any",
-            "min_words": 5
+            "min_words": 5,
+            "required_any": [
+              [
+                "pick a model"
+              ],
+              [
+                "not installed"
+              ],
+              [
+                "download"
+              ],
+              [
+                "cloud"
+              ]
+            ]
           }
         }
       ]
@@ -148,7 +207,24 @@
           },
           "checker": {
             "type": "any",
-            "min_words": 3
+            "min_words": 3,
+            "required_any": [
+              [
+                "dot"
+              ],
+              [
+                "orange"
+              ],
+              [
+                "spinning"
+              ],
+              [
+                "icon"
+              ],
+              [
+                "subtitle"
+              ]
+            ]
           }
         },
         {
@@ -160,7 +236,18 @@
           },
           "checker": {
             "type": "any",
-            "min_words": 5
+            "min_words": 5,
+            "required_any": [
+              [
+                "fake-alias"
+              ],
+              [
+                "starting"
+              ],
+              [
+                "spinning"
+              ]
+            ]
           }
         }
       ]
@@ -198,7 +285,24 @@
           },
           "checker": {
             "type": "any",
-            "min_words": 3
+            "min_words": 3,
+            "required_any": [
+              [
+                "⌘n"
+              ],
+              [
+                "cmd+n"
+              ],
+              [
+                "command+n"
+              ],
+              [
+                "hint"
+              ],
+              [
+                "press"
+              ]
+            ]
           }
         },
         {
@@ -210,7 +314,27 @@
           },
           "checker": {
             "type": "any",
-            "min_words": 5
+            "min_words": 5,
+            "required_any": [
+              [
+                "new chat"
+              ],
+              [
+                "search chats"
+              ],
+              [
+                "start chatting"
+              ],
+              [
+                "⌘n"
+              ],
+              [
+                "cmd+n"
+              ],
+              [
+                "command+n"
+              ]
+            ]
           }
         }
       ]
@@ -246,7 +370,24 @@
           },
           "checker": {
             "type": "any",
-            "min_words": 3
+            "min_words": 3,
+            "required_any": [
+              [
+                "next"
+              ],
+              [
+                "checkmark"
+              ],
+              [
+                "icon"
+              ],
+              [
+                "button"
+              ],
+              [
+                "blue"
+              ]
+            ]
           }
         },
         {
@@ -258,7 +399,18 @@
           },
           "checker": {
             "type": "any",
-            "min_words": 5
+            "min_words": 5,
+            "required_any": [
+              [
+                "skip"
+              ],
+              [
+                "checkmark"
+              ],
+              [
+                "icon"
+              ]
+            ]
           }
         }
       ]
@@ -294,7 +446,27 @@
           },
           "checker": {
             "type": "any",
-            "min_words": 3
+            "min_words": 3,
+            "required_any": [
+              [
+                "skip"
+              ],
+              [
+                "checkmark"
+              ],
+              [
+                "icon"
+              ],
+              [
+                "button"
+              ],
+              [
+                "blue"
+              ],
+              [
+                "dot"
+              ]
+            ]
           }
         },
         {
@@ -306,7 +478,18 @@
           },
           "checker": {
             "type": "any",
-            "min_words": 5
+            "min_words": 5,
+            "required_any": [
+              [
+                "next"
+              ],
+              [
+                "checkmark"
+              ],
+              [
+                "icon"
+              ]
+            ]
           }
         }
       ]
@@ -350,7 +533,24 @@
           },
           "checker": {
             "type": "any",
-            "min_words": 3
+            "min_words": 3,
+            "required_any": [
+              [
+                "rapid-mlx"
+              ],
+              [
+                "icon"
+              ],
+              [
+                "mascot"
+              ],
+              [
+                "title"
+              ],
+              [
+                "chat"
+              ]
+            ]
           }
         },
         {
@@ -362,7 +562,24 @@
           },
           "checker": {
             "type": "any",
-            "min_words": 5
+            "min_words": 5,
+            "required_any": [
+              [
+                "⌘n"
+              ],
+              [
+                "cmd+n"
+              ],
+              [
+                "command+n"
+              ],
+              [
+                "icon"
+              ],
+              [
+                "rapid-mlx"
+              ]
+            ]
           }
         }
       ]
@@ -398,7 +615,24 @@
           },
           "checker": {
             "type": "any",
-            "min_words": 3
+            "min_words": 3,
+            "required_any": [
+              [
+                "starting"
+              ],
+              [
+                "dot"
+              ],
+              [
+                "orange"
+              ],
+              [
+                "icon"
+              ],
+              [
+                "qwen"
+              ]
+            ]
           }
         },
         {
@@ -410,7 +644,21 @@
           },
           "checker": {
             "type": "any",
-            "min_words": 5
+            "min_words": 5,
+            "required_any": [
+              [
+                "stop"
+              ],
+              [
+                "starting"
+              ],
+              [
+                "dot"
+              ],
+              [
+                "orange"
+              ]
+            ]
           }
         }
       ]
@@ -453,7 +701,24 @@
           },
           "checker": {
             "type": "any",
-            "min_words": 3
+            "min_words": 3,
+            "required_any": [
+              [
+                "info"
+              ],
+              [
+                "icon"
+              ],
+              [
+                "stop"
+              ],
+              [
+                "button"
+              ],
+              [
+                "status"
+              ]
+            ]
           }
         },
         {
@@ -465,7 +730,21 @@
           },
           "checker": {
             "type": "any",
-            "min_words": 5
+            "min_words": 5,
+            "required_any": [
+              [
+                "qwen3.6"
+              ],
+              [
+                "ready"
+              ],
+              [
+                "stop"
+              ],
+              [
+                "icon"
+              ]
+            ]
           }
         }
       ]
@@ -508,7 +787,27 @@
           },
           "checker": {
             "type": "any",
-            "min_words": 3
+            "min_words": 3,
+            "required_any": [
+              [
+                "⌘n"
+              ],
+              [
+                "cmd+n"
+              ],
+              [
+                "command+n"
+              ],
+              [
+                "chat"
+              ],
+              [
+                "icon"
+              ],
+              [
+                "hint"
+              ]
+            ]
           }
         },
         {
@@ -520,7 +819,30 @@
           },
           "checker": {
             "type": "any",
-            "min_words": 5
+            "min_words": 5,
+            "required_any": [
+              [
+                "rapid-mlx"
+              ],
+              [
+                "new chat"
+              ],
+              [
+                "search chats"
+              ],
+              [
+                "start chatting"
+              ],
+              [
+                "⌘n"
+              ],
+              [
+                "cmd+n"
+              ],
+              [
+                "command+n"
+              ]
+            ]
           }
         }
       ]
@@ -561,7 +883,27 @@
           },
           "checker": {
             "type": "any",
-            "min_words": 3
+            "min_words": 3,
+            "required_any": [
+              [
+                "checkmark"
+              ],
+              [
+                "icon"
+              ],
+              [
+                "next"
+              ],
+              [
+                "button"
+              ],
+              [
+                "dot"
+              ],
+              [
+                "dots"
+              ]
+            ]
           }
         },
         {
@@ -573,7 +915,21 @@
           },
           "checker": {
             "type": "any",
-            "min_words": 5
+            "min_words": 5,
+            "required_any": [
+              [
+                "pick a model"
+              ],
+              [
+                "next"
+              ],
+              [
+                "checkmark"
+              ],
+              [
+                "icon"
+              ]
+            ]
           }
         }
       ]
@@ -622,7 +978,27 @@
           },
           "checker": {
             "type": "any",
-            "min_words": 3
+            "min_words": 3,
+            "required_any": [
+              [
+                "download"
+              ],
+              [
+                "idle"
+              ],
+              [
+                "button"
+              ],
+              [
+                "orange"
+              ],
+              [
+                "icon"
+              ],
+              [
+                "cloud"
+              ]
+            ]
           }
         },
         {
@@ -634,7 +1010,21 @@
           },
           "checker": {
             "type": "any",
-            "min_words": 5
+            "min_words": 5,
+            "required_any": [
+              [
+                "qwen3.6"
+              ],
+              [
+                "fake-alias"
+              ],
+              [
+                "idle"
+              ],
+              [
+                "download"
+              ]
+            ]
           }
         }
       ]
@@ -672,7 +1062,33 @@
           },
           "checker": {
             "type": "any",
-            "min_words": 3
+            "min_words": 3,
+            "required_any": [
+              [
+                "background"
+              ],
+              [
+                "padding"
+              ],
+              [
+                "dot"
+              ],
+              [
+                "dots"
+              ],
+              [
+                "layout"
+              ],
+              [
+                "button"
+              ],
+              [
+                "checkmark"
+              ],
+              [
+                "white"
+              ]
+            ]
           }
         },
         {
@@ -684,7 +1100,24 @@
           },
           "checker": {
             "type": "any",
-            "min_words": 5
+            "min_words": 5,
+            "required_any": [
+              [
+                "pick a model"
+              ],
+              [
+                "next"
+              ],
+              [
+                "skip"
+              ],
+              [
+                "dot"
+              ],
+              [
+                "checkmark"
+              ]
+            ]
           }
         }
       ]
@@ -720,7 +1153,30 @@
           },
           "checker": {
             "type": "any",
-            "min_words": 3
+            "min_words": 3,
+            "required_any": [
+              [
+                "dark"
+              ],
+              [
+                "dot"
+              ],
+              [
+                "dots"
+              ],
+              [
+                "icon"
+              ],
+              [
+                "contrast"
+              ],
+              [
+                "button"
+              ],
+              [
+                "checkmark"
+              ]
+            ]
           }
         },
         {
@@ -732,7 +1188,24 @@
           },
           "checker": {
             "type": "any",
-            "min_words": 5
+            "min_words": 5,
+            "required_any": [
+              [
+                "pick a model"
+              ],
+              [
+                "dark"
+              ],
+              [
+                "skip"
+              ],
+              [
+                "next"
+              ],
+              [
+                "dot"
+              ]
+            ]
           }
         }
       ]
@@ -769,7 +1242,27 @@
           },
           "checker": {
             "type": "any",
-            "min_words": 3
+            "min_words": 3,
+            "required_any": [
+              [
+                "mascot"
+              ],
+              [
+                "tiger"
+              ],
+              [
+                "icon"
+              ],
+              [
+                "search"
+              ],
+              [
+                "empty"
+              ],
+              [
+                "title"
+              ]
+            ]
           }
         },
         {
@@ -781,7 +1274,24 @@
           },
           "checker": {
             "type": "any",
-            "min_words": 5
+            "min_words": 5,
+            "required_any": [
+              [
+                "new chat"
+              ],
+              [
+                "start chatting"
+              ],
+              [
+                "mascot"
+              ],
+              [
+                "tiger"
+              ],
+              [
+                "search"
+              ]
+            ]
           }
         }
       ]
@@ -817,7 +1327,27 @@
           },
           "checker": {
             "type": "any",
-            "min_words": 3
+            "min_words": 3,
+            "required_any": [
+              [
+                "border"
+              ],
+              [
+                "icon"
+              ],
+              [
+                "gray"
+              ],
+              [
+                "grey"
+              ],
+              [
+                "edge"
+              ],
+              [
+                "green"
+              ]
+            ]
           }
         },
         {
@@ -829,7 +1359,18 @@
           },
           "checker": {
             "type": "any",
-            "min_words": 5
+            "min_words": 5,
+            "required_any": [
+              [
+                "qwen3.6"
+              ],
+              [
+                "ready"
+              ],
+              [
+                "icon"
+              ]
+            ]
           }
         }
       ]
@@ -866,7 +1407,30 @@
           },
           "checker": {
             "type": "any",
-            "min_words": 3
+            "min_words": 3,
+            "required_any": [
+              [
+                "blue"
+              ],
+              [
+                "white"
+              ],
+              [
+                "dark"
+              ],
+              [
+                "light"
+              ],
+              [
+                "color"
+              ],
+              [
+                "colour"
+              ],
+              [
+                "mode"
+              ]
+            ]
           }
         },
         {
@@ -878,7 +1442,27 @@
           },
           "checker": {
             "type": "any",
-            "min_words": 5
+            "min_words": 5,
+            "required_any": [
+              [
+                "dark"
+              ],
+              [
+                "light"
+              ],
+              [
+                "next"
+              ],
+              [
+                "blue"
+              ],
+              [
+                "white"
+              ],
+              [
+                "mode"
+              ]
+            ]
           }
         }
       ]
@@ -916,7 +1500,27 @@
           },
           "checker": {
             "type": "any",
-            "min_words": 3
+            "min_words": 3,
+            "required_any": [
+              [
+                "download"
+              ],
+              [
+                "orange"
+              ],
+              [
+                "idle"
+              ],
+              [
+                "icon"
+              ],
+              [
+                "cloud"
+              ],
+              [
+                "button"
+              ]
+            ]
           }
         },
         {
@@ -928,7 +1532,18 @@
           },
           "checker": {
             "type": "any",
-            "min_words": 5
+            "min_words": 5,
+            "required_any": [
+              [
+                "ready"
+              ],
+              [
+                "idle"
+              ],
+              [
+                "download"
+              ]
+            ]
           }
         }
       ]
@@ -966,7 +1581,27 @@
           },
           "checker": {
             "type": "any",
-            "min_words": 3
+            "min_words": 3,
+            "required_any": [
+              [
+                "spinning"
+              ],
+              [
+                "starting"
+              ],
+              [
+                "ready"
+              ],
+              [
+                "dot"
+              ],
+              [
+                "orange"
+              ],
+              [
+                "icon"
+              ]
+            ]
           }
         },
         {
@@ -978,7 +1613,18 @@
           },
           "checker": {
             "type": "any",
-            "min_words": 5
+            "min_words": 5,
+            "required_any": [
+              [
+                "starting"
+              ],
+              [
+                "ready"
+              ],
+              [
+                "spinning"
+              ]
+            ]
           }
         }
       ]
@@ -1016,7 +1662,27 @@
           },
           "checker": {
             "type": "any",
-            "min_words": 3
+            "min_words": 3,
+            "required_any": [
+              [
+                "download"
+              ],
+              [
+                "orange"
+              ],
+              [
+                "grey"
+              ],
+              [
+                "gray"
+              ],
+              [
+                "button"
+              ],
+              [
+                "icon"
+              ]
+            ]
           }
         },
         {
@@ -1028,7 +1694,18 @@
           },
           "checker": {
             "type": "any",
-            "min_words": 5
+            "min_words": 5,
+            "required_any": [
+              [
+                "pick a model"
+              ],
+              [
+                "fake-alias"
+              ],
+              [
+                "download"
+              ]
+            ]
           }
         }
       ]

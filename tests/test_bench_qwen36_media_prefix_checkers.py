@@ -1,8 +1,10 @@
 """Contracts for the media-prefix harness's open-ended ``any`` checker.
 
-The ``any`` checker gates turns where no term checker can be semantic. A
-bare word count is gameable — a degenerate loop like ``foo foo foo foo
-foo`` passes — so the checker also requires the vocabulary to spread.
+The ``any`` checker gates turns where no fixed answer exists, but it is
+still grounded two ways: ``min_words`` plus a distinct-vocabulary floor
+rejects degenerate loops (``foo foo foo foo foo``), and ``required_any``
+anchors the semantics — at least one alternative term list must be fully
+present, so fluent-but-unrelated output fails.
 """
 
 from __future__ import annotations
@@ -40,3 +42,23 @@ def test_any_distinct_floor_scales_with_min_words():
     three = "alpha beta gamma alpha beta gamma alpha beta gamma"
     assert _checker_pass({"type": "any", "min_words": 8}, four)
     assert not _checker_pass({"type": "any", "min_words": 8}, three)
+
+
+def test_any_required_any_requires_an_alternative():
+    checker = {"type": "any", "min_words": 3, "required_any": [["ready"], ["idle"]]}
+    assert _checker_pass(checker, "The status chip reads Ready and green.")
+    assert _checker_pass(checker, "The chip says IDLE right now.")
+    # Fluent but unrelated: correct length, none of the anchors.
+    assert not _checker_pass(checker, "The weather is nice today, honestly.")
+
+
+def test_any_required_any_alternative_must_match_completely():
+    # An alternative is satisfied only when every term in it is present.
+    checker = {"type": "any", "required_any": [["new", "chat"]]}
+    assert _checker_pass(checker, "press new chat to begin")
+    assert not _checker_pass(checker, "press the new button to begin the setup")
+
+
+def test_any_without_required_any_stays_word_floor_only():
+    assert _checker_pass({"type": "any", "min_words": 2}, "anything at all")
+    assert not _checker_pass({"type": "any", "min_words": 3}, "too short")
