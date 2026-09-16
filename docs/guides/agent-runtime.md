@@ -100,6 +100,10 @@ python scripts/qualify_personal_intelligence.py MODEL \
   --output reports/benchmarks/personal-intelligence-MODEL.json
 ```
 
+For an authenticated server, export `RAPID_MLX_API_KEY` before running the
+suite. The script sends it as a bearer credential but never records it in argv,
+the JSON receipt, or the reproduction command.
+
 The exact-build target matrix and receipts live in
 `docs/engineering/performance/2026-09-15-personal-intelligence-top-model-qualification.md`.
 Only the complete canonical matrix can set `qualified:true`; subset `--tasks`

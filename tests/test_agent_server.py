@@ -32,6 +32,7 @@ from vllm_mlx.agent_runtime.server import (
     _evaluate_arithmetic,
     _format_retry_instruction,
     _has_browse_observation,
+    _observed_sentence_count,
     _planned_weather_arguments,
     _planned_weather_requests,
     _planned_web_search_query,
@@ -162,6 +163,14 @@ def test_format_retry_rejects_trailing_non_sentence_garbage():
         AgentModelTurn(content="Welcome! Glad you're here.\n2"),
     )
     assert cleaned.content == "Welcome! Glad you're here."
+
+
+def test_sentence_count_ignores_titles_initials_and_acronyms():
+    assert (
+        _observed_sentence_count("Dr. Smith joined today. He leads the U.S. team.") == 2
+    )
+    assert _observed_sentence_count("A. Smith joined today. Welcome aboard.") == 2
+    assert _observed_sentence_count("The answer is 42. Done.") == 2
 
 
 @pytest.mark.asyncio
@@ -621,6 +630,9 @@ def test_multiple_weather_targets_are_planned_individually():
     ) == ({"location": "Trinidad and Tobago"}, {"location": "Paris"})
     assert _planned_weather_requests("Weather in Trinidad and Tobago?") == (
         {"location": "Trinidad and Tobago"},
+    )
+    assert _planned_weather_requests("Weather in Saint Pierre and Miquelon?") == (
+        {"location": "Saint Pierre and Miquelon"},
     )
 
 

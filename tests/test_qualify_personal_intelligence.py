@@ -1,4 +1,5 @@
 import argparse
+import io
 from pathlib import Path
 
 from scripts.qualify_personal_intelligence import (
@@ -6,6 +7,7 @@ from scripts.qualify_personal_intelligence import (
     _format_valid,
     _identity_checks,
     _is_complete_qualification_matrix,
+    _request,
     _suite_command,
 )
 
@@ -92,3 +94,20 @@ def test_receipt_records_a_complete_shell_safe_reproduction_command() -> None:
         assert flag in command
     assert "'Mac Studio, 256 GB'" in command
     assert "'PYTHONPATH=$PWD rapid-mlx serve model'" in command
+
+
+def test_requests_use_environment_bearer_without_recording_it(monkeypatch) -> None:
+    captured = {}
+
+    def fake_urlopen(request, timeout):
+        captured["authorization"] = request.get_header("Authorization")
+        captured["timeout"] = timeout
+        return io.BytesIO(b'{"ok": true}')
+
+    monkeypatch.setenv("RAPID_MLX_API_KEY", "qualification-secret")
+    monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+    assert _request("http://127.0.0.1:8000", "GET", "/v1/models") == {"ok": True}
+    assert captured == {
+        "authorization": "Bearer qualification-secret",
+        "timeout": 30.0,
+    }

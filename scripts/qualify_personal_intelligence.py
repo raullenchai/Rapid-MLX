@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
 import shlex
 import time
@@ -128,11 +129,16 @@ def _request(
     timeout: float = 30.0,
 ) -> dict[str, Any]:
     data = None if payload is None else json.dumps(payload).encode()
+    headers = {"Content-Type": "application/json"}
+    # Credentials are intentionally environment-only: they must never appear
+    # in argv, the generated receipt, or its reproducible suite command.
+    if api_key := os.environ.get("RAPID_MLX_API_KEY"):
+        headers["Authorization"] = f"Bearer {api_key}"
     request = urllib.request.Request(
         base_url.rstrip("/") + path,
         data=data,
         method=method,
-        headers={"Content-Type": "application/json"},
+        headers=headers,
     )
     try:
         with urllib.request.urlopen(request, timeout=timeout) as response:

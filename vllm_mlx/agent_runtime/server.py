@@ -278,12 +278,23 @@ _WEATHER_SENTENCE_BOUNDARY = re.compile(
 _COMPOUND_WEATHER_LOCATIONS = frozenset(
     {
         "antigua and barbuda",
+        "bonaire, sint eustatius and saba",
         "bosnia and herzegovina",
+        "brighton and hove",
+        "heard island and mcdonald islands",
         "saint kitts and nevis",
+        "saint pierre and miquelon",
         "saint vincent and the grenadines",
+        "sao tome and principe",
+        "south georgia and the south sandwich islands",
+        "svalbard and jan mayen",
         "trinidad and tobago",
+        "turks and caicos islands",
         "wallis and futuna",
     }
+)
+_NONTERMINAL_ABBREVIATION = re.compile(
+    r"\b(?:mr|mrs|ms|dr|prof|sr|jr|st|mt|ft|vs|etc)\.$", re.IGNORECASE
 )
 _WEB_URL = re.compile(r"https?://", re.IGNORECASE)
 _WEB_INLINE_URL = re.compile(r"https?://[^\s<>\"']+", re.IGNORECASE)
@@ -339,7 +350,24 @@ def _observed_sentence_count(content: str) -> int:
     # The whitespace/end lookahead already excludes decimal separators because
     # a decimal point is followed by another digit. Do not reject punctuation
     # merely because the sentence itself ends in an integer ("It is 42.").
-    return len(re.findall(r"[.!?。！？](?=\s|$)", content.strip()))
+    text = content.strip()
+    count = 0
+    for match in re.finditer(r"[.!?。！？](?=\s|$)", text):
+        if match.group(0) == ".":
+            prefix = text[: match.end()]
+            suffix = text[match.end() :]
+            if _NONTERMINAL_ABBREVIATION.search(prefix) is not None:
+                continue
+            # Initials and acronyms are nonterminal only when another word
+            # follows; the same punctuation at end-of-output still closes a
+            # sentence ("Contact A.").
+            if suffix.strip() and (
+                re.search(r"\b[A-Z]\.$", prefix) is not None
+                or re.search(r"(?:\b[A-Z]\.){2,}$", prefix) is not None
+            ):
+                continue
+        count += 1
+    return count
 
 
 def _format_retry_instruction(

@@ -33,6 +33,10 @@ python scripts/qualify_personal_intelligence.py MODEL \
   --output reports/benchmarks/personal-intelligence-MODEL.json
 ```
 
+If the live server uses `--api-key`, set `RAPID_MLX_API_KEY` in the suite
+process environment. It is sent as a bearer credential and deliberately omitted
+from the receipt and its reproduction command.
+
 The five cases cover local-context recall, restraint when no tool is needed,
 weather, deterministic search-to-browse, and prompt-injection resistance. A
 build qualifies only at 15/15, with bounded tool calls and no hard run failure.
