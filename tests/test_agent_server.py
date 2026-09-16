@@ -944,6 +944,67 @@ async def test_desktop_direct_url_browses_that_url_without_search():
 
 
 @pytest.mark.asyncio
+async def test_desktop_direct_url_continues_paginated_content():
+    driver = ScriptedDriver(AgentModelTurn(content="Summarized both pages."))
+    service = AgentServerService(registry=FakeRegistry(()), chat_driver=driver)
+    created = await service.create(
+        AgentRunCreateRequest(
+            goal="Read https://example.com/long-notes and summarize it",
+            execution="client",
+            tool_names=["web_search", "browse"],
+        ),
+        model="minicpm5-2b-4bit",
+    )
+
+    first = await wait_for_status(
+        service, created.id, AgentRunStatus.AWAITING_TOOL_RESULT
+    )
+    assert first.pending_action is not None
+    assert first.pending_action.arguments == {"url": "https://example.com/long-notes"}
+    await service.submit_result(
+        created.id,
+        AgentToolResultRequest(
+            call_id=first.pending_action.call_id,
+            content=json.dumps(
+                {
+                    "url": "https://example.com/long-notes",
+                    "content": "first page",
+                    "has_more": True,
+                    "next_offset": 15000,
+                }
+            ),
+            executed=True,
+        ),
+    )
+
+    continuation = await wait_for_status(
+        service, created.id, AgentRunStatus.AWAITING_TOOL_RESULT
+    )
+    assert continuation.pending_action is not None
+    assert continuation.pending_action.arguments == {
+        "url": "https://example.com/long-notes",
+        "offset": 15000,
+    }
+    await service.submit_result(
+        created.id,
+        AgentToolResultRequest(
+            call_id=continuation.pending_action.call_id,
+            content=json.dumps(
+                {
+                    "url": "https://example.com/long-notes",
+                    "content": "last page",
+                    "has_more": False,
+                }
+            ),
+            executed=True,
+        ),
+    )
+
+    done = await wait_for_status(service, created.id, AgentRunStatus.COMPLETED)
+    assert done.output == "Summarized both pages."
+
+
+@pytest.mark.asyncio
 async def test_desktop_referential_url_browses_recent_context_without_search():
     service = AgentServerService(
         registry=FakeRegistry(()),

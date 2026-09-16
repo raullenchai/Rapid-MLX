@@ -2484,7 +2484,16 @@ class AgentServerService:
                 direct = context_urls[-1] if context_urls else None
             if direct is not None:
                 url = _trim_exterior_url_punctuation(direct.group(0))
-                return None if url in browsed_urls else {"url": url}
+                if url not in browsed_urls:
+                    return {"url": url}
+                return next(
+                    (
+                        continuation
+                        for continuation in pending_continuations
+                        if continuation["url"] == url
+                    ),
+                    None,
+                )
         ranked_urls = [
             _trim_exterior_url_punctuation(match.group(1))
             for match in _WEB_RESULT_URL.finditer(search_content)
