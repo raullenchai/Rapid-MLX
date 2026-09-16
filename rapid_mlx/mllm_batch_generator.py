@@ -284,7 +284,22 @@ def _is_control_stop_token(
     return token in stop_tokens and not request.ignore_eos
 
 
-def _request_sampler(request: "MLLMBatchRequest") -> Callable:
+def _effective_top_k(top_k: int, vocab_size: int | None) -> int:
+    """Normalize a top-k value that covers the complete vocabulary.
+
+    ``mlx_lm.sample_utils.apply_top_k`` rejects ``top_k >= vocab_size``,
+    while the API contract treats that range as "keep every token". A
+    disabled top-k value is therefore the equivalent, non-raising form.
+    """
+
+    if vocab_size is not None and top_k >= vocab_size:
+        return 0
+    return top_k
+
+
+def _request_sampler(
+    request: "MLLMBatchRequest", vocab_size: int | None = None
+) -> Callable:
     """Return the request-owned sampler, preserving all sampling controls."""
 
     key = (
@@ -293,10 +308,12 @@ def _request_sampler(request: "MLLMBatchRequest") -> Callable:
         request.min_p,
         request.top_k,
         request.seed,
+        vocab_size,
     )
     cached = request._cached_sampler
     if cached is not None and cached[0] == key:
         return cached[1]
+    effective_top_k = _effective_top_k(request.top_k, vocab_size)
     if request.seed is None:
         kwargs: dict[str, Any] = {
             "temp": request.temperature,
@@ -304,8 +321,8 @@ def _request_sampler(request: "MLLMBatchRequest") -> Callable:
         }
         if request.min_p:
             kwargs["min_p"] = request.min_p
-        if request.top_k:
-            kwargs["top_k"] = request.top_k
+        if effective_top_k:
+            kwargs["top_k"] = effective_top_k
         sampler = make_sampler(**kwargs)
     else:
         sampler = make_seeded_sampler(
@@ -313,7 +330,7 @@ def _request_sampler(request: "MLLMBatchRequest") -> Callable:
             temperature=request.temperature,
             top_p=request.top_p,
             min_p=request.min_p,
-            top_k=request.top_k,
+            top_k=effective_top_k,
         )
     request._cached_sampler = (key, sampler)
     return sampler
@@ -447,9 +464,15 @@ class MLLMBatchRequest:
     # no images or the model does not support feature caching. Appended last so
     # inserting it never shifts the meaning of any positional constructor arg.
     vision_feature_key: str | None = None
+    # Request-owned sampler state. The key also includes vocabulary width,
+    # because an otherwise identical top-k setting may normalize differently
+    # across models.
     _cached_sampler: (
-        tuple[tuple[float, float, float, int, int | None], Callable] | None
+        tuple[tuple[float, float, float, int, int | None, int | None], Callable] | None
     ) = field(default=None, init=False, repr=False, compare=False)
+    _cached_penalty_processors: tuple[Any, ...] | None = field(
+        default=None, init=False, repr=False, compare=False
+    )
 
 
 @dataclass
@@ -638,7 +661,7 @@ def _maybe_apply_penalty_processors(
     freq = req.frequency_penalty
     if rep == 1.0 and pres == 0.0 and freq == 0.0:
         return row_logits
-    cached = getattr(req, "_cached_penalty_processors", None)
+    cached = req._cached_penalty_processors
     key = (rep, pres, freq)
     if cached is None or cached[0] != key:
         processors = make_logits_processors(
@@ -839,7 +862,7 @@ class MLLMBatchGenerator:
         self.stop_tokens = stop_tokens or set()
         self.sampler = sampler or (lambda x: mx.argmax(x, axis=-1))
         self._shared_batch_sampler: (
-            tuple[tuple[float, float, float, int], Callable] | None
+            tuple[tuple[float, float, float, int, int], Callable] | None
         ) = None
 
         self.prefill_batch_size = prefill_batch_size
@@ -2113,7 +2136,7 @@ class MLLMBatchGenerator:
                 logprobs = last_logits - mx.logsumexp(
                     last_logits, axis=-1, keepdims=True
                 )
-                req_sampler = _request_sampler(req)
+                req_sampler = _request_sampler(req, logprobs.shape[-1])
                 sampled = req_sampler(logprobs)
 
                 mx.eval(sampled, logprobs)
@@ -2287,16 +2310,25 @@ class MLLMBatchGenerator:
         # use this shared fast path. Unseeded samplers can be shared only when
         # every shape-changing control matches.
         logprobs = logits - mx.logsumexp(logits, axis=-1, keepdims=True)
+        vocab_size = logprobs.shape[-1]
         if requests and len(requests) == logprobs.shape[0]:
             first_key = (
                 requests[0].temperature,
                 requests[0].top_p,
                 requests[0].min_p,
-                requests[0].top_k,
+                _effective_top_k(requests[0].top_k, vocab_size),
+                vocab_size,
             )
             homogeneous = requests[0].seed is None and all(
                 r.seed is None
-                and (r.temperature, r.top_p, r.min_p, r.top_k) == first_key
+                and (
+                    r.temperature,
+                    r.top_p,
+                    r.min_p,
+                    _effective_top_k(r.top_k, vocab_size),
+                    vocab_size,
+                )
+                == first_key
                 for r in requests
             )
             if homogeneous:
@@ -2308,8 +2340,9 @@ class MLLMBatchGenerator:
                     }
                     if requests[0].min_p:
                         kwargs["min_p"] = requests[0].min_p
-                    if requests[0].top_k:
-                        kwargs["top_k"] = requests[0].top_k
+                    effective_top_k = _effective_top_k(requests[0].top_k, vocab_size)
+                    if effective_top_k:
+                        kwargs["top_k"] = effective_top_k
                     fn = make_sampler(**kwargs)
                     shared = (first_key, fn)
                     self._shared_batch_sampler = shared
@@ -2317,7 +2350,7 @@ class MLLMBatchGenerator:
             else:
                 sampled_tokens = []
                 for i, req in enumerate(requests):
-                    req_sampler = _request_sampler(req)
+                    req_sampler = _request_sampler(req, vocab_size)
                     sampled_tokens.append(req_sampler(logprobs[i : i + 1]))
                 sampled = mx.concatenate(sampled_tokens, axis=0)
         else:
