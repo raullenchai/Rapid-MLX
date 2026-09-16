@@ -89,8 +89,14 @@ def test_json_checker_requires_types_and_semantic_values() -> None:
         "field_terms": {"status": ["ready"], "buttons": ["start"]},
     }
     assert _checker_pass(checker, '{"status":"Ready","buttons":["Start"]}')
+    assert _checker_pass(
+        checker, '```json\n{"status":"Ready","buttons":["Start"]}\n```'
+    )
     assert not _checker_pass(checker, '{"status":null,"buttons":[]}')
     assert not _checker_pass(checker, '{"status":"Idle","buttons":["Stop"]}')
+    assert not _checker_pass(
+        checker, 'Here is the JSON:\n{"status":"Ready","buttons":["Start"]}'
+    )
 
 
 def test_terms_checker_enforces_minimum_word_count() -> None:

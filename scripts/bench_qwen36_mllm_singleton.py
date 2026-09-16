@@ -85,11 +85,10 @@ def _checker_pass(checker: dict[str, Any], text: str) -> bool:
         if stripped.startswith("```"):
             stripped = stripped.split("\n", 1)[-1]
             if stripped.endswith("```"):
-                stripped = stripped[:-3]
+                stripped = stripped[:-3].rstrip()
         try:
-            start = stripped.index("{")
-            payload = json.loads(stripped[start:])
-        except (ValueError, json.JSONDecodeError):
+            payload = json.loads(stripped)
+        except json.JSONDecodeError:
             return False
         if not isinstance(payload, dict) or not all(
             key in payload and payload[key] is not None

@@ -560,7 +560,7 @@ def _extract_detached_singleton_leaf(leaf: Any, idx: int) -> Any:
     ``contiguous``/``eval``), which would alias the live batch state until a
     later evaluation mutates or frees it. Terminal extraction must yield
     arrays that stay valid no matter what happens to the live batch
-    afterwards, so build a fresh leaf from explicit ``mx.contiguous`` copies
+    afterwards, so build a fresh leaf from explicit allocated copies
     and evaluate them on the caller's (worker) stream before returning.
     """
     from mlx_vlm.models.cache import ArraysCache, KVCache
@@ -576,20 +576,27 @@ def _extract_detached_singleton_leaf(leaf: Any, idx: int) -> Any:
     except ImportError:
         pass
 
+    def allocated_copy(value: mx.array) -> mx.array:
+        # ``mx.contiguous`` may return its input when the slice already has a
+        # contiguous layout. Adding a fresh zero buffer is the MLX-native copy
+        # idiom used by the engine's other state snapshots and guarantees that
+        # terminal cache ownership is independent of the live batch.
+        return value + mx.zeros_like(value)
+
     if type(leaf) in arrays_types:
         detached = type(leaf)(len(leaf.cache))
         detached.cache = [
-            None if state is None else mx.contiguous(state[idx : idx + 1])
+            None if state is None else allocated_copy(state[idx : idx + 1])
             for state in leaf.cache
         ]
         for attr in ("left_padding", "lengths"):
             value = getattr(leaf, attr, None)
             if value is not None:
-                setattr(detached, attr, mx.contiguous(value[idx : idx + 1]))
+                setattr(detached, attr, allocated_copy(value[idx : idx + 1]))
         offset = getattr(leaf, "offset", None)
         if offset is not None:
             if hasattr(offset, "shape"):
-                detached.offset = mx.contiguous(offset[idx : idx + 1])
+                detached.offset = allocated_copy(offset[idx : idx + 1])
             else:
                 detached.offset = offset
         materialized = [state for state in detached.cache if state is not None]
@@ -615,8 +622,8 @@ def _extract_detached_singleton_leaf(leaf: Any, idx: int) -> Any:
         # an untrimmed row copy would carry up to one slab of zero padding and
         # inflate byte accounting for anything that consumes the extract.
         offset = int(getattr(leaf, "offset", 0) or 0)
-        detached.keys = mx.contiguous(leaf.keys[idx : idx + 1, :, :offset, :])
-        detached.values = mx.contiguous(leaf.values[idx : idx + 1, :, :offset, :])
+        detached.keys = allocated_copy(leaf.keys[idx : idx + 1, :, :offset, :])
+        detached.values = allocated_copy(leaf.values[idx : idx + 1, :, :offset, :])
         detached.offset = leaf.offset
         mx.eval(detached.keys, detached.values)
     return detached
