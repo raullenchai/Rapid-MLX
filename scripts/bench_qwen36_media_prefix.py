@@ -207,7 +207,10 @@ def _structural_pass(checker: dict[str, Any], text: str) -> bool:
     min_lines = int(checker.get("min_lines", 0) or 0)
     max_lines = int(checker.get("max_lines", 0) or 0)
     words = len(text.split())
-    lines = text.count("\n") + 1
+    # Lines are non-blank splitlines: a trailing newline cannot fake a second
+    # line ("Ready\n" is one line), and blank padding lines neither satisfy a
+    # minimum nor violate a maximum — the prompts ask for content lines.
+    lines = sum(1 for line in text.splitlines() if line.strip())
     if min_words and words < min_words:
         return False
     if max_words and words > max_words:

@@ -86,9 +86,7 @@
             "required_any_groups": [
               [
                 [
-                  "qwen3.6"
-                ],
-                [
+                  "qwen3.6-27b",
                   "ready"
                 ]
               ],
@@ -98,6 +96,18 @@
                 ],
                 [
                   "circular"
+                ],
+                [
+                  "stop"
+                ],
+                [
+                  "info"
+                ],
+                [
+                  "button"
+                ],
+                [
+                  "chip"
                 ]
               ]
             ]
@@ -179,15 +189,25 @@
             "required_any_groups": [
               [
                 [
-                  "pick"
-                ],
-                [
-                  "installed"
+                  "pick a model",
+                  "not installed"
                 ]
               ],
               [
                 [
                   "cloud"
+                ],
+                [
+                  "download"
+                ],
+                [
+                  "icon"
+                ],
+                [
+                  "start"
+                ],
+                [
+                  "button"
                 ]
               ]
             ]
@@ -267,10 +287,9 @@
             "required_any_groups": [
               [
                 [
-                  "alias"
-                ],
-                [
-                  "spinning"
+                  "fake-alias",
+                  "starting",
+                  "spinning up rapid-mlx"
                 ]
               ],
               [
@@ -279,6 +298,12 @@
                 ],
                 [
                   "dot"
+                ],
+                [
+                  "icon"
+                ],
+                [
+                  "subtitle"
                 ]
               ]
             ]
@@ -369,15 +394,9 @@
             "required_any_groups": [
               [
                 [
-                  "new",
-                  "chat"
-                ],
-                [
-                  "search"
-                ],
-                [
-                  "start",
-                  "chatting"
+                  "new chat",
+                  "search chats",
+                  "start chatting"
                 ]
               ],
               [
@@ -407,6 +426,12 @@
                 ],
                 [
                   "cartoon"
+                ],
+                [
+                  "icon"
+                ],
+                [
+                  "rapid-mlx"
                 ]
               ]
             ]
@@ -488,6 +513,18 @@
               [
                 [
                   "checkmark"
+                ],
+                [
+                  "next"
+                ],
+                [
+                  "icon"
+                ],
+                [
+                  "button"
+                ],
+                [
+                  "blue"
                 ]
               ]
             ]
@@ -567,15 +604,28 @@
             "required_any_groups": [
               [
                 [
-                  "next"
-                ],
-                [
-                  "bottom"
+                  "next",
+                  "bottom right"
                 ]
               ],
               [
                 [
                   "checkmark"
+                ],
+                [
+                  "skip"
+                ],
+                [
+                  "icon"
+                ],
+                [
+                  "button"
+                ],
+                [
+                  "blue"
+                ],
+                [
+                  "dot"
                 ]
               ]
             ]
@@ -665,6 +715,21 @@
               [
                 [
                   "cartoon"
+                ],
+                [
+                  "rapid-mlx"
+                ],
+                [
+                  "icon"
+                ],
+                [
+                  "mascot"
+                ],
+                [
+                  "title"
+                ],
+                [
+                  "chat"
                 ]
               ]
             ]
@@ -755,6 +820,15 @@
                 ],
                 [
                   "orange"
+                ],
+                [
+                  "starting"
+                ],
+                [
+                  "icon"
+                ],
+                [
+                  "qwen"
                 ]
               ]
             ]
@@ -844,10 +918,9 @@
             "required_any_groups": [
               [
                 [
+                  "qwen3.6-27b",
+                  "ready",
                   "stop"
-                ],
-                [
-                  "action"
                 ]
               ],
               [
@@ -856,6 +929,12 @@
                 ],
                 [
                   "icon"
+                ],
+                [
+                  "button"
+                ],
+                [
+                  "status"
                 ]
               ]
             ]
@@ -978,6 +1057,18 @@
                 ],
                 [
                   "press"
+                ],
+                [
+                  "cmd+n"
+                ],
+                [
+                  "command+n"
+                ],
+                [
+                  "icon"
+                ],
+                [
+                  "hint"
                 ]
               ]
             ]
@@ -1065,15 +1156,25 @@
             "required_any_groups": [
               [
                 [
-                  "heading"
-                ],
-                [
-                  "pick"
+                  "pick a model",
+                  "next"
                 ]
               ],
               [
                 [
                   "checkmark"
+                ],
+                [
+                  "icon"
+                ],
+                [
+                  "button"
+                ],
+                [
+                  "dot"
+                ],
+                [
+                  "dots"
                 ]
               ]
             ]
@@ -1208,6 +1309,15 @@
                 ],
                 [
                   "upload"
+                ],
+                [
+                  "download"
+                ],
+                [
+                  "button"
+                ],
+                [
+                  "orange"
                 ]
               ]
             ]
@@ -1324,6 +1434,18 @@
                 ],
                 [
                   "padding"
+                ],
+                [
+                  "layout"
+                ],
+                [
+                  "button"
+                ],
+                [
+                  "checkmark"
+                ],
+                [
+                  "white"
                 ]
               ]
             ]
@@ -1448,6 +1570,18 @@
                 ],
                 [
                   "primary"
+                ],
+                [
+                  "dark"
+                ],
+                [
+                  "icon"
+                ],
+                [
+                  "contrast"
+                ],
+                [
+                  "button"
                 ]
               ]
             ]
@@ -1536,6 +1670,15 @@
                 ],
                 [
                   "mascot"
+                ],
+                [
+                  "icon"
+                ],
+                [
+                  "search"
+                ],
+                [
+                  "title"
                 ]
               ]
             ]
@@ -1616,10 +1759,9 @@
             "required_any_groups": [
               [
                 [
-                  "ready"
-                ],
-                [
-                  "qwen3.6"
+                  "ready",
+                  "qwen3.6-27b",
+                  "stop"
                 ]
               ],
               [
@@ -1634,6 +1776,21 @@
                 ],
                 [
                   "frame"
+                ],
+                [
+                  "icon"
+                ],
+                [
+                  "gray"
+                ],
+                [
+                  "grey"
+                ],
+                [
+                  "edge"
+                ],
+                [
+                  "green"
                 ]
               ]
             ]
@@ -1749,6 +1906,12 @@
                 ],
                 [
                   "filled"
+                ],
+                [
+                  "colour"
+                ],
+                [
+                  "mode"
                 ]
               ]
             ]
@@ -1835,10 +1998,8 @@
             "required_any_groups": [
               [
                 [
+                  "ready",
                   "idle"
-                ],
-                [
-                  "ready"
                 ]
               ],
               [
@@ -1847,6 +2008,15 @@
                 ],
                 [
                   "download"
+                ],
+                [
+                  "icon"
+                ],
+                [
+                  "cloud"
+                ],
+                [
+                  "button"
                 ]
               ]
             ]
@@ -1930,9 +2100,7 @@
             "required_any_groups": [
               [
                 [
-                  "starting"
-                ],
-                [
+                  "starting",
                   "ready"
                 ]
               ],
@@ -1951,6 +2119,9 @@
                 ],
                 [
                   "green"
+                ],
+                [
+                  "icon"
                 ]
               ]
             ]
@@ -2040,10 +2211,8 @@
             "required_any_groups": [
               [
                 [
-                  "fake"
-                ],
-                [
-                  "pick"
+                  "pick a model",
+                  "fake-alias"
                 ]
               ],
               [
@@ -2058,6 +2227,18 @@
                 ],
                 [
                   "icon"
+                ],
+                [
+                  "download"
+                ],
+                [
+                  "grey"
+                ],
+                [
+                  "gray"
+                ],
+                [
+                  "button"
                 ]
               ]
             ]

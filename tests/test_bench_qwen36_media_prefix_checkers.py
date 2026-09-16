@@ -350,6 +350,21 @@ def test_line_expect_pins_image_order():
     assert not _checker_pass(checker, "Idle and download available\nReady")
 
 
+def test_line_counts_ignore_blank_padding():
+    # Line counts are over non-blank lines: a trailing newline cannot fake
+    # a second line, and blank padding lines neither satisfy a minimum nor
+    # violate a maximum.
+    two_lines = {"type": "terms", "required": ["ready"], "min_lines": 2}
+    assert not _checker_pass(two_lines, "Ready\n")
+    assert not _checker_pass(two_lines, "Ready\n\n")
+    assert _checker_pass(two_lines, "Ready\nIdle\n")
+    assert _checker_pass(two_lines, "Ready\n\nIdle")
+    one_line = {"type": "terms", "required": ["skip"], "max_lines": 1}
+    assert _checker_pass(one_line, "Skip\n")
+    assert _checker_pass(one_line, "\nSkip\n")
+    assert not _checker_pass(one_line, "Skip\nNext")
+
+
 def test_any_required_any_min_requires_multiple_anchors():
     # Summary turns: a single anchor must not qualify -- the response has
     # to reference at least ``required_any_min`` distinct alternatives.
