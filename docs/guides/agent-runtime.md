@@ -66,8 +66,9 @@ The qualification field is additive to the OpenAI model card:
 support. At run creation Desktop also checks that the returned model, runtime
 profile, and versioned qualification ID match the model-card values; a mismatch
 is cancelled rather than falling back to a generic harness. Qualification also
-requires the tested backing repository identity and live native parser; an alias
-reused for other weights, an incompatible parser override, or
+requires the tested canonical backing repository identity and live native
+parser. A public alias is not accepted as proof of the backing artifact: an
+alias reused for other weights, an incompatible parser override, or
 `--no-tool-call-parser` returns `null`.
 
 Each admitted pairing is a versioned
@@ -299,10 +300,14 @@ writing, explicit no-network requests, and transformation tasks see no
 live-data tool; weather tasks see only `weather`; web tasks deterministically
 run `web_search`, extract ranked HTTP(S) result lines, then run `browse`. Long
 pages follow the tool's `next_offset`, and explicit comparison tasks can read
-up to three ranked pages. Search and browse still execute only in Desktop, and
-`browse` retains its existing cache, SSRF guard, and per-fetch approval. Tool
-output remains untrusted data, and the final synthesis turn has no tools
-visible.
+up to three ranked pages. Explicit URLs remain browseable for transformation
+requests such as “summarize this URL”; an explicit offline instruction still
+wins. Referential follow-ups such as “open that link” use the newest HTTP(S)
+URL in bounded recent context. Terse current-weather requests such as “Paris
+weather?” use live weather, while dated forecasts continue through web
+evidence. Search and browse still execute only in Desktop, and `browse` retains
+its existing cache, SSRF guard, and per-fetch approval. Tool output remains
+untrusted data, and the final synthesis turn has no tools visible.
 
 ## Cancel a run
 
