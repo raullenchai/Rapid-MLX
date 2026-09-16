@@ -114,6 +114,44 @@ def test_zero_pairs_requires_explicit_lifecycle_mode() -> None:
     assert "valid only with --lifecycle" in result.stderr
 
 
+def test_nonpositive_max_tokens_is_rejected() -> None:
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "scripts.bench_qwen36_mllm_singleton",
+            "--model",
+            "unused",
+            "--max-tokens",
+            "0",
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 2
+    assert "must be positive" in result.stderr
+
+
+def test_unknown_case_id_is_rejected() -> None:
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "scripts.bench_qwen36_mllm_singleton",
+            "--model",
+            "unused",
+            "--cases",
+            "typo-case",
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 2
+    assert "unknown --cases id(s): typo-case" in result.stderr
+
+
 def test_warm_gate_requires_measured_hit_and_candidate_singleton() -> None:
     baseline = {
         "per_case": {

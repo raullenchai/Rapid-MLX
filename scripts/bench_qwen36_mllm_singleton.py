@@ -200,7 +200,9 @@ async def _run_case(
     *,
     max_tokens_override: int | None,
 ) -> dict[str, Any]:
-    max_tokens = max_tokens_override or int(case["max_tokens"])
+    max_tokens = (
+        int(case["max_tokens"]) if max_tokens_override is None else max_tokens_override
+    )
     sampling = case.get("sampling", {})
     stats_before = engine.get_stats()
     before = dict(stats_before.get("batch_generator", {}))
@@ -550,6 +552,8 @@ async def _main() -> None:
         parser.error("--pairs must be non-negative")
     if args.pairs == 0 and not args.lifecycle:
         parser.error("--pairs 0 is valid only with --lifecycle")
+    if args.max_tokens is not None and args.max_tokens <= 0:
+        parser.error("--max-tokens must be positive")
 
     from rapid_mlx.engine.batched import BatchedEngine
     from rapid_mlx.scheduler import SchedulerConfig
@@ -560,6 +564,10 @@ async def _main() -> None:
     repo_root = (
         args.manifest.resolve().parent / manifest.get("images_root", ".")
     ).resolve()
+    manifest_ids = {case["id"] for case in manifest["cases"]}
+    unknown_case_ids = sorted(set(args.cases) - manifest_ids)
+    if unknown_case_ids:
+        parser.error(f"unknown --cases id(s): {', '.join(unknown_case_ids)}")
     cases = [
         case for case in manifest["cases"] if not args.cases or case["id"] in args.cases
     ]
