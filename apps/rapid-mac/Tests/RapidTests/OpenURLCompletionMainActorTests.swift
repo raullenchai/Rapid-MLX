@@ -117,6 +117,17 @@ struct OpenURLCompletionMainActorTests {
                     site.hopsFirst,
                     "\(path) — \(mutation) must run inside a main-actor hop that OPENS the openURL completion body, not inline on LaunchServices' open-queue. Closure body: \(site.raw)"
                 )
+                let acceptedGuard = "guardacceptedelse{return}"
+                let strippedMutation = Self.strip(mutation)
+                let guardRange = site.raw.range(of: acceptedGuard)
+                let mutationRange = site.raw.range(of: strippedMutation)
+                let acceptanceGuardsMutation = guardRange.flatMap { guardRange in
+                    mutationRange.map { guardRange.lowerBound < $0.lowerBound }
+                } ?? false
+                #expect(
+                    acceptanceGuardsMutation,
+                    "\(path) — the accepted result must guard \(mutation). A declined openURL request must leave prompt/banner state unchanged. Closure body: \(site.raw)"
+                )
             }
         }
     }
@@ -133,6 +144,29 @@ struct OpenURLCompletionMainActorTests {
                 "\(site.file) (openURL call #\(site.occurrence)) — `MainActor.assumeIsolated` ASSERTS that the caller is already on the main actor; the openURL completion never is. It traps with the same EXC_BREAKPOINT as the unfixed code. Use `Task { @MainActor in … }`."
             )
         }
+    }
+
+    @Test("Scanner accepts legal call spacing and fails closed on ambiguous arguments")
+    func scannerCoverage() {
+        let spaced = SourceGuardSupport.canonicalSource(
+            "openURL (url) { accepted in Task { @MainActor in guard accepted else { return } } }",
+            literals: .erase
+        )
+        let spacedSites = Self.openURLCompletionSites(inCanonical: spaced, file: "fixture.swift")
+        #expect(spacedSites.count == 1)
+        #expect(spacedSites.first?.hopsFirst == true)
+
+        let ambiguous = SourceGuardSupport.canonicalSource(
+            "openURL(url / divisor) { accepted in Task { @MainActor in } }",
+            literals: .erase
+        )
+        let ambiguousSites = Self.openURLCompletionSites(
+            inCanonical: ambiguous,
+            file: "fixture.swift"
+        )
+        #expect(ambiguousSites.count == 1)
+        #expect(ambiguousSites.first?.hopsFirst == false)
+        #expect(ambiguousSites.first?.raw.hasPrefix("<unscannable:") == true)
     }
 
     // MARK: - Scanner
@@ -166,7 +200,6 @@ struct OpenURLCompletionMainActorTests {
         var sites: [CallSite] = []
         for case let url as URL in enumerator where url.pathExtension == "swift" {
             let source = try String(contentsOf: url, encoding: .utf8)
-            guard source.contains("openURL(") else { continue }
             sites += openURLCompletionSites(
                 inCanonical: SourceGuardSupport.canonicalSource(source, literals: .erase),
                 file: url.lastPathComponent
@@ -201,6 +234,11 @@ struct OpenURLCompletionMainActorTests {
             // `openURL(` — the `(` is the last character of the match.
             let openParen = canonical.index(before: call.upperBound)
             guard let closeParen = endOfParenGroup(canonical, openAt: openParen) else {
+                let unscannable =
+                    "<unscannable: openURL argument list contains syntax the source guard refuses to parse>"
+                sites.append(CallSite(
+                    file: file, occurrence: occurrence, raw: unscannable, hopsFirst: false
+                ))
                 continue
             }
             let afterCall = canonical.index(after: closeParen)
