@@ -2324,7 +2324,14 @@ class MLLMBatchGenerator:
             )
             homogeneous = requests[0].seed is None and all(
                 r.seed is None
-                and (r.temperature, r.top_p, r.min_p, r.top_k) == first_key
+                and (
+                    r.temperature,
+                    r.top_p,
+                    r.min_p,
+                    _effective_top_k(r.top_k, vocab_size),
+                    vocab_size,
+                )
+                == first_key
                 for r in requests
             )
             if homogeneous:

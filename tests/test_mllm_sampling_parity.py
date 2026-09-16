@@ -28,11 +28,11 @@ pytestmark = pytest.mark.requires_mlx
 
 import mlx.core as mx  # noqa: E402
 
-from vllm_mlx.mllm_batch_generator import (  # noqa: E402
+from rapid_mlx.mllm_batch_generator import (  # noqa: E402
     MLLMBatchGenerator,
     MLLMBatchRequest,
 )
-from vllm_mlx.mllm_scheduler import MLLMScheduler, MLLMSchedulerConfig  # noqa: E402
+from rapid_mlx.mllm_scheduler import MLLMScheduler, MLLMSchedulerConfig  # noqa: E402
 
 # ---------------------------------------------------------------------------
 # Fixtures (mirroring test_mllm_batch_generator.py's stubs)
@@ -153,10 +153,10 @@ class TestBatchSamplerSelection:
             return lambda x: mx.zeros((x.shape[0],), dtype=mx.uint32)
 
         monkeypatch.setattr(
-            "vllm_mlx.mllm_batch_generator.make_sampler", fake_make_sampler
+            "rapid_mlx.mllm_batch_generator.make_sampler", fake_make_sampler
         )
         monkeypatch.setattr(
-            "vllm_mlx.mllm_batch_generator.make_seeded_sampler",
+            "rapid_mlx.mllm_batch_generator.make_seeded_sampler",
             lambda **_kw: pytest.fail("unseeded batch must not build seeded samplers"),
         )
 
@@ -188,7 +188,7 @@ class TestBatchSamplerSelection:
             return lambda x: mx.zeros((x.shape[0],), dtype=mx.uint32)
 
         monkeypatch.setattr(
-            "vllm_mlx.mllm_batch_generator.make_sampler", fake_make_sampler
+            "rapid_mlx.mllm_batch_generator.make_sampler", fake_make_sampler
         )
 
         gen = _make_step_stub_generator()
@@ -204,8 +204,8 @@ class TestBatchSamplerSelection:
         )
 
         assert make_sampler_calls == [
-            {"temp": 0.7, "top_p": 0.9, "min_p": 0.05, "top_k": 0},
-            {"temp": 0.7, "top_p": 0.9, "min_p": 0.10, "top_k": 0},
+            {"temp": 0.7, "top_p": 0.9, "min_p": 0.05},
+            {"temp": 0.7, "top_p": 0.9, "min_p": 0.10},
         ]
         assert gen._shared_batch_sampler is None
 
@@ -230,7 +230,7 @@ class TestBatchSamplerSelection:
 
         # Equivalence at the normalisation layer: ``top_k >= vocab`` is
         # semantically "keep every token" — the disabled value.
-        from vllm_mlx.mllm_batch_generator import _effective_top_k
+        from rapid_mlx.mllm_batch_generator import _effective_top_k
 
         assert _effective_top_k(10**9, 8) == 0
         assert _effective_top_k(8, 8) == 0
@@ -248,7 +248,7 @@ class TestBatchSamplerSelection:
             return lambda x: mx.zeros((x.shape[0],), dtype=mx.uint32)
 
         monkeypatch.setattr(
-            "vllm_mlx.mllm_batch_generator.make_sampler", fake_make_sampler
+            "rapid_mlx.mllm_batch_generator.make_sampler", fake_make_sampler
         )
         gen = _make_step_stub_generator(vocab=8)
         requests = [_make_request(i, top_k=10**9) for i in range(3)]
@@ -258,9 +258,7 @@ class TestBatchSamplerSelection:
             cache=[],
             requests=requests,
         )
-        assert make_sampler_calls == [
-            {"temp": 0.7, "top_p": 0.9, "min_p": 0.0, "top_k": 0}
-        ]
+        assert make_sampler_calls == [{"temp": 0.7, "top_p": 0.9}]
         assert gen._shared_batch_sampler is not None
 
     def test_seeded_request_gets_private_samplers_per_row(self, monkeypatch):
@@ -278,10 +276,10 @@ class TestBatchSamplerSelection:
             return lambda x: mx.zeros((x.shape[0],), dtype=mx.uint32)
 
         monkeypatch.setattr(
-            "vllm_mlx.mllm_batch_generator.make_seeded_sampler", fake_make_seeded
+            "rapid_mlx.mllm_batch_generator.make_seeded_sampler", fake_make_seeded
         )
         monkeypatch.setattr(
-            "vllm_mlx.mllm_batch_generator.make_sampler", fake_make_sampler
+            "rapid_mlx.mllm_batch_generator.make_sampler", fake_make_sampler
         )
 
         gen = _make_step_stub_generator()
@@ -313,7 +311,7 @@ class TestBatchSamplerSelection:
             return _CountingSeededSampler(constructions)
 
         monkeypatch.setattr(
-            "vllm_mlx.mllm_batch_generator.make_seeded_sampler", fake_make_seeded
+            "rapid_mlx.mllm_batch_generator.make_seeded_sampler", fake_make_seeded
         )
 
         gen = _make_step_stub_generator()
@@ -344,7 +342,7 @@ class TestBatchSamplerSelection:
             cache_module, "make_prompt_cache", lambda _model: [_Cache()]
         )
         monkeypatch.setattr(
-            "vllm_mlx.mllm_batch_generator.first_incompatible_mllm_cache_type",
+            "rapid_mlx.mllm_batch_generator.first_incompatible_mllm_cache_type",
             lambda *_args, **_kwargs: None,
         )
 
@@ -354,7 +352,7 @@ class TestBatchSamplerSelection:
             return _CountingSeededSampler(constructions)
 
         monkeypatch.setattr(
-            "vllm_mlx.mllm_batch_generator.make_seeded_sampler", fake_make_seeded
+            "rapid_mlx.mllm_batch_generator.make_seeded_sampler", fake_make_seeded
         )
 
         class _Model:
@@ -402,7 +400,7 @@ class TestBatchSamplerSelection:
     def test_seeded_greedy_request_is_deterministic(self):
         """``temperature=0`` with a seed must return the argmax token on
         every draw (greedy short-circuit inside ``make_seeded_sampler``)."""
-        from vllm_mlx._seeded_sampler import make_seeded_sampler
+        from rapid_mlx._seeded_sampler import make_seeded_sampler
 
         sampler = make_seeded_sampler(seed=1234, temperature=0.0)
         logprobs = mx.log(mx.array([[0.1, 0.6, 0.3]]))
@@ -414,7 +412,7 @@ class TestBatchSamplerSelection:
         the same token stream (within-engine determinism contract)."""
 
         def run():
-            from vllm_mlx._seeded_sampler import make_seeded_sampler
+            from rapid_mlx._seeded_sampler import make_seeded_sampler
 
             sampler = make_seeded_sampler(seed=42, temperature=0.7, top_p=0.9, top_k=3)
             logprobs = mx.log(mx.array([[0.4, 0.3, 0.2, 0.1]]))
