@@ -401,6 +401,12 @@
                 ],
                 [
                   "mascot"
+                ],
+                [
+                  "tiger"
+                ],
+                [
+                  "cartoon"
                 ]
               ]
             ]
@@ -1696,6 +1702,15 @@
               ],
               [
                 "mode"
+              ],
+              [
+                "dot"
+              ],
+              [
+                "dots"
+              ],
+              [
+                "filled"
               ]
             ],
             "max_lines": 1,
@@ -1734,6 +1749,15 @@
                 ],
                 [
                   "button"
+                ],
+                [
+                  "dot"
+                ],
+                [
+                  "dots"
+                ],
+                [
+                  "filled"
                 ]
               ]
             ]
@@ -1933,6 +1957,18 @@
               [
                 [
                   "spinning"
+                ],
+                [
+                  "dot"
+                ],
+                [
+                  "dots"
+                ],
+                [
+                  "orange"
+                ],
+                [
+                  "green"
                 ]
               ]
             ]
@@ -2034,6 +2070,12 @@
                 ],
                 [
                   "screenshot"
+                ],
+                [
+                  "question"
+                ],
+                [
+                  "icon"
                 ]
               ]
             ]
