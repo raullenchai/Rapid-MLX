@@ -862,7 +862,7 @@ class MLLMBatchGenerator:
         self.stop_tokens = stop_tokens or set()
         self.sampler = sampler or (lambda x: mx.argmax(x, axis=-1))
         self._shared_batch_sampler: (
-            tuple[tuple[float, float, float, int], Callable] | None
+            tuple[tuple[float, float, float, int, int], Callable] | None
         ) = None
 
         self.prefill_batch_size = prefill_batch_size
