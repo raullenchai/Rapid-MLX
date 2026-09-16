@@ -5,6 +5,47 @@ import Testing
 @MainActor
 @Suite("Custom instructions")
 struct CustomInstructionsTests {
+    @Test("Personal Intelligence keeps custom instructions out of quoted context")
+    func personalIntelligenceSeparatesTrustedInstructions() throws {
+        let (defaults, name) = freshDefaults()
+        defer { defaults.removePersistentDomain(forName: name) }
+        let config = CustomInstructionsConfig(defaults: defaults)
+        config.global = "Always answer in Spanish."
+        let model = ChatViewModel(
+            customInstructions: config,
+            persistsConversations: false
+        )
+        model.setConversationInstructions("Keep answers concise.")
+        #expect(model.beginAgentTurn("Remember project Cedar", alias: "model") {})
+        model.completeAgentTurn("Understood.")
+
+        let instructions = try #require(model.personalIntelligenceTrustedInstructions())
+        let context = try #require(model.personalIntelligenceLocalContext())
+        #expect(instructions.contains("Always answer in Spanish."))
+        #expect(instructions.contains("Keep answers concise."))
+        #expect(!context.contains("Always answer in Spanish."))
+        #expect(!context.contains("Keep answers concise."))
+        #expect(context.contains("Remember project Cedar"))
+    }
+
+    @Test("Personal Intelligence instructions use the server's Unicode-scalar limit")
+    func personalIntelligenceInstructionWireLimit() throws {
+        let (defaults, name) = freshDefaults()
+        defer { defaults.removePersistentDomain(forName: name) }
+        let config = CustomInstructionsConfig(defaults: defaults)
+        config.global = String(repeating: "👨‍👩‍👧‍👦", count: 4_000)
+        let model = ChatViewModel(
+            customInstructions: config,
+            persistsConversations: false
+        )
+        model.setConversationInstructions("Conversation wins.")
+
+        let instructions = try #require(model.personalIntelligenceTrustedInstructions())
+        #expect(instructions.unicodeScalars.count <= 8_192)
+        #expect(instructions.contains("Conversation wins."))
+        #expect(instructions.contains("</conversation_instructions>"))
+    }
+
     private static func source(_ relativePath: String) throws -> String {
         let root = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()

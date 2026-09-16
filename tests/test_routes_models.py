@@ -26,6 +26,8 @@ the openai client see in production.
 
 from __future__ import annotations
 
+import inspect
+
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -324,6 +326,82 @@ def test_model_info_exposes_live_serving_lane_reason(monkeypatch):
 
     assert info.serving_lane == "text"
     assert info.serving_lane_reason == "vision_hybrid_runtime_unsupported"
+
+
+def test_model_info_exposes_only_qualified_personal_intelligence_harnesses():
+    """Tool support and Personal Intelligence qualification are distinct."""
+    from vllm_mlx.config import get_config
+    from vllm_mlx.routes import models as models_route
+
+    cfg = get_config()
+    saved = {
+        key: getattr(cfg, key, None)
+        for key in (
+            "model_name",
+            "model_path",
+            "model_alias",
+            "model_registry",
+            "tool_call_parser",
+        )
+    }
+    try:
+        cfg.model_registry = None
+        for alias, repository, parser, profile, qualification in (
+            (
+                "minicpm5-2b-4bit",
+                "openbmb/MiniCPM5-2B-MLX",
+                "minicpm",
+                "minicpm5-2b",
+                "minicpm5-2b-q4-v1",
+            ),
+            (
+                "qwen3.5-4b-4bit",
+                "mlx-community/Qwen3.5-4B-MLX-4bit",
+                "hermes",
+                "qwen3.5-4b",
+                "qwen3.5-4b-q4-v1",
+            ),
+            (
+                "qwen3.5-9b-4bit",
+                "mlx-community/Qwen3.5-9B-4bit",
+                "hermes",
+                "qwen3.5-9b",
+                "qwen3.5-9b-q4-v1",
+            ),
+        ):
+            cfg.model_name = repository
+            cfg.model_path = repository
+            cfg.model_alias = alias
+            cfg.tool_call_parser = parser
+            info = models_route._build_model_info(alias)
+            assert info.personal_intelligence_profile == profile
+            assert info.personal_intelligence_qualification == qualification
+
+        assert (
+            models_route._build_model_info(
+                "gemma-4-e2b-4bit"
+            ).personal_intelligence_profile
+            is None
+        )
+
+        class BrokenRegistry:
+            def get_entry(self, _model_id):
+                caller = inspect.currentframe().f_back
+                if caller is not None and caller.f_code.co_name == "_build_model_info":
+                    raise RuntimeError("corrupt registry")
+                return None
+
+        cfg.model_registry = BrokenRegistry()
+        cfg.model_name = "mlx-community/Qwen3.5-4B-MLX-4bit"
+        cfg.model_path = cfg.model_name
+        cfg.model_alias = "qwen3.5-4b-4bit"
+        cfg.tool_call_parser = "hermes"
+        broken = models_route._build_model_info(cfg.model_alias)
+        assert broken.personal_intelligence_profile is None
+        assert broken.personal_intelligence_qualification is None
+    finally:
+        for key, value in saved.items():
+            setattr(cfg, key, value)
 
 
 def test_build_model_info_prefers_live_hybrid_probe(monkeypatch):

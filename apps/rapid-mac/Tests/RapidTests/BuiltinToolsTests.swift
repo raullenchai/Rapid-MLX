@@ -52,6 +52,7 @@ final class BuiltinToolsTests {
         #expect(result.content.contains("web_search"))
         #expect(result.content.contains("browse"))
         #expect(result.content.contains("weather"))
+        #expect(!result.executed)
     }
 
     @Test("Registry stamps the call id onto a result the tool produced without one")
@@ -179,6 +180,55 @@ final class BuiltinToolsTests {
     func unsetToolDefaultsToEnabled() {
         let vm = ChatViewModel(tools: makeRegistry(), toolDefaults: freshDefaults())
         #expect(vm.disabledTools.isEmpty)
+    }
+
+    @Test("Personal Intelligence projects only enabled live-data built-ins")
+    func personalIntelligenceToolProjection() {
+        let vm = ChatViewModel(tools: makeRegistry(), toolDefaults: freshDefaults())
+        #expect(vm.personalIntelligenceDefinitions.map { $0.function.name } == [
+            "web_search", "browse", "weather",
+        ])
+
+        vm.setToolEnabled("browse", false)
+        #expect(vm.personalIntelligenceDefinitions.map { $0.function.name } == [
+            "web_search", "weather",
+        ])
+    }
+
+    @Test("Personal Intelligence refuses invalid arguments before dispatch")
+    func personalIntelligenceRejectsInvalidArguments() async throws {
+        let vm = ChatViewModel(tools: makeRegistry(), toolDefaults: freshDefaults())
+        let action = try JSONDecoder().decode(
+            AgentPendingAction.self,
+            from: Data(#"{"call_id":"bad","name":"weather","arguments":{},"approval_summary":null,"risk":"read_only","approval_required":false}"#.utf8)
+        )
+
+        let result = await vm.executePersonalIntelligenceTool(
+            action,
+            advertised: vm.personalIntelligenceDefinitions
+        )
+
+        #expect(result.isError)
+        #expect(!result.executed)
+        #expect(result.content.contains("location"))
+    }
+
+    @Test("Personal Intelligence records a declined browse as unexecuted")
+    func personalIntelligenceRecordsDeclinedBrowse() async throws {
+        let registry = DeclinedBrowseRegistry()
+        let vm = ChatViewModel(tools: registry, toolDefaults: freshDefaults())
+        let action = try JSONDecoder().decode(
+            AgentPendingAction.self,
+            from: Data(#"{"call_id":"declined","name":"browse","arguments":{"url":"https://example.com"},"approval_summary":null,"risk":"read_only","approval_required":false}"#.utf8)
+        )
+
+        let result = await vm.executePersonalIntelligenceTool(
+            action,
+            advertised: registry.definitions
+        )
+
+        #expect(result.isError)
+        #expect(!result.executed)
     }
 
     // MARK: - Dispatch refusal
@@ -328,6 +378,21 @@ final class BuiltinToolsTests {
         #expect(stamped.count == turn.count)
         #expect(stamped.map(\.role) == turn.map(\.role))
         #expect(stamped.filter { $0.role == .system } == turn.filter { $0.role == .system })
+    }
+}
+
+@MainActor
+private final class DeclinedBrowseRegistry: ToolRegistry {
+    let definitions = [BrowseTool.definition]
+
+    func run(_ call: ToolCall) async -> ToolCallResult {
+        ToolCallResult(
+            toolCallID: call.id,
+            content: "User declined to open this page.",
+            isError: true,
+            failureKind: .userDeclined,
+            executed: false
+        )
     }
 }
 

@@ -6,6 +6,8 @@ protocol AgentRuntimeTransport: Sendable {
         goal: String,
         model: String?,
         toolNames: [String]?,
+        trustedInstructions: String?,
+        localContext: String?,
         execution: AgentExecutionMode,
         bearerToken: String?
     ) async throws -> AgentRunView
@@ -29,12 +31,98 @@ protocol AgentRuntimeTransport: Sendable {
     func cancel(runID: String, bearerToken: String?) async throws -> AgentRunView
 }
 
-enum AgentRuntimeFeatureConfig {
-    static let enabledKey = "Rapid.experimental.agentRuntimeEnabled"
-    static let defaultEnabled = false
+enum PersonalIntelligenceConfig {
+    static let introductionCompletedKey =
+        "Rapid.personalIntelligence.introductionCompleted"
+    static let preferredEnabledKey = "Rapid.personalIntelligence.preferredEnabled"
+    static let conversationStatesKey = "Rapid.personalIntelligence.conversationStates"
+    static let defaultPreferredEnabled = true
 
-    static func isEnabled(in defaults: UserDefaults = .standard) -> Bool {
-        defaults.object(forKey: enabledKey) as? Bool ?? defaultEnabled
+    /// Accept only the server's exact live model → harness binding. Tool-call
+    /// support is deliberately insufficient, and a stale profile for the
+    /// previously selected model must not enable this one.
+    static func harnessProfile(
+        for alias: String,
+        serverProfile: ServerModelProfile?
+    ) -> String? {
+        guard let serverProfile,
+              serverProfile.id == alias,
+              let parser = serverProfile.toolCallParser?
+                  .trimmingCharacters(in: .whitespacesAndNewlines),
+              !parser.isEmpty,
+              let harness = serverProfile.personalIntelligenceProfile?
+                  .trimmingCharacters(in: .whitespacesAndNewlines),
+              !harness.isEmpty,
+              let qualification = serverProfile.personalIntelligenceQualification?
+                  .trimmingCharacters(in: .whitespacesAndNewlines),
+              !qualification.isEmpty else { return nil }
+        return harness
+    }
+
+    static func supportsModel(
+        _ alias: String,
+        serverProfile: ServerModelProfile?
+    ) -> Bool {
+        harnessProfile(for: alias, serverProfile: serverProfile) != nil
+    }
+
+    static func isEnabled(
+        conversationEnabled: Bool,
+        alias: String,
+        serverProfile: ServerModelProfile?
+    ) -> Bool {
+        conversationEnabled && supportsModel(alias, serverProfile: serverProfile)
+    }
+
+    static func loadConversationStates(
+        from defaults: UserDefaults = .standard
+    ) -> [UUID: Bool] {
+        guard let stored = defaults.dictionary(forKey: conversationStatesKey) else {
+            return [:]
+        }
+        return stored.reduce(into: [:]) { result, entry in
+            guard let id = UUID(uuidString: entry.key), let enabled = entry.value as? Bool else {
+                return
+            }
+            result[id] = enabled
+        }
+    }
+
+    static func saveConversationStates(
+        _ states: [UUID: Bool],
+        to defaults: UserDefaults = .standard
+    ) {
+        defaults.set(
+            Dictionary(uniqueKeysWithValues: states.map { ($0.key.uuidString, $0.value) }),
+            forKey: conversationStatesKey
+        )
+    }
+
+    static func reconciledConversationStates(
+        _ states: [UUID: Bool],
+        activeConversationID: UUID,
+        storedConversationIDs: Set<UUID>,
+        newlyCreatedConversationIDs: Set<UUID> = [],
+        introductionCompleted: Bool,
+        preferredEnabled: Bool
+    ) -> [UUID: Bool] {
+        let retainedIDs = storedConversationIDs.union([activeConversationID])
+        var result = states.filter { retainedIDs.contains($0.key) }
+
+        // Previously saved conversations must not be retroactively opted in
+        // when the user accepts the introduction. Only a genuinely new draft
+        // inherits the default preference.
+        for id in storedConversationIDs where result[id] == nil {
+            result[id] = newlyCreatedConversationIDs.contains(id)
+                ? introductionCompleted && preferredEnabled
+                : false
+        }
+        if result[activeConversationID] == nil {
+            result[activeConversationID] = storedConversationIDs.contains(activeConversationID)
+                ? false
+                : introductionCompleted && preferredEnabled
+        }
+        return result
     }
 }
 
@@ -103,6 +191,7 @@ struct AgentRunView: Codable, Equatable, Sendable {
     let id: String
     let model: String
     let profile: String
+    let personalIntelligenceQualification: String?
     let status: AgentRunStatus
     let modelTurns: Int
     let toolRounds: Int
@@ -113,6 +202,7 @@ struct AgentRunView: Codable, Equatable, Sendable {
 
     enum CodingKeys: String, CodingKey {
         case id, model, profile, status
+        case personalIntelligenceQualification = "personal_intelligence_qualification"
         case modelTurns = "model_turns"
         case toolRounds = "tool_rounds"
         case finalSynthesis = "final_synthesis"
@@ -159,6 +249,9 @@ enum AgentRuntimeClientError: Error, Equatable, LocalizedError {
     case invalidResponse
     case http(status: Int, message: String)
     case malformedResponse
+    case harnessProfileMismatch(expected: String, received: String)
+    case modelBindingMismatch(expected: String, received: String)
+    case qualificationMismatch(expected: String, received: String?)
 
     var errorDescription: String? {
         switch self {
@@ -170,6 +263,12 @@ enum AgentRuntimeClientError: Error, Equatable, LocalizedError {
             message
         case .malformedResponse:
             "The Rapid Agent Runtime returned an unreadable response."
+        case .harnessProfileMismatch(let expected, let received):
+            "Personal Intelligence expected the \(expected) harness, but the server returned \(received). Update Rapid-MLX and try again."
+        case .modelBindingMismatch(let expected, let received):
+            "Personal Intelligence expected \(expected), but the server started \(received). The mismatched run was stopped; refresh the model and try again."
+        case .qualificationMismatch(let expected, let received):
+            "Personal Intelligence expected qualification \(expected), but the server returned \(received ?? "none"). The mismatched run was stopped; update Rapid-MLX and try again."
         }
     }
 }
@@ -184,11 +283,15 @@ final class AgentRuntimeClient: Sendable {
         let goal: String
         let model: String?
         let toolNames: [String]?
+        let trustedInstructions: String?
+        let localContext: String?
         let execution: AgentExecutionMode
 
         enum CodingKeys: String, CodingKey {
             case goal, model
             case toolNames = "tool_names"
+            case trustedInstructions = "trusted_instructions"
+            case localContext = "local_context"
             case execution
         }
     }
@@ -239,6 +342,8 @@ final class AgentRuntimeClient: Sendable {
         goal: String,
         model: String? = nil,
         toolNames: [String]? = nil,
+        trustedInstructions: String? = nil,
+        localContext: String? = nil,
         execution: AgentExecutionMode,
         bearerToken: String? = nil
     ) async throws -> AgentRunView {
@@ -250,6 +355,8 @@ final class AgentRuntimeClient: Sendable {
                 goal: goal,
                 model: model,
                 toolNames: toolNames,
+                trustedInstructions: trustedInstructions,
+                localContext: localContext,
                 execution: execution
             )
         )
