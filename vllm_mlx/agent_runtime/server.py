@@ -319,7 +319,10 @@ def _requested_sentence_count(goal: str) -> int | None:
 
 
 def _observed_sentence_count(content: str) -> int:
-    return len(re.findall(r"(?<!\d)[.!?。！？](?=\s|$)", content.strip()))
+    # The whitespace/end lookahead already excludes decimal separators because
+    # a decimal point is followed by another digit. Do not reject punctuation
+    # merely because the sentence itself ends in an integer ("It is 42.").
+    return len(re.findall(r"[.!?。！？](?=\s|$)", content.strip()))
 
 
 def _format_retry_instruction(
@@ -336,10 +339,11 @@ def _format_retry_instruction(
         and _WEB_URL.search(turn.content) is None
     ):
         return (
-            "Rewrite the answer using only this shape: <requested value> — "
-            "<exact source URL>. Copy the most specific canonical URL from the "
-            "tool evidence already provided; do not use a broader index URL, "
-            "invent a URL, or add explanatory text."
+            "Revise the answer to include the most specific canonical HTTP(S) "
+            "URL from the tool evidence already provided. Preserve every other "
+            "requested content and format constraint and all existing facts. "
+            "Do not use a broader index URL or invent a URL; output only the "
+            "corrected answer."
         )
     expected = _requested_sentence_count(goal)
     if expected is None:
@@ -383,12 +387,24 @@ def _has_browse_observation(messages: Sequence[dict[str, Any]]) -> bool:
         and isinstance(call.get("id"), str)
         and call.get("function", {}).get("name") == "browse"
     }
-    return any(
-        message.get("role") == "tool"
-        and message.get("tool_call_id") in browse_call_ids
-        and isinstance(message.get("content"), str)
-        for message in messages
-    )
+    for message in messages:
+        content = message.get("content")
+        if (
+            message.get("role") != "tool"
+            or message.get("tool_call_id") not in browse_call_ids
+            or not isinstance(content, str)
+        ):
+            continue
+        # A denial, network error, or empty page is still a tool observation,
+        # but it is not citation evidence. Only enable repair when the matching
+        # browse result actually carries a usable HTTP(S) URL.
+        if _WEB_INLINE_URL.search(
+            content
+        ) is not None and not content.lstrip().lower().startswith(
+            ("browse error:", "client tool was not executed")
+        ):
+            return True
+    return False
 
 
 def _repair_version_source_output(

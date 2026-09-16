@@ -31,6 +31,7 @@ from vllm_mlx.agent_runtime.server import (
     _chat_tool_choice,
     _evaluate_arithmetic,
     _format_retry_instruction,
+    _has_browse_observation,
     _planned_weather_arguments,
     _remove_trailing_count_artifact,
     _repair_version_source_output,
@@ -379,6 +380,13 @@ def test_explicit_sentence_count_gets_one_bounded_correction():
     )
     assert (
         _format_retry_instruction(
+            "Write exactly two sentences.",
+            AgentModelTurn(content="The answer is 42. Done."),
+        )
+        is None
+    )
+    assert (
+        _format_retry_instruction(
             "Summarize these two sentences: Alpha. Beta.",
             AgentModelTurn(content="Summary."),
         )
@@ -393,8 +401,8 @@ def test_explicit_source_url_gets_one_bounded_correction_when_omitted():
         source_evidence_available=True,
     )
     assert retry is not None
-    assert "<exact source URL>" in retry
-    assert "most specific canonical URL" in retry
+    assert "Preserve every other requested content and format constraint" in retry
+    assert "most specific canonical HTTP(S) URL" in retry
     assert "invent a URL" in retry
     assert (
         _format_retry_instruction(
@@ -403,6 +411,51 @@ def test_explicit_source_url_gets_one_bounded_correction_when_omitted():
             source_evidence_available=True,
         )
         is not None
+    )
+
+
+def test_citation_retry_requires_usable_browse_url_evidence():
+    call = {
+        "role": "assistant",
+        "tool_calls": [
+            {
+                "id": "browse_1",
+                "function": {
+                    "name": "browse",
+                    "arguments": '{"url":"https://example.com/article"}',
+                },
+            }
+        ],
+    }
+    assert not _has_browse_observation(
+        [
+            call,
+            {
+                "role": "tool",
+                "tool_call_id": "browse_1",
+                "content": "Client tool was not executed.",
+            },
+        ]
+    )
+    assert not _has_browse_observation(
+        [
+            call,
+            {
+                "role": "tool",
+                "tool_call_id": "browse_1",
+                "content": "browse error: request failed",
+            },
+        ]
+    )
+    assert _has_browse_observation(
+        [
+            call,
+            {
+                "role": "tool",
+                "tool_call_id": "browse_1",
+                "content": ("Article content. Source: https://example.com/article"),
+            },
+        ]
     )
     assert (
         _format_retry_instruction(

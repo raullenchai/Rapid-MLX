@@ -197,7 +197,7 @@ def _format_valid(task: Task, output: str) -> bool:
         return normalize_em_dash(stripped) == normalize_em_dash(task.exact_output)
     if task.id == "context_recall":
         return stripped.casefold() == "juniper"
-    sentence_endings = re.findall(r"(?<!\d)[.!?。！？](?=\s|$)", stripped)
+    sentence_endings = re.findall(r"[.!?。！？](?=\s|$)", stripped)
     ends_with_terminator = bool(stripped) and stripped[-1] in ".!?。！？"
     if task.id == "tool_restraint":
         return len(sentence_endings) == 2 and ends_with_terminator
