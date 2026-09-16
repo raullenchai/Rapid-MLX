@@ -55,7 +55,7 @@ struct OpenURLCompletionMainActorTests {
     /// rather than hops, so on the open-queue it traps with the very
     /// signature this guard exists to prevent.
     private static let mainActorHops = [
-        "Task{@MainActor",
+        "Task{@MainActorin",
         "DispatchQueue.main.async{",
     ]
 
@@ -174,6 +174,12 @@ struct OpenURLCompletionMainActorTests {
             file: "fixture.swift"
         )
         #expect(falsePrefix.first?.hopsFirst == false)
+
+        let falseGlobalActor = Self.openURLCompletionSites(
+            inCanonical: "openURL(url){acceptedinTask{@MainActorFooin}}",
+            file: "fixture.swift"
+        )
+        #expect(falseGlobalActor.first?.hopsFirst == false)
 
         let escapedMutation = Self.openURLCompletionSites(
             inCanonical:
