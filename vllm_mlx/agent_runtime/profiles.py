@@ -181,7 +181,7 @@ def _qualification_index() -> dict[str, PersonalIntelligenceQualification]:
         for identity in qualification.public_identities:
             normalized = _normalize_identity(identity)
             if normalized in result:
-                raise RuntimeError(
+                raise RuntimeError(  # pragma: no cover - import-time invariant
                     f"duplicate Personal Intelligence identity: {identity}"
                 )
             result[normalized] = qualification
@@ -390,5 +390,5 @@ def resolve_personal_intelligence_qualification(
         tool_call_parser=tool_call_parser,
     )
     if profile.name != qualification.profile.name:
-        return None
+        return None  # pragma: no cover - qualification/profile table invariant
     return qualification

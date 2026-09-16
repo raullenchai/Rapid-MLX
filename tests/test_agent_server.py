@@ -3,6 +3,7 @@
 import asyncio
 import json
 from collections.abc import Sequence
+from types import SimpleNamespace
 
 import pytest
 from pydantic import ValidationError
@@ -16,6 +17,7 @@ from vllm_mlx.agent_runtime import (
     ToolSpec,
     resolve_agent_profile,
 )
+from vllm_mlx.agent_runtime import server as agent_server
 from vllm_mlx.agent_runtime.server import (
     _MULTI_SOURCE_INTENT,
     AgentApprovalRequest,
@@ -666,6 +668,219 @@ def test_multiple_weather_targets_are_planned_individually():
     assert _planned_weather_requests(
         "Compare the weather in Springfield, IL, and Boston"
     ) == ({"location": "Springfield, IL"}, {"location": "Boston"})
+
+
+def test_personal_intelligence_defensive_planning_branches():
+    """Malformed history and exhausted plans fail closed without model-visible noise."""
+
+    call = AgentToolCall(id="call", name="weather", arguments={"location": "Paris"})
+    assert (
+        _format_retry_instruction(
+            "Write exactly one sentence.", AgentModelTurn(tool_calls=[call])
+        )
+        is None
+    )
+    original = AgentModelTurn(content="One.\n3")
+    assert _remove_trailing_count_artifact("Write two sentences.", original) == original
+    incomplete = AgentModelTurn(content="One\n2")
+    assert (
+        _remove_trailing_count_artifact("Write two sentences.", incomplete)
+        == incomplete
+    )
+
+    assert _planned_weather_requests("Weather in ?") == ()
+    assert _planned_weather_requests("Weather in Paris in Fahrenheit") == (
+        {"location": "Paris", "units": "imperial"},
+    )
+    lfm = resolve_agent_profile(
+        "mlx-community/LFM2.5-1.2B-Instruct-4bit",
+        tool_call_parser="lfm2",
+    )
+    assert agent_server._system_prompt_for(lfm) == agent_server._LFM_SMALL_SYSTEM_PROMPT
+
+    malformed_messages = [
+        {
+            "tool_calls": [
+                "not-a-call",
+                {"function": {"arguments": {}}},
+                {"function": {"name": "weather", "arguments": "{"}},
+                {"function": {"name": "weather", "arguments": []}},
+            ]
+        }
+    ]
+    entry = SimpleNamespace(
+        messages=malformed_messages,
+        run=SimpleNamespace(goal="Weather in Paris"),
+        settings=SimpleNamespace(execution="client"),
+    )
+    assert AgentServerService._called_desktop_arguments(entry) == {}
+
+    browse_entry = SimpleNamespace(
+        messages=[
+            {
+                "tool_calls": [
+                    {
+                        "function": {
+                            "name": "browse",
+                            "arguments": "{",
+                        }
+                    }
+                ]
+            }
+        ],
+        run=SimpleNamespace(goal="Open the result"),
+        settings=SimpleNamespace(execution="client"),
+    )
+    assert AgentServerService._planned_browse_arguments(browse_entry) is None
+
+    weather = ToolSpec(
+        name="weather", description="Weather", parameters={}, risk=ToolRisk.READ_ONLY
+    )
+    search = ToolSpec(
+        name="web_search", description="Search", parameters={}, risk=ToolRisk.READ_ONLY
+    )
+    browse = ToolSpec(
+        name="browse", description="Browse", parameters={}, risk=ToolRisk.READ_ONLY
+    )
+    exhausted_weather = SimpleNamespace(
+        messages=[
+            {
+                "tool_calls": [
+                    {
+                        "function": {
+                            "name": "weather",
+                            "arguments": '{"location":"Paris"}',
+                        }
+                    }
+                ]
+            }
+        ],
+        run=SimpleNamespace(goal="Weather in Paris"),
+        settings=SimpleNamespace(execution="client"),
+    )
+    assert (
+        AgentServerService._planned_desktop_turn(exhausted_weather, [weather]) is None
+    )
+    no_query = SimpleNamespace(
+        messages=[],
+        run=SimpleNamespace(goal="Hello"),
+        settings=SimpleNamespace(execution="client"),
+    )
+    assert AgentServerService._planned_desktop_turn(no_query, [search]) is None
+    assert AgentServerService._planned_desktop_turn(no_query, [browse]) is None
+
+    exact_goal = (
+        "Reply with only the release version, an em dash, and its canonical URL; "
+        "output nothing else."
+    )
+    malformed_browse_history = [
+        {
+            "tool_calls": [
+                "not-a-call",
+                {"function": {"name": "other", "arguments": {}}},
+                {"function": {"name": "browse", "arguments": "{"}},
+                {"function": {"name": "browse", "arguments": []}},
+            ]
+        }
+    ]
+    multi_version = AgentModelTurn(content="Versions 0.14.2 and 0.14.3")
+    assert (
+        _repair_version_source_output(
+            exact_goal, malformed_browse_history, multi_version
+        )
+        == multi_version
+    )
+    single_version = AgentModelTurn(content="Version 0.14.2")
+    assert (
+        _repair_version_source_output(
+            exact_goal, malformed_browse_history, single_version
+        )
+        == single_version
+    )
+
+    detailed_url = "https://example.com/releases/v0.14.2/details"
+    repaired = _repair_version_source_output(
+        exact_goal,
+        [
+            {
+                "tool_calls": [
+                    {
+                        "id": "browse-detail",
+                        "function": {
+                            "name": "browse",
+                            "arguments": '{"url":"https://example.com/releases"}',
+                        },
+                    }
+                ]
+            },
+            {
+                "role": "tool",
+                "tool_call_id": "browse-detail",
+                "content": detailed_url,
+            },
+        ],
+        single_version,
+    )
+    assert repaired.content == f"0.14.2 — {detailed_url}"
+
+    def ranked_browse_entry(*, browsed: list[str], goal: str):
+        search_id = "search"
+        urls = [
+            "https://example.com/one",
+            "https://example.com/two",
+            "https://example.com/three",
+            "https://example.com/four",
+        ]
+        calls = [
+            {
+                "id": search_id,
+                "function": {"name": "web_search", "arguments": "{}"},
+            },
+            *[
+                {
+                    "id": f"browse-{index}",
+                    "function": {
+                        "name": "browse",
+                        "arguments": json.dumps({"url": url}),
+                    },
+                }
+                for index, url in enumerate(browsed)
+            ],
+        ]
+        return SimpleNamespace(
+            messages=[
+                {"tool_calls": calls},
+                {
+                    "role": "tool",
+                    "tool_call_id": search_id,
+                    "content": "\n".join(urls),
+                },
+            ],
+            run=SimpleNamespace(goal=goal),
+            settings=SimpleNamespace(execution="client", local_context=""),
+        )
+
+    assert (
+        AgentServerService._planned_browse_arguments(
+            ranked_browse_entry(
+                browsed=["https://example.com/one"], goal="Find the release"
+            )
+        )
+        is None
+    )
+    assert (
+        AgentServerService._planned_browse_arguments(
+            ranked_browse_entry(
+                browsed=[
+                    "https://example.com/one",
+                    "https://example.com/two",
+                    "https://example.com/three",
+                ],
+                goal="Compare multiple sources",
+            )
+        )
+        is None
+    )
 
 
 def test_web_search_query_excludes_unrelated_prompt_context():

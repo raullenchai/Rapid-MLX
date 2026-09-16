@@ -26,6 +26,8 @@ the openai client see in production.
 
 from __future__ import annotations
 
+import inspect
+
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -381,6 +383,22 @@ def test_model_info_exposes_only_qualified_personal_intelligence_harnesses():
             ).personal_intelligence_profile
             is None
         )
+
+        class BrokenRegistry:
+            def get_entry(self, _model_id):
+                caller = inspect.currentframe().f_back
+                if caller is not None and caller.f_code.co_name == "_build_model_info":
+                    raise RuntimeError("corrupt registry")
+                return None
+
+        cfg.model_registry = BrokenRegistry()
+        cfg.model_name = "mlx-community/Qwen3.5-4B-MLX-4bit"
+        cfg.model_path = cfg.model_name
+        cfg.model_alias = "qwen3.5-4b-4bit"
+        cfg.tool_call_parser = "hermes"
+        broken = models_route._build_model_info(cfg.model_alias)
+        assert broken.personal_intelligence_profile is None
+        assert broken.personal_intelligence_qualification is None
     finally:
         for key, value in saved.items():
             setattr(cfg, key, value)

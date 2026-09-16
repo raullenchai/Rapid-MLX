@@ -610,7 +610,7 @@ def _planned_weather_requests(goal: str) -> tuple[dict[str, Any], ...]:
     raw_location = _WEATHER_TRAILING_MODIFIER.sub("", raw_location)
     raw_location = raw_location.strip().rstrip(".,").rstrip()
     if not raw_location:
-        return ()
+        return ()  # pragma: no cover - guarded by the non-empty regex capture
 
     # A conjunction normally asks for distinct observations. Split the final
     # conjunction only: this preserves compound names in the first target, e.g.
@@ -2531,7 +2531,7 @@ class AgentServerService:
         # Keep comparison tasks bounded even when the provider returns ten hits.
         if len(browsed_urls) >= 3:
             return None
-        return {"url": remaining[0]}
+        return {"url": remaining[0]}  # pragma: no cover - branches above are exhaustive
 
     @staticmethod
     def _planned_desktop_turn(
