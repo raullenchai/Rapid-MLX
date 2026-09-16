@@ -510,12 +510,28 @@ async def _main() -> None:
                     for sample in auto_samples
                     if sample["send"] == send
                 }
-                if not off_hashes or not auto_hashes or off_hashes != auto_hashes:
+                if (
+                    len(off_hashes) != 1
+                    or len(auto_hashes) != 1
+                    or off_hashes != auto_hashes
+                ):
                     exact = False
             per_case_exact[case_id] = exact
         result["exact_by_case"] = per_case_exact
         result["exact_cases"] = sum(per_case_exact.values())
         result["total_cases"] = len(per_case_exact)
+        result["checker_failures"] = [
+            {
+                "phase": phase,
+                "case": case_id,
+                "send": sample["send"],
+                "pair": sample["pair"],
+            }
+            for phase in ("off", "auto")
+            for case_id, samples in result["phases"][phase]["per_case"].items()
+            for sample in samples
+            if not sample["checker_pass"]
+        ]
 
         # The candidate phase must actually have taken the fast path, and the
         # baseline must never have: an eligibility regression would otherwise
@@ -576,6 +592,7 @@ async def _main() -> None:
             "exact_by_case",
             "exact_cases",
             "total_cases",
+            "checker_failures",
             "fastpath_engaged",
             "apc_hits",
             "warm_qualified",
@@ -595,6 +612,8 @@ async def _main() -> None:
     print(format_bench_json(payload, Path(__file__)))
     if result.get("exact_cases", 0) != result.get("total_cases", 0):
         raise SystemExit(1)
+    if result.get("checker_failures"):
+        raise SystemExit(4)
     if args.pairs > 0 and not result.get("fastpath_engaged", False):
         raise SystemExit(2)
     if args.pairs > 0 and not result.get("warm_qualified", True):

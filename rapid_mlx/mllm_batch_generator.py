@@ -530,7 +530,10 @@ def _singleton_regular_cache_leaves(
     still pays the merge — that exclusion is deliberate until the dense
     merge/extract lifecycle around plain mlx-lm leaves is qualified.
     """
-    if not caches:
+    # This optimization is qualified only for the serialized hybrid lane.
+    # Dense/continuous lanes may be momentarily B=1 and then admit another
+    # request, which would require promoting this layout mid-generation.
+    if not allow_arrays_cache or not caches:
         return False
     try:
         from mlx_vlm.models.cache import ArraysCache, KVCache
@@ -562,8 +565,19 @@ def _extract_detached_singleton_leaf(leaf: Any, idx: int) -> Any:
     """
     from mlx_vlm.models.cache import ArraysCache, KVCache
 
-    if isinstance(leaf, ArraysCache):
-        detached = ArraysCache(len(leaf.cache))
+    arrays_types: tuple[type, ...] = (ArraysCache,)
+    kv_types: tuple[type, ...] = (KVCache,)
+    try:
+        from mlx_lm.models.cache import ArraysCache as LMArraysCache
+        from mlx_lm.models.cache import KVCache as LMKVCache
+
+        arrays_types += (LMArraysCache,)
+        kv_types += (LMKVCache,)
+    except ImportError:
+        pass
+
+    if type(leaf) in arrays_types:
+        detached = type(leaf)(len(leaf.cache))
         detached.cache = [
             None if state is None else mx.contiguous(state[idx : idx + 1])
             for state in leaf.cache
@@ -581,7 +595,11 @@ def _extract_detached_singleton_leaf(leaf: Any, idx: int) -> Any:
             mx.eval(*materialized)
         return detached
 
-    detached = KVCache()
+    if type(leaf) not in kv_types:
+        raise TypeError(
+            f"unsupported singleton-regular cache leaf: {type(leaf).__name__}"
+        )
+    detached = type(leaf)()
     if getattr(leaf, "keys", None) is not None:
         # Trim to ``offset`` exactly like ``KVCache.extract`` and the LLM-lane
         # singleton copy do: upstream KVCache slab-allocates in fixed steps, so
@@ -2316,6 +2334,9 @@ class MLLMBatchGenerator:
             len(requests) == 1
             and len(per_request_caches) == 1
             and self.singleton_fastpath == "auto"
+            and self.allow_arrays_cache
+            and self.prefill_batch_size == 1
+            and self.completion_batch_size == 1
             and _singleton_regular_cache_leaves(
                 per_request_caches[0], self.allow_arrays_cache
             )

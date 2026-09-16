@@ -23,15 +23,15 @@ pytestmark = pytest.mark.requires_mlx
 
 import mlx.core as mx  # noqa: E402
 
-from vllm_mlx.mllm_batch_generator import (  # noqa: E402
+from rapid_mlx.mllm_batch_generator import (  # noqa: E402
     MLLMBatch,
     MLLMBatchGenerator,
     MLLMBatchRequest,
     MLLMBatchStats,
     _singleton_regular_cache_leaves,
 )
-from vllm_mlx.mllm_scheduler import MLLMSchedulerConfig  # noqa: E402
-from vllm_mlx.scheduler import SchedulerConfig  # noqa: E402
+from rapid_mlx.mllm_scheduler import MLLMSchedulerConfig  # noqa: E402
+from rapid_mlx.scheduler import SchedulerConfig  # noqa: E402
 
 VOCAB = 8
 
@@ -76,11 +76,39 @@ def _kv_leaves(n_layers: int = 2):
     return leaves
 
 
+def _lm_arrays_leaves(n_layers: int = 2, n_state: int = 2):
+    """Populated regular mlx-lm ArraysCache leaves (one per layer)."""
+    from mlx_lm.models.cache import ArraysCache
+
+    leaves = []
+    for _ in range(n_layers):
+        leaf = ArraysCache(n_state)
+        leaf.cache = [mx.ones((1, 2, 3)), mx.ones((1, 2, 3)) * 2]
+        leaves.append(leaf)
+    return leaves
+
+
+def _lm_kv_leaves(n_layers: int = 2):
+    """Populated regular mlx-lm KVCache leaves (one per layer)."""
+    from mlx_lm.models.cache import KVCache
+
+    leaves = []
+    for _ in range(n_layers):
+        leaf = KVCache()
+        leaf.keys = mx.ones((1, 2, 5, 4))
+        leaf.values = mx.ones((1, 2, 5, 4)) * 3
+        leaf.offset = 5
+        leaves.append(leaf)
+    return leaves
+
+
 def _stub_generator(leaves, singleton_fastpath: str = "auto"):
     gen = MLLMBatchGenerator.__new__(MLLMBatchGenerator)
     gen._stats = MLLMBatchStats()
     gen._stream = mx.default_stream(mx.cpu)
     gen.allow_arrays_cache = True
+    gen.prefill_batch_size = 1
+    gen.completion_batch_size = 1
     gen.singleton_fastpath = singleton_fastpath
     gen.vision_prefill_token_budget = 8192
     gen.language_model = object()
@@ -126,6 +154,9 @@ class TestEligibilityHelper:
 
     def test_empty_is_not_eligible(self):
         assert not _singleton_regular_cache_leaves([], True)
+
+    def test_non_serialized_lane_is_not_eligible(self):
+        assert not _singleton_regular_cache_leaves(_arrays_leaves(), False)
 
     def test_wrapped_compound_leaf_fails_closed(self):
         from mlx_vlm.models.cache import CacheList
@@ -380,7 +411,10 @@ class TestExtendRefusal:
 class TestSingletonExtractionDetachment:
     """Handoff §7: extraction must return detached, materialized state."""
 
-    @pytest.mark.parametrize("leaf_factory", [_arrays_leaves, _kv_leaves])
+    @pytest.mark.parametrize(
+        "leaf_factory",
+        [_arrays_leaves, _kv_leaves, _lm_arrays_leaves, _lm_kv_leaves],
+    )
     def test_extract_returns_real_detached_leaves(self, leaf_factory):
         leaves = leaf_factory()
         batch = MLLMBatch(
@@ -404,7 +438,10 @@ class TestSingletonExtractionDetachment:
         # Nothing aliases the live leaf objects.
         assert all(src is not dst for src, dst in zip(leaves, extracted))
 
-    @pytest.mark.parametrize("leaf_factory", [_arrays_leaves, _kv_leaves])
+    @pytest.mark.parametrize(
+        "leaf_factory",
+        [_arrays_leaves, _kv_leaves, _lm_arrays_leaves, _lm_kv_leaves],
+    )
     def test_extracted_state_survives_live_mutation(self, leaf_factory):
         leaves = leaf_factory()
         batch = MLLMBatch(
