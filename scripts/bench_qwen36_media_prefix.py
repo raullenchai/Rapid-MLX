@@ -235,6 +235,26 @@ def _checker_pass(checker: dict[str, Any], text: str) -> bool:
             for alternative in required_any
         ):
             return False
+        # ``line_expect`` pins ordered per-line content for the multi-image
+        # turns ("report the first bar, then the second, one line each"):
+        # line 1 must carry the first bar's terms and line 2 the second's,
+        # so swapping the two image answers fails — with flat ``required``
+        # both orderings pass although image ordering is the behavior under
+        # test. Paired with ``min_lines``/``max_lines`` it pins the
+        # one-line-per-bar shape too.
+        line_expect = checker.get("line_expect", [])
+        if line_expect:
+            lines = text.splitlines()
+            for line_index, alternative in enumerate(line_expect):
+                terms = alternative if isinstance(alternative, list) else [alternative]
+                line_tokens = (
+                    _tokens(lines[line_index]) if line_index < len(lines) else []
+                )
+                if not all(
+                    _term_matches(line_tokens, term, guard_negation=True)
+                    for term in terms
+                ):
+                    return False
         if not _structural_pass(checker, text):
             return False
         return not any(
@@ -242,10 +262,15 @@ def _checker_pass(checker: dict[str, Any], text: str) -> bool:
             for term in checker.get("forbidden", [])
         )
     if kind == "json_shape":
-        # "Output JSON only": the stripped response itself must parse as one
-        # JSON object — searching for the first ``{`` would let prose
-        # wrapped around an all-null payload pass ("JSON only" with
-        # entirely wrong field values).
+        # "Output JSON only": the stripped response must parse as one JSON
+        # object — searching for the first ``{`` would let prose wrapped
+        # around an all-null payload pass ("JSON only" with entirely wrong
+        # field values). A fenced response passes only when the fence
+        # wraps exactly one JSON object and nothing else: the manifest's
+        # JSON turns ask for the answer as a fenced ```json code block
+        # (the contract the qualified model deterministically follows),
+        # so the fence is requested markup, not prose — prose outside the
+        # fence still fails the whole-payload parse.
         stripped = text.strip()
         if stripped.startswith("```"):
             stripped = stripped.split("\n", 1)[-1]
@@ -358,6 +383,21 @@ def _checker_pass(checker: dict[str, Any], text: str) -> bool:
             for alternative in required_any
         ):
             return False
+        # ``required_any_groups``: AND over groups of OR-alternatives. The
+        # summary turns ("summarize your previous two answers") use one
+        # group per prior answer, so a response that drops an entire
+        # answer fails — a flat ``required_any`` let any single anchor
+        # qualify.
+        required_any_groups = checker.get("required_any_groups", [])
+        for group in required_any_groups:
+            if not any(
+                all(
+                    _term_matches(text_tokens, term, guard_negation=True)
+                    for term in alternative
+                )
+                for alternative in group
+            ):
+                return False
         return True
     raise ValueError(f"unknown checker type: {kind}")
 
@@ -497,9 +537,15 @@ async def _run_phase(
     for conversation in conversations:
         await _replay_conversation(engine, conversation, repo_root)
 
-    # Engagement counters must come from the MEASURED passes only: warmup
-    # would otherwise contribute stores/hits and let the engagement (and
-    # warm-regression) gates pass green while every measured pass missed.
+    # The warmup pass must not leak into the measured passes. Warmup stores
+    # boundary snapshots; left in place, measured pass 1 would resume them
+    # and the latency gates would never observe the documented store-turn
+    # cost (and a warmup-only store would keep the cache alive without any
+    # measured pass proving it can store). Drop every cached entry and
+    # reset the counters so the measured passes are self-contained — store
+    # on the store turn, resume on the turns after — and the engagement
+    # counters measure exactly those passes.
+    engine.clear_prefix_cache(reset_stats=True)
     warmup_stats = engine.get_stats().get("media_prefix_cache") or {}
     by_conversation: dict[str, list[list[dict[str, Any]]]] = {
         conversation["id"]: [] for conversation in conversations

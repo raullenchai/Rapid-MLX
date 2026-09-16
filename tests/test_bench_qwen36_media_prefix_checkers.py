@@ -294,3 +294,48 @@ def test_resume_regressions_compare_each_resumed_sample_to_baseline():
     ]
     # A resume slower than a missing baseline entry cannot be judged.
     assert _resume_regressions([[_pass(7, 9.9, 64)]], {}, margin=1.15) == []
+
+
+def test_line_expect_pins_image_order():
+    # Two-toolbar turns report one line per bar; swapping the bars is a
+    # wrong answer even though every term is present somewhere.
+    checker = {
+        "type": "terms",
+        "required": ["ready", "idle"],
+        "min_lines": 2,
+        "max_lines": 2,
+        "line_expect": [["ready"], ["idle"]],
+    }
+    assert _checker_pass(checker, "Ready\nIdle")
+    assert not _checker_pass(checker, "Idle\nReady")
+    # A missing second line fails; line_expect pins which line carries the
+    # terms, not line exclusivity — but the terms must be on THEIR line.
+    assert not _checker_pass(checker, "Ready")
+    assert _checker_pass(checker, "Ready\nIdle and download available")
+    assert not _checker_pass(checker, "Idle and download available\nReady")
+
+
+def test_required_any_groups_require_every_group():
+    # A summary of two prior answers must anchor BOTH: a flat
+    # required_any let a summary drop an entire answer.
+    checker = {
+        "type": "any",
+        "min_words": 5,
+        "required_any_groups": [[["qwen3.6"], ["ready"]], [["icon"], ["info"]]],
+    }
+    both = "The model is qwen3.6-27b with a Ready chip and an info icon."
+    assert _checker_pass(checker, both)
+    # Covers answer 1 only.
+    assert not _checker_pass(checker, "The model is qwen3.6-27b and its chip is Ready.")
+    # Covers answer 2 only.
+    assert not _checker_pass(checker, "A circular information icon is visible.")
+
+
+def test_json_shape_still_parses_fenced_payload():
+    # The JSON turns ask for a fenced code block, so a fence wrapping
+    # exactly one JSON object is the requested markup, not prose.
+    checker = {"type": "json_shape", "keys": ["a"], "required": ["x"]}
+    assert _checker_pass(checker, '```json\n{"a": "x"}\n```')
+    # Prose outside the fence still fails the whole-payload parse.
+    assert not _checker_pass(checker, 'Here you go:\n```json\n{"a": "x"}\n```')
+    assert not _checker_pass(checker, '```json\n{"a": "x"}\n```\nHope that helps!')

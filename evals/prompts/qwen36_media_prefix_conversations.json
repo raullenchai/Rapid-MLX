@@ -74,7 +74,7 @@
         },
         {
           "prompt": "Summarize your previous two answers in one short sentence.",
-          "max_tokens": 32,
+          "max_tokens": 64,
           "sampling": {
             "temperature": 0.0,
             "top_p": 1.0
@@ -82,18 +82,25 @@
           "checker": {
             "type": "any",
             "min_words": 5,
-            "required_any": [
+            "max_lines": 1,
+            "required_any_groups": [
               [
-                "qwen3.6"
+                [
+                  "qwen3.6"
+                ],
+                [
+                  "ready"
+                ]
               ],
               [
-                "ready"
-              ],
-              [
-                "icon"
+                [
+                  "icon"
+                ],
+                [
+                  "info"
+                ]
               ]
-            ],
-            "max_lines": 1
+            ]
           }
         }
       ]
@@ -160,7 +167,7 @@
         },
         {
           "prompt": "Summarize your previous two answers in one short sentence.",
-          "max_tokens": 32,
+          "max_tokens": 64,
           "sampling": {
             "temperature": 0.0,
             "top_p": 1.0
@@ -168,21 +175,25 @@
           "checker": {
             "type": "any",
             "min_words": 5,
-            "required_any": [
+            "max_lines": 1,
+            "required_any_groups": [
               [
-                "pick a model"
+                [
+                  "pick a model"
+                ],
+                [
+                  "not installed"
+                ]
               ],
               [
-                "not installed"
-              ],
-              [
-                "download"
-              ],
-              [
-                "cloud"
+                [
+                  "download"
+                ],
+                [
+                  "cloud"
+                ]
               ]
-            ],
-            "max_lines": 1
+            ]
           }
         }
       ]
@@ -247,7 +258,7 @@
         },
         {
           "prompt": "Summarize your previous two answers in one short sentence.",
-          "max_tokens": 32,
+          "max_tokens": 64,
           "sampling": {
             "temperature": 0.0,
             "top_p": 1.0
@@ -255,18 +266,28 @@
           "checker": {
             "type": "any",
             "min_words": 5,
-            "required_any": [
+            "max_lines": 1,
+            "required_any_groups": [
               [
-                "fake-alias"
+                [
+                  "fake-alias"
+                ],
+                [
+                  "starting"
+                ],
+                [
+                  "spinning"
+                ]
               ],
               [
-                "starting"
-              ],
-              [
-                "spinning"
+                [
+                  "orange"
+                ],
+                [
+                  "dot"
+                ]
               ]
-            ],
-            "max_lines": 1
+            ]
           }
         }
       ]
@@ -330,7 +351,7 @@
         },
         {
           "prompt": "Summarize your previous two answers in one short sentence.",
-          "max_tokens": 32,
+          "max_tokens": 64,
           "sampling": {
             "temperature": 0.0,
             "top_p": 1.0
@@ -338,27 +359,31 @@
           "checker": {
             "type": "any",
             "min_words": 5,
-            "required_any": [
+            "max_lines": 1,
+            "required_any_groups": [
               [
-                "new chat"
+                [
+                  "new chat"
+                ],
+                [
+                  "search chats"
+                ],
+                [
+                  "start chatting"
+                ]
               ],
               [
-                "search chats"
-              ],
-              [
-                "start chatting"
-              ],
-              [
-                "⌘n"
-              ],
-              [
-                "cmd+n"
-              ],
-              [
-                "command+n"
+                [
+                  "⌘n"
+                ],
+                [
+                  "cmd+n"
+                ],
+                [
+                  "command+n"
+                ]
               ]
-            ],
-            "max_lines": 1
+            ]
           }
         }
       ]
@@ -383,7 +408,7 @@
             "required": [
               "skip"
             ],
-            "max_words": 3
+            "max_words": 1
           }
         },
         {
@@ -419,7 +444,7 @@
         },
         {
           "prompt": "Summarize your previous two answers in one short sentence.",
-          "max_tokens": 32,
+          "max_tokens": 64,
           "sampling": {
             "temperature": 0.0,
             "top_p": 1.0
@@ -427,18 +452,22 @@
           "checker": {
             "type": "any",
             "min_words": 5,
-            "required_any": [
+            "max_lines": 1,
+            "required_any_groups": [
               [
-                "skip"
+                [
+                  "skip"
+                ]
               ],
               [
-                "checkmark"
-              ],
-              [
-                "icon"
+                [
+                  "checkmark"
+                ],
+                [
+                  "icon"
+                ]
               ]
-            ],
-            "max_lines": 1
+            ]
           }
         }
       ]
@@ -503,7 +532,7 @@
         },
         {
           "prompt": "Summarize your previous two answers in one short sentence.",
-          "max_tokens": 32,
+          "max_tokens": 64,
           "sampling": {
             "temperature": 0.0,
             "top_p": 1.0
@@ -511,18 +540,22 @@
           "checker": {
             "type": "any",
             "min_words": 5,
-            "required_any": [
+            "max_lines": 1,
+            "required_any_groups": [
               [
-                "next"
+                [
+                  "next"
+                ]
               ],
               [
-                "checkmark"
-              ],
-              [
-                "icon"
+                [
+                  "checkmark"
+                ],
+                [
+                  "icon"
+                ]
               ]
-            ],
-            "max_lines": 1
+            ]
           }
         }
       ]
@@ -591,7 +624,7 @@
         },
         {
           "prompt": "Summarize your previous two answers in one short sentence.",
-          "max_tokens": 32,
+          "max_tokens": 64,
           "sampling": {
             "temperature": 0.0,
             "top_p": 1.0
@@ -599,24 +632,28 @@
           "checker": {
             "type": "any",
             "min_words": 5,
-            "required_any": [
+            "max_lines": 1,
+            "required_any_groups": [
               [
-                "⌘n"
+                [
+                  "⌘n"
+                ],
+                [
+                  "cmd+n"
+                ],
+                [
+                  "command+n"
+                ]
               ],
               [
-                "cmd+n"
-              ],
-              [
-                "command+n"
-              ],
-              [
-                "icon"
-              ],
-              [
-                "rapid-mlx"
+                [
+                  "icon"
+                ],
+                [
+                  "rapid-mlx"
+                ]
               ]
-            ],
-            "max_lines": 1
+            ]
           }
         }
       ]
@@ -677,7 +714,7 @@
         },
         {
           "prompt": "Summarize your previous two answers in one short sentence.",
-          "max_tokens": 32,
+          "max_tokens": 64,
           "sampling": {
             "temperature": 0.0,
             "top_p": 1.0
@@ -685,21 +722,22 @@
           "checker": {
             "type": "any",
             "min_words": 5,
-            "required_any": [
+            "max_lines": 1,
+            "required_any_groups": [
               [
-                "stop"
+                [
+                  "right"
+                ]
               ],
               [
-                "starting"
-              ],
-              [
-                "dot"
-              ],
-              [
-                "orange"
+                [
+                  "spinning"
+                ],
+                [
+                  "starting"
+                ]
               ]
-            ],
-            "max_lines": 1
+            ]
           }
         }
       ]
@@ -713,7 +751,7 @@
       ],
       "turns": [
         {
-          "prompt": "Output JSON only: {\"model\": <model name>, \"status\": <status chip>, \"action\": <rightmost button label>}.",
+          "prompt": "Output a single fenced ```json code block and nothing else. Output JSON only: {\"model\": <model name>, \"status\": <status chip>, \"action\": <rightmost button label>}.",
           "max_tokens": 64,
           "sampling": {
             "temperature": 0.0,
@@ -777,7 +815,7 @@
         },
         {
           "prompt": "Summarize your previous two answers in one short sentence.",
-          "max_tokens": 32,
+          "max_tokens": 64,
           "sampling": {
             "temperature": 0.0,
             "top_p": 1.0
@@ -785,21 +823,28 @@
           "checker": {
             "type": "any",
             "min_words": 5,
-            "required_any": [
+            "max_lines": 1,
+            "required_any_groups": [
               [
-                "qwen3.6"
+                [
+                  "qwen3.6"
+                ],
+                [
+                  "ready"
+                ],
+                [
+                  "stop"
+                ]
               ],
               [
-                "ready"
-              ],
-              [
-                "stop"
-              ],
-              [
-                "icon"
+                [
+                  "icon"
+                ],
+                [
+                  "info"
+                ]
               ]
-            ],
-            "max_lines": 1
+            ]
           }
         }
       ]
@@ -813,7 +858,7 @@
       ],
       "turns": [
         {
-          "prompt": "Output JSON only: {\"title\": <sidebar title>, \"buttons\": [<visible button labels>]}.",
+          "prompt": "Output a single fenced ```json code block and nothing else. Output JSON only: {\"title\": <sidebar title>, \"buttons\": [<visible button labels>]}.",
           "max_tokens": 96,
           "sampling": {
             "temperature": 0.0,
@@ -887,7 +932,7 @@
         },
         {
           "prompt": "Summarize your previous two answers in one short sentence.",
-          "max_tokens": 32,
+          "max_tokens": 64,
           "sampling": {
             "temperature": 0.0,
             "top_p": 1.0
@@ -895,30 +940,34 @@
           "checker": {
             "type": "any",
             "min_words": 5,
-            "required_any": [
+            "max_lines": 1,
+            "required_any_groups": [
               [
-                "rapid-mlx"
+                [
+                  "rapid-mlx"
+                ],
+                [
+                  "new chat"
+                ],
+                [
+                  "search chats"
+                ],
+                [
+                  "start chatting"
+                ]
               ],
               [
-                "new chat"
-              ],
-              [
-                "search chats"
-              ],
-              [
-                "start chatting"
-              ],
-              [
-                "⌘n"
-              ],
-              [
-                "cmd+n"
-              ],
-              [
-                "command+n"
+                [
+                  "⌘n"
+                ],
+                [
+                  "cmd+n"
+                ],
+                [
+                  "command+n"
+                ]
               ]
-            ],
-            "max_lines": 1
+            ]
           }
         }
       ]
@@ -932,7 +981,7 @@
       ],
       "turns": [
         {
-          "prompt": "Output JSON only: {\"heading\": <page heading>, \"primary_action\": <bottom-right button label>}.",
+          "prompt": "Output a single fenced ```json code block and nothing else. Output JSON only: {\"heading\": <page heading>, \"primary_action\": <bottom-right button label>}.",
           "max_tokens": 64,
           "sampling": {
             "temperature": 0.0,
@@ -994,7 +1043,7 @@
         },
         {
           "prompt": "Summarize your previous two answers in one short sentence.",
-          "max_tokens": 32,
+          "max_tokens": 64,
           "sampling": {
             "temperature": 0.0,
             "top_p": 1.0
@@ -1002,21 +1051,25 @@
           "checker": {
             "type": "any",
             "min_words": 5,
-            "required_any": [
+            "max_lines": 1,
+            "required_any_groups": [
               [
-                "pick a model"
+                [
+                  "pick a model"
+                ],
+                [
+                  "next"
+                ]
               ],
               [
-                "next"
-              ],
-              [
-                "checkmark"
-              ],
-              [
-                "icon"
+                [
+                  "checkmark"
+                ],
+                [
+                  "icon"
+                ]
               ]
-            ],
-            "max_lines": 1
+            ]
           }
         }
       ]
@@ -1031,7 +1084,7 @@
       ],
       "turns": [
         {
-          "prompt": "Output JSON only: {\"bars\": [{\"model\": <first bar model>, \"status\": <first bar status>}, {\"model\": <second bar model>, \"status\": <second bar status>}]}.",
+          "prompt": "Output a single fenced ```json code block and nothing else. Output JSON only: {\"bars\": [{\"model\": <first bar model>, \"status\": <first bar status>}, {\"model\": <second bar model>, \"status\": <second bar status>}]}.",
           "max_tokens": 96,
           "sampling": {
             "temperature": 0.0,
@@ -1115,7 +1168,7 @@
         },
         {
           "prompt": "Summarize your previous two answers in one short sentence.",
-          "max_tokens": 32,
+          "max_tokens": 64,
           "sampling": {
             "temperature": 0.0,
             "top_p": 1.0
@@ -1123,21 +1176,31 @@
           "checker": {
             "type": "any",
             "min_words": 5,
-            "required_any": [
+            "max_lines": 1,
+            "required_any_groups": [
               [
-                "qwen3.6"
+                [
+                  "qwen3.6"
+                ],
+                [
+                  "fake-alias"
+                ],
+                [
+                  "idle"
+                ],
+                [
+                  "ready"
+                ]
               ],
               [
-                "fake-alias"
-              ],
-              [
-                "idle"
-              ],
-              [
-                "download"
+                [
+                  "icon"
+                ],
+                [
+                  "information"
+                ]
               ]
-            ],
-            "max_lines": 1
+            ]
           }
         }
       ]
@@ -1209,7 +1272,7 @@
         },
         {
           "prompt": "Summarize your previous two answers in one short sentence.",
-          "max_tokens": 32,
+          "max_tokens": 64,
           "sampling": {
             "temperature": 0.0,
             "top_p": 1.0
@@ -1217,24 +1280,34 @@
           "checker": {
             "type": "any",
             "min_words": 5,
-            "required_any": [
+            "max_lines": 1,
+            "required_any_groups": [
               [
-                "pick a model"
+                [
+                  "pick a model"
+                ],
+                [
+                  "next"
+                ],
+                [
+                  "skip"
+                ],
+                [
+                  "dot"
+                ],
+                [
+                  "checkmark"
+                ]
               ],
               [
-                "next"
-              ],
-              [
-                "skip"
-              ],
-              [
-                "dot"
-              ],
-              [
-                "checkmark"
+                [
+                  "dots"
+                ],
+                [
+                  "indicator"
+                ]
               ]
-            ],
-            "max_lines": 1
+            ]
           }
         }
       ]
@@ -1307,7 +1380,7 @@
         },
         {
           "prompt": "Summarize your previous two answers in one short sentence.",
-          "max_tokens": 32,
+          "max_tokens": 64,
           "sampling": {
             "temperature": 0.0,
             "top_p": 1.0
@@ -1315,24 +1388,34 @@
           "checker": {
             "type": "any",
             "min_words": 5,
-            "required_any": [
+            "max_lines": 1,
+            "required_any_groups": [
               [
-                "pick a model"
+                [
+                  "pick a model"
+                ],
+                [
+                  "skip"
+                ],
+                [
+                  "next"
+                ],
+                [
+                  "dark"
+                ]
               ],
               [
-                "dark"
-              ],
-              [
-                "skip"
-              ],
-              [
-                "next"
-              ],
-              [
-                "dot"
+                [
+                  "mode"
+                ],
+                [
+                  "visibility"
+                ],
+                [
+                  "light"
+                ]
               ]
-            ],
-            "max_lines": 1
+            ]
           }
         }
       ]
@@ -1400,7 +1483,7 @@
         },
         {
           "prompt": "Summarize your previous two answers in one short sentence.",
-          "max_tokens": 32,
+          "max_tokens": 64,
           "sampling": {
             "temperature": 0.0,
             "top_p": 1.0
@@ -1408,24 +1491,28 @@
           "checker": {
             "type": "any",
             "min_words": 5,
-            "required_any": [
+            "max_lines": 1,
+            "required_any_groups": [
               [
-                "new chat"
+                [
+                  "new chat"
+                ],
+                [
+                  "start chatting"
+                ],
+                [
+                  "search"
+                ]
               ],
               [
-                "start chatting"
-              ],
-              [
-                "mascot"
-              ],
-              [
-                "tiger"
-              ],
-              [
-                "search"
+                [
+                  "mascot"
+                ],
+                [
+                  "tiger"
+                ]
               ]
-            ],
-            "max_lines": 1
+            ]
           }
         }
       ]
@@ -1491,7 +1578,7 @@
         },
         {
           "prompt": "Summarize your previous two answers in one short sentence.",
-          "max_tokens": 32,
+          "max_tokens": 64,
           "sampling": {
             "temperature": 0.0,
             "top_p": 1.0
@@ -1499,18 +1586,31 @@
           "checker": {
             "type": "any",
             "min_words": 5,
-            "required_any": [
+            "max_lines": 1,
+            "required_any_groups": [
               [
-                "qwen3.6"
+                [
+                  "qwen3.6"
+                ],
+                [
+                  "ready"
+                ],
+                [
+                  "icon"
+                ]
               ],
               [
-                "ready"
-              ],
-              [
-                "icon"
+                [
+                  "border"
+                ],
+                [
+                  "black"
+                ],
+                [
+                  "edge"
+                ]
               ]
-            ],
-            "max_lines": 1
+            ]
           }
         }
       ]
@@ -1578,7 +1678,7 @@
         },
         {
           "prompt": "Summarize your previous two answers in one short sentence.",
-          "max_tokens": 32,
+          "max_tokens": 64,
           "sampling": {
             "temperature": 0.0,
             "top_p": 1.0
@@ -1586,27 +1686,31 @@
           "checker": {
             "type": "any",
             "min_words": 5,
-            "required_any": [
+            "max_lines": 1,
+            "required_any_groups": [
               [
-                "dark"
+                [
+                  "dark"
+                ],
+                [
+                  "light"
+                ],
+                [
+                  "mode"
+                ]
               ],
               [
-                "light"
-              ],
-              [
-                "next"
-              ],
-              [
-                "blue"
-              ],
-              [
-                "white"
-              ],
-              [
-                "mode"
+                [
+                  "next"
+                ],
+                [
+                  "blue"
+                ],
+                [
+                  "white"
+                ]
               ]
-            ],
-            "max_lines": 1
+            ]
           }
         }
       ]
@@ -1634,7 +1738,15 @@
               "idle"
             ],
             "min_lines": 2,
-            "max_lines": 2
+            "max_lines": 2,
+            "line_expect": [
+              [
+                "ready"
+              ],
+              [
+                "idle"
+              ]
+            ]
           }
         },
         {
@@ -1673,7 +1785,7 @@
         },
         {
           "prompt": "Summarize your previous two answers in one short sentence.",
-          "max_tokens": 32,
+          "max_tokens": 64,
           "sampling": {
             "temperature": 0.0,
             "top_p": 1.0
@@ -1681,18 +1793,22 @@
           "checker": {
             "type": "any",
             "min_words": 5,
-            "required_any": [
+            "max_lines": 1,
+            "required_any_groups": [
               [
-                "ready"
+                [
+                  "ready"
+                ],
+                [
+                  "idle"
+                ]
               ],
               [
-                "idle"
-              ],
-              [
-                "download"
+                [
+                  "download"
+                ]
               ]
-            ],
-            "max_lines": 1
+            ]
           }
         }
       ]
@@ -1720,7 +1836,15 @@
               "ready"
             ],
             "min_lines": 2,
-            "max_lines": 2
+            "max_lines": 2,
+            "line_expect": [
+              [
+                "starting"
+              ],
+              [
+                "ready"
+              ]
+            ]
           }
         },
         {
@@ -1759,7 +1883,7 @@
         },
         {
           "prompt": "Summarize your previous two answers in one short sentence.",
-          "max_tokens": 32,
+          "max_tokens": 64,
           "sampling": {
             "temperature": 0.0,
             "top_p": 1.0
@@ -1767,18 +1891,22 @@
           "checker": {
             "type": "any",
             "min_words": 5,
-            "required_any": [
+            "max_lines": 1,
+            "required_any_groups": [
               [
-                "starting"
+                [
+                  "starting"
+                ],
+                [
+                  "ready"
+                ]
               ],
               [
-                "ready"
-              ],
-              [
-                "spinning"
+                [
+                  "spinning"
+                ]
               ]
-            ],
-            "max_lines": 1
+            ]
           }
         }
       ]
@@ -1806,7 +1934,15 @@
               "fake-alias"
             ],
             "min_lines": 2,
-            "max_lines": 2
+            "max_lines": 2,
+            "line_expect": [
+              [
+                "pick a model"
+              ],
+              [
+                "fake-alias"
+              ]
+            ]
           }
         },
         {
@@ -1845,7 +1981,7 @@
         },
         {
           "prompt": "Summarize your previous two answers in one short sentence.",
-          "max_tokens": 32,
+          "max_tokens": 64,
           "sampling": {
             "temperature": 0.0,
             "top_p": 1.0
@@ -1853,18 +1989,22 @@
           "checker": {
             "type": "any",
             "min_words": 5,
-            "required_any": [
+            "max_lines": 1,
+            "required_any_groups": [
               [
-                "pick a model"
+                [
+                  "pick a model"
+                ],
+                [
+                  "fake-alias"
+                ]
               ],
               [
-                "fake-alias"
-              ],
-              [
-                "download"
+                [
+                  "download"
+                ]
               ]
-            ],
-            "max_lines": 1
+            ]
           }
         }
       ]
