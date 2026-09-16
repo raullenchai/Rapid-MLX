@@ -270,6 +270,16 @@ struct AgentRuntimeClientTests {
         )
         #expect(created[newDraft] == true)
 
+        let afterDeletingOldConversations =
+            PersonalIntelligenceConfig.reconciledConversationStates(
+                created,
+                activeConversationID: newDraft,
+                storedConversationIDs: [newDraft],
+                introductionCompleted: true,
+                preferredEnabled: true
+            )
+        #expect(afterDeletingOldConversations == [newDraft: true])
+
         let declined = PersonalIntelligenceConfig.reconciledConversationStates(
             [:],
             activeConversationID: newDraft,

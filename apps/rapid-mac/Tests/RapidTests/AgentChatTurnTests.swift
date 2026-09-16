@@ -26,7 +26,9 @@ struct AgentChatTurnTests {
         model.completeAgentTurn("latest")
 
         let context = try #require(model.personalIntelligenceLocalContext())
-        #expect(context.unicodeScalars.count < 32_768)
+        #expect(context.hasPrefix("<recent_conversation>\n"))
+        #expect(context.hasSuffix("\n</recent_conversation>"))
+        #expect(context.unicodeScalars.count == 24_000)
     }
 
     @Test("A completed agent run becomes an ordinary persisted chat turn")

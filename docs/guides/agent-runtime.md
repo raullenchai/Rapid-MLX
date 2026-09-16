@@ -291,9 +291,9 @@ system message, after its fixed safety/tool policy, with conversation
 instructions taking precedence over conflicting global instructions. Memory
 and at most the last eight completed user/assistant messages travel separately
 through `local_context` as explicitly untrusted quoted data. The server caps
-that field at 32,768 characters (Desktop budgets message content to 24,000
-characters, newest first). Neither transient field is copied into public Agent
-events.
+that field at 32,768 characters; Desktop caps the complete serialized context,
+including wrappers and separators, at 24,000 Unicode scalars with newest
+messages first. Neither transient field is copied into public Agent events.
 
 The harness exposes only tools relevant to the current request. Recall,
 writing, explicit no-network requests, and transformation tasks see no

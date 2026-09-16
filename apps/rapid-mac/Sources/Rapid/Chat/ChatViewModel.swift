@@ -448,39 +448,49 @@ final class ChatViewModel {
     /// stale history at the expense of the immediately preceding answer.
     func personalIntelligenceLocalContext() -> String? {
         let maximumCharacters = 24_000
-        var remaining = maximumCharacters
+        let recentPrefix = "<recent_conversation>\n"
+        let recentSuffix = "\n</recent_conversation>"
+        var recentRemaining = maximumCharacters
+            - recentPrefix.unicodeScalars.count
+            - recentSuffix.unicodeScalars.count
         var recentRows: [String] = []
         for message in messages.reversed() {
-            guard remaining > 0, recentRows.count < 8 else { break }
+            guard recentRemaining > 0, recentRows.count < 8 else { break }
             guard message.status == .complete,
                   message.role == .user || message.role == .assistant else { continue }
             let content = message.content.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !content.isEmpty else { continue }
-            let row = "\(message.role.rawValue): \(content)"
-            let kept = String(String.UnicodeScalarView(row.unicodeScalars.prefix(remaining)))
-            recentRows.append(kept)
-            remaining -= kept.unicodeScalars.count
+            let rowPrefix = "\(message.role.rawValue): "
+            let separatorSize = recentRows.isEmpty ? 0 : 2
+            let fixedSize = separatorSize + rowPrefix.unicodeScalars.count
+            guard recentRemaining > fixedSize else { break }
+            let keptContent = String(String.UnicodeScalarView(
+                content.unicodeScalars.prefix(recentRemaining - fixedSize)
+            ))
+            recentRows.append(rowPrefix + keptContent)
+            recentRemaining -= fixedSize + keptContent.unicodeScalars.count
         }
 
+        let recentSection: String? = recentRows.isEmpty ? nil :
+            recentPrefix + recentRows.reversed().joined(separator: "\n\n") + recentSuffix
         var sections: [String] = []
         if let memory = memoryStore?.formattedForPrompt() {
             let memorySize = memory.unicodeScalars.count
+            let recentSize = recentSection?.unicodeScalars.count ?? 0
+            let separatorSize = recentSection == nil ? 0 : 2
             // Never cut through the memory wrapper or a durable fact. Recent
             // conversation owns the budget; memory is included only if its
             // complete, separately labelled block still fits.
-            if memorySize <= remaining {
+            if memorySize + recentSize + separatorSize <= maximumCharacters {
                 sections.append(memory)
-                remaining -= memorySize
             }
         }
-        if !recentRows.isEmpty {
-            sections.append(
-                "<recent_conversation>\n\(recentRows.reversed().joined(separator: "\n\n"))\n</recent_conversation>"
-            )
-        }
+        if let recentSection { sections.append(recentSection) }
 
         guard !sections.isEmpty else { return nil }
-        return sections.joined(separator: "\n\n")
+        let context = sections.joined(separator: "\n\n")
+        assert(context.unicodeScalars.count <= maximumCharacters)
+        return context
     }
 
     /// Execute one server-issued client action through the same schema and

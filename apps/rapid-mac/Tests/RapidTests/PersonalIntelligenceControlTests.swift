@@ -136,6 +136,9 @@ struct PersonalIntelligenceControlTests {
             "returnPersonalIntelligenceRunBinding(conversationID:viewModel.activeConversationID,"
         ))
         #expect(stripped.contains(
+            ".onChange(of:viewModel.conversations.map(\\.id)){_,_inpruneAttachmentDrafts()reconcilePersonalIntelligenceStates()}"
+        ))
+        #expect(stripped.contains(
             ".onChange(of:personalIntelligenceBinding){oldBinding,newBindinginifnewBinding.invalidatesRun(boundTo:oldBinding){stopAgentIfNeeded()}"
         ))
         #expect(stripped.contains(

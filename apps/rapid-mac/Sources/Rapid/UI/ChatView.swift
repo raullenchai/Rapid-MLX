@@ -407,6 +407,7 @@ struct ChatView: View {
         }
         .onChange(of: viewModel.conversations.map(\.id)) { _, _ in
             pruneAttachmentDrafts()
+            reconcilePersonalIntelligenceStates()
         }
         .onChange(of: viewModel.activeConversationID) { _, _ in
             pruneAttachmentDrafts()
