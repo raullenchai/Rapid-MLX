@@ -83,24 +83,21 @@
             "type": "any",
             "min_words": 5,
             "max_lines": 1,
-            "required_any_groups": [
+            "required_any": [
               [
-                [
-                  "qwen3.6"
-                ],
-                [
-                  "ready"
-                ]
+                "qwen3.6"
               ],
               [
-                [
-                  "icon"
-                ],
-                [
-                  "info"
-                ]
+                "ready"
+              ],
+              [
+                "icon"
+              ],
+              [
+                "info"
               ]
-            ]
+            ],
+            "required_any_min": 2
           }
         }
       ]
@@ -176,24 +173,21 @@
             "type": "any",
             "min_words": 5,
             "max_lines": 1,
-            "required_any_groups": [
+            "required_any": [
               [
-                [
-                  "pick a model"
-                ],
-                [
-                  "not installed"
-                ]
+                "pick a model"
               ],
               [
-                [
-                  "download"
-                ],
-                [
-                  "cloud"
-                ]
+                "not installed"
+              ],
+              [
+                "download"
+              ],
+              [
+                "cloud"
               ]
-            ]
+            ],
+            "required_any_min": 2
           }
         }
       ]
@@ -267,27 +261,27 @@
             "type": "any",
             "min_words": 5,
             "max_lines": 1,
-            "required_any_groups": [
+            "required_any": [
               [
-                [
-                  "fake-alias"
-                ],
-                [
-                  "starting"
-                ],
-                [
-                  "spinning"
-                ]
+                "fake-alias"
               ],
               [
-                [
-                  "orange"
-                ],
-                [
-                  "dot"
-                ]
+                "starting"
+              ],
+              [
+                "spinning"
+              ],
+              [
+                "orange"
+              ],
+              [
+                "dot"
+              ],
+              [
+                "subtitle"
               ]
-            ]
+            ],
+            "required_any_min": 2
           }
         }
       ]
@@ -343,6 +337,18 @@
               ],
               [
                 "press"
+              ],
+              [
+                "dog"
+              ],
+              [
+                "mascot"
+              ],
+              [
+                "icon"
+              ],
+              [
+                "rapid-mlx"
               ]
             ],
             "max_lines": 1,
@@ -360,30 +366,36 @@
             "type": "any",
             "min_words": 5,
             "max_lines": 1,
-            "required_any_groups": [
+            "required_any": [
               [
-                [
-                  "new chat"
-                ],
-                [
-                  "search chats"
-                ],
-                [
-                  "start chatting"
-                ]
+                "new chat"
               ],
               [
-                [
-                  "⌘n"
-                ],
-                [
-                  "cmd+n"
-                ],
-                [
-                  "command+n"
-                ]
+                "search chats"
+              ],
+              [
+                "start chatting"
+              ],
+              [
+                "⌘n"
+              ],
+              [
+                "cmd+n"
+              ],
+              [
+                "command+n"
+              ],
+              [
+                "dog"
+              ],
+              [
+                "mascot"
+              ],
+              [
+                "rapid-mlx"
               ]
-            ]
+            ],
+            "required_any_min": 2
           }
         }
       ]
@@ -453,21 +465,21 @@
             "type": "any",
             "min_words": 5,
             "max_lines": 1,
-            "required_any_groups": [
+            "required_any": [
               [
-                [
-                  "skip"
-                ]
+                "skip"
               ],
               [
-                [
-                  "checkmark"
-                ],
-                [
-                  "icon"
-                ]
+                "checkmark"
+              ],
+              [
+                "icon"
+              ],
+              [
+                "blue"
               ]
-            ]
+            ],
+            "required_any_min": 2
           }
         }
       ]
@@ -541,21 +553,24 @@
             "type": "any",
             "min_words": 5,
             "max_lines": 1,
-            "required_any_groups": [
+            "required_any": [
               [
-                [
-                  "next"
-                ]
+                "next"
               ],
               [
-                [
-                  "checkmark"
-                ],
-                [
-                  "icon"
-                ]
+                "checkmark"
+              ],
+              [
+                "icon"
+              ],
+              [
+                "blue"
+              ],
+              [
+                "bottom right"
               ]
-            ]
+            ],
+            "required_any_min": 2
           }
         }
       ]
@@ -633,27 +648,30 @@
             "type": "any",
             "min_words": 5,
             "max_lines": 1,
-            "required_any_groups": [
+            "required_any": [
               [
-                [
-                  "⌘n"
-                ],
-                [
-                  "cmd+n"
-                ],
-                [
-                  "command+n"
-                ]
+                "⌘n"
               ],
               [
-                [
-                  "icon"
-                ],
-                [
-                  "rapid-mlx"
-                ]
+                "cmd+n"
+              ],
+              [
+                "command+n"
+              ],
+              [
+                "icon"
+              ],
+              [
+                "rapid-mlx"
+              ],
+              [
+                "mascot"
+              ],
+              [
+                "cartoon"
               ]
-            ]
+            ],
+            "required_any_min": 2
           }
         }
       ]
@@ -723,21 +741,24 @@
             "type": "any",
             "min_words": 5,
             "max_lines": 1,
-            "required_any_groups": [
+            "required_any": [
               [
-                [
-                  "right"
-                ]
+                "right"
               ],
               [
-                [
-                  "spinning"
-                ],
-                [
-                  "starting"
-                ]
+                "spinning"
+              ],
+              [
+                "starting"
+              ],
+              [
+                "orange"
+              ],
+              [
+                "dot"
               ]
-            ]
+            ],
+            "required_any_min": 2
           }
         }
       ]
@@ -824,27 +845,24 @@
             "type": "any",
             "min_words": 5,
             "max_lines": 1,
-            "required_any_groups": [
+            "required_any": [
               [
-                [
-                  "qwen3.6"
-                ],
-                [
-                  "ready"
-                ],
-                [
-                  "stop"
-                ]
+                "qwen3.6"
               ],
               [
-                [
-                  "icon"
-                ],
-                [
-                  "info"
-                ]
+                "ready"
+              ],
+              [
+                "stop"
+              ],
+              [
+                "icon"
+              ],
+              [
+                "info"
               ]
-            ]
+            ],
+            "required_any_min": 2
           }
         }
       ]
@@ -941,33 +959,30 @@
             "type": "any",
             "min_words": 5,
             "max_lines": 1,
-            "required_any_groups": [
+            "required_any": [
               [
-                [
-                  "rapid-mlx"
-                ],
-                [
-                  "new chat"
-                ],
-                [
-                  "search chats"
-                ],
-                [
-                  "start chatting"
-                ]
+                "rapid-mlx"
               ],
               [
-                [
-                  "⌘n"
-                ],
-                [
-                  "cmd+n"
-                ],
-                [
-                  "command+n"
-                ]
+                "new chat"
+              ],
+              [
+                "search chats"
+              ],
+              [
+                "start chatting"
+              ],
+              [
+                "⌘n"
+              ],
+              [
+                "cmd+n"
+              ],
+              [
+                "command+n"
               ]
-            ]
+            ],
+            "required_any_min": 2
           }
         }
       ]
@@ -1052,24 +1067,21 @@
             "type": "any",
             "min_words": 5,
             "max_lines": 1,
-            "required_any_groups": [
+            "required_any": [
               [
-                [
-                  "pick a model"
-                ],
-                [
-                  "next"
-                ]
+                "pick a model"
               ],
               [
-                [
-                  "checkmark"
-                ],
-                [
-                  "icon"
-                ]
+                "next"
+              ],
+              [
+                "checkmark"
+              ],
+              [
+                "icon"
               ]
-            ]
+            ],
+            "required_any_min": 2
           }
         }
       ]
@@ -1177,30 +1189,33 @@
             "type": "any",
             "min_words": 5,
             "max_lines": 1,
-            "required_any_groups": [
+            "required_any": [
               [
-                [
-                  "qwen3.6"
-                ],
-                [
-                  "fake-alias"
-                ],
-                [
-                  "idle"
-                ],
-                [
-                  "ready"
-                ]
+                "qwen3.6"
               ],
               [
-                [
-                  "icon"
-                ],
-                [
-                  "information"
-                ]
+                "fake-alias"
+              ],
+              [
+                "idle"
+              ],
+              [
+                "ready"
+              ],
+              [
+                "icon"
+              ],
+              [
+                "information"
+              ],
+              [
+                "models and statuses"
+              ],
+              [
+                "download"
               ]
-            ]
+            ],
+            "required_any_min": 2
           }
         }
       ]
@@ -1281,39 +1296,33 @@
             "type": "any",
             "min_words": 5,
             "max_lines": 1,
-            "required_any_groups": [
+            "required_any": [
               [
-                [
-                  "pick a model"
-                ],
-                [
-                  "next"
-                ],
-                [
-                  "skip"
-                ],
-                [
-                  "dot"
-                ],
-                [
-                  "checkmark"
-                ]
+                "pick a model"
               ],
               [
-                [
-                  "dots"
-                ],
-                [
-                  "dot"
-                ],
-                [
-                  "indicator"
-                ],
-                [
-                  "indicators"
-                ]
+                "next"
+              ],
+              [
+                "skip"
+              ],
+              [
+                "dot"
+              ],
+              [
+                "dots"
+              ],
+              [
+                "checkmark"
+              ],
+              [
+                "indicator"
+              ],
+              [
+                "indicators"
               ]
-            ]
+            ],
+            "required_any_min": 2
           }
         }
       ]
@@ -1340,11 +1349,24 @@
               "dark",
               "skip",
               "next",
-              "dots",
               "checkmark",
               "button"
             ],
-            "min_words": 200
+            "min_words": 200,
+            "required_any": [
+              [
+                "dots"
+              ],
+              [
+                "dot"
+              ],
+              [
+                "indicator"
+              ],
+              [
+                "indicators"
+              ]
+            ]
           }
         },
         {
@@ -1395,33 +1417,33 @@
             "type": "any",
             "min_words": 5,
             "max_lines": 1,
-            "required_any_groups": [
+            "required_any": [
               [
-                [
-                  "pick a model"
-                ],
-                [
-                  "skip"
-                ],
-                [
-                  "next"
-                ]
+                "pick a model"
               ],
               [
-                [
-                  "dark"
-                ],
-                [
-                  "mode"
-                ],
-                [
-                  "visibility"
-                ],
-                [
-                  "light"
-                ]
+                "skip"
+              ],
+              [
+                "next"
+              ],
+              [
+                "dark"
+              ],
+              [
+                "mode"
+              ],
+              [
+                "light"
+              ],
+              [
+                "dots"
+              ],
+              [
+                "checkmark"
               ]
-            ]
+            ],
+            "required_any_min": 2
           }
         }
       ]
@@ -1498,27 +1520,30 @@
             "type": "any",
             "min_words": 5,
             "max_lines": 1,
-            "required_any_groups": [
+            "required_any": [
               [
-                [
-                  "new chat"
-                ],
-                [
-                  "start chatting"
-                ],
-                [
-                  "search"
-                ]
+                "new chat"
               ],
               [
-                [
-                  "mascot"
-                ],
-                [
-                  "tiger"
-                ]
+                "start chatting"
+              ],
+              [
+                "search"
+              ],
+              [
+                "searching"
+              ],
+              [
+                "mascot"
+              ],
+              [
+                "tiger"
+              ],
+              [
+                "empty"
               ]
-            ]
+            ],
+            "required_any_min": 2
           }
         }
       ]
@@ -1593,30 +1618,27 @@
             "type": "any",
             "min_words": 5,
             "max_lines": 1,
-            "required_any_groups": [
+            "required_any": [
               [
-                [
-                  "qwen3.6"
-                ],
-                [
-                  "ready"
-                ],
-                [
-                  "icon"
-                ]
+                "qwen3.6"
               ],
               [
-                [
-                  "border"
-                ],
-                [
-                  "black"
-                ],
-                [
-                  "edges"
-                ]
+                "ready"
+              ],
+              [
+                "icon"
+              ],
+              [
+                "info"
+              ],
+              [
+                "gray"
+              ],
+              [
+                "grey"
               ]
-            ]
+            ],
+            "required_any_min": 2
           }
         }
       ]
@@ -1693,30 +1715,27 @@
             "type": "any",
             "min_words": 5,
             "max_lines": 1,
-            "required_any_groups": [
+            "required_any": [
               [
-                [
-                  "dark"
-                ],
-                [
-                  "light"
-                ],
-                [
-                  "mode"
-                ]
+                "dark"
               ],
               [
-                [
-                  "next"
-                ],
-                [
-                  "blue"
-                ],
-                [
-                  "white"
-                ]
+                "light"
+              ],
+              [
+                "mode"
+              ],
+              [
+                "next"
+              ],
+              [
+                "blue"
+              ],
+              [
+                "white"
               ]
-            ]
+            ],
+            "required_any_min": 2
           }
         }
       ]
@@ -1800,21 +1819,21 @@
             "type": "any",
             "min_words": 5,
             "max_lines": 1,
-            "required_any_groups": [
+            "required_any": [
               [
-                [
-                  "ready"
-                ],
-                [
-                  "idle"
-                ]
+                "ready"
               ],
               [
-                [
-                  "download"
-                ]
+                "idle"
+              ],
+              [
+                "download"
+              ],
+              [
+                "orange"
               ]
-            ]
+            ],
+            "required_any_min": 2
           }
         }
       ]
@@ -1898,21 +1917,21 @@
             "type": "any",
             "min_words": 5,
             "max_lines": 1,
-            "required_any_groups": [
+            "required_any": [
               [
-                [
-                  "starting"
-                ],
-                [
-                  "ready"
-                ]
+                "starting"
               ],
               [
-                [
-                  "spinning"
-                ]
+                "ready"
+              ],
+              [
+                "spinning"
+              ],
+              [
+                "orange"
               ]
-            ]
+            ],
+            "required_any_min": 2
           }
         }
       ]
@@ -1996,24 +2015,21 @@
             "type": "any",
             "min_words": 5,
             "max_lines": 1,
-            "required_any_groups": [
+            "required_any": [
               [
-                [
-                  "pick a model"
-                ],
-                [
-                  "fake-alias"
-                ]
+                "pick a model"
               ],
               [
-                [
-                  "download"
-                ],
-                [
-                  "orange"
-                ]
+                "fake-alias"
+              ],
+              [
+                "download"
+              ],
+              [
+                "orange"
               ]
-            ]
+            ],
+            "required_any_min": 2
           }
         }
       ]

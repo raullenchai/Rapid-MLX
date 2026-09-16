@@ -342,20 +342,25 @@ def test_line_expect_pins_image_order():
     assert not _checker_pass(checker, "Idle and download available\nReady")
 
 
-def test_required_any_groups_require_every_group():
-    # A summary of two prior answers must anchor BOTH: a flat
-    # required_any let a summary drop an entire answer.
+def test_any_required_any_min_requires_multiple_anchors():
+    # Summary turns: a single anchor must not qualify -- the response has
+    # to reference at least ``required_any_min`` distinct alternatives.
     checker = {
         "type": "any",
         "min_words": 5,
-        "required_any_groups": [[["qwen3.6"], ["ready"]], [["icon"], ["info"]]],
+        "required_any": [["ready"], ["dark"], ["skip"], ["next"]],
+        "required_any_min": 2,
     }
-    both = "The model is qwen3.6-27b with a Ready chip and an info icon."
-    assert _checker_pass(checker, both)
-    # Covers answer 1 only.
-    assert not _checker_pass(checker, "The model is qwen3.6-27b and its chip is Ready.")
-    # Covers answer 2 only.
-    assert not _checker_pass(checker, "A circular information icon is visible.")
+    assert _checker_pass(checker, "The dark screen shows Skip and Next buttons.")
+    # One anchor only.
+    assert not _checker_pass(checker, "The status chip is Ready and green.")
+    # No anchors at all.
+    assert not _checker_pass(checker, "The weather is lovely outside today.")
+    # Default stays 1 (plain required_any semantics).
+    assert _checker_pass(
+        {"type": "any", "required_any": [["ready"], ["dark"]]},
+        "The status chip is Ready.",
+    )
 
 
 def test_json_shape_still_parses_fenced_payload():

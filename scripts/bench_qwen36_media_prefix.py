@@ -376,29 +376,26 @@ def _checker_pass(checker: dict[str, Any], text: str) -> bool:
                 return False
         if not _structural_pass(checker, text):
             return False
+        # ``required_any`` anchors semantics: at least ``required_any_min``
+        # (default 1) alternatives must be fully present. The summary turns
+        # use ``required_any_min: 2`` over a pool spanning both prior
+        # answers' subjects, so a summary citing a single anchor — or none
+        # — fails. (An earlier per-answer grouping variant proved brittle:
+        # the detail answer's own phrasing varies at temperature 0 across
+        # hosts, so a partition by answer cannot be grounded stably; the
+        # min-match form expresses "covers more than one answer" robustly.)
         required_any = checker.get("required_any", [])
-        if required_any and not any(
-            all(
-                _term_matches(text_tokens, term, guard_negation=True)
-                for term in alternative
-            )
-            for alternative in required_any
-        ):
-            return False
-        # ``required_any_groups``: AND over groups of OR-alternatives. The
-        # summary turns ("summarize your previous two answers") use one
-        # group per prior answer, so a response that drops an entire
-        # answer fails — a flat ``required_any`` let any single anchor
-        # qualify.
-        required_any_groups = checker.get("required_any_groups", [])
-        for group in required_any_groups:
-            if not any(
-                all(
+        if required_any:
+            required_min = int(checker.get("required_any_min", 1) or 1)
+            matched = sum(
+                1
+                for alternative in required_any
+                if all(
                     _term_matches(text_tokens, term, guard_negation=True)
                     for term in alternative
                 )
-                for alternative in group
-            ):
+            )
+            if matched < required_min:
                 return False
         return True
     raise ValueError(f"unknown checker type: {kind}")
