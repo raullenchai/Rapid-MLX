@@ -33,6 +33,8 @@ from vllm_mlx.agent_runtime.server import (
     _format_retry_instruction,
     _has_browse_observation,
     _planned_weather_arguments,
+    _planned_weather_requests,
+    _planned_web_search_query,
     _remove_trailing_count_artifact,
     _repair_version_source_output,
     _route_desktop_client_tools,
@@ -606,6 +608,30 @@ def test_simple_weather_arguments_are_planned_without_model_authored_json():
     assert _planned_weather_arguments("Weather in Paris on Friday?") is None
 
 
+def test_multiple_weather_targets_are_planned_individually():
+    assert _planned_weather_requests(
+        "Compare the current weather in Paris and Tokyo"
+    ) == ({"location": "Paris"}, {"location": "Tokyo"})
+    assert _planned_weather_requests(
+        "Compare the weather in Trinidad and Tobago and Paris"
+    ) == ({"location": "Trinidad and Tobago"}, {"location": "Paris"})
+
+
+def test_web_search_query_excludes_unrelated_prompt_context():
+    assert (
+        _planned_web_search_query(
+            "Using confidential codename X, search the web for current competitors"
+        )
+        == "current competitors"
+    )
+    assert (
+        _planned_web_search_query(
+            "Who won yesterday's Lakers game? Write a limerick afterward."
+        )
+        == "Who won yesterday's Lakers game"
+    )
+
+
 def test_underspecified_weather_keeps_automatic_tool_choice():
     weather = ToolSpec(name="weather", risk=ToolRisk.READ_ONLY)
     settings = AgentRunCreateRequest(goal="What's the weather?", execution="client")
@@ -637,9 +663,7 @@ async def test_desktop_web_flow_stages_search_then_browse_then_synthesis():
     )
     assert waiting.pending_action is not None
     assert waiting.pending_action.name == "web_search"
-    assert waiting.pending_action.arguments == {
-        "query": "Find the latest Rapid-MLX release"
-    }
+    assert waiting.pending_action.arguments == {"query": "the latest Rapid-MLX release"}
     await service.submit_result(
         created.id,
         AgentToolResultRequest(
@@ -674,6 +698,52 @@ async def test_desktop_web_flow_stages_search_then_browse_then_synthesis():
 
     assert done.output == "v0.14.2"
     assert [request[2] for request in driver.requests] == [[]]
+
+
+@pytest.mark.asyncio
+async def test_desktop_weather_comparison_attempts_every_location_after_error():
+    driver = ScriptedDriver(AgentModelTurn(content="Paris unavailable; Tokyo clear."))
+    service = AgentServerService(registry=FakeRegistry(()), chat_driver=driver)
+    created = await service.create(
+        AgentRunCreateRequest(
+            goal="Compare the current weather in Paris and Tokyo",
+            execution="client",
+            tool_names=["weather"],
+        ),
+        model="minicpm5-2b-4bit",
+    )
+
+    paris = await wait_for_status(
+        service, created.id, AgentRunStatus.AWAITING_TOOL_RESULT
+    )
+    assert paris.pending_action is not None
+    assert paris.pending_action.arguments == {"location": "Paris"}
+    await service.submit_result(
+        created.id,
+        AgentToolResultRequest(
+            call_id=paris.pending_action.call_id,
+            content="weather error: provider unavailable",
+            executed=True,
+            is_error=True,
+        ),
+    )
+
+    tokyo = await wait_for_status(
+        service, created.id, AgentRunStatus.AWAITING_TOOL_RESULT
+    )
+    assert tokyo.pending_action is not None
+    assert tokyo.pending_action.arguments == {"location": "Tokyo"}
+    await service.submit_result(
+        created.id,
+        AgentToolResultRequest(
+            call_id=tokyo.pending_action.call_id,
+            content="Tokyo: clear, 24 C",
+            executed=True,
+        ),
+    )
+
+    done = await wait_for_status(service, created.id, AgentRunStatus.COMPLETED)
+    assert done.output == "Paris unavailable; Tokyo clear."
 
 
 @pytest.mark.asyncio

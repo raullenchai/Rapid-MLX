@@ -216,6 +216,13 @@ _EXPLICIT_SEARCH_ACTION = re.compile(
     r"\b(?:search|look\s+up|find\s+online)\b|(?:搜索|上网查|联网查)",
     re.IGNORECASE,
 )
+_EXPLICIT_SEARCH_QUERY = re.compile(
+    r"\b(?:search|browse)(?:\s+(?:the\s+)?(?:web|internet|online))?\s+"
+    r"(?:for\s+)?(?P<en>[^\n;]+)|"
+    r"\b(?:look\s+up|find\s+online)\s+(?P<lookup>[^\n;]+)|"
+    r"(?:搜索|上网查|联网查)(?:一下|下)?(?:关于)?(?P<zh>[^\n；]+)",
+    re.IGNORECASE,
+)
 _MULTI_SOURCE_INTENT = re.compile(
     r"\b(?:compare|comparison|both|two|multiple|several|across)\b|"
     r"比较|对比|分别|多个|两个|多篇|多条",
@@ -498,23 +505,116 @@ def _repair_version_source_output(
 
 
 def _planned_weather_arguments(goal: str) -> dict[str, Any] | None:
+    planned = _planned_weather_requests(goal)
+    return planned[0] if planned else None
+
+
+def _planned_weather_requests(goal: str) -> tuple[dict[str, Any], ...]:
+    """Extract the bounded sequence of current-weather lookups in a request."""
+
     if _FUTURE_WEATHER_INTENT.search(goal) is not None:
-        return None
+        return ()
     match = _WEATHER_LOCATION.search(goal)
     if match is None:
-        return None
-    location = _WEATHER_COMMA_MODIFIER.split(match.group(1), maxsplit=1)[0]
-    location = _WEATHER_SENTENCE_BOUNDARY.sub("", location)
-    location = _WEATHER_TRAILING_MODIFIER.sub("", location)
-    location = location.strip().rstrip(".,").rstrip()
-    if not location:
-        return None
-    arguments: dict[str, Any] = {"location": location}
+        return ()
+    raw_location = _WEATHER_COMMA_MODIFIER.split(match.group(1), maxsplit=1)[0]
+    raw_location = _WEATHER_SENTENCE_BOUNDARY.sub("", raw_location)
+    raw_location = _WEATHER_TRAILING_MODIFIER.sub("", raw_location)
+    raw_location = raw_location.strip().rstrip(".,").rstrip()
+    if not raw_location:
+        return ()
+
+    # A comparison asks for distinct observations. Split the final conjunction
+    # only: this preserves compound place names in the first target, e.g.
+    # "Trinidad and Tobago and Paris" -> ("Trinidad and Tobago", "Paris").
+    locations = [raw_location]
+    if _MULTI_SOURCE_INTENT.search(goal) is not None:
+        separators = list(
+            re.finditer(
+                r"\s+(?:and|versus|vs\.?)\s+|\s*(?:与|和|及|对比)\s*",
+                raw_location,
+                re.IGNORECASE,
+            )
+        )
+        if separators:
+            separator = separators[-1]
+            parts = [
+                raw_location[: separator.start()],
+                raw_location[separator.end() :],
+            ]
+            if all(part.strip() for part in parts):
+                locations = parts
+
+    units: str | None = None
     if re.search(r"\b(?:celsius|metric)\b|摄氏", goal, re.IGNORECASE):
-        arguments["units"] = "metric"
+        units = "metric"
     elif re.search(r"\b(?:fahrenheit|imperial)\b|华氏", goal, re.IGNORECASE):
-        arguments["units"] = "imperial"
-    return arguments
+        units = "imperial"
+    requests: list[dict[str, Any]] = []
+    for value in locations[:3]:
+        arguments: dict[str, Any] = {"location": value.strip().rstrip(".,")}
+        if units is not None:
+            arguments["units"] = units
+        requests.append(arguments)
+    return tuple(requests)
+
+
+def _planned_web_search_query(goal: str) -> str:
+    """Return a focused lookup term instead of forwarding the whole prompt."""
+
+    explicit = _EXPLICIT_SEARCH_QUERY.search(goal)
+    if explicit is not None:
+        query = (
+            explicit.group("en")
+            or explicit.group("lookup")
+            or explicit.group("zh")
+            or ""
+        )
+    else:
+        # Prefer the one sentence/clause carrying the live-data signal. This
+        # avoids sending unrelated prose or local context to the provider.
+        clauses = re.split(r"[\n;；]+|(?<=[.!?。！？])\s+", goal)
+        query = next(
+            (
+                clause
+                for clause in clauses
+                if _CURRENT_WEB_LOOKUP.search(clause) is not None
+                or _TEMPORAL_WEB_LOOKUP.search(clause) is not None
+            ),
+            "",
+        )
+        if not query:
+            query = next(
+                (
+                    clause
+                    for clause in clauses
+                    if _EXPLICIT_WEB_ACTION.search(clause) is not None
+                ),
+                "",
+            )
+    query = re.sub(
+        r"^\s*(?:please\s+)?(?:find|check|verify|tell\s+me|show\s+me)\s+",
+        "",
+        query,
+        flags=re.IGNORECASE,
+    )
+    query = re.sub(
+        r"\b(?:on|from|using)\s+(?:the\s+)?(?:web|internet|online)\b",
+        "",
+        query,
+        flags=re.IGNORECASE,
+    )
+    query = re.split(
+        r",\s*(?:then\s+)?(?:answer|respond|reply|summari[sz]e|write|"
+        r"format|include|use)\b|(?:，|；)(?:然后)?(?:回答|回复|总结|写|格式|包含|使用)",
+        query,
+        maxsplit=1,
+        flags=re.IGNORECASE,
+    )[0]
+    query = query.strip(" \t\r\n,.;:!?。！？；，")
+    # Routing only reaches this planner for an explicit/current lookup, but
+    # fail closed rather than leaking the original goal if extraction fails.
+    return query[:256]
 
 
 _MAX_ARITHMETIC_PRECISION = 1024
@@ -2150,13 +2250,23 @@ class AgentServerService:
         ):
             return tools
         by_name = {tool.name: tool for tool in tools}
-        called = {
-            call.get("function", {}).get("name")
-            for message in entry.messages
-            for call in message.get("tool_calls", [])
-            if isinstance(call, dict)
+        called_arguments = AgentServerService._called_desktop_arguments(entry)
+        called = set(called_arguments)
+        weather_requests = _planned_weather_requests(entry.run.goal)
+        weather_calls = {
+            json.dumps(arguments, sort_keys=True, separators=(",", ":"))
+            for arguments in called_arguments.get("weather", ())
         }
-        if "weather" in by_name and "weather" not in called:
+        weather_pending = (
+            any(
+                json.dumps(arguments, sort_keys=True, separators=(",", ":"))
+                not in weather_calls
+                for arguments in weather_requests
+            )
+            if weather_requests
+            else not weather_calls
+        )
+        if "weather" in by_name and weather_pending:
             return (by_name["weather"],)
         if "web_search" in by_name and "web_search" not in called:
             return (by_name["web_search"],)
@@ -2166,6 +2276,34 @@ class AgentServerService:
         ):
             return (by_name["browse"],)
         return ()
+
+    @staticmethod
+    def _called_desktop_arguments(
+        entry: _ServerRun,
+    ) -> dict[str, list[dict[str, Any]]]:
+        """Return valid arguments already attempted for each Desktop tool."""
+
+        called: dict[str, list[dict[str, Any]]] = {}
+        for message in entry.messages:
+            for call in message.get("tool_calls", []):
+                if not isinstance(call, dict):
+                    continue
+                function = call.get("function", {})
+                name = function.get("name")
+                if not isinstance(name, str):
+                    continue
+                raw_arguments = function.get("arguments")
+                try:
+                    arguments = (
+                        json.loads(raw_arguments)
+                        if isinstance(raw_arguments, str)
+                        else raw_arguments
+                    )
+                except json.JSONDecodeError:
+                    continue
+                if isinstance(arguments, dict):
+                    called.setdefault(name, []).append(arguments)
+        return called
 
     @staticmethod
     def _planned_browse_arguments(entry: _ServerRun) -> dict[str, Any] | None:
@@ -2285,7 +2423,21 @@ class AgentServerService:
         if entry.settings.execution != "client" or len(visible) != 1:
             return None
         if visible[0].name == "weather":
-            arguments = _planned_weather_arguments(entry.run.goal)
+            called = {
+                json.dumps(arguments, sort_keys=True, separators=(",", ":"))
+                for arguments in AgentServerService._called_desktop_arguments(
+                    entry
+                ).get("weather", ())
+            }
+            arguments = next(
+                (
+                    candidate
+                    for candidate in _planned_weather_requests(entry.run.goal)
+                    if json.dumps(candidate, sort_keys=True, separators=(",", ":"))
+                    not in called
+                ),
+                None,
+            )
             if arguments is None:
                 return None
             return AgentModelTurn(
@@ -2298,7 +2450,10 @@ class AgentServerService:
                 ]
             )
         if visible[0].name == "web_search":
-            arguments = {"query": entry.run.goal[:512]}
+            query = _planned_web_search_query(entry.run.goal)
+            if not query:
+                return None
+            arguments = {"query": query}
             return AgentModelTurn(
                 tool_calls=[
                     AgentToolCall(
