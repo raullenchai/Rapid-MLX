@@ -12,6 +12,7 @@ from __future__ import annotations
 import argparse
 import json
 import re
+import shlex
 import time
 import urllib.error
 import urllib.request
@@ -344,6 +345,43 @@ def _identity_checks(
     }
 
 
+def _suite_command(args: argparse.Namespace) -> str:
+    """Render a shell-safe command that reproduces this exact qualification."""
+
+    command = [
+        "python",
+        "scripts/qualify_personal_intelligence.py",
+        args.model,
+        "--base-url",
+        args.base_url,
+        "--seeds",
+        args.seeds,
+        "--timeout",
+        str(args.timeout),
+        "--hardware",
+        args.hardware,
+        "--os",
+        args.os_version,
+        "--runtime",
+        args.runtime,
+        "--source-revision",
+        args.source_revision,
+        "--server-command",
+        args.server_command,
+        "--expected-profile",
+        args.expected_profile,
+        "--expected-parser",
+        args.expected_parser,
+        "--expected-qualification",
+        args.expected_qualification,
+    ]
+    if args.tasks:
+        command.extend(("--tasks", args.tasks))
+    if args.output:
+        command.extend(("--output", str(args.output)))
+    return shlex.join(command)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("model")
@@ -425,17 +463,7 @@ def main() -> int:
             "runtime": args.runtime,
             "source_revision": args.source_revision,
             "server_command": args.server_command,
-            "suite_command": " ".join(
-                [
-                    "python scripts/qualify_personal_intelligence.py",
-                    args.model,
-                    f"--base-url {args.base_url}",
-                    f"--seeds {args.seeds}",
-                    f"--expected-profile {args.expected_profile}",
-                    f"--expected-parser {args.expected_parser}",
-                    f"--expected-qualification {args.expected_qualification}",
-                ]
-            ),
+            "suite_command": _suite_command(args),
         },
         "tasks": [asdict(task) for task in selected_tasks],
         "identity": {

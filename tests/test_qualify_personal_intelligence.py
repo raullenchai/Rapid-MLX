@@ -1,8 +1,12 @@
+import argparse
+from pathlib import Path
+
 from scripts.qualify_personal_intelligence import (
     TASKS,
     _format_valid,
     _identity_checks,
     _is_complete_qualification_matrix,
+    _suite_command,
 )
 
 
@@ -53,3 +57,38 @@ def test_exact_live_identity_is_part_of_qualification() -> None:
     }.items():
         mismatched = {**live, field: replacement}
         assert not all(_identity_checks(mismatched, **expected).values())
+
+
+def test_receipt_records_a_complete_shell_safe_reproduction_command() -> None:
+    command = _suite_command(
+        argparse.Namespace(
+            model="model alias",
+            base_url="http://127.0.0.1:18951",
+            seeds="11,22,33",
+            timeout=120.0,
+            tasks=None,
+            output=Path("reports/result.json"),
+            hardware="Mac Studio, 256 GB",
+            os_version="macOS 15.6.1 (24G90)",
+            runtime="rapid-mlx source abc; MLX 0.32.2",
+            source_revision="abc123",
+            server_command="PYTHONPATH=$PWD rapid-mlx serve model",
+            expected_profile="profile",
+            expected_parser="parser",
+            expected_qualification="qualification-v1",
+        )
+    )
+    for flag in (
+        "--hardware",
+        "--os",
+        "--runtime",
+        "--source-revision",
+        "--server-command",
+        "--expected-profile",
+        "--expected-parser",
+        "--expected-qualification",
+        "--output",
+    ):
+        assert flag in command
+    assert "'Mac Studio, 256 GB'" in command
+    assert "'PYTHONPATH=$PWD rapid-mlx serve model'" in command

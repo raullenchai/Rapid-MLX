@@ -609,12 +609,19 @@ def test_simple_weather_arguments_are_planned_without_model_authored_json():
 
 
 def test_multiple_weather_targets_are_planned_individually():
+    assert _planned_weather_requests("What is the weather in Paris and London?") == (
+        {"location": "Paris"},
+        {"location": "London"},
+    )
     assert _planned_weather_requests(
         "Compare the current weather in Paris and Tokyo"
     ) == ({"location": "Paris"}, {"location": "Tokyo"})
     assert _planned_weather_requests(
         "Compare the weather in Trinidad and Tobago and Paris"
     ) == ({"location": "Trinidad and Tobago"}, {"location": "Paris"})
+    assert _planned_weather_requests("Weather in Trinidad and Tobago?") == (
+        {"location": "Trinidad and Tobago"},
+    )
 
 
 def test_web_search_query_excludes_unrelated_prompt_context():

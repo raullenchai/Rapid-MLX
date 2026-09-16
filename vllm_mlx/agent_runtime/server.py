@@ -275,6 +275,16 @@ _WEATHER_SENTENCE_BOUNDARY = re.compile(
     r"(?<!\bSt)(?<!\bMt)(?<!\bFt)(?<!\bSte)(?<!\b[A-Z]\.[A-Z])\.)\s+.*$",
     re.IGNORECASE,
 )
+_COMPOUND_WEATHER_LOCATIONS = frozenset(
+    {
+        "antigua and barbuda",
+        "bosnia and herzegovina",
+        "saint kitts and nevis",
+        "saint vincent and the grenadines",
+        "trinidad and tobago",
+        "wallis and futuna",
+    }
+)
 _WEB_URL = re.compile(r"https?://", re.IGNORECASE)
 _WEB_INLINE_URL = re.compile(r"https?://[^\s<>\"']+", re.IGNORECASE)
 _WEB_RESULT_URL = re.compile(
@@ -524,26 +534,25 @@ def _planned_weather_requests(goal: str) -> tuple[dict[str, Any], ...]:
     if not raw_location:
         return ()
 
-    # A comparison asks for distinct observations. Split the final conjunction
-    # only: this preserves compound place names in the first target, e.g.
+    # A conjunction normally asks for distinct observations. Split the final
+    # conjunction only: this preserves compound names in the first target, e.g.
     # "Trinidad and Tobago and Paris" -> ("Trinidad and Tobago", "Paris").
     locations = [raw_location]
-    if _MULTI_SOURCE_INTENT.search(goal) is not None:
-        separators = list(
-            re.finditer(
-                r"\s+(?:and|versus|vs\.?)\s+|\s*(?:与|和|及|对比)\s*",
-                raw_location,
-                re.IGNORECASE,
-            )
+    separators = list(
+        re.finditer(
+            r"\s+(?:and|versus|vs\.?)\s+|\s*(?:与|和|及|对比)\s*",
+            raw_location,
+            re.IGNORECASE,
         )
-        if separators:
-            separator = separators[-1]
-            parts = [
-                raw_location[: separator.start()],
-                raw_location[separator.end() :],
-            ]
-            if all(part.strip() for part in parts):
-                locations = parts
+    )
+    if separators and raw_location.casefold() not in _COMPOUND_WEATHER_LOCATIONS:
+        separator = separators[-1]
+        parts = [
+            raw_location[: separator.start()],
+            raw_location[separator.end() :],
+        ]
+        if all(part.strip() for part in parts):
+            locations = parts
 
     units: str | None = None
     if re.search(r"\b(?:celsius|metric)\b|摄氏", goal, re.IGNORECASE):
