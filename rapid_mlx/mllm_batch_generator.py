@@ -586,11 +586,20 @@ def _extract_detached_singleton_leaf(leaf: Any, idx: int) -> Any:
             value = getattr(leaf, attr, None)
             if value is not None:
                 setattr(detached, attr, mx.contiguous(value[idx : idx + 1]))
+        offset = getattr(leaf, "offset", None)
+        if offset is not None:
+            if hasattr(offset, "shape"):
+                detached.offset = mx.contiguous(offset[idx : idx + 1])
+            else:
+                detached.offset = offset
         materialized = [state for state in detached.cache if state is not None]
         for attr in ("left_padding", "lengths"):
             value = getattr(detached, attr, None)
             if value is not None:
                 materialized.append(value)
+        detached_offset = getattr(detached, "offset", None)
+        if hasattr(detached_offset, "shape"):
+            materialized.append(detached_offset)
         if materialized:
             mx.eval(*materialized)
         return detached

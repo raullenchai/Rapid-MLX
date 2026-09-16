@@ -437,6 +437,14 @@ class TestSingletonExtractionDetachment:
         assert all(type(src) is type(dst) for src, dst in zip(leaves, extracted))
         # Nothing aliases the live leaf objects.
         assert all(src is not dst for src, dst in zip(leaves, extracted))
+        for src, dst in zip(leaves, extracted):
+            src_offset = getattr(src, "offset", None)
+            if src_offset is not None:
+                dst_offset = getattr(dst, "offset", None)
+                if hasattr(src_offset, "shape"):
+                    assert mx.array_equal(dst_offset, src_offset)
+                else:
+                    assert dst_offset == src_offset
 
     @pytest.mark.parametrize(
         "leaf_factory",
@@ -467,17 +475,20 @@ class TestSingletonExtractionDetachment:
                 flat.extend([leaf.keys, leaf.values])
         mx.eval(*flat)
 
-        # Replace every live array with different values, then re-check the
-        # extracted copy still carries the original values.
+        # Mutate every live allocation in place, then re-check the extracted
+        # copy still carries the original values. Rebinding ``leaf.cache``
+        # would not detect a lazy slice that still aliases the old allocation.
         for leaf in leaves:
             states = getattr(leaf, "cache", None)
             if states is not None:
-                leaf.cache = [None if s is None else s + 100.0 for s in states]
+                for state in states:
+                    if state is not None:
+                        state[:] = state + 100.0
                 if getattr(leaf, "offset", None) is not None:
                     leaf.offset = leaf.offset + 100
             else:
-                leaf.keys = leaf.keys + 100.0
-                leaf.values = leaf.values + 100.0
+                leaf.keys[:] = leaf.keys + 100.0
+                leaf.values[:] = leaf.values + 100.0
                 leaf.offset = leaf.offset + 100
         mx.eval(
             *[
