@@ -86,6 +86,9 @@ def _drive_serve_capturing_load_model_kwargs(argv_extra, monkeypatch):
     monkeypatch.setattr(server, "load_model", _stub_load_model)
     monkeypatch.setattr(cli, "_check_alias_min_memory", _spy_check_alias_min_memory)
     monkeypatch.setattr(cli, "_run_uvicorn", lambda *_a, **_kw: None)
+    # post-serve os._exit (#3495) would terminate the pytest process on
+    # this stubbed success path — keep the hard exit out of in-process tests
+    monkeypatch.setattr(cli, "_hard_exit_after_serve", lambda: None)
     monkeypatch.setattr(cli, "_ensure_model_downloaded", lambda *_a, **_kw: None)
     monkeypatch.setattr(cli, "_port_preflight_or_die", lambda *_a, **_kw: None)
     monkeypatch.setattr(cli, "_check_disk_space", lambda *_a, **_kw: None)
@@ -467,6 +470,8 @@ with (
     mock.patch.object(cli, "_port_preflight_or_die", lambda *a, **k: None),
     mock.patch.object(cli, "_resolve_audio_model_for_serve", lambda _n: None),
     mock.patch.object(cli, "_run_uvicorn", _fake_run_uvicorn),
+    # post-serve os._exit (#3495) must not terminate the pytest process
+    mock.patch.object(cli, "_hard_exit_after_serve", lambda: None),
     # server.load_model()'s own MLLM-vs-text routing safety gate (#352):
     # it prefetches + verifies the checkpoint config exists on disk before
     # ``resolve_serving_lane`` reads it, and hard-fails if that verification

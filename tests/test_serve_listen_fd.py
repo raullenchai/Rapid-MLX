@@ -310,6 +310,12 @@ def _free_tcp_port(host: str = "127.0.0.1") -> int:
 def _capture_uvicorn_run(monkeypatch):
     """Patch ``uvicorn.run`` to record kwargs and return without
     actually starting a server. Returns the dict the test asserts on.
+
+    Also stubs ``cli._hard_exit_after_serve`` (#3495): on the real
+    success path uvicorn.run returning flows into the post-serve
+    ``os._exit`` that skips interpreter finalization — in-process tests
+    must not die there. Tests that assert on the hard-exit contract
+    override this stub explicitly.
     """
     captured: dict = {}
 
@@ -320,6 +326,7 @@ def _capture_uvicorn_run(monkeypatch):
     import uvicorn
 
     monkeypatch.setattr(uvicorn, "run", fake_run)
+    monkeypatch.setattr(cli, "_hard_exit_after_serve", lambda: None)
     return captured
 
 
