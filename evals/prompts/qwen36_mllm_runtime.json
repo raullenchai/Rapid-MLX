@@ -150,12 +150,10 @@
         "temperature": 0.0,
         "top_p": 1.0
       },
-      "checker": {
-        "type": "terms",
-        "required": [
-          "n"
-        ]
-      }
+    "checker": {
+      "type": "regex",
+      "pattern": "(?i)(?:⌘\\s*n|(?:command|cmd)\\s*\\+?\\s*n)"
+    }
     },
     {
       "id": "control-04",

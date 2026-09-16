@@ -43,6 +43,7 @@ import asyncio
 import hashlib
 import json
 import random
+import re
 import statistics
 import time
 from pathlib import Path
@@ -91,6 +92,11 @@ def _checker_pass(checker: dict[str, Any], text: str) -> bool:
         return isinstance(payload, dict) and all(
             key in payload for key in checker.get("keys", [])
         )
+    if kind == "regex":
+        pattern = checker.get("pattern")
+        if not isinstance(pattern, str) or not pattern:
+            raise ValueError("regex checker requires a non-empty pattern")
+        return re.fullmatch(pattern, text.strip()) is not None
     if kind == "any":
         return bool(text.strip())
     raise ValueError(f"unknown checker type: {kind}")
@@ -102,6 +108,14 @@ def _median(samples: list[dict[str, Any]], key: str) -> float:
 
 def _delta(after: dict[str, Any], before: dict[str, Any], key: str) -> float:
     return float(after.get(key, 0.0)) - float(before.get(key, 0.0))
+
+
+def _percent_change(after: float | None, before: float | None) -> float | None:
+    """Return a percentage delta, or ``None`` for a zero/missing baseline."""
+
+    if after is None or before is None or before == 0:
+        return None
+    return 100.0 * (after / before - 1.0)
 
 
 def _lifecycle_passes(lifecycle: dict[str, Any], abort_iterations: int) -> bool:
@@ -482,6 +496,10 @@ async def _main() -> None:
     parser.add_argument("--output", type=Path, default=None)
     parser.add_argument("--summary-only", action="store_true")
     args = parser.parse_args()
+    if args.pairs < 0:
+        parser.error("--pairs must be non-negative")
+    if args.pairs == 0 and not args.lifecycle:
+        parser.error("--pairs 0 is valid only with --lifecycle")
 
     from rapid_mlx.engine.batched import BatchedEngine
     from rapid_mlx.scheduler import SchedulerConfig
@@ -599,31 +617,24 @@ async def _main() -> None:
 
         result["summary_change_pct"] = {
             case_id: {
-                "ttft": 100.0
-                * (
-                    result["phases"]["auto"]["summary"][case_id]["median_ttft_s"]
-                    / result["phases"]["off"]["summary"][case_id]["median_ttft_s"]
-                    - 1.0
+                "ttft": _percent_change(
+                    result["phases"]["auto"]["summary"][case_id]["median_ttft_s"],
+                    result["phases"]["off"]["summary"][case_id]["median_ttft_s"],
                 ),
-                "elapsed": 100.0
-                * (
-                    result["phases"]["auto"]["summary"][case_id]["median_elapsed_s"]
-                    / result["phases"]["off"]["summary"][case_id]["median_elapsed_s"]
-                    - 1.0
+                "elapsed": _percent_change(
+                    result["phases"]["auto"]["summary"][case_id]["median_elapsed_s"],
+                    result["phases"]["off"]["summary"][case_id]["median_elapsed_s"],
                 ),
-                "generation_tps": 100.0
-                * (
+                "generation_tps": _percent_change(
                     result["phases"]["auto"]["summary"][case_id][
                         "median_generation_tps"
-                    ]
-                    / result["phases"]["off"]["summary"][case_id][
+                    ],
+                    result["phases"]["off"]["summary"][case_id][
                         "median_generation_tps"
-                    ]
-                    - 1.0
+                    ],
                 ),
             }
             for case_id in result["phases"]["auto"]["summary"]
-            if result["phases"]["off"]["summary"][case_id]["median_ttft_s"]
         }
     finally:
         pass
