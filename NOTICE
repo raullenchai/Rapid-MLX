@@ -20,9 +20,10 @@ history until 2026-02-15. The project was renamed to Rapid-MLX on 2026-03-13.
 
 **The files in this repository have been changed.** Since the rename the
 codebase has been extensively modified, extended, and in large part rewritten
-by the Rapid-MLX contributors; the Python package retains
-the `rapid_mlx` import name from its origin. Neither the original authors nor
-any upstream project endorses this distribution. The complete record of what
+by the Rapid-MLX contributors; the Python package now uses the `rapid_mlx`
+import name and retains `vllm_mlx` as a deprecated compatibility shim. Neither
+the original authors nor any upstream project endorses this distribution. The
+complete record of what
 changed, when, and by whom is preserved in the git history of this repository.
 
 Rapid-MLX is not affiliated with, and is not a distribution of, the vLLM
