@@ -44,6 +44,35 @@ import rapid_mlx as _rapid_mlx
 
 __version__ = _rapid_mlx.__version__
 
+
+class _RapidMlxLegacyResourceLoader:
+    """Keep package discovery/resources working through the legacy name."""
+
+    def __init__(self, legacy_loader, target_loader):
+        self._legacy_loader = legacy_loader
+        self._target_loader = target_loader
+
+    def __getattr__(self, name):
+        return getattr(self._legacy_loader, name)
+
+    def get_resource_reader(self, fullname):
+        get_reader = getattr(self._target_loader, "get_resource_reader", None)
+        return None if get_reader is None else get_reader(_rapid_mlx.__name__)
+
+
+# The shim directory intentionally contains only this module. Point package
+# discovery at the renamed tree so integrations that enumerate
+# ``vllm_mlx.__path__`` keep seeing the same submodules during the deprecation
+# window. Resource APIs consult the package loader rather than ``__path__``,
+# so delegate those reads separately; this preserves access to top-level data
+# such as aliases.json without shipping a second, drift-prone copy.
+__path__ = list(_rapid_mlx.__path__)
+if __spec__ is not None:
+    __spec__.submodule_search_locations = list(__path__)
+    if __loader__ is not None and _rapid_mlx.__loader__ is not None:
+        __loader__ = _RapidMlxLegacyResourceLoader(__loader__, _rapid_mlx.__loader__)
+        __spec__.loader = __loader__
+
 # ``from vllm_mlx import *`` must keep yielding the same engine names as
 # before the rename (the pre-rename package defined the identical
 # ``__all__``). Star-import resolves each name through ``__getattr__``,
@@ -135,6 +164,8 @@ class _RapidMlxModuleAliasFinder:
     handles them.
     """
 
+    _rapid_mlx_alias_finder = True
+
     def find_spec(self, fullname, path=None, target=None):
         if not fullname.startswith(_PREFIX):
             return None
@@ -183,7 +214,9 @@ class _RapidMlxModuleAliasFinder:
 
 def _install_alias_finder() -> None:
     for finder in sys.meta_path:
-        if isinstance(finder, _RapidMlxModuleAliasFinder):
+        # Class identity changes when the shim itself is reloaded, so an
+        # isinstance check is not idempotent across importlib.reload().
+        if getattr(finder, "_rapid_mlx_alias_finder", False):
             return  # idempotent (e.g. interpreter reload scenarios)
     sys.meta_path.insert(0, _RapidMlxModuleAliasFinder())
 

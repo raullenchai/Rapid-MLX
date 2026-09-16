@@ -30,8 +30,10 @@ happens, delete this file together with ``vllm_mlx/``.
 """
 
 import importlib
+import importlib.resources
 import importlib.util
 import pathlib
+import pkgutil
 import subprocess
 import sys
 
@@ -91,6 +93,36 @@ def test_shim_submodule_aliases_same_module_object():
     modern = importlib.import_module("rapid_mlx.chip_tier")
     assert legacy is modern
     assert sys.modules["vllm_mlx.chip_tier"] is sys.modules["rapid_mlx.chip_tier"]
+
+
+def test_shim_preserves_package_discovery_and_top_level_resources(monkeypatch):
+    """External integrations may discover modules/data through the old package."""
+    shim = _fresh_import_vllm_mlx(monkeypatch)
+
+    discovered = {entry.name for entry in pkgutil.iter_modules(shim.__path__)}
+    assert {"cli", "engine", "server"} <= discovered
+
+    root = importlib.resources.files(shim)
+    assert root.joinpath("aliases.json").is_file()
+    assert root.joinpath("model_recommendations.json").is_file()
+
+
+def test_shim_reload_does_not_stack_alias_finders(monkeypatch):
+    shim = _fresh_import_vllm_mlx(monkeypatch)
+
+    def installed_finders():
+        return [
+            finder
+            for finder in sys.meta_path
+            if getattr(finder, "_rapid_mlx_alias_finder", False)
+        ]
+
+    before = installed_finders()
+    importlib.reload(shim)
+    after = installed_finders()
+
+    assert len(after) == len(before) == 1
+    assert after[0] is before[0]
 
 
 def test_shim_nested_submodule_aliases_same_module_object():
