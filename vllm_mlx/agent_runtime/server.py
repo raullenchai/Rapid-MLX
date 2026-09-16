@@ -246,6 +246,9 @@ _SOURCE_URL_INTENT = re.compile(
     r"(?:附上|给出|提供|返回|显示).{0,20}(?:链接|网址|URL)",
     re.IGNORECASE,
 )
+_DASH_SOURCE_FORMAT = re.compile(
+    r"\b(?:em|en)\s+dash\b|[—–]|(?:破折号|长横线)", re.IGNORECASE
+)
 _WEATHER_LOCATION = re.compile(
     r"\b(?:weather|temperature|forecast)\s+(?:in|for)\s+([^?;\n]+?)"
     r"(?=[?;\n]|$)",
@@ -296,6 +299,12 @@ _COMPOUND_WEATHER_LOCATIONS = frozenset(
 )
 _NONTERMINAL_ABBREVIATION = re.compile(
     r"\b(?:mr|mrs|ms|dr|prof|sr|jr|st|mt|ft|vs|etc)\.$", re.IGNORECASE
+)
+_NON_LOCATION_WEATHER_TARGET = re.compile(
+    r"^(?:(?:the\s+)?(?:latest|recent|current|today(?:'s)?)\s+)?"
+    r"(?:news|headlines|release|version|price|score|schedule|results?)\b|"
+    r"^(?:最新|近期|当前|今天的)?(?:新闻|头条|发布|版本|价格|比分|赛程|结果)",
+    re.IGNORECASE,
 )
 _WEB_URL = re.compile(r"https?://", re.IGNORECASE)
 _WEB_INLINE_URL = re.compile(r"https?://[^\s<>\"']+", re.IGNORECASE)
@@ -475,6 +484,7 @@ def _repair_version_source_output(
         or not turn.content
         or exact_output_requested is None
         or _SOURCE_URL_INTENT.search(goal) is None
+        or _DASH_SOURCE_FORMAT.search(goal) is None
         or re.search(r"\b(?:version|release)\b|版本|发布", goal, re.IGNORECASE) is None
     ):
         return turn
@@ -566,7 +576,6 @@ def _planned_weather_requests(goal: str) -> tuple[dict[str, Any], ...]:
     # A conjunction normally asks for distinct observations. Split the final
     # conjunction only: this preserves compound names in the first target, e.g.
     # "Trinidad and Tobago and Paris" -> ("Trinidad and Tobago", "Paris").
-    locations = [raw_location]
     separators = list(
         re.finditer(
             r"\s+(?:and|versus|vs\.?)\s+|\s*(?:与|和|及|对比)\s*",
@@ -574,6 +583,13 @@ def _planned_weather_requests(goal: str) -> tuple[dict[str, Any], ...]:
             re.IGNORECASE,
         )
     )
+    if separators:
+        separator = separators[-1]
+        trailing_target = raw_location[separator.end() :].strip()
+        if _NON_LOCATION_WEATHER_TARGET.search(trailing_target) is not None:
+            raw_location = raw_location[: separator.start()].strip()
+            separators = []
+    locations = [raw_location]
     if separators and raw_location.casefold() not in _COMPOUND_WEATHER_LOCATIONS:
         separator = separators[-1]
         parts = [
@@ -636,6 +652,11 @@ def _planned_web_search_query(goal: str) -> str:
         query,
         flags=re.IGNORECASE,
     )
+    query = re.split(
+        r"(?<=[!?。！？])\s+|(?<!\d)\.(?=\s+[A-Z])",
+        query,
+        maxsplit=1,
+    )[0]
     query = re.sub(
         r"\b(?:on|from|using)\s+(?:the\s+)?(?:web|internet|online)\b",
         "",
