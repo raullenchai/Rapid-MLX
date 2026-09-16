@@ -198,6 +198,15 @@ def _warm_phase_qualified(phase: dict[str, Any], require_singleton: bool) -> boo
     return cold_is_cold and warm_is_warm
 
 
+def _measured_fastpath_engaged(phase: dict[str, Any]) -> bool:
+    """Return whether a measured sample, rather than warmup, used the fast path."""
+    return any(
+        int(sample.get("singleton_batch_delta", 0)) > 0
+        for samples in phase.get("per_case", {}).values()
+        for sample in samples
+    )
+
+
 async def _run_case(
     engine: Any,
     case: dict[str, Any],
@@ -581,6 +590,10 @@ async def _main() -> None:
     ]
     if not cases:
         raise SystemExit("no manifest cases selected")
+    if args.lifecycle and sum(bool(case.get("images")) for case in cases) < 2:
+        parser.error(
+            "--lifecycle requires at least two selected cases with image fixtures"
+        )
 
     result: dict[str, Any] = {
         "model": str(Path(args.model).expanduser().resolve()),
@@ -664,10 +677,9 @@ async def _main() -> None:
         # The candidate phase must actually have taken the fast path, and the
         # baseline must never have: an eligibility regression would otherwise
         # compare off vs off and record a vacuous pass as qualification.
-        result["fastpath_engaged"] = (
-            result["phases"]["auto"]["singleton_batches"] > 0
-            and result["phases"]["off"]["singleton_batches"] == 0
-        )
+        result["fastpath_engaged"] = _measured_fastpath_engaged(
+            result["phases"]["auto"]
+        ) and not _measured_fastpath_engaged(result["phases"]["off"])
         # Warm-hit qualification requires the APC to actually serve hits in
         # both phases. mlx-vlm's exact APC stores a turn boundary only when
         # it clears ``APC_EXACT_MIN_TOKENS`` (default 16), so the manifest

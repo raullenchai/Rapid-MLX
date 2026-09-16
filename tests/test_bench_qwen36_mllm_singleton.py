@@ -7,6 +7,7 @@ from scripts.bench_qwen36_mllm_singleton import (
     _checker_pass,
     _hash_streams_exact,
     _lifecycle_passes,
+    _measured_fastpath_engaged,
     _percent_change,
     _warm_phase_qualified,
 )
@@ -150,6 +151,36 @@ def test_unknown_case_id_is_rejected() -> None:
     )
     assert result.returncode == 2
     assert "unknown --cases id(s): typo-case" in result.stderr
+
+
+def test_lifecycle_requires_two_selected_media_cases() -> None:
+    for selected in (("text-warm-01",), ("ocr-01",)):
+        command = [
+            sys.executable,
+            "-m",
+            "scripts.bench_qwen36_mllm_singleton",
+            "--model",
+            "unused",
+            "--lifecycle",
+        ]
+        for case_id in selected:
+            command.extend(("--cases", case_id))
+        result = subprocess.run(command, capture_output=True, text=True, check=False)
+        assert result.returncode == 2
+        assert (
+            "requires at least two selected cases with image fixtures" in result.stderr
+        )
+
+
+def test_fastpath_engagement_ignores_unmeasured_warmup_counter() -> None:
+    phase = {
+        "singleton_batches": 1,
+        "per_case": {"ocr-01": [{"singleton_batch_delta": 0}]},
+    }
+    assert not _measured_fastpath_engaged(phase)
+
+    phase["per_case"]["ocr-01"].append({"singleton_batch_delta": 1})
+    assert _measured_fastpath_engaged(phase)
 
 
 def test_warm_gate_requires_measured_hit_and_candidate_singleton() -> None:
