@@ -579,9 +579,6 @@ async def _main() -> None:
     if args.abort_iterations <= 0:
         parser.error("--abort-iterations must be positive")
 
-    from rapid_mlx.engine.batched import BatchedEngine
-    from rapid_mlx.scheduler import SchedulerConfig
-
     manifest = json.loads(args.manifest.read_text())
     # Image paths resolve against <manifest-dir>/<images_root> so a manifest
     # nested under evals/prompts/ points at repo-tracked fixtures portably.
@@ -601,6 +598,11 @@ async def _main() -> None:
         parser.error(
             "--lifecycle requires at least two selected cases with image fixtures"
         )
+
+    # Keep validation usable on non-MLX hosts (including Linux CI) by loading
+    # the runtime only after every argument and manifest contract has passed.
+    from rapid_mlx.engine.batched import BatchedEngine
+    from rapid_mlx.scheduler import SchedulerConfig
 
     result: dict[str, Any] = {
         "model": str(Path(args.model).expanduser().resolve()),
