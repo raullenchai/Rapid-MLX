@@ -377,13 +377,7 @@ def _checker_pass(checker: dict[str, Any], text: str) -> bool:
         if not _structural_pass(checker, text):
             return False
         # ``required_any`` anchors semantics: at least ``required_any_min``
-        # (default 1) alternatives must be fully present. The summary turns
-        # use ``required_any_min: 2`` over a pool spanning both prior
-        # answers' subjects, so a summary citing a single anchor — or none
-        # — fails. (An earlier per-answer grouping variant proved brittle:
-        # the detail answer's own phrasing varies at temperature 0 across
-        # hosts, so a partition by answer cannot be grounded stably; the
-        # min-match form expresses "covers more than one answer" robustly.)
+        # (default 1) alternatives must be fully present.
         required_any = checker.get("required_any", [])
         if required_any:
             required_min = int(checker.get("required_any_min", 1) or 1)
@@ -396,6 +390,23 @@ def _checker_pass(checker: dict[str, Any], text: str) -> bool:
                 )
             )
             if matched < required_min:
+                return False
+        # ``required_any_groups``: AND over groups of OR-alternatives — the
+        # summary turns use one group per prior answer, so a response that
+        # drops an entire answer fails even though its anchors also occur
+        # in the other answer. Each group's alternatives span the subject's
+        # phrasings observed across hosts (detail answers vary at
+        # temperature 0 across machines; a single phrasing is not
+        # groundable).
+        required_any_groups = checker.get("required_any_groups", [])
+        for group in required_any_groups:
+            if not any(
+                all(
+                    _term_matches(text_tokens, term, guard_negation=True)
+                    for term in alternative
+                )
+                for alternative in group
+            ):
                 return False
         return True
     raise ValueError(f"unknown checker type: {kind}")
@@ -457,14 +468,16 @@ def _resume_regressions(
     media-hit delta; ``cached_tokens`` alone would also count text
     exact-cache warm hits, which are not this feature's latency to
     defend) is compared against the baseline median TTFT for its turn;
-    medians never mix cold and resumed executions. Turn 1 (the store turn) is excluded —
-    its bounded snapshot cost is documented in the design note.
+    medians never mix cold and resumed executions. Turns 0-1 are excluded
+    (turn 1 is the documented store turn — its bounded snapshot cost is in
+    the design note — and a turn-1 "resume" can only come from an earlier
+    pass's same-prompt entry, not this pass's lifecycle).
     """
     flagged: list[dict[str, Any]] = []
     for pass_index, passes in enumerate(auto_passes):
         for sample in passes:
             turn = sample["turn"]
-            if turn < 1 or not sample["media_hit"]:
+            if turn < 2 or not sample["media_hit"]:
                 continue
             baseline = baseline_median_by_turn.get(turn)
             if baseline is None or baseline <= 0:
@@ -560,34 +573,30 @@ async def _run_phase(
     # and the latency gates would never observe the documented store-turn
     # cost (and a warmup-only store would keep the cache alive without any
     # measured pass proving it can store). Drop every cached entry and
-    # reset the counters so the measured passes are self-contained — store
-    # on the store turn, resume on the turns after — and the engagement
-    # counters measure exactly those passes.
-    engine.clear_prefix_cache(reset_stats=True)
-    warmup_stats = engine.get_stats().get("media_prefix_cache") or {}
+    # reset the counters before EACH measured pass so every pass runs the
+    # full store→resume lifecycle self-contained — store on the store turn,
+    # resume on the turns after — and no pass starts from a prior pass's
+    # leftovers.
     by_conversation: dict[str, list[list[dict[str, Any]]]] = {
         conversation["id"]: [] for conversation in conversations
     }
+    media = {key: 0 for key in ("hits", "misses", "stores", "budget_evictions")}
     for _ in range(pairs):
+        engine.clear_prefix_cache(reset_stats=True)
         for conversation in conversations:
             by_conversation[conversation["id"]].append(
                 await _replay_conversation(engine, conversation, repo_root)
             )
-    measured_stats = engine.get_stats().get("media_prefix_cache") or {}
-    media = {
-        # Counters delta over the measured passes; gauges (entries/bytes/
+        # Counters were reset at the pass start, so the post-pass values are
+        # that pass's totals; sum across passes. Gauges (entries/bytes/
         # budget) report the end-of-phase state as-is.
-        **{
-            key: int(measured_stats.get(key, 0) or 0)
-            - int(warmup_stats.get(key, 0) or 0)
-            for key in ("hits", "misses", "stores", "budget_evictions")
-        },
-        **{
-            key: measured_stats[key]
-            for key in ("entries", "bytes", "budget_bytes")
-            if key in measured_stats
-        },
-    }
+        pass_stats = engine.get_stats().get("media_prefix_cache") or {}
+        for key in media:
+            media[key] += int(pass_stats.get(key, 0) or 0)
+        if "entries" in pass_stats:
+            for key in ("entries", "bytes", "budget_bytes"):
+                if key in pass_stats:
+                    media[key] = pass_stats[key]
     return {
         "per_conversation": by_conversation,
         "media_prefix_cache": media,
@@ -756,6 +765,11 @@ async def _main() -> None:
                     ]
                 )
             exact_by_turn[conversation_id] = flags
+            # ``checker_flags`` is turn-major ([off, auto] per turn);
+            # ``zip(*...)`` transposes to phase-major columns, so each
+            # ``all(pair)`` is one phase's all-turns verdict. The gate only
+            # needs "checkers pass in both phases on every turn", which this
+            # preserves — a failed turn fails its phase column.
             checker_pass_both[conversation_id] = [
                 all(pair) for pair in zip(*checker_flags)
             ]

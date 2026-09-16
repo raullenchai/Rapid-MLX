@@ -83,21 +83,24 @@
             "type": "any",
             "min_words": 5,
             "max_lines": 1,
-            "required_any": [
+            "required_any_groups": [
               [
-                "qwen3.6"
+                [
+                  "qwen3.6"
+                ],
+                [
+                  "ready"
+                ]
               ],
               [
-                "ready"
-              ],
-              [
-                "icon"
-              ],
-              [
-                "info"
+                [
+                  "icon"
+                ],
+                [
+                  "circular"
+                ]
               ]
-            ],
-            "required_any_min": 2
+            ]
           }
         }
       ]
@@ -173,21 +176,21 @@
             "type": "any",
             "min_words": 5,
             "max_lines": 1,
-            "required_any": [
+            "required_any_groups": [
               [
-                "pick a model"
+                [
+                  "pick"
+                ],
+                [
+                  "installed"
+                ]
               ],
               [
-                "not installed"
-              ],
-              [
-                "download"
-              ],
-              [
-                "cloud"
+                [
+                  "cloud"
+                ]
               ]
-            ],
-            "required_any_min": 2
+            ]
           }
         }
       ]
@@ -261,27 +264,24 @@
             "type": "any",
             "min_words": 5,
             "max_lines": 1,
-            "required_any": [
+            "required_any_groups": [
               [
-                "fake-alias"
+                [
+                  "alias"
+                ],
+                [
+                  "spinning"
+                ]
               ],
               [
-                "starting"
-              ],
-              [
-                "spinning"
-              ],
-              [
-                "orange"
-              ],
-              [
-                "dot"
-              ],
-              [
-                "subtitle"
+                [
+                  "orange"
+                ],
+                [
+                  "dot"
+                ]
               ]
-            ],
-            "required_any_min": 2
+            ]
           }
         }
       ]
@@ -366,36 +366,44 @@
             "type": "any",
             "min_words": 5,
             "max_lines": 1,
-            "required_any": [
+            "required_any_groups": [
               [
-                "new chat"
+                [
+                  "new",
+                  "chat"
+                ],
+                [
+                  "search"
+                ],
+                [
+                  "start",
+                  "chatting"
+                ]
               ],
               [
-                "search chats"
-              ],
-              [
-                "start chatting"
-              ],
-              [
-                "⌘n"
-              ],
-              [
-                "cmd+n"
-              ],
-              [
-                "command+n"
-              ],
-              [
-                "dog"
-              ],
-              [
-                "mascot"
-              ],
-              [
-                "rapid-mlx"
+                [
+                  "⌘n"
+                ],
+                [
+                  "cmd+n"
+                ],
+                [
+                  "command+n"
+                ],
+                [
+                  "press"
+                ],
+                [
+                  "hint"
+                ],
+                [
+                  "dog"
+                ],
+                [
+                  "mascot"
+                ]
               ]
-            ],
-            "required_any_min": 2
+            ]
           }
         }
       ]
@@ -465,21 +473,18 @@
             "type": "any",
             "min_words": 5,
             "max_lines": 1,
-            "required_any": [
+            "required_any_groups": [
               [
-                "skip"
+                [
+                  "skip"
+                ]
               ],
               [
-                "checkmark"
-              ],
-              [
-                "icon"
-              ],
-              [
-                "blue"
+                [
+                  "checkmark"
+                ]
               ]
-            ],
-            "required_any_min": 2
+            ]
           }
         }
       ]
@@ -553,24 +558,21 @@
             "type": "any",
             "min_words": 5,
             "max_lines": 1,
-            "required_any": [
+            "required_any_groups": [
               [
-                "next"
+                [
+                  "next"
+                ],
+                [
+                  "bottom"
+                ]
               ],
               [
-                "checkmark"
-              ],
-              [
-                "icon"
-              ],
-              [
-                "blue"
-              ],
-              [
-                "bottom right"
+                [
+                  "checkmark"
+                ]
               ]
-            ],
-            "required_any_min": 2
+            ]
           }
         }
       ]
@@ -648,30 +650,18 @@
             "type": "any",
             "min_words": 5,
             "max_lines": 1,
-            "required_any": [
+            "required_any_groups": [
               [
-                "⌘n"
+                [
+                  "⌘n"
+                ]
               ],
               [
-                "cmd+n"
-              ],
-              [
-                "command+n"
-              ],
-              [
-                "icon"
-              ],
-              [
-                "rapid-mlx"
-              ],
-              [
-                "mascot"
-              ],
-              [
-                "cartoon"
+                [
+                  "cartoon"
+                ]
               ]
-            ],
-            "required_any_min": 2
+            ]
           }
         }
       ]
@@ -741,24 +731,18 @@
             "type": "any",
             "min_words": 5,
             "max_lines": 1,
-            "required_any": [
+            "required_any_groups": [
               [
-                "right"
+                [
+                  "right"
+                ]
               ],
               [
-                "spinning"
-              ],
-              [
-                "starting"
-              ],
-              [
-                "orange"
-              ],
-              [
-                "dot"
+                [
+                  "spinning"
+                ]
               ]
-            ],
-            "required_any_min": 2
+            ]
           }
         }
       ]
@@ -845,24 +829,24 @@
             "type": "any",
             "min_words": 5,
             "max_lines": 1,
-            "required_any": [
+            "required_any_groups": [
               [
-                "qwen3.6"
+                [
+                  "stop"
+                ],
+                [
+                  "action"
+                ]
               ],
               [
-                "ready"
-              ],
-              [
-                "stop"
-              ],
-              [
-                "icon"
-              ],
-              [
-                "info"
+                [
+                  "info"
+                ],
+                [
+                  "icon"
+                ]
               ]
-            ],
-            "required_any_min": 2
+            ]
           }
         }
       ]
@@ -959,30 +943,32 @@
             "type": "any",
             "min_words": 5,
             "max_lines": 1,
-            "required_any": [
+            "required_any_groups": [
               [
-                "rapid-mlx"
+                [
+                  "title"
+                ],
+                [
+                  "new",
+                  "chat"
+                ],
+                [
+                  "search"
+                ],
+                [
+                  "start",
+                  "chatting"
+                ]
               ],
               [
-                "new chat"
-              ],
-              [
-                "search chats"
-              ],
-              [
-                "start chatting"
-              ],
-              [
-                "⌘n"
-              ],
-              [
-                "cmd+n"
-              ],
-              [
-                "command+n"
+                [
+                  "⌘n"
+                ],
+                [
+                  "press"
+                ]
               ]
-            ],
-            "required_any_min": 2
+            ]
           }
         }
       ]
@@ -1067,21 +1053,21 @@
             "type": "any",
             "min_words": 5,
             "max_lines": 1,
-            "required_any": [
+            "required_any_groups": [
               [
-                "pick a model"
+                [
+                  "heading"
+                ],
+                [
+                  "pick"
+                ]
               ],
               [
-                "next"
-              ],
-              [
-                "checkmark"
-              ],
-              [
-                "icon"
+                [
+                  "checkmark"
+                ]
               ]
-            ],
-            "required_any_min": 2
+            ]
           }
         }
       ]
@@ -1189,33 +1175,27 @@
             "type": "any",
             "min_words": 5,
             "max_lines": 1,
-            "required_any": [
+            "required_any_groups": [
               [
-                "qwen3.6"
+                [
+                  "idle"
+                ],
+                [
+                  "fake"
+                ]
               ],
               [
-                "fake-alias"
-              ],
-              [
-                "idle"
-              ],
-              [
-                "ready"
-              ],
-              [
-                "icon"
-              ],
-              [
-                "information"
-              ],
-              [
-                "models and statuses"
-              ],
-              [
-                "download"
+                [
+                  "cloud"
+                ],
+                [
+                  "icon"
+                ],
+                [
+                  "upload"
+                ]
               ]
-            ],
-            "required_any_min": 2
+            ]
           }
         }
       ]
@@ -1296,33 +1276,42 @@
             "type": "any",
             "min_words": 5,
             "max_lines": 1,
-            "required_any": [
+            "required_any_groups": [
               [
-                "pick a model"
+                [
+                  "indicators"
+                ],
+                [
+                  "hierarchy"
+                ]
               ],
               [
-                "next"
-              ],
-              [
-                "skip"
-              ],
-              [
-                "dot"
-              ],
-              [
-                "dots"
-              ],
-              [
-                "checkmark"
-              ],
-              [
-                "indicator"
-              ],
-              [
-                "indicators"
+                [
+                  "dots"
+                ],
+                [
+                  "dot"
+                ],
+                [
+                  "indicator"
+                ],
+                [
+                  "indicators"
+                ],
+                [
+                  "filled"
+                ],
+                [
+                  "minimalist"
+                ],
+                [
+                  "background"
+                ],
+                [
+                  "padding"
+                ]
               ]
-            ],
-            "required_any_min": 2
+            ]
           }
         }
       ]
@@ -1417,33 +1406,48 @@
             "type": "any",
             "min_words": 5,
             "max_lines": 1,
-            "required_any": [
+            "required_any_groups": [
               [
-                "pick a model"
+                [
+                  "skip"
+                ],
+                [
+                  "checkmark"
+                ],
+                [
+                  "dark"
+                ]
               ],
               [
-                "skip"
-              ],
-              [
-                "next"
-              ],
-              [
-                "dark"
-              ],
-              [
-                "mode"
-              ],
-              [
-                "light"
-              ],
-              [
-                "dots"
-              ],
-              [
-                "checkmark"
+                [
+                  "dark"
+                ],
+                [
+                  "mode"
+                ],
+                [
+                  "light"
+                ],
+                [
+                  "contrast"
+                ],
+                [
+                  "rounded"
+                ],
+                [
+                  "blue"
+                ],
+                [
+                  "primary"
+                ],
+                [
+                  "dots"
+                ],
+                [
+                  "filled"
+                ]
               ]
-            ],
-            "required_any_min": 2
+            ]
           }
         }
       ]
@@ -1520,30 +1524,21 @@
             "type": "any",
             "min_words": 5,
             "max_lines": 1,
-            "required_any": [
+            "required_any_groups": [
               [
-                "new chat"
+                [
+                  "sidebar"
+                ]
               ],
               [
-                "start chatting"
-              ],
-              [
-                "search"
-              ],
-              [
-                "searching"
-              ],
-              [
-                "mascot"
-              ],
-              [
-                "tiger"
-              ],
-              [
-                "empty"
+                [
+                  "tiger"
+                ],
+                [
+                  "mascot"
+                ]
               ]
-            ],
-            "required_any_min": 2
+            ]
           }
         }
       ]
@@ -1618,27 +1613,30 @@
             "type": "any",
             "min_words": 5,
             "max_lines": 1,
-            "required_any": [
+            "required_any_groups": [
               [
-                "qwen3.6"
+                [
+                  "ready"
+                ],
+                [
+                  "qwen3.6"
+                ]
               ],
               [
-                "ready"
-              ],
-              [
-                "icon"
-              ],
-              [
-                "info"
-              ],
-              [
-                "gray"
-              ],
-              [
-                "grey"
+                [
+                  "border"
+                ],
+                [
+                  "black"
+                ],
+                [
+                  "edges"
+                ],
+                [
+                  "frame"
+                ]
               ]
-            ],
-            "required_any_min": 2
+            ]
           }
         }
       ]
@@ -1715,27 +1713,30 @@
             "type": "any",
             "min_words": 5,
             "max_lines": 1,
-            "required_any": [
+            "required_any_groups": [
               [
-                "dark"
+                [
+                  "dark"
+                ],
+                [
+                  "light"
+                ]
               ],
               [
-                "light"
-              ],
-              [
-                "mode"
-              ],
-              [
-                "next"
-              ],
-              [
-                "blue"
-              ],
-              [
-                "white"
+                [
+                  "color"
+                ],
+                [
+                  "blue"
+                ],
+                [
+                  "white"
+                ],
+                [
+                  "button"
+                ]
               ]
-            ],
-            "required_any_min": 2
+            ]
           }
         }
       ]
@@ -1819,21 +1820,24 @@
             "type": "any",
             "min_words": 5,
             "max_lines": 1,
-            "required_any": [
+            "required_any_groups": [
               [
-                "ready"
+                [
+                  "idle"
+                ],
+                [
+                  "ready"
+                ]
               ],
               [
-                "idle"
-              ],
-              [
-                "download"
-              ],
-              [
-                "orange"
+                [
+                  "orange"
+                ],
+                [
+                  "download"
+                ]
               ]
-            ],
-            "required_any_min": 2
+            ]
           }
         }
       ]
@@ -1917,21 +1921,21 @@
             "type": "any",
             "min_words": 5,
             "max_lines": 1,
-            "required_any": [
+            "required_any_groups": [
               [
-                "starting"
+                [
+                  "starting"
+                ],
+                [
+                  "ready"
+                ]
               ],
               [
-                "ready"
-              ],
-              [
-                "spinning"
-              ],
-              [
-                "orange"
+                [
+                  "spinning"
+                ]
               ]
-            ],
-            "required_any_min": 2
+            ]
           }
         }
       ]
@@ -2015,21 +2019,24 @@
             "type": "any",
             "min_words": 5,
             "max_lines": 1,
-            "required_any": [
+            "required_any_groups": [
               [
-                "pick a model"
+                [
+                  "fake"
+                ],
+                [
+                  "pick"
+                ]
               ],
               [
-                "fake-alias"
-              ],
-              [
-                "download"
-              ],
-              [
-                "orange"
+                [
+                  "orange"
+                ],
+                [
+                  "screenshot"
+                ]
               ]
-            ],
-            "required_any_min": 2
+            ]
           }
         }
       ]

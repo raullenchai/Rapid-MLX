@@ -297,15 +297,23 @@ def test_resume_regressions_compare_each_resumed_sample_to_baseline():
     # Pass 0's turn-3 sample (0.9s) is 1.8x the baseline median; the same
     # slot's other pass (0.2s) is fine — per-sample gating flags the slow
     # one instead of letting the median hide it. Turn-2 samples straddle
-    # the margin without crossing it. Store-turn samples (turn 1) never
-    # count regardless of latency, cold samples are never compared, and a
-    # text warm hit (cached_tokens > 0 without a media hit) is not this
-    # feature's latency to defend:
+    # the margin without crossing it. Turns 0-1 never count regardless of
+    # latency (turn 1 is the documented store turn; a turn-1 "resume" can
+    # only come from an earlier pass's same-prompt entry, not this pass's
+    # lifecycle), cold samples are never compared, and a text warm hit
+    # (cached_tokens > 0 without a media hit) is not this feature's
+    # latency to defend:
     text_warm = dict(_pass(2, 9.9, 64), media_hit=False)
     assert (
         _resume_regressions(
-            [[dict(_pass(1, 9.9, 0), media_hit=False), text_warm]],
-            {2: 0.5},
+            [
+                [
+                    dict(_pass(1, 9.9, 0), media_hit=False),
+                    dict(_pass(1, 9.9, 64), media_hit=True),
+                    text_warm,
+                ]
+            ],
+            {1: 0.5, 2: 0.5},
             margin=1.15,
         )
         == []
@@ -361,6 +369,25 @@ def test_any_required_any_min_requires_multiple_anchors():
         {"type": "any", "required_any": [["ready"], ["dark"]]},
         "The status chip is Ready.",
     )
+
+
+def test_any_required_any_groups_require_every_answer():
+    # Summary turns: one group per prior answer — a response that drops an
+    # entire answer fails even though its anchors also occur in the other
+    # answer. Groups are ANDed; within a group the alternatives are ORs.
+    checker = {
+        "type": "any",
+        "min_words": 5,
+        "required_any_groups": [[["ready"], ["idle"]], [["checkmark"], ["blue"]]],
+    }
+    # Both answers referenced.
+    assert _checker_pass(checker, "The chip is Ready and the icon is blue.")
+    # Only the first answer's subject: fails the second group.
+    assert not _checker_pass(checker, "The status chip is Ready and green.")
+    # Only the second answer's subject: fails the first group.
+    assert not _checker_pass(checker, "A blue circular icon is visible.")
+    # A group needs one whole alternative, not one term from each.
+    assert not _checker_pass(checker, "Idle buttons everywhere you look.")
 
 
 def test_json_shape_still_parses_fenced_payload():
