@@ -173,6 +173,17 @@ _CURRENT_WEB_LOOKUP = re.compile(
     r"(?:最新|当前|新闻|来源|价格|股价|比分|赛程|总统|发布|版本)",
     re.IGNORECASE,
 )
+_TEMPORAL_WEB_LOOKUP = re.compile(
+    r"\b(?:who|what|when|where|how|did|does|is|are|was|were|won|happened|"
+    r"tell\s+me|show\s+me|find|check)\b.{0,120}"
+    r"\b(?:today|yesterday(?:['’]s)?|last\s+night|this\s+week|currently|now|"
+    r"as\s+of|latest|recent)\b|"
+    r"(?:谁|什么|何时|哪里|怎么|如何|告诉我|查一下|看看).{0,80}"
+    r"(?:今天|昨天|昨晚|本周|现在|当前|刚刚|最近|最新)|"
+    r"(?:今天|昨天|昨晚|本周|现在|当前|刚刚|最近|最新).{0,80}"
+    r"(?:谁|什么|何时|哪里|怎么|如何|赢|结果)",
+    re.IGNORECASE,
+)
 _WEB_PROHIBITION = re.compile(
     r"\b(?:do\s+not|don't|dont|never|without)\s+"
     r"(?:look(?:ing)?(?:\s+anything)?\s+up|search(?:ing)?(?:\s+(?:the\s+)?"
@@ -530,6 +541,7 @@ def _route_desktop_client_tools(
     web = (
         _EXPLICIT_WEB_ACTION.search(goal) is not None
         or _CURRENT_WEB_LOOKUP.search(goal) is not None
+        or _TEMPORAL_WEB_LOOKUP.search(goal) is not None
         or future_weather
     ) and not web_prohibited
     url = has_url and not web_prohibited

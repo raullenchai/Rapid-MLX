@@ -305,7 +305,9 @@ requests such as “summarize this URL”; an explicit offline instruction still
 wins. Referential follow-ups such as “open that link” use the newest HTTP(S)
 URL in bounded recent context. Terse current-weather requests such as “Paris
 weather?” use live weather, while dated forecasts continue through web
-evidence. Search and browse still execute only in Desktop, and `browse` retains
+evidence. Explicitly time-sensitive questions such as yesterday's game result
+also route through current web evidence. Search and browse still execute only
+in Desktop, and `browse` retains
 its existing cache, SSRF guard, and per-fetch approval. Tool output remains
 untrusted data, and the final synthesis turn has no tools visible.
 

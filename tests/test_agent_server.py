@@ -302,6 +302,19 @@ def test_desktop_tool_routing_is_intent_scoped_and_preserves_non_desktop_names()
         "web_search",
         "browse",
     ]
+    assert _route_desktop_client_tools("Who won yesterday’s Lakers game?", offered) == [
+        "custom__read",
+        "web_search",
+        "browse",
+    ]
+    assert _route_desktop_client_tools("昨天湖人队谁赢了？", offered) == [
+        "custom__read",
+        "web_search",
+        "browse",
+    ]
+    assert _route_desktop_client_tools(
+        "Do not browse; who won yesterday's game?", offered
+    ) == ["custom__read"]
     assert _route_desktop_client_tools("Read https://example.com/a", offered) == [
         "custom__read",
         "browse",
