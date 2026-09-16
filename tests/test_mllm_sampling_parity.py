@@ -218,15 +218,19 @@ class TestBatchSamplerSelection:
         batch. Drives the REAL mlx-lm ``make_sampler`` chain (no stub) so
         the raise would surface here."""
         gen = _make_step_stub_generator(vocab=8)
-        requests = [_make_request(0, top_k=10**9), _make_request(1, top_k=8)]
+        requests = [
+            _make_request(0, top_k=10**9),
+            _make_request(1, top_k=8),
+            _make_request(2, top_k=10**9, seed=7),
+        ]
         # No exception: both rows sample through the clamped chain.
         sampled, _ = MLLMBatchGenerator._step(
             gen,
-            mx.array([[1], [2]], dtype=mx.uint32),
+            mx.array([[1], [2], [3]], dtype=mx.uint32),
             cache=[],
             requests=requests,
         )
-        assert sampled.shape == (2,)
+        assert sampled.shape == (3,)
 
         # Equivalence at the normalisation layer: ``top_k >= vocab`` is
         # semantically "keep every token" — the disabled value.
@@ -266,9 +270,11 @@ class TestBatchSamplerSelection:
         every row carries the same seed and fingerprint. Each row receives
         its own closure — same seed does NOT mean a shared RNG stream."""
         constructions: list = []
+        seeded_sampler_calls: list[dict] = []
         make_sampler_calls = []
 
         def fake_make_seeded(**kwargs):
+            seeded_sampler_calls.append(kwargs)
             return _CountingSeededSampler(constructions)
 
         def fake_make_sampler(**kwargs):
@@ -284,8 +290,8 @@ class TestBatchSamplerSelection:
 
         gen = _make_step_stub_generator()
         requests = [
-            _make_request(0, seed=42),
-            _make_request(1, seed=42),
+            _make_request(0, seed=42, temperature=0.5, top_p=0.8, min_p=0.1, top_k=7),
+            _make_request(1, seed=42, temperature=0.5, top_p=0.8, min_p=0.1, top_k=7),
         ]
         MLLMBatchGenerator._step(
             gen,
@@ -297,6 +303,10 @@ class TestBatchSamplerSelection:
         # Two distinct closures, one per request; no unseeded construction.
         assert len(constructions) == 2
         assert constructions[0] is not constructions[1]
+        assert seeded_sampler_calls == [
+            {"seed": 42, "temperature": 0.5, "top_p": 0.8, "min_p": 0.1, "top_k": 7},
+            {"seed": 42, "temperature": 0.5, "top_p": 0.8, "min_p": 0.1, "top_k": 7},
+        ]
         assert make_sampler_calls == []
         # The shared interning slot must stay empty for seeded batches.
         assert gen._shared_batch_sampler is None

@@ -313,6 +313,7 @@ def _request_sampler(
     cached = request._cached_sampler
     if cached is not None and cached[0] == key:
         return cached[1]
+    effective_top_k = _effective_top_k(request.top_k, vocab_size)
     if request.seed is None:
         kwargs: dict[str, Any] = {
             "temp": request.temperature,
@@ -320,7 +321,6 @@ def _request_sampler(
         }
         if request.min_p:
             kwargs["min_p"] = request.min_p
-        effective_top_k = _effective_top_k(request.top_k, vocab_size)
         if effective_top_k:
             kwargs["top_k"] = effective_top_k
         sampler = make_sampler(**kwargs)
@@ -330,7 +330,7 @@ def _request_sampler(
             temperature=request.temperature,
             top_p=request.top_p,
             min_p=request.min_p,
-            top_k=request.top_k,
+            top_k=effective_top_k,
         )
     request._cached_sampler = (key, sampler)
     return sampler
@@ -468,10 +468,7 @@ class MLLMBatchRequest:
     # because an otherwise identical top-k setting may normalize differently
     # across models.
     _cached_sampler: (
-        tuple[
-            tuple[float, float, float, int, int | None, int | None], Callable
-        ]
-        | None
+        tuple[tuple[float, float, float, int, int | None, int | None], Callable] | None
     ) = field(default=None, init=False, repr=False, compare=False)
     _cached_penalty_processors: tuple[Any, ...] | None = field(
         default=None, init=False, repr=False, compare=False
@@ -2343,9 +2340,7 @@ class MLLMBatchGenerator:
                     }
                     if requests[0].min_p:
                         kwargs["min_p"] = requests[0].min_p
-                    effective_top_k = _effective_top_k(
-                        requests[0].top_k, vocab_size
-                    )
+                    effective_top_k = _effective_top_k(requests[0].top_k, vocab_size)
                     if effective_top_k:
                         kwargs["top_k"] = effective_top_k
                     fn = make_sampler(**kwargs)
