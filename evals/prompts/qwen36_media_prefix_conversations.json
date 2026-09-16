@@ -35,7 +35,10 @@
             "required": [
               "qwen3.6-27b",
               "ready"
-            ]
+            ],
+            "max_lines": 2,
+            "max_words": 8,
+            "min_lines": 2
           }
         },
         {
@@ -64,7 +67,9 @@
               [
                 "chip"
               ]
-            ]
+            ],
+            "max_lines": 1,
+            "max_words": 25
           }
         },
         {
@@ -87,7 +92,8 @@
               [
                 "icon"
               ]
-            ]
+            ],
+            "max_lines": 1
           }
         }
       ]
@@ -115,7 +121,10 @@
             ],
             "forbidden": [
               "ready"
-            ]
+            ],
+            "max_lines": 2,
+            "max_words": 8,
+            "min_lines": 2
           }
         },
         {
@@ -144,7 +153,9 @@
               [
                 "button"
               ]
-            ]
+            ],
+            "max_lines": 1,
+            "max_words": 25
           }
         },
         {
@@ -170,7 +181,8 @@
               [
                 "cloud"
               ]
-            ]
+            ],
+            "max_lines": 1
           }
         }
       ]
@@ -195,7 +207,9 @@
             "required": [
               "fake-alias",
               "starting"
-            ]
+            ],
+            "max_lines": 3,
+            "max_words": 12
           }
         },
         {
@@ -224,7 +238,9 @@
               [
                 "subtitle"
               ]
-            ]
+            ],
+            "max_lines": 1,
+            "max_words": 25
           }
         },
         {
@@ -247,7 +263,8 @@
               [
                 "spinning"
               ]
-            ]
+            ],
+            "max_lines": 1
           }
         }
       ]
@@ -273,7 +290,9 @@
               "new chat",
               "search chats",
               "start chatting"
-            ]
+            ],
+            "min_lines": 3,
+            "max_lines": 3
           }
         },
         {
@@ -302,7 +321,9 @@
               [
                 "press"
               ]
-            ]
+            ],
+            "max_lines": 1,
+            "max_words": 25
           }
         },
         {
@@ -334,7 +355,8 @@
               [
                 "command+n"
               ]
-            ]
+            ],
+            "max_lines": 1
           }
         }
       ]
@@ -358,7 +380,8 @@
             "type": "terms",
             "required": [
               "skip"
-            ]
+            ],
+            "max_words": 3
           }
         },
         {
@@ -387,7 +410,9 @@
               [
                 "blue"
               ]
-            ]
+            ],
+            "max_lines": 1,
+            "max_words": 25
           }
         },
         {
@@ -410,7 +435,8 @@
               [
                 "icon"
               ]
-            ]
+            ],
+            "max_lines": 1
           }
         }
       ]
@@ -434,7 +460,8 @@
             "type": "terms",
             "required": [
               "next"
-            ]
+            ],
+            "max_words": 6
           }
         },
         {
@@ -466,7 +493,9 @@
               [
                 "dot"
               ]
-            ]
+            ],
+            "max_lines": 1,
+            "max_words": 25
           }
         },
         {
@@ -489,7 +518,8 @@
               [
                 "icon"
               ]
-            ]
+            ],
+            "max_lines": 1
           }
         }
       ]
@@ -521,7 +551,8 @@
               [
                 "command+n"
               ]
-            ]
+            ],
+            "max_words": 3
           }
         },
         {
@@ -550,7 +581,9 @@
               [
                 "chat"
               ]
-            ]
+            ],
+            "max_lines": 1,
+            "max_words": 25
           }
         },
         {
@@ -579,7 +612,8 @@
               [
                 "rapid-mlx"
               ]
-            ]
+            ],
+            "max_lines": 1
           }
         }
       ]
@@ -603,7 +637,8 @@
             "type": "terms",
             "required": [
               "right"
-            ]
+            ],
+            "max_lines": 1
           }
         },
         {
@@ -632,7 +667,9 @@
               [
                 "qwen"
               ]
-            ]
+            ],
+            "max_lines": 1,
+            "max_words": 25
           }
         },
         {
@@ -658,7 +695,8 @@
               [
                 "orange"
               ]
-            ]
+            ],
+            "max_lines": 1
           }
         }
       ]
@@ -718,7 +756,9 @@
               [
                 "status"
               ]
-            ]
+            ],
+            "max_lines": 1,
+            "max_words": 25
           }
         },
         {
@@ -744,7 +784,8 @@
               [
                 "icon"
               ]
-            ]
+            ],
+            "max_lines": 1
           }
         }
       ]
@@ -807,7 +848,9 @@
               [
                 "hint"
               ]
-            ]
+            ],
+            "max_lines": 1,
+            "max_words": 25
           }
         },
         {
@@ -842,7 +885,8 @@
               [
                 "command+n"
               ]
-            ]
+            ],
+            "max_lines": 1
           }
         }
       ]
@@ -903,7 +947,9 @@
               [
                 "dots"
               ]
-            ]
+            ],
+            "max_lines": 1,
+            "max_words": 25
           }
         },
         {
@@ -929,7 +975,8 @@
               [
                 "icon"
               ]
-            ]
+            ],
+            "max_lines": 1
           }
         }
       ]
@@ -998,7 +1045,9 @@
               [
                 "cloud"
               ]
-            ]
+            ],
+            "max_lines": 1,
+            "max_words": 25
           }
         },
         {
@@ -1024,7 +1073,8 @@
               [
                 "download"
               ]
-            ]
+            ],
+            "max_lines": 1
           }
         }
       ]
@@ -1050,7 +1100,8 @@
               "pick a model",
               "next",
               "skip"
-            ]
+            ],
+            "min_words": 200
           }
         },
         {
@@ -1088,7 +1139,9 @@
               [
                 "white"
               ]
-            ]
+            ],
+            "max_lines": 1,
+            "max_words": 25
           }
         },
         {
@@ -1117,7 +1170,8 @@
               [
                 "checkmark"
               ]
-            ]
+            ],
+            "max_lines": 1
           }
         }
       ]
@@ -1141,7 +1195,8 @@
             "type": "terms",
             "required": [
               "pick a model"
-            ]
+            ],
+            "min_words": 200
           }
         },
         {
@@ -1176,7 +1231,9 @@
               [
                 "checkmark"
               ]
-            ]
+            ],
+            "max_lines": 1,
+            "max_words": 25
           }
         },
         {
@@ -1205,7 +1262,8 @@
               [
                 "dot"
               ]
-            ]
+            ],
+            "max_lines": 1
           }
         }
       ]
@@ -1230,7 +1288,8 @@
             "required": [
               "new chat",
               "start chatting"
-            ]
+            ],
+            "min_words": 200
           }
         },
         {
@@ -1262,7 +1321,9 @@
               [
                 "title"
               ]
-            ]
+            ],
+            "max_lines": 1,
+            "max_words": 25
           }
         },
         {
@@ -1291,7 +1352,8 @@
               [
                 "search"
               ]
-            ]
+            ],
+            "max_lines": 1
           }
         }
       ]
@@ -1315,7 +1377,8 @@
             "type": "terms",
             "required": [
               "ready"
-            ]
+            ],
+            "min_words": 200
           }
         },
         {
@@ -1347,7 +1410,9 @@
               [
                 "green"
               ]
-            ]
+            ],
+            "max_lines": 1,
+            "max_words": 25
           }
         },
         {
@@ -1370,7 +1435,8 @@
               [
                 "icon"
               ]
-            ]
+            ],
+            "max_lines": 1
           }
         }
       ]
@@ -1395,7 +1461,8 @@
             "type": "terms",
             "required": [
               "dark"
-            ]
+            ],
+            "max_lines": 1
           }
         },
         {
@@ -1430,7 +1497,9 @@
               [
                 "mode"
               ]
-            ]
+            ],
+            "max_lines": 1,
+            "max_words": 25
           }
         },
         {
@@ -1462,7 +1531,8 @@
               [
                 "mode"
               ]
-            ]
+            ],
+            "max_lines": 1
           }
         }
       ]
@@ -1488,7 +1558,9 @@
             "required": [
               "ready",
               "idle"
-            ]
+            ],
+            "min_lines": 2,
+            "max_lines": 2
           }
         },
         {
@@ -1520,7 +1592,9 @@
               [
                 "button"
               ]
-            ]
+            ],
+            "max_lines": 1,
+            "max_words": 25
           }
         },
         {
@@ -1543,7 +1617,8 @@
               [
                 "download"
               ]
-            ]
+            ],
+            "max_lines": 1
           }
         }
       ]
@@ -1569,7 +1644,9 @@
             "required": [
               "starting",
               "ready"
-            ]
+            ],
+            "min_lines": 2,
+            "max_lines": 2
           }
         },
         {
@@ -1601,7 +1678,9 @@
               [
                 "icon"
               ]
-            ]
+            ],
+            "max_lines": 1,
+            "max_words": 25
           }
         },
         {
@@ -1624,7 +1703,8 @@
               [
                 "spinning"
               ]
-            ]
+            ],
+            "max_lines": 1
           }
         }
       ]
@@ -1650,7 +1730,9 @@
             "required": [
               "pick a model",
               "fake-alias"
-            ]
+            ],
+            "min_lines": 2,
+            "max_lines": 2
           }
         },
         {
@@ -1682,7 +1764,9 @@
               [
                 "icon"
               ]
-            ]
+            ],
+            "max_lines": 1,
+            "max_words": 25
           }
         },
         {
@@ -1705,7 +1789,8 @@
               [
                 "download"
               ]
-            ]
+            ],
+            "max_lines": 1
           }
         }
       ]

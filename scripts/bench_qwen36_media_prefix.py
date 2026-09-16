@@ -60,6 +60,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import contextlib
 import hashlib
 import json
 import statistics
@@ -115,22 +116,123 @@ def _conversation_messages(
     return messages
 
 
+_PUNCT = '.,;:!?’”"()[]{}<>`—–-“„«»'
+
+# Characters that fuse words in prose ("skip"/"next", "dark-themed",
+# "qwen3.6-27b" on the text side): normalized to spaces before tokenizing so
+# compound forms split into the same tokens the term side does.
+_INNER_BREAKS = str.maketrans({"/": " ", "-": " ", "–": " ", "—": " "})
+
+# Tokens that invert a preceding claim: a required term directly preceded by
+# one of these does not satisfy the requirement ("not ready" must not pass a
+# "ready" requirement). Applied to *required* matching only — ``forbidden``
+# terms stay negation-blind (claiming "not ready" on a screen whose chip says
+# otherwise is still wrong content).
+_NEGATORS = frozenset(
+    {
+        "not",
+        "no",
+        "never",
+        "none",
+        "cannot",
+        "without",
+        "isn't",
+        "aren't",
+        "wasn't",
+        "weren't",
+        "don't",
+        "doesn't",
+        "didn't",
+        "can't",
+        "won't",
+    }
+)
+
+
+def _tokens(text: str) -> list[str]:
+    """Whitespace tokens, casefolded, edge punctuation stripped, empties out.
+
+    Slash/hyphen runs are broken into separate tokens first so compound
+    forms ("skip"/"next", "dark-themed") tokenize the same on the term and
+    text sides.
+    """
+    tokens = []
+    for raw in text.casefold().translate(_INNER_BREAKS).split():
+        token = raw.strip(_PUNCT)
+        if token:
+            tokens.append(token)
+    return tokens
+
+
+def _term_matches(text_tokens: list[str], term: str, *, guard_negation: bool) -> bool:
+    """Token/phrase-boundary term match.
+
+    Substring matching admits wrong answers ("bright side" for "right",
+    "not ready" for "ready"); matching on normalized token sequences fixes
+    both — the phrase must appear as a contiguous token run, and with
+    ``guard_negation`` a negator directly before the run does not count.
+    """
+    phrase = _tokens(term)
+    if not phrase:
+        return False
+    width = len(phrase)
+    for start in range(len(text_tokens) - width + 1):
+        if text_tokens[start : start + width] != phrase:
+            continue
+        if guard_negation and start > 0 and text_tokens[start - 1] in _NEGATORS:
+            continue
+        return True
+    return False
+
+
+def _structural_pass(checker: dict[str, Any], text: str) -> bool:
+    """Explicit per-turn formatting constraints from the prompt wording.
+
+    "Two short lines", "one short line", "only its exact label",
+    "at least 200 words" — keyword presence alone lets a terse blob with the
+    right substrings pass, so the manifest's structural constraints are
+    validated here: word-count bounds and line-count bounds.
+    """
+    min_words = int(checker.get("min_words", 0) or 0)
+    max_words = int(checker.get("max_words", 0) or 0)
+    min_lines = int(checker.get("min_lines", 0) or 0)
+    max_lines = int(checker.get("max_lines", 0) or 0)
+    words = len(text.split())
+    lines = text.count("\n") + 1
+    if min_words and words < min_words:
+        return False
+    if max_words and words > max_words:
+        return False
+    if min_lines and lines < min_lines:
+        return False
+    return not (max_lines and lines > max_lines)
+
+
 def _checker_pass(checker: dict[str, Any], text: str) -> bool:
-    lowered = text.casefold()
+    text_tokens = _tokens(text)
     kind = checker.get("type", "any")
     if kind == "terms":
-        if not all(term.casefold() in lowered for term in checker.get("required", [])):
+        if not all(
+            _term_matches(text_tokens, term, guard_negation=True)
+            for term in checker.get("required", [])
+        ):
             return False
         # ``required_any``: alternatives — at least one term list fully
         # satisfied (e.g. a shortcut rendered as "⌘N" or "Cmd+N").
         required_any = checker.get("required_any", [])
         if required_any and not any(
-            all(term.casefold() in lowered for term in alternative)
+            all(
+                _term_matches(text_tokens, term, guard_negation=True)
+                for term in alternative
+            )
             for alternative in required_any
         ):
             return False
+        if not _structural_pass(checker, text):
+            return False
         return not any(
-            term.casefold() in lowered for term in checker.get("forbidden", [])
+            _term_matches(text_tokens, term, guard_negation=False)
+            for term in checker.get("forbidden", [])
         )
     if kind == "json_shape":
         stripped = text.strip()
@@ -163,18 +265,25 @@ def _checker_pass(checker: dict[str, Any], text: str) -> bool:
                         item_key in item for item_key in item_keys[key]
                     ):
                         return False
+        if not _structural_pass(checker, text):
+            return False
         return not any(
-            term.casefold() in lowered for term in checker.get("forbidden", [])
-        ) and all(term.casefold() in lowered for term in checker.get("required", []))
+            _term_matches(text_tokens, term, guard_negation=False)
+            for term in checker.get("forbidden", [])
+        ) and all(
+            _term_matches(text_tokens, term, guard_negation=True)
+            for term in checker.get("required", [])
+        )
     if kind == "any":
-        # Open-ended follow-up turns are still grounded two ways:
+        # Open-ended follow-up turns are still grounded three ways:
         # ``min_words`` rejects degenerate outputs (empty, single looping
         # token) — word count alone is gameable ("foo foo foo foo foo"), so
         # the vocabulary must spread too: at least half the floor (minimum
         # 2) distinct words. ``required_any`` carries the semantics: at
         # least one alternative term list must be fully present, anchored
         # to content a correct answer must reference (the conversation's
-        # own screen elements or its prior answers).
+        # own screen elements or its prior answers). ``min_lines``/
+        # ``max_lines``/``max_words`` pin the prompt's formatting asks.
         min_words = int(checker.get("min_words", 0) or 0)
         if min_words > 0:
             if len(text.split()) < min_words:
@@ -183,9 +292,14 @@ def _checker_pass(checker: dict[str, Any], text: str) -> bool:
             distinct.discard("")
             if len(distinct) < max(2, min_words // 2):
                 return False
+        if not _structural_pass(checker, text):
+            return False
         required_any = checker.get("required_any", [])
         if required_any and not any(
-            all(term.casefold() in lowered for term in alternative)
+            all(
+                _term_matches(text_tokens, term, guard_negation=True)
+                for term in alternative
+            )
             for alternative in required_any
         ):
             return False
@@ -371,7 +485,15 @@ async def _main() -> None:
             force_mllm=True,
             scheduler_config=SchedulerConfig(mllm_media_prefix_cache=flag),
         )
-        await engine.start()
+        try:
+            await engine.start()
+        except BaseException:
+            # A partially-initialized engine may already hold worker/model
+            # resources; the phase-level ``finally`` below is not installed
+            # yet, so stop() what was built before propagating.
+            with contextlib.suppress(Exception):
+                await engine.stop()
+            raise
         return engine
 
     try:
