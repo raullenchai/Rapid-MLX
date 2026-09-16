@@ -173,7 +173,15 @@ def _hash_streams_exact(
     auto_by_key = keyed(auto_samples)
     if not off_by_key or not auto_by_key or off_by_key.keys() != auto_by_key.keys():
         return False
-    return all(off_by_key[key] == auto_by_key[key] for key in off_by_key)
+    send_indexes = {send for _, send in off_by_key}
+    deterministic = all(
+        len({value for (_, stream), value in phase.items() if stream == send}) == 1
+        for phase in (off_by_key, auto_by_key)
+        for send in send_indexes
+    )
+    return deterministic and all(
+        off_by_key[key] == auto_by_key[key] for key in off_by_key
+    )
 
 
 def _warm_phase_qualified(phase: dict[str, Any], require_singleton: bool) -> bool:

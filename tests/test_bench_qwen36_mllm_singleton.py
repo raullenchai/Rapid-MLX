@@ -54,6 +54,9 @@ def test_hash_gate_requires_within_phase_determinism() -> None:
     auto[1]["sha256"] = "different"
     assert not _hash_streams_exact(off, auto)
 
+    off[1]["sha256"] = "different"
+    assert not _hash_streams_exact(off, auto)
+
 
 def test_hash_gate_requires_corresponding_send_streams() -> None:
     off = [{"pair": 1, "send": 1, "sha256": "same"}]
