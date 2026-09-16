@@ -806,7 +806,7 @@
       ],
       "turns": [
         {
-          "prompt": "Output JSON only: {\"model\": <model name>, \"status\": <status chip>, \"action\": <rightmost button label>}.",
+          "prompt": "Output a single ```json fenced code block containing only JSON, nothing else: {\"model\": <model name>, \"status\": <status chip>, \"action\": <rightmost button label>}.",
           "max_tokens": 64,
           "sampling": {
             "temperature": 0.0,
@@ -903,7 +903,7 @@
       ],
       "turns": [
         {
-          "prompt": "Output JSON only: {\"title\": <sidebar title>, \"buttons\": [<visible button labels>]}.",
+          "prompt": "Output a single ```json fenced code block containing only JSON, nothing else: {\"title\": <sidebar title>, \"buttons\": [<visible button labels>]}.",
           "max_tokens": 96,
           "sampling": {
             "temperature": 0.0,
@@ -973,7 +973,7 @@
           }
         },
         {
-          "prompt": "Summarize your previous two answers in one short sentence.",
+          "prompt": "Summarize your previous two answers in one short sentence, naming the specific button labels and the shortcut wording.",
           "max_tokens": 64,
           "sampling": {
             "temperature": 0.0,
@@ -987,12 +987,9 @@
               [
                 [
                   "new",
-                  "chat"
-                ],
-                [
-                  "search"
-                ],
-                [
+                  "chat",
+                  "search",
+                  "chats",
                   "start",
                   "chatting"
                 ]
@@ -1129,7 +1126,7 @@
       ],
       "turns": [
         {
-          "prompt": "Output JSON only: {\"bars\": [{\"model\": <first bar model>, \"status\": <first bar status>}, {\"model\": <second bar model>, \"status\": <second bar status>}]}.",
+          "prompt": "Output a single ```json fenced code block containing only JSON, nothing else: {\"bars\": [{\"model\": <first bar model>, \"status\": <first bar status>}, {\"model\": <second bar model>, \"status\": <second bar status>]}.",
           "max_tokens": 96,
           "sampling": {
             "temperature": 0.0,

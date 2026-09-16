@@ -167,6 +167,10 @@ _INNER_BREAKS = str.maketrans({"/": " ", "-": " ", "–": " ", "—": " "})
 # "ready" requirement). Applied to *required* matching only — ``forbidden``
 # terms stay negation-blind (claiming "not ready" on a screen whose chip says
 # otherwise is still wrong content).
+# Contrast conjunctions close the preceding clause: a negator behind one
+# targets the contrast, not the term after it ("not idle, but ready").
+_CONTRASTS = frozenset({"but", "yet", "however", "though", "although", "while"})
+
 _NEGATORS = frozenset(
     {
         "not",
@@ -231,8 +235,19 @@ def _term_matches(text_tokens: list[str], term: str, *, guard_negation: bool) ->
         if text_tokens[start : start + width] != phrase:
             continue
         if guard_negation:
+            # Scan the three tokens before the phrase right-to-left: a
+            # negator attached to the phrase rejects the match, but a
+            # contrast conjunction ends the clause the negation lives in —
+            # "not idle, but ready" asserts ``ready``.
             window = text_tokens[max(0, start - 3) : start]
-            if any(token in _NEGATORS for token in window):
+            negated = False
+            for token in reversed(window):
+                if token in _CONTRASTS:
+                    break
+                if token in _NEGATORS:
+                    negated = True
+                    break
+            if negated:
                 continue
             # Negation after the phrase inverts it too: "ready is not the
             # status" asserts the chip is anything but ready. Only a
