@@ -1,84 +1,56 @@
-# Atlas handoff — Rapid Agent Runtime
+# Atlas handoff — Personal Intelligence productization
 
 - **Owner:** Atlas
-- **Branch:** `atlas/agent-server-adapter`
-- **Base:** `origin/main` after merged runtime kernel PR #3439
-- **Status:** Server adapter implemented and under validation; Desktop adapter is next
+- **Branch / PR:** `feat/personal-intelligence` / #3490
+- **Base:** `origin/main` at the v0.14.2 release commit
+- **Status:** Draft for the next release; deliberately not queued
 
-## Verified facts
+## Completed and verified
 
-- Desktop already owns built-in tools, MCP adapters, approval UX, MemoryStore,
-  a bounded chat tool loop, and a transient LocalWorkflow ledger that is never
-  copied into public events.
-- Server already owns model routing, MCP discovery/execution, tool parsing,
-  authentication, and Chat/Responses APIs.
-- The P0 kernel adds no dependency or process. It stores a complete immutable
-  model-profile snapshot, snapshots the exact per-turn tool policy, and emits a
-  versioned append-only event stream writable only by the reducer.
-- Raw call arguments, tool-result content, goal-bearing ledger context, and final
-  model content are transient and never enter that event stream. Request events
-  retain call identity and argument names; result/completion events retain safe
-  metadata only.
-- Call IDs are single-use and approvals match the exact pending ID. External
-  calls remain runtime-private and are released to an executor only after a
-  positive approval.
-- Tool risk is mandatory at the registry boundary. Repeat fingerprints are
-  held only inside the live runtime and are never serialized. Weak tracking
-  references prevent abandoned runs from being retained in memory.
-- Calls are validated against the exact advertised JSON Schema before release.
-  One runtime-level lock serializes P0 transitions so concurrent approval or
-  result requests cannot release/complete the same call twice.
-- Result metadata distinguishes executed calls from denied/loop-blocked calls;
-  approval input is a strict Python boolean.
-- MiniCPM5-2B defaults are six visible tools, eight tool rounds, one call per
-  model turn, and two identical calls before forced final synthesis.
-- Focused unit tests, Ruff, and focused mypy pass.
+- Desktop has the approved composer toggle, first-use copy, per-conversation
+  state, attachment boundary, cancellation, and profile-mismatch handling.
+- `/v1/models/{id}` is the server-owned source of truth for the selected
+  model's nullable `personal_intelligence_profile`; Desktop has no model
+  allowlist and never switches or downloads another model.
+- Qualification checks the public identity, backing repository identity, live
+  parser, and expected harness. Parser opt-out/override and alias reuse fail
+  closed.
+- Q4 and Q8 MiniCPM artifacts have distinct, versioned, evidence-backed
+  qualification records even though they share one harness. Q8 is a 16 GB
+  candidate and does not inherit Q4's 8 GB recommendation.
+- Desktop now executes the three existing read-only built-ins (`web_search`,
+  `browse`, `weather`) for client-owned Agent runs and returns results under the
+  exact opaque call ID. Schemas and risk labels remain server-owned.
+- Custom instructions, MemoryStore, and the last eight completed chat messages
+  are available as bounded transient context and never enter public Agent
+  events.
+- Intent routing and deterministic search-to-browse staging reduce the visible
+  tool surface and remove mechanical argument generation from small models.
+- Live 15/15 receipts now qualify Qwen3.5 4B Q4, Qwen3.5 9B Q4, Qwen3.6 35B
+  A3B Q8, and LFM2.5 1.2B Q4 in addition to MiniCPM.
+- Codex review found and closed parser, backing-weight, cross-quant,
+  repository-evidence, explicit no-network, pagination, multi-source, and
+  ranked-URL selection gaps.
+- Current affected Python suite: 191 passed. Affected Swift suites: 90 passed.
+  Ruff format/lint and `git diff --check` passed.
 
-## Architecture boundary
+## Remaining qualification work
 
-The Python server owns run state and orchestration. Desktop will consume run
-events plus an authenticated transient call channel, retain presentation and
-its client-local tool executors, and return typed results. Plain Chat/Responses
-endpoints remain stateless and compatible.
-Do not add a second tool registry, memory implementation, sandbox, or planning
-framework to the runtime kernel.
+The Desktop execution/context blocker is closed. #3490 remains Draft because
+the maintainer's usage-table union is the product support target and the exact
+remaining builds have not all completed physical qualification.
 
 ## Next concrete action
 
-After this branch merges, add the Desktop client adapter behind a rollback
-feature flag. It should consume `/v1/agent/runs` plus the shared event schema,
-reuse the existing approval UI and tool executors, and post typed results back
-to the server. Follow with physical 8 GB / 16 GB qualification.
+Run the exact-build matrix in
+`docs/engineering/performance/2026-09-15-personal-intelligence-top-model-qualification.md`.
+Only add a `PersonalIntelligenceQualification` after a 15/15 JSON receipt.
+Qwen3.6 35B Q4, the Qwen3.8 variants, Bonsai, Qwen3-Coder, Ling, Qwen3.6 27B,
+GPT-OSS, and the Qwen3.5 Q8 builds remain pending.
 
-## Server adapter facts
+## Evidence
 
-- The server reuses the production non-streaming Chat Completions function
-  in-process; there is no loopback HTTP request or second inference stack.
-- The store is bounded to 32 runs, retains completed runs for 15 minutes, and
-  never evicts active work. Shutdown cancels runs before MCP and engine teardown.
-- Server and client execution modes share one reducer. Client mode is the
-  narrow handoff Desktop needs; clients cannot submit tool definitions, risk
-  labels, or event summaries.
-- MCP has no standard risk metadata. Only exact tools in the operator-owned
-  `agent_read_only_tools` config are automatic; every other call pauses for
-  exact-ID approval and still passes the existing MCP sandbox before execution.
-- A custom served name or arbitrary local directory cannot widen the MiniCPM
-  profile: selection uses catalog identity or exact loaded architecture
-  metadata plus the native parser, while inference uses the public served name.
-- Each run pins the MCP manager/executor generation that advertised its tools;
-  hot reload cannot redirect an old validated call to a replacement registry.
-- Each run binds its concrete model-registry entry (or single engine); an
-  unload/replacement fails instead of switching to a new default mid-run.
-- Model goals, raw call arguments, results, and final output are kept only in
-  the live adapter. The event API carries redacted metadata and monotonic cursors.
-
-## Risks
-
-- Model generation is still route-owned. The adapter calls that function
-  directly; a later extraction is warranted only if another internal consumer
-  appears.
-- P0 deliberately makes no crash-durability claim. A process restart terminates
-  in-flight runs; durable recovery would require a separate reviewed replay and
-  migration design.
-- Risk classification must come from the registry snapshot the model saw, not
-  from a later client-supplied tool definition.
+- `docs/engineering/performance/2026-09-13-minicpm5-small-agent-harness-ab.md`
+- `docs/engineering/decisions/2026-09-13-rapid-agent-runtime.md`
+- `docs/guides/agent-runtime.md`
+- `docs/engineering/performance/2026-09-15-personal-intelligence-top-model-qualification.md`

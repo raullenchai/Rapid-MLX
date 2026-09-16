@@ -1,41 +1,10 @@
 merge_queue:
-  mode: parallel
-  # One Mac batch may run beside one no-Mac batch. The per-scope capacity
-  # below keeps the scarce Mac lane serialized inside this global budget.
-  max_parallel_checks: 2
+  # Parallel mode requires subscription-gated scopes. Serial singleton
+  # candidates keep the active plan compatible; jobs within one candidate can
+  # still consume both provisioned macOS runners concurrently.
+  mode: serial
   skip_intermediate_results: false
   status_comments: outcomes
-
-# A PR has the ``mac-required`` scope when any changed file is not part of the
-# exact documentation-only allowlist used by scripts/classify_ci_changes.py.
-# Documentation-only PRs deliberately carry no scope, so they share no queue
-# dependency with the Mac lane. Mixed docs+product changes still match the
-# product file and therefore consume the Mac scope.
-scopes:
-  source:
-    files:
-      mac-required:
-        include:
-          - "*"
-          - "**/*"
-        exclude:
-          - docs/**/*
-          - README.md
-          - AGENTS.md
-          - CONTRIBUTING.md
-          - CODE_OF_CONDUCT.md
-          - SECURITY.md
-          - LICENSE
-  capacities:
-    mac-required: 1
-  # Queue/workflow routing changes affect every candidate and must serialize
-  # as a barrier rather than racing the policy they modify.
-  barrier_files:
-    include:
-      - .mergify.yml
-      - .github/**/*
-      - scripts/classify_ci_changes.py
-      - tests/test_classify_ci_changes.py
 
 merge_protections_settings:
   auto_merge_conditions:
@@ -44,7 +13,7 @@ merge_protections_settings:
         - label = merge-ready-mac
 
 # ``auto_merge_conditions`` admits a ready head initially. After a failed
-# batch, Mergify keeps the head in a terminal dequeued state; its supported
+# candidate, Mergify keeps the head in a terminal dequeued state; its supported
 # ``@mergifyio queue <queue-name>`` command resets that state and then enforces
 # the same exact-head queue conditions below. Ordinary pull-request rules do
 # not reset terminal queue state and must not be used as a requeue substitute.
@@ -52,9 +21,6 @@ merge_protections_settings:
 queue_rules:
   - name: no-mac-batch
     queue_branch_prefix: mergify/merge-queue/
-    batch_size: 4
-    batch_max_wait_time: 5 min
-    batch_max_failure_resolution_attempts: 2
     checks_timeout: 90 min
     max_checks_retries: 0
     merge_method: squash
@@ -80,9 +46,6 @@ queue_rules:
 
   - name: mac-batch
     queue_branch_prefix: mergify/merge-queue/
-    batch_size: 4
-    batch_max_wait_time: 15 min
-    batch_max_failure_resolution_attempts: 2
     checks_timeout: 90 min
     max_checks_retries: 0
     merge_method: squash

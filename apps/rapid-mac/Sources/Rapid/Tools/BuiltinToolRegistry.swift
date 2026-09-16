@@ -104,7 +104,8 @@ final class BuiltinToolRegistry: ToolRegistry {
             result = ToolCallResult(
                 toolCallID: call.id,
                 content: "unknown tool '\(call.function.name)' — available: web_search, browse, weather, read_document",
-                isError: true
+                isError: true,
+                executed: false
             )
         }
         // The individual tools don't know the toolCallID at run time, so
@@ -120,7 +121,8 @@ final class BuiltinToolRegistry: ToolRegistry {
             toolCallID: call.id,
             content: result.content,
             isError: result.isError || failureKind != nil,
-            failureKind: failureKind
+            failureKind: failureKind,
+            executed: result.executed
         )
     }
 

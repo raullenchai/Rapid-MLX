@@ -102,7 +102,8 @@ final class MCPToolRegistry: ToolRegistry {
                 toolCallID: call.id,
                 content: "MCP Connectors are turned off in Settings → Experimental; '\(name)' was not run.",
                 isError: true,
-                failureKind: .userDeclined
+                failureKind: .userDeclined,
+                executed: false
             )
         }
 
@@ -114,7 +115,8 @@ final class MCPToolRegistry: ToolRegistry {
                 toolCallID: call.id,
                 content: "tool '\(name)' is turned off in Settings → Experimental and was not run.",
                 isError: true,
-                failureKind: .userDeclined
+                failureKind: .userDeclined,
+                executed: false
             )
         }
 
@@ -132,14 +134,16 @@ final class MCPToolRegistry: ToolRegistry {
                 toolCallID: call.id,
                 content: "The user declined to run '\(name)'. Continue without it.",
                 isError: true,
-                failureKind: .userDeclined
+                failureKind: .userDeclined,
+                executed: false
             )
         case .unavailable:
             return ToolCallResult(
                 toolCallID: call.id,
                 content: "'\(name)' was not run — the request was cancelled before it could be approved.",
                 isError: true,
-                failureKind: .userDeclined
+                failureKind: .userDeclined,
+                executed: false
             )
         }
 

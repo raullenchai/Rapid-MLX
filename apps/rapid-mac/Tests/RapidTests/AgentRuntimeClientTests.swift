@@ -23,6 +23,8 @@ struct AgentRuntimeClientTests {
             goal: "Find the answer",
             model: "minicpm5-2b-4bit",
             toolNames: ["files__read_file"],
+            trustedInstructions: "Always answer concisely",
+            localContext: "Preference: concise",
             execution: .client,
             bearerToken: "secret"
         )
@@ -37,6 +39,8 @@ struct AgentRuntimeClientTests {
         #expect(body["model"] as? String == "minicpm5-2b-4bit")
         #expect(body["execution"] as? String == "client")
         #expect(body["tool_names"] as? [String] == ["files__read_file"])
+        #expect(body["trusted_instructions"] as? String == "Always answer concisely")
+        #expect(body["local_context"] as? String == "Preference: concise")
     }
 
     @Test("Create can keep MCP execution pinned to the server run")
@@ -175,14 +179,134 @@ struct AgentRuntimeClientTests {
         }
     }
 
-    @Test("Agent runtime remains opt-in")
-    func featureFlag() {
+    @Test("Personal Intelligence recognizes only model-specific harness bindings")
+    func personalIntelligenceModelSupport() {
+        let qualified = ServerModelProfile(
+            id: "minicpm5-2b-4bit",
+            toolCallParser: "minicpm",
+            personalIntelligenceProfile: "minicpm5-2b",
+            personalIntelligenceQualification: "minicpm5-2b-q4-v1"
+        )
+        #expect(PersonalIntelligenceConfig.supportsModel(
+            "minicpm5-2b-4bit",
+            serverProfile: qualified
+        ))
+        #expect(!PersonalIntelligenceConfig.supportsModel(
+            "qwen3.5-4b-4bit",
+            serverProfile: qualified
+        ))
+        #expect(!PersonalIntelligenceConfig.supportsModel(
+            "MiniCPM5-2B-4bit",
+            serverProfile: qualified
+        ))
+        #expect(!PersonalIntelligenceConfig.supportsModel(
+            "minicpm5-2b-4bit",
+            serverProfile: ServerModelProfile(id: "minicpm5-2b-4bit")
+        ))
+        #expect(!PersonalIntelligenceConfig.supportsModel(
+            "minicpm5-2b-4bit",
+            serverProfile: ServerModelProfile(
+                id: "minicpm5-2b-4bit",
+                personalIntelligenceProfile: "minicpm5-2b",
+                personalIntelligenceQualification: "minicpm5-2b-q4-v1"
+            )
+        ))
+        #expect(!PersonalIntelligenceConfig.supportsModel(
+            "minicpm5-2b-4bit",
+            serverProfile: ServerModelProfile(
+                id: "minicpm5-2b-4bit",
+                toolCallParser: "minicpm",
+                personalIntelligenceProfile: "minicpm5-2b"
+            )
+        ))
+        #expect(PersonalIntelligenceConfig.isEnabled(
+            conversationEnabled: true,
+            alias: "minicpm5-2b-4bit",
+            serverProfile: qualified
+        ))
+        #expect(!PersonalIntelligenceConfig.isEnabled(
+            conversationEnabled: true,
+            alias: "qwen3.5-4b-4bit",
+            serverProfile: qualified
+        ))
+    }
+
+    @Test("Only new conversations inherit the post-consent default")
+    func personalIntelligenceConversationDefaults() {
+        let oldA = UUID()
+        let oldB = UUID()
+        let newDraft = UUID()
+
+        let existing = PersonalIntelligenceConfig.reconciledConversationStates(
+            [:],
+            activeConversationID: oldA,
+            storedConversationIDs: [oldA, oldB],
+            introductionCompleted: true,
+            preferredEnabled: true
+        )
+        #expect(existing[oldA] == false)
+        #expect(existing[oldB] == false)
+
+        // Conversation persistence inserts the row before selecting it. The
+        // insertion transaction must record the inherited preference so the
+        // subsequent active-ID reconciliation cannot mistake it for an old
+        // saved conversation.
+        let insertedBeforeSelection = PersonalIntelligenceConfig.reconciledConversationStates(
+            existing,
+            activeConversationID: oldA,
+            storedConversationIDs: [oldA, oldB, newDraft],
+            newlyCreatedConversationIDs: [newDraft],
+            introductionCompleted: true,
+            preferredEnabled: true
+        )
+        #expect(insertedBeforeSelection[newDraft] == true)
+
+        let created = PersonalIntelligenceConfig.reconciledConversationStates(
+            insertedBeforeSelection,
+            activeConversationID: newDraft,
+            storedConversationIDs: [oldA, oldB, newDraft],
+            introductionCompleted: true,
+            preferredEnabled: true
+        )
+        #expect(created[newDraft] == true)
+
+        let afterDeletingOldConversations =
+            PersonalIntelligenceConfig.reconciledConversationStates(
+                created,
+                activeConversationID: newDraft,
+                storedConversationIDs: [newDraft],
+                introductionCompleted: true,
+                preferredEnabled: true
+            )
+        #expect(afterDeletingOldConversations == [newDraft: true])
+
+        let declined = PersonalIntelligenceConfig.reconciledConversationStates(
+            [:],
+            activeConversationID: newDraft,
+            storedConversationIDs: [],
+            introductionCompleted: false,
+            preferredEnabled: true
+        )
+        #expect(declined[newDraft] == false)
+    }
+
+    @Test("Per-conversation choices round-trip through preferences")
+    func personalIntelligencePersistence() throws {
         let suite = "AgentRuntimeClientTests.\(UUID().uuidString)"
-        let defaults = UserDefaults(suiteName: suite)!
+        let defaults = try #require(UserDefaults(suiteName: suite))
         defer { defaults.removePersistentDomain(forName: suite) }
-        #expect(!AgentRuntimeFeatureConfig.isEnabled(in: defaults))
-        defaults.set(true, forKey: AgentRuntimeFeatureConfig.enabledKey)
-        #expect(AgentRuntimeFeatureConfig.isEnabled(in: defaults))
+        let enabled = UUID()
+        let disabled = UUID()
+
+        PersonalIntelligenceConfig.saveConversationStates(
+            [enabled: true, disabled: false],
+            to: defaults
+        )
+
+        #expect(PersonalIntelligenceConfig.loadConversationStates(from: defaults) == [
+            enabled: true,
+            disabled: false,
+        ])
     }
 
     private static func jsonBody(at index: Int) throws -> [String: Any] {

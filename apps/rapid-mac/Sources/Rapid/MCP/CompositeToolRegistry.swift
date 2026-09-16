@@ -55,7 +55,8 @@ final class CompositeToolRegistry: ToolRegistry {
             toolCallID: call.id,
             content: "unknown tool '\(name)'\(available.isEmpty ? "" : " — available: \(available)")",
             isError: true,
-            failureKind: .toolFailed
+            failureKind: .toolFailed,
+            executed: false
         )
     }
 }

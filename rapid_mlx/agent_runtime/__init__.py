@@ -17,7 +17,13 @@ from .models import (
     ToolRisk,
     ToolSpec,
 )
-from .profiles import resolve_agent_profile
+from .profiles import (
+    PERSONAL_INTELLIGENCE_QUALIFICATIONS,
+    PersonalIntelligenceQualification,
+    resolve_agent_profile,
+    resolve_personal_intelligence_profile,
+    resolve_personal_intelligence_qualification,
+)
 from .runtime import AgentRuntime, AgentRuntimeError, AgentRuntimeOutput
 
 __all__ = [
@@ -31,7 +37,11 @@ __all__ = [
     "AgentRuntimeOutput",
     "AgentToolCall",
     "AgentToolResult",
+    "PERSONAL_INTELLIGENCE_QUALIFICATIONS",
+    "PersonalIntelligenceQualification",
     "ToolRisk",
     "ToolSpec",
     "resolve_agent_profile",
+    "resolve_personal_intelligence_qualification",
+    "resolve_personal_intelligence_profile",
 ]

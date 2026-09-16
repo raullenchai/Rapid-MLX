@@ -129,6 +129,9 @@ final class ChatViewModel {
     /// UUID on launch (opens to an empty "Ask anything"); ``persistActive``
     /// upserts under this id once the user sends.
     private(set) var activeConversationID = UUID()
+    /// Set only by the local New Chat command. Restore/import/sync paths never
+    /// populate it, so UI preferences cannot infer consent from a list delta.
+    private(set) var locallyCreatedConversationID: UUID?
 
     /// User-authored instructions for the open conversation. They are kept
     /// outside the visible transcript and merged into the wire-only system row.
@@ -389,6 +392,152 @@ final class ChatViewModel {
     /// the next turn without re-initialising the chat loop.
     var enabledDefinitions: [ToolDefinition] {
         tools.definitions.filter { !disabledTools.contains($0.function.name) }
+    }
+
+    /// The small, built-in tool surface Personal Intelligence may project to
+    /// the server-owned loop. Keep connector tools and attachment-only reads
+    /// out until their permission/context contracts are represented by that
+    /// loop. The snapshot is frozen by ChatView for the lifetime of one run.
+    var personalIntelligenceDefinitions: [ToolDefinition] {
+        let supported: Set<String> = ["web_search", "browse", "weather"]
+        return builtinDefinitions.filter {
+            supported.contains($0.function.name)
+                && !disabledTools.contains($0.function.name)
+        }
+    }
+
+    /// User-authored instruction layers remain instructions in Personal
+    /// Intelligence; they must not be mixed into quoted memory/transcript data.
+    func personalIntelligenceTrustedInstructions() -> String? {
+        let global = customInstructions.global.trimmingCharacters(
+            in: .whitespacesAndNewlines
+        )
+        let conversation = conversationInstructions.trimmingCharacters(
+            in: .whitespacesAndNewlines
+        )
+
+        func section(_ tag: String, _ content: String, budget: Int) -> String? {
+            guard !content.isEmpty else { return nil }
+            let opening = "<\(tag)>\n"
+            let closing = "\n</\(tag)>"
+            let overhead = opening.unicodeScalars.count + closing.unicodeScalars.count
+            guard budget > overhead else { return nil }
+            let kept = String(
+                String.UnicodeScalarView(content.unicodeScalars.prefix(budget - overhead))
+            )
+            return opening + kept + closing
+        }
+
+        // Reserve the wire budget for the higher-priority conversation layer
+        // first, but serialize global first so normal precedence remains clear.
+        var remaining = 8_192
+        let conversationSection = section(
+            "conversation_instructions", conversation, budget: remaining
+        )
+        remaining -= conversationSection?.unicodeScalars.count ?? 0
+        if conversationSection != nil, !global.isEmpty {
+            remaining = max(0, remaining - 2) // The section separator on the wire.
+        }
+        let globalSection = section("global_user_instructions", global, budget: remaining)
+        let sections = [globalSection, conversationSection].compactMap { $0 }
+        return sections.isEmpty ? nil : sections.joined(separator: "\n\n")
+    }
+
+    /// Bounded, transient quoted context for the server-owned loop. Recent
+    /// turns win the budget from newest to oldest so a follow-up never keeps
+    /// stale history at the expense of the immediately preceding answer.
+    func personalIntelligenceLocalContext() -> String? {
+        let maximumCharacters = 24_000
+        let recentPrefix = "<recent_conversation>\n"
+        let recentSuffix = "\n</recent_conversation>"
+        var recentRemaining = maximumCharacters
+            - recentPrefix.unicodeScalars.count
+            - recentSuffix.unicodeScalars.count
+        var recentRows: [String] = []
+        for message in messages.reversed() {
+            guard recentRemaining > 0, recentRows.count < 8 else { break }
+            guard message.status == .complete,
+                  message.role == .user || message.role == .assistant else { continue }
+            let content = message.content.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !content.isEmpty else { continue }
+            let rowPrefix = "\(message.role.rawValue): "
+            let separatorSize = recentRows.isEmpty ? 0 : 2
+            let fixedSize = separatorSize + rowPrefix.unicodeScalars.count
+            guard recentRemaining > fixedSize else { break }
+            let keptContent = String(String.UnicodeScalarView(
+                content.unicodeScalars.prefix(recentRemaining - fixedSize)
+            ))
+            recentRows.append(rowPrefix + keptContent)
+            recentRemaining -= fixedSize + keptContent.unicodeScalars.count
+        }
+
+        let recentSection: String? = recentRows.isEmpty ? nil :
+            recentPrefix + recentRows.reversed().joined(separator: "\n\n") + recentSuffix
+        var sections: [String] = []
+        if let memory = memoryStore?.formattedForPrompt() {
+            let memorySize = memory.unicodeScalars.count
+            let recentSize = recentSection?.unicodeScalars.count ?? 0
+            let separatorSize = recentSection == nil ? 0 : 2
+            // Never cut through the memory wrapper or a durable fact. Recent
+            // conversation owns the budget; memory is included only if its
+            // complete, separately labelled block still fits.
+            if memorySize + recentSize + separatorSize <= maximumCharacters {
+                sections.append(memory)
+            }
+        }
+        if let recentSection { sections.append(recentSection) }
+
+        guard !sections.isEmpty else { return nil }
+        let context = sections.joined(separator: "\n\n")
+        assert(context.unicodeScalars.count <= maximumCharacters)
+        return context
+    }
+
+    /// Execute one server-issued client action through the same schema and
+    /// registry boundary ordinary Chat uses. `executed` means dispatch crossed
+    /// into the concrete built-in tool, not merely that Desktop handled it.
+    func executePersonalIntelligenceTool(
+        _ action: AgentPendingAction,
+        advertised definitions: [ToolDefinition]
+    ) async -> AgentClientToolResult {
+        guard let definition = definitions.first(where: {
+            $0.function.name == action.name
+        }) else {
+            return AgentClientToolResult(
+                content: "The requested tool is not available in this Personal Intelligence run.",
+                isError: true,
+                executed: false
+            )
+        }
+
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+        guard let data = try? encoder.encode(CodableJSON.object(action.arguments)),
+              let arguments = String(data: data, encoding: .utf8) else {
+            return AgentClientToolResult(
+                content: "The tool arguments could not be encoded.",
+                isError: true,
+                executed: false
+            )
+        }
+        let call = ToolCall(id: action.callID, name: action.name, arguments: arguments)
+        let normalized: ToolCall
+        switch NativeToolCallExecutor.normalize(call, for: definition) {
+        case .success(let value):
+            normalized = value
+        case .failure(let rejection):
+            return AgentClientToolResult(
+                content: "tool '\(action.name)' error: \(rejection.reason)",
+                isError: true,
+                executed: false
+            )
+        }
+        let result = await tools.run(normalized)
+        return AgentClientToolResult(
+            content: result.content,
+            isError: result.isError,
+            executed: result.executed
+        )
     }
 
     /// Just the built-in tools, for Settings → Tools.
@@ -937,6 +1086,7 @@ final class ChatViewModel {
     /// currently open first. Cancels any in-flight stream.
     func selectConversation(_ id: UUID) {
         guard id != activeConversationID else { return }
+        locallyCreatedConversationID = nil
         cancelInflightWork()
         conversationEpoch &+= 1
         // Archive + unstick BEFORE swapping buffers, so the old transcript
@@ -1141,6 +1291,7 @@ final class ChatViewModel {
         branchChoices.removeAll()
         conversationInstructions = ""
         activeConversationID = UUID()
+        locallyCreatedConversationID = activeConversationID
         lastError = nil
         lastFailureKind = nil
         lastFailureAlias = nil

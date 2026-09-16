@@ -23,6 +23,8 @@ from .affine_route_qmv import affine2_route_down_qmv
 from .dspark import DSpark, DSparkWeights, draft_attention, quantize_cache
 from .load import load, supports_engram_ssd_offload
 
+MAX_INPUT_TOKENS = 8192
+
 
 @dataclass(frozen=True)
 class GenerationChunk:
@@ -287,11 +289,11 @@ def render_prompt(processor, _model, request, *, enable_thinking=False) -> str:
     if not enable_thinking:
         pieces.append("</think>")
     prompt = "".join(pieces)
-    if len(processor.encode(prompt, add_special_tokens=False)) > 8192:
+    if len(processor.encode(prompt, add_special_tokens=False)) > MAX_INPUT_TOKENS:
         raise HTTPException(
             status_code=400,
             detail=(
-                "DeepSeek V4.1 Flash currently supports at most 8192 input "
+                f"DeepSeek V4.1 Flash currently supports at most {MAX_INPUT_TOKENS} input "
                 "tokens in the qualified product lane"
             ),
         )
@@ -370,9 +372,28 @@ def _match(candidate, target_logits, eos_id, seed_already_emitted):
 
 
 def stream_generate(
-    model, processor, prompt: str, *, runtime: DSparkRuntime, max_tokens: int, **_kwargs
+    model,
+    processor,
+    prompt: str | list[int],
+    *,
+    runtime: DSparkRuntime,
+    max_tokens: int,
+    ignore_eos: bool = False,
+    **_kwargs,
 ):
-    input_ids = processor.encode(prompt, add_special_tokens=False)
+    """Generate from a rendered prompt or an exact token-id workload.
+
+    The OpenAI server always supplies rendered text.  Community Benchmark
+    supplies the registered token IDs directly so decode/re-tokenize cannot
+    silently change the protocol's prompt length or digest.  ``ignore_eos``
+    is likewise benchmark-only; the user-facing server retains normal EOS
+    termination.
+    """
+    input_ids = (
+        list(prompt)
+        if isinstance(prompt, list)
+        else processor.encode(prompt, add_special_tokens=False)
+    )
     if len(input_ids) < 2:
         raise ValueError("prompt must contain at least two tokens")
     cache = model.make_cache(max_seq_len=len(input_ids) + max_tokens + 8)
@@ -397,7 +418,7 @@ def stream_generate(
     seed_already_emitted = False
     while generated < max_tokens:
         seed = int(mx.argmax(logits))
-        if not seed_already_emitted and seed == eos_id:
+        if not ignore_eos and not seed_already_emitted and seed == eos_id:
             tokens = [seed]
             hit_eos = True
         else:
@@ -415,7 +436,10 @@ def stream_generate(
             )
             mx.eval(target_logits, target_hidden)
             tokens, mismatch, hit_eos, _accepted = _match(
-                candidate, target_logits, eos_id, seed_already_emitted
+                candidate,
+                target_logits,
+                -1 if ignore_eos else eos_id,
+                seed_already_emitted,
             )
             if mismatch is None:
                 for index in range(len(candidate)):
@@ -439,7 +463,7 @@ def stream_generate(
             if token != eos_id:
                 detokenizer.add_token(token)
             current = detokenizer.text
-            ending = token == eos_id or generated >= max_tokens
+            ending = (token == eos_id and not ignore_eos) or generated >= max_tokens
             if ending:
                 detokenizer.finalize()
                 current = detokenizer.text

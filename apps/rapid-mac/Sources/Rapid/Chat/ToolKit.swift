@@ -70,17 +70,23 @@ struct ToolCallResult: Equatable, Hashable, Sendable {
     /// Stable UI classification. Raw ``content`` is still passed back to
     /// the model, while the transcript renders this diagnosis instead.
     let failureKind: FailureDiagnosis.Kind?
+    /// Whether dispatch crossed into the concrete tool implementation. False
+    /// for schema, availability, settings, and approval refusals; true once a
+    /// tool owns the call, even when that tool later reports an error.
+    let executed: Bool
 
     init(
         toolCallID: String,
         content: String,
         isError: Bool = false,
-        failureKind: FailureDiagnosis.Kind? = nil
+        failureKind: FailureDiagnosis.Kind? = nil,
+        executed: Bool = true
     ) {
         self.toolCallID = toolCallID
         self.content = content
         self.isError = isError
         self.failureKind = failureKind
+        self.executed = executed
     }
 }
 
@@ -243,7 +249,8 @@ struct NativeToolCallExecutor {
                     known: knownNames
                 ) ?? "tool '\(call.function.name)' is unavailable",
                 isError: true,
-                failureKind: .toolFailed
+                failureKind: .toolFailed,
+                executed: false
             )
         }
 
@@ -261,7 +268,8 @@ struct NativeToolCallExecutor {
                 toolCallID: call.id,
                 content: "tool '\(call.function.name)' error: \(rejection.reason)",
                 isError: true,
-                failureKind: .toolFailed
+                failureKind: .toolFailed,
+                executed: false
             )
         }
         return await registry.run(normalized)
@@ -315,6 +323,18 @@ struct NativeToolCallExecutor {
            case .object(let properties)? = schema["properties"]
         {
             let allowed = properties.keys.sorted()
+            if case .array(let requiredValues)? = schema["required"] {
+                let required = requiredValues.compactMap { value -> String? in
+                    if case .string(let name) = value { return name }
+                    return nil
+                }
+                let missing = required.filter { object[$0] == nil }
+                if !missing.isEmpty {
+                    return .failure(ArgumentRejection(
+                        reason: "missing required argument(s): \(missing.joined(separator: ", "))"
+                    ))
+                }
+            }
             if schema["additionalProperties"] == .bool(false) {
                 let unknown = object.keys.filter { !properties.keys.contains($0) }.sorted()
                 if !unknown.isEmpty {
@@ -357,6 +377,11 @@ struct NativeToolCallExecutor {
 final class EmptyToolRegistry: ToolRegistry {
     var definitions: [ToolDefinition] { [] }
     func run(_ call: ToolCall) async -> ToolCallResult {
-        ToolCallResult(toolCallID: call.id, content: "no tool registry wired up", isError: true)
+        ToolCallResult(
+            toolCallID: call.id,
+            content: "no tool registry wired up",
+            isError: true,
+            executed: false
+        )
     }
 }

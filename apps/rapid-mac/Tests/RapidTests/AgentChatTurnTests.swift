@@ -5,6 +5,32 @@ import Testing
 @MainActor
 @Suite("Agent turns in Chat", .serialized)
 struct AgentChatTurnTests {
+    @Test("Personal Intelligence context keeps the newest turns when bounded")
+    func localContextPrioritizesNewestTurns() throws {
+        let model = ChatViewModel(persistsConversations: false)
+        #expect(model.beginAgentTurn("old-user-marker", alias: "model") {})
+        model.completeAgentTurn(String(repeating: "x", count: 30_000))
+        #expect(model.beginAgentTurn("newest-user-marker", alias: "model") {})
+        model.completeAgentTurn("newest-assistant-marker")
+
+        let context = try #require(model.personalIntelligenceLocalContext())
+        #expect(context.contains("newest-user-marker"))
+        #expect(context.contains("newest-assistant-marker"))
+        #expect(!context.contains("old-user-marker"))
+    }
+
+    @Test("Personal Intelligence context uses the server's Unicode-scalar limit")
+    func localContextUsesWireCompatibleCharacterCount() throws {
+        let model = ChatViewModel(persistsConversations: false)
+        #expect(model.beginAgentTurn(String(repeating: "👨‍👩‍👧‍👦", count: 10_000), alias: "model") {})
+        model.completeAgentTurn("latest")
+
+        let context = try #require(model.personalIntelligenceLocalContext())
+        #expect(context.hasPrefix("<recent_conversation>\n"))
+        #expect(context.hasSuffix("\n</recent_conversation>"))
+        #expect(context.unicodeScalars.count == 24_000)
+    }
+
     @Test("A completed agent run becomes an ordinary persisted chat turn")
     func completionProjectsIntoTranscript() {
         let store = FileManager.default.temporaryDirectory

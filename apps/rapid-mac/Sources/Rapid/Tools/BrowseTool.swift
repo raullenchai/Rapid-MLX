@@ -588,7 +588,8 @@ enum BrowseTool {
             toolCallID: "",
             content: "\(tool) error: \(error.message)",
             isError: true,
-            failureKind: .userDeclined
+            failureKind: .userDeclined,
+            executed: false
         )
     }
 

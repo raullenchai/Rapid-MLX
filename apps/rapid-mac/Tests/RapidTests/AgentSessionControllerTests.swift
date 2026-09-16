@@ -5,6 +5,11 @@ import Testing
 @MainActor
 @Suite("Agent Runtime session controller", .serialized)
 struct AgentSessionControllerTests {
+    enum BindingTransition: Sendable {
+        case model
+        case conversation
+    }
+
     @Test("A server-owned run reaches a completed UI state")
     func completesRun() async throws {
         let transport = AgentSessionTransportStub(
@@ -35,6 +40,218 @@ struct AgentSessionControllerTests {
         #expect(transport.createExecution == .server)
         #expect(transport.createBearer == "secret")
         #expect(transport.eventCursors == [0, 1])
+    }
+
+    @Test("A client-owned tool is executed once and returned to the server")
+    func executesClientTool() async throws {
+        let transport = AgentSessionTransportStub(
+            created: try Self.run(
+                status: "awaiting_tool_result",
+                pendingAction: """
+                {"call_id":"call-web","name":"web_search","arguments":{"query":"Rapid MLX"},"approval_summary":null,"risk":"read_only","approval_required":false}
+                """
+            ),
+            toolResult: try Self.run(status: "completed", output: "Found it.")
+        )
+        let controller = AgentSessionController(
+            transportFactory: { _ in transport },
+            pollDelay: { await Task.yield() }
+        )
+        var executedCalls: [String] = []
+
+        controller.start(
+            goal: "Find Rapid MLX",
+            model: "minicpm5-2b-4bit",
+            toolNames: ["web_search"],
+            clientToolExecutor: { action in
+                executedCalls.append(action.callID)
+                #expect(action.arguments["query"] == .string("Rapid MLX"))
+                return AgentClientToolResult(
+                    content: #"{"title":"Rapid MLX"}"#,
+                    isError: false,
+                    executed: true
+                )
+            },
+            baseURL: URL(string: "http://127.0.0.1:8000")!,
+            bearerToken: "secret"
+        )
+        await controller._testingWaitForDriver()
+
+        #expect(controller.phase == .completed)
+        #expect(transport.createExecution == .client)
+        #expect(transport.createToolNames == ["web_search"])
+        #expect(executedCalls == ["call-web"])
+        #expect(transport.toolSubmissions == [
+            ClientToolSubmission(
+                callID: "call-web",
+                content: #"{"title":"Rapid MLX"}"#,
+                isError: false,
+                executed: true
+            ),
+        ])
+    }
+
+    @Test("Cancellation during a client tool does not submit its late result")
+    func cancellationDuringClientTool() async throws {
+        let transport = AgentSessionTransportStub(
+            created: try Self.run(
+                status: "awaiting_tool_result",
+                pendingAction: """
+                {"call_id":"call-web","name":"web_search","arguments":{"query":"Rapid MLX"},"approval_summary":null,"risk":"read_only","approval_required":false}
+                """
+            ),
+            toolResult: try Self.run(status: "completed", output: "Too late.")
+        )
+        let controller = AgentSessionController(
+            transportFactory: { _ in transport },
+            pollDelay: { await Task.yield() }
+        )
+        var continuation: CheckedContinuation<AgentClientToolResult, Never>?
+
+        controller.start(
+            goal: "Find Rapid MLX",
+            model: "minicpm5-2b-4bit",
+            toolNames: ["web_search"],
+            clientToolExecutor: { _ in
+                await withCheckedContinuation { continuation = $0 }
+            },
+            baseURL: URL(string: "http://127.0.0.1:8000")!,
+            bearerToken: "secret"
+        )
+        while continuation == nil { await Task.yield() }
+        controller.cancel()
+        continuation?.resume(returning: AgentClientToolResult(
+            content: "late result",
+            isError: true,
+            executed: true
+        ))
+        await controller._testingWaitForDriver()
+
+        #expect(controller.phase == .cancelled)
+        #expect(transport.toolSubmissions.isEmpty)
+    }
+
+    @Test(
+        "A selected-model or conversation transition cancels the bound run",
+        arguments: [BindingTransition.model, .conversation]
+    )
+    func contextTransitionCancelsBoundRun(_ transition: BindingTransition) async throws {
+        let transport = AgentSessionTransportStub(
+            created: try Self.run(status: "awaiting_model"),
+            gets: [try Self.run(status: "awaiting_model")]
+        )
+        let controller = AgentSessionController(
+            transportFactory: { _ in transport },
+            pollDelay: { try await Task.sleep(nanoseconds: 30_000_000_000) }
+        )
+
+        controller.start(
+            goal: "Keep working",
+            model: "minicpm5-2b-4bit",
+            baseURL: URL(string: "http://127.0.0.1:8000")!,
+            bearerToken: nil
+        )
+        while controller.run == nil { await Task.yield() }
+
+        let oldBinding = Self.binding()
+        let newBinding: PersonalIntelligenceRunBinding = switch transition {
+        case .model:
+            Self.binding(selectedAlias: "qwen3.5-4b-4bit")
+        case .conversation:
+            Self.binding(conversationID: UUID())
+        }
+        // This is the same composite transition reconciliation invoked by
+        // ChatView's single binding observer.
+        if newBinding.invalidatesRun(boundTo: oldBinding) {
+            controller.bindingDidChange()
+        }
+        await transport.waitForCancellation()
+
+        #expect(controller.phase == .cancelled)
+        #expect(transport.cancelledRunIDs == [Self.runID])
+    }
+
+    @Test("A mismatched server harness is cancelled instead of running")
+    func rejectsMismatchedHarness() async throws {
+        let transport = AgentSessionTransportStub(
+            created: try Self.run(status: "awaiting_model", profile: "default")
+        )
+        let controller = AgentSessionController(
+            transportFactory: { _ in transport },
+            pollDelay: { await Task.yield() }
+        )
+
+        controller.start(
+            goal: "Organize these notes",
+            model: "minicpm5-2b-4bit",
+            expectedProfile: "minicpm5-2b",
+            baseURL: URL(string: "http://127.0.0.1:8000")!,
+            bearerToken: nil
+        )
+        await controller._testingWaitForDriver()
+        await transport.waitForCancellation()
+
+        #expect(controller.phase == .failed)
+        #expect(controller.errorMessage?.contains("expected the minicpm5-2b harness") == true)
+        #expect(transport.cancelledRunIDs == [Self.runID])
+    }
+
+    @Test("A mismatched exact model is cancelled even when the harness matches")
+    func rejectsMismatchedModel() async throws {
+        let transport = AgentSessionTransportStub(
+            created: try Self.run(
+                status: "awaiting_model",
+                model: "qwen3.5-4b-4bit",
+                profile: "minicpm5-2b"
+            )
+        )
+        let controller = AgentSessionController(
+            transportFactory: { _ in transport },
+            pollDelay: { await Task.yield() }
+        )
+
+        controller.start(
+            goal: "Organize these notes",
+            model: "minicpm5-2b-4bit",
+            expectedProfile: "minicpm5-2b",
+            baseURL: URL(string: "http://127.0.0.1:8000")!,
+            bearerToken: nil
+        )
+        await controller._testingWaitForDriver()
+        await transport.waitForCancellation()
+
+        #expect(controller.phase == .failed)
+        #expect(controller.errorMessage?.contains("server started qwen3.5-4b-4bit") == true)
+        #expect(transport.cancelledRunIDs == [Self.runID])
+    }
+
+    @Test("A stale exact-build qualification is cancelled before execution")
+    func rejectsMismatchedQualification() async throws {
+        let transport = AgentSessionTransportStub(
+            created: try Self.run(
+                status: "awaiting_model",
+                qualification: "minicpm5-2b-q4-v2"
+            )
+        )
+        let controller = AgentSessionController(
+            transportFactory: { _ in transport },
+            pollDelay: { await Task.yield() }
+        )
+
+        controller.start(
+            goal: "Organize these notes",
+            model: "minicpm5-2b-4bit",
+            expectedProfile: "minicpm5-2b",
+            expectedQualification: "minicpm5-2b-q4-v1",
+            baseURL: URL(string: "http://127.0.0.1:8000")!,
+            bearerToken: nil
+        )
+        await controller._testingWaitForDriver()
+        await transport.waitForCancellation()
+
+        #expect(controller.phase == .failed)
+        #expect(controller.errorMessage?.contains("expected qualification minicpm5-2b-q4-v1") == true)
+        #expect(transport.cancelledRunIDs == [Self.runID])
     }
 
     @Test("Approval pauses and resumes only the pending call")
@@ -275,14 +492,32 @@ struct AgentSessionControllerTests {
 
     private static let runID = "01234567-89ab-cdef-0123-456789abcdef"
 
+    private static func binding(
+        conversationID: UUID = UUID(uuidString: "11111111-1111-1111-1111-111111111111")!,
+        selectedAlias: String = "minicpm5-2b-4bit"
+    ) -> PersonalIntelligenceRunBinding {
+        PersonalIntelligenceRunBinding(
+            conversationID: conversationID,
+            selectedAlias: selectedAlias,
+            serverModelID: selectedAlias,
+            parser: "minicpm",
+            profile: "minicpm5-2b",
+            qualification: "minicpm5-2b-q4-v1"
+        )
+    }
+
     fileprivate static func run(
         status: String,
         output: String? = nil,
-        pendingAction: String = "null"
+        pendingAction: String = "null",
+        model: String = "minicpm5-2b-4bit",
+        profile: String = "minicpm5-2b",
+        qualification: String? = "minicpm5-2b-q4-v1"
     ) throws -> AgentRunView {
         let outputJSON = output.map { "\"\($0)\"" } ?? "null"
+        let qualificationJSON = qualification.map { "\"\($0)\"" } ?? "null"
         return try JSONDecoder().decode(AgentRunView.self, from: Data("""
-        {"id":"\(runID)","model":"minicpm5-2b-4bit","profile":"minicpm5-2b","status":"\(status)","model_turns":1,"tool_rounds":0,"final_synthesis":false,"failure_code":null,"output":\(outputJSON),"pending_action":\(pendingAction)}
+        {"id":"\(runID)","model":"\(model)","profile":"\(profile)","personal_intelligence_qualification":\(qualificationJSON),"status":"\(status)","model_turns":1,"tool_rounds":0,"final_synthesis":false,"failure_code":null,"output":\(outputJSON),"pending_action":\(pendingAction)}
         """.utf8))
     }
 
@@ -304,6 +539,13 @@ private struct Approval: Equatable {
     let approved: Bool
 }
 
+private struct ClientToolSubmission: Equatable {
+    let callID: String
+    let content: String
+    let isError: Bool
+    let executed: Bool
+}
+
 private enum AgentSessionStubError: Error {
     case disconnected
 }
@@ -314,6 +556,7 @@ private final class AgentSessionTransportStub: AgentRuntimeTransport, @unchecked
     var gets: [AgentRunView]
     var eventPages: [AgentEventsView]
     let approvalResult: AgentRunView?
+    let toolResult: AgentRunView?
     let suspendsCreate: Bool
     let throwsIfCreateCancelled: Bool
     let suspendsEvents: Bool
@@ -321,9 +564,12 @@ private final class AgentSessionTransportStub: AgentRuntimeTransport, @unchecked
 
     var createGoals: [String] = []
     var createExecution: AgentExecutionMode?
+    var createToolNames: [String]?
+    var createLocalContext: String?
     var createBearer: String?
     var eventCursors: [Int] = []
     var approvals: [Approval] = []
+    var toolSubmissions: [ClientToolSubmission] = []
     var cancelledRunIDs: [String] = []
     var cancelBearers: [String?] = []
     private var createContinuation: CheckedContinuation<Void, Never>?
@@ -337,6 +583,7 @@ private final class AgentSessionTransportStub: AgentRuntimeTransport, @unchecked
         gets: [AgentRunView] = [],
         eventPages: [AgentEventsView] = [],
         approvalResult: AgentRunView? = nil,
+        toolResult: AgentRunView? = nil,
         suspendsCreate: Bool = false,
         throwsIfCreateCancelled: Bool = false,
         suspendsEvents: Bool = false,
@@ -346,6 +593,7 @@ private final class AgentSessionTransportStub: AgentRuntimeTransport, @unchecked
         self.gets = gets
         self.eventPages = eventPages
         self.approvalResult = approvalResult
+        self.toolResult = toolResult
         self.suspendsCreate = suspendsCreate
         self.throwsIfCreateCancelled = throwsIfCreateCancelled
         self.suspendsEvents = suspendsEvents
@@ -355,12 +603,16 @@ private final class AgentSessionTransportStub: AgentRuntimeTransport, @unchecked
     func create(
         goal: String,
         model _: String?,
-        toolNames _: [String]?,
+        toolNames: [String]?,
+        trustedInstructions _: String?,
+        localContext: String?,
         execution: AgentExecutionMode,
         bearerToken: String?
     ) async throws -> AgentRunView {
         createGoals.append(goal)
         createExecution = execution
+        createToolNames = toolNames
+        createLocalContext = localContext
         createBearer = bearerToken
         if suspendsCreate {
             await withCheckedContinuation { continuation in
@@ -411,14 +663,19 @@ private final class AgentSessionTransportStub: AgentRuntimeTransport, @unchecked
 
     func submitToolResult(
         runID _: String,
-        callID _: String,
-        content _: String,
-        isError _: Bool,
-        executed _: Bool,
+        callID: String,
+        content: String,
+        isError: Bool,
+        executed: Bool,
         bearerToken _: String?
     ) async throws -> AgentRunView {
-        Issue.record("Client execution is outside this session slice")
-        return created
+        toolSubmissions.append(ClientToolSubmission(
+            callID: callID,
+            content: content,
+            isError: isError,
+            executed: executed
+        ))
+        return try #require(toolResult)
     }
 
     func cancel(runID: String, bearerToken: String?) async throws -> AgentRunView {

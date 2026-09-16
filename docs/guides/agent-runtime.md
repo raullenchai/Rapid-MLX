@@ -10,6 +10,111 @@ in-flight runs, and completed runs expire after 15 minutes. Use ordinary
 `/v1/chat/completions` or `/v1/responses` when a managed tool loop is not
 needed; those endpoints are unchanged.
 
+## Use Personal Intelligence in Desktop
+
+Desktop presents the runtime as **Personal Intelligence**, not as a separate
+Agent product. The single four-point icon beside the Chat attachment button is
+the per-conversation control:
+
+1. Hover the icon to see what the capability does.
+2. On first use, choose **Turn on** after reviewing the local-data and approval
+   contract, or **Not now** to keep ordinary Chat.
+3. After that introduction, click the icon once to turn Personal Intelligence
+   on for the current conversation and click it again to turn it off. A filled
+   indigo icon means on; a neutral icon means off.
+4. New conversations start on after the user has chosen **Turn on**. Any
+   consequential action still receives its own approval prompt. Existing
+   conversations are not opted in retroactively; their choice is stored per
+   conversation.
+
+Personal Intelligence is fail-closed and model-specific. Desktop enables it
+only when the live `/v1/models/{id}` response binds the exact selected model to
+a harness profile that has been tuned and dogfooded with that model. The server
+is the single source of truth; Desktop does not maintain a parallel model
+allowlist. Tool-call support by itself is not enough,
+and selecting Personal Intelligence never changes or downloads a different
+model. Every qualified pairing owns its tool visibility, loop budget, repeat
+guard, output ceiling, parser, and prompt behavior. The popover names the
+current model and explains when its profile is not ready. Switching back to a qualified model
+restores that
+conversation's prior on/off choice, unless attachments were staged while it
+was on ordinary Chat; in that case Personal Intelligence stays off and explains
+why instead of stranding those attachments.
+
+The introduction copy is the user contract:
+
+> Use your Mac’s tools and local context to get things done.
+>
+> Reads only what you choose. Asks before making changes. Runs locally by
+> default.
+
+Personal Intelligence currently accepts text tasks. Turn it off before adding
+a normal Chat attachment; model-native image and document attachment behavior
+is otherwise unchanged.
+
+The qualification field is additive to the OpenAI model card:
+
+```json
+{
+  "id": "minicpm5-2b-4bit",
+  "personal_intelligence_profile": "minicpm5-2b",
+  "personal_intelligence_qualification": "minicpm5-2b-q4-v1"
+}
+```
+
+`null` means ordinary Chat, including for models that otherwise advertise tool
+support. At run creation Desktop also checks that the returned model, runtime
+profile, and versioned qualification ID match the model-card values; a mismatch
+is cancelled rather than falling back to a generic harness. Qualification also
+requires the tested canonical backing repository identity and live native
+parser. A public alias is not accepted as proof of the backing artifact: an
+alias reused for other weights, an incompatible parser override, or
+`--no-tool-call-parser` returns `null`.
+
+Each admitted pairing is a versioned
+`PersonalIntelligenceQualification`: public model identities, backing artifact
+identities, parser, harness profile, and a repository-relative evidence report.
+Quantizations remain separate qualifications even when they share a parser and
+harness. Adding a name to a broad family matcher is therefore insufficient to
+enable the product. Current admitted builds are MiniCPM5-2B MLX Q4,
+Qwen3.5-4B Q4, Qwen3.5-9B Q4, Qwen3.6-35B-A3B Q8, and LFM2.5-1.2B Q4. Other
+quantizations, renamed local copies, and unlisted models remain ordinary Chat
+until their exact build passes qualification. MiniCPM Q8 is a 16 GB candidate
+and does not inherit Q4's strict qualification.
+
+Maintainers can run the same live Agent API qualification used for those
+receipts:
+
+```bash
+python scripts/qualify_personal_intelligence.py MODEL \
+  --base-url http://127.0.0.1:8000 \
+  --seeds 11,22,33 \
+  --hardware 'Mac model, chip, memory' \
+  --os 'macOS version and build' \
+  --runtime 'rapid-mlx, MLX, and mlx-lm versions' \
+  --source-revision 'exact Git commit' \
+  --server-command 'complete launch command and flags' \
+  --expected-profile 'model-specific harness profile' \
+  --expected-parser 'live native tool parser' \
+  --expected-qualification 'versioned exact-build qualification ID' \
+  --output reports/benchmarks/personal-intelligence-MODEL.json
+```
+
+For an authenticated server, export `RAPID_MLX_API_KEY` before running the
+suite. The script sends it as a bearer credential but never records it in argv,
+the JSON receipt, or the reproduction command.
+
+The exact-build target matrix and receipts live in
+`docs/engineering/performance/2026-09-15-personal-intelligence-top-model-qualification.md`.
+Only the complete canonical matrix can set `qualified:true`; subset `--tasks`
+runs are diagnostics. Receipts must use a full source SHA and a reconstruction
+command that checks out that revision before starting the server.
+The suite first verifies that the live model card matches all four expected
+identity fields, then verifies every created run returns the same profile and
+qualification ID. The qualification ID represents the exact public alias,
+backing artifact, parser, and harness admission record; behavior from a
+different mounted model therefore cannot certify the requested build.
+
 ## Start the server
 
 Agent runs use the MCP servers already configured for `serve`:
@@ -151,9 +256,12 @@ before the approval boundary.
 ## Client execution for Desktop
 
 Set `execution:"client"` when an authenticated client owns execution. Rapid
-still chooses tools from the server-owned registry, validates the model call,
-and applies the same approval policy. The client reads `pending_action`, runs
-the matching local adapter, then returns exactly one result:
+still chooses tools from server-owned schemas, validates the model call, and
+applies the same approval policy. Desktop selects only enabled names from the
+official `web_search`, `browse`, and `weather` catalog; it cannot submit a new
+schema or change a risk label. The client reads `pending_action`, validates the
+arguments against its matching native schema, runs the existing local adapter,
+then returns exactly one result:
 
 ```bash
 curl -sS http://127.0.0.1:8000/v1/agent/runs/RUN_ID/tool-result \
@@ -180,6 +288,32 @@ Tool completion events use `executed:true` when dispatch occurred,
 `executed:false` for a known pre-dispatch rejection, and `executed:null` when a
 third-party registry failure leaves the outcome uncertain. Treat `null` as
 potentially executed and never retry it automatically.
+
+Desktop sends global and conversation custom instructions through the dedicated
+`trusted_instructions` create field; the runtime keeps them in the leading
+system message, after its fixed safety/tool policy, with conversation
+instructions taking precedence over conflicting global instructions. Memory
+and at most the last eight completed user/assistant messages travel separately
+through `local_context` as explicitly untrusted quoted data. The server caps
+that field at 32,768 characters; Desktop caps the complete serialized context,
+including wrappers and separators, at 24,000 Unicode scalars with newest
+messages first. Neither transient field is copied into public Agent events.
+
+The harness exposes only tools relevant to the current request. Recall,
+writing, explicit no-network requests, and transformation tasks see no
+live-data tool; weather tasks see only `weather`; web tasks deterministically
+run `web_search`, extract ranked HTTP(S) result lines, then run `browse`. Long
+pages follow the tool's `next_offset`, and explicit comparison tasks can read
+up to three ranked pages. Explicit URLs remain browseable for transformation
+requests such as “summarize this URL”; an explicit offline instruction still
+wins. Referential follow-ups such as “open that link” use the newest HTTP(S)
+URL in bounded recent context. Terse current-weather requests such as “Paris
+weather?” use live weather, while dated forecasts continue through web
+evidence. Explicitly time-sensitive questions such as yesterday's game result
+also route through current web evidence. Search and browse still execute only
+in Desktop, and `browse` retains
+its existing cache, SSRF guard, and per-fetch approval. Tool output remains
+untrusted data, and the final synthesis turn has no tools visible.
 
 ## Cancel a run
 
