@@ -609,7 +609,7 @@
           }
         },
         {
-          "prompt": "Name one additional visible detail you have not mentioned yet anywhere in your earlier answers, and describe it precisely in your own words without naming any control you already listed. Answer with exactly one short line.",
+          "prompt": "Name one additional visible detail you have not mentioned yet anywhere in your earlier answers, and describe it precisely in your own words without naming any control you already listed. Answer with exactly one short line. Do not add any introduction, explanation, or extra formatting.",
           "max_tokens": 32,
           "sampling": {
             "temperature": 0.0,
