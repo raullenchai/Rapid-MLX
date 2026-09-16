@@ -112,7 +112,8 @@ async def test_direct_answer_completes_without_tools_and_keeps_output_out_of_eve
 
     created = await service.create(
         AgentRunCreateRequest(goal="private goal"),
-        model="minicpm5-2b-4bit",
+        model="openbmb/MiniCPM5-2B-MLX",
+        request_model="minicpm5-2b-4bit",
         profile_tool_call_parser="minicpm",
     )
     done = await wait_for_status(service, created.id, AgentRunStatus.COMPLETED)
@@ -280,6 +281,14 @@ def test_desktop_tool_routing_is_intent_scoped_and_preserves_non_desktop_names()
         "custom__read",
         "weather",
     ]
+    assert _route_desktop_client_tools("Forecast for Paris?", offered) == [
+        "custom__read",
+        "weather",
+    ]
+    assert _route_desktop_client_tools("Paris weather?", offered) == [
+        "custom__read",
+        "weather",
+    ]
     assert _route_desktop_client_tools(
         "What's the weather in Seattle tomorrow?", offered
     ) == ["custom__read", "web_search", "browse"]
@@ -303,6 +312,14 @@ def test_desktop_tool_routing_is_intent_scoped_and_preserves_non_desktop_names()
     assert _route_desktop_client_tools(
         "Do not browse; summarize this https://example.com/private", offered
     ) == ["custom__read"]
+    assert _route_desktop_client_tools(
+        "Open that link and summarize it",
+        offered,
+        "assistant: See https://example.com/article",
+    ) == ["custom__read", "browse"]
+    assert _route_desktop_client_tools(
+        "What about tomorrow?", offered, "user: What's the weather in Paris?"
+    ) == ["custom__read", "web_search", "browse"]
     assert _route_desktop_client_tools(
         "Give me Tokyo weather and summarize https://example.com/news", offered
     ) == ["custom__read", "browse", "weather"]
@@ -711,6 +728,35 @@ async def test_desktop_direct_url_browses_that_url_without_search():
     assert waiting.pending_action is not None
     assert waiting.pending_action.name == "browse"
     assert waiting.pending_action.arguments == {"url": "https://example.com/notes"}
+    await service.cancel(created.id)
+
+
+@pytest.mark.asyncio
+async def test_desktop_referential_url_browses_recent_context_without_search():
+    service = AgentServerService(
+        registry=FakeRegistry(()),
+        chat_driver=ScriptedDriver(AgentModelTurn(content="unused")),
+    )
+    created = await service.create(
+        AgentRunCreateRequest(
+            goal="Open that link and summarize it",
+            local_context=(
+                "<recent_conversation>\n"
+                "assistant: Read https://example.com/older first.\n\n"
+                "assistant: The relevant source is https://example.com/latest\n"
+                "</recent_conversation>"
+            ),
+            execution="client",
+            tool_names=["web_search", "browse"],
+        ),
+        model="minicpm5-2b-4bit",
+    )
+    waiting = await wait_for_status(
+        service, created.id, AgentRunStatus.AWAITING_TOOL_RESULT
+    )
+    assert waiting.pending_action is not None
+    assert waiting.pending_action.name == "browse"
+    assert waiting.pending_action.arguments == {"url": "https://example.com/latest"}
     await service.cancel(created.id)
 
 

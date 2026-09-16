@@ -60,14 +60,30 @@ def test_minicpm_profile_is_alias_and_repo_aware():
         assert profile.max_visible_tools == 8
         assert profile.max_tool_rounds == 12
 
-    for model, expected in (
-        ("qwen3.5-4b-4bit", "qwen3.5-4b"),
-        ("mlx-community/Qwen3.5-4B-MLX-4bit", "qwen3.5-4b"),
-        ("qwen3.5-9b-4bit", "qwen3.5-9b"),
-        ("mlx-community/Qwen3.5-9B-4bit", "qwen3.5-9b"),
+    for model, backing_model, expected in (
+        (
+            "qwen3.5-4b-4bit",
+            "mlx-community/Qwen3.5-4B-MLX-4bit",
+            "qwen3.5-4b",
+        ),
+        (
+            "mlx-community/Qwen3.5-4B-MLX-4bit",
+            "mlx-community/Qwen3.5-4B-MLX-4bit",
+            "qwen3.5-4b",
+        ),
+        (
+            "qwen3.5-9b-4bit",
+            "mlx-community/Qwen3.5-9B-4bit",
+            "qwen3.5-9b",
+        ),
+        (
+            "mlx-community/Qwen3.5-9B-4bit",
+            "mlx-community/Qwen3.5-9B-4bit",
+            "qwen3.5-9b",
+        ),
     ):
         profile = resolve_personal_intelligence_profile(
-            model, tool_call_parser="hermes"
+            model, backing_model=backing_model, tool_call_parser="hermes"
         )
         assert profile is not None
         assert profile.name == expected
@@ -107,7 +123,9 @@ def test_personal_intelligence_requires_a_qualified_model_profile():
         "openbmb/MiniCPM5-2B-MLX",
     ):
         profile = resolve_personal_intelligence_profile(
-            model, tool_call_parser="minicpm"
+            model,
+            backing_model="openbmb/MiniCPM5-2B-MLX",
+            tool_call_parser="minicpm",
         )
         assert profile is not None
         assert profile.name == "minicpm5-2b"
@@ -149,6 +167,14 @@ def test_personal_intelligence_requires_a_qualified_model_profile():
     assert (
         resolve_personal_intelligence_profile(
             "/models/minicpm5-2b-copy", tool_call_parser="minicpm"
+        )
+        is None
+    )
+    assert (
+        resolve_personal_intelligence_profile(
+            "minicpm5-2b-4bit",
+            backing_model="minicpm5-2b-4bit",
+            tool_call_parser="minicpm",
         )
         is None
     )

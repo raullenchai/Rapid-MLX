@@ -147,9 +147,15 @@ _EXPLICIT_WEATHER_REQUEST = re.compile(
     r"\b(?:what(?:'s|\s+is)|give|show|tell|get|check|find)\b.{0,80}"
     r"\b(?:weather|temperature|forecast)\b|"
     r"\b(?:weather|temperature)\s+(?:in|for)\b|"
+    r"^\s*forecast\s+(?:in|for)\b|"
+    r"^\s*(?!(?:write|draft|create)\b)[\w.'-]+(?:\s+[\w.'-]+){0,2}\s+"
+    r"(?:weather|temperature|forecast)\s*\??\s*$|"
     r"(?:查|看看|告诉|给我).{0,40}(?:天气|温度|气温|预报)|"
     r"(?:天气|温度|气温|预报).{0,20}(?:怎么样|如何|多少)",
     re.IGNORECASE,
+)
+_REFERENTIAL_WEATHER_ACTION = re.compile(
+    r"\b(?:what|how)\s+about\b|\b(?:there|instead)\b", re.IGNORECASE
 )
 _FUTURE_WEATHER_INTENT = re.compile(
     r"\b(?:tomorrow|tonight|next\s+(?:week|month)|"
@@ -187,6 +193,12 @@ _EXPLICIT_WEB_ACTION = re.compile(
     r"\b(?:search|look\s+up|browse|find\s+online|open\s+https?://)\b|"
     r"\b(?:on|from|using)\s+(?:the\s+)?(?:web|internet|online)\b|"
     r"(?:搜索|上网查|联网查|浏览网页|打开\s*https?://)",
+    re.IGNORECASE,
+)
+_REFERENTIAL_WEB_ACTION = re.compile(
+    r"\b(?:open|browse|read|visit|check|summari[sz]e)\s+"
+    r"(?:that|the|this|previous|last|above)\s+"
+    r"(?:link|url|page|site|source|article)\b",
     re.IGNORECASE,
 )
 _EXPLICIT_SEARCH_ACTION = re.compile(
@@ -481,7 +493,9 @@ def _planned_weather_arguments(goal: str) -> dict[str, Any] | None:
 _MAX_ARITHMETIC_PRECISION = 1024
 
 
-def _route_desktop_client_tools(goal: str, names: list[str]) -> list[str]:
+def _route_desktop_client_tools(
+    goal: str, names: list[str], local_context: str | None = None
+) -> list[str]:
     """Keep the Desktop tool surface relevant to this task.
 
     Small local models are materially less reliable when every tool is shown
@@ -491,14 +505,26 @@ def _route_desktop_client_tools(goal: str, names: list[str]) -> list[str]:
     """
 
     routed = [name for name in names if name not in _DESKTOP_CLIENT_TOOL_NAMES]
-    has_url = _WEB_URL.search(goal) is not None
+    context = local_context or ""
+    referential_web = (
+        _REFERENTIAL_WEB_ACTION.search(goal) is not None
+        and _WEB_URL.search(context) is not None
+    )
+    has_url = _WEB_URL.search(goal) is not None or referential_web
     supplied_text = (
         _SUPPLIED_TEXT_INTENT.search(goal) is not None
         and _EXPLICIT_WEB_ACTION.search(goal) is None
         and not has_url
     )
     web_prohibited = _WEB_PROHIBITION.search(goal) is not None or supplied_text
-    weather_request = _EXPLICIT_WEATHER_REQUEST.search(goal) is not None
+    referential_weather = (
+        _REFERENTIAL_WEATHER_ACTION.search(goal) is not None
+        and re.search(r"\b(?:weather|temperature|forecast)\b", context, re.IGNORECASE)
+        is not None
+    )
+    weather_request = (
+        _EXPLICIT_WEATHER_REQUEST.search(goal) is not None or referential_weather
+    )
     future_weather = weather_request and _FUTURE_WEATHER_INTENT.search(goal) is not None
     weather = weather_request and not future_weather and not web_prohibited
     web = (
@@ -1575,7 +1601,7 @@ class AgentServerService:
             selected_names = request.tool_names
             if request.execution == "client" and selected_names is not None:
                 selected_names = _route_desktop_client_tools(
-                    request.goal, selected_names
+                    request.goal, selected_names, request.local_context
                 )
             tools = self._select_tools(
                 selected_names,
@@ -2184,6 +2210,11 @@ class AgentServerService:
         )
         if not search_content:
             direct = _WEB_INLINE_URL.search(entry.run.goal)
+            if direct is None and _REFERENTIAL_WEB_ACTION.search(entry.run.goal):
+                context_urls = list(
+                    _WEB_INLINE_URL.finditer(entry.settings.local_context or "")
+                )
+                direct = context_urls[-1] if context_urls else None
             if direct is not None:
                 url = _trim_exterior_url_punctuation(direct.group(0))
                 return None if url in browsed_urls else {"url": url}

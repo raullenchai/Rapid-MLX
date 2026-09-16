@@ -111,9 +111,7 @@ PERSONAL_INTELLIGENCE_QUALIFICATIONS = (
         public_identities=frozenset(
             {"qwen3.5-4b-4bit", "mlx-community/Qwen3.5-4B-MLX-4bit"}
         ),
-        backing_identities=frozenset(
-            {"qwen3.5-4b-4bit", "mlx-community/Qwen3.5-4B-MLX-4bit"}
-        ),
+        backing_identities=frozenset({"mlx-community/Qwen3.5-4B-MLX-4bit"}),
         profile=QWEN35_4B_PROFILE,
         tool_call_parser="hermes",
         evidence=(
@@ -126,9 +124,7 @@ PERSONAL_INTELLIGENCE_QUALIFICATIONS = (
         public_identities=frozenset(
             {"qwen3.5-9b-4bit", "mlx-community/Qwen3.5-9B-4bit"}
         ),
-        backing_identities=frozenset(
-            {"qwen3.5-9b-4bit", "mlx-community/Qwen3.5-9B-4bit"}
-        ),
+        backing_identities=frozenset({"mlx-community/Qwen3.5-9B-4bit"}),
         profile=QWEN35_9B_PROFILE,
         tool_call_parser="hermes",
         evidence=(
@@ -141,9 +137,7 @@ PERSONAL_INTELLIGENCE_QUALIFICATIONS = (
         public_identities=frozenset(
             {"qwen3.6-35b-8bit", "mlx-community/Qwen3.6-35B-A3B-8bit"}
         ),
-        backing_identities=frozenset(
-            {"qwen3.6-35b-8bit", "mlx-community/Qwen3.6-35B-A3B-8bit"}
-        ),
+        backing_identities=frozenset({"mlx-community/Qwen3.6-35B-A3B-8bit"}),
         profile=QWEN36_35B_PROFILE,
         tool_call_parser="qwen3_coder_xml",
         evidence=(
@@ -156,9 +150,7 @@ PERSONAL_INTELLIGENCE_QUALIFICATIONS = (
         public_identities=frozenset(
             {"lfm2.5-1b-4bit", "mlx-community/LFM2.5-1.2B-Instruct-4bit"}
         ),
-        backing_identities=frozenset(
-            {"lfm2.5-1b-4bit", "mlx-community/LFM2.5-1.2B-Instruct-4bit"}
-        ),
+        backing_identities=frozenset({"mlx-community/LFM2.5-1.2B-Instruct-4bit"}),
         profile=LFM25_1B_PROFILE,
         tool_call_parser="lfm",
         evidence=(
@@ -169,7 +161,7 @@ PERSONAL_INTELLIGENCE_QUALIFICATIONS = (
     PersonalIntelligenceQualification(
         id="minicpm5-2b-q4-v1",
         public_identities=frozenset({"minicpm5-2b-4bit", "openbmb/minicpm5-2b-mlx"}),
-        backing_identities=frozenset({"minicpm5-2b-4bit", "openbmb/minicpm5-2b-mlx"}),
+        backing_identities=frozenset({"openbmb/minicpm5-2b-mlx"}),
         profile=MINICPM5_2B_PROFILE,
         tool_call_parser="minicpm",
         evidence=(
