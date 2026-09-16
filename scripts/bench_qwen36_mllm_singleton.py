@@ -453,18 +453,13 @@ async def _run_lifecycle(
         asyncio.create_task(queued(media_cases[0])),
         asyncio.create_task(queued(media_cases[1])),
     ]
-    max_running_observed = 0
-    max_waiting_observed = 0
-    observed_running_with_waiter = False
-    while not all(task.done() for task in queued_tasks):
-        stats = engine.get_stats()
-        running = int(stats.get("num_running", 0))
-        waiting = int(stats.get("num_waiting", 0))
-        max_running_observed = max(max_running_observed, running)
-        max_waiting_observed = max(max_waiting_observed, waiting)
-        observed_running_with_waiter |= running == 1 and waiting >= 1
-        await asyncio.sleep(0.001)
     first, second = await asyncio.gather(*queued_tasks)
+    queue_stats = engine.get_stats()
+    max_running_observed = int(queue_stats.get("max_num_running_observed", 0))
+    max_waiting_observed = int(queue_stats.get("max_num_waiting_observed", 0))
+    observed_running_with_waiter = bool(
+        queue_stats.get("observed_running_with_waiter", False)
+    )
     result["queued_concurrency"] = {
         "elapsed_s": time.perf_counter() - queued_started,
         "num_requests_processed": engine.get_stats().get("num_requests_processed"),
