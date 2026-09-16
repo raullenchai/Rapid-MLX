@@ -87,6 +87,7 @@ ALLOWED_PROFILE_KEYS: frozenset[str] = frozenset(
         "dflash_target_revision",
         "dflash_draft_revision",
         "dflash_algorithm",
+        "dflash_block_size",
         "supports_ddtree",
         "ddtree_draft_model",
         "ddtree_speculative_tokens",
@@ -716,19 +717,13 @@ def test_dflash_requires_drafter(alias: str) -> None:
 
 @pytest.mark.parametrize("alias", _alias_ids())
 def test_dflash_excludes_moe_architectures(alias: str) -> None:
-    """``is_moe=True`` MUST NOT pair with ``supports_dflash=True``. PoC on
-    Qwen3.6-35B-A3B (MoE hybrid) measured 0.76-0.82× regression
-    regardless of precision — DFlash drafters' hidden-state fusion
-    misfires on expert-routing churn (accept_len floors at ~1.5).
-    Re-enabling this combination would ship the regression to users."""
+    """MoE DFlash requires an immutable, DFlash2 qualification receipt."""
     profile = list_profiles()[alias]
-    if profile.is_moe:
-        assert not profile.supports_dflash, (
-            f"{alias}: is_moe=True but supports_dflash=True — DFlash "
-            f"acceptance collapses on MoE due to expert-routing churn. "
-            f"Confirmed regression on Qwen3.6-35B-A3B; do not enable on "
-            f"MoE aliases."
-        )
+    if profile.is_moe and profile.supports_dflash:
+        assert profile.dflash_algorithm == "dflash2"
+        assert profile.dflash_target_revision
+        assert profile.dflash_draft_revision
+        assert profile.dflash_block_size is not None
 
 
 @pytest.mark.parametrize("alias", _alias_ids())
@@ -770,7 +765,11 @@ def test_dflash_eligible_aliases_have_qualified_drafter_family() -> None:
         (
             "mlx-community/Muse-Glimmer-30B-8bit",
             "meta-models/Muse-Glimmer-30B-assistant",
-        )
+        ),
+        (
+            "Vontra/GLM-5.3-Flash-MLX-4bit-MTP",
+            "incoai/GLM-5.3-Flash-DFlash2",
+        ),
     }
     for alias, profile in list_profiles().items():
         if not profile.supports_dflash:
@@ -858,6 +857,34 @@ def test_negative_control_unknown_dflash_algorithm_is_caught() -> None:
                 "dflash_draft_model": "fake/DFlash",
                 "dflash_algorithm": "unknown",
             },
+        )
+
+
+@pytest.mark.parametrize("bad_size", [0, 1, -1, True, "4"])
+def test_dflash_block_size_requires_integer_at_least_two(bad_size) -> None:
+    from vllm_mlx.model_aliases import _coerce
+
+    with pytest.raises(ValueError, match="dflash_block_size"):
+        _coerce(
+            "fake-alias",
+            {
+                "hf_path": "fake/Model",
+                "dflash_draft_model": "fake/DFlash2",
+                "dflash_algorithm": "dflash2",
+                "dflash_target_revision": "a" * 40,
+                "dflash_draft_revision": "b" * 40,
+                "dflash_block_size": bad_size,
+            },
+        )
+
+
+def test_dflash_block_size_requires_drafter() -> None:
+    from vllm_mlx.model_aliases import _coerce
+
+    with pytest.raises(ValueError, match="requires dflash_draft_model"):
+        _coerce(
+            "fake-alias",
+            {"hf_path": "fake/Model", "dflash_block_size": 4},
         )
 
 
@@ -2118,8 +2145,8 @@ def test_glm_5_2_reap50_alias_resolves_to_pipenetwork_4bit() -> None:
     )
 
 
-def test_glm_5_3_flash_alias_declares_qualified_native_mtp() -> None:
-    """GLM-5.3 advertises only its immutable, qualified native-MTP pair."""
+def test_glm_5_3_flash_alias_declares_qualified_speculative_pairs() -> None:
+    """GLM-5.3 advertises immutable, qualified MTP and DFlash2 pairs."""
 
     alias = "glm5.3-flash-4bit"
     profile = list_profiles()[alias]
@@ -2137,7 +2164,14 @@ def test_glm_5_3_flash_alias_declares_qualified_native_mtp() -> None:
     assert profile.mtp_draft_model is None
     assert profile.mtp_speculative_tokens == 1
     assert profile.mtp_default_enabled is True
-    assert profile.supports_dflash is False
+    assert profile.supports_dflash is True
+    assert profile.dflash_draft_model == "incoai/GLM-5.3-Flash-DFlash2"
+    assert profile.dflash_target_revision == (
+        "76add2a341a1cd90ad0e86bb69839ea9c35827c6"
+    )
+    assert profile.dflash_draft_revision == ("bf582e4eacc1810f76656d1811693ff6c6737d2a")
+    assert profile.dflash_algorithm == "dflash2"
+    assert profile.dflash_block_size == 4
     assert profile.tool_call_parser == "glm47"
     assert profile.reasoning_parser == "glm5"
     assert dict(profile.recommended_sampling or ()) == {

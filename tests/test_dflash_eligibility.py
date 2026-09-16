@@ -117,6 +117,45 @@ def test_check_rejects_moe_alias() -> None:
         check(p, alias="qwen3.6-35b-8bit")
 
 
+def test_check_accepts_exactly_qualified_moe_dflash2_pair() -> None:
+    p = AliasProfile(
+        hf_path="Vontra/GLM-5.3-Flash-MLX-4bit-MTP",
+        is_moe=True,
+        supports_dflash=True,
+        dflash_draft_model="incoai/GLM-5.3-Flash-DFlash2",
+        dflash_target_revision="a" * 40,
+        dflash_draft_revision="b" * 40,
+        dflash_algorithm="dflash2",
+        dflash_block_size=4,
+    )
+
+    assessment = report(p, alias="glm5.3-flash-4bit")
+
+    assert assessment.reasons == ()
+    assert assessment.recommendation == "verified"
+
+
+def test_explicit_qualification_env_bypasses_only_moe_gate(monkeypatch) -> None:
+    """The benchmark's documented PoC switch must match its log message."""
+    monkeypatch.setenv("RAPID_MLX_DFLASH_BYPASS_MOE_GATE", "1")
+    p = AliasProfile(
+        hf_path="Vontra/GLM-5.3-Flash-MLX-4bit-MTP",
+        is_moe=True,
+        supports_dflash=False,
+    )
+
+    assessment = report(
+        p,
+        alias="glm5.3-flash-4bit",
+        explicit=True,
+        drafter_model="incoai/GLM-5.3-Flash-DFlash2",
+    )
+
+    assert assessment.recommendation == "experimental"
+    assert not any("alias is MoE" in reason for reason in assessment.reasons)
+    assert any("qualification run" in warning for warning in assessment.warnings)
+
+
 def test_explicit_4bit_main_model_is_experimental() -> None:
     p = AliasProfile(
         hf_path="mlx-community/Qwen3.5-27B-4bit",  # 4-bit!

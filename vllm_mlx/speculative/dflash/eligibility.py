@@ -17,6 +17,7 @@ Gates derived from qualification bench data (see issue #264):
 
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass
 
 from vllm_mlx.model_aliases import AliasProfile
@@ -68,17 +69,6 @@ def report(
     """
     reasons: list[str] = []
     warnings: list[str] = []
-    if not profile.supports_dflash and not explicit:
-        reasons.append(
-            "alias is not DFlash-enabled (set supports_dflash=true in "
-            "aliases.json after benching to validate ≥1.3× speedup)"
-        )
-    if profile.is_moe:
-        reasons.append(
-            "alias is MoE (is_moe=true) — DFlash acceptance floors at "
-            "~1.5 tokens/round on expert-routing churn; regression "
-            "measured on Qwen3.6-35B-A3B"
-        )
     is_4bit = profile_looks_like_4bit(profile) or bool(
         alias and _looks_like_4bit(alias)
     )
@@ -91,6 +81,22 @@ def report(
         and bool(drafter_model or profile.dflash_draft_model)
         and (drafter_model is None or drafter_model == profile.dflash_draft_model)
     )
+    if not profile.supports_dflash and not explicit:
+        reasons.append(
+            "alias is not DFlash-enabled (set supports_dflash=true in "
+            "aliases.json after benching to validate ≥1.3× speedup)"
+        )
+    bypass_moe_gate = os.environ.get("RAPID_MLX_DFLASH_BYPASS_MOE_GATE") == "1"
+    if profile.is_moe and not (curated_pair or bypass_moe_gate):
+        reasons.append(
+            "alias is MoE (is_moe=true) and this exact target/drafter pair "
+            "has not passed DFlash qualification"
+        )
+    elif profile.is_moe and bypass_moe_gate and not curated_pair:
+        warnings.append(
+            "MoE eligibility gate bypassed for an explicit qualification run; "
+            "this does not qualify the pair for production"
+        )
     if is_4bit and not curated_pair:
         warnings.append(
             f"main model hf_path={profile.hf_path!r} is 4-bit quantized; "
@@ -120,7 +126,7 @@ def report(
         has_drafter=has_drafter,
         recommendation=(
             "incompatible"
-            if profile.is_moe
+            if profile.is_moe and not (curated_pair or bypass_moe_gate)
             else ("verified" if curated_pair else "experimental")
         ),
         warnings=tuple(warnings),

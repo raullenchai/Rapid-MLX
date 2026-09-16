@@ -4851,6 +4851,9 @@ def serve_command(args):
             expected_algorithm=(
                 _resolve_dflash_expected_algorithm(_profile, _drafter_repo)
             ),
+            block_size=(
+                getattr(_profile, "dflash_block_size", None) if _profile else None
+            ),
         )
         return
 
