@@ -77,7 +77,6 @@ class _RapidMlxModuleAliasLoader:
     def __init__(self, target_name, target_spec):
         self._target_name = target_name
         self._target_spec = target_spec  # real spec of the rapid_mlx target
-        self._target = None
 
     def create_module(self, spec):
         module = importlib.import_module(self._target_name)
@@ -111,9 +110,6 @@ class _RapidMlxModuleAliasLoader:
             if search is not None:
                 module.__path__ = list(search)
 
-    def get_filename(self, fullname):
-        return getattr(self._target_spec, "origin", None)
-
     def get_code(self, fullname):
         loader = self._target_spec.loader if self._target_spec else None
         return None if loader is None else loader.get_code(self._target_name)
@@ -145,12 +141,27 @@ class _RapidMlxModuleAliasFinder:
         target_name = _TARGET_PREFIX + fullname[len(_PREFIX) :]
         # Locate the target WITHOUT executing it. A missing target returns
         # None so the real ``ModuleNotFoundError: vllm_mlx.<sub>`` surfaces
-        # untouched; a target whose own dependencies fail imports AFTER
-        # this check, so the honest error (e.g. ``No module named 'yaml'``)
+        # untouched; a target whose own dependencies fail to import raises
+        # through, so the honest error (e.g. ``No module named 'yaml'``)
         # propagates instead of being masked as a missing shim submodule.
         try:
             target_spec = importlib.util.find_spec(target_name)
-        except (ImportError, AttributeError, ValueError):
+        except ModuleNotFoundError as exc:
+            # find_spec executes intermediate parent packages, so a broken
+            # dependency of e.g. rapid_mlx.audio surfaces HERE as
+            # ModuleNotFoundError('yaml'). Only a miss that names a
+            # rapid_mlx module means "the target itself doesn't exist";
+            # anything else is a real failure and must propagate.
+            if not (
+                exc.name
+                and (
+                    exc.name == target_name
+                    or exc.name.startswith(_TARGET_PREFIX)
+                )
+            ):
+                raise
+            return None
+        except (AttributeError, ValueError):
             return None
         if target_spec is None or target_spec.loader is None:
             return None

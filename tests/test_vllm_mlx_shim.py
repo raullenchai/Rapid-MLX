@@ -155,6 +155,32 @@ def test_shim_unknown_submodule_raises_import_error():
         importlib.import_module("vllm_mlx.no_such_submodule_xyz")
 
 
+def test_shim_propagates_intermediate_parent_failures(monkeypatch):
+    """A broken dep of an INTERMEDIATE parent package must surface honestly.
+
+    ``importlib.util.find_spec`` executes intermediate parent packages, so
+    e.g. a yaml failure inside ``rapid_mlx.audio``'s ``__init__`` raises
+    ``ModuleNotFoundError('yaml')`` while locating
+    ``rapid_mlx.audio.tts`` — the shim must re-raise it, not swallow it
+    into ``No module named 'vllm_mlx.audio.tts'``. Simulated at the same
+    call site by intercepting ``importlib.util.find_spec``.
+    """
+    real_find_spec = importlib.util.find_spec
+
+    def fake_find_spec(name, *args, **kwargs):
+        if name == "rapid_mlx.audio":
+            raise ModuleNotFoundError(
+                "No module named 'fakebrokenlib'", name="fakebrokenlib"
+            )
+        return real_find_spec(name, *args, **kwargs)
+
+    monkeypatch.setattr(importlib.util, "find_spec", fake_find_spec)
+    monkeypatch.delitem(sys.modules, "rapid_mlx.audio", raising=False)
+    monkeypatch.delitem(sys.modules, "vllm_mlx.audio", raising=False)
+    with pytest.raises(ModuleNotFoundError, match="fakebrokenlib"):
+        importlib.import_module("vllm_mlx.audio")
+
+
 @pytest.mark.requires_mlx
 def test_python_dash_m_vllm_mlx_server_still_runs():
     """``python -m vllm_mlx.server --help`` must keep working (issue #3511)."""
