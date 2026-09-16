@@ -838,7 +838,7 @@
           }
         },
         {
-          "prompt": "Name one additional visible detail you have not mentioned yet. One short line.",
+          "prompt": "Name one additional visible detail you have not mentioned yet anywhere in your earlier answers, and describe it precisely in your own words. Answer with exactly one short line.",
           "max_tokens": 32,
           "sampling": {
             "temperature": 0.0,
@@ -877,7 +877,10 @@
               [
                 [
                   "qwen3.6-27b",
-                  "ready",
+                  "ready"
+                ],
+                [
+                  "qwen3.6-27b",
                   "stop"
                 ]
               ],
@@ -1245,10 +1248,12 @@
                   "upload"
                 ],
                 [
-                  "download"
+                  "dark",
+                  "gray"
                 ],
                 [
-                  "orange"
+                  "gray",
+                  "square"
                 ]
               ]
             ]
